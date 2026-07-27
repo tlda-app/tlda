@@ -114,7 +114,7 @@ function checkManifest() {
 async function checkBrowser(docName, expectedPages) {
   const checks = []
   const roomId = `smoke-test-${Date.now()}`
-  const url = `http://localhost:5173${VITE_BASE}?doc=${docName}&room=${roomId}`
+  const url = `http://localhost:5173${VITE_BASE}?project=${docName}&room=${roomId}`
 
   const browser = await puppeteer.launch({
     headless: 'shell',

@@ -34,8 +34,8 @@ type LineYEntry = { file: string; line: number; canvasY: number }
 
 const lineYIndexCache = new Map<string, Array<LineYEntry>>()
 
-export function clearLineYIndexCache(docName: string): void {
-  lineYIndexCache.delete(docName)
+export function clearLineYIndexCache(projectName: string): void {
+  lineYIndexCache.delete(projectName)
 }
 
 function pagesToInfos(pages: SvgPage[]) {
@@ -47,12 +47,12 @@ function pagesToInfos(pages: SvgPage[]) {
 }
 
 async function getLineYIndex(
-  docName: string,
+  projectName: string,
   pages: SvgPage[]
 ): Promise<Array<LineYEntry>> {
-  if (lineYIndexCache.has(docName)) return lineYIndexCache.get(docName)!
+  if (lineYIndexCache.has(projectName)) return lineYIndexCache.get(projectName)!
 
-  const lookup = await loadLookup(docName)
+  const lookup = await loadLookup(projectName)
   if (!lookup) return []
 
   const pageInfos = pagesToInfos(pages)
@@ -69,7 +69,7 @@ async function getLineYIndex(
     if (canvas) result.push({ file, line: lineNum, canvasY: canvas.y })
   }
   result.sort((a, b) => a.canvasY - b.canvasY)
-  lineYIndexCache.set(docName, result)
+  lineYIndexCache.set(projectName, result)
   return result
 }
 
@@ -311,7 +311,7 @@ export async function initRibbon(
 export async function processRibbonHighlight(
   editor: Editor,
   shapeId: TLShapeId,
-  docName: string,
+  projectName: string,
   pages: SvgPage[]
 ): Promise<void> {
   const shape = editor.getShape(shapeId)
@@ -338,7 +338,7 @@ export async function processRibbonHighlight(
 
   const ribbonY = ribbon.y
 
-  const index = await getLineYIndex(docName, pages)
+  const index = await getLineYIndex(projectName, pages)
   const startRef = findClosestLine(index, bounds.minY)
   const endRef = findClosestLine(index, bounds.maxY)
 
@@ -381,7 +381,7 @@ export async function processRibbonHighlight(
  */
 export async function remapRibbonSegments(
   editor: Editor,
-  docName: string,
+  projectName: string,
   pages: SvgPage[]
 ): Promise<void> {
   if (pages.length === 0) return
@@ -389,7 +389,7 @@ export async function remapRibbonSegments(
   const ribbon = getRibbonShape(editor)
   if (!ribbon) return
 
-  const index = await getLineYIndex(docName, pages)
+  const index = await getLineYIndex(projectName, pages)
   if (index.length === 0) return
 
   const ribbonY = ribbon.y
@@ -437,7 +437,7 @@ export async function remapRibbonSegments(
     .filter(({ s }) => typeof s.approvedAtCommit === 'string')
   if (cur && anchored.length > 0) {
     const results = await checkRibbonStale(
-      docName,
+      projectName,
       anchored.map(({ s }) => ({
         file: s.startFile ?? '',
         startLine: Math.min(s.startLine, s.endLine),
@@ -492,7 +492,7 @@ const ERASE_RADIUS = 6
  */
 export function setupRibbonEraser(
   editor: Editor,
-  docName: string,
+  projectName: string,
   pages: SvgPage[]
 ): void {
   let eraserActive = false
@@ -500,7 +500,7 @@ export function setupRibbonEraser(
 
   // Keep a resolved index handy so each pointer_move can erase synchronously.
   // Refreshed on every pointer_down so it survives a rebuild (which clears the cache).
-  void getLineYIndex(docName, pages).then(idx => { index = idx })
+  void getLineYIndex(projectName, pages).then(idx => { index = idx })
 
   // Subtract the band [pageY ± ERASE_RADIUS] from the ribbon's segments.
   const eraseBandAt = (pageY: number) => {
@@ -539,7 +539,7 @@ export function setupRibbonEraser(
       const pagePoint = editor.inputs.currentPagePoint
       if (pagePoint.x < MARGIN_X + BAR_WIDTH + 20) {
         eraserActive = true
-        void getLineYIndex(docName, pages).then(idx => { index = idx })
+        void getLineYIndex(projectName, pages).then(idx => { index = idx })
         eraseBandAt(pagePoint.y)
       }
     }

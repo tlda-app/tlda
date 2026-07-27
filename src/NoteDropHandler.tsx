@@ -103,7 +103,7 @@ export function NoteDropHandler() {
                 copiedFromShapeId: '',
                 copiedFromTimestamp: Date.now(),
                 fleetSource: JSON.stringify({ type: 'scratch-doc', name: dropData.name, path: dropData.path }),
-                docName: dropData.name,
+                projectName: dropData.name,
                 docPath: dropData.path,
               },
             } as any)

@@ -8,18 +8,18 @@ const pageInfoCache = new Map()
 const HTML_PAGE_SPACING = PAGE_GAP
 const HTML_TAB_SPACING = 24
 
-export function loadHtmlLayout(docName) {
-  if (pageInfoCache.has(docName)) return pageInfoCache.get(docName)
-  const pageInfos = readJsonSync(docName, 'page-info.json')
+export function loadHtmlLayout(projectName) {
+  if (pageInfoCache.has(projectName)) return pageInfoCache.get(projectName)
+  const pageInfos = readJsonSync(projectName, 'page-info.json')
   if (!pageInfos) return null
   const layout = computeHtmlLayout(pageInfos)
-  pageInfoCache.set(docName, layout)
+  pageInfoCache.set(projectName, layout)
   return layout
 }
 
-export function clearHtmlLayoutCache(docName) {
-  if (docName) {
-    pageInfoCache.delete(docName)
+export function clearHtmlLayoutCache(projectName) {
+  if (projectName) {
+    pageInfoCache.delete(projectName)
   } else {
     pageInfoCache.clear()
   }
@@ -85,15 +85,15 @@ function computeHtmlLayout(pageInfos) {
   return { pages, widest }
 }
 
-export function htmlToCanvas(docName, page, localX, localY) {
-  const layout = loadHtmlLayout(docName)
+export function htmlToCanvas(projectName, page, localX, localY) {
+  const layout = loadHtmlLayout(projectName)
   if (!layout || page < 1 || page > layout.pages.length) return null
   const p = layout.pages[page - 1]
   return { x: p.x + localX, y: p.y + localY }
 }
 
-export function canvasToHtml(docName, canvasX, canvasY) {
-  const layout = loadHtmlLayout(docName)
+export function canvasToHtml(projectName, canvasX, canvasY) {
+  const layout = loadHtmlLayout(projectName)
   if (!layout) return null
   let bestMatch = null
   let bestDist = Infinity

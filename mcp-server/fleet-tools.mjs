@@ -663,7 +663,7 @@ let AGENT_ID = process.env.FLEET_ID || null;
 // Ref tokens created by tlda_highlight — keyed by «annotation:label» token
 const _refTokens = new Map();
 
-// Most recent tlda doc this agent is working with — set by monitor_add and
+// Most recent tlda project this agent is working with — set by monitor_add and
 // used by chat() to stamp outgoing messages with { doc, version } so the
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;
@@ -1621,7 +1621,7 @@ export function getFleetTools() {
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, login, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
-          doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
+          project: { type: 'string', description: 'Project name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
       },
     },
@@ -4314,11 +4314,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       header = `${filtered.length} messages${rangeStr}`;
     }
 
-    // Fetch shadow commit log if doc parameter provided
+    // Fetch shadow commit log if project parameter provided
     let shadowCommits = [];
-    if (args.doc) {
+    if (args.project) {
       try {
-        const sRes = await fleetFetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(args.doc)}/shadow/log`);
+        const sRes = await fleetFetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(args.project)}/shadow/log`);
         if (sRes.ok) {
           const sData = await sRes.json();
           shadowCommits = (sData.commits || []).map(c => ({ ...c, ms: new Date(c.timestamp).getTime() }));
@@ -4359,7 +4359,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
       const from = tag(m.from, m.fromName, m.fromNameNow);
       const to = tag(m.to, m.toName, m.toNameNow);
-      const ver = args.doc ? versionAt(m.timestamp) : null;
+      const ver = args.project ? versionAt(m.timestamp) : null;
       const verStr = ver ? ` @${ver}` : '';
       const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
       const lineBytes = Buffer.byteLength(line + SEP, 'utf8');

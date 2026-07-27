@@ -419,7 +419,7 @@ function radioAgentMatchesActiveTarget(agentId, agents = []) {
 function isDocSurface() {
   if (typeof document === 'undefined') return false
   try {
-    return new URLSearchParams(window.location.search).has('doc')
+    return new URLSearchParams(window.location.search).has('project')
   } catch {
     return false
   }

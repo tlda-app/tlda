@@ -39,7 +39,7 @@ interface ForeignDoc {
 export function useDocAutoOpen(
   editorRef: React.MutableRefObject<Editor | null>,
   document: SvgDocument,
-  docName: string,
+  projectName: string,
   onReloadRequest?: () => void,
 ) {
   const foreignDocsRef = useRef<Map<string, ForeignDoc>>(new Map())
@@ -50,7 +50,7 @@ export function useDocAutoOpen(
     if (!editor) return
 
     // Current doc updated — trigger reload
-    if (event.name === docName) {
+    if (event.name === projectName) {
       onReloadRequest?.()
       return
     }
@@ -143,7 +143,7 @@ export function useDocAutoOpen(
       const id = shapeIds[i]
       fetchForeignPage(event.name, i, id, svgBasePath)
     }
-  }, [editorRef, document, docName, onReloadRequest])
+  }, [editorRef, document, projectName, onReloadRequest])
 
   // SSE connection
   useEffect(() => {

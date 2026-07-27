@@ -152,13 +152,13 @@ export function sourceLineToEditorCanvas(
  * Tries server first (local dev), falls back to static lookup (hosted)
  */
 export async function getSourceAnchor(
-  docName: string,
+  projectName: string,
   page: number,
   x: number,
   y: number
 ): Promise<SourceAnchor | null> {
   // Static lookup — uses lookup.json generated at build time
-  return getSourceAnchorStatic(docName, page, x, y)
+  return getSourceAnchorStatic(projectName, page, x, y)
 }
 
 /**
@@ -166,7 +166,7 @@ export async function getSourceAnchor(
  * Tries server first (local dev), falls back to static lookup (hosted)
  */
 export async function resolvAnchor(
-  docName: string,
+  projectName: string,
   anchor: SourceAnchor
 ): Promise<PdfPosition | null> {
   // Try server first (only on HTTP, not HTTPS)
@@ -175,7 +175,7 @@ export async function resolvAnchor(
 
     // If we have a content fingerprint, try to find the current line
     if (anchor.content) {
-      const findUrl = `${SYNCTEX_SERVER}/find?doc=${encodeURIComponent(docName)}&file=${encodeURIComponent(anchor.file)}&content=${encodeURIComponent(anchor.content)}&hint=${anchor.line}`
+      const findUrl = `${SYNCTEX_SERVER}/find?project=${encodeURIComponent(projectName)}&file=${encodeURIComponent(anchor.file)}&content=${encodeURIComponent(anchor.content)}&hint=${anchor.line}`
       const findResp = await fetch(findUrl, { signal: AbortSignal.timeout(2000) })
       const findData = await findResp.json()
 
@@ -188,7 +188,7 @@ export async function resolvAnchor(
       }
     }
 
-    const url = `${SYNCTEX_SERVER}/view?doc=${encodeURIComponent(docName)}&file=${encodeURIComponent(anchor.file)}&line=${resolvedLine}&column=${anchor.column || 0}`
+    const url = `${SYNCTEX_SERVER}/view?project=${encodeURIComponent(projectName)}&file=${encodeURIComponent(anchor.file)}&line=${resolvedLine}&column=${anchor.column || 0}`
     const resp = await fetch(url, { signal: AbortSignal.timeout(2000) })
     const data = await resp.json()
     if (!data.error) {
@@ -200,7 +200,7 @@ export async function resolvAnchor(
 
   // Fall back to static lookup
   console.log('[SyncTeX] Using static lookup for resolve')
-  return resolveAnchorStatic(docName, anchor)
+  return resolveAnchorStatic(projectName, anchor)
 }
 
 /**

@@ -18,7 +18,7 @@ import { svgViewBoxStore } from '../stores/svgViewBoxStore'
 import { setPageRenderHash } from '../stores/renderHashStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 import { isPhoneViewport } from '../phoneViewport'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -138,8 +138,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
-  const doc = useContext(DocContext)
-  const docName = doc?.docName || ''
+  const doc = useContext(ProjectContext)
+  const projectName = doc?.projectName || ''
 
   // Subscribe to reactive SVG text store
   const svgText = useSyncExternalStore(
@@ -160,10 +160,10 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const pageIdx = shape.props.pageIndex
     const fetchCompare = async () => {
       try {
-        if (!docName) return
+        if (!projectName) return
         let hash7 = propHash7
         if (!hash7) {
-          const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
+          const sigRes = await fetch(`/api/projects/${projectName}/signal/signal:compare`)
           if (!sigRes.ok) throw new Error(`compare signal failed: ${sigRes.status}`)
           const sig = await sigRes.json()
           const ref = sig?.data?.ref
@@ -171,7 +171,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
           hash7 = ref.slice(0, 7)
         }
         const filename = getPageFilename(pageIdx) ?? `page-${pageIdx + 1}.svg`
-        const url = `/docs/${docName}/history/shadow-${hash7}/${filename}`
+        const url = `/docs/${projectName}/history/shadow-${hash7}/${filename}`
         const res = await fetch(url)
         if (!res.ok) throw new Error(`compare SVG failed: ${res.status}`)
         const text = await res.text()
@@ -182,7 +182,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       }
     }
     fetchCompare()
-  }, [docName, shape.id, shape.props.compareHash7, shape.props.compareRef, shape.props.pageIndex, svgText])
+  }, [projectName, shape.id, shape.props.compareHash7, shape.props.compareRef, shape.props.pageIndex, svgText])
 
   // Track what's currently injected so we skip redundant DOM work
   const injectedRef = useRef<string | null>(null)
@@ -223,7 +223,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const idStr = shape.id as string
     if (idStr.includes('col-') || idStr.includes('compare-page-')) return
 
-    if (!docName) return
+    if (!projectName) return
 
     // Abort previous fetch if still in flight
     if (abortRef.current) abortRef.current.abort()
@@ -468,9 +468,9 @@ function SvgPageComponent({ shape }: { shape: any }) {
             }}
           />
         </div>
-        {docName && isNearViewport && (
+        {projectName && isNearViewport && (
           <LineNumberOverlay
-            docName={docName}
+            projectName={projectName}
             pageNum={shape.props.pageIndex + 1}
             shapeH={shape.props.h}
             containerRef={containerRef}

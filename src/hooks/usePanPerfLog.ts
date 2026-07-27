@@ -97,7 +97,7 @@ function postProfile(kind: string, summary: unknown, trace: SelfProfilingTrace) 
   const record = {
     ts: new Date().toISOString(),
     kind,
-    doc: new URLSearchParams(window.location.search).get('doc') || undefined,
+    doc: new URLSearchParams(window.location.search).get('project') || undefined,
     href: window.location.href,
     summary,
     readableStacks: hasReadableFrameName(trace),

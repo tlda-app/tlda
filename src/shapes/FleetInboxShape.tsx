@@ -28,7 +28,7 @@ import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent, loadFleetHistoryForAgents } from '../fleet-data-adapter'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
 import { invalidationFromRanges } from '../invalidationGraph'
@@ -361,8 +361,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const mainEd = (typeof window !== 'undefined'
     ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
     : undefined) || editor
-  const docCtx = useContext(DocContext)
-  const docName = docCtx?.docName || ''
+  const docCtx = useContext(ProjectContext)
+  const projectName = docCtx?.projectName || ''
   const { w, h } = shape.props
 
   // Proof-dependency graph for this doc (proof-info.json `pairs[]`). The cascade
@@ -370,13 +370,13 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // round-trip. Reloaded on a rebuild (the shared cache clears on signal:reload).
   const [proofInfo, setProofInfo] = useState<{ pairs?: any[] } | null>(null)
   useEffect(() => {
-    if (!docName) return
+    if (!projectName) return
     let live = true
-    const load = () => { fetchProofInfo(docName).then((d) => { if (live) setProofInfo(d || null) }) }
+    const load = () => { fetchProofInfo(projectName).then((d) => { if (live) setProofInfo(d || null) }) }
     load()
     const off = onReloadSignal(load)
     return () => { live = false; if (typeof off === 'function') off() }
-  }, [docName])
+  }, [projectName])
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const containerRef = useRef<HTMLDivElement>(null)
   const isSelectedRef = useRef(false)

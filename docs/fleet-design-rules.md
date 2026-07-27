@@ -228,7 +228,7 @@ So:
 | the question | the instrument |
 |---|---|
 | I changed a widget — does it render right? | your own browser, on a document he is **not** in, released when the check ends |
-| What is it doing for **him** right now? | `screenshot(doc, target: "screen")` — his whole visible area, through the viewer |
+| What is it doing for **him** right now? | `screenshot(project, target: "screen")` — his whole visible area, through the viewer |
 | What is it **logging** for him? | `~/.config/tlda/client.log` — every `log.*` call from his tab, no DevTools needed |
 | Is it **slow** for him? | the client profiler on his session |
 

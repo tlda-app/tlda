@@ -61,8 +61,8 @@ function StatusBadge({ status }: { status: RibbonSegment['status'] }) {
   )
 }
 
-function ProvenanceCardBody({ docName, active, graphWidth }: {
-  docName: string
+function ProvenanceCardBody({ projectName, active, graphWidth }: {
+  projectName: string
   active: ActiveSpan
   graphWidth: number
 }) {
@@ -74,11 +74,11 @@ function ProvenanceCardBody({ docName, active, graphWidth }: {
       setProofInfo(null)
       return
     }
-    fetchProofInfo(docName).then((info) => {
+    fetchProofInfo(projectName).then((info) => {
       if (!cancelled) setProofInfo(info)
     })
     return () => { cancelled = true }
-  }, [docName, active.index, active.seg.stale])
+  }, [projectName, active.index, active.seg.stale])
 
   const nodes = useMemo(
     () => active.seg.stale && proofInfo ? cascadeNodes(proofInfo, active.seg) : [],
@@ -109,7 +109,7 @@ function ProvenanceCardBody({ docName, active, graphWidth }: {
   )
 }
 
-export function ProvenancePanel({ docName }: { docName: string }) {
+export function ProvenancePanel({ projectName }: { projectName: string }) {
   const mode = useProvenanceMode()
   const editor = useEditor()
   const [lastActive, setLastActive] = useState<ActiveSpan | null>(null)
@@ -144,7 +144,7 @@ export function ProvenancePanel({ docName }: { docName: string }) {
       }}
     >
       {lastActive ? (
-        <ProvenanceCardBody docName={docName} active={lastActive} graphWidth={280} />
+        <ProvenanceCardBody projectName={projectName} active={lastActive} graphWidth={280} />
       ) : (
         <div className="provenance-muted">hover a ribbon span</div>
       )}

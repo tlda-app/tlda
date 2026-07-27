@@ -21,7 +21,7 @@ const TIMELINE_GAP = 64  // gap between doc right edge and timeline
 export function useTimelineOverlay(
   editorRef: React.MutableRefObject<Editor | null>,
   document: SvgDocument,
-  docName: string,
+  projectName: string,
 ) {
   const [active, setActive] = useState(false)
   const shapeIdRef = useRef<TLShapeId | null>(null)
@@ -32,8 +32,8 @@ export function useTimelineOverlay(
 
     // Fetch data from both endpoints concurrently
     const [historyRes, shapesRes] = await Promise.all([
-      fetch(`/api/projects/${docName}/history`).then(r => r.ok ? r.json() : { entries: [] }).catch(() => ({ entries: [] })),
-      fetch(`/api/projects/${docName}/shapes`).then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch(`/api/projects/${projectName}/history`).then(r => r.ok ? r.json() : { entries: [] }).catch(() => ({ entries: [] })),
+      fetch(`/api/projects/${projectName}/shapes`).then(r => r.ok ? r.json() : []).catch(() => []),
     ])
 
     const totalPages = document.pages.length
@@ -129,7 +129,7 @@ export function useTimelineOverlay(
     const topY = document.pages.length > 0 ? document.pages[0].bounds.y : 0
 
     // Create shape
-    const id = createShapeId(`${docName}-timeline`)
+    const id = createShapeId(`${projectName}-timeline`)
     editor.store.mergeRemoteChanges(() => {
       editor.createShapes([{
         id,
@@ -149,7 +149,7 @@ export function useTimelineOverlay(
 
     shapeIdRef.current = id
     setActive(true)
-  }, [editorRef, document, docName])
+  }, [editorRef, document, projectName])
 
   const hide = useCallback(() => {
     const editor = editorRef.current

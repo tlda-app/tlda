@@ -351,7 +351,7 @@ export function renderMarkdown(html, extraMacros) {
     const project = m ? m[1] : '';
     const shapeId = m ? m[2] : '';
     const openUrl = project
-      ? `${myTldaUrl()}/?doc=${encodeURIComponent(project)}${shapeId ? '&focus=' + encodeURIComponent(shapeId) : ''}`
+      ? `${myTldaUrl()}/?project=${encodeURIComponent(project)}${shapeId ? '&focus=' + encodeURIComponent(shapeId) : ''}`
       : '';
     return ph(`<div class="tlda-embed">
       <div class="tlda-embed-source">${esc(source)}</div>

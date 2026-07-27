@@ -21,7 +21,7 @@ name `tlda-revealjs`. The extension directory is named `tlda` rather than
 
 ```sh
 quarto render talk.qmd --to tlda-revealjs
-tlda doc link talk talk.qmd --format slides
+tlda project link talk talk.qmd --format slides
 ```
 
 The tlda link step links the repository containing `talk.qmd`, derives the

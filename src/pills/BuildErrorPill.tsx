@@ -12,7 +12,7 @@
 import { useState, useEffect, useRef, useContext } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { openInEditor } from '../texsync'
 import type { BuildError } from '../useYjsSync'
 import './BuildErrorPill.css'
@@ -28,7 +28,7 @@ export function BuildErrorPill() {
   const [showList, setShowList] = useState(false)
   const [cleanRebuildError, setCleanRebuildError] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
 
   // Read errors from the doc-version sentinel and re-read whenever it changes.
   useEffect(() => {
@@ -57,7 +57,7 @@ export function BuildErrorPill() {
   const handleCleanRebuild = async () => {
     if (!doc) return
     try {
-      const res = await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
+      const res = await fetch(`/api/projects/${doc.projectName}/build?clean=1`, { method: 'POST' })
       if (!res.ok) throw new Error(`clean rebuild failed: ${res.status}`)
       setCleanRebuildError('')
     } catch (e) {
@@ -86,7 +86,7 @@ export function BuildErrorPill() {
               <div
                 key={i}
                 className={'build-error-item' + (hasLine ? ' clickable' : '')}
-                onClick={hasLine && doc ? () => openInEditor(doc.docName, err.file || '', err.line!) : undefined}
+                onClick={hasLine && doc ? () => openInEditor(doc.projectName, err.file || '', err.line!) : undefined}
               >
                 {hasLine && <span className="build-error-loc">{(err.file || '').split('/').pop()}:{err.line}</span>}
                 {cleanMessage(err.message)}

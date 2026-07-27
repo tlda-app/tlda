@@ -253,7 +253,7 @@ function assertMcpCallersCarryManifest() {
   const pushEnd = index.indexOf('// Shadow-branch commit', pushStart)
   assert.ok(pushStart >= 0 && pushEnd > pushStart, 'MCP push handler not found')
   const pushHandler = index.slice(pushStart, pushEnd)
-  assert.match(pushHandler, /pushMcpSourceFiles\(\{ doc, files, session: process\.env\.CLAUDE_SESSION, serverFetch \}\)/, 'MCP push handler must use tested source push orchestration')
+  assert.match(pushHandler, /pushMcpSourceFiles\(\{ project, files, session: process\.env\.CLAUDE_SESSION, serverFetch \}\)/, 'MCP push handler must use tested source push orchestration')
   assert.doesNotMatch(pushHandler, /catch\s*\{[^}]*\}/, 'MCP push must fail closed if current authored inventory cannot be read')
 }
 
@@ -274,23 +274,23 @@ async function assertMcpPushOrchestrationBehavior() {
   ]
   const calls = []
   await pushMcpSourceFiles({
-    doc: 'mcp-doc',
+    project: 'mcp-project',
     files,
     session: 'session-1',
     serverFetch: async (urlPath, options) => {
       calls.push({ urlPath, options })
-      if (urlPath === '/api/projects/mcp-doc') return { format: 'svg', mainFile: 'main.tex' }
-      if (urlPath === '/api/projects/mcp-doc/files') return { files: ['main.tex', 'notes.tex'] }
-      if (urlPath === '/api/projects/mcp-doc/source-authority') return { currentRevision: 'revision-1' }
-      if (urlPath === '/api/projects/mcp-doc/push') return { ok: true }
+      if (urlPath === '/api/projects/mcp-project') return { format: 'svg', mainFile: 'main.tex' }
+      if (urlPath === '/api/projects/mcp-project/files') return { files: ['main.tex', 'notes.tex'] }
+      if (urlPath === '/api/projects/mcp-project/source-authority') return { currentRevision: 'revision-1' }
+      if (urlPath === '/api/projects/mcp-project/push') return { ok: true }
       throw new Error(`unexpected fetch ${urlPath}`)
     },
   })
   assert.deepEqual(calls.map(call => call.urlPath), [
-    '/api/projects/mcp-doc',
-    '/api/projects/mcp-doc/files',
-    '/api/projects/mcp-doc/source-authority',
-    '/api/projects/mcp-doc/push',
+    '/api/projects/mcp-project',
+    '/api/projects/mcp-project/files',
+    '/api/projects/mcp-project/source-authority',
+    '/api/projects/mcp-project/push',
   ])
   const pushBody = JSON.parse(calls[3].options.body)
   assert.deepEqual(pushBody.files, files)
@@ -306,21 +306,21 @@ async function assertMcpPushOrchestrationBehavior() {
     const failedCalls = []
     await assert.rejects(
       () => pushMcpSourceFiles({
-        doc: 'mcp-doc',
+        project: 'mcp-project',
         files,
         session: 'session-1',
         serverFetch: async (urlPath, options) => {
           failedCalls.push({ urlPath, options })
-          if (urlPath === '/api/projects/mcp-doc') return { format: 'svg', mainFile: 'main.tex' }
-          if (urlPath === '/api/projects/mcp-doc/files') return filesResponse
-          if (urlPath === '/api/projects/mcp-doc/source-authority') return { currentRevision: 'revision-1' }
-          if (urlPath === '/api/projects/mcp-doc/push') return { ok: true }
+          if (urlPath === '/api/projects/mcp-project') return { format: 'svg', mainFile: 'main.tex' }
+          if (urlPath === '/api/projects/mcp-project/files') return filesResponse
+          if (urlPath === '/api/projects/mcp-project/source-authority') return { currentRevision: 'revision-1' }
+          if (urlPath === '/api/projects/mcp-project/push') return { ok: true }
           throw new Error(`unexpected fetch ${urlPath}`)
         },
       }),
       /files failed|files array/,
     )
-    assert.equal(failedCalls.some(call => call.urlPath === '/api/projects/mcp-doc/push'), false)
+    assert.equal(failedCalls.some(call => call.urlPath === '/api/projects/mcp-project/push'), false)
   }
 }
 
@@ -330,9 +330,9 @@ function assertInitCreatesOnlyRequestedMainFile() {
   const initEnd = source.indexOf('// Fleet-daemon control:', initStart)
   assert.ok(initStart >= 0 && initEnd > initStart, 'cmdInit not found')
   const initSource = source.slice(initStart, initEnd)
-  assert.match(initSource, /writeFileSync\(join\(targetDir,\s*mainFile\)/, 'doc init must create the requested main file')
-  assert.doesNotMatch(initSource, /writeFileSync\(join\(targetDir,\s*['"]README\.md['"]/, 'doc init must not seed README.md')
-  assert.doesNotMatch(initSource, /git',\s*\['add',\s*mainFile,\s*['"]README\.md['"]/, 'doc init must not commit README.md')
+  assert.match(initSource, /writeFileSync\(join\(targetDir,\s*mainFile\)/, 'project init must create the requested main file')
+  assert.doesNotMatch(initSource, /writeFileSync\(join\(targetDir,\s*['"]README\.md['"]/, 'project init must not seed README.md')
+  assert.doesNotMatch(initSource, /git',\s*\['add',\s*mainFile,\s*['"]README\.md['"]/, 'project init must not commit README.md')
   assert.match(initSource, /sourceManifestForFiles\(files,\s*\{\s*format:\s*'svg',\s*mainFile\s*\}\)/, 'LaTeX init must declare the requested main file')
   assert.match(initSource, /sourceManifestForFiles\(files,\s*\{\s*format:\s*'markdown',\s*mainFile\s*\}\)/, 'Markdown init must declare the requested main file')
   assert.match(initSource, /sourceManifestForFiles\(files,\s*\{\s*format:\s*'html',\s*mainFile\s*\}\)/, 'HTML init must declare the requested main file')
@@ -353,24 +353,24 @@ async function main() {
     await assertMcpPushOrchestrationBehavior()
     assertInitCreatesOnlyRequestedMainFile()
 
-    createProject({ name: 'latex-doc', title: 'Latex', mainFile: 'main.tex', format: 'svg' })
-    updateProject('latex-doc', { pages: 1, buildStatus: 'success' })
-    assert.deepEqual(fs.readdirSync(sourceDir('latex-doc')), [], 'Project creation must not invent source files')
-    write(path.join(sourceDir('latex-doc'), 'README.md'), '# legacy unowned file\n')
-    write(path.join(sourceDir('latex-doc'), 'main.synctex.gz'), 'generated\n')
-    assert.deepEqual(hashSourceFiles('latex-doc'), {})
+    createProject({ name: 'latex-project', title: 'Latex', mainFile: 'main.tex', format: 'svg' })
+    updateProject('latex-project', { pages: 1, buildStatus: 'success' })
+    assert.deepEqual(fs.readdirSync(sourceDir('latex-project')), [], 'Project creation must not invent source files')
+    write(path.join(sourceDir('latex-project'), 'README.md'), '# legacy unowned file\n')
+    write(path.join(sourceDir('latex-project'), 'main.synctex.gz'), 'generated\n')
+    assert.deepEqual(hashSourceFiles('latex-project'), {})
 
-    let result = await processProjectPush('latex-doc', {
+    let result = await processProjectPush('latex-project', {
       expectedRevision: null,
       files: [{ path: 'main.tex', content: 'hello\n' }],
       sourceManifest: ['main.tex'],
     })
     assert.equal(result.ok, true)
     let expectedRevision = result.sourceRevision
-    assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
-    assertProjectJsonHasNoClientManifest('latex-doc')
-    assert.deepEqual(Object.keys(hashSourceFiles('latex-doc')).sort(), ['main.tex'])
-    updateProject('latex-doc', {
+    assert.deepEqual(readClientSourceManifest('latex-project'), ['main.tex'])
+    assertProjectJsonHasNoClientManifest('latex-project')
+    assert.deepEqual(Object.keys(hashSourceFiles('latex-project')).sort(), ['main.tex'])
+    updateProject('latex-project', {
       members: ['original-member'],
       sourceDir: '/tmp/original-source',
       session: 'original-session',
@@ -378,7 +378,7 @@ async function main() {
       lastEditedBy: 'original-editor',
       lastEditedByAt: 43,
     })
-    assertProjectJsonHasNoClientManifest('latex-doc')
+    assertProjectJsonHasNoClientManifest('latex-project')
 
     const legacyDir = path.join(root, 'legacy-json')
     fs.mkdirSync(path.join(legacyDir, 'source'), { recursive: true })
@@ -399,8 +399,8 @@ async function main() {
     assertProjectJsonHasNoClientManifest('legacy-json')
     assert.deepEqual(Object.keys(hashSourceFiles('legacy-json')).sort(), ['main.tex', 'notes.tex'])
 
-    let beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    let beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       expectedRevision,
       files: [{ path: 'notes.tex', content: 'notes\n' }],
       sourceDir: '/tmp/should-not-stick',
@@ -410,10 +410,10 @@ async function main() {
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [{ path: 'notes.tex', content: 'notes\n' }],
       sourceManifest: ['main.tex'],
       sourceDir: '/tmp/should-not-stick',
@@ -423,10 +423,10 @@ async function main() {
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [{ path: 'notes.tex', content: 'notes\n' }],
       sourceManifest: ['notes.tex'],
       sourceDir: '/tmp/should-not-stick',
@@ -437,20 +437,20 @@ async function main() {
     })
     assert.equal(result.status, 400)
     assert.match(result.error, /missing surviving authored file/)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [{ path: 'main.tex', content: 'edited through PUT\n' }],
       sourceManifest: ['notes.tex'],
       editedBy: 'put-editor',
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [],
       sourceManifest: ['../escape.tex'],
       sourceDir: '/tmp/should-not-stick',
@@ -460,10 +460,10 @@ async function main() {
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [{ path: 'main.tex', content: 'mixed escape\n' }],
       sourceManifest: ['main.tex', '../escape.tex'],
       sourceDir: '/tmp/should-not-stick',
@@ -473,10 +473,10 @@ async function main() {
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [],
       sourceManifest: ['main.tex', 'missing.tex'],
       sourceDir: '/tmp/should-not-stick',
@@ -487,10 +487,10 @@ async function main() {
     })
     assert.equal(result.status, 400)
     assert.match(result.error, /nonexistent authored file/)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    beforeRejected = snapshotProject('latex-doc')
-    result = await processProjectPush('latex-doc', {
+    beforeRejected = snapshotProject('latex-project')
+    result = await processProjectPush('latex-project', {
       files: [],
       deletedFiles: ['main.tex'],
       sourceManifest: ['main.tex'],
@@ -501,9 +501,9 @@ async function main() {
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('latex-doc', beforeRejected)
+    assertSnapshotEqual('latex-project', beforeRejected)
 
-    result = await processProjectPush('latex-doc', {
+    result = await processProjectPush('latex-project', {
       expectedRevision,
       files: [{ path: 'notes.tex', content: 'notes\n' }],
       deletedFiles: ['main.tex'],
@@ -511,12 +511,12 @@ async function main() {
     })
     assert.equal(result.ok, true)
     expectedRevision = result.sourceRevision
-    assert.equal(readSourceFile('latex-doc', 'main.tex'), null)
-    assert.equal(readSourceFile('latex-doc', 'notes.tex'), 'notes\n')
-    assert.deepEqual(readClientSourceManifest('latex-doc'), ['notes.tex'])
-    assertProjectJsonHasNoClientManifest('latex-doc')
+    assert.equal(readSourceFile('latex-project', 'main.tex'), null)
+    assert.equal(readSourceFile('latex-project', 'notes.tex'), 'notes\n')
+    assert.deepEqual(readClientSourceManifest('latex-project'), ['notes.tex'])
+    assertProjectJsonHasNoClientManifest('latex-project')
 
-    result = await processProjectPush('latex-doc', {
+    result = await processProjectPush('latex-project', {
       expectedRevision,
       files: [{ path: 'main.tex', content: 'hello again\n' }],
       deletedFiles: ['notes.tex'],
@@ -524,9 +524,9 @@ async function main() {
     })
     assert.equal(result.ok, true)
     expectedRevision = result.sourceRevision
-    assert.equal(readSourceFile('latex-doc', 'notes.tex'), null)
-    assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
-    assertProjectJsonHasNoClientManifest('latex-doc')
+    assert.equal(readSourceFile('latex-project', 'notes.tex'), null)
+    assert.deepEqual(readClientSourceManifest('latex-project'), ['main.tex'])
+    assertProjectJsonHasNoClientManifest('latex-project')
 
     for (const [failAt, body] of [
       ['write:2', {
@@ -544,29 +544,29 @@ async function main() {
         sourceManifest: ['main.tex'],
       }],
     ]) {
-      beforeRejected = snapshotProject('latex-doc')
-      result = await processProjectPush('latex-doc', { expectedRevision, ...body }, { failAt })
+      beforeRejected = snapshotProject('latex-project')
+      result = await processProjectPush('latex-project', { expectedRevision, ...body }, { failAt })
       assert.equal(result.status, 409)
-      assertSnapshotEqual('latex-doc', beforeRejected)
+      assertSnapshotEqual('latex-project', beforeRejected)
     }
 
-    result = await processProjectPush('latex-doc', {
+    result = await processProjectPush('latex-project', {
       expectedRevision,
       files: [],
       deletedFiles: ['README.md', 'main.synctex.gz'],
       sourceManifest: ['main.tex'],
     })
     assert.equal(result.ok, true)
-    assert.equal(fs.existsSync(path.join(sourceDir('latex-doc'), 'README.md')), true)
-    assert.equal(fs.existsSync(path.join(sourceDir('latex-doc'), 'main.synctex.gz')), true)
-    assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
+    assert.equal(fs.existsSync(path.join(sourceDir('latex-project'), 'README.md')), true)
+    assert.equal(fs.existsSync(path.join(sourceDir('latex-project'), 'main.synctex.gz')), true)
+    assert.deepEqual(readClientSourceManifest('latex-project'), ['main.tex'])
 
-    result = await processProjectPush('latex-doc', {
+    result = await processProjectPush('latex-project', {
       files: [],
       sourceManifest: ['main.tex'],
     })
     assert.equal(result.ok, true)
-    assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
+    assert.deepEqual(readClientSourceManifest('latex-project'), ['main.tex'])
 
     createProject({ name: 'overleaf-fail', title: 'Overleaf Fail', mainFile: 'main.tex', format: 'svg' })
     updateProject('overleaf-fail', {
@@ -941,21 +941,21 @@ async function main() {
     assert.equal(result.status, 400)
     assertSnapshotEqual('failed', beforeRejected)
 
-    createProject({ name: 'book-doc', title: 'Book', format: 'book', members: ['original-book-member'] })
-    beforeRejected = snapshotProject('book-doc')
-    result = await processProjectPush('book-doc', {
+    createProject({ name: 'book-project', title: 'Book', format: 'book', members: ['original-book-member'] })
+    beforeRejected = snapshotProject('book-project')
+    result = await processProjectPush('book-project', {
       files: [{ path: 'chapter.tex', content: 'chapter\n' }],
       members: ['should-not-stick'],
     })
     assert.equal(result.status, 400)
-    assertSnapshotEqual('book-doc', beforeRejected)
+    assertSnapshotEqual('book-project', beforeRejected)
 
-    result = await processProjectPush('book-doc', {
+    result = await processProjectPush('book-project', {
       files: [],
       members: ['accepted-book-member'],
     })
     assert.equal(result.status, 200)
-    assert.deepEqual(readProject('book-doc').members, ['accepted-book-member'])
+    assert.deepEqual(readProject('book-project').members, ['accepted-book-member'])
 
     const localHashes = { 'main.tex': md5('delivered\n') }
     createProject({ name: 'summary', title: 'Summary', mainFile: 'main.tex', format: 'svg' })
@@ -968,7 +968,7 @@ async function main() {
     })
 
     assert.deepEqual(normalizeSourceManifest(['README.md'], readProject('markdown-readme')), ['README.md'])
-    assert.deepEqual(normalizeSourceManifest(['README.md'], readProject('latex-doc')), [])
+    assert.deepEqual(normalizeSourceManifest(['README.md'], readProject('latex-project')), [])
 
     console.log('PASS source manifest contract')
   } finally {

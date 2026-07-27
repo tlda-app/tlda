@@ -4,7 +4,7 @@ import { useEditor } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
-import { DocContext, PanelContext } from '../PanelContext'
+import { ProjectContext, PanelContext } from '../PanelContext'
 import { onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
@@ -45,7 +45,7 @@ function computeDefaultFolded(items: Array<{ level: string }>): Set<number> {
 
 export function TocTab() {
   const editor = useEditor()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const ctx = useContext(PanelContext)
   const hasPresenterPrivilege = useSyncExternalStore(subscribeCanPresent, canPresent)
   const [headings, setHeadings] = useState<TocEntry[]>([])
@@ -69,7 +69,7 @@ export function TocTab() {
   useEffect(() => {
     return onReloadSignal((_signal) => {
       if (doc) {
-        clearLookupCache(doc.docName)
+        clearLookupCache(doc.projectName)
         setReloadCount(c => c + 1)
       }
     })
@@ -79,7 +79,7 @@ export function TocTab() {
     if (!doc) return
     // Slides format: load TOC from page-info.json
     if (doc?.format === 'slides') {
-      fetch(`/docs/${doc.docName}/page-info.json`)
+      fetch(`/docs/${doc.projectName}/page-info.json`)
         .then(r => r.ok ? r.json() : null)
         .then((entries: Array<{ title?: string }> | null) => {
           if (entries) setSlideTitles(entries.map(e => e.title || ''))
@@ -92,7 +92,7 @@ export function TocTab() {
       // Multi-target: load each target's lookup, merge with dividers
       let pageOffset = 0
       Promise.all(targets.map(async (t) => {
-        const resp = await fetch(`/docs/${doc.docName}/${t.name}-lookup.json`).catch(() => null)
+        const resp = await fetch(`/docs/${doc.projectName}/${t.name}-lookup.json`).catch(() => null)
         if (!resp?.ok) return { target: t, headings: [] as TocEntry[], pageOffset }
         const data = await resp.json()
         const h = parseHeadings(data.lines, data.meta, { skipAppendixDivider: true })
@@ -125,13 +125,13 @@ export function TocTab() {
         setCollapsed(computeDefaultFolded(merged))
       })
     } else {
-      loadLookup(doc.docName).then(data => {
+      loadLookup(doc.projectName).then(data => {
         if (data) {
           const h = parseHeadings(data.lines, data.meta)
           setHeadings(h)
           setCollapsed(computeDefaultFolded(h))
         } else {
-          loadHtmlToc(doc!.docName).then(toc => {
+          loadHtmlToc(doc!.projectName).then(toc => {
             if (toc) {
               setHtmlToc(toc)
               setCollapsed(computeDefaultFolded(toc))
@@ -140,7 +140,7 @@ export function TocTab() {
         }
       })
     }
-  }, [doc?.docName, doc?.format, doc?.targets, reloadCount])
+  }, [doc?.projectName, doc?.format, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
     if (!doc) return
@@ -284,16 +284,16 @@ export function TocTab() {
       setHtmlSearchIndex(null)
       return
     }
-    loadLookup(doc.docName).then(data => {
+    loadLookup(doc.projectName).then(data => {
       if (data) {
         setSearchLines(data.lines)
       } else {
-        loadHtmlSearch(doc.docName).then(index => {
+        loadHtmlSearch(doc.projectName).then(index => {
           if (index) setHtmlSearchIndex(index)
         })
       }
     })
-  }, [doc?.docName, doc?.format, reloadCount])
+  }, [doc?.projectName, doc?.format, reloadCount])
 
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current)

@@ -12,7 +12,7 @@ import { JSDOM } from 'jsdom'
 import { installChatImageRetry, isRetryableChatImage, retryImageUrl, markChatImageUnavailable } from '../src/fleet/chat-image-retry.mjs'
 
 function setupDom(html = '<div id="log"></div>') {
-  const dom = new JSDOM(html, { url: 'https://tlda-phi.example/?doc=test' })
+  const dom = new JSDOM(html, { url: 'https://tlda-phi.example/?project=test' })
   globalThis.HTMLImageElement = dom.window.HTMLImageElement
   globalThis.MutationObserver = dom.window.MutationObserver
   globalThis.Event = dom.window.Event

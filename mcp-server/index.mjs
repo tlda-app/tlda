@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Unified MCP Server — tlda doc tools + fleet agent tools.
+ * Unified MCP Server — tlda project tools + fleet agent tools.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -30,7 +30,7 @@ import { connectSSE } from '../shared/sse-parser.mjs';
 import { WebSocketServer } from 'ws';
 import { getIndexAbove } from '@tldraw/utils';
 import { findRenderedText } from './svg-text.mjs';
-import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
+import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localProjectDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
 import { formatDisplayTimestamp } from '../shared/display-time.mjs';
@@ -67,21 +67,21 @@ async function serverFetch(urlPath, options = {}) {
   });
 }
 
-async function fetchShapes(docName, typeFilter) {
+async function fetchShapes(projectName, typeFilter) {
   const qs = typeFilter ? `?type=${typeFilter}` : '';
-  return serverFetch(`/api/projects/${docName}/shapes${qs}`);
+  return serverFetch(`/api/projects/${projectName}/shapes${qs}`);
 }
 
-async function fetchShape(docName, shapeId) {
+async function fetchShape(projectName, shapeId) {
   const id = shapeId.startsWith('shape:') ? shapeId : `shape:${shapeId}`;
-  return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`);
+  return serverFetch(`/api/projects/${projectName}/shapes/${encodeURIComponent(id)}`);
 }
 
 /** Get the next available shape index (above all existing shapes). */
-async function getNextShapeIndex(docName) {
+async function getNextShapeIndex(projectName) {
   let maxIndex = 'a1';
   try {
-    const allShapes = await fetchShapes(docName);
+    const allShapes = await fetchShapes(projectName);
     for (const s of allShapes) {
       if (s.typeName === 'shape' && s.index && s.index > maxIndex) {
         maxIndex = s.index;
@@ -91,41 +91,41 @@ async function getNextShapeIndex(docName) {
   return getIndexAbove(maxIndex);
 }
 
-async function createShapeRest(docName, shape) {
-  return serverFetch(`/api/projects/${docName}/shapes`, {
+async function createShapeRest(projectName, shape) {
+  return serverFetch(`/api/projects/${projectName}/shapes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(shape),
   });
 }
 
-async function updateShapeRest(docName, shapeId, updates) {
+async function updateShapeRest(projectName, shapeId, updates) {
   const id = shapeId.startsWith('shape:') ? shapeId : `shape:${shapeId}`;
-  return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`, {
+  return serverFetch(`/api/projects/${projectName}/shapes/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
   });
 }
 
-async function deleteShapeRest(docName, shapeId) {
+async function deleteShapeRest(projectName, shapeId) {
   const id = shapeId.startsWith('shape:') ? shapeId : `shape:${shapeId}`;
-  return serverFetch(`/api/projects/${docName}/shapes/${encodeURIComponent(id)}`, {
+  return serverFetch(`/api/projects/${projectName}/shapes/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 }
 
-async function broadcastSignalRest(docName, key, data) {
-  return serverFetch(`/api/projects/${docName}/signal`, {
+async function broadcastSignalRest(projectName, key, data) {
+  return serverFetch(`/api/projects/${projectName}/signal`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, ...data }),
   });
 }
 
-async function readSignalRest(docName, key) {
+async function readSignalRest(projectName, key) {
   try {
-    return await serverFetch(`/api/projects/${docName}/signal/${encodeURIComponent(key)}`);
+    return await serverFetch(`/api/projects/${projectName}/signal/${encodeURIComponent(key)}`);
   } catch {
     return null;
   }
@@ -270,17 +270,17 @@ function formatUnderstandingSummary(segments) {
  * Connect to signal SSE stream. Returns { close() }.
  * Calls onSignal(signal) for each signal broadcast ({key, ...data, timestamp}).
  */
-function connectSignalStream(docName, onSignal) {
+function connectSignalStream(projectName, onSignal) {
   const stream = connectSSE({
-    url: `${TLDA_SYNC_SERVER}/api/projects/${docName}/signal/stream`,
+    url: `${TLDA_SYNC_SERVER}/api/projects/${projectName}/signal/stream`,
     headers: TLDA_AUTH_HEADERS,
     onEvent: onSignal,
     onEnd() {
-      console.error(`[SSE] Signal stream ${docName} ended, reconnecting...`);
+      console.error(`[SSE] Signal stream ${projectName} ended, reconnecting...`);
       setTimeout(() => stream.reconnect(), 3000);
     },
     onError() {
-      console.error(`[SSE] Signal stream ${docName} error, reconnecting...`);
+      console.error(`[SSE] Signal stream ${projectName} error, reconnecting...`);
       setTimeout(() => stream.reconnect(), 5000);
     },
   });
@@ -291,17 +291,17 @@ function connectSignalStream(docName, onSignal) {
  * Connect to shape change SSE stream. Returns { close() }.
  * Calls onChange() whenever shapes change in the sync room.
  */
-function connectShapeStream(docName, onChange) {
+function connectShapeStream(projectName, onChange) {
   const stream = connectSSE({
-    url: `${TLDA_SYNC_SERVER}/api/projects/${docName}/shapes/stream`,
+    url: `${TLDA_SYNC_SERVER}/api/projects/${projectName}/shapes/stream`,
     headers: TLDA_AUTH_HEADERS,
     onEvent: onChange,
     onEnd() {
-      console.error(`[SSE] Shape stream ${docName} ended, reconnecting...`);
+      console.error(`[SSE] Shape stream ${projectName} ended, reconnecting...`);
       setTimeout(() => stream.reconnect(), 3000);
     },
     onError() {
-      console.error(`[SSE] Shape stream ${docName} error, reconnecting...`);
+      console.error(`[SSE] Shape stream ${projectName} error, reconnecting...`);
       setTimeout(() => stream.reconnect(), 5000);
     },
   });
@@ -314,24 +314,24 @@ const SNAPSHOT_PATH = '/tmp/tldraw-snapshot.json';
 const SCREENSHOT_PATH = '/tmp/annotated-view.png';
 
 /** Check if a document has built pages. Returns { ok, pages, buildStatus } or { ok: false, reason }. */
-async function checkDocBuildStatus(docName) {
+async function checkProjectBuildStatus(projectName) {
   const sUrl = getServerUrl();
   try {
-    const res = await fetch(`${sUrl}/api/projects/${docName}`, { headers: TLDA_AUTH_HEADERS });
+    const res = await fetch(`${sUrl}/api/projects/${projectName}`, { headers: TLDA_AUTH_HEADERS });
     if (res.ok) {
       const info = await res.json();
       if (!info.pages || info.pages === 0) {
         const status = info.buildStatus || 'unknown';
-        if (status === 'building') return { ok: false, reason: `Document "${docName}" is currently building — no pages available yet` };
-        return { ok: false, reason: `Document "${docName}" has no built pages (build status: ${status})` };
+        if (status === 'building') return { ok: false, reason: `Document "${projectName}" is currently building — no pages available yet` };
+        return { ok: false, reason: `Document "${projectName}" has no built pages (build status: ${status})` };
       }
       return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
     }
-    if (ALLOW_LOCAL_DOC_DISK) return checkDocBuildStatusDisk(docName);
-    return { ok: false, reason: `Document "${docName}" status check failed on ${sUrl}: HTTP ${res.status}` };
+    if (ALLOW_LOCAL_DOC_DISK) return checkProjectBuildStatusDisk(projectName);
+    return { ok: false, reason: `Document "${projectName}" status check failed on ${sUrl}: HTTP ${res.status}` };
   } catch (e) {
     if (ALLOW_LOCAL_DOC_DISK) {
-      const diskResult = checkDocBuildStatusDisk(docName);
+      const diskResult = checkProjectBuildStatusDisk(projectName);
       if (diskResult.ok) return diskResult;
       if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
         if (process.env.TLDA_SYNC_SERVER) return diskResult;
@@ -340,26 +340,26 @@ async function checkDocBuildStatus(docName) {
       return diskResult;
     }
     if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
-      return { ok: false, reason: `Document "${docName}" status check failed: ${sUrl} is unreachable` };
+      return { ok: false, reason: `Document "${projectName}" status check failed: ${sUrl} is unreachable` };
     }
-    return { ok: false, reason: `Document "${docName}" status check failed on ${sUrl}: ${e.message}` };
+    return { ok: false, reason: `Document "${projectName}" status check failed on ${sUrl}: ${e.message}` };
   }
 }
 
 /** Local-store status check: read project.json directly when disk mode is allowed. */
-function checkDocBuildStatusDisk(docName) {
-  const projDir = path.join(PROJECT_ROOT, 'server', 'projects', docName);
+function checkProjectBuildStatusDisk(projectName) {
+  const projDir = path.join(PROJECT_ROOT, 'server', 'projects', projectName);
   const projJson = path.join(projDir, 'project.json');
   try {
     const info = JSON.parse(fs.readFileSync(projJson, 'utf8'));
     if (!info.pages || info.pages === 0) {
       const status = info.buildStatus || 'unknown';
-      if (status === 'building') return { ok: false, reason: `Document "${docName}" is currently building — no pages available yet` };
-      return { ok: false, reason: `Document "${docName}" has no built pages (build status: ${status})` };
+      if (status === 'building') return { ok: false, reason: `Document "${projectName}" is currently building — no pages available yet` };
+      return { ok: false, reason: `Document "${projectName}" has no built pages (build status: ${status})` };
     }
     return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
   } catch {
-    return { ok: false, reason: `Project "${docName}" not found on server. Run "tlda doc status ${docName}" or "tlda doc errors ${docName}" to investigate.` };
+    return { ok: false, reason: `Project "${projectName}" not found on server. Run "tlda project status ${projectName}" or "tlda project errors ${projectName}" to investigate.` };
   }
 }
 
@@ -376,22 +376,22 @@ initDataSource(PROJECT_ROOT, ALLOW_LOCAL_DOC_DISK ? null : TLDA_SERVER);
 
 // ---- Lookup.json support ----
 
-function loadLookup(docName) {
-  return readJsonSync(docName, 'lookup.json');
+function loadLookup(projectName) {
+  return readJsonSync(projectName, 'lookup.json');
 }
 
-async function loadLookupAsync(docName) {
-  return await readJson(docName, 'lookup.json');
+async function loadLookupAsync(projectName) {
+  return await readJson(projectName, 'lookup.json');
 }
 
-function lookupLine(docName, lineNum, file) {
-  const lookup = loadLookup(docName);
+function lookupLine(projectName, lineNum, file) {
+  const lookup = loadLookup(projectName);
   if (!lookup?.lines) return null;
   return _lookupLineInData(lookup, lineNum, file);
 }
 
-async function lookupLineAsync(docName, lineNum, file) {
-  const lookup = await loadLookupAsync(docName);
+async function lookupLineAsync(projectName, lineNum, file) {
+  const lookup = await loadLookupAsync(projectName);
   if (!lookup?.lines) return null;
   return _lookupLineInData(lookup, lineNum, file);
 }
@@ -537,7 +537,7 @@ async function educationGate(name, args) {
 
 const AT_REF_PATTERN = /(?<![\\@\w])@([\w:.-]+)/g
 
-function validateRefs(text, docName) {
+function validateRefs(text, projectName) {
   if (!text) return { warnings: [], refs: [] }
   const refs = []
   let match
@@ -547,7 +547,7 @@ function validateRefs(text, docName) {
   }
   if (refs.length === 0) return { warnings: [], refs: [] }
 
-  const sm = readJsonSync(docName, 'source-map.json')
+  const sm = readJsonSync(projectName, 'source-map.json')
   const labels = sm?.labels || []
   const labelSet = new Set(labels.map(e => e.label))
 
@@ -579,13 +579,13 @@ function formatRefWarnings(validation) {
 
 // Coordinate mapping now lives in lib/formatCoords.mjs (imported above)
 
-function findNearbyLines(docName, canvasBBox) {
-  const lookup = loadLookup(docName);
+function findNearbyLines(projectName, canvasBBox) {
+  const lookup = loadLookup(projectName);
   if (!lookup?.lines) return [];
 
   // Convert bbox corners to doc-local coordinates
-  const topLeft = canvasToDoc(docName, canvasBBox.minX, canvasBBox.minY);
-  const bottomRight = canvasToDoc(docName, canvasBBox.maxX, canvasBBox.maxY);
+  const topLeft = canvasToDoc(projectName, canvasBBox.minX, canvasBBox.minY);
+  const bottomRight = canvasToDoc(projectName, canvasBBox.maxX, canvasBBox.maxY);
   const page = topLeft.page; // assume stroke doesn't span pages
 
   // Y margin: generous to catch lines near the stroke
@@ -608,18 +608,18 @@ function findNearbyLines(docName, canvasBBox) {
 
 // ---- HTML search index text extraction ----
 
-function loadSearchIndex(docName) {
-  return readJsonSync(docName, 'search-index.json');
+function loadSearchIndex(projectName) {
+  return readJsonSync(projectName, 'search-index.json');
 }
 
-function findHtmlRenderedText(docName, canvasBBox) {
-  const searchIndex = loadSearchIndex(docName);
+function findHtmlRenderedText(projectName, canvasBBox) {
+  const searchIndex = loadSearchIndex(projectName);
   if (!searchIndex) return [];
 
   // Find which page the bbox center is on
   const centerX = (canvasBBox.minX + canvasBBox.maxX) / 2;
   const centerY = (canvasBBox.minY + canvasBBox.maxY) / 2;
-  const pos = canvasToHtml(docName, centerX, centerY);
+  const pos = canvasToHtml(projectName, centerX, centerY);
   if (!pos) return [];
 
   // Find the search index entry for this page
@@ -635,15 +635,15 @@ function findHtmlRenderedText(docName, canvasBBox) {
   return [text.slice(start, start + 200)];
 }
 
-function getRenderedText(docName, bbox) {
-  if (isHtmlDoc(docName)) {
-    const texts = findHtmlRenderedText(docName, bbox);
+function getRenderedText(projectName, bbox) {
+  if (isHtmlDoc(projectName)) {
+    const texts = findHtmlRenderedText(projectName, bbox);
     if (texts.length === 0) return '';
     let joined = texts.join(' | ');
     if (joined.length > 200) joined = joined.slice(0, 200) + '…';
     return joined;
   }
-  const texts = findRenderedText(docName, bbox, PROJECT_ROOT);
+  const texts = findRenderedText(projectName, bbox, PROJECT_ROOT);
   if (texts.length === 0) return '';
   // Truncate to ~200 chars total for readability
   let joined = texts.join(' | ');
@@ -653,12 +653,12 @@ function getRenderedText(docName, bbox) {
 
 // ---- Page-relative position description ----
 // Converts a canvas bbox center into "page N, upper-right" style description.
-function describePagePosition(docName, canvasBBox) {
+function describePagePosition(projectName, canvasBBox) {
   const cx = (canvasBBox.minX + canvasBBox.maxX) / 2;
   const cy = (canvasBBox.minY + canvasBBox.maxY) / 2;
-  const doc = canvasToDoc(docName, cx, cy);
-  const pw = isHtmlDoc(docName) ? getPageWidth(docName) : PDF_WIDTH;
-  const ph = isHtmlDoc(docName) ? 600 : PDF_HEIGHT;
+  const doc = canvasToDoc(projectName, cx, cy);
+  const pw = isHtmlDoc(projectName) ? getPageWidth(projectName) : PDF_WIDTH;
+  const ph = isHtmlDoc(projectName) ? 600 : PDF_HEIGHT;
 
   // Horizontal zone
   const xFrac = doc.pdfX / pw;
@@ -821,8 +821,8 @@ function getTextBBox(shape) {
  * them into a uniform array with page position, source lines, rendered text, etc.
  * Also includes math-note shapes for context building.
  */
-async function collectDrawnShapes(docName) {
-  const allRecords = await fetchShapes(docName);
+async function collectDrawnShapes(projectName) {
+  const allRecords = await fetchShapes(projectName);
   const shapes = [];
 
   for (const record of allRecords) {
@@ -837,9 +837,9 @@ async function collectDrawnShapes(docName) {
       if (!bbox) continue;
       const tool = shapeType === 'highlight' ? 'highlighter' : 'pen';
       const gesture = classifyGesture(bbox);
-      const nearbyLines = findNearbyLines(docName, bbox);
-      const pos = describePagePosition(docName, bbox);
-      const rendered = getRenderedText(docName, bbox);
+      const nearbyLines = findNearbyLines(projectName, bbox);
+      const pos = describePagePosition(projectName, bbox);
+      const rendered = getRenderedText(projectName, bbox);
       // Magic highlighter metadata
       const highlightText = record.meta?.highlightText || null;
       const highlightLines = record.meta?.highlightLines || null;
@@ -857,15 +857,15 @@ async function collectDrawnShapes(docName) {
       const ep = getArrowEndpoints(record);
       const bbox = getArrowBBox(record);
       if (!ep || !bbox) continue;
-      const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
-      const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
-      const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
-      const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+      const pdfStart = canvasToDoc(projectName, ep.start.x, ep.start.y);
+      const pdfEnd = canvasToDoc(projectName, ep.end.x, ep.end.y);
+      const startLines = findNearbyLines(projectName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+      const endLines = findNearbyLines(projectName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
       const label = record.props?.text || '';
       const startBound = record.props?.start?.boundShapeId || null;
       const endBound = record.props?.end?.boundShapeId || null;
-      const rendered = getRenderedText(docName, bbox);
-      const pos = describePagePosition(docName, bbox);
+      const rendered = getRenderedText(projectName, bbox);
+      const pos = describePagePosition(projectName, bbox);
       shapes.push({
         id, shapeType: 'arrow', color, label, page: pos.page, position: pos.description, bbox,
         startPage: pdfStart.page, endPage: pdfEnd.page,
@@ -878,10 +878,10 @@ async function collectDrawnShapes(docName) {
       const bbox = getGeoBBox(record);
       if (!bbox) continue;
       const geo = record.props?.geo || 'rectangle';
-      const nearbyLines = findNearbyLines(docName, bbox);
-      const pos = describePagePosition(docName, bbox);
+      const nearbyLines = findNearbyLines(projectName, bbox);
+      const pos = describePagePosition(projectName, bbox);
       const label = record.props?.text || '';
-      const rendered = getRenderedText(docName, bbox);
+      const rendered = getRenderedText(projectName, bbox);
       shapes.push({ id, shapeType: 'geo', geo, color, label, page: pos.page, position: pos.description,
         bbox, lines: nearbyLines, rendered, createdAt });
       continue;
@@ -891,9 +891,9 @@ async function collectDrawnShapes(docName) {
       const bbox = getTextBBox(record);
       const text = record.props?.text || '';
       if (!text.trim()) continue;
-      const pos = describePagePosition(docName, bbox);
-      const nearbyLines = findNearbyLines(docName, bbox);
-      const rendered = getRenderedText(docName, bbox);
+      const pos = describePagePosition(projectName, bbox);
+      const nearbyLines = findNearbyLines(projectName, bbox);
+      const rendered = getRenderedText(projectName, bbox);
       shapes.push({ id, shapeType: 'text', color, text, page: pos.page, position: pos.description,
         bbox, lines: nearbyLines, rendered, createdAt });
       continue;
@@ -913,9 +913,9 @@ async function collectDrawnShapes(docName) {
       }
       if (!isFinite(minX)) continue;
       const bbox = { minX, minY, maxX, maxY };
-      const nearbyLines = findNearbyLines(docName, bbox);
-      const pos = describePagePosition(docName, bbox);
-      const rendered = getRenderedText(docName, bbox);
+      const nearbyLines = findNearbyLines(projectName, bbox);
+      const pos = describePagePosition(projectName, bbox);
+      const rendered = getRenderedText(projectName, bbox);
       shapes.push({ id, shapeType: 'line', color, page: pos.page, position: pos.description,
         bbox, lines: nearbyLines, rendered, createdAt });
       continue;
@@ -928,7 +928,7 @@ async function collectDrawnShapes(docName) {
       let pos;
       if (record.x != null && record.y != null) {
         const fakeBBox = { minX: record.x, minY: record.y, maxX: record.x + 10, maxY: record.y + 10 };
-        pos = describePagePosition(docName, fakeBBox);
+        pos = describePagePosition(projectName, fakeBBox);
       }
       shapes.push({
         id, shapeType: 'note', color, text,
@@ -1170,13 +1170,13 @@ function formatShapeDetail(s) {
 
 // ---- Signal writers ----
 
-function writeAgentAttention(docName, x, y, agent) {
-  broadcastSignalRest(docName, 'signal:agent-attention', { x, y, timestamp: Date.now(), agent })
+function writeAgentAttention(projectName, x, y, agent) {
+  broadcastSignalRest(projectName, 'signal:agent-attention', { x, y, timestamp: Date.now(), agent })
     .catch(e => console.warn('[Attention] Failed to write:', e.message));
 }
 
-function writeAgentHeartbeat(docName, state, agent) {
-  broadcastSignalRest(docName, 'signal:agent-heartbeat', { state, timestamp: Date.now(), agent })
+function writeAgentHeartbeat(projectName, state, agent) {
+  broadcastSignalRest(projectName, 'signal:agent-heartbeat', { state, timestamp: Date.now(), agent })
     .catch(e => console.warn('[Heartbeat] Failed to write:', e.message));
 }
 
@@ -1253,7 +1253,7 @@ async function scrollToLine(doc, line, file) {
       });
       return { ok: true, elementId, method: 'scroll-to-element' };
     } catch (e) {
-      return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for doc "${doc}". Element scroll also failed: ${e.message}` };
+      return { ok: false, error: `Line ${line}${file ? ' in ' + path.basename(file) : ''} not found in lookup.json for project "${doc}". Element scroll also failed: ${e.message}` };
     }
   }
 
@@ -1691,7 +1691,7 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { doc, line } = JSON.parse(body);
+        const { project: doc, line } = JSON.parse(body);
         const result = await scrollToLine(doc, line);
         res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -1709,7 +1709,7 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { doc, file, line } = JSON.parse(body);
+        const { project: doc, file, line } = JSON.parse(body);
         const result = await highlightLine(doc, file, line);
         res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -1727,7 +1727,7 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { doc, line, text, color } = JSON.parse(body);
+        const { project: doc, line, text, color } = JSON.parse(body);
         const result = await sendNote(doc, line, text, color);
         res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -1745,7 +1745,7 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { doc, line, text, color, width, height, side } = JSON.parse(body);
+        const { project: doc, line, text, color, width, height, side } = JSON.parse(body);
         const result = await addAnnotation(doc, line, text, { color, width, height, side });
         res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -1763,7 +1763,7 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { doc, id, text } = JSON.parse(body);
+        const { project: doc, id, text } = JSON.parse(body);
         const result = await replyAnnotation(doc, id, text);
         res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -1781,7 +1781,7 @@ const httpServer = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { doc, id } = JSON.parse(body);
+        const { project: doc, id } = JSON.parse(body);
         const result = await deleteAnnotation(doc, id);
         res.writeHead(result.ok ? 200 : 404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
@@ -1793,17 +1793,17 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /annotations?doc=<name>
+  // GET /annotations?project=<name>
   if (req.method === 'GET' && req.url?.startsWith('/annotations')) {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const doc = url.searchParams.get('doc');
-    if (!doc) {
+    const project = url.searchParams.get('project');
+    if (!project) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required parameter: doc' }));
+      res.end(JSON.stringify({ error: 'Missing required parameter: project' }));
       return;
     }
     try {
-      const result = await listAnnotations(doc);
+      const result = await listAnnotations(project);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
@@ -1813,18 +1813,18 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /shapes?doc=<name> — read all shapes from sync room + signals from Yjs
+  // GET /shapes?project=<name> — read all shapes from sync room + signals from Yjs
   if (req.method === 'GET' && req.url?.startsWith('/shapes')) {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const docName = url.searchParams.get('doc');
-    if (!docName) {
+    const projectName = url.searchParams.get('project');
+    if (!projectName) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required parameter: doc' }));
+      res.end(JSON.stringify({ error: 'Missing required parameter: project' }));
       return;
     }
     try {
       // Shapes from @tldraw/sync room via REST
-      const records = await fetchShapes(docName);
+      const records = await fetchShapes(projectName);
       const shapes = records.filter(r => r.id?.startsWith('shape:') || r.id?.startsWith('binding:'));
 
       // Signals from cache (no longer in Yjs)
@@ -1968,7 +1968,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           target: {
             type: 'string',
             enum: ['viewport', 'screen'],
@@ -1999,7 +1999,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'Render ONLY these specific shapes (by id) and frame them. Combine with shapeTypes.',
           },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
@@ -2008,7 +2008,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           line: { type: 'number', description: 'Source line number to anchor the note to. Required unless page is given.' },
           page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$). Required unless `options_file` or `file` is given.' },
@@ -2022,17 +2022,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
-      name: 'read_doc',
-      description: 'Read a tlda document\'s SOURCE (read-only) — document- and version-aware. Resolves the doc name to its source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a PAST version from the doc\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. For annotations use read_annotations.',
+      name: 'read_project',
+      description: 'Read a tlda project\'s source (read-only) — project- and version-aware. Resolves the project name to a source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a past version from the project\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. For annotations use read_annotations.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman").' },
-          file: { type: 'string', description: 'Source file within the doc (default: the doc\'s main file).' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman").' },
+          file: { type: 'string', description: 'Source file within the project (default: the project\'s main file).' },
           startLine: { type: 'number', description: '1-based start line for a plain read (optional).' },
           endLine: { type: 'number', description: 'Explicit end line (optional; otherwise a window of `lines` is read).' },
           lines: { type: 'number', description: 'Window height: how many lines to read (default 400 for a plain read, 80 for a ref).' },
@@ -2040,7 +2040,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           ref: { type: 'string', description: 'Label or theorem number to jump to, e.g. "thm:main" or "2.1" (optional).' },
           before: { type: 'number', description: 'With `ref`: how many lines above the anchor to start (default 3).' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
@@ -2049,7 +2049,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           type: {
             type: 'array',
             items: { type: 'string', enum: ['note', 'highlight', 'draw', 'arrow', 'geo', 'text', 'line'] },
@@ -2061,7 +2061,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           endLine: { type: 'number', description: 'Only return annotations at or before this source line' },
           unaddressed_only: { type: 'boolean', description: 'Only return unaddressed annotations (where meta.addressed is not true). Default: false.' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
@@ -2070,11 +2070,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           id: { type: 'string', description: 'Shape ID to reply to (e.g. "shape:abc123")' },
           text: { type: 'string', description: 'Reply text (supports $math$)' },
         },
-        required: ['doc', 'id', 'text'],
+        required: ['project', 'id', 'text'],
       },
     },
     {
@@ -2083,10 +2083,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           id: { type: 'string', description: 'Shape ID (e.g. "shape:abc123")' },
         },
-        required: ['doc', 'id'],
+        required: ['project', 'id'],
       },
     },
     {
@@ -2095,14 +2095,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           startLine: { type: 'number', description: 'First source line to highlight' },
           endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line). Optional when text is provided.' },
           color: { type: 'string', description: 'Highlight color: yellow, light-blue, light-green, light-violet, light-red, orange (default: orange)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects). Omit for main file.' },
           text: { type: 'string', description: 'Specific text to highlight (substring from the source). When provided, highlights just this text instead of full lines. startLine is used as a hint for where to search.' },
         },
-        required: ['doc', 'startLine'],
+        required: ['project', 'startLine'],
       },
     },
     {
@@ -2111,7 +2111,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           fromLine: { type: 'number', description: 'Source line where the arrow starts' },
           toLine: { type: 'number', description: 'Source line where the arrow ends' },
           label: { type: 'string', description: 'Optional text label on the arrow' },
@@ -2120,7 +2120,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           toFile: { type: 'string', description: 'Source file for toLine (if different from file). Omit if same file.' },
           side: { type: 'string', enum: ['left', 'right'], description: 'Which margin to place the arrow in (default: left)' },
         },
-        required: ['doc', 'fromLine', 'toLine'],
+        required: ['project', 'fromLine', 'toLine'],
       },
     },
     {
@@ -2129,7 +2129,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name' },
+          project: { type: 'string', description: 'Project name' },
           startLine: { type: 'number', description: 'First source line' },
           endLine: { type: 'number', description: 'Last source line' },
           status: { type: 'string', enum: ['approved', 'understood', 'unchecked'], description: 'Understanding status' },
@@ -2141,7 +2141,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           eventId: { type: 'string', description: 'Optional fleet event/message ID linked to this check' },
           file: { type: 'string', description: 'Source file path or name for the range. Omit for main file.' },
         },
-        required: ['doc', 'startLine', 'endLine', 'status'],
+        required: ['project', 'startLine', 'endLine', 'status'],
       },
     },
     {
@@ -2150,9 +2150,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name' },
+          project: { type: 'string', description: 'Project name' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
@@ -2161,11 +2161,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           line: { type: 'number', description: 'Source line number to scroll to' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects, e.g. "appendix.tex"). Omit for main file.' },
         },
-        required: ['doc', 'line'],
+        required: ['project', 'line'],
       },
     },
     {
@@ -2174,45 +2174,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (room for the signal)' },
+          project: { type: 'string', description: 'Project name (room for the signal)' },
           agent: { type: 'string', description: 'Agent friendly name or fleet ID to target (e.g. "historian", "fleet:e7175365")' },
           chatShapeId: { type: 'string', description: 'Shape ID of the chat panel to update (from message context.chatShapeId). Targets the exact panel the user spoke in.' },
           panel: { type: 'string', description: 'Fallback: "left" or "right" (by canvas x-position). Use chatShapeId instead when available.' },
         },
-        required: ['doc', 'agent'],
+        required: ['project', 'agent'],
       },
     },
     {
-      name: 'doc_version',
-      description: 'List the history of a document. Each successful build becomes a version. Returns recent versions with their hash and timestamp, or the version active at a given time.',
+      name: 'project_version',
+      description: 'List the history of a project. Each successful build becomes a version. Returns recent versions with their hash and timestamp, or the version active at a given time.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           timestamp: { type: 'number', description: 'Unix ms timestamp — returns the version active at that time (latest version before). Omit to list all recent versions.' },
           limit: { type: 'number', description: 'Max entries to return (default: 20)' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
       name: 'build',
-      description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. If a build is already in progress, polls and returns its status instead of triggering a new one. Returns build status including any errors.',
+      description: 'Trigger a build (LaTeX/markdown compilation) for a tlda project. If a build is already in progress, polls and returns its status instead of triggering a new one. Returns build status including any errors.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Project/document name in tlda' },
+          project: { type: 'string', description: 'Project name in tlda' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     {
       name: 'push',
-      description: 'Push source files to a tlda document and optionally trigger a build. Files are read from the local filesystem.',
+      description: 'Push source files to a tlda project and optionally trigger a build. Files are read from the local filesystem.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Project/document name in tlda' },
+          project: { type: 'string', description: 'Project name in tlda' },
           files: {
             type: 'array',
             items: {
@@ -2228,19 +2228,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           build: { type: 'boolean', description: 'Trigger build after push. Default: true' },
         },
-        required: ['doc', 'files'],
+        required: ['project', 'files'],
       },
     },
     {
       name: 'lookup_theorem',
-      description: 'Look up any labeled item in a tlda document — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
+      description: 'Look up any labeled item in a tlda project — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Project/document name in tlda' },
+          project: { type: 'string', description: 'Project name in tlda' },
           query: { type: 'string', description: 'Number ("4.3", "A.1") or full label ("thm:rate-main")' },
         },
-        required: ['doc', 'query'],
+        required: ['project', 'query'],
       },
     },
     {
@@ -2249,14 +2249,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           content_path: { type: 'string', description: 'Local path to .tex or .md/.qmd file containing the scratch content. Markdown files are preserved as-is and converted at build time.' },
           label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
           after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
           before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
           replace: { type: 'string', description: 'Label of an existing scratch section to overwrite in-place. Content is replaced; the \\inputscratch{} in main.tex stays. Exclusive with after/before.' },
         },
-        required: ['doc', 'content_path', 'label'],
+        required: ['project', 'content_path', 'label'],
       },
     },
     {
@@ -2265,10 +2265,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
+          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           label: { type: 'string', description: 'Label of the scratch section to inline (same label used when it was created with input_scratch)' },
         },
-        required: ['doc', 'label'],
+        required: ['project', 'label'],
       },
     },
     {
@@ -2277,13 +2277,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document name' },
+          project: { type: 'string', description: 'Project name' },
           startLine: { type: 'number', description: 'First source line to extract' },
           endLine: { type: 'number', description: 'Last source line to extract' },
           name: { type: 'string', description: 'Name for the scratch file (e.g. "bias-rework"). Creates scratch/{name}.md' },
           file: { type: 'string', description: 'Source file (for multi-file projects). Omit for main file.' },
         },
-        required: ['doc', 'startLine', 'endLine', 'name'],
+        required: ['project', 'startLine', 'endLine', 'name'],
       },
     },
     {
@@ -2292,10 +2292,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          doc: { type: 'string', description: 'Document/project name whose macros to use (e.g. "bregman").' },
+          project: { type: 'string', description: 'Project name whose macros to use (e.g. "bregman").' },
           version: { type: 'string', description: 'Optional shadow version (build hash). Accepted and stored for future use; macro resolution currently uses the document\'s latest macros regardless.' },
         },
-        required: ['doc'],
+        required: ['project'],
       },
     },
     ...getFleetTools(),
@@ -2305,9 +2305,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 // Track last ping timestamp (consumed by get_feedback)
 let lastPingTimestamp = 0;
 
-async function summarizeAnnotations(docName) {
+async function summarizeAnnotations(projectName) {
   try {
-    const shapes = await fetchShapes(docName, 'math-note');
+    const shapes = await fetchShapes(projectName, 'math-note');
     const annotations = [];
     for (const record of shapes) {
       if (!record || record.type !== 'math-note') continue;
@@ -2322,24 +2322,24 @@ async function summarizeAnnotations(docName) {
   }
 }
 
-async function formatPing(ping, docName) {
+async function formatPing(ping, projectName) {
   const vp = ping.viewport ? `Viewport: (${ping.viewport.x?.toFixed(0)}, ${ping.viewport.y?.toFixed(0)})` : '';
-  const summary = await summarizeAnnotations(docName);
+  const summary = await summarizeAnnotations(projectName);
   return `Ping received! ${vp}\n\n${summary}`;
 }
 
 /** Format a stroke result (draw/highlight/arrow/geo/text/line) for MCP response.
  *  Returns { content, page } where page is used for nearby-context lookup. */
-function formatStrokeResult(r, docName, prefix, entry, agent) {
+function formatStrokeResult(r, projectName, prefix, entry, agent) {
   const color = r.props?.color || 'black';
 
   if (r.type === 'arrow') {
     const ep = getArrowEndpoints(r);
     if (ep) {
-      const pdfStart = canvasToDoc(docName, ep.start.x, ep.start.y);
-      const pdfEnd = canvasToDoc(docName, ep.end.x, ep.end.y);
-      const startLines = findNearbyLines(docName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
-      const endLines = findNearbyLines(docName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
+      const pdfStart = canvasToDoc(projectName, ep.start.x, ep.start.y);
+      const pdfEnd = canvasToDoc(projectName, ep.end.x, ep.end.y);
+      const startLines = findNearbyLines(projectName, { minX: ep.start.x - 10, minY: ep.start.y - 10, maxX: ep.start.x + 10, maxY: ep.start.y + 10 });
+      const endLines = findNearbyLines(projectName, { minX: ep.end.x - 10, minY: ep.end.y - 10, maxX: ep.end.x + 10, maxY: ep.end.y + 10 });
       const label = r.props?.text || '';
       let text = `${prefix}Arrow (${color})`;
       if (label) text += ` "${label}"`;
@@ -2349,10 +2349,10 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
       else text += `\n  to:   page ${pdfEnd.page}`;
       const arrowBBox = getArrowBBox(r);
       if (arrowBBox) {
-        const rendered = getRenderedText(docName, arrowBBox);
+        const rendered = getRenderedText(projectName, arrowBBox);
         if (rendered) text += `\n  rendered: "${rendered}"`;
       }
-      writeAgentAttention(docName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, agent);
+      writeAgentAttention(projectName, (ep.start.x + ep.end.x) / 2, (ep.start.y + ep.end.y) / 2, agent);
       return { content: [{ type: 'text', text }], page: pdfStart.page };
     }
   }
@@ -2365,9 +2365,9 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     if (label) text += ` "${label}"`;
     let page = null;
     if (bbox) {
-      const pos = describePagePosition(docName, bbox);
+      const pos = describePagePosition(projectName, bbox);
       page = pos.page;
-      const nearbyLines = findNearbyLines(docName, bbox);
+      const nearbyLines = findNearbyLines(projectName, bbox);
       text += `\n  ${pos.description}`;
       if (nearbyLines.length > 0) {
         const lineRange = nearbyLines.length === 1
@@ -2377,22 +2377,22 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
         text += `\n  first: "${nearbyLines[0].content}"`;
         if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
       }
-      const rendered = getRenderedText(docName, bbox);
+      const rendered = getRenderedText(projectName, bbox);
       if (rendered) text += `\n  rendered: "${rendered}"`;
     }
-    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    if (bbox) writeAgentAttention(projectName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
     return { content: [{ type: 'text', text }], page };
   }
 
   if (r.type === 'text') {
     const textContent = r.props?.text || '';
     const bbox = getTextBBox(r);
-    const pos = describePagePosition(docName, bbox);
-    const nearbyLines = findNearbyLines(docName, bbox);
+    const pos = describePagePosition(projectName, bbox);
+    const nearbyLines = findNearbyLines(projectName, bbox);
     let text = `${prefix}Text (${color}): "${textContent}"`;
     text += `\n  ${pos.description}`;
     if (nearbyLines.length > 0) text += `\n  near line ${nearbyLines[0].line}: "${nearbyLines[0].content}"`;
-    const rendered = getRenderedText(docName, bbox);
+    const rendered = getRenderedText(projectName, bbox);
     if (rendered) text += `\n  rendered: "${rendered}"`;
     return { content: [{ type: 'text', text }], page: pos.page };
   }
@@ -2403,7 +2403,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 
   // Magic highlighter: has extracted text metadata from SVG
   if (r.type === 'highlight' && r.meta?.highlightText) {
-    const pos = bbox ? describePagePosition(docName, bbox) : null;
+    const pos = bbox ? describePagePosition(projectName, bbox) : null;
     const lines = r.meta.highlightLines || [r.meta.highlightText];
     let text = `${prefix}Highlight (${color})`;
     if (pos) text += ` ${pos.description}`;
@@ -2415,25 +2415,25 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
       for (const line of lines) text += `\n    "${line}"`;
     }
     text += `\n  NOTE: edge lines and first/last words may bleed from adjacent text`;
-    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    if (bbox) writeAgentAttention(projectName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
     return { content: [{ type: 'text', text }], page: pos?.page || null };
   }
 
   // Handwriting recognition: has LaTeX transcription from MyScript
   if (r.type === 'draw' && r.meta?.transcription) {
-    const pos = bbox ? describePagePosition(docName, bbox) : null;
+    const pos = bbox ? describePagePosition(projectName, bbox) : null;
     let text = `${prefix}Handwriting (${color})`;
     if (pos) text += ` ${pos.description}`;
     text += `\n  transcription: "${r.meta.transcription}"`;
     if (!r.meta.transcriptionVerified) text += ` (unverified)`;
-    if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+    if (bbox) writeAgentAttention(projectName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
     return { content: [{ type: 'text', text }], page: pos?.page || null };
   }
 
   const sentiment = tool === 'highlighter' ? 'attention' : 'correction';
   const gesture = bbox ? classifyGesture(bbox) : 'unknown';
-  const nearbyLines = bbox ? findNearbyLines(docName, bbox) : [];
-  const pos = bbox ? describePagePosition(docName, bbox) : null;
+  const nearbyLines = bbox ? findNearbyLines(projectName, bbox) : [];
+  const pos = bbox ? describePagePosition(projectName, bbox) : null;
 
   let text = `${prefix}Stroke: ${tool} (${color}) → ${gesture} [${sentiment}]`;
   if (pos) text += `\n  ${pos.description}`;
@@ -2445,9 +2445,9 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
     text += `\n  first: "${nearbyLines[0].content}"`;
     if (nearbyLines.length > 1) text += `\n  last:  "${nearbyLines[nearbyLines.length - 1].content}"`;
   }
-  const rendered = bbox ? getRenderedText(docName, bbox) : '';
+  const rendered = bbox ? getRenderedText(projectName, bbox) : '';
   if (rendered) text += `\n  rendered: "${rendered}"`;
-  if (bbox) writeAgentAttention(docName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
+  if (bbox) writeAgentAttention(projectName, (bbox.minX + bbox.maxX) / 2, (bbox.minY + bbox.maxY) / 2, agent);
   return { content: [{ type: 'text', text }], page: pos?.page || null };
 }
 
@@ -2467,11 +2467,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // Pre-check: tools that depend on built pages should fail fast with a diagnostic
   if (TOOLS_NEEDING_BUILD.has(name)) {
-    const docName = args?.doc;
-    if (docName) {
-      const buildCheck = await checkDocBuildStatus(docName);
+    const projectName = args?.project;
+    if (projectName) {
+      const buildCheck = await checkProjectBuildStatus(projectName);
       if (!buildCheck.ok) {
-        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda doc status ${docName}" or "tlda doc errors ${docName}" to investigate.` }], isError: true };
+        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda project status ${projectName}" or "tlda project errors ${projectName}" to investigate.` }], isError: true };
       }
     }
   }
@@ -2483,21 +2483,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
 
-  if (name === 'read_doc') {
+  if (name === 'read_project') {
     // Document- and version-aware source read. Resolves a doc to its source
     // file, reads a paginated line window, supports reading a past version (git
     // show) and jumping to a label/theorem via the source map.
-    const doc = args?.doc;
-    if (!doc) return { content: [{ type: 'text', text: 'read_doc: `doc` is required.' }], isError: true };
+    const doc = args?.project;
+    if (!doc) return { content: [{ type: 'text', text: 'read_project: `project` is required.' }], isError: true };
     const projDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc);
     let cfg;
     try { cfg = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8')); }
-    catch { return { content: [{ type: 'text', text: `read_doc: unknown doc "${doc}" (no project.json).` }], isError: true }; }
+    catch { return { content: [{ type: 'text', text: `read_project: unknown project "${doc}" (no project.json).` }], isError: true }; }
     const sourceDir = cfg.sourceDir;
-    if (!sourceDir || !fs.existsSync(sourceDir)) return { content: [{ type: 'text', text: `read_doc: doc "${doc}" has no source dir on this machine.` }], isError: true };
+    if (!sourceDir || !fs.existsSync(sourceDir)) return { content: [{ type: 'text', text: `read_project: project "${doc}" has no source dir on this machine.` }], isError: true };
     const mainFile = cfg.mainFile || cfg.main;
     const file = args.file || mainFile;
-    if (!file) return { content: [{ type: 'text', text: `read_doc: no file given and doc "${doc}" has no mainFile.` }], isError: true };
+    if (!file) return { content: [{ type: 'text', text: `read_project: no file given and project "${doc}" has no mainFile.` }], isError: true };
     let relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
 
     // ref/label shorthand → anchor line. The source map's labels come from the
@@ -2514,13 +2514,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const smPath = path.join(projDir, 'output', `${texBase}-source-map.json`);
       let sm;
       try { sm = JSON.parse(fs.readFileSync(smPath, 'utf8')); }
-      catch { return { content: [{ type: 'text', text: `read_doc: ref lookup unavailable for ${doc} (no source map — build the doc first).` }], isError: true }; }
+      catch { return { content: [{ type: 'text', text: `read_project: ref lookup unavailable for ${doc} (no source map — build the project first).` }], isError: true }; }
       const q = String(args.ref).trim();
       const e = (sm.labels || []).find(x => x.label === q || x.number === q)
             || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
-      if (!e) return { content: [{ type: 'text', text: `read_doc: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
+      if (!e) return { content: [{ type: 'text', text: `read_project: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
       const found = findLabelLine(sourceDir, sm, mainFile, e.label);
-      if (!found) return { content: [{ type: 'text', text: `read_doc: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the doc may need a rebuild.` }], isError: true };
+      if (!found) return { content: [{ type: 'text', text: `read_project: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the project may need a rebuild.` }], isError: true };
       anchorLine = found.line;
       relFile = found.file;   // read the file the label actually lives in
       refNote = ` (ref "${q}" → ${e.number || e.label} @ ${found.file}:${found.line})`;
@@ -2529,12 +2529,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Read content — current version (fs) or a past version (git show).
     let data, versionNote = '';
     if (args.version) {
-      if (!fs.existsSync(path.join(sourceDir, '.git'))) return { content: [{ type: 'text', text: `read_doc: "${doc}" source has no git history for versioned reads.` }], isError: true };
+      if (!fs.existsSync(path.join(sourceDir, '.git'))) return { content: [{ type: 'text', text: `read_project: "${doc}" source has no git history for versioned reads.` }], isError: true };
       try { data = execFileSync('git', ['show', `${args.version}:${relFile}`], { cwd: sourceDir, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }); versionNote = ` @${args.version}`; }
-      catch (e) { return { content: [{ type: 'text', text: `read_doc: couldn't read ${relFile} @${args.version}: ${String(e.message).split('\n')[0]}` }], isError: true }; }
+      catch (e) { return { content: [{ type: 'text', text: `read_project: couldn't read ${relFile} @${args.version}: ${String(e.message).split('\n')[0]}` }], isError: true }; }
     } else {
       try { data = fs.readFileSync(path.join(sourceDir, relFile), 'utf8'); }
-      catch (e) { return { content: [{ type: 'text', text: `read_doc: ${e.code === 'ENOENT' ? 'no such file' : e.message}: ${relFile}` }], isError: true }; }
+      catch (e) { return { content: [{ type: 'text', text: `read_project: ${e.code === 'ENOENT' ? 'no such file' : e.message}: ${relFile}` }], isError: true }; }
     }
 
     const allLines = data.split('\n');
@@ -2561,9 +2561,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'screenshot') {
-    const docName = args?.doc;
-    if (!docName) {
-      return { content: [{ type: 'text', text: 'Missing doc parameter' }], isError: true };
+    const projectName = args?.project;
+    if (!projectName) {
+      return { content: [{ type: 'text', text: 'Missing project parameter' }], isError: true };
     }
 
     // Resolve target → signal payload.
@@ -2601,13 +2601,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (Array.isArray(args?.shapeIds) && args.shapeIds.length) signalData.shapeIds = args.shapeIds;
     if (args?.padding != null) signalData.padding = args.padding;
 
-    const mailbox = startOperationMailbox('screenshot', { doc: docName, label: `${docName}${labelTag}` });
+    const mailbox = startOperationMailbox('screenshot', { doc: projectName, label: `${projectName}${labelTag}` });
     if (!mailbox) return { content: [{ type: 'text', text: 'Screenshot mailbox requires fleet login. Call login() first.' }], isError: true };
 
     (async () => {
       try {
         const reqTs = signalData.timestamp;
-        await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
+        await broadcastSignalRest(projectName, 'signal:screenshot-request', signalData);
         // The viewer captures and POSTs its reply back to the server, which caches
         // it (signalCache). Poll that cache for a reply newer than our request,
         // rather than relying on catching the live SSE signal — the reply can
@@ -2621,7 +2621,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await new Promise(r => setTimeout(r, 350));
           let cached = null;
           try {
-            cached = await serverFetch(`/api/projects/${docName}/signal/signal:screenshot`);
+            cached = await serverFetch(`/api/projects/${projectName}/signal/signal:screenshot`);
           } catch {
             cached = null; // 404 until the viewer replies — keep polling
           }
@@ -2629,7 +2629,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         if (!result?.data) {
           deliverOperationMailboxCompletion(mailbox, 'failed', {
-            label: `${docName}${labelTag}`,
+            label: `${projectName}${labelTag}`,
             error: 'No viewer responded — open the document in a browser first',
           });
           return;
@@ -2639,7 +2639,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let uploaded = null;
         try {
           tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-screenshot-mailbox-'));
-          const tmpFile = path.join(tmpDir, `${docName}-${mailbox.id.replace(/[^a-zA-Z0-9_-]/g, '-')}.png`);
+          const tmpFile = path.join(tmpDir, `${projectName}-${mailbox.id.replace(/[^a-zA-Z0-9_-]/g, '-')}.png`);
           fs.writeFileSync(tmpFile, Buffer.from(result.data, 'base64'));
           uploaded = await uploadFileToServer(tmpFile, getFleetServerUrl());
         } finally {
@@ -2653,8 +2653,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         const kb = Math.round(result.data.length / 1024);
         deliverOperationMailboxCompletion(mailbox, 'completed', {
-          label: `${docName}${labelTag}`,
-          doc: docName,
+          label: `${projectName}${labelTag}`,
+          doc: projectName,
           bytes_base64: result.data.length,
           mimeType: result.mimeType || 'image/png',
           url: uploaded.url,
@@ -2662,17 +2662,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
       } catch (e) {
         deliverOperationMailboxCompletion(mailbox, 'failed', {
-          label: `${docName}${labelTag}`,
+          label: `${projectName}${labelTag}`,
           error: e.message || String(e),
         });
       }
     })();
 
-    return operationMailboxStartedResult(mailbox, { extra: `doc: ${docName}` });
+    return operationMailboxStartedResult(mailbox, { extra: `doc: ${projectName}` });
   }
 
   if (name === 'add_note') {
-    const { doc, line, page: pageNum, color, size, width, height, side, text_anchor, options_file: optionsFile } = args;
+    const { project: doc, line, page: pageNum, color, size, width, height, side, text_anchor, options_file: optionsFile } = args;
     let { text, choices, file } = args;
     let effectiveSize = size;
     if (!doc || (!line && !pageNum)) {
@@ -2728,7 +2728,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const startLine = args.startLine || null;
     const endLine = args.endLine || null;
     const unaddressedOnly = args.unaddressed_only || false;
-    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: project' }], isError: true };
     try {
       const items = [];
       const sinceTs = sinceMinutes ? Date.now() - sinceMinutes * 60 * 1000 : null;
@@ -2817,7 +2817,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'reply_note') {
-    const { doc, id, text } = args;
+    const { project: doc, id, text } = args;
     if (!doc || !id || !text) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
     try {
       const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
@@ -2840,7 +2840,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'delete_annotation') {
-    const { doc, id } = args;
+    const { project: doc, id } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
     try {
       const result = await deleteAnnotation(doc, id);
@@ -2852,7 +2852,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_chat_target') {
-    const { doc, agent, panel, chatShapeId } = args;
+    const { project: doc, agent, panel, chatShapeId } = args;
     if (!doc || !agent) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, agent' }], isError: true };
     }
@@ -2867,7 +2867,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'scroll_to_line') {
-    const { doc, line, file } = args;
+    const { project: doc, line, file } = args;
     if (!doc || !line) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line' }], isError: true };
     }
@@ -2880,14 +2880,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     const tok = resolveToken();
     const tokParam = tok ? `&token=${tok}` : '';
-    const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
+    const viewUrl = `${getServerUrl()}/?project=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 
   if (name === 'draw_highlight') {
-    const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
+    const { project: doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
     if (!doc || startLine == null) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine' }], isError: true };
+      return { content: [{ type: 'text', text: 'Missing required parameters: project, startLine' }], isError: true };
     }
     // endLine is required unless text is provided
     const endLine = endLineArg ?? startLine;
@@ -2960,7 +2960,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const { createReadStream, readdirSync } = await import('fs');
           const { createGunzip } = await import('zlib');
           const { createInterface } = await import('readline');
-          const srcDir = localDocDir(doc)?.replace(/\/output$/, '/source') || '';
+          const srcDir = localProjectDir(doc)?.replace(/\/output$/, '/source') || '';
           const synctexFiles = srcDir ? readdirSync(srcDir).filter(f => f.endsWith('.synctex.gz')) : [];
           if (synctexFiles.length > 0) {
             const synctexPath = path.join(srcDir, synctexFiles[0]);
@@ -3120,7 +3120,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // --- Full-line highlighting (original behavior) ---
       // Staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
       // drill teacher stages line-range highlights through the same code path.
-      const r = await stageHighlight(doc, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
+      const r = await stageHighlight(project, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
       if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
       return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${r.page}, ${color} (${r.shapeId})` }] };
     } catch (e) {
@@ -3129,7 +3129,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'draw_arrow') {
-    const { doc, fromLine, toLine, label, color = 'orange', file, toFile, side = 'left' } = args;
+    const { project: doc, fromLine, toLine, label, color = 'orange', file, toFile, side = 'left' } = args;
     if (!doc || fromLine == null || toLine == null) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, fromLine, toLine' }], isError: true };
     }
@@ -3220,13 +3220,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_understanding') {
-    const { doc, startLine, endLine, status, file } = args;
+    const { project: doc, startLine, endLine, status, file } = args;
     if (!doc || startLine == null || endLine == null || !status) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, startLine, endLine, status' }], isError: true };
+      return { content: [{ type: 'text', text: 'Missing required parameters: project, startLine, endLine, status' }], isError: true };
     }
     try {
       // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(doc, startLine, file);
+      const startPos = await lookupLineAsync(project, startLine, file);
       const endPos = await lookupLineAsync(doc, endLine, file);
       if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
       if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
@@ -3304,7 +3304,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'get_understanding') {
     const { doc } = args;
-    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: project' }], isError: true };
     try {
       const shapes = await fetchShapes(doc, 'understanding-line');
       const ribbon = shapes.find(s => s.id === UNDERSTANDING_RIBBON_ID);
@@ -3321,9 +3321,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'doc_version') {
-    const doc = args?.doc;
-    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
+  if (name === 'project_version') {
+    const doc = args?.project;
+    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: project' }], isError: true };
     try {
       const ts = args?.timestamp;
       const limit = args?.limit || 20;
@@ -3351,7 +3351,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'build') {
     const { doc } = args;
-    if (!doc) return { content: [{ type: 'text', text: 'doc is required.' }], isError: true };
+    if (!doc) return { content: [{ type: 'text', text: 'project is required.' }], isError: true };
     try {
       // Check current status first
       const status = await serverFetch(`/api/projects/${doc}/build/status`);
@@ -3423,8 +3423,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'push') {
-    const { doc, files: fileSpecs, build = true } = args;
-    if (!doc || !fileSpecs) return { content: [{ type: 'text', text: 'doc and files are required.' }], isError: true };
+    const { project, files: fileSpecs, build = true } = args;
+    if (!project || !fileSpecs) return { content: [{ type: 'text', text: 'project and files are required.' }], isError: true };
     try {
       const files = [];
       for (const spec of fileSpecs) {
@@ -3437,15 +3437,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!content) return { content: [{ type: 'text', text: `No content for ${spec.path} — provide content or localPath.` }], isError: true };
         files.push({ path: spec.path, content });
       }
-      await pushMcpSourceFiles({ doc, files, session: process.env.CLAUDE_SESSION, serverFetch });
+      await pushMcpSourceFiles({ project, files, session: process.env.CLAUDE_SESSION, serverFetch });
 
       // Shadow-branch commit (best-effort)
       try {
-        const projectConfigPath = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc, 'project.json');
+        const projectConfigPath = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', project, 'project.json');
         const cfg = JSON.parse(fs.readFileSync(projectConfigPath, 'utf8'));
         const sourceDir = cfg.sourceDir;
         if (sourceDir && fs.existsSync(path.join(sourceDir, '.git'))) {
-          const branch = `shadow/${doc}`;
+          const branch = `shadow/${project}`;
           const timestamp = new Date().toISOString();
           const msg = `auto: ${timestamp} via push`;
           execSync('git add -A', { cwd: sourceDir, stdio: 'pipe' });
@@ -3462,20 +3462,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           process.stderr.write(`[tlda] shadow commit ${commit.slice(0, 8)} on ${branch}\n`);
         }
       } catch (e) {
-        process.stderr.write(`[tlda] shadow commit failed for "${doc}": ${e.message}\n`);
+        process.stderr.write(`[tlda] shadow commit failed for "${project}": ${e.message}\n`);
       }
 
       let buildMsg = '';
       if (build) {
         try {
-          await serverFetch(`/api/projects/${doc}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          await serverFetch(`/api/projects/${project}/build`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
           buildMsg = ' Build triggered.';
           const pollInterval = setInterval(async () => {
             try {
-              const status = await serverFetch(`/api/projects/${doc}/build/status`);
+              const status = await serverFetch(`/api/projects/${project}/build/status`);
               if (status.phase === 'idle' || status.status === 'complete' || status.status === 'error') {
                 clearInterval(pollInterval);
-                process.stderr.write(`[tlda] push build ${status.status !== 'error' ? 'success' : 'failed'} for "${doc}"\n`);
+                process.stderr.write(`[tlda] push build ${status.status !== 'error' ? 'success' : 'failed'} for "${project}"\n`);
               }
             } catch (e) {
               process.stderr.write(`[tlda] push poll failed: ${e.message}\n`);
@@ -3486,15 +3486,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           buildMsg = ` Build trigger failed: ${e.message}`;
         }
       }
-      return { content: [{ type: 'text', text: `Pushed ${files.length} file(s) to "${doc}".${buildMsg}` }] };
+      return { content: [{ type: 'text', text: `Pushed ${files.length} file(s) to "${project}".${buildMsg}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }
   }
 
   if (name === 'lookup_theorem') {
-    const { doc, query } = args;
-    if (!doc || !query) return { content: [{ type: 'text', text: 'doc and query are required.' }], isError: true };
+    const { project: doc, query } = args;
+    if (!doc || !query) return { content: [{ type: 'text', text: 'project and query are required.' }], isError: true };
     try {
       const tldaProjectsDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects');
       const q = query.trim();
@@ -3515,7 +3515,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         entry = labels.find(e => e.label === q || e.number === q);
         if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
       } else {
-        return { content: [{ type: 'text', text: `lookup_theorem: source map unavailable for ${doc} (build the doc first).` }], isError: true };
+        return { content: [{ type: 'text', text: `lookup_theorem: source map unavailable for ${doc} (build the project first).` }], isError: true };
       }
 
       if (!entry) {
@@ -3541,9 +3541,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'input_scratch') {
-    const { doc, content_path, label, after, before, replace } = args;
+    const { project: doc, content_path, label, after, before, replace } = args;
     if (!doc || !content_path || !label) {
-      return { content: [{ type: 'text', text: 'doc, content_path, and label are required.' }], isError: true };
+      return { content: [{ type: 'text', text: 'project, content_path, and label are required.' }], isError: true };
     }
     if (!after && !before && !replace) {
       return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
@@ -3628,9 +3628,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'inline_scratch') {
-    const { doc, label } = args;
+    const { project: doc, label } = args;
     if (!doc || !label) {
-      return { content: [{ type: 'text', text: 'doc and label are required.' }], isError: true };
+      return { content: [{ type: 'text', text: 'project and label are required.' }], isError: true };
     }
     try {
       const result = await serverFetch(`/api/projects/${doc}/inline-scratch`, {
@@ -3652,9 +3652,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'extract_to_scratch') {
-    const { doc, startLine, endLine, name: scratchName, file: sourceFile } = args;
+    const { project: doc, startLine, endLine, name: scratchName, file: sourceFile } = args;
     if (!doc || !startLine || !endLine || !scratchName) {
-      return { content: [{ type: 'text', text: 'doc, startLine, endLine, and name are required.' }], isError: true };
+      return { content: [{ type: 'text', text: 'project, startLine, endLine, and name are required.' }], isError: true };
     }
     try {
       const projectInfo = await serverFetch(`/api/projects/${doc}`);
@@ -3700,7 +3700,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const mdPath = path.join(scratchDir, `${scratchName}.md`);
       fs.writeFileSync(mdPath, mdContent, 'utf8');
 
-      const result = await addAnnotation(doc, startLine, mdContent, {
+      const result = await addAnnotation(project, startLine, mdContent, {
         color: 'violet', size: 'lg', side: 'right',
       });
 
@@ -3728,10 +3728,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'set_preamble') {
-    const doc = args.doc;
+    const doc = args.project;
     const version = args.version || null;
     if (!doc) {
-      return { content: [{ type: 'text', text: 'doc is required (the document/project name whose macros to use).' }], isError: true };
+      return { content: [{ type: 'text', text: 'project is required (the project name whose macros to use).' }], isError: true };
     }
     // Best-effort: fetch the doc's macros only to report the count back to the
     // agent. A network failure here is non-fatal — we still set the preamble doc;

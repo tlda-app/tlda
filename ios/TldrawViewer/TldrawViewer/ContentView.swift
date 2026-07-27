@@ -33,7 +33,7 @@ struct TldrawWebView: UIViewRepresentable {
         // Load the dev server — change this to your Mac's local IP
         // The app will also check for a stored URL preference
         let urlString = UserDefaults.standard.string(forKey: "serverURL")
-            ?? "http://10.0.0.18:5173/?doc=bregman"
+            ?? "http://10.0.0.18:5173/?project=bregman"
         if let url = URL(string: urlString) {
             webView.load(URLRequest(url: url))
         }

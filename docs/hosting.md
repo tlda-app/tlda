@@ -22,10 +22,10 @@ interface.
 3. Start the server with `tlda server start`.
 4. Start exactly one `tlda daemon start --env <name>` for each environment
    whose source trees or agent sessions the machine owns.
-5. Link a history-backed document with `tlda doc link`, then use
-   `tlda doc share <name>` to print the reachable viewer URL.
+5. Link a history-backed document with `tlda project link`, then use
+   `tlda project share <name>` to print the reachable viewer URL.
 
-When the configured server is already remote, `tlda doc share` uses that origin.
+When the configured server is already remote, `tlda project share` uses that origin.
 For a local server it chooses, in order, an active Tailscale Funnel URL, a
 Tailscale address, or a private LAN address. It refuses to present localhost as
 a usable URL for another machine.
@@ -41,7 +41,7 @@ boundary. `tailscale serve` can put the local server behind the machine's valid
 
 Funnel makes the selected `.ts.net` URL public. Before enabling it, configure
 tlda token authentication rather than relying on tailnet membership. Check the
-actual URL with `tailscale funnel status`; `tlda doc share` detects that URL and
+actual URL with `tailscale funnel status`; `tlda project share` detects that URL and
 includes the document's read-only login token.
 
 Never expose the standard server port publicly with neither token authentication

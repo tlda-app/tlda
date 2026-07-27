@@ -76,21 +76,20 @@ import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shar
 
 // --- Argument parsing ---
 
-// Noun routing. The CLI is organized under nouns (server / doc / agent / config).
-// `tlda doc <sub> …` and `tlda config <sub> …` forward transparently to the
+// Noun routing. The CLI is organized under nouns (server / project / agent / config).
+// `tlda project <sub> …` and `tlda config <sub> …` forward transparently to the
 // sub's handler by splicing the noun out of argv, so every existing handler runs
 // unchanged. (server/agent self-dispatch and aren't spliced; `doctor` and `logs`
-// are their own top-level commands.) Flat forms still work for now so the
-// feedback hook etc. don't break, but `--help` only advertises the nouns.
-const DOC_SUBS = new Set([
+// are their own top-level commands.)
+const PROJECT_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
   'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'init',
   'repo-doctor', 'init-shadow',
 ])
-const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
+const REMOVED_PROJECT_SUBS = new Set(['create', 'preview'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
 const TOP_LEVEL_COMMANDS = [
-  ['doc', 'work on a document project'],
+  ['project', 'work on a project'],
   ['server', 'run/manage the tlda server'],
   ['daemon', 'fleet daemon (source watch + activity)'],
   ['bot', 'manage configured fleet bots'],
@@ -102,7 +101,7 @@ const TOP_LEVEL_COMMANDS = [
   ['logs', 'unified logs across all sources'],
   ['completions', 'output zsh completion script'],
 ]
-const DOC_COMMANDS = [
+const PROJECT_COMMANDS = [
   ['init', 'Create a new blank git-backed project'],
   ['link', 'Link an existing project, push files, build'],
   ['open', 'Open the viewer'],
@@ -113,7 +112,7 @@ const DOC_COMMANDS = [
   ['share', 'Print a shareable read-only URL'],
   ['delete', 'Delete a project'],
   ['scratch', 'Publish a scratch .md'],
-  ['book', 'Group existing docs into a book'],
+  ['book', 'Group existing projects into a book'],
   ['repo-doctor', 'Diagnose/repair a project source repo'],
   ['init-shadow', 'Rebuild a project shadow history repo'],
 ]
@@ -168,11 +167,15 @@ let _nounUsed = null
 {
   const noun = process.argv[2]
   const sub = process.argv[3]
-  if (noun === 'doc' && sub && REMOVED_DOC_SUBS.has(sub)) {
-    console.error(`Unknown tlda doc subcommand: ${sub}`)
+  if (noun === 'doc') {
+    console.error('Unknown tlda noun: doc')
     process.exit(1)
   }
-  if (noun === 'doc' && sub && DOC_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'doc' }
+  if (noun === 'project' && sub && REMOVED_PROJECT_SUBS.has(sub)) {
+    console.error(`Unknown tlda project subcommand: ${sub}`)
+    process.exit(1)
+  }
+  if (noun === 'project' && sub && PROJECT_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'project' }
   else if (noun === 'config' && sub && CONFIG_SUBS.has(sub)) { process.argv.splice(2, 1); _nounUsed = 'config' }
 }
 
@@ -184,7 +187,7 @@ const command = args[0]
 {
   const REDIRECT = { watch: 'daemon', 'watch-all': 'daemon', attach: 'agent attach' }
   if (!_nounUsed && command) {
-    if (DOC_SUBS.has(command)) { console.error(`\`tlda ${command}\` moved — use: tlda doc ${command}`); process.exit(1) }
+    if (PROJECT_SUBS.has(command)) { console.error(`\`tlda ${command}\` moved — use: tlda project ${command}`); process.exit(1) }
     if (CONFIG_SUBS.has(command)) { console.error(`\`tlda ${command}\` moved — use: tlda config ${command}`); process.exit(1) }
     if (REDIRECT[command]) { console.error(`\`tlda ${command}\` moved — use: tlda ${REDIRECT[command]}`); process.exit(1) }
   }
@@ -192,19 +195,19 @@ const command = args[0]
 
 // Per-command help (shown with --help)
 const COMMAND_HELP = {
-  scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
-  book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda doc link paper path/to/paper.tex\n    tlda doc link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
-  init:    'tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda doc link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
-  push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
+  scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
+  book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
+  link:    'tlda project link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
+  init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
+  push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
-  open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter permission).',
-  share:   'tlda doc share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific doc\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
-  status:  'tlda doc status [name]\n\n  Show build status for a project.',
-  errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
+  open:    'tlda project open [name]\n\n  Open the viewer in the default browser (RW token = presenter permission).',
+  share:   'tlda project share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific project\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
+  status:  'tlda project status [name]\n\n  Show build status for a project.',
+  errors:  'tlda project errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
-  delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
+  delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   bot:     'tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement.',
@@ -212,7 +215,7 @@ const COMMAND_HELP = {
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
-  'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
+  'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   config:  'tlda config [init | apply | set <key> <value> | get [key]]\n\n  init   Create the config files a fresh install needs (daemon.yaml, server.yaml)\n         pointing at this machine. Only writes files that are missing; an\n         existing config is never merged into or overwritten.\n  apply  Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n         --dry-run       show the plan without writing plists or running launchctl.\n         --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  set    Manage CLI preferences.\n  get    Show CLI preferences.',
 }
 
@@ -413,7 +416,7 @@ async function cmdBook() {
   const name = getPositional(0)
   const membersArg = getFlag('members')
   if (!name || !membersArg) {
-    console.error('Usage: tlda doc book <name> --members doc1,doc2,doc3,...')
+    console.error('Usage: tlda project book <name> --members project1,project2,project3,...')
     process.exit(1)
   }
 
@@ -452,13 +455,13 @@ async function cmdBook() {
   for (const m of members) console.log(dim(`  ${m}`))
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
 }
 
 async function cmdScratch() {
   const filePath = getPositional(0)
   if (!filePath) {
-    console.error('Usage: tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]')
+    console.error('Usage: tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]')
     process.exit(1)
   }
 
@@ -523,12 +526,12 @@ async function cmdScratch() {
   }
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${bookName}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${bookName}`)}`)
 }
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda project link <name> [file] [--title "Title"] [--format slides|html|markdown]'); process.exit(1) }
 
   let format = getFlag('format') || null
   const positionalMain = getPositional(1)
@@ -542,7 +545,7 @@ async function cmdCreate() {
   const title = getFlag('title') || name
 
   // Infer the format from the file argument when --format is omitted. Without
-  // this, `tlda doc link x README.md` falls through to the LaTeX/svg
+  // this, `tlda project link x README.md` falls through to the LaTeX/svg
   // path, which uploads the ENTIRE directory — gigabytes if --dir is a code repo.
   // Explicit --format always wins; .tex/unknown keep the existing LaTeX default.
   if (!format) {
@@ -614,7 +617,7 @@ async function cmdCreate() {
     console.log(green('Slides processed.'))
 
     const server = getServer()
-    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
   }
 
@@ -669,7 +672,7 @@ async function cmdCreate() {
     console.log(green('HTML project processed.'))
 
     const server = getServer()
-    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
   }
 
@@ -720,7 +723,7 @@ async function cmdCreate() {
     console.log(green('Markdown project processed.'))
 
     const server = getServer()
-    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
   }
 
@@ -733,7 +736,7 @@ async function cmdCreate() {
     repoRoot = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
   } catch {
     console.error(red(`Refusing to link ${dir}`))
-    console.error(red('  — tlda doc link requires an existing Git repository.'))
+    console.error(red('  — tlda project link requires an existing Git repository.'))
     process.exit(1)
   }
   if (realpathSync(repoRoot) !== realpathSync(dir)) {
@@ -770,12 +773,12 @@ async function cmdCreate() {
   }
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
 }
 
 async function cmdPush() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc push [name] [--dir /path]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda project push [name] [--dir /path]'); process.exit(1) }
 
   const dir = resolve(getFlag('dir') || '.')
 
@@ -813,7 +816,7 @@ async function cmdPush() {
 // A repository is just a remote you haven't cloned yet. `link` takes the main
 // file either way; add `--from <git-url>` (Overleaf, GitHub, ssh, …) and the
 // server clones + polls that remote instead of watching a local directory.
-//   tlda doc link <name> <main-file> [--from <git-url>] [--token TOKEN] [--title T] [--poll 60]
+//   tlda project link <name> <main-file> [--from <git-url>] [--token TOKEN] [--title T] [--poll 60]
 async function cmdLink() {
   const from = getFlag('from')
   if (from) await cmdLinkRemote(from)
@@ -827,7 +830,7 @@ async function cmdLinkRemote(gitUrl) {
   const name = getPositional(0)
   const mainFile = getPositional(1) || getFlag('main')
   if (!name || !mainFile) {
-    console.error('Usage: tlda doc link <name> <main-file> --from <git-url> [--token TOKEN] [--title "Title"] [--poll 60]')
+    console.error('Usage: tlda project link <name> <main-file> --from <git-url> [--token TOKEN] [--title "Title"] [--poll 60]')
     console.error('  <main-file> is the entry .tex inside the repo (no default — papers aren\'t all main.tex)')
     process.exit(1)
   }
@@ -845,7 +848,7 @@ async function cmdLinkRemote(gitUrl) {
 async function cmdInit() {
   const name = getPositional(0)
   if (!name) {
-    console.error('Usage: tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown]')
+    console.error('Usage: tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown]')
     process.exit(1)
   }
 
@@ -880,7 +883,7 @@ async function cmdInit() {
     const entries = readdirSync(targetDir)
     if (entries.length > 0) {
       console.error(red(`Directory already exists and is not empty: ${targetDir}`))
-      console.error(`  Use \`tlda doc link\` to attach an existing project directory.`)
+      console.error(`  Use \`tlda project link\` to attach an existing project directory.`)
       process.exit(1)
     }
   }
@@ -980,18 +983,18 @@ async function cmdInit() {
     }
   } catch (e) {
     if (e.message.includes('already exists')) {
-      console.log(`Project "${name}" already exists on server — use \`tlda doc link\` or \`tlda doc push\` instead.`)
+      console.log(`Project "${name}" already exists on server — use \`tlda project link\` or \`tlda project push\` instead.`)
     } else {
       console.warn(yellow(`  Server registration failed: ${e.message}`))
-      console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda doc link ${name} ${mainFile}\` when the server is up.`))
+      console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda project link ${name} ${mainFile}\` when the server is up.`))
       const server = getServer()
-      console.log(`\nViewer (once registered): ${cyan(`${server}/?doc=${name}`)}`)
+      console.log(`\nViewer (once registered): ${cyan(`${server}/?project=${name}`)}`)
       return
     }
   }
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
 }
 
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
@@ -2369,7 +2372,7 @@ async function cmdWatch() {
     await api('GET', `/api/projects/${name}`)
   } catch {
     console.error(red(`Project "${name}" not found on server.`))
-    console.error(`  Run \`tlda doc link ${name}\` first, or did you mean \`tlda daemon start\`?`)
+    console.error(`  Run \`tlda project link ${name}\` first, or did you mean \`tlda daemon start\`?`)
     process.exit(1)
   }
 
@@ -2400,7 +2403,7 @@ async function cmdOpen() {
   const server = getServer()
   const token = getToken()
   const browser = getFlag('browser') || loadCliConfig().browser || null
-  const redirect = name ? `/?doc=${name}` : '/'
+  const redirect = name ? `/?project=${name}` : '/'
   const url = token
     ? `${server}/auth/login?token=${token}&redirect=${encodeURIComponent(redirect)}`
     : `${server}${redirect}`
@@ -2426,7 +2429,7 @@ async function cmdShare() {
   } else if (arg === '.') {
     name = await inferProjectName()
     if (!name) {
-      console.error('No project found for the current directory. Run `tlda doc share <name>` or `tlda doc share` for the index page.')
+      console.error('No project found for the current directory. Run `tlda project share <name>` or `tlda project share` for the index page.')
       process.exit(1)
     }
   } else {
@@ -2486,7 +2489,7 @@ async function cmdList() {
 
 async function cmdStatus() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc status [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda project status [name]'); process.exit(1) }
 
   const data = await api('GET', `/api/projects/${name}/build/status`)
   const statusColor = data.status === 'success' ? green : data.status === 'error' ? red : dim
@@ -2502,7 +2505,7 @@ async function cmdStatus() {
 
 async function cmdErrors() {
   const name = getPositional(0) || await inferProjectName()
-  if (!name) { console.error('Usage: tlda doc errors [name]'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda project errors [name]'); process.exit(1) }
 
   const wait = hasFlag('wait') || hasFlag('w')
 
@@ -2550,7 +2553,7 @@ async function cmdErrors() {
 
 async function cmdDelete() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda doc delete <name>'); process.exit(1) }
+  if (!name) { console.error('Usage: tlda project delete <name>'); process.exit(1) }
 
   await api('DELETE', `/api/projects/${name}`)
   console.log(green(`Project "${name}" deleted.`))
@@ -2575,7 +2578,7 @@ async function cmdMoveProject() {
   const name = getPositional(0) || await inferProjectName()
   const targetConfig = getPositional(1)
   if (!name || !targetConfig) {
-    console.error('Usage: tlda doc move <project> <config>')
+    console.error('Usage: tlda project move <project> <config>')
     process.exit(1)
   }
   const selectedConfig = getActiveEnvName()
@@ -2601,7 +2604,7 @@ async function cmdMoveProject() {
     console.log(`[dry-run] would ${alreadyOwned ? 'ensure' : 'move'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}`)
     console.log(`  working directory stays: ${sourceDir}`)
     console.log(`  daemon ownership becomes: ${targetConfig}`)
-    console.log(`  target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`)
+    console.log(`  target viewer: ${targetServer}/?project=${encodeURIComponent(name)}`)
     if (associatedAgents.length) {
       console.log(`  associated agents: ${associatedAgents.map(agent => agent.friendly_name || agent.name || agent.id).join(', ')}`)
       for (const agent of associatedAgents) {
@@ -2648,7 +2651,7 @@ async function cmdMoveProject() {
   console.log(green(`${alreadyOwned ? 'Confirmed' : 'Moved'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}.`))
   console.log(dim(`  Working directory unchanged: ${sourceDir}`))
   console.log(dim(`  Daemon ownership: ${targetConfig}`))
-  console.log(dim(`  Target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`))
+  console.log(dim(`  Target viewer: ${targetServer}/?project=${encodeURIComponent(name)}`))
   console.log(green(`  ${targetConfig} daemon world is running.`))
   if (!associatedAgents.length) {
     console.log(dim('  Associated agents: none'))
@@ -2774,7 +2777,7 @@ function cmdCompletions() {
   const commandEntries = TOP_LEVEL_COMMANDS
     .map(([name, description]) => `    '${name}:${description}'`)
     .join('\n')
-  const docSubs = DOC_COMMANDS.map(([name]) => `'${name}'`).join(' ')
+  const projectSubs = PROJECT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const serverSubs = SERVER_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const daemonSubs = DAEMON_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
@@ -2790,7 +2793,7 @@ function cmdCompletions() {
 
 _tlda_projects() {
   local -a projects
-  projects=(\${(f)"$(tlda doc list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
+  projects=(\${(f)"$(tlda project list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
   _describe 'project' projects
 }
 
@@ -2905,9 +2908,9 @@ ${commandEntries}
       ;;
     args)
       case $words[1] in
-        doc)
+        project)
           if (( CURRENT == 2 )); then
-            local -a subs=(${docSubs})
+            local -a subs=(${projectSubs})
             _describe 'subcommand' subs
           else
             case $words[2] in
@@ -3037,7 +3040,7 @@ async function cmdDeploy() {
       const projects = data.projects || data || []
       const first = projects[0]
       if (first?.name) {
-        const docRes = await fetch(`${serverUrl}/?doc=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
+        const docRes = await fetch(`${serverUrl}/?project=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
         const docBody = await docRes.text()
         if (docRes.ok && docBody.includes('<div id="root">')) {
           pass(first.name)
@@ -5283,11 +5286,11 @@ async function cmdDoctor() {
       } else {
         for (const { p, kind, detail } of projectIssues) {
           if (kind === 'build-broken') {
-            fail(`Project "${p.name}" build ${detail}`, `tlda doc errors ${p.name}`)
+            fail(`Project "${p.name}" build ${detail}`, `tlda project errors ${p.name}`)
           } else if (kind === 'main-missing') {
             fail(`Project "${p.name}" mainFile missing: ${detail}`, `edit ${p.sourceDir.replace(homedir(), '~')}/project.json or recreate project`)
           } else if (kind === 'stale') {
-            fail(`Project "${p.name}" stale: ${detail}`, `tlda doc push ${p.name} --dir ${p.sourceDir} && tlda build ${p.name}`)
+            fail(`Project "${p.name}" stale: ${detail}`, `tlda project push ${p.name} --dir ${p.sourceDir} && tlda build ${p.name}`)
           }
           issues++
         }
@@ -5795,7 +5798,7 @@ async function cmdFleetDev() {
   console.log(dim('  If shapes look stale: tlda server stop && tlda server start'))
 
   const server = getServer()
-  console.log(`\n  ${server}/?doc=fleet-dev\n`)
+  console.log(`\n  ${server}/?project=fleet-dev\n`)
   console.log(dim('  Click the page in TOC to zoom to the fleet shapes area.'))
 
   function rec(id, type, x, y, props, index, locked = false) {
@@ -5875,17 +5878,17 @@ async function main() {
       case 'completions': cmdCompletions(); break
       case 'init-shadow': await cmdInitShadow(); break
       case 'repo-doctor': await cmdRepoDoctor(); break
-      case 'doc':
-        console.log(`tlda doc — work on a document project
+      case 'project':
+        console.log(`tlda project — work on a project
 
-${formatCommandRows(DOC_COMMANDS)}`)
+${formatCommandRows(PROJECT_COMMANDS)}`)
         break
       default:
         console.log(`tlda — collaborative LaTeX paper review
 
-${formatCommandRows(TOP_LEVEL_COMMANDS.map(([name, description]) => [`tlda ${name}${name === 'logs' ? ' [agent]' : name === 'daemon' ? ' [start|stop]' : name === 'doctor' ? ' [--fix]' : name === 'doc' || name === 'server' || name === 'agent' || name === 'config' || name === 'bot' ? ' <cmd>' : ''}`, description]))}
+${formatCommandRows(TOP_LEVEL_COMMANDS.map(([name, description]) => [`tlda ${name}${name === 'logs' ? ' [agent]' : name === 'daemon' ? ' [start|stop]' : name === 'doctor' ? ' [--fix]' : name === 'project' || name === 'server' || name === 'agent' || name === 'config' || name === 'bot' ? ' <cmd>' : ''}`, description]))}
 
-Run \`tlda <noun>\` (e.g. \`tlda doc\`) to list that group's commands.
+Run \`tlda <noun>\` (e.g. \`tlda project\`) to list that group's commands.
 Developer commands (hacking on tlda itself): \`tlda-dev --help\`
 
 Options: --env <name> · --server <url> · --dir <path> · --title "…" · --main file.tex`)

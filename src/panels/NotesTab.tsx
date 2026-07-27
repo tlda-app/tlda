@@ -18,7 +18,7 @@ interface RemoteNote {
   meta: Record<string, unknown>
   parentId?: string
   docKey: string   // which member doc this came from
-  docName: string  // display name
+  projectName: string  // display name
 }
 
 function isDone(shape: TLShape): boolean {
@@ -91,7 +91,7 @@ export function NotesTab() {
           if (!resp.ok) return
           const shapes = await resp.json()
           for (const s of shapes) {
-            allRemote.push({ ...s, docKey: member.key, docName: member.name })
+            allRemote.push({ ...s, docKey: member.key, projectName: member.name })
           }
         } catch { /* ignore fetch errors */ }
       }))
@@ -310,7 +310,7 @@ export function NotesTab() {
           </span>
         </div>
         <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
-          <span className="note-doc-badge">{note.docName}</span>
+          <span className="note-doc-badge">{note.projectName}</span>
           {anchorLine && <span>L{anchorLine}</span>}
         </div>
       </div>

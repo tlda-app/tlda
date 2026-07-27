@@ -3,13 +3,13 @@ import { useEditor } from 'tldraw'
 import type { TLShape } from 'tldraw'
 import { loadLookup, loadHtmlSearch, type LookupEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { navigateTo, navigateToPage, stripTex, getShapeText } from './helpers'
 import { setSearchFilter } from '../stores'
 
 export function SearchTab() {
   const editor = useEditor()
-  const ctx = useContext(DocContext)
+  const ctx = useContext(ProjectContext)
   const [query, setQuery] = useState('')
   const [lookupLines, setLookupLines] = useState<Record<string, LookupEntry> | null>(null)
   const [htmlSearchIndex, setHtmlSearchIndex] = useState<HtmlSearchEntry[] | null>(null)
@@ -23,17 +23,17 @@ export function SearchTab() {
       setHtmlSearchIndex(null)
       return
     }
-    loadLookup(ctx.docName).then(data => {
+    loadLookup(ctx.projectName).then(data => {
       if (data) {
         setLookupLines(data.lines)
       } else {
         // Fallback: try HTML search index
-        loadHtmlSearch(ctx.docName).then(index => {
+        loadHtmlSearch(ctx.projectName).then(index => {
           if (index) setHtmlSearchIndex(index)
         })
       }
     })
-  }, [ctx?.docName, ctx?.format])
+  }, [ctx?.projectName, ctx?.format])
 
   // Debounce
   useEffect(() => {

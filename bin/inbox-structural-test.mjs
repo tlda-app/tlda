@@ -28,7 +28,7 @@ await page.addInitScript(() => {
   try { localStorage.setItem('fleet-inbox-sort', 'type') } catch {}
 })
 
-await page.goto(`${VITE}/?doc=${DOC}&name=tester&pw=1`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${VITE}/?project=${DOC}&name=tester&pw=1`, { waitUntil: 'domcontentloaded' })
 await page.waitForFunction(() => !!window.__tldraw_editor__, null, { timeout: 30000 })
 await page.waitForFunction(() => window.__tldraw_editor__.getCurrentPageShapes().some(s => s.type === 'svg-page'), null, { timeout: 30000 })
 log('✓ editor + pages')

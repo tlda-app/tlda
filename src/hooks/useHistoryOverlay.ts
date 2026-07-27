@@ -39,7 +39,7 @@ export function useHistoryOverlay(
   const overlayRef = useRef<OverlayState | null>(null)
 
   const showOverlay = useCallback(async (
-    docName: string,
+    projectName: string,
     snapshotId: string,
     changedPages: PageDiff[],
   ) => {
@@ -80,7 +80,7 @@ export function useHistoryOverlay(
 
     await Promise.all(
       Array.from({ length: totalPages }, (_, i) => i + 1).map(async (pageNum) => {
-        const url = snapshotPageUrl(docName, snapshotId, pageNum)
+        const url = snapshotPageUrl(projectName, snapshotId, pageNum)
         try {
           const resp = await fetch(url)
           if (!resp.ok) return
@@ -101,7 +101,7 @@ export function useHistoryOverlay(
         const currentPage = document.pages[op.pageNum - 1]
         if (!currentPage) continue
 
-        const shapeId = createShapeId(`${docName}-hist-old-${op.pageNum}`)
+        const shapeId = createShapeId(`${projectName}-hist-old-${op.pageNum}`)
 
         // Scale old page to match current page width
         const scale = TARGET_WIDTH / op.width
@@ -133,7 +133,7 @@ export function useHistoryOverlay(
         createdIds.add(shapeId)
 
         // Label above old page
-        const labelId = createShapeId(`${docName}-hist-label-${op.pageNum}`)
+        const labelId = createShapeId(`${projectName}-hist-label-${op.pageNum}`)
         editor.createShapes([{
           id: labelId,
           type: 'text',
@@ -237,14 +237,14 @@ export function useHistoryOverlay(
   }, [document, editorRef, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef])
 
   const toggleOverlay = useCallback((
-    docName: string,
+    projectName: string,
     snapshotId: string,
     changedPages: PageDiff[],
   ) => {
     if (overlayRef.current) {
       hideOverlay()
     } else {
-      showOverlay(docName, snapshotId, changedPages)
+      showOverlay(projectName, snapshotId, changedPages)
     }
   }, [showOverlay, hideOverlay])
 

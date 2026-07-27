@@ -20,7 +20,7 @@ const OLD_PAGE_GAP = 48   // canvas units gap between main and shadow column
 
 export function useDividerDiff(
   editorRef: React.MutableRefObject<Editor | null>,
-  docName: string,
+  projectName: string,
   activeHash: string | null,
   columnX: number,
   shadowYOffset = 0,
@@ -29,7 +29,7 @@ export function useDividerDiff(
   const resultMapRef = useRef<Map<string, string[]>>(new Map())
 
   useEffect(() => {
-    if (!activeHash || !docName || !columnX) return
+    if (!activeHash || !projectName || !columnX) return
     const editor = editorRef.current
     if (!editor) return
 
@@ -60,7 +60,7 @@ export function useDividerDiff(
         if (shapeRight < gapLeft - 20 || bounds.x > gapRight + 20) continue
 
         // It's a divider hit — trigger the diff (async, fire-and-forget)
-        triggerDiff(editor, shape, bounds, docName, hash7, columnX, shadowYOffset, resultMap)
+        triggerDiff(editor, shape, bounds, projectName, hash7, columnX, shadowYOffset, resultMap)
       }
 
       // Cascade delete: when a trigger highlight is erased, remove its result shapes.
@@ -79,14 +79,14 @@ export function useDividerDiff(
     })
 
     return unsub
-  }, [editorRef, docName, activeHash, columnX, shadowYOffset])
+  }, [editorRef, projectName, activeHash, columnX, shadowYOffset])
 }
 
 async function triggerDiff(
   editor: Editor,
   shape: any,
   bounds: { x: number; y: number; w: number; h: number },
-  docName: string,
+  projectName: string,
   hash7: string,
   columnX: number,
   shadowYOffset: number,
@@ -126,7 +126,7 @@ async function triggerDiff(
   }, 0)
 
   try {
-    const resp = await fetch(`/api/projects/${docName}/history/diff-region`, {
+    const resp = await fetch(`/api/projects/${projectName}/history/diff-region`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hash7, page: pageNum, pdfYMin, pdfYMax, columnX, shadowYOffset, triggerId: shape.id }),

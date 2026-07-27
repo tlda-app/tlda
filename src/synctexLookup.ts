@@ -35,28 +35,28 @@ const lookupCache = new Map<string, Promise<LookupData | null>>()
  * Load lookup table for a document. Results are cached for the session;
  * concurrent callers share one fetch rather than each issuing their own.
  */
-export function loadLookup(docName: string): Promise<LookupData | null> {
-  if (!lookupCache.has(docName)) {
+export function loadLookup(projectName: string): Promise<LookupData | null> {
+  if (!lookupCache.has(projectName)) {
     const base = assetBase()
-    lookupCache.set(docName, fetch(`${base}docs/${docName}/lookup.json`)
+    lookupCache.set(projectName, fetch(`${base}docs/${projectName}/lookup.json`)
       .then(resp => {
         if (!resp.ok) return null
         return resp.json() as Promise<LookupData>
       })
       .catch(() => {
-        console.warn(`[SyncTeX] Could not load lookup.json for ${docName}`)
+        console.warn(`[SyncTeX] Could not load lookup.json for ${projectName}`)
         return null
       })
     )
   }
-  return lookupCache.get(docName)!
+  return lookupCache.get(projectName)!
 }
 
 /**
  * Check if static lookup is available for a document
  */
-export async function hasStaticLookup(docName: string): Promise<boolean> {
-  const lookup = await loadLookup(docName)
+export async function hasStaticLookup(projectName: string): Promise<boolean> {
+  const lookup = await loadLookup(projectName)
   return lookup !== null
 }
 
@@ -65,12 +65,12 @@ export async function hasStaticLookup(docName: string): Promise<boolean> {
  * Returns null if no lookup available (caller should fall back to server)
  */
 export async function getSourceAnchorStatic(
-  docName: string,
+  projectName: string,
   page: number,
   _x: number,
   _y: number
 ): Promise<SourceAnchor | null> {
-  const lookup = await loadLookup(docName)
+  const lookup = await loadLookup(projectName)
   if (!lookup) return null
 
   // Find lines on this page AND adjacent pages (synctex page boundaries
@@ -129,10 +129,10 @@ export async function getSourceAnchorStatic(
  * Returns null if no lookup available (caller should fall back to server)
  */
 export async function resolveAnchorStatic(
-  docName: string,
+  projectName: string,
   anchor: SourceAnchor
 ): Promise<PdfPosition | null> {
-  const lookup = await loadLookup(docName)
+  const lookup = await loadLookup(projectName)
   if (!lookup) return null
 
   let resolvedLine = anchor.line
@@ -204,11 +204,11 @@ export async function resolveAnchorStatic(
 /**
  * Clear lookup cache (call after document rebuild)
  */
-export function clearLookupCache(docName?: string) {
-  if (docName) {
-    lookupCache.delete(docName)
-    htmlTocCache.delete(docName)
-    htmlSearchCache.delete(docName)
+export function clearLookupCache(projectName?: string) {
+  if (projectName) {
+    lookupCache.delete(projectName)
+    htmlTocCache.delete(projectName)
+    htmlSearchCache.delete(projectName)
   } else {
     lookupCache.clear()
     htmlTocCache.clear()
@@ -243,32 +243,32 @@ onReloadSignal(() => {
   htmlSearchCache.clear()
 })
 
-export async function loadHtmlToc(docName: string): Promise<HtmlTocEntry[] | null> {
-  if (htmlTocCache.has(docName)) return htmlTocCache.get(docName)!
+export async function loadHtmlToc(projectName: string): Promise<HtmlTocEntry[] | null> {
+  if (htmlTocCache.has(projectName)) return htmlTocCache.get(projectName)!
   try {
     const base = assetBase()
-    const resp = await fetch(`${base}docs/${docName}/toc.json`)
-    if (!resp.ok) { htmlTocCache.set(docName, null); return null }
+    const resp = await fetch(`${base}docs/${projectName}/toc.json`)
+    if (!resp.ok) { htmlTocCache.set(projectName, null); return null }
     const data = await resp.json()
-    htmlTocCache.set(docName, data)
+    htmlTocCache.set(projectName, data)
     return data
   } catch {
-    htmlTocCache.set(docName, null)
+    htmlTocCache.set(projectName, null)
     return null
   }
 }
 
-export async function loadHtmlSearch(docName: string): Promise<HtmlSearchEntry[] | null> {
-  if (htmlSearchCache.has(docName)) return htmlSearchCache.get(docName)!
+export async function loadHtmlSearch(projectName: string): Promise<HtmlSearchEntry[] | null> {
+  if (htmlSearchCache.has(projectName)) return htmlSearchCache.get(projectName)!
   try {
     const base = assetBase()
-    const resp = await fetch(`${base}docs/${docName}/search-index.json`)
-    if (!resp.ok) { htmlSearchCache.set(docName, null); return null }
+    const resp = await fetch(`${base}docs/${projectName}/search-index.json`)
+    if (!resp.ok) { htmlSearchCache.set(projectName, null); return null }
     const data = await resp.json()
-    htmlSearchCache.set(docName, data)
+    htmlSearchCache.set(projectName, data)
     return data
   } catch {
-    htmlSearchCache.set(docName, null)
+    htmlSearchCache.set(projectName, null)
     return null
   }
 }

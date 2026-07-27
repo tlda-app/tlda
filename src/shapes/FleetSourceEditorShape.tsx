@@ -19,7 +19,7 @@ import { defaultKeymap, history, historyKeymap, redo, undo } from '@codemirror/c
 import { getOriginalDoc, unifiedMergeView, updateOriginalDoc } from '@codemirror/merge'
 import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
 import { htmlSourceLineAnchorAtCanvasY, type HtmlSourceLineAnchor } from '../htmlSourceAnchors'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
@@ -159,8 +159,8 @@ function basename(file: string) {
   return normalizeFile(file).replace(/^.*[\\/]/, '')
 }
 
-function projectApiPath(docName: string, path: string) {
-  return `${STORE_API}/api/projects/${encodeURIComponent(docName)}${path}`
+function projectApiPath(projectName: string, path: string) {
+  return `${STORE_API}/api/projects/${encodeURIComponent(projectName)}${path}`
 }
 
 function getFleetStyleVars(): CSSProperties {
@@ -453,7 +453,7 @@ function sourceCursorEditor(fallback: unknown): SourceCursorEditor {
 
 function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const styleVars = useFleetStyleVars()
   const useVim = useSyncExternalStore(subscribeVimMode, getVimMode)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -565,7 +565,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => {
     sourceFilesRef.current = null
     sourceFilesPromiseRef.current = null
-  }, [doc?.docName])
+  }, [doc?.projectName])
 
   const pdfSpansToCanvasMark = (spans: SourceCursorPdfSpan[], sourceLine: number): SourceCursorLaserMark | null => {
     const mainEditor = sourceCursorEditor(editor)
@@ -600,8 +600,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }
 
   const computeCursorLaserMark = async (sourceFile: string, sourceLine: number, sourceColumn: number, seq: number) => {
-    if (!doc?.docName) return null
-    const res = await fetch(projectApiPath(doc.docName, '/source-cursor'), {
+    if (!doc?.projectName) return null
+    const res = await fetch(projectApiPath(doc.projectName, '/source-cursor'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file: sourceFile, line: sourceLine, column: sourceColumn }),
@@ -695,7 +695,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }, [])
 
   useEffect(() => {
-    if (!doc?.docName) return
+    if (!doc?.projectName) return
     let cancelled = false
     async function resolveFile() {
       if (shape.props.file) {
@@ -703,7 +703,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         return
       }
       try {
-        const res = await fetch(projectApiPath(doc!.docName, ''))
+        const res = await fetch(projectApiPath(doc!.projectName, ''))
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
         projectInfoRef.current = info
@@ -725,14 +725,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     }
     resolveFile()
     return () => { cancelled = true }
-  }, [doc?.docName, editor, shape.id, shape.props.file])
+  }, [doc?.projectName, editor, shape.id, shape.props.file])
 
   useEffect(() => {
-    if (!doc?.docName) return
+    if (!doc?.projectName) return
     let cancelled = false
     async function loadProjectConflictState() {
       try {
-        const res = await fetch(projectApiPath(doc!.docName, ''))
+        const res = await fetch(projectApiPath(doc!.projectName, ''))
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
         projectInfoRef.current = info
@@ -751,13 +751,13 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [doc?.docName])
+  }, [doc?.projectName])
 
   useEffect(() => {
-    if (!doc?.docName) return
+    if (!doc?.projectName) return
     let cancelled = false
     let lookup: LookupData | null = null
-    void loadLookup(doc.docName).then((data) => {
+    void loadLookup(doc.projectName).then((data) => {
       lookup = data
       lookupRef.current = data
     })
@@ -783,7 +783,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       window.cancelAnimationFrame(raf)
       if (typeof unsubscribe === 'function') unsubscribe()
     }
-  }, [doc?.docName, editor])
+  }, [doc?.projectName, editor])
 
   useEffect(() => {
     return () => {
@@ -793,10 +793,10 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }, [])
 
   const loadSourceFiles = async () => {
-    if (!doc?.docName) return []
+    if (!doc?.projectName) return []
     if (sourceFilesRef.current) return sourceFilesRef.current
     if (!sourceFilesPromiseRef.current) {
-      sourceFilesPromiseRef.current = fetch(projectApiPath(doc.docName, '/files'))
+      sourceFilesPromiseRef.current = fetch(projectApiPath(doc.projectName, '/files'))
         .then(async (res) => {
           if (!res.ok) throw new Error(`files ${res.status}`)
           const payload = await res.json()
@@ -822,17 +822,17 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }
 
   const writeSourceFile = async (sourceFile: string, nextFullText: string) => {
-    if (!doc?.docName || !sourceFile) return null
+    if (!doc?.projectName || !sourceFile) return null
     const sourcePath = await resolveSourceFilePath(sourceFile)
     if (!projectInfoRef.current) {
-      const infoRes = await fetch(projectApiPath(doc.docName, ''))
+      const infoRes = await fetch(projectApiPath(doc.projectName, ''))
       if (infoRes.ok) projectInfoRef.current = await infoRes.json()
     }
     const sourceManifest = normalizeSourceManifest([...await loadSourceFiles(), sourcePath], projectInfoRef.current || {})
-    const authorityRes = await fetch(projectApiPath(doc.docName, '/source-authority'))
+    const authorityRes = await fetch(projectApiPath(doc.projectName, '/source-authority'))
     if (!authorityRes.ok) throw new Error(`source authority ${authorityRes.status}`)
     const sourceAuthority = await authorityRes.json()
-    const res = await fetch(projectApiPath(doc.docName, `/source/${encodeURIComponent(sourcePath)}`), {
+    const res = await fetch(projectApiPath(doc.projectName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -867,7 +867,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }
 
   const writeSource = async (nextFullText: string, seq: number) => {
-    if (!doc?.docName || !file) return
+    if (!doc?.projectName || !file) return
     if (nextFullText === savedTextRef.current) {
       setStatus('ready')
       setStatusText(trackedAnchorStatusText(sourceWindowRef.current))
@@ -986,7 +986,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }
 
   useEffect(() => {
-    if (!doc?.docName || !cmHostRef.current || !file) return
+    if (!doc?.projectName || !cmHostRef.current || !file) return
     let cancelled = false
 
     async function loadSource() {
@@ -996,7 +996,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setStatusText(`Loading ${file}...`)
       try {
         const sourcePath = await resolveSourceFilePath(file)
-        const res = await fetch(projectApiPath(doc!.docName, `/source/${encodeURIComponent(sourcePath)}`))
+        const res = await fetch(projectApiPath(doc!.projectName, `/source/${encodeURIComponent(sourcePath)}`))
 	        if (!res.ok) throw new Error(`source ${res.status}`)
 	        const text = await res.text()
 	        if (cancelled || !cmHostRef.current) return
@@ -1155,7 +1155,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 	      cmViewRef.current?.destroy()
       cmViewRef.current = null
     }
-  }, [doc?.docName, file, useVim])
+  }, [doc?.projectName, file, useVim])
 
 	  useEffect(() => {
 	    const view = cmViewRef.current
@@ -1223,7 +1223,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const primaryOnTop = !sourceSplit || normalizeFile(file) === normalizeFile(sourceSplit.beforeFile)
 
   useEffect(() => {
-    if (!doc?.docName || !secondaryFile || !secondaryCmHostRef.current) {
+    if (!doc?.projectName || !secondaryFile || !secondaryCmHostRef.current) {
       secondaryCmViewRef.current?.destroy()
       secondaryCmViewRef.current = null
       secondarySavedTextRef.current = ''
@@ -1231,7 +1231,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       return
     }
 
-    const docName = doc.docName
+    const projectName = doc.projectName
     const activeSecondaryFile = secondaryFile
     const activeSplit = sourceSplit
     let cancelled = false
@@ -1243,7 +1243,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       secondaryWriteTimerRef.current = null
       try {
         const sourcePath = await resolveSourceFilePath(activeSecondaryFile)
-        const res = await fetch(projectApiPath(docName, `/source/${encodeURIComponent(sourcePath)}`))
+        const res = await fetch(projectApiPath(projectName, `/source/${encodeURIComponent(sourcePath)}`))
         if (!res.ok) throw new Error(`source ${res.status}`)
         const text = await res.text()
         if (cancelled || !secondaryCmHostRef.current) return
@@ -1347,7 +1347,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       secondaryCmViewRef.current?.destroy()
       secondaryCmViewRef.current = null
     }
-  }, [doc?.docName, secondaryFile, sourceSplit?.beforeFile, sourceSplit?.beforeLine, sourceSplit?.afterFile, sourceSplit?.afterLine, useVim])
+  }, [doc?.projectName, secondaryFile, sourceSplit?.beforeFile, sourceSplit?.beforeLine, sourceSplit?.afterFile, sourceSplit?.afterLine, useVim])
 
   const applyConflictSide = (side: ConflictSide) => {
     const view = cmViewRef.current

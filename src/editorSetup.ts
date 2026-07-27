@@ -794,7 +794,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
           fetch('/api/backing-file-unregister', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filePath, docName: document.name }),
+            body: JSON.stringify({ filePath, projectName: document.name }),
           }).catch(e => log.warn('backing', 'unregister failed', { error: String(e?.message || e) }))
         }
       }

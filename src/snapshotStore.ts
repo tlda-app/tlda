@@ -35,10 +35,10 @@ function notifySnapshotListeners() {
 }
 
 /** Load snapshots from localStorage for a document. */
-export function initSnapshots(docName: string): void {
-  currentDocName = docName
+export function initSnapshots(projectName: string): void {
+  currentDocName = projectName
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_PREFIX + docName)
+    const raw = localStorage.getItem(STORAGE_KEY_PREFIX + projectName)
     if (raw) {
       const parsed = JSON.parse(raw)
       snapshots = parsed.snapshots || []

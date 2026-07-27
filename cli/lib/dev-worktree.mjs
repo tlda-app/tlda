@@ -2,7 +2,7 @@
  * Worktree-relative `tlda-dev` mirrors.
  *
  * Skip's rule: `tlda-dev <cmd>` is the worktree-relative mirror of `tlda <cmd>`.
- * Where `tlda doc share` shares the *live* :5176 server (token, real rooms),
+ * Where `tlda project share` shares the *live* :5176 server (token, real rooms),
  * `tlda-dev serve` / `tlda-dev share` stand up and share THIS worktree's branch,
  * reachable from Skip's other devices, with the SPA's injected config pointed at
  * the reachable host — and NO token.
@@ -25,7 +25,7 @@
  *     the cert's SANs.
  *
  * Isolation: the preview gets its own projects dir + fleet DB (room snapshots live
- * under PROJECTS_DIR, so sharing the live one would corrupt real rooms). `--doc`
+ * under PROJECTS_DIR, so sharing the live one would corrupt real rooms). `--project`
  * copies one project in so Skip can open a real document; otherwise it's the UI
  * shell. Nothing touches the live :5176 server or its rooms.
  */
@@ -50,10 +50,10 @@ const PREVIEW_PORT_MAX = 5299
 const SERVE_HELP = `tlda-dev serve — run THIS worktree as an isolated preview
 
 Usage:
-  tlda-dev serve [start] [--sandbox] [--real-fleet] [--doc NAME] [--port N] [--no-build]
+  tlda-dev serve [start] [--sandbox] [--real-fleet] [--project NAME] [--port N] [--no-build]
   tlda-dev serve stop [--json]
   tlda-dev serve status [--all] [--json]
-  tlda-dev serve url [--doc NAME]
+  tlda-dev serve url [--project NAME]
   tlda-dev serve reap-orphans [--json]
 
 Notes:
@@ -147,7 +147,7 @@ function listPreviewStates() {
       branch: m?.branch || branch,
       worktreeDir: m?.worktreeDir || null,
       base: m?.base || null,
-      doc: m?.doc || null,
+      project: m?.project || null,
       port: m?.port || null,
       pid,
       rawPid,
@@ -282,8 +282,8 @@ async function printQr(url) {
   } catch { /* qrcode-terminal missing — URL alone is enough */ }
 }
 
-function viewerUrl(base, doc) {
-  return doc ? `${base}/?doc=${encodeURIComponent(doc)}` : `${base}/`
+function viewerUrl(base, project) {
+  return project ? `${base}/?project=${encodeURIComponent(project)}` : `${base}/`
 }
 
 async function health(base) {
@@ -347,7 +347,7 @@ export async function cmdServeWorktree(args) {
   if (verb === 'reap-orphans') return reapOrphanPreviews(json)
   if (verb === 'url') {
     const m = readManifest(branch)
-    if (m && readPid(branch)) { console.log(viewerUrl(m.base, values.get('doc') || m.doc)); return }
+    if (m && readPid(branch)) { console.log(viewerUrl(m.base, values.get('project') || m.project)); return }
     console.error(`no preview running for ${branch} — run: tlda-dev serve`); process.exit(1)
   }
 
@@ -355,7 +355,7 @@ export async function cmdServeWorktree(args) {
   if (readPid(branch)) {
     const m = readManifest(branch)
     console.log(`preview already running for ${branch} (pid ${readPid(branch)}) — tlda-dev serve stop first`)
-    if (m) console.log(`  ${viewerUrl(m.base, m.doc)}`)
+    if (m) console.log(`  ${viewerUrl(m.base, m.project)}`)
     return
   }
 
@@ -369,7 +369,7 @@ export async function cmdServeWorktree(args) {
 
   const port = values.has('port') ? parseInt(values.get('port'), 10) : await findFreePort(5190)
   const base = `${reach.scheme}://${reach.host}:${port}`
-  const doc = values.get('doc') || null
+  const project = values.get('project') || null
 
   console.log(`Serving worktree: ${worktreeDir}`)
   console.log(`Branch: ${branch}`)
@@ -377,14 +377,14 @@ export async function cmdServeWorktree(args) {
   mkdirSync(stateDir(branch), { recursive: true })
   mkdirSync(projectsDir(branch), { recursive: true })
 
-  // Seed a real doc (copy the project so its assets exist; room snapshot stays
+  // Seed a real project (copy the project so its assets exist; room snapshot stays
   // isolated under the preview's own projects dir).
-  if (doc) {
-    const src = join(mainRepoRoot(), 'server', 'projects', doc)
+  if (project) {
+    const src = join(mainRepoRoot(), 'server', 'projects', project)
     if (!existsSync(src)) {
-      console.error(`--doc ${doc}: no such project under ${join(mainRepoRoot(), 'server', 'projects')}`); process.exit(1)
+      console.error(`--project ${project}: no such project under ${join(mainRepoRoot(), 'server', 'projects')}`); process.exit(1)
     }
-    cpSync(src, join(projectsDir(branch), doc), { recursive: true })
+    cpSync(src, join(projectsDir(branch), project), { recursive: true })
   }
 
   // Build the branch's SPA (vite only — skip `tsc -b` so WIP type errors don't
@@ -509,9 +509,9 @@ export async function cmdServeWorktree(args) {
     console.log(`sandbox daemon started (pid ${daemonPid}) → ${base} (sandbox-locked, cannot reach prod)`)
   }
 
-  const url = viewerUrl(base, doc)
+  const url = viewerUrl(base, project)
   const manifest = {
-    branch, worktreeDir, base, doc, port, host: reach.host, kind: reach.kind,
+    branch, worktreeDir, base, project, port, host: reach.host, kind: reach.kind,
     url, pid, daemonPid, sandbox: flags.has('sandbox'), realFleet, tokenless: true, config: configName(branch),
     projectsDir: projectsDir(branch), fleetDb: fleetDb(branch),
   }
@@ -541,8 +541,8 @@ export async function cmdShareWorktree(args) {
     console.error(`No preview running for ${branch}. Start one with:  tlda-dev serve`)
     process.exit(1)
   }
-  const doc = values.get('doc') || values.get('0') || m.doc
-  const url = viewerUrl(m.base, doc)
+  const project = values.get('project') || values.get('0') || m.project
+  const url = viewerUrl(m.base, project)
   console.log(`Worktree preview (${branch}) — reachable, no token:`)
   console.log(`  ${url}\n`)
   await printQr(url)
@@ -580,7 +580,7 @@ async function statusPreview(branch, json, flags = new Set()) {
   if (json) { console.log(JSON.stringify(state, null, 2)); return }
   if (up) {
     console.log(`preview: up (${branch})`)
-    console.log(`  ${viewerUrl(m.base, m.doc)}  (reachable, no token)`)
+    console.log(`  ${viewerUrl(m.base, m.project)}  (reachable, no token)`)
     console.log(`  log: ${logFile(branch)}`)
   } else if (pid) {
     console.log(`preview: pid ${pid} alive but not answering — see ${logFile(branch)}`)
@@ -603,7 +603,7 @@ async function statusAllPreviews(json) {
     console.log('previews:')
     for (const s of states) {
       const status = s.pid ? 'pid-alive' : s.rawPid ? 'pid-dead' : 'no-pid'
-      const url = s.base ? ` ${viewerUrl(s.base, s.doc)}` : ''
+      const url = s.base ? ` ${viewerUrl(s.base, s.project)}` : ''
       console.log(`  ${s.branch}: ${status}${url}`)
       if (s.worktreeDir) console.log(`    worktree: ${s.worktreeDir}`)
       console.log(`    log: ${s.log}`)

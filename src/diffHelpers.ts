@@ -104,14 +104,14 @@ export function setupDiffHoverEffect(editor: Editor, document: SvgDocument) {
  */
 export function setupDiffHoverEffectFromData(
   editor: Editor,
-  docName: string,
+  projectName: string,
   dd: Pick<DiffData, 'highlights' | 'arrows'>,
 ): () => void {
   const highlightShapeIds = dd.highlights.map((_, i) =>
-    createShapeId(`${docName}-diff-hl-${i}`)
+    createShapeId(`${projectName}-diff-hl-${i}`)
   )
   const arrowShapeIds = dd.arrows.map((_, i) =>
-    createShapeId(`${docName}-diff-arrow-${i}`)
+    createShapeId(`${projectName}-diff-arrow-${i}`)
   )
 
   const highlightToArrows = new Map<TLShapeId, TLShapeId[]>()
@@ -210,7 +210,7 @@ export function setupDiffReviewEffect(editor: Editor, document: SvgDocument) {
  */
 export function setupDiffReviewEffectFromData(
   editor: Editor,
-  docName: string,
+  projectName: string,
   dd: Pick<DiffData, 'highlights'>,
 ): () => void {
   if (!isSignalConnected()) return () => {}
@@ -218,7 +218,7 @@ export function setupDiffReviewEffectFromData(
   const pageHighlights = new Map<number, { current: TLShapeId[], old: TLShapeId[] }>()
   for (let i = 0; i < dd.highlights.length; i++) {
     const hl = dd.highlights[i]
-    const hlId = createShapeId(`${docName}-diff-hl-${i}`)
+    const hlId = createShapeId(`${projectName}-diff-hl-${i}`)
     if (!pageHighlights.has(hl.currentPage)) {
       pageHighlights.set(hl.currentPage, { current: [], old: [] })
     }
@@ -278,7 +278,7 @@ export function setupDiffReviewEffectFromData(
  */
 export function setupPulseForDiffData(
   editor: Editor,
-  docName: string,
+  projectName: string,
   dd: DiffData,
   focusChangeRef: React.MutableRefObject<((currentPage: number) => void) | null>,
 ) {
@@ -290,7 +290,7 @@ export function setupPulseForDiffData(
     const baseOpacities: number[] = []
     for (let i = 0; i < dd.highlights.length; i++) {
       if (dd.highlights[i].currentPage === currentPage) {
-        const hlId = createShapeId(`${docName}-diff-hl-${i}`)
+        const hlId = createShapeId(`${projectName}-diff-hl-${i}`)
         const shape = editor.getShape(hlId)
         hlIds.push(hlId)
         baseOpacities.push(shape?.opacity ?? 0.07)
@@ -315,7 +315,7 @@ export function setupPulseForDiffData(
  */
 export function setupPulseForDiffLayout(
   editorRef: React.MutableRefObject<Editor | null>,
-  docName: string,
+  projectName: string,
   diff: { highlights: DiffHighlight[] },
   focusChangeRef: React.MutableRefObject<((currentPage: number) => void) | null>,
 ) {
@@ -330,7 +330,7 @@ export function setupPulseForDiffLayout(
     const baseOpacities: number[] = []
     for (let i = 0; i < diff.highlights.length; i++) {
       if (diff.highlights[i].currentPage === currentPage) {
-        const hlId = createShapeId(`${docName}-diff-hl-${i}`)
+        const hlId = createShapeId(`${projectName}-diff-hl-${i}`)
         const shape = editor.getShape(hlId)
         hlIds.push(hlId)
         baseOpacities.push(shape?.opacity ?? 0.07)

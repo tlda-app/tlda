@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DOMParser } from '@xmldom/xmldom';
-import { readManifestSync, localDocDir } from './data-source.mjs';
+import { readManifestSync, localProjectDir } from './data-source.mjs';
 
 // ---- Font class parsing ----
 
@@ -172,25 +172,25 @@ const PAGE_GAP = _lc2.PAGE_GAP;
 /**
  * Find rendered text within a canvas bounding box.
  *
- * @param {string} docName - Document name (e.g. "bregman")
+ * @param {string} projectName - Document name (e.g. "bregman")
  * @param {object} canvasBBox - { minX, minY, maxX, maxY } in canvas coordinates
  * @param {string} projectRoot - Absolute path to project root
  * @returns {string[]} Array of text lines overlapping the bbox
  */
-export function findRenderedText(docName, canvasBBox, projectRoot) {
+export function findRenderedText(projectName, canvasBBox, projectRoot) {
   // Load manifest to get page count
   const manifest = readManifestSync();
-  const pageCount = manifest?.documents?.[docName]?.pages;
+  const pageCount = manifest?.documents?.[projectName]?.pages;
   if (!pageCount) return [];
 
   // Determine which page(s) the bbox falls on
   // Each SVG has its own viewBox; we need to load it to get accurate dimensions
-  const docDir = localDocDir(docName);
+  const docDir = localProjectDir(projectName);
 
   // Read project.json for multi-target info (targets[] with texBase + pages).
   // Single-target docs do not need target metadata; they use bare page names.
   let targets = null;
-  const projPath = path.join(projectRoot, 'server', 'projects', docName, 'project.json');
+  const projPath = path.join(projectRoot, 'server', 'projects', projectName, 'project.json');
   if (fs.existsSync(projPath)) {
     try {
       const proj = JSON.parse(fs.readFileSync(projPath, 'utf8'));

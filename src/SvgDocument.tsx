@@ -78,7 +78,7 @@ import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
-import { DocContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
+import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
 import { NoteDropHandler } from './NoteDropHandler'
 import { MarkdownDropHandler } from './MarkdownDropHandler'
 import { setCurrentDocumentInfo, pageSpacing, type SvgDocument } from './svgDocumentLoader'
@@ -228,11 +228,11 @@ function withShapeErrorBoundary<T extends new (...args: any[]) => any>(Util: T):
 const SHAPE_SYNC_SERVER = SYNC_SERVER
 
 // Initialize signal connection when the document mounts (signals go via HTTP POST + @tldraw/sync custom messages)
-function useSignalInit(docName: string) {
+function useSignalInit(projectName: string) {
   useEffect(() => {
-    initSignalConnection(docName, SYNC_SERVER)
+    initSignalConnection(projectName, SYNC_SERVER)
     return () => teardownSignalConnection()
-  }, [docName])
+  }, [projectName])
 }
 
 // Inline base64 asset store (for image uploads via AssetToolbarItem)
@@ -265,7 +265,7 @@ interface SvgDocumentEditorProps {
 const MAX_VISIBLE_VERSIONS = 5
 
 function VersionStamp({ document }: { document: SvgDocument }) {
-  const docName = document.name
+  const projectName = document.name
   const editor = useEditor()
   const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
   const [history, setHistory] = useState<Array<{ hash: string; timestamp: number }>>([])
@@ -303,7 +303,7 @@ function VersionStamp({ document }: { document: SvgDocument }) {
     if (!sentinel?.commitHash || sentinel.commitHash === prevHashRef.current) return
     prevHashRef.current = sentinel.commitHash
 
-    fetch(`/api/projects/${docName}/history/shadow`)
+    fetch(`/api/projects/${projectName}/history/shadow`)
       .then(r => r.ok ? r.json() : null)
       .then(raw => {
         const data: Array<{ hash: string; timestamp: number }> = raw?.versions || raw
@@ -318,7 +318,7 @@ function VersionStamp({ document }: { document: SvgDocument }) {
       lastHtmlReloadAtRef.current = sentinel.buildReadyAt
       reloadPages(editor, document, null)
     }
-  }, [sentinel?.commitHash, docName, document, editor, usesHtmlPages])
+  }, [sentinel?.commitHash, projectName, document, editor, usesHtmlPages])
 
   // Track reload signals to detect misses.
   useEffect(() => {
@@ -416,9 +416,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const togglePanelsLocal = useCallback(() => { setPanelsLocal(prev => !prev) }, [])
 
   // --- Hooks ---
-  const docName = document.name
+  const projectName = document.name
 
-  const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange } = useSnapshotTimeline(document, docName)
+  const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange } = useSnapshotTimeline(document, projectName)
   const { overlayActive: showHistoryPanel, toggleOverlay: toggleHistoryOverlay, hideOverlay: hideHistoryOverlay } = useHistoryOverlay(
     editorRef, document, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef,
   )
@@ -435,7 +435,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
     // Auto-activate overlay if selecting a change and overlay isn't active
     if (id && !showHistoryPanel && activeHistoryIdx >= 0 && activeHistoryIdx < historyEntries.length) {
-      toggleHistoryOverlay(docName, historyEntries[activeHistoryIdx].id, historyChangedPages)
+      toggleHistoryOverlay(projectName, historyEntries[activeHistoryIdx].id, historyChangedPages)
     }
 
     // Re-apply highlights with selection coloring
@@ -474,10 +474,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       if (newRegions.length > 0) setChangeHighlights(pageData.shapeId, newRegions)
 
       // Old page shape (only exists when overlay is active)
-      const oldShapeId = `shape:${docName}-hist-old-${pd.page}`
+      const oldShapeId = `shape:${projectName}-hist-old-${pd.page}`
       if (oldRegions.length > 0) setChangeHighlights(oldShapeId, oldRegions)
     }
-  }, [historyChangedPages, document, showHistoryPanel, activeHistoryIdx, historyEntries, toggleHistoryOverlay, docName])
+  }, [historyChangedPages, document, showHistoryPanel, activeHistoryIdx, historyEntries, toggleHistoryOverlay, projectName])
   // Legacy aliases for backward compatibility with panel context
   const snapshotCount = historyEntries.length
   const snapshotSliderIdx = activeHistoryIdx
@@ -488,8 +488,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Role only meaningful in presentation (slides) format
   useMemo(() => {
-    if (isPresentation) { initRole(docName); setDraftMode(getRole() === 'viewer') }
-  }, [docName, isPresentation])
+    if (isPresentation) { initRole(projectName); setDraftMode(getRole() === 'viewer') }
+  }, [projectName, isPresentation])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
   // Presentation: broadcast presenter identity + sync draft mode to role
@@ -523,20 +523,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const [reloadWarnings, setReloadWarnings] = useState<BuildWarning[]>([])
 
   // Fleet playback — listen for BroadcastChannel and swap annotation shapes
-  const playbackState = useSyncedPlayback(editorRef, docName)
+  const playbackState = useSyncedPlayback(editorRef, projectName)
 
   // Spatial timeline overlay — activity scatter plot
-  const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, docName)
+  const { timelineActive, toggleTimeline } = useTimelineOverlay(editorRef, document, projectName)
 
   // Shadow history scrubber
   const {
     shadowTimeBounds, shadowActiveVersion, shadowLoading, shadowVisible,
     shadowColumnX, shadowYOffset, shadowChangelog,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
-  } = useShadowOverlay(editorRef, document, docName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+  } = useShadowOverlay(editorRef, document, projectName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
-  useDividerDiff(editorRef, docName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
+  useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)
 
   // Side-by-side version comparison — relay Yjs signal to window event
   useEffect(() => {
@@ -549,7 +549,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   useFleetTheme()
 
   // Auto-open shared docs pushed via fleet
-  useDocAutoOpen(editorRef, document, docName)
+  useDocAutoOpen(editorRef, document, projectName)
 
   // Auxiliary mouse button (3 or 4) toggles pan mode: move mouse to pan canvas / scroll chat
   usePanMode(editorRef)
@@ -802,7 +802,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     () => {
       const chrome = isPresentation
         ? <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
-        : <><RibbonLane /><ProvenancePanel docName={docName} /><ProvenanceInline docName={docName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
+        : <><RibbonLane /><ProvenancePanel projectName={projectName} /><ProvenanceInline projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
       return {
         PageMenu: null,
         SharePanel: null,
@@ -815,7 +815,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         InFrontOfTheCanvas: () => chrome,
       }
     },
-    [document, docName, isPresentation]
+    [document, projectName, isPresentation]
   )
 
   // Pulse effect for standalone diff docs
@@ -826,8 +826,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   }, [document])
 
   // Stable doc info — only changes when a different document loads
-  const docContextValue = useMemo(() => ({
-    docName,
+  const projectContextValue = useMemo(() => ({
+    projectName,
     format: document.format,
     pages: document.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
@@ -838,7 +838,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       tldrawPageId: p.tldrawPageId,
     })),
     targets: document.targets,
-  }), [docName, document])
+  }), [projectName, document])
 
   // Volatile panel state — toggles, loading flags, history, etc.
   const panelContextValue = useMemo(() => ({
@@ -1113,7 +1113,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           mainEditor={editorRef.current}
           selectedChangeId={selectedChangeId}
           historyChanges={historyChanges}
-          docName={docName}
+          projectName={projectName}
           shapeUtils={shapeUtils}
           tools={tools}
           licenseKey={LICENSE_KEY}
@@ -1148,7 +1148,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         <PlaybackPill state={playbackState} />
         {editorRef.current && (
           <LiveRoomAudio
-            docName={document.name}
+            projectName={document.name}
             editor={editorRef.current}
           />
         )}
@@ -1178,7 +1178,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   return (
     <>
-    <DocContext.Provider value={docContextValue}>
+    <ProjectContext.Provider value={projectContextValue}>
     <PanelContext.Provider value={panelContextValue}>
     <BottomPanelsContext.Provider value={bottomPanelsContent}>
     <AgentPillContext.Provider value={agentPillContent}>
@@ -1590,7 +1590,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     </AgentPillContext.Provider>
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
-    </DocContext.Provider>
+    </ProjectContext.Provider>
     </>
   )
 }

@@ -65,7 +65,7 @@ function StatusBadge({ status }: { status: RibbonSegment['status'] }) {
   )
 }
 
-function InlineBody({ docName, pinned }: { docName: string; pinned: PinnedSpan }) {
+function InlineBody({ projectName, pinned }: { projectName: string; pinned: PinnedSpan }) {
   const [proofInfo, setProofInfo] = useState<any>(null)
 
   useEffect(() => {
@@ -74,11 +74,11 @@ function InlineBody({ docName, pinned }: { docName: string; pinned: PinnedSpan }
       setProofInfo(null)
       return
     }
-    fetchProofInfo(docName).then((info) => {
+    fetchProofInfo(projectName).then((info) => {
       if (!cancelled) setProofInfo(info)
     })
     return () => { cancelled = true }
-  }, [docName, pinned.index, pinned.seg.stale])
+  }, [projectName, pinned.index, pinned.seg.stale])
 
   const nodes = useMemo(
     () => pinned.seg.stale && proofInfo ? cascadeNodes(proofInfo, pinned.seg) : [],
@@ -109,7 +109,7 @@ function InlineBody({ docName, pinned }: { docName: string; pinned: PinnedSpan }
   )
 }
 
-export function ProvenanceInline({ docName }: { docName: string }) {
+export function ProvenanceInline({ projectName }: { projectName: string }) {
   const mode = useProvenanceMode()
   const editor = useEditor()
   const [pinned, setPinned] = useState<PinnedSpan | null>(null)
@@ -189,7 +189,7 @@ export function ProvenanceInline({ docName }: { docName: string }) {
         >
           <div style={{ display: 'flex', alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <InlineBody docName={docName} pinned={pinned} />
+              <InlineBody projectName={projectName} pinned={pinned} />
             </div>
             <button
               type="button"

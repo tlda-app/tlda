@@ -19,7 +19,7 @@ import {
 import type { Editor } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
@@ -64,7 +64,7 @@ export class DocClipShapeUtil extends BaseBoxShapeUtil<any> {
 
 function DocClipComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
 
   const { w, h, page, yTop, yBottom } = shape.props
@@ -91,7 +91,7 @@ function DocClipComponent({ shape }: { shape: any }) {
   // Prefetch SVG for the target page
   const [svgReady, setSvgReady] = useState(false)
   useEffect(() => {
-    if (!doc?.pages?.length || !doc?.docName || page <= 0) { setSvgReady(false); return }
+    if (!doc?.pages?.length || !doc?.projectName || page <= 0) { setSvgReady(false); return }
     const pageIdx = page - 1
     if (pageIdx < 0 || pageIdx >= doc.pages.length) { setSvgReady(false); return }
     const p = doc.pages[pageIdx]
