@@ -345,24 +345,20 @@ function logWsClose(kind, ws, code, reason) {
 // always pair them with the durable fleet id. Mutates rows in place and returns
 // them. A null period name means the agent was nameless then (reach it by id).
 // A thread is a few dozen agents talking across thousands of rows, so the same
-// ids repeat constantly. The two memos below live and die with one stampNames
-// call: nothing outlives the request, so there is nothing to invalidate when an
-// agent is renamed.
-//   - nameAt is TIME-dependent, so its key is (id, ts). Keying on id alone would
-//     collapse an agent's distinct historical names into whichever one resolved
-//     first and silently rewrite history in every thread view.
+// ids repeat constantly. Both lookups below are resolved once per agent and
+// then answered from memory, and both live and die with this one call —
+// nothing outlives the request, so a rename has nothing to invalidate.
+//   - The historical name is time-dependent, so it cannot be memoized on id
+//     alone; a per-request resolver reads each agent's name spans once and
+//     answers every timestamp from them. Memoizing the resolved name on id
+//     would collapse an agent's distinct historical names into whichever one
+//     resolved first and silently rewrite history in every thread view.
 //   - The current friendly_name is time-independent, so id alone is its key.
 function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
-  const nameAtMemo = new Map()
+  const resolver = fleetStore.nameResolver()
   const nameNowMemo = new Map()
-  const nameAt = (id, ts) => {
-    const key = `${id} ${ts ?? ''}`
-    if (nameAtMemo.has(key)) return nameAtMemo.get(key)
-    const name = fleetStore.nameAt(id, ts)
-    nameAtMemo.set(key, name)
-    return name
-  }
+  const nameAt = (id, ts) => resolver.nameAt(id, ts)
   const nameNow = id => {
     if (nameNowMemo.has(id)) return nameNowMemo.get(id)
     const name = fleetStore.getAgent(id)?.friendly_name ?? null
