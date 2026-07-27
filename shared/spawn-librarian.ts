@@ -327,10 +327,7 @@ export function resolveSpawnCollision(input: {
   const { name, respawn, fresh = false, liveMatches } = input
   if (respawn || !name) return { name, respawn }
   if (fresh) return { name, respawn: false }
-  const live = liveMatches.filter((a) => !a.dead)
-  if (live.length === 0) return { name, respawn }
-  if (live.length > 1) return { name, respawn }
-  const existing = live[0]
+  const existing = liveMatches[0]
   if (!existing) return { name, respawn }
   return { name: existing.id, respawn: true, existing }
 }
