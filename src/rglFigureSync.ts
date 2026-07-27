@@ -196,15 +196,20 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
     const pose = readPose(binding.rgl)
     if (!pose || !posesDiffer(pose, binding.lastPublished)) return
     binding.lastPublished = pose
-    const shape = editor.store.get(shapeId) as { type?: string; meta?: Record<string, unknown> } | undefined
+    const shape = editor.store.get(shapeId) as { meta?: Record<string, unknown> } | undefined
     if (!shape) return
+    // `editor.store.update`, NOT `editor.updateShape`. Deck shapes are created
+    // with `isLocked: true` (src/loaders/createShapes.ts), and the editor
+    // silently ignores updates to locked shapes — no error, no write, nothing to
+    // debug. The store-level write is the path this file already uses for the
+    // same locked shape in the `tlda-resize` handler.
+    //
     // Spread-then-set writes one key; tldraw diffs meta per key, so a peer
     // rotating a different figure is not clobbered by this write.
-    editor.updateShape({
-      id: shapeId,
-      type: shape.type,
-      meta: { ...shape.meta, [figurePoseMetaKey(binding.index)]: JSON.stringify(pose) },
-    } as Parameters<typeof editor.updateShape>[0])
+    editor.store.update(shapeId, (s: any) => ({
+      ...s,
+      meta: { ...s.meta, [figurePoseMetaKey(binding.index)]: JSON.stringify(pose) },
+    }))
   }
 
   const applyStored = (binding: FigureBinding) => {
