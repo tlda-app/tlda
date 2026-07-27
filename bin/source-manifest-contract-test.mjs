@@ -241,8 +241,10 @@ function assertPutRequiresCallerManifest() {
   const writeSource = callerSource.slice(writeStart, writeEnd)
   assert.match(writeSource, /sourceManifest/, 'fleet source editor PUT caller must send sourceManifest')
   assert.match(writeSource, /expectedRevision/, 'fleet source editor PUT caller must send expectedRevision')
-  assert.match(writeSource, /\/source-authority/, 'fleet source editor PUT caller must read current source authority')
+  assert.doesNotMatch(writeSource, /\/source-authority/, 'fleet source editor must not refresh authority immediately before overwriting a loaded buffer')
   assert.match(writeSource, /loadSourceFiles\(\)/, 'fleet source editor PUT caller must base manifest on current client inventory')
+  assert.match(callerSource, /X-TLDA-Source-Revision/, 'fleet source editor load must retain the revision served with its source bytes')
+  assert.match(writeSource, /expectedRevision,\s*\n/, 'fleet source editor PUT must send the caller buffer revision')
 }
 
 function assertMcpCallersCarryManifest() {

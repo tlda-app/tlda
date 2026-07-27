@@ -503,6 +503,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const secondarySavedTextRef = useRef('')
   const fullSourceRef = useRef('')
   const secondaryFullSourceRef = useRef('')
+  const loadedSourceRevisionRef = useRef<string | null>(null)
+  const secondaryLoadedSourceRevisionRef = useRef<string | null>(null)
   const sourceFilesRef = useRef<string[] | null>(null)
   const sourceFilesPromiseRef = useRef<Promise<string[]> | null>(null)
   const projectInfoRef = useRef<any | null>(null)
@@ -821,7 +823,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     return matches.length === 1 ? matches[0] : normalized
   }
 
-  const writeSourceFile = async (sourceFile: string, nextFullText: string) => {
+  const writeSourceFile = async (sourceFile: string, nextFullText: string, expectedRevision: string | null) => {
     if (!doc?.projectName || !sourceFile) return null
     const sourcePath = await resolveSourceFilePath(sourceFile)
     if (!projectInfoRef.current) {
@@ -829,9 +831,6 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       if (infoRes.ok) projectInfoRef.current = await infoRes.json()
     }
     const sourceManifest = normalizeSourceManifest([...await loadSourceFiles(), sourcePath], projectInfoRef.current || {})
-    const authorityRes = await fetch(projectApiPath(doc.projectName, '/source-authority'))
-    if (!authorityRes.ok) throw new Error(`source authority ${authorityRes.status}`)
-    const sourceAuthority = await authorityRes.json()
     const res = await fetch(projectApiPath(doc.projectName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -839,7 +838,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         content: nextFullText,
         sourceManifest,
         editedBy: shape.props.userId || shape.props.deviceId || 'fleet-source-editor',
-        expectedRevision: sourceAuthority.currentRevision,
+        expectedRevision,
       }),
     })
     const payload = await res.json().catch(() => ({}))
@@ -850,8 +849,12 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       // instead of showing them "Sync failed".
       const merged = conflictedTextFor(payload, sourcePath)
       if (merged !== null) {
-        const conflict = new Error('Conflict — resolve the markers, then it syncs') as Error & { conflictText?: string }
+        const conflict = new Error('Conflict — resolve the markers, then it syncs') as Error & {
+          conflictText?: string
+          sourceRevision?: string
+        }
         conflict.conflictText = merged
+        conflict.sourceRevision = payload?.authority?.currentRevision
         throw conflict
       }
       throw new Error(payload?.error || `sync ${res.status}`)
@@ -876,13 +879,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     setStatus('syncing')
     setStatusText('Syncing...')
     try {
-      const payload = await writeSourceFile(file, nextFullText)
+      const payload = await writeSourceFile(file, nextFullText, loadedSourceRevisionRef.current)
       if (seq !== saveSeqRef.current) return
       // The write landed, so whatever this editor was holding is resolved.
       setHeldConflictFile((held) => (held === normalizeFile(file) ? null : held))
       conflictRawTextRef.current = ''
       savedTextRef.current = nextFullText
       fullSourceRef.current = nextFullText
+      if (typeof payload?.sourceRevision === 'string') loadedSourceRevisionRef.current = payload.sourceRevision
       setSourceHasConflictMarkers(hasConflictMarkers(nextFullText))
       sourceWindowRef.current = sourceWindowForText(nextFullText, sourceWindowRef.current.targetLine)
       setStatus('synced')
@@ -893,6 +897,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       // text with its git markers into the buffer; that lights the resolve UI
       // that already exists, and the write stays held until it is resolved.
       if (typeof err?.conflictText === 'string') {
+        if (typeof err?.sourceRevision === 'string') loadedSourceRevisionRef.current = err.sourceRevision
         loadConflictIntoEditor(err.conflictText)
         setStatus('dirty')
         setStatusText('Conflict — resolve the markers, then it syncs')
@@ -910,7 +915,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     fullSourceRef.current = conflictText
     conflictRawTextRef.current = conflictText
     setSourceHasConflictMarkers(true)
-    setHeldConflictFile(normalizeFile(file))
+    const conflictFile = normalizeFile(file)
+    // The CodeMirror dispatch below runs its update listener synchronously,
+    // before React commits heldConflictFile. Put the same fact in the listener's
+    // ref first so conflict text cannot be queued as an ordinary save.
+    if (!conflictFilesRef.current.includes(conflictFile)) {
+      conflictFilesRef.current = [...conflictFilesRef.current, conflictFile]
+    }
+    setHeldConflictFile(conflictFile)
     const view = cmViewRef.current
     if (!view) return
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: conflictText } })
@@ -949,14 +961,16 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     if (secondaryWriteTimerRef.current) window.clearTimeout(secondaryWriteTimerRef.current)
     secondaryWriteTimerRef.current = window.setTimeout(() => {
       secondaryWriteTimerRef.current = null
-      void writeSourceFile(sourceFile, text)
-        .then(() => {
+      void writeSourceFile(sourceFile, text, secondaryLoadedSourceRevisionRef.current)
+        .then((payload) => {
           if (seq !== secondarySaveSeqRef.current) return
           secondarySavedTextRef.current = text
           secondaryFullSourceRef.current = text
+          if (typeof payload?.sourceRevision === 'string') secondaryLoadedSourceRevisionRef.current = payload.sourceRevision
         })
         .catch((err: any) => {
           if (seq !== secondarySaveSeqRef.current) return
+          if (typeof err?.sourceRevision === 'string') secondaryLoadedSourceRevisionRef.current = err.sourceRevision
           setStatus('error')
           setStatusText(`${sourceFile}: ${err?.message || 'Sync failed'}`)
         })
@@ -998,8 +1012,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const sourcePath = await resolveSourceFilePath(file)
         const res = await fetch(projectApiPath(doc!.projectName, `/source/${encodeURIComponent(sourcePath)}`))
 	        if (!res.ok) throw new Error(`source ${res.status}`)
-	        const text = await res.text()
-	        if (cancelled || !cmHostRef.current) return
+        const text = await res.text()
+        const sourceRevision = res.headers.get('X-TLDA-Source-Revision')
+        if (cancelled || !cmHostRef.current) return
 	
 	        cmKeydownCleanupRef.current?.()
 	        cmKeydownCleanupRef.current = null
@@ -1014,6 +1029,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         fullSourceRef.current = editorText
         sourceWindowRef.current = sourceWindow
         savedTextRef.current = text
+        loadedSourceRevisionRef.current = sourceRevision
         setSourceHasConflictMarkers(hasConflictMarkers(editorText))
         const startState = EditorState.create({
           doc: editorText,
@@ -1228,6 +1244,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       secondaryCmViewRef.current = null
       secondarySavedTextRef.current = ''
       secondaryFullSourceRef.current = ''
+      secondaryLoadedSourceRevisionRef.current = null
       return
     }
 
@@ -1246,6 +1263,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const res = await fetch(projectApiPath(projectName, `/source/${encodeURIComponent(sourcePath)}`))
         if (!res.ok) throw new Error(`source ${res.status}`)
         const text = await res.text()
+        const sourceRevision = res.headers.get('X-TLDA-Source-Revision')
         if (cancelled || !secondaryCmHostRef.current) return
 
         keydownCleanup?.()
@@ -1253,6 +1271,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         secondaryCmViewRef.current?.destroy()
         secondarySavedTextRef.current = text
         secondaryFullSourceRef.current = text
+        secondaryLoadedSourceRevisionRef.current = sourceRevision
         const startState = EditorState.create({
           doc: text,
           extensions: [

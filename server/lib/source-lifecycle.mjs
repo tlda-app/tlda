@@ -139,6 +139,16 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   return {
     readAuthority: state,
     readRevision: revision,
+    readCurrentFile(path) {
+      const authority = state()
+      if (authority.state !== SOURCE_AUTHORITY_CURRENT || !authority.currentRevision) return null
+      const current = revision(authority.currentRevision)
+      const file = current?.files?.find(candidate => candidate.path === path)
+      return {
+        sourceRevision: authority.currentRevision,
+        content: file ? Buffer.from(file.content, 'base64') : null,
+      }
+    },
     bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
       const before = state()
       if (before.state !== SOURCE_AUTHORITY_UNINITIALIZED || expectedRevision !== null) {

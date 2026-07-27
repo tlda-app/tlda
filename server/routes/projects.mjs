@@ -515,6 +515,12 @@ router.get('/:name/source/:file', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   try {
+    const current = sourceLifecycleStore(req.params.name).readCurrentFile(req.params.file)
+    if (current) {
+      if (current.content === null) return res.status(404).json({ error: 'File not found' })
+      res.set('X-TLDA-Source-Revision', current.sourceRevision)
+      return res.set('Content-Type', 'text/plain; charset=utf-8').send(current.content)
+    }
     const content = readSourceFile(req.params.name, req.params.file)
     if (content === null) return res.status(404).json({ error: 'File not found' })
     res.set('Content-Type', 'text/plain; charset=utf-8').send(content)
