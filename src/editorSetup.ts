@@ -21,6 +21,7 @@ import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from '
 import { getViewerId } from './useYjsSync'
 import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import { htmlIframeElements } from './htmlIframeRegistry'
+import { FORMATS_WITH_OWN_PAGE_INFO } from '../shared/document-formats.mjs'
 import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
 import {
   getVisibilityMode, subscribeVisibility,
@@ -428,14 +429,22 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
 }
 
 /**
- * Markdown parts (notes/scratch) attached to a non-html/markdown project —
- * e.g. a LaTeX project's scratch columns. They render through the exact same
- * markdown renderer and html-page shape machinery as a markdown project's
- * own columns, on their own TLDraw page — separate from this document's SVG
- * pages, which createSvgShapes owns exclusively. Best-effort and self-
- * correcting: a project with no parts yet just 404s and no-ops.
+ * Markdown parts (notes/scratch) attached to a project whose own document has
+ * no page-info.json — e.g. a LaTeX project's scratch columns. They render
+ * through the exact same markdown renderer and html-page shape machinery as a
+ * markdown project's own columns, on their own TLDraw page — separate from
+ * this document's SVG pages, which createSvgShapes owns exclusively. Best-
+ * effort and self-correcting: a project with no parts yet just 404s and no-ops.
+ *
+ * Only for a format whose page-info.json IS the parts listing. A format that
+ * owns its own page-info has its DOCUMENT'S pages in that file, and reading
+ * those as parts renders the whole document a second time — which is what a
+ * slides deck got, stacked on the real deck and eating every click in it. The
+ * check lives here rather than at the call sites so a third caller can't miss
+ * it.
  */
 async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
+  if (FORMATS_WITH_OWN_PAGE_INFO.has(document.format)) return
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   // Distinct namespace from the main document's own page/shape ids — the
   // main document already owns `${name}-page-N`; parts must never collide
@@ -737,12 +746,9 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     createSvgShapes(editor, document)
   }
 
-  // Markdown parts (scratch/notes) attached to this project, if any — not
-  // html/markdown format's own concern (those already include parts in
-  // `document.pages` via page-info.json).
-  if (document.format !== 'html' && document.format !== 'markdown') {
-    void refreshSvgProjectParts(editor, document)
-  }
+  // Markdown parts (scratch/notes) attached to this project, if any. It
+  // decides for itself which formats have parts to read.
+  void refreshSvgProjectParts(editor, document)
 
   // Set up diff layout: old page opacity, highlight overlays
   // Check for existing diff shapes (from Yjs sync) by looking for the first highlight ID
