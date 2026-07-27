@@ -77,7 +77,7 @@ try {
   assert.equal(pending[0].payload.agent_id, agent.id)
 
   store = new FleetStore(fleetDbPath, { taskDoc: false })
-  store.upsertAgent({
+  await store.upsertAgent({
     id: agent.id,
     friendly_name: agent.friendly_name,
     labels: [],
@@ -89,7 +89,7 @@ try {
     metadata: { kind: 'codex', model: 'gpt-test' },
   })
   await store.share(buildDaemonActivityRecord(pending[0].payload))
-  const history = store.buildChatHistoryResponse({ agents: [agent.id], limit: 10 })
+  const history = await store.buildChatHistoryResponse({ agents: [agent.id], limit: 10 })
   assert.equal(history.events.length, 1)
   assert.equal(history.events[0].event_type, 'activity')
   assert.equal(history.events[0].from, agent.id)

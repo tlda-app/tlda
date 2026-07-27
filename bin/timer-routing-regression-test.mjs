@@ -252,7 +252,7 @@ function createSchedulerHarness(nowMs) {
     })
     await h.scheduler.start()
     assert.equal(h.broadcasts.length, 1)
-    assert.equal(h.store.listPendingTimerEvents().length, 0)
+    assert.equal((await h.store.listPendingTimerEvents()).length, 0)
   } finally {
     h.close()
   }

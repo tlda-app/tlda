@@ -16,7 +16,6 @@
  */
 
 import Database from 'better-sqlite3';
-import { Worker } from 'node:worker_threads';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -65,6 +64,11 @@ const TRANSPORT_OPERATION_PRUNE_BATCH_MAX = envNumber('TLDA_TRANSPORT_OPERATION_
 // someone tailing `fly logs` at the instant it fires.
 const SLOWQUERY_LOG_FILE = path.join(os.homedir(), '.config', 'tlda', 'slowquery.log');
 const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
+
+function statementArgs(params) {
+  if (params === undefined) return [];
+  return Array.isArray(params) ? params : [params];
+}
 
 function cwdPathSegments(cwd) {
   const normalized = String(cwd || '').trim().replace(/\/+$/, '');
@@ -161,10 +165,15 @@ const PROTECTED_AGENT_UPSERT_FIELDS = [
   'resume_id',
 ];
 
+// Clears the fields that belong to the durable current-seat projection, not to
+// the mutable agents row. The flat seat_* fields are what runtime routing reads.
 function withoutProtectedAgentFields(agent) {
   if (!agent) return agent;
   const next = { ...agent };
   for (const field of PROTECTED_AGENT_UPSERT_FIELDS) next[field] = null;
+  next.seat_present = false;
+  next.seat_daemon_key = null;
+  next.seat_terminal_capability = null;
   return next;
 }
 
@@ -324,10 +333,10 @@ export class FleetStore {
         return stmt;
       };
     }
-    // WAL (set here + by the writer worker; it's a persistent property of the
-    // file): lets THIS main connection READ concurrently while the worker holds
-    // the write lock during a slow FTS merge. NORMAL is durable across an app
-    // crash — only a power loss can lose the last txn, never corrupts.
+    // WAL is a persistent property of the file. The server uses this store
+    // through FleetStoreClient, so slow SQLite work stays on the store worker
+    // rather than the server event loop. NORMAL is durable across an app crash;
+    // only a power loss can lose the last txn, never corrupts.
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     // The dominant cost of a read here is I/O, not the query plan: identical
@@ -367,45 +376,13 @@ export class FleetStore {
       ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
       : null;
 
-    // The writer worker owns the connection that writes the high-frequency
-    // `events` rows (every activity card / chat). better-sqlite3 is synchronous,
-    // so a ~1.5s FTS-merge on an events INSERT would freeze THIS thread's event
-    // loop — dropping fleet chat/health — if it ran here. On the worker it never
-    // touches the loop. (Lower-frequency agent/lineage writes still run
-    // synchronously on this connection; making the worker the SOLE writer for
-    // those too is a flagged follow-up.)
-    this._writeSeq = 0;
-    this._writeWaiters = new Map();
-    this._worker = new Worker(new URL('./db-writer.worker.mjs', import.meta.url), {
-      workerData: { dbPath },
-    });
-    this._worker.on('message', (m) => {
-      if (m && m.ready) return;
-      if (m.id == null) { if (m.error) console.error('[db-writer] fire-and-forget failed:', m.error, m.sql); return; }
-      const w = this._writeWaiters.get(m.id);
-      if (!w) return;
-      this._writeWaiters.delete(m.id);
-      m.error ? w.reject(new Error(m.error)) : w.resolve(m.result);
-    });
-    this._worker.on('error', (e) => console.error('[db-writer] worker crashed:', e));
   }
 
-  // Fire-and-forget write on the worker (no result awaited). Accepts a prepared
-  // statement (its `.source` SQL is reused) or a raw SQL string.
-  _w(stmtOrSql, params) {
-    const sql = typeof stmtOrSql === 'string' ? stmtOrSql : stmtOrSql.source;
-    this._worker.postMessage({ kind: 'run', sql, params });
-  }
-
-  // Await a write on the worker, resolving to { lastInsertRowid, changes }.
-  // Used where the caller needs the row id (share) or the constraint error.
+  // Await a write, resolving to { lastInsertRowid, changes }. Used where the
+  // caller needs the row id (share) or the constraint error.
   _wAwait(stmtOrSql, params) {
-    const sql = typeof stmtOrSql === 'string' ? stmtOrSql : stmtOrSql.source;
-    const id = ++this._writeSeq;
-    return new Promise((resolve, reject) => {
-      this._writeWaiters.set(id, { resolve, reject });
-      this._worker.postMessage({ id, kind: 'run', sql, params });
-    });
+    const stmt = typeof stmtOrSql === 'string' ? this.db.prepare(stmtOrSql) : stmtOrSql;
+    return stmt.run(...statementArgs(params));
   }
 
   _replaceCwdSegments(source, agentId, cwd) {
@@ -470,18 +447,15 @@ export class FleetStore {
   }
 
   _wBatchAwait(ops) {
-    const id = ++this._writeSeq;
-    return new Promise((resolve, reject) => {
-      this._writeWaiters.set(id, { resolve, reject });
-      this._worker.postMessage({
-        id,
-        kind: 'batch',
-        ops: ops.map(op => ({
-          sql: typeof op.stmtOrSql === 'string' ? op.stmtOrSql : op.stmtOrSql.source,
-          params: op.params || [],
-        })),
-      });
+    const tx = this.db.transaction(() => {
+      let result = null;
+      for (const op of ops) {
+        const stmt = typeof op.stmtOrSql === 'string' ? this.db.prepare(op.stmtOrSql) : op.stmtOrSql;
+        result = stmt.run(...statementArgs(op.params));
+      }
+      return result;
     });
+    return tx();
   }
 
   _createTables() {
@@ -1463,7 +1437,7 @@ export class FleetStore {
     // Incrementally bump last_active for the event's sender + recipient. Both
     // params are the event timestamp; MAX keeps the newest if events arrive out
     // of order. id IN (?, ?) is an O(1) PK lookup; null from/to simply matches
-    // nothing. Runs on the writer worker, off the main loop.
+    // nothing. The server runs this store on the store worker, off the main loop.
     this._updateAgentLastActive = this.db.prepare(`
       UPDATE agents SET last_active = MAX(COALESCE(last_active, ?), ?) WHERE id IN (?, ?)
     `);
@@ -1870,8 +1844,9 @@ export class FleetStore {
     }
     const meta = metadata ? JSON.stringify(metadata) : null;
 
-    // The events INSERT runs on the writer worker: a slow FTS merge here never
-    // freezes the main event loop. We await it because we need the real row id.
+    // The events INSERT runs inside fleet-store.worker.mjs: a slow FTS merge
+    // here never freezes the main event loop. We await it because we need the
+    // real row id.
     const result = await this._wAwait(this._insertEvent, [
       event.type,
       ts,
@@ -1885,14 +1860,14 @@ export class FleetStore {
 
     const eventId = result.lastInsertRowid;
 
-    // Maintain agents.last_active incrementally (writer worker, ordered after
-    // the insert) so getAllAgents never scans events.
+    // Maintain agents.last_active incrementally, ordered after the insert, so
+    // getAllAgents never scans events.
     if (event.from || event.to) {
-      this._w(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
+      await this._wAwait(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
     }
 
     // Track unread before returning so callers that immediately retract can
-    // operate on a real mailbox row instead of racing the writer worker.
+    // operate on a real mailbox row.
     if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
       // Direct, explicit-CC, and wiretap recipients must all have the same
       // durable inbox path. Channel notifications are only previews.
@@ -2651,6 +2626,9 @@ export class FleetStore {
       env_name: seat.env_name,
       daemon_key: seat.daemon_key,
       resume_id: seat.resume_id,
+      seat_present: true,
+      seat_daemon_key: seat.daemon_key,
+      seat_terminal_capability: seat.terminal_capability,
     };
   }
 
@@ -3030,8 +3008,8 @@ export class FleetStore {
 
   // The live human holding this name, or null. Deliberately NOT
   // getLiveAgentsByFriendlyName filtered by `human`: that one applies
-  // projectAgentCurrentSeat, which nulls the six seat fields when an agent has
-  // no seat, and the login path this serves writes the row it gets straight
+  // projectAgentCurrentSeat, which rewrites route/display fields when an agent
+  // has a current seat, and the login path this serves writes the row straight
   // back through upsertAgent. Hydrated but unprojected is what that write
   // needs. At most one row can exist — idx_agents_live_name makes a second
   // live holder of a name unrepresentable.
@@ -4235,11 +4213,8 @@ export class FleetStore {
     return markOne(ids);
   }
 
-  // Inbox acknowledgement is on the request path while activity/chat writes
-  // are already flowing through the writer worker. Keep its heartbeat and
-  // read-receipt updates on that same single writer: a main-connection
-  // transaction here can otherwise race the worker and expose SQLITE_BUSY to
-  // the inbox caller.
+  // Inbox acknowledgement is on the request path. Keep its heartbeat and
+  // read-receipt updates in one transaction on the store connection.
   async acknowledgeInboxRead(agentId, eventIds = []) {
     const ids = [...new Set((eventIds || []).map(id => Number(id)).filter(Number.isFinite))];
     const ops = [{ stmtOrSql: this._updateAgentLastSeen, params: [new Date().toISOString(), agentId] }];
@@ -5472,7 +5447,6 @@ export class FleetStore {
     this._closed = true;
     if (this._cwdSegmentBackfillImmediate) clearImmediate(this._cwdSegmentBackfillImmediate);
     this._cwdSegmentBackfillImmediate = null;
-    this._worker?.terminate?.();
     this.db.close();
   }
 }

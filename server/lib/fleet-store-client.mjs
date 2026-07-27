@@ -147,7 +147,7 @@ export class FleetStoreClient {
   }
 
   // Close the store inside the worker FIRST, then terminate. The store owns the
-  // connection, a WAL checkpoint, a backfill timer and the db-writer worker;
+  // connection, a WAL checkpoint and a backfill timer;
   // terminating the thread without closing it kills all of that mid-flight.
   async close() {
     if (this._closed) return

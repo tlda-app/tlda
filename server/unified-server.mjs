@@ -66,7 +66,8 @@ import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requ
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { FleetStore, isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
+import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
+import { FleetStoreClient } from './lib/fleet-store-client.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
@@ -257,7 +258,8 @@ resetStaleBuildStates()
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
-const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
+const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, { taskDoc: true })
+await fleetStore.ready()
 const fleetOperationContext = new AsyncLocalStorage()
 const serverDaemonOutboxInflight = new Map()
 let serverTimerScheduler = null
@@ -425,6 +427,7 @@ const runtimeStatusStore = createAgentRuntimeStatusStore({
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
+fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
 
 // Awake, projected from the agent ROW. It used to take an id and call back
 // into the store for a seat — per check — while both of its callers already
@@ -1211,7 +1214,7 @@ async function drainTaskWakeQueue() {
 }
 
 async function taskInboxStatusFor(agentId) {
-  const status = fleetStore?.getAgent?.(agentId)?.metadata?.inboxStatus
+  const status = (await fleetStore?.getAgent?.(agentId))?.metadata?.inboxStatus
   return normalizeInboxStatus(status)
 }
 
@@ -1500,6 +1503,7 @@ const serverDaemonTransport = createFleetOperationTransport({
   observe: event => {
     if (event.stage === 'started') {
       fleetStore.beginTransportOperation(event.envelope)
+        .catch(e => console.error(`[server-daemon] begin transport operation failed for ${event.envelope?.operation_id}: ${e?.message || e}`))
       return
     }
     fleetStore.recordTransportOperationResult(
@@ -1508,7 +1512,7 @@ const serverDaemonTransport = createFleetOperationTransport({
       event.ok ? 'result' : 'error',
       event.ok ? { ok: true, queued: event.queued === true } : { message: event.error },
       event.envelope,
-    )
+    ).catch(e => console.error(`[server-daemon] record transport result failed for ${event.operation_id}: ${e?.message || e}`))
   },
 })
 
@@ -1555,7 +1559,7 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 // anything is deleted. Gating broadcastFleet itself is the deletion, and it
 // waits for that equivalence to be proven.
 const filterSubscriptions = createFilterSubscriptions({
-  getAgents: () => fleetStore?.getAllAgents?.() || [],
+  getAgents: async () => await fleetStore?.getAllAgents?.() || [],
 })
 
 // Liveness counters for the filter push.
@@ -1739,8 +1743,8 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
 const spawnLibrarian = new SpawnLibrarian({
   loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
-  onWedged: ({ agent_id, liveness }) => {
-    const agent = fleetStore?.getAgent?.(agent_id)
+  onWedged: async ({ agent_id, liveness }) => {
+    const agent = await fleetStore?.getAgent?.(agent_id)
     const label = agent?.friendly_name || agent_id
     const metadata = {
       type: 'agent_wedged',
@@ -2052,10 +2056,9 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
       requested,
       // The store method runs the same query and additionally applies
       // projectAgentCurrentSeat. That is behaviour-neutral here: the projection
-      // only ever rewrites the six seat fields (session_id, cwd, machine_id,
-      // env_name, daemon_key, resume_id), and this path reads `dead` and `id`
-      // — in resolveSpawnCollision, then in the share() and broadcastState()
-      // below. It touches neither.
+      // rewrites route/display fields, including metadata.model for display,
+      // while this path reads `dead` and `id` in resolveSpawnCollision and then
+      // in the share() and broadcastState() below. It touches neither.
       liveMatches: await fleetStore.getLiveAgentsByFriendlyName(name),
       projectForCwd,
     })
@@ -2394,7 +2397,7 @@ scheduleSessionEntryBackfill()
 
 // Ensure server owner exists as a human agent in the DB on startup
 if (fleetStore) {
-  fleetStore.upsertAgent({
+  await fleetStore.upsertAgent({
     id: SERVER_OWNER_ID,
     friendly_name: SERVER_OWNER_NAME,
     human: true,
@@ -2404,8 +2407,8 @@ if (fleetStore) {
     last_seen: new Date().toISOString(),
   })
   const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || readDaemonConfig().spawnMachineId
-  if (configuredSpawnMachine && !fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
-    fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
+  if (configuredSpawnMachine && !await fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
+    await fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
     console.log(`[spawn-route] configured ${SERVER_OWNER_ID} ${SPAWN_MACHINE_PREF_KEY}=${configuredSpawnMachine}`)
   }
 }
@@ -2769,19 +2772,19 @@ function protectedAgentEditFields(agentData = {}) {
   return Object.keys(agentData).filter(key => PROTECTED_AGENT_EDIT_FIELDS.has(key))
 }
 
-function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
-  const event = fleetStore.getEventById?.(eventId)
+async function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
+  const event = await fleetStore.getEventById?.(eventId)
   if (!event) return null
   const current = event.metadata || {}
   const next = updater(current)
   // Replace, not patch: the updater was handed the current metadata and
   // returns what it wants stored, so a key it dropped must stay dropped.
-  fleetStore.replaceEventMetadata(eventId, next)
+  await fleetStore.replaceEventMetadata(eventId, next)
   if (broadcast) broadcastEvent('event-update', { id: eventId, metadata_patch: next })
   return next
 }
 
-function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
+async function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
   return patchEventMetadata(eventId, metadata => (
     setRecipientAttachmentState(metadata, recipientId, attachmentId, record)
   ))
@@ -2809,11 +2812,11 @@ function finalizeRecipientPlaceholderPaths(metadata = {}, { recipientId, eventId
   return next
 }
 
-function recordPlaceholderReadForMessages(agentId, messages = []) {
+async function recordPlaceholderReadForMessages(agentId, messages = []) {
   const now = new Date().toISOString()
   for (const message of messages || []) {
     if (!hasPendingAttachmentPlaceholders(message?.metadata, agentId)) continue
-    patchEventMetadata(message.id, metadata => (
+    await patchEventMetadata(message.id, metadata => (
       markPendingAttachmentPlaceholdersRead(metadata, agentId, { now })
     ))
   }
@@ -2877,7 +2880,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
 
 async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata }) {
   if (placeholderSupersededForRecipient(metadata, recipientId, attachment.id)) return
-  const finalMetadata = patchEventMetadata(eventId, current => (
+  const finalMetadata = await patchEventMetadata(eventId, current => (
     markPlaceholderSuperseded(current, recipientId, attachment.id)
   ))
   await insertMaterializationAmend({ eventId, metadata: finalMetadata || metadata })
@@ -3829,7 +3832,7 @@ app.get('/api/runtime-status', requireRead, async (_req, res) => {
 const pendingEducation = new Map()
 
 // Preventive check: hook sends tool+file, server runs qualifications inline
-app.get('/api/education/check/:agentId', (req, res) => {
+app.get('/api/education/check/:agentId', async (req, res) => {
   const agentId = req.params.agentId
   const tool = req.query.tool || ''
   const file = req.query.file || ''
@@ -3852,7 +3855,7 @@ app.get('/api/education/check/:agentId', (req, res) => {
     if (source) input.source = source
     if (name) input.name = name
     if (command) input.command = command
-    checkQualifications(agentId, tool, file, input)
+    await checkQualifications(agentId, tool, file, input)
   }
 
   // Return any owed skill(s). The block is STICKY: checkQualifications above
@@ -5555,7 +5558,8 @@ async function handleFleetWsMessage(ws, msg) {
   const clientOperationId = msg.operation_id || operationEnvelope?.operation_id || null
   const reply = (result) => {
     if (clientOperationId && fleetStore) {
-      fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
+    fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
+      .catch(e => console.error(`[fleet-ws] record transport result failed for ${clientOperationId}: ${e?.message || e}`))
     }
     if (id) {
       sendFleetResponseFrame(ws, { id, result })
@@ -5574,6 +5578,7 @@ async function handleFleetWsMessage(ws, msg) {
       : err
     if (clientOperationId && fleetStore) {
       fleetStore.recordTransportOperationResult(clientOperationId, type, 'error', payload, operationEnvelope)
+        .catch(e => console.error(`[fleet-ws] record transport error failed for ${clientOperationId}: ${e?.message || e}`))
     }
     if (err && typeof err === 'object') {
       sendFleetResponseFrame(ws, {
@@ -6076,23 +6081,23 @@ async function handleFleetWsMessage(ws, msg) {
         if (!me) throw new Error('fleet-search requires caller identity for `me`')
         return me
       }
-      const resolveAgentNode = (node) => {
+      const resolveAgentNode = async (node) => {
         if (!node) return new Set()
         switch (node.t) {
           case 'lit': {
             if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
             const ids = node.selector
-              ? fleetStore.resolveAgentSelector(node.selector)
-              : fleetStore.resolveAgentQuery(node.v)
+              ? await fleetStore.resolveAgentSelector(node.selector)
+              : await fleetStore.resolveAgentQuery(node.v)
             return new Set(ids)
           }
           case 'me': return new Set([currentSearchActor()])
           case 'and': {
-            const left = resolveAgentNode(node.l)
-            const right = resolveAgentNode(node.r)
+            const left = await resolveAgentNode(node.l)
+            const right = await resolveAgentNode(node.r)
             return new Set([...left].filter(id => right.has(id)))
           }
-          case 'or': return new Set([...resolveAgentNode(node.l), ...resolveAgentNode(node.r)])
+          case 'or': return new Set([...await resolveAgentNode(node.l), ...await resolveAgentNode(node.r)])
           case 'not':
             // Search-side negated agent sets are enforced by the post-filter.
             // Do not broaden the SQL prefilter to "all agents" here.
@@ -6100,51 +6105,51 @@ async function handleFleetWsMessage(ws, msg) {
           default: return new Set()
         }
       }
-      const collectPrefilterIds = (node, out = new Set()) => {
+      const collectPrefilterIds = async (node, out = new Set()) => {
         if (!node) return out
         switch (node.t) {
           case 'from':
           case 'to':
-            for (const id of resolveAgentNode(node.x)) out.add(id)
+            for (const id of await resolveAgentNode(node.x)) out.add(id)
             break
           case 'lit':
           case 'me':
-            for (const id of resolveAgentNode(node)) out.add(id)
+            for (const id of await resolveAgentNode(node)) out.add(id)
             break
           case 'and':
           case 'or':
-            collectPrefilterIds(node.l, out); collectPrefilterIds(node.r, out)
+            await collectPrefilterIds(node.l, out); await collectPrefilterIds(node.r, out)
             break
           case 'not':
             break
         }
         return out
       }
-      const matchesAgentNode = (node, id) => {
+      const matchesAgentNode = async (node, id) => {
         if (!node) return true
         switch (node.t) {
           case 'lit':
-          case 'me': return resolveAgentNode(node).has(id)
-          case 'and': return matchesAgentNode(node.l, id) && matchesAgentNode(node.r, id)
-          case 'or': return matchesAgentNode(node.l, id) || matchesAgentNode(node.r, id)
-          case 'not': return !matchesAgentNode(node.x, id)
+          case 'me': return (await resolveAgentNode(node)).has(id)
+          case 'and': return await matchesAgentNode(node.l, id) && await matchesAgentNode(node.r, id)
+          case 'or': return await matchesAgentNode(node.l, id) || await matchesAgentNode(node.r, id)
+          case 'not': return !await matchesAgentNode(node.x, id)
           default: return false
         }
       }
       const rowId = (row, key) => row[key] || (key === 'from' ? row.agentId : null)
-      const matchesMessageNode = (node, row) => {
+      const matchesMessageNode = async (node, row) => {
         if (!node) return true
         switch (node.t) {
-          case 'from': return matchesAgentNode(node.x, rowId(row, 'from'))
-          case 'to': return matchesAgentNode(node.x, rowId(row, 'to'))
+          case 'from': return await matchesAgentNode(node.x, rowId(row, 'from'))
+          case 'to': return await matchesAgentNode(node.x, rowId(row, 'to'))
           case 'lit':
-          case 'me': return matchesAgentNode(node, rowId(row, 'from')) || matchesAgentNode(node, rowId(row, 'to')) || matchesAgentNode(node, row.agentId)
+          case 'me': return await matchesAgentNode(node, rowId(row, 'from')) || await matchesAgentNode(node, rowId(row, 'to')) || await matchesAgentNode(node, row.agentId)
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
-          case 'and': return matchesMessageNode(node.l, row) && matchesMessageNode(node.r, row)
-          case 'or': return matchesMessageNode(node.l, row) || matchesMessageNode(node.r, row)
-          case 'not': return !matchesMessageNode(node.x, row)
+          case 'and': return await matchesMessageNode(node.l, row) && await matchesMessageNode(node.r, row)
+          case 'or': return await matchesMessageNode(node.l, row) || await matchesMessageNode(node.r, row)
+          case 'not': return !await matchesMessageNode(node.x, row)
           default: return false
         }
       }
@@ -6153,7 +6158,7 @@ async function handleFleetWsMessage(ws, msg) {
       let searchAgent = msg.agents?.length ? msg.agents : msg.agent;
       const messageFilter = msg.filterExpression ? parseMessageFilter(msg.filterExpression) : null
       if (messageFilter) {
-        const ids = [...collectPrefilterIds(messageFilter)]
+        const ids = [...await collectPrefilterIds(messageFilter)]
         if (ids.length) searchAgent = ids
       }
       // A typed name fragment (agent:/from:) resolves on the SERVER to the set of
@@ -6218,11 +6223,11 @@ async function handleFleetWsMessage(ws, msg) {
       }
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
-        const ids = [...new Set(naturalQueries.flatMap(async query => (
+        const ids = [...new Set((await Promise.all(naturalQueries.map(async query => (
           String(query || '').trim() === 'me'
             ? [currentSearchActor()]
             : await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
-        )))]
+        )))).flat())]
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
           const agentResults = await fleetStore.searchAll(naturalTextQuery, {
@@ -6243,7 +6248,13 @@ async function handleFleetWsMessage(ws, msg) {
         }
       }
       if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
-      if (messageFilter) results = results.filter(r => matchesMessageNode(messageFilter, r))
+      if (messageFilter) {
+        const filtered = []
+        for (const row of results) {
+          if (await matchesMessageNode(messageFilter, row)) filtered.push(row)
+        }
+        results = filtered
+      }
       results = await stampNames(results)
       const context = {}
       if (msg.context_timestamps?.length) {
@@ -6498,11 +6509,11 @@ async function handleFleetWsMessage(ws, msg) {
     // version is being viewed (a string-form amend has no source → no chip).
     const { from: rawFrom, event_id, message: text, inline_attachments, source } = msg
     if (!text) { error('missing message'); return }
-    const resolveSingle = (id) => {
+    const resolveSingle = async (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
-      const a = fleetStore?.findAgent(id); return a ? a.id : null
+      const a = await fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    const from = rawFrom ? (await resolveSingle(rawFrom) || rawFrom) : null
     if (!from) { reply({ ok: false, error: 'missing from' }); return }
     let target
     if (event_id != null) {
@@ -6590,11 +6601,11 @@ async function handleFleetWsMessage(ws, msg) {
         return
       }
     }
-    const resolveSingle = (id) => {
+    const resolveSingle = async (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
-      const a = fleetStore?.findAgent(id); return a ? a.id : null
+      const a = await fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    const from = rawFrom ? (await resolveSingle(rawFrom) || rawFrom) : null
     // `to` is a filter expression (e.g. "fleet:skip", "awake & reviewers",
     // "mathy & !goose"). Parse once, then test each agent's label set.
     let filterAst
@@ -6700,7 +6711,7 @@ async function handleFleetWsMessage(ws, msg) {
           timestamp: ts,
           attachments: materializableAttachments,
         })
-        patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
+        await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
       }
       controlPlaneTraces.append({
         trace_id: traceId,
@@ -8074,7 +8085,7 @@ function qualGlobToRegex(glob) {
   return new RegExp('^' + withAlts + '$')
 }
 
-function qualTrackRead(agentId, key) {
+async function qualTrackRead(agentId, key) {
   if (!key) return
   if (!_qualAgentReads.has(agentId)) _qualAgentReads.set(agentId, new Set())
   _qualAgentReads.get(agentId).add(key)
@@ -8082,15 +8093,22 @@ function qualTrackRead(agentId, key) {
     // Reading the skill clears it from the owed set — the block lifts.
     const owed = _qualAgentOwed.get(agentId)
     if (owed) owed.delete(key.slice('skill:'.length))
-    if (fleetStore) { try { fleetStore.addSkillRead(agentId, key) } catch {} }
+    if (fleetStore) {
+      try { await fleetStore.addSkillRead(agentId, key) } catch (e) {
+        // Memory state already lifted this gate; persistence failure should be
+        // visible without re-blocking the action that read the skill.
+        console.warn(`[education] failed to persist skill read for ${agentId}: ${e?.message || e}`)
+      }
+    }
   }
 }
 
-function qualTrackPartialSkillReads(agentId, command) {
-  recordPartialSkillReads(_qualAgentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
-    qualTrackRead(id, filePath)
-    qualTrackRead(id, skillKey)
-  })
+async function qualTrackPartialSkillReads(agentId, command) {
+  const completed = recordPartialSkillReads(_qualAgentPartialSkillReads, agentId, command)
+  for (const rec of completed) {
+    await qualTrackRead(rec.agentId, rec.filePath)
+    await qualTrackRead(rec.agentId, rec.skillKey)
+  }
 }
 
 async function qualLoadReadsFromDb() {
@@ -8152,7 +8170,7 @@ function qualToolConditionMet(condition, input) {
   return false
 }
 
-function checkQualifications(agentId, tool, arg, input) {
+async function checkQualifications(agentId, tool, arg, input) {
   if (_qualRules.length === 0 || !fleetStore) return
 
   const reads = _qualAgentReads.get(agentId) || new Set()
@@ -8167,27 +8185,27 @@ function checkQualifications(agentId, tool, arg, input) {
   const isFileRead = tool === 'Read' || toolBase === 'read_file'
   const summonSource = input?.source || input?.skill || input?.name || ''
   const isSummonLoad = (toolReadNorm.includes('summon') || toolBase === 'load') && toolBase !== 'read_file' && summonSource
-  if (tool === 'Bash' && input?.command) qualTrackPartialSkillReads(agentId, input.command)
+  if (tool === 'Bash' && input?.command) await qualTrackPartialSkillReads(agentId, input.command)
   if ((isFileRead || tool === 'Skill') && input) {
     if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
       if (fp) {
-        qualTrackRead(agentId, fp)
+        await qualTrackRead(agentId, fp)
         // A read whose path is …/skills/<name>/SKILL.md credits skill:<name> —
         // this is what lets native (Claude/codex) and MCP-read_file (goose)
         // reads register with the education gate in place of skill().
         const skillMatch = fp.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/)
-        if (skillMatch) qualTrackRead(agentId, 'skill:' + skillMatch[1])
+        if (skillMatch) await qualTrackRead(agentId, 'skill:' + skillMatch[1])
       }
     }
     if (tool === 'Skill') {
       const skill = input.skill || ''
-      if (skill) qualTrackRead(agentId, 'skill:' + skill)
+      if (skill) await qualTrackRead(agentId, 'skill:' + skill)
     }
     return
   }
   if (isSummonLoad) {
-    qualTrackRead(agentId, 'skill:' + String(summonSource))
+    await qualTrackRead(agentId, 'skill:' + String(summonSource))
     return
   }
 
@@ -8919,7 +8937,7 @@ async function handleDaemonWsMessage(ws, msg) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e
     }
-    checkQualifications(agent_id, tool, arg, input)
+    await checkQualifications(agent_id, tool, arg, input)
     return
   }
 
