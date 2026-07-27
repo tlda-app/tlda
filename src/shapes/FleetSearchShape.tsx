@@ -204,8 +204,13 @@ function searchResultMessageDrag(result: any, text: string, ctx: ReturnType<type
   const id = result.source === 'session'
     ? (result.id ? `session:${result.id}` : `session:${fromId}:${ts}`)
     : (result.id ? `msg:${result.id}` : `msg:${fromId}:${ts}`)
+  // The pill's identity is `id`; this is the prose a person reads once the pill
+  // lands in the composer, so it gets the reader's own clock rather than the
+  // raw UTC stamp the API returned.
+  const stamped = ts ? new Date(ts) : null
+  const readableTs = stamped && !Number.isNaN(stamped.getTime()) ? stamped.toLocaleString() : ts
   const content = [
-    ts ? `[${ts}]` : '',
+    ts ? `[${readableTs}]` : '',
     label ? `${label}:` : '',
     text,
   ].filter(Boolean).join(' ')

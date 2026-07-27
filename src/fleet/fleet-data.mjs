@@ -28,6 +28,7 @@ import {
   upsertFleetEvent,
   upsertFleetEvents,
   upsertFleetEventsForBuffer,
+  upsertLocalEventIntoBuffer,
   applyFilterEvents,
   inLiveDelivery,
 } from './fleet-data.ts'
@@ -587,25 +588,43 @@ export async function sendMessage(to, text, opts = {}) {
     const { type, ...payload } = body
     const d = await browserFleetTransport.durable(type, payload, { operationId: body._tempId })
     console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-    return { ok: true, event_id: d.event_id || null, queued: d.queued === true, operation_id: d.operation_id || body._tempId || null }
+    // A durable send that only reached the outbox is queued, not sent. Reporting
+    // ok for it is a success this layer can't support: it's what stops the caller
+    // ever marking the message "not sent", so a disconnected message is neither
+    // visibly sent nor visibly unsent. The row still delivers on reconnect, and
+    // the echo clears the mark when it binds.
+    return { ok: d.queued !== true, event_id: d.event_id || null, queued: d.queued === true, operation_id: d.operation_id || body._tempId || null }
   } catch (e) {
     console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
     return { ok: false, event_id: null }
   }
 }
 
-/** Inject an optimistic (locally-authored) event into the event list immediately. */
-export function injectOptimisticEvent(event) {
+/**
+ * Inject an optimistic (locally-authored) event into the event list immediately.
+ *
+ * `bufferKey` is the sending chat panel's own buffer. A filtered panel renders from a
+ * server-fed buffer that the global fanout deliberately skips, so without this the row
+ * is invisible there until the server echoes it back — which, connected, is a few
+ * milliseconds and looks like a working local echo, and disconnected is never.
+ */
+export function injectOptimisticEvent(event, bufferKey) {
   const result = liveUpsert(event)
   projectStoreResult(result)
+  upsertLocalEventIntoBuffer(bufferKey, result.event)
   notify('messages', result.event)
 }
 
-/** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
-export function updateOptimisticEvent(tempId, updates) {
+/**
+ * Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile).
+ * Takes the sending panel's `bufferKey` for the same reason inject does: the row is the
+ * same object, but the panel's buffer needs its own upsert to notify its view.
+ */
+export function updateOptimisticEvent(tempId, updates, bufferKey) {
   const ev = _store.patchByTempId(tempId, updates)
   if (ev) {
     upsertFleetEvent(ev)
+    upsertLocalEventIntoBuffer(bufferKey, ev)
     notify('messages', null)
   }
 }

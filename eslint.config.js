@@ -4,6 +4,7 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
+import awaitFleetStore from './eslint-rules/await-fleet-store.mjs'
 
 export default defineConfig([
   globalIgnores(['dist']),
@@ -37,6 +38,12 @@ export default defineConfig([
       sourceType: 'module',
       globals: { ...globals.node, ...globals.browser },
     },
-    rules: { 'no-undef': 'error' },
+    plugins: { tlda: { rules: { 'await-fleet-store': awaitFleetStore } } },
+    // A FleetStore call that returns a Promise must be consumed as one. The
+    // store is moving onto a worker thread, so its methods become async one at
+    // a time; this is what stops a call site from silently keeping the old
+    // synchronous reading. See server/lib/fleet-store-async-methods.mjs for why
+    // it enforces a list rather than every method.
+    rules: { 'no-undef': 'error', 'tlda/await-fleet-store': 'error' },
   },
 ])

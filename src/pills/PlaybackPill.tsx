@@ -19,7 +19,7 @@ export function PlaybackPill({ state }: PlaybackPillProps) {
   if (!state.active) return null
 
   return (
-    <span className="playback-pill" title={`Fleet playback at ${state.ts ? new Date(state.ts).toISOString() : '?'}`}>
+    <span className="playback-pill" title={`Fleet playback at ${state.ts ? new Date(state.ts).toLocaleString() : '?'}`}>
       <span className="playback-dot" />
       {state.ts ? formatTime(state.ts) : 'playing'}
       {state.speed !== 1 && ` ${state.speed}x`}

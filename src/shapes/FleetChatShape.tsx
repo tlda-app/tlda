@@ -3794,11 +3794,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const text = resendBtn.dataset.resendText
         const tempId = resendBtn.dataset.resendTempid
         if (to && text && tempId) {
-          updateOptimisticEvent(tempId, { _failed: false })
+          updateOptimisticEvent(tempId, { _failed: false }, chatEventBufferKey)
           const resendOpts: any = { _tempId: tempId }
           sendMessage(to, text, resendOpts)
             .then((r: any) => { if (!r?.ok) throw new Error('resend failed') })
-            .catch(() => updateOptimisticEvent(tempId, { _failed: true }))
+            .catch(() => updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey))
         }
         return
       }
@@ -4381,7 +4381,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       text,
       timestamp: new Date().toISOString(),
       read: false,
-    })
+    }, chatEventBufferKey)
     void (async () => {
       const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
       if (context) await enrichContextWithSourceLines(context)
@@ -4442,7 +4442,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (attempt < 3) {
             setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
           } else {
-            updateOptimisticEvent(tempId, { _failed: true })
+            updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey)
           }
         })
       }
@@ -4468,7 +4468,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       text,
       timestamp: new Date().toISOString(),
       read: false,
-    })
+    }, chatEventBufferKey)
     const refAttachments = buildRefAttachments(text, editor)
     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
@@ -4482,7 +4482,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (attempt < 3) {
           setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
         } else {
-          updateOptimisticEvent(tempId, { _failed: true })
+          updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey)
         }
       })
     }

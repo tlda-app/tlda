@@ -7,7 +7,7 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join, basename } from 'path'
-import { sourceDir as getSourceDir, outputDir as getOutputDir, listProjects, aggregateBookToc } from './project-store.mjs'
+import { sourceDir as getSourceDir, outputDir as getOutputDir, listProjects, aggregateBookToc, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
@@ -16,14 +16,31 @@ function signalReload(name, pages) {
   getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
 }
 
-async function signalLightweightBuildReady(name, pages, format, buildReadyAt) {
-  const reporter = getBuildReporter()
-  await reporter.writeSentinel(`doc-${name}`, {
-    commitHash: `${format}-${buildReadyAt}`,
-    timestamp: buildReadyAt,
-    buildReadyAt,
-  })
-  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: buildReadyAt })
+/**
+ * Declare paper scope for the formats whose project IS a rendered document.
+ *
+ * LaTeX learns its scope from the .fls and markdown from the refs its columns
+ * name, because for those the project holds authored input. Slides and HTML
+ * hold no input at all — the .qmd/.Rmd is never pushed, only what it rendered
+ * to. So the pushed manifest is the whole document, and the scope is all of it.
+ *
+ * Nothing is excluded, deliberately. Dropping the render's `*_files/` tree was
+ * considered and rejected: it would drop the deck itself (which lives at the
+ * same level), and it would drop knitr-generated figures, which have no sibling
+ * carrying their record the way a LaTeX .pdf has its .svg — so an old version
+ * would render with a hole where the figure was. The bulk it would have saved
+ * is vendored library code that is byte-identical every render, and git
+ * content-addresses blobs, so it costs one copy across all versions rather than
+ * one per version. What actually churns is the small part.
+ */
+function writeSourceScope(name, srcDir) {
+  const files = readClientSourceManifest(name)
+    .filter((rel) => existsSync(join(srcDir, rel)))
+    .sort()
+  writeFileSync(
+    join(getOutputDir(name), 'relevant-files.json'),
+    JSON.stringify({ generated_at: new Date().toISOString(), files }, null, 2),
+  )
 }
 
 function regenerateBookTocs(name) {
@@ -76,9 +93,9 @@ export async function buildHtml(name) {
     writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
   }
 
-  const buildReadyAt = Date.now()
-  reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
-  await signalLightweightBuildReady(name, pageInfo.length, 'html', buildReadyAt)
+  writeSourceScope(name, srcDir)
+  reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
+  signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
 }
 
@@ -100,6 +117,7 @@ export async function buildSlides(name) {
   const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
+  writeSourceScope(name, srcDir)
   reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)

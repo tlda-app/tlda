@@ -49,14 +49,16 @@ import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf, recoverProjectSourceTransactions, readOverleafLocalHead, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
+import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 
 const router = Router()
 
 // Formats that already write their own page-info.json via their own build
 // pipeline (server/lib/format-builders.mjs) — writing a parts-only one would
 // clobber it. Everything else (svg, png, diff, ...) has no page-info.json of
-// its own, so a project's parts get one.
-const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides'])
+// its own, so a project's parts get one. The viewer needs the same fact to
+// know whether a page-info.json it fetches is parts or the document's own
+// pages, so the set lives in shared/ rather than here.
 
 function sameOrigin(a, b) {
   try {

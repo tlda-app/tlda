@@ -234,6 +234,37 @@ export function isChatHistoryEventType(type) {
   return CHAT_HISTORY_EVENT_TYPES.includes(type);
 }
 
+// The one place the "what was this agent called at instant ts" rule lives.
+// Pure, and resolved against one entry from nameSpansFor(), so naming a page of
+// events is in-memory work over data already fetched rather than a query per
+// row. `entry.spans` is every name_history row for the agent, oldest first.
+//
+// The three no-covering-span outcomes are DIFFERENT and must stay that way:
+// before all recorded history is the earliest known name, after the last span
+// is null (the agent aged out and is genuinely nameless then), and no history
+// at all is the current name. Flattening them silently rewrites history in
+// every thread view. Comparisons are on the ISO strings, matching the TEXT
+// comparison the SQL did.
+//
+// The ID is always the durable handle — callers pair this name WITH the id.
+export function resolveNameAt(entry, ts) {
+  if (!entry) return null;
+  const spans = entry.spans;
+  if (ts && spans.length) {
+    // Newest qualifying span wins. Spans arrive oldest-first, so walking back
+    // and taking the first match is the one `ORDER BY from_ts DESC LIMIT 1`
+    // returned.
+    for (let i = spans.length - 1; i >= 0; i -= 1) {
+      const span = spans[i];
+      if (span.from_ts <= ts && (span.to_ts == null || span.to_ts > ts)) {
+        return span.friendly_name; // may be null (nameless span)
+      }
+    }
+    return ts < spans[0].from_ts ? spans[0].friendly_name : null;
+  }
+  return entry.current ?? null;
+}
+
 export class FleetStore {
   constructor(dbPath, options = {}) {
     dbPath = dbPath || DB_PATH;
@@ -1445,9 +1476,6 @@ export class FleetStore {
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
-        session_id = COALESCE(excluded.session_id, agents.session_id),
-        session_ids = COALESCE(excluded.session_ids, agents.session_ids),
-        cwd = COALESCE(excluded.cwd, agents.cwd),
         labels = COALESCE(excluded.labels, agents.labels),
         registered_at = COALESCE(excluded.registered_at, agents.registered_at),
         last_seen = excluded.last_seen,
@@ -1458,12 +1486,24 @@ export class FleetStore {
           WHEN excluded.metadata IS NULL THEN agents.metadata
           WHEN agents.metadata IS NULL THEN excluded.metadata
           ELSE json_patch(agents.metadata, excluded.metadata)
-        END,
-        machine_id = excluded.machine_id,
-        env_name = excluded.env_name,
-        daemon_key = excluded.daemon_key,
-        resume_id = excluded.resume_id
+        END
     `);
+    // PROTECTED_AGENT_UPSERT_FIELDS are deliberately absent from DO UPDATE SET:
+    // an agent's identity is WRITE-ONCE through this path. They stay in the
+    // INSERT so a brand-new row can carry them, but no update here can ever
+    // change them again — not to a value, and (the bug this fixes) not to null.
+    // mirrorAgentSeatIdentity() is the sole authority that may change them,
+    // because the seat is where that identity actually lives.
+    //
+    // Why this is load-bearing: upsertAgent() strips all seven to null before
+    // every write, so while machine_id/env_name/daemon_key/resume_id sat in
+    // this clause as `= excluded.x`, EVERY routine upsert (a label change, a
+    // login, a shell reservation) silently wiped them. That stranded agents
+    // with no daemon address — unmovable, and unable to say what project they
+    // belong to — and threw away resume_id, which is the "lost the session
+    // handle" failure AGENTS.md insists must never happen. Broken by 27ccf6a7
+    // (2026-07-21 00:23:25), which flipped all four off COALESCE; 1ee5dd63
+    // restored cwd 67 seconds later and left the rest. Do not re-add them here.
 
     const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
     const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
@@ -1538,16 +1578,6 @@ export class FleetStore {
     this._getDaemonRegistration = this.db.prepare('SELECT * FROM daemon_registry WHERE daemon_key = ?');
     this._listDaemonRegistrations = this.db.prepare('SELECT * FROM daemon_registry ORDER BY daemon_key');
 
-    // Name provenance: span covering an instant (newest qualifying span wins).
-    this._nameAtStmt = this.db.prepare(`
-      SELECT friendly_name FROM name_history
-      WHERE fleet_id = ? AND from_ts <= ? AND (to_ts IS NULL OR to_ts > ?)
-      ORDER BY from_ts DESC LIMIT 1
-    `);
-    this._nameEarliestStmt = this.db.prepare(`
-      SELECT friendly_name, from_ts FROM name_history WHERE fleet_id = ?
-      ORDER BY from_ts ASC LIMIT 1
-    `);
     this._nameHistoryStmt = this.db.prepare(`
       SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
       ORDER BY from_ts ASC
@@ -2557,29 +2587,51 @@ export class FleetStore {
 
   // ---- Name provenance ----
 
-  // The friendly_name this agent held at instant `ts` (ISO string). Returns the
-  // span covering [from_ts, to_ts); a NULL friendly_name (nameless span) yields
-  // null. If `ts` predates all history, falls back to the earliest known name.
-  // If the agent has no history at all, falls back to its current friendly_name.
-  // The ID is always the durable handle — callers pair this name WITH the id.
-  nameAt(fleetId, ts) {
-    if (!fleetId) return null;
-    if (ts) {
-      const span = this._nameAtStmt.get(fleetId, ts, ts);
-      if (span) return span.friendly_name; // may be null (nameless span)
-      // No covering span. Two cases:
-      const earliest = this._nameEarliestStmt.get(fleetId);
-      if (earliest) {
-        // (a) ts predates all recorded history → nearest earlier-known name.
-        if (ts < earliest.from_ts) return earliest.friendly_name;
-        // (b) ts is past the last span → the agent is currently nameless
-        //     (aged out). Genuinely no name then; the id stays reachable.
-        return null;
+  // Everything needed to name a set of agents at arbitrary instants, in two
+  // queries regardless of how many rows are being named.
+  //
+  // This replaces a per-(id, ts) `nameAt` lookup. Its only caller was
+  // `stampNames` in unified-server.mjs, which ran SIX store calls per row —
+  // three `nameAt` and three `getAgent` — over a page capped at 5,000 rows.
+  // That is up to 30,000 point queries to render one events reply, and it was
+  // the largest single fan-out in the server. A page mentions a few dozen
+  // distinct agents at most, so the work was never proportional to the answer.
+  //
+  // The `getAgent` half was worse than a query: it hydrated the whole agent —
+  // JSON.parse of metadata, labels and session_ids, plus runtime-status and
+  // seat projection — to read one column off the row. `_hydrateAgent` is the
+  // top frame in six of the stalls in the live lag profiler.
+  //
+  // Returns a Map from fleet id to { spans, current }. `spans` is oldest-first,
+  // which is the order resolveNameAt walks.
+  nameSpansFor(ids) {
+    const unique = [...new Set((ids || []).filter(Boolean))];
+    const out = new Map();
+    if (!unique.length) return out;
+    for (const id of unique) out.set(id, { spans: [], current: null });
+
+    // Chunked because a parameter list is bounded (SQLITE_MAX_VARIABLE_NUMBER
+    // is 999 on older builds). A page's distinct agents fit in one chunk in
+    // practice; the loop is so a caller passing a large id set cannot fail.
+    for (let i = 0; i < unique.length; i += 400) {
+      const chunk = unique.slice(i, i + 400);
+      const holes = chunk.map(() => '?').join(',');
+      const spans = this.db.prepare(`
+        SELECT fleet_id, friendly_name, from_ts, to_ts FROM name_history
+        WHERE fleet_id IN (${holes})
+        ORDER BY fleet_id, from_ts ASC, id ASC
+      `).all(...chunk);
+      for (const span of spans) out.get(span.fleet_id)?.spans.push(span);
+
+      const current = this.db.prepare(
+        `SELECT id, friendly_name FROM agents WHERE id IN (${holes})`,
+      ).all(...chunk);
+      for (const row of current) {
+        const entry = out.get(row.id);
+        if (entry) entry.current = row.friendly_name;
       }
     }
-    // No history at all for this agent → current cache.
-    const a = this._getAgent.get(fleetId);
-    return a ? a.friendly_name : null;
+    return out;
   }
 
   // Full span list for an agent, oldest first. Used for the thread-header
@@ -2922,9 +2974,28 @@ export class FleetStore {
   }
 
   removeAgent(id) {
+    this.retireTasksForGoneAgent(id, 'agent row deleted');
     this._deleteAgent.run(id);
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
+  }
+
+  /**
+   * An agent's open tasks die when the agent does.
+   *
+   * Called from the two places an agent stops existing — markDead() and
+   * removeAgent(). Without this, every death leaves its tasks open forever and
+   * the active-task list grows without bound; 851 rows had accumulated by
+   * 2026-07-26, 688 of them on agents that were dead or whose row was gone.
+   */
+  retireTasksForGoneAgent(id, why) {
+    const open = this.getActiveTasksByAgent(id);
+    const retired = [];
+    for (const task of open) {
+      const result = this.retireTask(task, { reason: `${why} — task closed with its agent`, retiredBy: 'system' });
+      if (result) retired.push(result.task_id);
+    }
+    return retired;
   }
 
   updateHeartbeat(id) {
@@ -2980,6 +3051,7 @@ export class FleetStore {
       }
       this._markAgentDead.run(id);
     })();
+    this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
   }
@@ -3510,6 +3582,77 @@ export class FleetStore {
       unread_removed: false,
       exposed: true,
     };
+  }
+
+  /**
+   * Administratively close a task that nobody is going to do, recording WHY on
+   * the row itself.
+   *
+   * Distinct from retractTask(): a retract un-sends a task the recipient never
+   * saw, so it may remove the row. A retire is for a task that was delivered and
+   * has simply outlived its agent — the row stays, carrying the reason, so a
+   * bulk close is auditable afterwards. It writes no report document, sends no
+   * chat, and wakes nobody.
+   *
+   * The unread delegate row is cleared too: `status='retracted'` already stops
+   * decideTaskRenudges (isRenudgeableTaskStatus excludes it), but leaving the
+   * unread behind would keep the item in the agent's inbox forever.
+   */
+  retireTask(taskOrId, { reason, retiredBy = null, at = new Date().toISOString() } = {}) {
+    if (!reason) throw new Error('retireTask requires a reason');
+    const task = typeof taskOrId === 'string' ? this.getTask(taskOrId) : taskOrId;
+    if (!task) return null;
+    if (task.status === 'done' || task.status === 'retracted') return null;
+
+    const state = this.getTaskDeliveryState(task);
+    const event = state?.event || null;
+    this.db.transaction(() => {
+      if (event && state.unread) this._deleteUnreadForEvent.run(event.id, task.agent);
+      this.upsertTask({
+        ...task,
+        status: 'retracted',
+        completed_at: task.completed_at || at,
+        metadata: {
+          ...(task.metadata || {}),
+          retired: { reason, by: retiredBy, at },
+        },
+      });
+    })();
+
+    return { task_id: task.id, agent: task.agent, reason, retired_by: retiredBy, retired_at: at };
+  }
+
+  /**
+   * Retire many tasks as ONE transaction.
+   *
+   * better-sqlite3 is synchronous, so a bulk retire blocks the server's event
+   * loop for its whole duration — the same shape as the task-doc materializer's
+   * old synchronous git wait that Skip felt as the app locking up. Measured on
+   * this store: 500 retires cost 1113ms as individual transactions and 354ms as
+   * one (3.1x), because the per-task version pays 500 commits instead of one.
+   *
+   * Callers should still send modest batches: one transaction makes each write
+   * cheaper, it does not yield between them.
+   */
+  retireTasks(ids, { reason, retiredBy = null } = {}) {
+    if (!reason) throw new Error('retireTasks requires a reason');
+    const retired = [];
+    const skipped = [];
+    const at = new Date().toISOString();
+    this.db.transaction(() => {
+      for (const id of ids) {
+        const task = this.getTask(id);
+        if (!task) { skipped.push({ task_id: id, why: 'not found' }); continue; }
+        if (task.status === 'done' || task.status === 'retracted') {
+          skipped.push({ task_id: id, why: `already ${task.status}` });
+          continue;
+        }
+        const result = this.retireTask(task, { reason, retiredBy, at });
+        if (result) retired.push(result);
+        else skipped.push({ task_id: id, why: 'not retirable' });
+      }
+    })();
+    return { retired, skipped };
   }
 
   _hydrateTask(row) {

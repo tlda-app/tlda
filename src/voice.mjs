@@ -860,7 +860,7 @@ function sendDeepgramAudioChunk(data) {
   if (_deepgramWs?.readyState === WebSocket.OPEN && _deepgramRelayConnected) reconcileUpstream()
   if (_dgUpstreamPaused) return false
   if (_deepgramPcmPaused || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN ||
-      !_deepgramRelayConnected || !deepgramRecognizerConnected() || _deepgramReadyEpoch !== _speechEpoch) {
+      !_deepgramRelayConnected || !deepgramRecognizerAcceptsAudio() || _deepgramReadyEpoch !== _speechEpoch) {
     _deepgramAudioBacklog.push(_speechEpoch, data)
     return true
   }
@@ -1250,6 +1250,14 @@ function activeAgentColor() {
 
 export function setVoiceTarget(textarea, targetHandle) {
   _voiceDumping = false
+  // A textarea target and an accumulator are alternatives, never both: fillTextarea
+  // and targetLabel both consult the accumulator FIRST, so leaving one set here
+  // welded voice to it. setVoiceAccumulator already enforces this in the other
+  // direction (it nulls _activeTextarea); this side never did, which made a voice
+  // note a one-way door — tapping into a chat composer set _activeTextarea, the
+  // note's accumulator survived, and dictation kept landing in the note with the
+  // HUD still reading "note". The only escape was reloading the app.
+  _accumulator = null
   if (textarea !== _activeTextarea) {
     const wasRecording = _recording
     vlog('setVoiceTarget: switching chat', { wasRecording, backend: _backend, wsOpen: _deepgramRelayConnected, hasMic: !!_deepgramStream })
@@ -2163,6 +2171,26 @@ function deepgramRecognizerConnected() {
   return currentDeepgramRecognizerStatus() === 'connected'
 }
 
+// Whether the bridge will do something useful with an audio frame right now.
+// Wider than `connected` by exactly one state, and the difference is the whole
+// bug behind "a disconnect that won't be resolved on its own":
+//
+// After IDLE_CUTOFF_MS with no speech the bridge closes its upstream, sets
+// `idleClosed`, and reports `status:'idle'`. Its ONLY way back is an inbound
+// frame whose RMS clears `resumeRms` — see the `if (idleClosed)` resume in
+// deepgram-sdk-bridge.mjs. So while it is idle it is not deaf; it is listening
+// for exactly one thing. Gating our send on `connected` withheld that one thing
+// and parked his speech in the backlog, which prunes at 3s: the frame the bridge
+// was waiting for was the frame we had decided not to send, both sides waited
+// forever, and only a fresh `start` from the mic button broke the tie.
+//
+// 'error' stays excluded on purpose — that upstream is not idle-closed and does
+// not resume on audio, so it has its own reconnect and frames would be wasted.
+function deepgramRecognizerAcceptsAudio() {
+  const status = currentDeepgramRecognizerStatus()
+  return status === 'connected' || status === 'idle'
+}
+
 function deepgramCommonState(now = Date.now()) {
   if (!_recording || _backend !== 'deepgram') return 'inactive'
   if (_deepgramHardFailure) return 'failed'
@@ -2171,7 +2199,12 @@ function deepgramCommonState(now = Date.now()) {
   }
   const status = currentDeepgramRecognizerStatus()
   if (status === 'connected') return voiceLivenessStatus(now) === 'live' ? 'usable' : 'recovering'
-  if (status === 'idle' || status === 'error') return 'recovering'
+  // Idle is not a fault and nothing needs to recover from it: the upstream is
+  // closed to conserve a quiet mic, we keep streaming, and the bridge reopens on
+  // his first words (with pre-roll, so they aren't clipped). Reporting
+  // 'recovering' here described a repair that was never happening.
+  if (status === 'idle') return 'usable'
+  if (status === 'error') return 'recovering'
   return 'starting'
 }
 
@@ -2186,7 +2219,7 @@ function deepgramHealthLabel(now = Date.now()) {
   if (status === 'connected') {
     return voiceLivenessStatus(now) === 'live' ? 'mic live; waiting for speech' : 'no mic input'
   }
-  if (status === 'idle') return 'recognizer idle; recovering'
+  if (status === 'idle') return 'paused; speak to resume'
   if (status === 'error') return 'recognizer unavailable; recovering'
   return 'waiting for recognizer'
 }
@@ -2512,7 +2545,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       if (msg.status === 'connected') {
         hideDontSpeak()
       } else {
-        showDontSpeak(msg.status === 'idle' ? 'recognizer idle; recovering' : 'recognizer unavailable; recovering')
+        showDontSpeak(msg.status === 'idle' ? 'paused; speak to resume' : 'recognizer unavailable; recovering')
       }
       _voiceHealthLabel = deepgramHealthLabel()
       showRecordingHud()

@@ -2,10 +2,7 @@ import { execFile } from 'child_process'
 import os from 'os'
 import { promisify } from 'util'
 
-import {
-  isPlaywrightBrowserArgs,
-  selectOrphanAgentProcesses,
-} from './daemon-guards.mjs'
+import { isPlaywrightBrowserArgs } from './daemon-guards.mjs'
 import { sweepOrphanPreviewDirs } from '../cli/lib/dev-worktree.mjs'
 import { expiredLeases, formatLeaseMarkdownTable, listLeases, releaseLease, renewLease } from '../cli/lib/resource-leases.mjs'
 
@@ -60,7 +57,6 @@ export function formatReaperMarkdownReport(status = {}) {
     '| --- | ---: | --- |',
     '| Vite servers | ' + (status.vites?.length ?? 0) + ' | ' + (status.vites?.filter(v => !v.hasClient).length ?? 0) + ' without browser clients |',
     '| Playwright browsers | ' + (status.browsers?.length ?? 0) + ' | ' + (status.browsers?.filter(b => !b.controllerAlive).length ?? 0) + ' orphan candidates |',
-    '| Agent processes | ' + (status.agentProcesses?.length ?? 0) + ' | ' + (status.agentProcessSkippedCount ?? 0) + ' skipped as protected/recent |',
   ]
   lines.push('', formatLeaseMarkdownTable(status.leases || []))
   if (status.unleased?.length) {
@@ -77,8 +73,11 @@ export function formatReaperMarkdownReport(status = {}) {
   return lines.join('\n')
 }
 
-export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} } = {}) {
-  const currentAgents = () => getAgents?.() || []
+// The dev reaper takes no agent list and no tmux handle. It reaps dev
+// resources — vite servers, playwright browsers, preview dirs, expired leases —
+// and it decides on each resource's own idleness. It cannot reach an agent, by
+// construction: killing agents is Todd's job.
+export function createDevReaper({ sendMsg = () => {} } = {}) {
   // ─── Memory pressure ────────────────────────────────────────────────
 
   function getMemoryPressure() {
@@ -96,41 +95,22 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     return Math.round(baseMs * scale)
   }
 
-  // ─── Process → agent attribution ───────────────────────────────────
-  // Walk up the ppid chain to find a `claude` process. Extract --resume
-  // session ID or tmux session name, match against the agent list.
-
-  async function getProcessInfo(pid) {
-    try {
-      const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'pid=,ppid=,args='],
-        { timeout: 2000, encoding: 'utf8' })
-      const m = stdout.trim().match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
-      if (!m) return null
-      return { pid: parseInt(m[1], 10), ppid: parseInt(m[2], 10), args: m[3] }
-    } catch { return null }
-  }
-
-  async function attributeToAgent(pid) {
-    let cur = pid
-    const visited = new Set()
-    for (let depth = 0; depth < 10; depth++) {
-      if (visited.has(cur) || cur <= 1) break
-      visited.add(cur)
-      const info = await getProcessInfo(cur)
-      if (!info) break
-      if (info.args.includes('claude') && !info.args.includes('playwright')) {
-        const resumeMatch = info.args.match(/--resume\s+([a-f0-9-]+)/)
-        if (resumeMatch) {
-          const sessionId = resumeMatch[1]
-          const agent = currentAgents().find(a => a.session_id === sessionId)
-          if (agent) return { id: agent.id, name: agent.name || agent.id.slice(0, 8) }
-        }
-        const agentByTmux = currentAgents().find(a => a.tmux_session && info.args.includes(a.tmux_session))
-        if (agentByTmux) return { id: agentByTmux.id, name: agentByTmux.name || agentByTmux.id.slice(0, 8) }
-      }
-      cur = info.ppid
+  // ─── Resource → owner label ────────────────────────────────────────
+  // Ownership comes from the lease. `tlda-dev serve` and `tlda-dev pw` stamp it
+  // from FLEET_ID at acquire time, so it is a declaration by the process that
+  // created the resource, not a guess about it.
+  //
+  // The ppid-walking attribution that used to live here is deleted, not moved:
+  // inferring which agent owns a pid is what let this reaper kill live agents,
+  // and a dev reaper has no business identifying agents at all. Reaping decides
+  // on the resource's own idleness; the owner is only ever a label.
+  function ownerByPid(leases = listLeases()) {
+    const map = new Map()
+    for (const lease of leases) {
+      const pid = lease.metadata?.pid
+      if (Number.isInteger(pid)) map.set(pid, lease.owner?.id || null)
     }
-    return null
+    return map
   }
 
   async function attributeViteByCwd(pid) {
@@ -247,8 +227,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
         try {
           process.kill(v.pid, 'SIGKILL')
           console.log(`[vite-reaper] killed pid=${v.pid} ports=${v.ports.join(',')} idle=${Math.round(idleMs / 60000)}m pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
-          const attr = await attributeToAgent(v.pid).catch(() => null)
-          killed.push({ pid: v.pid, kind: 'vite', ts: now, reason: `idle ${Math.round(idleMs / 60000)}m`, agent: attr?.name || null })
+          killed.push({ pid: v.pid, kind: 'vite', ts: now, reason: `idle ${Math.round(idleMs / 60000)}m`, agent: ownerByPid().get(v.pid) || null })
         } catch (e) {
           // Reaper sweep continues after one kill race; process may have exited first.
           console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
@@ -337,8 +316,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
             // Child processes may already be gone after killing the browser parent.
           }
           console.log(`[pw-reaper] killed pid=${b.pid} orphan=${Math.round(orphanMs / 1000)}s threshold=${Math.round(threshold / 1000)}s pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
-          const attr = await attributeToAgent(b.pid).catch(() => null)
-          killed.push({ pid: b.pid, kind: 'playwright', ts: now, reason: `orphan ${Math.round(orphanMs / 1000)}s`, agent: attr?.name || null })
+          killed.push({ pid: b.pid, kind: 'playwright', ts: now, reason: `orphan ${Math.round(orphanMs / 1000)}s`, agent: ownerByPid().get(b.pid) || null })
         } catch (e) {
           // Reaper sweep continues after one kill race; process may have exited first.
           console.log(`[pw-reaper] kill pid=${b.pid} failed: ${e.message}`)
@@ -353,191 +331,6 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       if (!livePids.has(pid)) _pwLastSeen.delete(pid)
     }
     return { browsers: enriched, killed }
-  }
-
-  // ─── Agent-process reaper — kill orphaned harness runtimes ─────────
-  const AGENT_PROCESS_ORPHAN_MS = parseInt(process.env.REAPER_AGENT_PROCESS_MS, 10) || 30 * 60 * 1000
-  const AGENT_PROCESS_TERM_GRACE_MS = parseInt(process.env.REAPER_AGENT_PROCESS_TERM_GRACE_MS, 10) || 5000
-
-  async function listAgentHarnessProcesses() {
-    let psOut = ''
-    try {
-      const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,etimes=,args='], { timeout: 5000, encoding: 'utf8' })
-      psOut = stdout
-    } catch {
-      return []
-    }
-    const now = Date.now()
-    const procs = []
-    for (const line of psOut.split('\n')) {
-      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
-      if (!m) continue
-      const pid = parseInt(m[1], 10)
-      const ppid = parseInt(m[2], 10)
-      const ageSeconds = parseInt(m[3], 10)
-      if (!Number.isFinite(pid) || !Number.isFinite(ppid) || !Number.isFinite(ageSeconds)) continue
-      procs.push({ pid, ppid, ageMs: ageSeconds * 1000, startedAt: now - ageSeconds * 1000, args: m[4] })
-    }
-    return procs
-  }
-
-  async function liveTmuxSessionNames() {
-    try {
-      const { stdout } = await execFileP('tmux', [...tmuxArgs, 'list-sessions', '-F', '#S'], { timeout: 3000, encoding: 'utf8' })
-      return new Set(stdout.split('\n').map(s => s.trim()).filter(Boolean))
-    } catch {
-      return new Set()
-    }
-  }
-
-  async function liveTmuxPaneProcessPids(processes) {
-    let paneOut = ''
-    try {
-      const { stdout } = await execFileP('tmux', [...tmuxArgs, 'list-panes', '-a', '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' })
-      paneOut = stdout
-    } catch {
-      return new Set()
-    }
-    const roots = paneOut.split('\n').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite)
-    const childrenByPpid = new Map()
-    for (const proc of processes) {
-      const ppid = Number(proc.ppid)
-      if (!Number.isFinite(ppid)) continue
-      if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
-      childrenByPpid.get(ppid).push(Number(proc.pid))
-    }
-    const protectedPids = new Set()
-    const stack = [...roots]
-    while (stack.length) {
-      const pid = stack.pop()
-      if (protectedPids.has(pid)) continue
-      protectedPids.add(pid)
-      for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
-    }
-    return protectedPids
-  }
-
-  function processAlive(pid) {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  async function waitForProcessExit(pid, timeoutMs) {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      if (!processAlive(pid)) return true
-      await new Promise(resolve => setTimeout(resolve, 250))
-    }
-    return !processAlive(pid)
-  }
-
-  async function terminateOrphanAgentProcess(proc) {
-    try {
-      process.kill(proc.pid, 'SIGTERM')
-      try { await execFileP('pkill', ['-TERM', '-P', String(proc.pid)], { timeout: 2000 }) } catch {
-        // Expected when the harness has no child processes left to signal.
-      }
-    } catch (e) {
-      if (!processAlive(proc.pid)) return { ok: true, signal: 'already-exited' }
-      throw e
-    }
-    if (await waitForProcessExit(proc.pid, AGENT_PROCESS_TERM_GRACE_MS)) return { ok: true, signal: 'SIGTERM' }
-    process.kill(proc.pid, 'SIGKILL')
-    try { await execFileP('pkill', ['-9', '-P', String(proc.pid)], { timeout: 2000 }) } catch {
-      // Expected when the harness has no child processes left to kill.
-    }
-    return { ok: true, signal: 'SIGKILL' }
-  }
-
-  async function reapOrphanAgentProcesses() {
-    const processes = await listAgentHarnessProcesses()
-    const [liveSessions, protectedPids] = await Promise.all([
-      liveTmuxSessionNames(),
-      liveTmuxPaneProcessPids(processes),
-    ])
-    const { selected, skipped } = selectOrphanAgentProcesses({
-      processes,
-      agents: currentAgents(),
-      liveTmuxSessions: liveSessions,
-      protectedPids,
-      minAgeMs: AGENT_PROCESS_ORPHAN_MS,
-    })
-    const killed = []
-    const failed = []
-    for (const proc of selected) {
-      try {
-        const result = await terminateOrphanAgentProcess(proc)
-        console.log(`[agent-reaper] killed pid=${proc.pid} agent=${proc.agentName || proc.agentId} harness=${proc.harness} tmux=${proc.tmuxSession || '-'} age=${Math.round(proc.ageMs / 60000)}m signal=${result.signal} pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
-        killed.push({
-          pid: proc.pid,
-          kind: 'agent-process',
-          ts: Date.now(),
-          reason: `orphan agent process ${Math.round(proc.ageMs / 60000)}m`,
-          agent: proc.agentName || null,
-          agentId: proc.agentId || null,
-          harness: proc.harness,
-          signal: result.signal,
-        })
-      } catch (e) {
-        console.log(`[agent-reaper] kill pid=${proc.pid} agent=${proc.agentName || proc.agentId} failed: ${e.message}`)
-        failed.push({
-          pid: proc.pid,
-          agent: proc.agentName || null,
-          agentId: proc.agentId || null,
-          error: e.message,
-        })
-      }
-    }
-    return {
-      processes: selected.map(proc => ({
-        pid: proc.pid,
-        ppid: proc.ppid,
-        ageMs: proc.ageMs,
-        harness: proc.harness,
-        agent: proc.agentName || null,
-        agentId: proc.agentId || null,
-        tmuxSession: proc.tmuxSession || null,
-      })),
-      killed,
-      failed,
-      skippedCount: skipped.length,
-    }
-  }
-
-  async function getMemoryByAgent() {
-    try {
-      const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
-      const procs = []
-      for (const line of stdout.split('\n')) {
-        const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
-        if (!m) continue
-        const rss = parseInt(m[3], 10) * 1024
-        if (rss < 10 * 1024 * 1024) continue
-        const comm = m[4].trim().split('/').pop()
-        procs.push({ pid: parseInt(m[1], 10), ppid: parseInt(m[2], 10), rss, name: comm })
-      }
-      const attrs = await Promise.all(procs.map(async p => {
-        const match = await attributeToAgent(p.pid).catch(() => null)
-        return { ...p, agent: match?.name || null }
-      }))
-      const groups = new Map()
-      for (const p of attrs) {
-        const key = p.agent || 'system'
-        if (!groups.has(key)) groups.set(key, { agent: key, totalRss: 0, processes: [] })
-        const g = groups.get(key)
-        g.totalRss += p.rss
-        g.processes.push({ name: p.name, rss: p.rss })
-      }
-      const result = [...groups.values()]
-      result.sort((a, b) => b.totalRss - a.totalRss)
-      return result
-    } catch (e) {
-      throw new Error(`getMemoryByAgent failed: ${e.message}`)
-    }
   }
 
   // ─── Combined reaper sweep with status broadcast ──────────────────
@@ -579,7 +372,6 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     const viteResult = await reapVites().catch(e => { console.error('[vite-reaper] sweep failed:', e.message); return { vites: [], killed: [] } })
     const pwResult = await reapPlaywright().catch(e => { console.error('[pw-reaper] sweep failed:', e.message); return { browsers: [], killed: [] } })
-    const agentProcessResult = await reapOrphanAgentProcesses().catch(e => { console.error('[agent-reaper] sweep failed:', e.message); return { processes: [], killed: [], failed: [], skippedCount: 0 } })
     // Preview-dir reaper — reclaim orphaned tlda-dev preview data dirs (dead
     // process + non-today mtime), so 32GB of fleet.db copies + projects never
     // re-accumulates from previews that died without a clean `stop`.
@@ -589,7 +381,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     for (const b of previewDirResult.swept) console.log(`[preview-dir-reaper] swept orphaned preview dir: ${b}`)
     _sweepCount++
 
-    const allKills = [...(viteResult.killed || []), ...(pwResult.killed || []), ...(agentProcessResult.killed || [])]
+    const allKills = [...(viteResult.killed || []), ...(pwResult.killed || [])]
     _recentKills.push(...allKills)
     while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
 
@@ -597,36 +389,20 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     const pressure = getMemoryPressure()
     const cpu = cpuPressureSnapshot()
 
-    // Attribute processes to agents (in parallel for speed)
-    const viteAttrs = await Promise.all((viteResult.vites || []).map(async v => {
-      const worktree = await attributeViteByCwd(v.pid)
-      const agentMatch = await attributeToAgent(v.pid)
-      return { pid: v.pid, agent: agentMatch?.name || worktree || null, agentId: agentMatch?.id || null }
-    }))
-    const browserAttrs = await Promise.all((pwResult.browsers || []).map(async b => {
-      const agentMatch = await attributeToAgent(b.pid)
-      return { pid: b.pid, agent: agentMatch?.name || null, agentId: agentMatch?.id || null }
-    }))
-    const viteAgentMap = Object.fromEntries(viteAttrs.map(a => [a.pid, { agent: a.agent, agentId: a.agentId }]))
-    const browserAgentMap = Object.fromEntries(browserAttrs.map(a => [a.pid, { agent: a.agent, agentId: a.agentId }]))
+    // Label each resource from its lease owner. A vite server with no lease
+    // still gets its worktree name, which is a property of the process's own
+    // cwd rather than a claim about who is using it.
+    const owners = ownerByPid()
+    const viteWorktrees = await Promise.all((viteResult.vites || []).map(v => attributeViteByCwd(v.pid)))
 
-    const viteSnap = (viteResult.vites || []).map(v => ({
+    const viteSnap = (viteResult.vites || []).map((v, i) => ({
       pid: v.pid,
       ports: v.ports,
       hasClient: _viteLastClient.has(v.pid) && (now - _viteLastClient.get(v.pid)) < 1000,
       idleMs: _viteLastClient.has(v.pid) ? now - _viteLastClient.get(v.pid) : 0,
-      agent: viteAgentMap[v.pid]?.agent || null,
-      agentId: viteAgentMap[v.pid]?.agentId || null,
+      agent: owners.get(v.pid) || viteWorktrees[i] || null,
+      agentId: owners.get(v.pid) || null,
     }))
-
-    let memoryByAgent = []
-    let memoryByAgentError = null
-    try {
-      memoryByAgent = await getMemoryByAgent()
-    } catch (e) {
-      memoryByAgentError = e.message
-      console.error('[dev-reaper] memory attribution failed:', e.message)
-    }
 
     // The reaper is also the renewer for long-lived server/session leases.
     // Tabs deliberately renew only through their owner's wrapper activity.
@@ -646,23 +422,18 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
         ...cpu,
         totalMem: os.totalmem(),
         freeMem: os.freemem(),
-        memoryByAgent,
-        memoryByAgentError,
         vites: viteSnap,
         browsers: (pwResult.browsers || []).map(b => ({
           ...b,
-          agent: browserAgentMap[b.pid]?.agent || null,
-          agentId: browserAgentMap[b.pid]?.agentId || null,
+          agent: owners.get(b.pid) || null,
+          agentId: owners.get(b.pid) || null,
         })),
-        agentProcesses: agentProcessResult.processes || [],
-        agentProcessFailures: agentProcessResult.failed || [],
-        agentProcessSkippedCount: agentProcessResult.skippedCount || 0,
         lastKills: _recentKills.slice(),
         leases,
         unleased,
         leaseActions,
-        thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS, agentProcessMs: AGENT_PROCESS_ORPHAN_MS },
-        scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS), agentProcessMs: AGENT_PROCESS_ORPHAN_MS },
+        thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS },
+        scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS) },
         sweepCount: _sweepCount,
         lastSweep: now,
       }
@@ -682,13 +453,13 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
   // ─── Reaper RPC handlers ──────────────────────────────────────────
   async function rpcKill({ pid }) {
     if (!pid) throw new Error('missing pid')
-    const attr = await attributeToAgent(pid).catch(() => null)
+    const owner = ownerByPid().get(pid) || null
     try {
       process.kill(pid, 'SIGKILL')
       try { await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 }) } catch {
         // Child cleanup is advisory after the requested process was killed.
       }
-      _recentKills.push({ pid, kind: 'manual', ts: Date.now(), reason: 'manual kill', agent: attr?.name || null })
+      _recentKills.push({ pid, kind: 'manual', ts: Date.now(), reason: 'manual kill', agent: owner })
       while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
       return { killed: true, pid }
     } catch (e) {

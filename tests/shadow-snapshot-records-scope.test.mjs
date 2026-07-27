@@ -76,9 +76,11 @@ function makeProject(files) {
     writeFileSync(path, content)
   }
 
+  // Scope entries are project-relative — the same names the author's machine
+  // uses, so nothing has to be translated between the two.
   writeFileSync(
     join(outDir, 'relevant-files.json'),
-    JSON.stringify({ files: Object.keys(files).map((rel) => join(srcDir, rel)).sort() }, null, 2),
+    JSON.stringify({ files: Object.keys(files).sort() }, null, 2),
   )
 
   return { root, srcDir, repoDir: join(projectDir(PROJECT), 'shadow-repo') }

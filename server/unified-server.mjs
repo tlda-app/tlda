@@ -47,6 +47,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
@@ -65,7 +66,7 @@ import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requ
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { FleetStore, isChatHistoryEventType } from './lib/fleet-store.mjs'
+import { FleetStore, isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
@@ -344,25 +345,38 @@ function logWsClose(kind, ws, code, reason) {
 // server where the DB is — the MCP and client just display fromName/toName and
 // always pair them with the durable fleet id. Mutates rows in place and returns
 // them. A null period name means the agent was nameless then (reach it by id).
+// A thread is a few dozen agents talking across thousands of rows, so the same
+// ids repeat constantly and the work should be proportional to the agents, not
+// to the rows. One call fetches every participant's name spans and current
+// name; everything after that is in memory. Nothing outlives the request, so a
+// rename has nothing to invalidate.
+//
+// This replaced a per-row lookup that ran `nameAt` + `getAgent` for each of
+// from/to/agentId on every row, against a limit of 5,000 — up to 30,000
+// synchronous point queries to render one events reply, each `getAgent`
+// hydrating an entire agent to read one column.
+//
+// The historical name is time-dependent and must NOT be memoized on id alone:
+// that would collapse an agent's distinct historical names into whichever
+// resolved first and silently rewrite history in every thread view. Resolving
+// against the spans keeps every instant distinct.
 function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
+  const names = fleetStore.nameSpansFor(
+    rows.flatMap(r => [r.from, r.to, r.agentId]),
+  )
+  const stamp = (r, id, nameKey, nowKey) => {
+    if (!id) return
+    const entry = names.get(id)
+    const at = resolveNameAt(entry, r.timestamp)
+    r[nameKey] = at
+    const current = entry?.current ?? null
+    if (current !== at) r[nowKey] = current
+  }
   for (const r of rows) {
-    const ts = r.timestamp
-    if (r.from) {
-      r.fromName = fleetStore.nameAt(r.from, ts)
-      const cur = fleetStore.getAgent(r.from)?.friendly_name ?? null
-      if (cur !== r.fromName) r.fromNameNow = cur
-    }
-    if (r.to) {
-      r.toName = fleetStore.nameAt(r.to, ts)
-      const cur = fleetStore.getAgent(r.to)?.friendly_name ?? null
-      if (cur !== r.toName) r.toNameNow = cur
-    }
-    if (r.agentId) {
-      r.agentName = fleetStore.nameAt(r.agentId, ts)
-      const cur = fleetStore.getAgent(r.agentId)?.friendly_name ?? null
-      if (cur !== r.agentName) r.agentNameNow = cur
-    }
+    stamp(r, r.from, 'fromName', 'fromNameNow')
+    stamp(r, r.to, 'toName', 'toNameNow')
+    stamp(r, r.agentId, 'agentName', 'agentNameNow')
   }
   return rows
 }
@@ -2207,7 +2221,7 @@ async function reportFleetIncidentClear({ key, agent, health, incident }) {
     `**Fleet incident cleared: activity-health/${incident?.boundary || health?.boundary || 'unknown'}**`,
     '',
     `Agent: \`${agent?.friendly_name || agent?.id || 'unknown'}\``,
-    `Recovered at: \`${health?.ts || new Date().toISOString()}\``,
+    `Recovered at: \`${formatDisplayTimestamp(health?.ts || Date.now())}\``,
     '',
     '```json',
     JSON.stringify(compactObject({
@@ -5594,7 +5608,7 @@ async function handleFleetWsMessage(ws, msg) {
     const eventText = isShellReservation
       ? `${lifecycleLabel} shell reserved`
       : `${lifecycleLabel} registered`
-    fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
+    void fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
     const storedAgent = fleetStore.getAgent?.(agentId) || agent
     broadcastState(storedAgent)
     // Push through the current-seat projection; seatless reservations have no
@@ -5650,7 +5664,7 @@ async function handleFleetWsMessage(ws, msg) {
       fleetStore.upsertAgent(agent)
       const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(agent_id) || agent) || fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
-      fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
+      void fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
       markAgentAlive(agent_id, Date.now(), { source: 'agent-login' })
       touchActivity(agent_id)
       spawnLibrarian.observeLiveness({
@@ -7417,7 +7431,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
-    const event = fleetStore.share?.({
+    const event = await fleetStore.share?.({
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
       metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
     })
@@ -8061,8 +8075,9 @@ function projectsForDaemon() {
         const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
         if (p.sourceDir && existsSync(rfPath)) {
           const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
-          // Filter to only author-dir paths (not the server mirror paths)
-          watchFiles = daemonWatchFilesFromAbsolutePaths(p, rf.files || [])
+          // Scope is project-relative, and the daemon watches relative to
+          // sourceDir — so it is already in the daemon's own space.
+          watchFiles = (rf.files || []).filter(f => typeof f === 'string' && f.length > 0)
         }
       } catch (e) {
         // Keep daemon welcome/project updates flowing; null watchFiles makes the
@@ -8088,6 +8103,9 @@ function projectsForDaemon() {
     })
 }
 
+// Project-part source paths are recorded absolute (they may point outside this
+// project), so they still need reducing to the daemon's sourceDir-relative space.
+// Paper scope does NOT come through here — it is already relative.
 function daemonWatchFilesFromAbsolutePaths(project, files) {
   return (files || [])
     .filter(f => typeof f === 'string' && f.startsWith(project.sourceDir))
@@ -9051,7 +9069,7 @@ async function handleDaemonWsMessage(ws, msg) {
         fleetStore?.updateEventText(existing.eventId, updatedText)
         broadcastEvent('event-update', { id: existing.eventId, text: updatedText })
       } else {
-        const event = fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })
+        const event = await fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })
         if (event) {
           fleetStore?.addUnread?.(event.id, to)
           broadcastEvent('fleet-event', { type: 'chat', from: 'fleet:tlda', to, id: event.id, text: baseText, event_id: event.id })

@@ -66,8 +66,21 @@ const DAEMON_FILE = join(CONFIG_DIR, 'daemon.yaml')
 const SERVER_FILE = join(CONFIG_DIR, 'server.yaml')
 const CLI_FILE = join(CONFIG_DIR, 'cli.yaml')
 
+/**
+ * A missing config file means a fresh install, not a corrupt one — the only
+ * thing wrong is that nobody has created it yet. Name the command that creates
+ * it, so someone who has never read the README is one line from unblocked
+ * instead of staring at the path of a file they have never heard of.
+ *
+ * This does NOT weaken the rule above: the load still throws, and nothing here
+ * guesses a default. It only makes the failure say what to do next.
+ */
+function missingConfigError(file) {
+  return new Error(`tlda config: ${file} not found — run \`tlda config init\` to create a starter config`)
+}
+
 function loadDaemonYaml() {
-  if (!existsSync(DAEMON_FILE)) throw new Error(`tlda config: ${DAEMON_FILE} not found`)
+  if (!existsSync(DAEMON_FILE)) throw missingConfigError(DAEMON_FILE)
   try {
     return parseYaml(readFileSync(DAEMON_FILE, 'utf8')) || {}
   } catch (e) {
@@ -76,7 +89,7 @@ function loadDaemonYaml() {
 }
 
 export function loadServerConfig() {
-  if (!existsSync(SERVER_FILE)) throw new Error(`tlda config: ${SERVER_FILE} not found`)
+  if (!existsSync(SERVER_FILE)) throw missingConfigError(SERVER_FILE)
   try {
     return validateServerConfigTopLevel(parseYaml(readFileSync(SERVER_FILE, 'utf8')) || {}, 'server.yaml')
   } catch (e) {
@@ -96,6 +109,88 @@ export function saveCliConfig(value = {}) {
   const browser = typeof value.browser === 'string' && value.browser.trim() ? value.browser.trim() : null
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
   writeFileSync(CLI_FILE, browser ? `browser: ${JSON.stringify(browser)}\n` : '')
+}
+
+/**
+ * The starter config a fresh install needs. Everything a first run reads has to
+ * be here: `environments` (a COMPLETE entry, since partial entries throw) and
+ * `statusScanSeconds` (read at fleet-daemon module load, so the daemon dies
+ * without it). Both point at this machine, which is the only thing a new user
+ * has — remote environments are something they add later, by name.
+ *
+ * `licenseKey: ""` is the documented "explicitly unlicensed" value, not a
+ * placeholder to fill in.
+ */
+const STARTER_DAEMON_YAML = `# tlda daemon settings.
+#
+# An environment is a COMPLETE set of three fields — there are no fallbacks, and
+# a missing one fails at startup rather than being guessed:
+#
+#   database    fleet, chat, registry, agents
+#   store       document assets and shape sync
+#   licenseKey  tldraw license ("" means explicitly unlicensed)
+#
+# "environments.default" names the active one. Add more under "values" and
+# select one for a single run with "--env <name>"; see \`tlda env\`.
+environments:
+  default: local
+  values:
+    local:
+      database: http://localhost:${DEFAULT_PORT}
+      store: http://localhost:${DEFAULT_PORT}
+      licenseKey: ""
+
+# How often the daemon asks each box which agents are running and what they are
+# doing, in seconds.
+statusScanSeconds: 3
+`
+
+/**
+ * server.yaml has no required keys, but `loadServerConfig` throws when the file
+ * is absent — so a fresh install needs the file to exist even though it has
+ * nothing to say yet. Comments parse as empty, so this is that empty file with
+ * the options written down where someone will find them.
+ */
+const STARTER_SERVER_YAML = `# tlda server settings. Every key is optional; the file itself is not.
+#
+#   timezone             IANA zone name (e.g. America/New_York) that
+#                        human-readable times render in. Display only —
+#                        stored timestamps stay UTC. Absent = this machine's zone.
+#   buildMaxConcurrency  how many document builds run at once
+#   buildPriority        build ordering across projects
+`
+
+/**
+ * Create the config files a fresh install needs — and only the ones that are
+ * missing. An existing file is never read, merged into, or overwritten: that
+ * file carries someone's environments, and losing it would be far worse than
+ * the missing-config error this exists to fix.
+ *
+ * The exclusive-create flag is what enforces that, rather than a check followed
+ * by a write — the OS refuses the write, so there is no window in which an
+ * existing config could be clobbered.
+ *
+ * Deliberately NOT auto-run by anything. A command someone types is
+ * predictable; writing to a config directory as a side effect of a command that
+ * was supposed to read it is the kind of surprise that costs someone their
+ * environments later. The missing-config error names this command instead.
+ *
+ * Returns one { path, created } per file, in the order they are written.
+ */
+export function initConfig() {
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
+  return [
+    [DAEMON_FILE, STARTER_DAEMON_YAML],
+    [SERVER_FILE, STARTER_SERVER_YAML],
+  ].map(([path, contents]) => {
+    try {
+      writeFileSync(path, contents, { flag: 'wx' })
+      return { path, created: true }
+    } catch (e) {
+      if (e.code === 'EEXIST') return { path, created: false }
+      throw e
+    }
+  })
 }
 
 /**

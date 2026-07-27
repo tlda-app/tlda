@@ -1413,7 +1413,7 @@ export function createJsonlIngestor({
     if (text.length > 2000) text = text.substring(0, 2000)
     if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
         text.startsWith('<channel') || text.startsWith('📬') ||
-        /^Call (?:login|register)\([^)]*\) with the fleet MCP server\b/.test(text)) return true
+        /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/.test(text)) return true
     const ts = parsed.timestamp || null
     if (!ts) return true
     return sendMsg({

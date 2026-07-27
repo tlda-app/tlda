@@ -788,6 +788,40 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, task_id })
   })
 
+  // --- POST /api/tasks/retire ---
+  // Administratively close tasks nobody is going to do, recording the reason on
+  // each row. The caller passes the exact ids and the reason — the server holds
+  // no staleness rule of its own, so it can never decide to wipe on its own.
+  // `dry_run: true` reports what would happen and changes nothing.
+  router.post('/api/tasks/retire', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    const { task_ids, reason, by, dry_run } = req.body || {}
+    if (!Array.isArray(task_ids) || task_ids.length === 0) { res.status(400).json({ error: 'missing task_ids' }); return }
+    // Capped low on purpose. Each retire is a synchronous SQLite write, so a
+    // batch blocks the event loop for its whole duration — 500 measured at
+    // ~350ms even as one transaction, which is a visible freeze on a loaded box.
+    // 100 keeps a batch under ~100ms; callers page through instead.
+    if (task_ids.length > 100) { res.status(400).json({ error: 'at most 100 task_ids per call — each retire is a synchronous write and a large batch blocks the event loop' }); return }
+    if (!reason || typeof reason !== 'string') { res.status(400).json({ error: 'missing reason' }); return }
+    const dryRun = dry_run === true
+    try {
+      let retired = []
+      let skipped = []
+      if (dryRun) {
+        for (const id of task_ids) {
+          const task = fleetStore.getTask?.(id)
+          if (!task) { skipped.push({ task_id: id, why: 'not found' }); continue }
+          if (task.status === 'done' || task.status === 'retracted') { skipped.push({ task_id: id, why: `already ${task.status}` }); continue }
+          retired.push({ task_id: id, agent: task.agent, description: task.description })
+        }
+      } else {
+        ({ retired, skipped } = fleetStore.retireTasks(task_ids, { reason, retiredBy: by || null }))
+      }
+      if (!dryRun && retired.length) broadcastState()
+      res.json({ ok: true, dry_run: dryRun, reason, retired_count: retired.length, skipped_count: skipped.length, retired, skipped })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // --- POST /api/spawn ---
   // Spawn or respawn an agent via the fleet daemon RPC.
   // Body: { model?, doc?, name?, agent?, respawn? }
