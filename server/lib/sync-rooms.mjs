@@ -980,13 +980,44 @@ const globalEventListeners = new Set()
 
 /**
  * Emit a global event to all SSE subscribers (cross-document).
+ *
+ * A listener may be async. One that is gets its rejection routed to the same
+ * place a synchronous throw goes, because `try { cb(event) } catch` does NOT
+ * catch a rejected promise — the call returns cleanly and the rejection
+ * surfaces later as an unhandled rejection with no idea which listener
+ * produced it. That mattered here before anything was async: the QA-watch
+ * listener in unified-server.mjs calls the fleet store, and the store is moving
+ * behind an async proxy.
+ *
+ * Emitting stays fire-and-forget by contract — this is a broadcast, no caller
+ * awaits it, and one slow listener must not hold up the rest. So a listener's
+ * failure is reported, not propagated.
+ *
+ * The failure is REPORTED, which is the other half of this. The previous
+ * version discarded the error entirely, so every listener failure — including
+ * the store being unreachable — became silence.
+ *
  * @param {string} type - Event type (e.g., 'doc-arrived')
  * @param {object} data - Event payload
  */
 export function emitGlobalEvent(type, data) {
   const event = { type, ...data, timestamp: Date.now() }
   for (const cb of globalEventListeners) {
-    try { cb(event) } catch {}
+    try {
+      const result = cb(event)
+      if (result && typeof result.then === 'function') {
+        result.then(undefined, e => {
+          // Reported, not rethrown: listeners are independent subscribers and
+          // the emitter has no way to recover on one's behalf. Propagating
+          // would let a single bad listener break every other one.
+          console.error(`[global-event] async listener failed for ${type}:`, e?.message || e)
+        })
+      }
+    } catch (e) {
+      // Reported, not rethrown: same reason as the async branch above — one
+      // listener's failure must not stop the broadcast reaching the others.
+      console.error(`[global-event] listener threw for ${type}:`, e?.message || e)
+    }
   }
 }
 
