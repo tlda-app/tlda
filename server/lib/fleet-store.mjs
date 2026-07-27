@@ -25,7 +25,7 @@ import os from 'os';
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
-import { fleetRosterCategory, isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
+import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 
@@ -1513,6 +1513,12 @@ export class FleetStore {
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_current_seats WHERE daemon_key = @daemonKey)`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
+    // findAgent's name branch. Deliberately the bare row, not AGENT_SELECT: the
+    // branch this replaced also read `SELECT *`, so keeping it identical makes
+    // removing the tie-break a pure deletion. (It means a name lookup returns no
+    // lineage_name while an id lookup does — a real inconsistency, but an
+    // existing one, and not this change's to alter.)
+    this._getLiveAgentRowByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0');
     this._getAgentSeat = this.db.prepare('SELECT * FROM agent_seats WHERE agent_id = ?');
     this._getCurrentAgentSeat = this.db.prepare(`
       SELECT c.agent_id, c.session_id,
@@ -2694,49 +2700,19 @@ export class FleetStore {
     // Todd-owned naming convention the server never interprets.
     let row = this._getAgent.get(query);
     if (!row) {
-      // Name lookup — liveness-aware, NEVER throws (Skip's spec S1 / G.22 /
-      // F.16, scratch/registration-rules.md). Among non-dead agents holding
-      // this name, prefer the actually-live holder (daemon oracle), else the
-      // most-recently-active. A dead/corrupted namesake must never shadow the
-      // live holder — that shadowing was the wake bug. The old code THREW on a
-      // >1 collision, which killed the wake outright; resolving deterministically
-      // to the live holder is the fix. Falls back to any row (incl. dead) only
-      // when no live agent holds the name, so resurrect-by-name still resolves.
-      const nameRows = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(query);
-      row = nameRows.length > 0 ? this._pickLiveHolder(nameRows) : this._getAgentByName.get(query);
+      // Name lookup. A living name has exactly one holder — the partial unique
+      // index idx_agents_live_name (friendly_name WHERE dead = 0) makes a second
+      // one unrepresentable — so there is nothing to disambiguate and liveness
+      // never enters the question. Falls back to any row (incl. dead) only when
+      // no living agent holds the name, so resurrect-by-name still resolves
+      // (Skip's spec G.22, scratch/registration-rules.md).
+      row = this._getLiveAgentRowByFriendlyName.get(query) || this._getAgentByName.get(query);
     }
     if (!row) {
       // Search by session_id
       row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
     }
     return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
-  }
-
-  // Among non-dead rows that share a friendly name, pick the live-holder-wins /
-  // most-recently-active one (Skip's spec G.22 / F.16). An actually-awake holder
-  // (runtime projection) beats a hibernating one; within a liveness tier the
-  // most recent last_seen wins; last_active and finally row order break further
-  // ties. This is the S1 resolver: wake reaches the live agent by liveness, not
-  // by an arbitrary name-grep. Deterministic and total — never throws (the old
-  // collision throw broke waking the live holder whenever a dead/corrupted
-  // namesake was still marked alive). Takes raw rows; caller hydrates the result.
-  _pickLiveHolder(rows) {
-    if (rows.length === 1) return rows[0];
-    const ts = (v) => {
-      if (v == null) return 0;
-      const n = new Date(v).getTime();
-      return Number.isFinite(n) ? n : 0;
-    };
-    const awake = (r) => {
-      return this._runtimeStatusProvider ? isRuntimeAwake({ ...r, runtime_status: this._runtimeStatusProvider(r) }) : false;
-    };
-    return rows.slice().sort((a, b) => {
-      const liveDelta = (awake(b) ? 1 : 0) - (awake(a) ? 1 : 0);
-      if (liveDelta !== 0) return liveDelta;
-      const seenDelta = ts(b.last_seen) - ts(a.last_seen);
-      if (seenDelta !== 0) return seenDelta;
-      return ts(b.last_active) - ts(a.last_active);
-    })[0];
   }
 
   getAllAgents() {
