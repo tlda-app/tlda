@@ -2382,9 +2382,13 @@ const notificationAttempts = createNotificationAttemptRecorder({
 // project list to all connected fleet-daemons so they can start
 // watching its source files, and tell browsers to refresh their project
 // list (the spawn form / agents panel) so it stays live without a reload.
-onGlobalEvent((event) => {
+// async because broadcastDaemonProjectsUpdated now enqueues through the store,
+// which lives on a worker thread. emitGlobalEvent already handles a listener that
+// returns a promise — it attaches a rejection handler rather than letting one
+// listener's failure stop the broadcast reaching the others.
+onGlobalEvent(async (event) => {
   if (event?.type === 'project-changed') {
-    broadcastDaemonProjectsUpdated()
+    await broadcastDaemonProjectsUpdated()
     broadcastEvent('projects-updated', { name: event.name })
   }
   if (event?.type === 'source-edit') {
@@ -3891,7 +3895,7 @@ function resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, 
   }
 }
 
-function backingFileRegister(record) {
+async function backingFileRegister(record) {
   const key = backingRegistryKey(record.project, record.backingName)
   if (!backingFileRegistry.has(key)) {
     backingFileRegistry.set(key, {
@@ -3904,22 +3908,22 @@ function backingFileRegister(record) {
   const entry = backingFileRegistry.get(key)
   if (!entry.ownerMachineId && record.ownerMachineId) entry.ownerMachineId = record.ownerMachineId
   entry.docNames.add(record.roomName)
-  sendWatchBackingFiles()
+  await sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
-function backingFileUnregister(record) {
+async function backingFileUnregister(record) {
   const key = backingRegistryKey(record.project, record.backingName)
   const entry = backingFileRegistry.get(key)
   if (!entry) return
   entry.docNames.delete(record.roomName)
   if (entry.docNames.size > 0) { persistBackingRegistry(); return }
   backingFileRegistry.delete(key)
-  sendWatchBackingFiles()
+  await sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
-function sendWatchBackingFiles() {
+async function sendWatchBackingFiles() {
   const byOwner = new Map()
   for (const entry of backingFileRegistry.values()) {
     if (!entry.ownerMachineId) continue
@@ -3933,7 +3937,7 @@ function sendWatchBackingFiles() {
   for (const [machineId, files] of byOwner) {
     // This is a bare machine id, but daemon connections/outbox delivery use scoped
     // `${machine_id}:${env_name}` keys; the first real registration will not route.
-    enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
+    await enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
   }
 }
 
@@ -3968,7 +3972,7 @@ async function rebuildBackingFileRegistry() {
             ownerMachineId: shape.props.backingOwnerMachineId,
             legacyBackfill: !shape.props.backingName && !shape.props.backingOwnerMachineId && !shape.props.backingSyncStatus,
           })
-          if (!record.error) backingFileRegister(record)
+          if (!record.error) await backingFileRegister(record)
         }
       }
     } catch (e) { console.warn(`[server] failed to scan backing files for ${docName}: ${e.message}`) }
@@ -3978,23 +3982,23 @@ async function rebuildBackingFileRegistry() {
 }
 
 // POST /api/backing-file-register — client registers a backing file watch
-app.post('/api/backing-file-register', requireRead, (req, res) => {
+app.post('/api/backing-file-register', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
   if ((!backingName && !filePath) || !docName) return res.status(400).json({ error: 'Missing backingName/filePath or docName' })
   const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
   if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
-  backingFileRegister(record)
+  await backingFileRegister(record)
   res.json({ ok: true, status: 'pending', project: record.project, backingName: record.backingName, ownerMachineId: record.ownerMachineId })
 })
 
 // POST /api/backing-file-unregister — client drops a backing file watch when its
 // note is deleted, so the daemon stops watching a file no note is backed by.
-app.post('/api/backing-file-unregister', requireRead, (req, res) => {
+app.post('/api/backing-file-unregister', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
   if (!backingName && !filePath) return res.status(400).json({ error: 'Missing backingName/filePath' })
   if (!docName) return res.status(400).json({ error: 'Missing docName' })
   const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
-  if (!record.error) backingFileUnregister(record)
+  if (!record.error) await backingFileUnregister(record)
   res.json({ ok: true })
 })
 
@@ -8052,12 +8056,12 @@ function broadcastDaemonAgentsUpdated(agentUpdates = null) {
   // makes daemon startup proportional to fleet history and can take chat down.
 }
 
-function broadcastDaemonProjectsUpdated() {
+async function broadcastDaemonProjectsUpdated() {
   const daemonKeys = knownDaemonKeys()
   if (daemonKeys.length === 0) return
   const projects = projectsForDaemon()
   for (const daemonKey of daemonKeys) {
-    enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
+    await enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
   }
 }
 
@@ -8328,7 +8332,9 @@ async function handleDaemonWsMessage(ws, msg) {
         ...obligation,
       }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
     }
-    flushServerDaemonOutbox(daemonKey)
+    // Not awaited: the obligations above are durable once enqueued, and
+    // daemon-welcome must not block on the socket draining them.
+    void flushServerDaemonOutbox(daemonKey)
 
     // Check each project's shadow repo for agent commits that haven't been built yet.
     // This catches the case where an agent committed directly to the shadow repo

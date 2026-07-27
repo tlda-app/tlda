@@ -60,8 +60,9 @@ export function createDaemonWsControlPlane({
     // Not awaited: enqueueing is durable, and a caller enqueueing a message
     // must not block on the daemon socket accepting it. The returned promise
     // never rejects — flushServerDaemonOutbox catches and logs — so dropping
-    // it here cannot produce an unhandled rejection.
-    flushServerDaemonOutbox(daemonKey)
+    // it here cannot produce an unhandled rejection. Spelled `void` so the
+    // async-cascade guard can tell a deliberate drop from a forgotten await.
+    void flushServerDaemonOutbox(daemonKey)
     return id
   }
 
