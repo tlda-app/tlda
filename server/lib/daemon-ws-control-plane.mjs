@@ -14,8 +14,7 @@ export function createDaemonWsControlPlane({
   daemonConnections,
   serverDaemonOutbox,
   serverDaemonOutboxInflight,
-  daemonOutboxProcessedGetStmt = null,
-  daemonOutboxProcessedInsertStmt = null,
+  fleetStore,
   socketCanAcceptMore = () => true,
   clock = () => new Date().toISOString(),
   setTimeoutFn = setTimeout,
@@ -23,16 +22,21 @@ export function createDaemonWsControlPlane({
   classifyServerDaemonOutboxError = () => 'retry',
   onPermanentServerDaemonOutboxError = null,
 } = {}) {
-  function isProcessedDaemonOutboxMessage(msg) {
+  // No store-missing guard on either of these. A null statement used to mean
+  // "never processed" and "don't record", which would have replayed every
+  // redelivered envelope forever without saying anything. The store is not
+  // optional here; if it is missing the call throws, which is the correct
+  // outcome for a server that cannot tell duplicates from new work.
+  async function isProcessedDaemonOutboxMessage(msg) {
     const outboxId = daemonOutboxId(msg)
-    if (!outboxId || !daemonOutboxProcessedGetStmt) return false
-    return !!daemonOutboxProcessedGetStmt.get(outboxId)
+    if (!outboxId) return false
+    return !!(await fleetStore.daemonOutboxWasProcessed(outboxId))
   }
 
-  function markDaemonOutboxMessageProcessed(msg) {
+  async function markDaemonOutboxMessageProcessed(msg) {
     const outboxId = daemonOutboxId(msg)
-    if (!outboxId || !daemonOutboxProcessedInsertStmt) return
-    daemonOutboxProcessedInsertStmt.run(outboxId, msg.type || 'unknown', clock())
+    if (!outboxId) return
+    await fleetStore.markDaemonOutboxProcessed(outboxId, msg.type || 'unknown', clock())
   }
 
   function ackDaemonOutboxMessage(ws, msg) {
@@ -126,12 +130,12 @@ export function createDaemonWsControlPlane({
         errorServerDaemonOutboxMessage(msg)
         return { handled: true, kind: 'server-daemon-outbox-error' }
       }
-      if (isProcessedDaemonOutboxMessage(msg)) {
+      if (await isProcessedDaemonOutboxMessage(msg)) {
         ackDaemonOutboxMessage(ws, msg)
         return { handled: true, kind: 'duplicate-daemon-outbox' }
       }
       await handleMessage(ws, msg)
-      markDaemonOutboxMessageProcessed(msg)
+      await markDaemonOutboxMessageProcessed(msg)
       ackDaemonOutboxMessage(ws, msg)
       return { handled: true, kind: 'processed' }
     } catch (e) {

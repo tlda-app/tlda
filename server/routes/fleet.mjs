@@ -47,14 +47,15 @@ const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_UNREAD_LIMIT = 50
 
 function recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, messages = []) {
-  if (!fleetStore?.db || !agentId) return
+  if (!agentId) return
   const now = new Date().toISOString()
   for (const message of messages || []) {
     if (!message?.metadata?.recipient_refs?.[agentId]) continue
     const next = markPendingAttachmentPlaceholdersRead(message.metadata, agentId, { now })
     if (next === message.metadata) continue
-    fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
-      .run(JSON.stringify(next), message.id)
+    // Replace, not patch: markPendingAttachmentPlaceholdersRead returns the
+    // complete metadata object it wants stored.
+    fleetStore.replaceEventMetadata(message.id, next)
     broadcastEvent('event-update', { id: message.id, metadata_patch: next })
   }
 }
@@ -1190,8 +1191,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (newText !== event.text || inlineAttachments?.length) {
         const mergedAtts = [...existingAtts, ...(inlineAttachments || [])]
         const newMeta = { ...existingMeta, inline_attachments: mergedAtts }
-        fleetStore.db.prepare('UPDATE events SET text = ?, metadata = ? WHERE id = ?')
-          .run(newText, JSON.stringify(newMeta), evId)
+        fleetStore.replaceEventTextAndMetadata(evId, newText, newMeta)
         broadcastEvent('event-update', { id: evId, text: newText, inline_attachments: mergedAtts })
       }
     }
@@ -1386,22 +1386,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/shared-docs ---
   router.get('/api/shared-docs', (req, res) => {
-    const docs = fleetStore?.db?.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC').all() || []
-    res.json(docs)
+    res.json(fleetStore.getSharedDocs())
   })
 
   // --- POST /api/shared-docs ---
   router.post('/api/shared-docs', (req, res) => {
     const { doc, path: docPath, title, agent, ephemeral } = req.body || {}
     if (!doc) { res.status(400).send('missing doc'); return }
-    const now = new Date().toISOString()
-    if (fleetStore) {
-      fleetStore.db.prepare(`
-        INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(doc) DO UPDATE SET path=excluded.path, title=excluded.title, agent=excluded.agent, ephemeral=excluded.ephemeral, updated_at=excluded.updated_at
-      `).run(doc, docPath || null, title || null, agent || null, ephemeral ? 1 : 0, now, now)
-    }
+    fleetStore.upsertSharedDoc({ doc, path: docPath, title, agent, ephemeral })
     res.json({ ok: true })
   })
 

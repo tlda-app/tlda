@@ -274,6 +274,12 @@ export class FleetStore {
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
+    // The file this store actually opened, as a plain property rather than
+    // something read back off the connection. Diagnostics compare it against
+    // the configured path to catch a store pointed at the wrong database, and
+    // the connection is not reachable from the main thread once this store
+    // runs on a worker — FleetStoreClient carries the same property.
+    this.dbPath = dbPath;
     this.db = new Database(dbPath);
     // Slow-query logger: any .all()/.get() >= TLDA_SLOWQUERY_MS (default 25ms)
     // logs its SQL + duration + rowcount to [slowquery] in server.log. Installed
@@ -751,6 +757,17 @@ export class FleetStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_subscriptions_owner ON subscriptions(owner);
+
+      -- Daemon outbox at-most-once ledger. A daemon redelivers an envelope it
+      -- did not see acked, so the server has to recognise one it already
+      -- handled. Owned here rather than created by unified-server at import,
+      -- which is where it lived until the store moved off the main thread and
+      -- the server stopped holding a database handle to create it with.
+      CREATE TABLE IF NOT EXISTS daemon_outbox_processed (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        processed_at TEXT NOT NULL
+      );
 
       -- Shared document metadata
       CREATE TABLE IF NOT EXISTS shared_docs (
@@ -1449,6 +1466,40 @@ export class FleetStore {
       UPDATE events SET metadata = json_patch(COALESCE(metadata, '{}'), ?) WHERE id = ?
     `);
 
+    // Distinct from _updateEventMetadata above, which MERGES via json_patch.
+    // This one REPLACES. Callers that derive a complete metadata object and
+    // want a removed key to stay removed need replacement — json_patch would
+    // keep the old key, and additionally reads a null value as "delete this
+    // key", so the two are not interchangeable in either direction.
+    this._replaceEventMetadata = this.db.prepare(`
+      UPDATE events SET metadata = ? WHERE id = ?
+    `);
+
+    this._replaceEventTextAndMetadata = this.db.prepare(`
+      UPDATE events SET text = ?, metadata = ? WHERE id = ?
+    `);
+
+    this._unreadPendingRow = this.db.prepare(`
+      SELECT read FROM unread WHERE event_id = ? AND to_id = ?
+    `);
+
+    // Claude Code can write the same user message to its JSONL more than once
+    // (compaction, in particular), and several daemons compound that. The
+    // daemon dedups within its own offset; this is the authoritative check.
+    this._terminalChatDuplicate = this.db.prepare(`
+      SELECT 1 FROM events
+      WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat'
+      LIMIT 1
+    `);
+
+    this._daemonOutboxProcessedGet = this.db.prepare(`
+      SELECT 1 FROM daemon_outbox_processed WHERE id = ? LIMIT 1
+    `);
+
+    this._daemonOutboxProcessedInsert = this.db.prepare(`
+      INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)
+    `);
+
     // No unbounded variant of this query exists on purpose. Fetching an agent's
     // entire unread backlog to slice it in JS grows all day and blocks the event
     // loop synchronously; the caller that did that is gone. Use the limited form.
@@ -1658,15 +1709,22 @@ export class FleetStore {
     this._deleteUnreadForEvent = this.db.prepare('DELETE FROM unread WHERE event_id = ? AND to_id = ? AND read = 0');
 
     // Shared doc queries
+    // A null path/title/agent CLEARS the stored value; it does not preserve it.
+    // This statement used to COALESCE those three, but nothing called the
+    // method — the two live share paths (the shared-docs-set socket verb and
+    // POST /api/shared-docs) each ran their own copy of this SQL with plain
+    // `= excluded.x`, so clearing is the behaviour the app actually has. The
+    // method now matches the app rather than the app matching the method.
+    // shared_at is left alone on conflict: the first share is when it was
+    // shared.
     this._upsertSharedDoc = this.db.prepare(`
       INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(doc) DO UPDATE SET
-        path = COALESCE(excluded.path, shared_docs.path),
-        title = COALESCE(excluded.title, shared_docs.title),
-        agent = COALESCE(excluded.agent, shared_docs.agent),
+        path = excluded.path,
+        title = excluded.title,
+        agent = excluded.agent,
         ephemeral = excluded.ephemeral,
-        shared_at = COALESCE(shared_docs.shared_at, excluded.shared_at),
         updated_at = excluded.updated_at
     `);
 
@@ -3686,20 +3744,17 @@ export class FleetStore {
     );
   }
 
+  // Rows as stored, with `ephemeral` still 0/1. The hydrator that turned it
+  // into a boolean was only ever reachable from here, and both live readers
+  // (the shared-docs-get socket verb and GET /api/shared-docs) put these rows
+  // straight on the wire — hydrating would change a client-visible payload
+  // from 0/1 to false/true, which nobody asked for.
   getSharedDocs() {
-    return this._getAllSharedDocs.all().map(r => this._hydrateSharedDoc(r));
+    return this._getAllSharedDocs.all();
   }
 
   getSharedDoc(name) {
-    const row = this._getSharedDoc.get(name);
-    return row ? this._hydrateSharedDoc(row) : null;
-  }
-
-  _hydrateSharedDoc(row) {
-    return {
-      ...row,
-      ephemeral: !!row.ephemeral,
-    };
+    return this._getSharedDoc.get(name) || null;
   }
 
   // ---- Wiretap management ----
@@ -4074,6 +4129,37 @@ export class FleetStore {
 
   updateEventMetadata(eventId, patch) {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
+  }
+
+  // Overwrite metadata wholesale. NOT updateEventMetadata with a different
+  // name: that one merges with json_patch, so a key the caller deliberately
+  // dropped would survive, and a null value would delete a key rather than
+  // store one. Callers here have already derived the complete object.
+  replaceEventMetadata(eventId, metadata) {
+    this._replaceEventMetadata.run(JSON.stringify(metadata), eventId);
+  }
+
+  replaceEventTextAndMetadata(eventId, newText, metadata) {
+    this._replaceEventTextAndMetadata.run(newText, JSON.stringify(metadata), eventId);
+  }
+
+  // Has this recipient's copy of the event not been read yet? Absent row and
+  // read row are both "nothing pending"; only an existing unread row counts.
+  isUnreadPending(eventId, agentId) {
+    const row = this._unreadPendingRow.get(eventId, agentId);
+    return !!row && !row.read;
+  }
+
+  terminalChatDuplicateExists(timestamp, fromId, toId, textPrefix) {
+    return !!this._terminalChatDuplicate.get(timestamp, fromId, toId, textPrefix);
+  }
+
+  daemonOutboxWasProcessed(outboxId) {
+    return !!this._daemonOutboxProcessedGet.get(outboxId);
+  }
+
+  markDaemonOutboxProcessed(outboxId, type, processedAt) {
+    this._daemonOutboxProcessedInsert.run(outboxId, type || 'unknown', processedAt);
   }
 
   updateEventText(eventId, newText) {
