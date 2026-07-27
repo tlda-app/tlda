@@ -2,8 +2,8 @@
 
 Date: 2026-06-18
 
-This is the code-grounded contract for sharing local artifacts through fleet chat.
-It is the detailed companion to the short rule in `CLAUDE.md`.
+This is the code-grounded contract for sharing local artifacts through fleet
+chat. It is the detailed companion to the short rule in `AGENTS.md`.
 
 ## Contract
 
@@ -17,8 +17,8 @@ The user-visible browser result is the contract:
 
 - Images, including screenshots, should render inline in fleet chat.
 - Non-image files should render as attachment chips with server-visible URLs.
-- Missing local files should block the send path or render a clear broken
-  attachment, not become a silent dead link.
+- Missing local files do not block chat delivery. They remain plain text and
+  the sender receives a visible warning that the file was not uploaded.
 - A bare path such as `/tmp/foo.png` or a manually constructed
   `/api/file?path=/tmp/foo.png` URL is not acceptable proof unless that exact file
   already exists on the fleet server and the browser-visible URL has been
@@ -45,9 +45,10 @@ relative `/api/file?...`, localhost loopback URLs, or URLs whose origin matches
 the configured fleet server and whose referenced path exists on the sender's
 machine; arbitrary off-origin `/api/file?...` links remain ordinary links.
 
-If `brokenPaths` is non-empty, `chat()` refuses to send the message. If files
-upload successfully, the stored chat event contains `metadata.inline_attachments`,
-and the message text contains `{{att:N}}` placeholders.
+If files upload successfully, the stored chat event contains
+`metadata.inline_attachments`, and the message text contains `{{att:N}}`
+placeholders. Unresolved path-looking text is delivered unchanged and reported
+back to the sender as a warning.
 
 ### Shared Markdown File Messages
 
@@ -118,50 +119,3 @@ attachment detection. This means:
 
 Use backticks only when the path is prose/code, not when the file is the artifact
 the user needs to see.
-
-## Recent Failure Mode
-
-On 2026-06-18 around 6:55 PM, `todo-rollout-manager` reported Playwright
-verification for activity cards and gave this artifact as proof:
-
-```text
-/tmp/tlda-smoke/activity-card-element-live.png
-```
-
-That message put the path in backticks and did not include it as a bare path or
-markdown image. Because `detectAttachments()` intentionally skips backticked
-spans, the path never entered the upload pipeline. The message reached the user
-as an agent-local filesystem path, not as a server-visible artifact.
-
-The follow-up check manually constructed:
-
-```text
-https://tlda-fly.cormorant-matrix.ts.net/api/file?path=/tmp/tlda-smoke/activity-card-element-live.png
-```
-
-That failed because `/api/file` serves files on the fleet server, and the
-screenshot was on the agent's local machine. The correct behavior would have
-been one of:
-
-- send a normal `chat()` message containing the screenshot path as an unquoted
-  path so the attachment pipeline uploads it, or
-- upload it with `POST /api/upload`, verify the returned `/api/file?...` URL
-  gives `200` with `image/png`, then send that verified URL or inline image.
-
-The user's correction was about intent: local paths in fleet chat are supposed to
-get uploaded. Treating the broken link as "expected because local paths are
-local" was wrong; it described the failure after bypassing the intended chat
-path, not the contract.
-
-## Tests To Keep
-
-`test/message-processing-artifacts.test.mjs` covers:
-
-- bare local image paths become `{{att:0}}` and upload;
-- missing bare local paths are marked broken;
-- backticked local paths remain literal and do not upload.
-- local `/api/file?path=...` URLs upload and rewrite through the attachment
-  pipeline, while arbitrary off-origin `/api/file?path=...` URLs do not.
-
-Future browser-visible tests should also prove that a local screenshot path sent
-via chat renders as `img.chat-image` in a mounted fleet chat panel.

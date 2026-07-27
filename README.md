@@ -104,6 +104,31 @@ That gets you working on your own machine. To reach it from other devices — yo
 > agents' machine and run `tlda daemon start --env <name>` there. The daemon
 > is the bridge to files, sessions, and RPC on that machine.
 
+### Starting from Overleaf or another Git remote
+
+If the paper already lives in a remote repository, let the tlda server clone
+and watch that repository instead of linking a local checkout:
+
+```bash
+tlda project link my-paper paper.tex \
+  --from https://git.overleaf.com/your-project-id \
+  --token "$OVERLEAF_TOKEN" \
+  --poll 60
+tlda project open my-paper
+```
+
+`--from` accepts any Git URL the server can clone, including GitHub and SSH
+remotes. `paper.tex` is the main file inside that repository. The server clones
+the remote, performs an initial build, and polls it (every 60 seconds above;
+the minimum is 15). Remote commits flow into tlda; source edits sent through
+tlda are committed and pushed back to the same remote. Pollers resume when the
+server restarts.
+
+The sync path reports fetch, build, and push failures, but automatic
+file-by-file Git conflict resolution is not implemented. The UI has readers for
+`overleafConflictFiles`, but the server does not currently produce that conflict
+state.
+
 ---
 
 ## The document
@@ -126,7 +151,7 @@ Your paper renders as pages on the canvas and rebuilds live every time you save.
 
 ### Version history
 
-A stack of build timestamps sits in the top-left corner, most recent on top. Click an older one to open that version side by side with the current document, with a slider along the bottom to scrub through the full history; click the current timestamp to close it. Every successful build is committed to a per-project history kept by the server, so the timeline is always complete regardless of your own git habits. Turn on **mirroring** and each build also lands in your own working copy as a tagged git commit — be warned that if you push to your remotes, the history you share will be fine-grained (a commit per build).
+A stack of build timestamps sits in the top-left corner, most recent on top. Click an older one to open that version side by side with the current document, with a slider along the bottom to scrub through the full history; click the current timestamp to close it. Every successful build is committed to a per-project history kept by the server. When a daemon is connected to a linked Git working copy, tlda also attempts to mirror the build there as `shadow/<hash>` and may advance the current branch with a preservation commit. A mirror failure does not fail the document build. The project-list **Git mirror sync** checkbox currently controls linked remote/Overleaf synchronization; it does not enable or disable this build mirror.
 
 <img src="docs/images/tlda-compare-mode.png" alt="Two versions of a page side by side" width="100%">
 
@@ -319,6 +344,10 @@ You can run tlda on a box other people reach — an always-on machine at home, a
 VPS, or a container host — so they open a URL and join. Put a **boundary** around
 it (next section), define a complete named config for that deployment, and select
 that config on its clients and daemons.
+
+For the repository's Fly deployment, follow the checked
+[Fly runbook](docs/live-deploy.md). The supported wrapper is
+`npm run deploy:live`; plain `fly deploy` reads the wrong configuration.
 
 <details>
 <summary>Worked example: a container host behind Tailscale</summary>

@@ -1,28 +1,16 @@
-# Live Deploy Runbook
+# Fly deployment
 
-This is the deploy path for Skip's live `phi`/Fly TLDA server.
+This repository has two Fly applications. Despite the file names, the active
+named environments are:
 
-## Principle: test vs live is a name (Skip, 2026-06-19)
+| Named environment | Fly config | Fly app | Tailnet origin |
+| --- | --- | --- | --- |
+| `testing` | `fly.live.toml` | `tldraw-sync-skip` | `https://tlda-fly.cormorant-matrix.ts.net` |
+| `stable` | `fly.stable.toml` | `tldraw-sync-skip-stable` | `https://tlda-fly-stable.cormorant-matrix.ts.net` |
 
-The only difference between a **test** phi instance and the **live** phi instance
-must be a single specification in the deploy process — `test` or `live` — nothing
-else. Same build, same image, same entrypoint, same deploy command; the config
-name is the one thing that differs (`fly.live.toml` for live, a `fly.test-*.toml`
-for a test instance pointed at a separate Fly app). That way, vetting a test
-instance tells Skip exactly what he is getting from the real deploy, because it
-went through the identical path.
-
-> "The difference between it being the test instance and the actual instance is
-> just a specification of test or live. That way I know what I'm getting. That
-> should be the goal of all of this — all this dev/test infrastructure should be
-> going toward the difference between real and test being a name."
-
-This is the north star for the test/dev deploy infrastructure. A test path that
-diverges from the live path (a local rig, a hand-built one-off, a different
-image) is **not** a valid vetting target — if it isn't the live process with the
-name swapped, it doesn't tell Skip what the real deploy will do. Hard line either
-way: a test deploy must target a **separate** Fly app and must never touch the
-live `phi` env.
+Both configs use `Dockerfile.live`, `scripts/fly-entrypoint-live.sh`, port 5176,
+a persistent `sync_data` volume, and Tailscale rather than a public Fly HTTP
+service.
 
 ## Current Command
 
@@ -48,6 +36,22 @@ a successful deploy command by pipeline status.
   Pages machinery, not the current `phi` deploy path.
 - Do not use `Dockerfile.live` with `fly.toml` by hand. Use the full live config:
   `fly deploy -c fly.live.toml`.
+
+## Worked stable deployment
+
+The same wrapper can target the separate `stable` application:
+
+```bash
+npm run deploy:live -- --fly-config fly.stable.toml --dry-run
+npm run deploy:live -- --fly-config fly.stable.toml
+fly status -c fly.stable.toml
+curl -fsS https://tlda-fly-stable.cormorant-matrix.ts.net/health
+curl -fsS https://tlda-fly-stable.cormorant-matrix.ts.net/api/fleet-config
+```
+
+For `testing`, omit `--fly-config`; the wrapper defaults to
+`fly.live.toml`. The dry run still performs preflight and a complete frontend
+build, but skips `fly deploy`.
 
 ## Configuration boundary
 
@@ -78,36 +82,9 @@ stale frontend assets.
 ### If the checkout is dirty with someone else's work
 
 Preflight requires the **main checkout on branch `main`, clean** — it rejects
-worktrees explicitly (`identity.isWorktree`), so "deploy from a clean worktree at
-the commit" is not available as a way around a dirty tree. In a shared checkout
-that other agents work in, the blocker is usually somebody's uncommitted WIP.
-
-The right first move is to get its owner to commit it. If that is not possible
-and the deploy is genuinely urgent, parking it is acceptable — but:
-
-**Parking someone's uncommitted work is a promise to restore it, and that promise
-is broken far more often than it is kept.** As of 2026-07-25 this repo carries
-**43 stash entries going back to March**, 26 of them named for exactly this
-situation — *"AGENTS.md process guard (not mine, stashing to unblock Gate2A
-deploy preflight)"*, *"orphaned-agent-wip-preserved"*, *"stranded ... edits"*,
-*"rescue: orphaned shared-checkout WIP"*, *"parked for clean ... deploy"*. Each
-was somebody's working state, parked to get a deploy out, and never restored.
-
-A stash is invisible. Nobody discovers their work is missing until they go
-looking for it, which is usually never. The stack is a graveyard, not a queue.
-
-So if you park it:
-
-1. **Back it up outside git first** — `git diff HEAD -- <paths> > <scratch>/wip.patch`.
-   A stash you forget is recoverable only if you knew it existed.
-2. Stash **only the specific paths** that block preflight, never a bare `git stash`.
-3. Use a stash message naming who parked it and why.
-4. **Restore in the same session, and verify it** — diff the restored tree against
-   the backup patch and confirm they match. Do not assume `stash pop` was clean.
-5. Say in your report that you moved someone's work, and that you restored it.
-
-If you cannot commit to steps 1–5 before you start, do not stash — wait, or hand
-the deploy to someone who can.
+worktrees explicitly (`identity.isWorktree`). Do not move or stash another
+person's uncommitted work to satisfy this check; get its owner to commit it or
+wait until the main checkout is clean.
 
 ## Deploy
 

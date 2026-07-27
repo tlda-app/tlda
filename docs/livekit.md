@@ -1,52 +1,47 @@
-# LiveKit live voice/video
+# LiveKit voice and video
 
-> **Historical MVP record.** This describes the July 3, 2026 landable worktree,
-> not a standing guarantee that every step is deployed unchanged. The product
-> principle remains current: voice/video is entered from the document while
-> reading, not presented as a separate meeting room.
+LiveKit supplies the optional real-time media path. The document is the room:
+there is no separate meeting page and opening a document does not join a call.
 
-Status: landable MVP worktree, 2026-07-03.
+## What is wired
 
-## Product shape
+Open the table-of-contents panel and use its microphone and camera glyphs:
 
-The document is the shared room. Joining voice/video is another facet of
-co-presence on a paper, beside "Link cameras." There is no always-on corner
-chrome: a plain document open does not draw call UI. A reader joins from the TOC
-panel, and once connected the mic state folds into the existing dictation speech
-HUD.
+- The microphone joins the document's room. Once joined, the same glyph mutes
+  or unmutes the local microphone.
+- The camera joins if necessary and then turns the local camera on or off.
+  Dragging the camera glyph places the video panel.
+- Remote audio is subscribed automatically. Spatial audio is enabled by
+  default in the session store and uses Web Audio panning when the browser
+  supports it.
+- Local and remote camera tracks appear in a `fleet-video` canvas shape, with
+  at most four visible tiles. The automatically created shape is removed when
+  the call ends.
+- Call microphone and participant state is published to the existing speech
+  HUD rather than a separate call toolbar.
 
-## User flow
+There is currently no explicit leave button in this UI. A dropped connection,
+component teardown, or page exit disconnects the room. Recording and instant
+replay are not implemented here.
 
-1. Open a document.
-2. In the TOC panel, use **Join voice/video** under **Link cameras**.
-3. While connected, the line changes to **In voice/video** and exposes contextual
-   **Mute mic / Unmute mic** and **Spatial audio** options.
-4. Mic status appears in the bottom-center speech HUD. The HUD uses the same
-   surface as dictation, so dictation and call state do not compete.
-5. Remote video, when published, appears as one locked TLDraw `fleet-video`
-   shape with up to four tiles.
-6. Tap **In voice/video** again to leave.
-
-If the server has no LiveKit credentials, the option renders as inert
-**Voice/video off** and `/api/livekit/token` returns 503.
+If the server has no LiveKit credentials, the configuration probe reports
+`configured: false`; the microphone cannot join and the camera control says
+video chat is not configured. The token route returns HTTP 503.
 
 ## Architecture
 
-- `server/routes/livekit.mjs` exposes `/api/livekit/config` and
-  `/api/livekit/token`. Tokens are scoped to a sanitized document/session room:
-  `tlda-<doc>-<session>`.
-- `src/livekit/liveSession.ts` owns join, mute, spatial-audio, and runtime state.
-  The TOC sets intent; the room controller reports runtime status.
-- `src/livekit/LiveRoomAudio.tsx` is the headless LiveKit controller. It connects
-  to the room, publishes the local mic, attaches remote audio, tracks optional
-  remote video, updates the speech HUD, and cleans up on leave.
-- `src/panels/TocTab.tsx` renders the subtle TOC entry beside the existing
-  camera-link control.
-- `src/shapes/FleetVideoShape.tsx` implements the TLDraw video tile shape. Its
-  props are registered in both the client shape util and
-  `server/lib/sync-rooms.mjs`.
-- Recording, instant replay, and classroom/session-feed machinery are outside
-  this MVP slice.
+- `server/routes/livekit.mjs` exposes authenticated `/api/livekit/config` and
+  `/api/livekit/token` routes. Tokens last six hours and grant publish,
+  subscribe, data-publish, and own-metadata permissions in a sanitized
+  `tlda-<project>-<session>` room.
+- `src/livekit/liveSession.ts` owns join, mute, camera, spatial-audio, and
+  runtime state. The TOC sets intent; the room controller reports runtime
+  state.
+- `src/livekit/LiveRoomAudio.tsx` is the headless LiveKit controller. It
+  connects to the room, publishes local media, attaches remote media, manages
+  spatial audio, updates the speech HUD, and cleans up on disconnect.
+- `src/panels/TocTab.tsx` renders the microphone and camera controls.
+- `src/shapes/FleetVideoShape.tsx` renders the canvas video panel.
 
 ## Configuration
 
@@ -58,12 +53,18 @@ LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
 ```
 
-`LIVEKIT_WS_URL` may be used as an alternate URL input. The browser receives only
-the configured status and scoped token responses from tlda.
+`LIVEKIT_WS_URL` may be used as an alternate URL input. The browser receives
+only the configured status and scoped token responses from tlda.
 
-## Verification target
+For the Fly applications, put those three values in `~/.livekit`, then run:
 
-For the MVP, verify the route/token path and a real two-client LiveKit call:
-join from the TOC, publish mic, subscribe/play remote audio, mute/unmute, leave,
-and clean up. Video support should ship when the browser proof shows a remote
-camera tile appears and is removed on leave.
+```sh
+scripts/set-livekit-secrets.sh tldraw-sync-skip
+scripts/set-livekit-secrets.sh tldraw-sync-skip-stable
+```
+
+Setting Fly secrets restarts the selected application. Both deployed Fly
+applications currently report `configured: true`, and the live token endpoint
+returns room, URL, and token fields. This documentation audit did not perform a
+two-client media call, so it does not claim current end-to-end microphone,
+camera, or playback verification.
