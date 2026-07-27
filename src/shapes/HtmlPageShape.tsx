@@ -526,15 +526,26 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const { deltaX, deltaY, ctrlKey, metaKey } = e.data
         const iframe = iframeRef.current
         const iframeRect = iframe?.getBoundingClientRect()
+        // A position inside an iframe is measured in that frame's own CSS pixels —
+        // a transform on an ancestor is invisible from inside — while TLDraw's
+        // wheel event speaks screen pixels of the top-level document. This is the
+        // only side that can see both, so convert here, off the same rect either
+        // way so the point and the delta land in one coordinate system.
+        const scale = iframeRect && iframe?.offsetWidth ? iframeRect.width / iframe.offsetWidth : 1
+        // The anchor is a position, so it always converts. The delta is not always
+        // a position: the bridge's touch path derives it from clientX and it is a
+        // distance in frame pixels, but a wheel delta is a device unit no transform
+        // ever touched. The bridge says which one it sent.
+        const deltaScale = e.data.deltaInFramePx ? scale : 1
         const point = typeof e.data.clientX === 'number' && typeof e.data.clientY === 'number' && iframeRect
-          ? new Vec(iframeRect.left + e.data.clientX, iframeRect.top + e.data.clientY)
+          ? new Vec(iframeRect.left + e.data.clientX * scale, iframeRect.top + e.data.clientY * scale)
           : new Vec(editor.inputs.currentScreenPoint.x, editor.inputs.currentScreenPoint.y)
         // Negate deltas: browser wheel deltaY>0 = scroll down, but TLDraw's
         // internal convention (from @use-gesture) uses negative = pan down.
         editor.dispatch({
           type: 'wheel',
           name: 'wheel',
-          delta: new Vec(-(deltaX || 0), -(deltaY || 0), 0),
+          delta: new Vec(-(deltaX || 0) * deltaScale, -(deltaY || 0) * deltaScale, 0),
           point,
           shiftKey: false,
           altKey: false,

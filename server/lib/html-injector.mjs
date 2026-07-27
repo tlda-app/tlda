@@ -184,6 +184,10 @@ const BRIDGE_SCRIPT = `
         type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
         shapeId: shapeId,
         viewportId: tldaWheelViewportId,
+        // Derived from touch.clientX, so it is a DISTANCE in this frame's own CSS
+        // pixels — unlike a wheel delta, which is a device unit no transform
+        // touches. The parent has to convert one and not the other.
+        deltaInFramePx: true,
         deltaX: deltaX, deltaY: deltaY, deltaMode: 0,
         clientX: touch.x, clientY: touch.y,
         ctrlKey: false, metaKey: false,
@@ -1076,6 +1080,10 @@ const SLIDES_BRIDGE_SCRIPT = `
         type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
         shapeId: shapeId,
         viewportId: tldaWheelViewportId,
+        // Derived from touch.clientX, so it is a DISTANCE in this frame's own CSS
+        // pixels — unlike a wheel delta, which is a device unit no transform
+        // touches. The parent has to convert one and not the other.
+        deltaInFramePx: true,
         deltaX: tldaSlideLastTouch.x - touch.x,
         deltaY: tldaSlideLastTouch.y - touch.y,
         deltaMode: 0,
