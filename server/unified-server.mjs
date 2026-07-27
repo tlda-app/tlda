@@ -357,9 +357,9 @@ function logWsClose(kind, ws, code, reason) {
 // that would collapse an agent's distinct historical names into whichever
 // resolved first and silently rewrite history in every thread view. Resolving
 // against the spans keeps every instant distinct.
-function stampNames(rows) {
+async function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
-  const names = fleetStore.nameSpansFor(
+  const names = await fleetStore.nameSpansFor(
     rows.flatMap(r => [r.from, r.to, r.agentId]),
   )
   const stamp = (r, id, nameKey, nowKey) => {
@@ -1069,16 +1069,16 @@ function taskDelegateWakeText(description, agentId) {
   return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
 }
 
-function runTaskRenudgeSweep() {
+async function runTaskRenudgeSweep() {
   if (!fleetStore) return
-  const page = fleetStore.getActiveTasksPage?.({ limit: TASK_RENUDGE_SWEEP_LIMIT, cursor: _taskRenudgeCursor }) || { tasks: [], nextCursor: null }
+  const page = await fleetStore.getActiveTasksPage?.({ limit: TASK_RENUDGE_SWEEP_LIMIT, cursor: _taskRenudgeCursor }) || { tasks: [], nextCursor: null }
   const tasks = page.tasks || []
   _taskRenudgeCursor = page.nextCursor || null
   const taskStates = tasks.map(task => fleetStore.getTaskDeliveryState?.(task)).filter(Boolean)
   const agentIds = taskStates.map(state => state?.task?.agent).filter(Boolean)
   const nudges = decideTaskRenudges({
     taskStates,
-    agents: fleetStore.getAgentsByIds?.(agentIds) || [],
+    agents: await fleetStore.getAgentsByIds?.(agentIds) || [],
     now: Date.now(),
     lastRenudged: _taskRenudged,
     renudgeIntervalMs: TASK_RENUDGE_INTERVAL_MS,
@@ -1650,10 +1650,10 @@ function touchActivity(agentId) {
 // This is the signal the disposition self-check bot (~/work/tlda-bots/disposition)
 // rides on. The true→false edge is deduped upstream by _thinkingState, so this
 // fires exactly once per turn.
-function emitTurnEnded(agentId, startedAtMs) {
+async function emitTurnEnded(agentId, startedAtMs) {
   if (!fleetStore || !agentId) return
   // Only real agents have turns — skip humans/bots (Skip, todd, tlda, …).
-  const a = fleetStore.getAgent?.(agentId)
+  const a = await fleetStore.getAgent?.(agentId)
   if (a?.human) return
   const endedAt = new Date()
   const durationMs = startedAtMs ? (endedAt.getTime() - startedAtMs) : null
@@ -2525,8 +2525,8 @@ function agentDaemonAddress(agent) {
   return daemonAddress(agent?.machine_id, agent?.env_name)
 }
 
-function currentSeatOrError(agent, { requireTerminal = true } = {}) {
-  const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+async function currentSeatOrError(agent, { requireTerminal = true } = {}) {
+  const seat = agent?.id ? await fleetStore?.getCurrentAgentSeat?.(agent.id) : null
   if (!seat) return { error: 'agent has no current durable seat' }
   if (requireTerminal && !seat.terminal_capability) {
     return { error: 'current durable seat is missing owning daemon terminal capability' }
@@ -2801,7 +2801,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
     if (record.state === 'available') return null
     return { attachment, record }
   }
-  const current = currentSeatOrError(recipient, { requireTerminal: false })
+  const current = await currentSeatOrError(recipient, { requireTerminal: false })
   if (current.error) {
     return fail(`${current.error} (op=materialize-attachment)`)
   }
@@ -4041,8 +4041,8 @@ app.post('/api/backing-file-write', requireRead, async (req, res) => {
 // ---------- Fleet action HTTP routes ----------
 // These mirror WS message handlers so UI buttons (fetch POST) can reach them.
 
-function currentSeatOrHttpError(res, agent) {
-  const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+async function currentSeatOrHttpError(res, agent) {
+  const seat = agent?.id ? await fleetStore?.getCurrentAgentSeat?.(agent.id) : null
   if (!seat) {
     res.status(409).json({ error: 'agent has no current durable seat' })
     return null
@@ -4060,7 +4060,7 @@ app.post('/api/send-text', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
@@ -4074,7 +4074,7 @@ app.post('/api/send-key', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key })
@@ -4088,7 +4088,7 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
@@ -4115,7 +4115,7 @@ app.post('/api/soft-interrupt', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
@@ -4129,7 +4129,7 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
@@ -4153,7 +4153,7 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
   const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
   if (!isPlanModeResponse(response)) return res.status(400).json({ error: 'response must be approve, supervised, or reject' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
@@ -5880,7 +5880,7 @@ async function handleFleetWsMessage(ws, msg) {
       const projectAgentQuery = String(msg.cwd || msg.project || '').trim()
       const hasText = (msg.query || '').trim().length > 0;
       if (projectAgentQuery && !hasText) {
-        const results = stampNames(await fleetStore.searchProjectAgents(projectAgentQuery, {
+        const results = await stampNames(await fleetStore.searchProjectAgents(projectAgentQuery, {
           limit: msg.limit,
           since: msg.since,
           before: msg.before,
@@ -5957,12 +5957,12 @@ async function handleFleetWsMessage(ws, msg) {
       }
       if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
       if (messageFilter) results = results.filter(r => matchesMessageNode(messageFilter, r))
-      results = stampNames(results)
+      results = await stampNames(results)
       const context = {}
       if (msg.context_timestamps?.length) {
         for (const ts of msg.context_timestamps) {
           const ctx = await fleetStore.getChatContext(ts, msg.context_window || 3)
-          stampNames(ctx.before); stampNames(ctx.after)
+          await stampNames(ctx.before); await stampNames(ctx.after)
           context[ts] = ctx
         }
       }
@@ -6517,7 +6517,7 @@ async function handleFleetWsMessage(ws, msg) {
         }
         if (approval?.agent_id) {
           const agent = await fleetStore.findAgent?.(approval.agent_id)
-          const { seat } = currentSeatOrError(agent)
+          const { seat } = await currentSeatOrError(agent)
           if (seat) sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
             text: key,
             enter: false,
@@ -6531,7 +6531,7 @@ async function handleFleetWsMessage(ws, msg) {
       const keyword = planKeywordMatch[2].toLowerCase()
       for (const r of recipients) {
         const agent = await fleetStore.findAgent(r)
-        const { seat } = currentSeatOrError(agent)
+        const { seat } = await currentSeatOrError(agent)
         if (!seat) continue
         sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
           text: '/plan',
@@ -6582,7 +6582,7 @@ async function handleFleetWsMessage(ws, msg) {
       // Period-correct names: render each historical message with the name its
       // sender/recipient held AT send time, plus `*NameNow` when since rotated.
       // The client nick prefers these over the current-name fallback.
-      stampNames(resolved)
+      await stampNames(resolved)
       reply({ events: resolved, hasMore })
     } catch (e) {
       error(e.message)
@@ -6975,7 +6975,7 @@ async function handleFleetWsMessage(ws, msg) {
       return
     }
     if (channel === 'tmux') {
-      const { seat, error: seatError } = currentSeatOrError(row)
+      const { seat, error: seatError } = await currentSeatOrError(row)
       if (!seat) { error(seatError); return }
     }
     await fleetStore.updateAgentMeta?.(row.id, { deliveryChannel: channel })
@@ -7020,7 +7020,7 @@ async function handleFleetWsMessage(ws, msg) {
       // and dedupes: only the first false after a true reaches emitTurnEnded.
       const startedAt = _thinkingState.get(msg.agentId)
       _thinkingState.delete(msg.agentId)
-      if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
+      if (startedAt !== undefined) await emitTurnEnded(msg.agentId, startedAt)
     }
     broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     reply({ ok: true })
@@ -7191,7 +7191,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
@@ -7214,7 +7214,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
@@ -7235,7 +7235,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
@@ -7249,7 +7249,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
@@ -7270,7 +7270,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, key } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key }))
@@ -7284,7 +7284,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, text, enter } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
@@ -7298,7 +7298,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, lines } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50 })
@@ -7312,7 +7312,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonEphemeral(seat.daemon_key, 'check-alive', { agent_id: agent.id, terminal_capability: seat.terminal_capability })
@@ -7329,7 +7329,7 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!isPlanModeResponse(response)) { error('response must be approve, supervised, or reject'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       let result = await sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
@@ -7356,7 +7356,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const parseCCMode = (pane) => {
@@ -7414,7 +7414,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!rawFrom) { error('missing from'); return }
     const agent = await fleetStore.findAgent(rawFrom)
     if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
@@ -7687,7 +7687,7 @@ async function handleFleetWsMessage(ws, msg) {
         events = await fleetStore.getEventsSince(afterId, limit)
       }
       const lastId = await fleetStore.getLastEventId()
-      reply({ events: stampNames(events), lastId, total })
+      reply({ events: await stampNames(events), lastId, total })
     } catch (e) { error(e.message) }
     return
   }
@@ -8000,9 +8000,9 @@ async function retireStaleAgentSeatBindingObligation(obligation, { reason = 'sta
   return removed
 }
 
-function knownDaemonKeys() {
+async function knownDaemonKeys() {
   const keys = new Set([...daemonConnections.keys()])
-  for (const row of fleetStore?.listDaemonRegistrations?.() || []) {
+  for (const row of await fleetStore?.listDaemonRegistrations?.() || []) {
     if (row.daemon_key) keys.add(row.daemon_key)
   }
   return [...keys].sort()
@@ -8077,7 +8077,7 @@ function broadcastDaemonAgentsUpdated(agentUpdates = null) {
 }
 
 async function broadcastDaemonProjectsUpdated() {
-  const daemonKeys = knownDaemonKeys()
+  const daemonKeys = await knownDaemonKeys()
   if (daemonKeys.length === 0) return
   const projects = projectsForDaemon()
   for (const daemonKey of daemonKeys) {
@@ -8425,7 +8425,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // lives on it, so it can never keep another daemon's agent looking awake.
     const seats = await fleetStore.getCurrentAgentSeats(reported)
     const running = new Set(reported.filter(id => seats.get(id)?.daemon_key === ws._daemonKey))
-    const absentSeats = fleetStore.getCurrentAgentSeats(reportedAbsent)
+    const absentSeats = await fleetStore.getCurrentAgentSeats(reportedAbsent)
     const absent = new Set(reportedAbsent.filter(id => absentSeats.get(id)?.daemon_key === ws._daemonKey))
 
     for (const id of running) {
@@ -8456,7 +8456,7 @@ async function handleDaemonWsMessage(ws, msg) {
       const seated = absentSeats.get(id)
       if (seated?.session_id) {
         try {
-          fleetStore.retireCurrentAgentSeat?.(id, {
+          await fleetStore.retireCurrentAgentSeat?.(id, {
             sessionId: seated.session_id,
             daemonKey: ws._daemonKey,
             ...(seated.terminal_capability ? { terminalCapability: seated.terminal_capability } : {}),
@@ -8891,7 +8891,7 @@ async function handleDaemonWsMessage(ws, msg) {
         // thinking → idle edge = turn end (see emitTurnEnded; deduped by _thinkingState).
         const startedAt = _thinkingState.get(msg.agentId)
         _thinkingState.delete(msg.agentId)
-        if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
+        if (startedAt !== undefined) await emitTurnEnded(msg.agentId, startedAt)
       }
       broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     }

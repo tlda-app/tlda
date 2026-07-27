@@ -86,6 +86,13 @@ export const ASYNC_CASCADE = Object.freeze([
   'scheduler.cancel',
   'this.refresh',
   'this.fire',
+  // unified-server leaves, converted with every call site already async.
+  'knownDaemonKeys',
+  'emitTurnEnded',
+  'currentSeatOrError',
+  'currentSeatOrHttpError',
+  'stampNames',
+  'runTaskRenudgeSweep',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']
