@@ -510,7 +510,6 @@ export function FleetHUD({
   // recursive composition; Y is pinned by the overlay policy. Persisted via an
   // invisible anchor shape in Yjs (survives across sessions/devices).
   const TOP_PAD = FLEET_HUD_DEFAULT_TOP_PAD_PX
-  const LEFT_PAD = 20
   const ignoreSavedAnchorRef = useRef(false)
   // True once the user has deliberately panned this session. Guards the
   // adopt-anchor-on-late-arrival listener so a late-syncing anchor can't
@@ -524,15 +523,6 @@ export function FleetHUD({
   }
   const activeTopPad = TOP_PAD
 
-  const keepHudAnchorMeaningfullyVisible = useCallback((anchor: FleetHudAnchor, bounds: ClipBounds): FleetHudAnchor => {
-    const projectedLeft = bounds.x + anchor.panOffset
-    const projectedRight = projectedLeft + bounds.w
-    if (projectedRight < window.innerWidth * 0.25 || projectedLeft > window.innerWidth * 0.75) {
-      return { ...anchor, panOffset: LEFT_PAD - bounds.x }
-    }
-    return anchor
-  }, [])
-
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
     const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
@@ -545,17 +535,17 @@ export function FleetHUD({
     if (!isFinite(minPageX)) return false
     const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     const off = layoutOffset(getHumanId(), getDeviceId())
-    const anchor = keepHudAnchorMeaningfullyVisible(computeFleetHudDefaultAnchor({
+    const anchor = computeFleetHudDefaultAnchor({
       bounds,
       docPageLeft: minPageX,
       docLeftScreen,
       layoutDx: off.dx,
       topPad: activeTopPad,
-    }), bounds)
+    })
     applyHudAnchor(anchor, { syncViewport: false })
     userPannedRef.current = false
     return true
-  }, [activeTopPad, applyHudAnchor, docShapesReady, keepHudAnchorMeaningfullyVisible, mainEditor])
+  }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
 
   useEffect(() => {
     if (!identityId || !deviceReady || !docShapesReady || fleetBounds) return
@@ -1175,13 +1165,13 @@ export function FleetHUD({
     // compensation here — cameraY below derives from fleetBounds.y (this layout's
     // actual top), so the HUD pins my layout to TOP_PAD regardless of its lane.
     const off = layoutOffset(getHumanId(), getDeviceId())
-    const anchor = keepHudAnchorMeaningfullyVisible(computeFleetHudDefaultAnchor({
+    const anchor = computeFleetHudDefaultAnchor({
       bounds: activeFleetBounds,
       docPageLeft: minPageX,
       docLeftScreen,
       layoutDx: off.dx,
       topPad: activeTopPad,
-    }), activeFleetBounds)
+    })
     applyHudAnchor(anchor, { syncViewport: false })
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
@@ -1208,7 +1198,7 @@ export function FleetHUD({
     const projectedLeft = activeFleetBounds.x + renderHudCameraAnchor.panOffset
     const projectedRight = projectedLeft + activeFleetBounds.w
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    const horizontallyVisible = projectedRight >= window.innerWidth * 0.25 && projectedLeft <= window.innerWidth * 0.75
+    const horizontallyVisible = projectedLeft >= 0 && projectedRight <= window.innerWidth
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
       const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
       let minPageX = Infinity
@@ -1219,13 +1209,13 @@ export function FleetHUD({
       if (isFinite(minPageX)) {
         const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
         const off = layoutOffset(getHumanId(), getDeviceId())
-        const anchor = keepHudAnchorMeaningfullyVisible(computeFleetHudDefaultAnchor({
+        const anchor = computeFleetHudDefaultAnchor({
           bounds: activeFleetBounds,
           docPageLeft: minPageX,
           docLeftScreen,
           layoutDx: off.dx,
           topPad: activeTopPad,
-        }), activeFleetBounds)
+        })
         applyHudAnchor(anchor, { syncViewport: false })
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false
