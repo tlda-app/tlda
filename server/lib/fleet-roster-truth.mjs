@@ -29,6 +29,7 @@ function rowForAgent(agent, now = Date.now()) {
     daemon_key: runtimeRoute?.daemon_key || agentDaemonKey(agent),
     activity: act?.state || null,
     tool: act?.tool || null,
+    runtime_status: agent.runtime_status || null,
     activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}, agent.runtime_status || null, {
       allowRoutableNoTmuxSuppression: true,
     }),
