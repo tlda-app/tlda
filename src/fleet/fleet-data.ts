@@ -398,6 +398,29 @@ export function upsertFleetEventsForBuffer(
   return added
 }
 
+// A locally-authored row the server has never seen — an optimistic send — belongs in
+// the buffer of the chat that sent it, keyed by that chat's own id. That is not a
+// filter decision, so it is the one write into a server-fed buffer that does not come
+// from the subscription, and fanoutEventToBuffers deliberately can't do it.
+//
+// It needs no removal counterpart: when the server echo binds the row, asFleetEvent
+// sees the key change tmp:<tempId> -> db:<id> and removeEventIdFromStores drops the
+// old key from every buffer, this one included. The server's copy then arrives through
+// applyFilterEvents under the new key, so the panel ends up with one row, not two.
+//
+// Does not create the buffer. A buffer that doesn't exist yet has nothing rendering it,
+// and creating one here with a null filter would make the next eventBuffer() call see a
+// filter change and clear exactly the row we just wrote.
+export function upsertLocalEventIntoBuffer(
+  bufferKey: string | null | undefined,
+  event: Record<string, unknown> | null | undefined,
+): void {
+  if (!bufferKey || !event) return
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer) return
+  buffer.store.upsert(asFleetEvent(event))
+}
+
 export function removeFleetEvent(event: Record<string, unknown> | null | undefined): void {
   if (!event) return
   const id = eventIds.get(event) ?? keyOfEvent(event)

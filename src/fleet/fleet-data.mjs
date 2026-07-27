@@ -28,6 +28,7 @@ import {
   upsertFleetEvent,
   upsertFleetEvents,
   upsertFleetEventsForBuffer,
+  upsertLocalEventIntoBuffer,
   applyFilterEvents,
   inLiveDelivery,
 } from './fleet-data.ts'
@@ -594,18 +595,31 @@ export async function sendMessage(to, text, opts = {}) {
   }
 }
 
-/** Inject an optimistic (locally-authored) event into the event list immediately. */
-export function injectOptimisticEvent(event) {
+/**
+ * Inject an optimistic (locally-authored) event into the event list immediately.
+ *
+ * `bufferKey` is the sending chat panel's own buffer. A filtered panel renders from a
+ * server-fed buffer that the global fanout deliberately skips, so without this the row
+ * is invisible there until the server echoes it back — which, connected, is a few
+ * milliseconds and looks like a working local echo, and disconnected is never.
+ */
+export function injectOptimisticEvent(event, bufferKey) {
   const result = liveUpsert(event)
   projectStoreResult(result)
+  upsertLocalEventIntoBuffer(bufferKey, result.event)
   notify('messages', result.event)
 }
 
-/** Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile). */
-export function updateOptimisticEvent(tempId, updates) {
+/**
+ * Update fields on an optimistic event (e.g. mark _failed, or set _dbId on reconcile).
+ * Takes the sending panel's `bufferKey` for the same reason inject does: the row is the
+ * same object, but the panel's buffer needs its own upsert to notify its view.
+ */
+export function updateOptimisticEvent(tempId, updates, bufferKey) {
   const ev = _store.patchByTempId(tempId, updates)
   if (ev) {
     upsertFleetEvent(ev)
+    upsertLocalEventIntoBuffer(bufferKey, ev)
     notify('messages', null)
   }
 }
