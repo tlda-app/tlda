@@ -211,11 +211,6 @@ export async function injectCodexPrompt(session, prompt, {
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', session, '-p')
-      if (stdout.includes('Do you trust the contents of this directory?')) {
-        await tmuxExec(tmuxSocket, 'send-keys', '-t', session, 'Enter')
-        await sleep(1000)
-        continue
-      }
       if (stdout.includes('MCP startup interrupted') || stdout.includes('MCP startup cancelled')) {
         return false
       }

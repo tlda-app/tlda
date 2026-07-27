@@ -105,6 +105,7 @@ export function buildCmd({
   if (name) parts.push(`FLEET_NAME=${sq(name)}`)
   parts.push(sq(GOOSE_BIN))
   parts.push('run')
+  parts.push('--no-profile')
   parts.push(`--recipe ${sq(recipe)}`)
   parts.push('--with-builtin developer,summon')
   parts.push(`--params provider=${sq(provider)}`)
