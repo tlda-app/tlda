@@ -44,12 +44,35 @@
  * than managed. If you are about to move this to props, you are reintroducing
  * all three.
  *
- * WHO MAY DRIVE: anyone in the room, deliberately. No capability check and no
- * permission UI — the demo is "you can do this". Don't harden this without Skip
- * asking for it.
+ * WHO MAY DRIVE: whoever has joined the room. Skip's model, in his words: "there
+ * is a set — you can either just do your own thing, or you can join the room
+ * thing. Everyone who's joined the room thing has linked everything… and then you
+ * can opt out whenever you feel like it, and then you're just doing your own thing
+ * again. It's per person."
+ *
+ * So this is NOT a second opt-in beside the camera one. Membership in the room is
+ * one switch, and `getCameraLinked()` is how that switch is expressed today — the
+ * same per-browser preference that gates the camera broadcast (SvgDocument's
+ * `broadcast-camera`) and the camera follow (useCameraLink). Figure poses ride it.
+ * If you are moving the view together, the figures turning together is the same
+ * act. **Do not add a separate figure-sync preference.** If membership ever gets
+ * its own name, this should follow it rather than keep a private flag.
+ *
+ * Both directions gate, and they read the flag at call time, so leaving is live:
+ * opt out mid-drag and you stop publishing and stop following immediately.
+ *
+ * Two behaviours fall out of the gate rather than needing code, which is why there
+ * is none here for either:
+ *   - Leaving freezes you where the room had it. We simply stop applying; nothing
+ *     snaps you anywhere. Jumping on exit would be jarring.
+ *   - A visitor who never joined always sees the figure as the author rendered it,
+ *     whatever the last person left in the room, and their own rotations stay
+ *     local and die with the page. **Do not add a "reset to authored pose" path** —
+ *     that is this property re-implemented as a feature.
  */
 
 import type { Editor, TLShapeId } from 'tldraw'
+import { getCameraLinked, subscribeCameraLinked } from './cameraLink'
 import { log } from './logger'
 
 /** Meta key holding figure `index`'s shared pose. Position-keyed — see `bind`. */
@@ -184,6 +207,7 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
   const bindings: FigureBinding[] = []
   let disposed = false
   let removeStoreListener: (() => void) | null = null
+  let removeLinkListener: (() => void) | null = null
 
   const readStoredPose = (index: number): FigurePose | null => {
     const shape = editor.store.get(shapeId) as { meta?: Record<string, unknown> } | undefined
@@ -193,6 +217,8 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
   const publish = (binding: FigureBinding) => {
     binding.pendingFrame = null
     if (disposed || binding.applyingRemote) return
+    // Not in the room: your rotations are your own and go nowhere.
+    if (!getCameraLinked()) return
     const pose = readPose(binding.rgl)
     if (!pose || !posesDiffer(pose, binding.lastPublished)) return
     const shape = editor.store.get(shapeId) as { meta?: Record<string, unknown> } | undefined
@@ -222,6 +248,9 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
   }
 
   const applyStored = (binding: FigureBinding) => {
+    // Not in the room: never follow. Read at call time so opting out stops you
+    // mid-session rather than at the next reload.
+    if (!getCameraLinked()) return
     const stored = readStoredPose(binding.index)
     if (!stored) return
     const current = readPose(binding.rgl)
@@ -272,6 +301,17 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
       applyStored(binding)
     })
 
+    // Joining the room mid-session catches you up to the poses it is holding.
+    // This is where figures differ from the camera, which deliberately does not
+    // snap on toggle: a camera self-corrects on the other person's next move,
+    // which happens constantly, whereas a figure nobody touches for ten minutes
+    // would leave a joiner sitting at the wrong orientation for ten minutes.
+    // Same reason a fresh visitor applies on iframe load.
+    removeLinkListener = subscribeCameraLinked(() => {
+      if (disposed || !getCameraLinked()) return
+      for (const binding of bindings) applyStored(binding)
+    })
+
     // A local rotation and a remote one both land as prop changes; applyStored's
     // epsilon check makes reacting to our own write a no-op.
     removeStoreListener = editor.store.listen(
@@ -303,6 +343,7 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
   const teardown = () => {
     disposed = true
     removeStoreListener?.()
+    removeLinkListener?.()
     for (const binding of bindings) {
       if (binding.pendingFrame !== null) cancelAnimationFrame(binding.pendingFrame)
     }
