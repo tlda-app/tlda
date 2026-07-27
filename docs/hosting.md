@@ -48,6 +48,27 @@ Never expose the standard server port publicly with neither token authentication
 nor an authenticated network boundary. The application deliberately includes
 terminal and agent-control surfaces.
 
+### Providing agents for browser-only collaborators
+
+A collaborator using only the browser can still work with agents, but those
+agents must run on a machine whose daemon connects to the same tlda server. The
+operator can provide that machine; it does not have to be the collaborator's
+computer.
+
+The repository's Fly-for-friends path uses two Fly applications:
+`Dockerfile.live` runs the viewer, project build, and fleet server, while
+`Dockerfile.agent` with `scripts/fly-entrypoint-agent.sh` runs an outbound-only
+daemon and Codex agents. The agent application keeps Codex and tlda state on a
+volume, clones the friend's Git repository into its work directory, and seeds
+Codex authentication from a Fly secret.
+
+`tlda-fly friend plan` and `tlda-fly friend up` generate this render/agent pair.
+That helper is not currently a complete supported setup: its final project-link
+step still invokes the removed `tlda doc link` command, so `friend up` cannot
+finish successfully with the current CLI. The image and configuration path
+exist, but provisioning remains an operator-managed setup until that command is
+corrected.
+
 ## The live Fly deployment
 
 The authoritative live procedure remains `docs/live-deploy.md`. From a clean

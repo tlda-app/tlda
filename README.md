@@ -52,7 +52,9 @@ Open the URL they gave you and pick a name — you're on their canvas. Nothing t
 The easiest way to start is the Overleaf level of involvement: use the source
 editor in the browser, whose shared state is synchronized through Yjs. If
 someone else is serving tlda for you, you do not have to set anything up on
-your computer to read and edit the paper there.
+your computer to read and edit the paper there. You can still work with agents
+at this level; they run on another box, such as the server or a collaborator's
+machine.
 
 If you want more control, use your own text editor and bring your own agents.
 That is when you run the daemon on your machine: it carries your local edits
