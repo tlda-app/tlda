@@ -588,7 +588,12 @@ export async function sendMessage(to, text, opts = {}) {
     const { type, ...payload } = body
     const d = await browserFleetTransport.durable(type, payload, { operationId: body._tempId })
     console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-    return { ok: true, event_id: d.event_id || null, queued: d.queued === true, operation_id: d.operation_id || body._tempId || null }
+    // A durable send that only reached the outbox is queued, not sent. Reporting
+    // ok for it is a success this layer can't support: it's what stops the caller
+    // ever marking the message "not sent", so a disconnected message is neither
+    // visibly sent nor visibly unsent. The row still delivers on reconnect, and
+    // the echo clears the mark when it binds.
+    return { ok: d.queued !== true, event_id: d.event_id || null, queued: d.queued === true, operation_id: d.operation_id || body._tempId || null }
   } catch (e) {
     console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
     return { ok: false, event_id: null }
