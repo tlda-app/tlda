@@ -357,11 +357,17 @@ export function createJsonlIngestor({
         cwd: input.cwd,
         friendlyName: input.friendly_name,
       })
-      if (event) sendMsg(event)
     } catch (e) {
       log.error(`daemon ledger session identity write failed for ${fleetId}: ${e.message}`)
-      throw e
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'daemon-ledger-session-identity-write-failed',
+        fleet_id: fleetId,
+        session_id: sessionId,
+        error: e?.message || String(e),
+      })
     }
+    if (event) sendMsg(event)
   }
 
   function persistLocalMarkerBinding(marker, { sessionId, jsonlPath, harnessKind } = {}) {

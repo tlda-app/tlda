@@ -20,10 +20,18 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+const SESSION_UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
+
+function normalizeSessionIdForLedger(value) {
+  const text = value == null || value === '' ? null : String(value)
+  if (!text) return null
+  return SESSION_UUID_RE.exec(text)?.[1] || text
+}
+
 function processBindingSignature(row = {}) {
   return JSON.stringify({
     id: row.id || null,
-    sessionId: row.sessionId || null,
+    sessionId: normalizeSessionIdForLedger(row.sessionId) || null,
     sessionKind: row.sessionKind || null,
     sessionPath: row.sessionPath || null,
     tmuxSession: row.tmuxSession || null,
@@ -706,30 +714,30 @@ export class PermissionLedger {
       return null
     }
     const beforeBindingSignature = processBindingSignature(existing)
-    // Identity is the seat tuple. `model` and `cwd` are metadata, not
+    const normalizedSessionId = normalizeSessionIdForLedger(sessionId)
+    // Identity is the local process tuple. Route fields, `model`, and `cwd` are metadata, not
     // identity: a model ALIAS vs its resolved name ('fable' vs
     // 'claude-fable-5') bounced every wake of a healthy seat, and a worktree
     // cwd vs the repo root rejected legitimate worktree logins (both 7/17).
     // They still persist fill-null-only below; they just cannot conflict.
     const incoming = {
-      sessionId,
+      sessionId: normalizedSessionId,
       sessionKind,
       sessionPath,
       tmuxSession,
-      machineId,
-      envName,
-      daemonKey,
     }
     for (const [field, value] of Object.entries(incoming)) {
       const normalized = value == null || value === '' ? null : String(value)
-      const current = existing[field] == null || existing[field] === '' ? null : String(existing[field])
+      const current = field === 'sessionId'
+        ? normalizeSessionIdForLedger(existing[field])
+        : (existing[field] == null || existing[field] === '' ? null : String(existing[field]))
       if (normalized && current && normalized !== current) {
         throw new Error(`daemon ledger identity conflict for ${key}: ${field} existing=${current} incoming=${normalized}`)
       }
     }
     this.db.prepare(`
       UPDATE permission_grants SET
-        session_id = COALESCE(session_id, ?),
+        session_id = COALESCE(?, session_id),
         session_kind = COALESCE(session_kind, ?),
         session_path = COALESCE(session_path, ?),
         tmux_session = COALESCE(tmux_session, ?),
@@ -743,7 +751,7 @@ export class PermissionLedger {
         last_seen = ?
       WHERE id = ?
     `).run(
-      sessionId || null,
+      normalizedSessionId || null,
       sessionKind || null,
       sessionPath || null,
       tmuxSession || null,

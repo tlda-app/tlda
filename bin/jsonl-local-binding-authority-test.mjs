@@ -47,12 +47,12 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex' } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, jsonlFileName = 'rollout-jsonl-owner.jsonl' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
   const projectDir = join(projectsDir, '-Users-skip-work-tlda')
-  const jsonlPath = join(projectDir, 'rollout-jsonl-owner.jsonl')
+  const jsonlPath = join(projectDir, jsonlFileName)
   mkdirSync(projectDir, { recursive: true })
   writeFileSync(jsonlPath, kind === 'claude'
     ? '{"message":{"content":[{"type":"text","text":"Logged in fleet:jsonlown.\\nYour name: \\"jsonl-owner\\""}]}}\n'
@@ -107,7 +107,7 @@ function createHarness({ kind = 'codex' } = {}) {
       },
     },
     jsonlTranscriptRoots: [projectsDir],
-    permissionLedger: null,
+    permissionLedger,
     bufferActivity(agentId, activity) { bufferedActivity.push({ agentId, activity }) },
     extractActivityEvents() { return [] },
     machineId: 'mini',
@@ -239,6 +239,87 @@ function assertTailCount(harness, expected) {
     assert.equal(warnings.length, 1)
   } finally {
     console.warn = originalWarn
+    cleanup()
+  }
+}
+
+{
+  const calls = []
+  const harness = createHarness({
+    jsonlFileName: 'rollout-2026-07-27T16-46-08-019fa553-eb8e-7d41-9ea8-9c71c3bab5f4.jsonl',
+    permissionLedger: {
+      setSessionSync() {
+        calls.push('setSessionSync')
+        throw new Error('forced ledger write failure')
+      },
+    },
+  })
+  try {
+    harness.setRows([])
+    await harness.sync('initial-empty-root')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:default',
+            machine_id: 'mini',
+            env_name: 'default',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'mint-jsonl-owner',
+            harness_kind: 'codex',
+            model: 'gpt-test',
+            cwd: '/Users/skip/work/tlda',
+          },
+        },
+      }],
+    })
+    assert.equal(calls.length >= 1, true)
+    assert.equal(harness.sentToServer.some(message =>
+      message.type === 'daemon-warning' &&
+      message.warning === 'daemon-ledger-session-identity-write-failed' &&
+      message.fleet_id === 'fleet:jsonl-owner'
+    ), true)
+    assert.equal(harness.sentToServer.some(message =>
+      message.type === 'agent-seat' &&
+      message.agent_id === 'fleet:jsonl-owner' &&
+      message.session_id === '019fa553-eb8e-7d41-9ea8-9c71c3bab5f4'
+    ), true)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const { ledger, cleanup } = createLedger()
+  const sessionUuid = '019fa553-eb8e-7d41-9ea8-9c71c3bab5f4'
+  const rolloutSession = `rollout-2026-07-27T16-46-08-${sessionUuid}`
+  try {
+    ledger.setSessionSync('fleet:jsonl-owner', fullBinding({
+      sessionId: rolloutSession,
+      envName: 'stable',
+      daemonKey: 'mini:stable',
+      machineId: 'mini',
+    }))
+    const row = ledger.setSessionSync('fleet:jsonl-owner', {
+      sessionId: sessionUuid,
+      sessionKind: 'codex',
+      sessionPath: '/tmp/jsonl-owner.jsonl',
+      tmuxSession: 'fleet-jsonl-owner',
+      envName: 'testing',
+      daemonKey: 'mini:testing',
+      machineId: 'air',
+    })
+    assert.equal(row.sessionId, sessionUuid)
+    assert.equal(row.envName, 'stable')
+    assert.equal(row.daemonKey, 'mini:stable')
+    assert.equal(row.machineId, 'mini')
+  } finally {
     cleanup()
   }
 }
