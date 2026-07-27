@@ -77,12 +77,25 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  // figureView0..7 mirror HtmlPageShapeUtil.props in src/shapes/HtmlPageShape.tsx.
+  // They carry the shared orientation of the deck's rgl WebGL figures — one prop
+  // per figure, because tldraw merges concurrent edits per prop key. Any change
+  // here must be made on both sides in the same commit or sync throws for every
+  // client in the room.
   'html-page': {
     props: {
       w: T.number,
       h: T.number,
       url: T.string,
       source: T.optional(T.string),
+      figureView0: T.optional(T.string),
+      figureView1: T.optional(T.string),
+      figureView2: T.optional(T.string),
+      figureView3: T.optional(T.string),
+      figureView4: T.optional(T.string),
+      figureView5: T.optional(T.string),
+      figureView6: T.optional(T.string),
+      figureView7: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.html-page',
