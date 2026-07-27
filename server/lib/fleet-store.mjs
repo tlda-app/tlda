@@ -2922,9 +2922,28 @@ export class FleetStore {
   }
 
   removeAgent(id) {
+    this.retireTasksForGoneAgent(id, 'agent row deleted');
     this._deleteAgent.run(id);
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
+  }
+
+  /**
+   * An agent's open tasks die when the agent does.
+   *
+   * Called from the two places an agent stops existing — markDead() and
+   * removeAgent(). Without this, every death leaves its tasks open forever and
+   * the active-task list grows without bound; 851 rows had accumulated by
+   * 2026-07-26, 688 of them on agents that were dead or whose row was gone.
+   */
+  retireTasksForGoneAgent(id, why) {
+    const open = this.getActiveTasksByAgent(id);
+    const retired = [];
+    for (const task of open) {
+      const result = this.retireTask(task, { reason: `${why} — task closed with its agent`, retiredBy: 'system' });
+      if (result) retired.push(result.task_id);
+    }
+    return retired;
   }
 
   updateHeartbeat(id) {
@@ -2980,6 +2999,7 @@ export class FleetStore {
       }
       this._markAgentDead.run(id);
     })();
+    this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
   }
@@ -3510,6 +3530,44 @@ export class FleetStore {
       unread_removed: false,
       exposed: true,
     };
+  }
+
+  /**
+   * Administratively close a task that nobody is going to do, recording WHY on
+   * the row itself.
+   *
+   * Distinct from retractTask(): a retract un-sends a task the recipient never
+   * saw, so it may remove the row. A retire is for a task that was delivered and
+   * has simply outlived its agent — the row stays, carrying the reason, so a
+   * bulk close is auditable afterwards. It writes no report document, sends no
+   * chat, and wakes nobody.
+   *
+   * The unread delegate row is cleared too: `status='retracted'` already stops
+   * decideTaskRenudges (isRenudgeableTaskStatus excludes it), but leaving the
+   * unread behind would keep the item in the agent's inbox forever.
+   */
+  retireTask(taskOrId, { reason, retiredBy = null, at = new Date().toISOString() } = {}) {
+    if (!reason) throw new Error('retireTask requires a reason');
+    const task = typeof taskOrId === 'string' ? this.getTask(taskOrId) : taskOrId;
+    if (!task) return null;
+    if (task.status === 'done' || task.status === 'retracted') return null;
+
+    const state = this.getTaskDeliveryState(task);
+    const event = state?.event || null;
+    this.db.transaction(() => {
+      if (event && state.unread) this._deleteUnreadForEvent.run(event.id, task.agent);
+      this.upsertTask({
+        ...task,
+        status: 'retracted',
+        completed_at: task.completed_at || at,
+        metadata: {
+          ...(task.metadata || {}),
+          retired: { reason, by: retiredBy, at },
+        },
+      });
+    })();
+
+    return { task_id: task.id, agent: task.agent, reason, retired_by: retiredBy, retired_at: at };
   }
 
   _hydrateTask(row) {
