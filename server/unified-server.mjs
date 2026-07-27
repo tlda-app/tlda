@@ -8061,8 +8061,9 @@ function projectsForDaemon() {
         const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
         if (p.sourceDir && existsSync(rfPath)) {
           const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
-          // Filter to only author-dir paths (not the server mirror paths)
-          watchFiles = daemonWatchFilesFromAbsolutePaths(p, rf.files || [])
+          // Scope is project-relative, and the daemon watches relative to
+          // sourceDir — so it is already in the daemon's own space.
+          watchFiles = (rf.files || []).filter(f => typeof f === 'string' && f.length > 0)
         }
       } catch (e) {
         // Keep daemon welcome/project updates flowing; null watchFiles makes the
@@ -8088,6 +8089,9 @@ function projectsForDaemon() {
     })
 }
 
+// Project-part source paths are recorded absolute (they may point outside this
+// project), so they still need reducing to the daemon's sourceDir-relative space.
+// Paper scope does NOT come through here — it is already relative.
 function daemonWatchFilesFromAbsolutePaths(project, files) {
   return (files || [])
     .filter(f => typeof f === 'string' && f.startsWith(project.sourceDir))

@@ -202,14 +202,14 @@ export function diagnosePaperScope(name) {
   } catch (e) {
     throw new Error(`paper scope is corrupt (${relPath}): ${e.message}`)
   }
+  // Scope entries are project-relative — the same string here and on the
+  // author's machine. We join against this server's mirror.
   const files = Array.isArray(parsed?.files) ? parsed.files : []
   const srcDir = sourceDir(name)
   const out = new Set()
   let absent = 0
-  for (const p of files) {
-    if (typeof p !== 'string') continue
-    if (!p.startsWith(srcDir + '/')) continue
-    const rel = p.slice(srcDir.length + 1)
+  for (const rel of files) {
+    if (typeof rel !== 'string' || !rel) continue
     if (BUILD_ARTIFACT_RE.test(rel)) continue
     if (!existsSync(join(srcDir, rel))) { absent++; continue }
     out.add(rel)
@@ -219,7 +219,7 @@ export function diagnosePaperScope(name) {
       scope: null,
       reason: files.length === 0
         ? `the build declared an empty paper scope (${relPath} lists no files)`
-        : `none of the ${files.length} declared paper file(s) resolved under ${srcDir} (${absent} absent)`,
+        : `none of the ${files.length} declared paper file(s) exist under ${srcDir} (${absent} absent)`,
     }
   }
   return { scope: [...out].sort(), reason: null }

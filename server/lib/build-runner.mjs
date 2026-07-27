@@ -1376,19 +1376,18 @@ function writeRelevantFiles(ctx) {
   // The authoring source dir lives at project.sourceDir (daemon-watched).
   // srcDir is the per-project mirror under server/projects/<name>/source/;
   // pdflatex compiled from srcDir, so INPUT lines reference srcDir paths.
-  // We translate them to authoring-dir paths so the set matches what the
-  // daemon actually pushes from.
+  // Scope is emitted PROJECT-RELATIVE, so it names the same file in both
+  // places and neither root leaks into the record.
   const authorDir = project?.sourceDir
   // Resolve the source/author dirs once. On Fly, /app/server/projects is a
   // symlink to /app/server/persist/projects (fly-entrypoint-live.sh), so
-  // realpathSync(<input>) yields the persist path. We must compare against the
-  // RESOLVED dirs, but emit paths in the LITERAL srcDir/authorDir space the rest
-  // of the pipeline (readPaperScope, the daemon watch filter) expects. See
-  // relevantPathsForInput. Before this, the post-realpath input was tested
-  // against the un-resolved srcDir, never matched, and the paper scope came out
-  // empty — which silently froze shadow commits after the 2026-06-14 persist
-  // migration (commit 46fb299d introduced the symlink).
-  const dirs = { srcDir, authorDir, realSrcDir: realDirOf(srcDir), realAuthorDir: realDirOf(authorDir) }
+  // realpathSync(<input>) yields the persist path and must be compared against
+  // the RESOLVED dirs. Before this, the post-realpath input was tested against
+  // the un-resolved srcDir, never matched, and the paper scope came out empty —
+  // which silently froze shadow commits after the 2026-06-14 persist migration
+  // (commit 46fb299d introduced the symlink). Relative output is what keeps
+  // that class closed: there is no second path space left to disagree with.
+  const dirs = { srcDir, realSrcDir: realDirOf(srcDir), realAuthorDir: realDirOf(authorDir) }
   const relevant = new Set()
   let lineCount = 0
   try {
@@ -1398,7 +1397,8 @@ function writeRelevantFiles(ctx) {
       lineCount++
       const raw = line.slice(6).trim()
       if (!raw) continue
-      for (const rp of relevantPathsForInput(raw, dirs)) relevant.add(rp)
+      const rel = relevantPathForInput(raw, dirs)
+      if (rel) relevant.add(rel)
     }
   } catch (e) {
     addLog(`Relevant files: parse failed (non-fatal): ${e.message}`)
@@ -1424,18 +1424,16 @@ function writeRelevantFiles(ctx) {
   }
   // Augment with SVG siblings of included PDF figures — tlda's patch pipeline
   // renders SVGs, not the PDFs that pdflatex reads.
-  for (const p of [...relevant]) {
-    if (!p.endsWith('.pdf')) continue
-    const svgPath = p.replace(/\.pdf$/, '.svg')
-    if (existsSync(svgPath)) relevant.add(svgPath)
+  for (const rel of [...relevant]) {
+    if (!rel.endsWith('.pdf')) continue
+    addRelevantPath(relevant, rel.replace(/\.pdf$/, '.svg'), srcDir, authorDir)
   }
   // Augment with markdown source files for generated scratch .tex files.
   // The build runner converts .tlda/scratch/*.md → .tex; pdflatex only
   // sees the .tex, but the daemon needs to watch the .md source.
-  for (const p of [...relevant]) {
-    if (!p.includes('.tlda/scratch/') || !p.endsWith('.tex')) continue
-    const mdPath = p.replace(/\.tex$/, '.md')
-    if (existsSync(mdPath)) relevant.add(mdPath)
+  for (const rel of [...relevant]) {
+    if (!rel.includes('.tlda/scratch/') || !rel.endsWith('.tex')) continue
+    addRelevantPath(relevant, rel.replace(/\.tex$/, '.md'), srcDir, authorDir)
   }
   // Augment with xr / xr-hyper externally-referenced documents. When main
   // does \externaldocument{X}, xr writes \@input{X.aux} into main's .aux —
@@ -1456,7 +1454,8 @@ function writeRelevantFiles(ctx) {
               if (!line.startsWith('INPUT ')) continue
               const raw = line.slice(6).trim()
               if (!raw) continue
-              for (const rp of relevantPathsForInput(raw, dirs)) relevant.add(rp)
+              const rel = relevantPathForInput(raw, dirs)
+              if (rel) relevant.add(rel)
             }
           } catch {}
         }
@@ -1467,7 +1466,6 @@ function writeRelevantFiles(ctx) {
   try {
     writeFileSync(outPath, JSON.stringify({
       generated_at: new Date().toISOString(),
-      source_dir: authorDir || srcDir,
       files: [...relevant].sort(),
     }, null, 2))
     addLog(`Relevant files: ${relevant.size} entries from ${lineCount} INPUT lines`)
@@ -1476,17 +1474,20 @@ function writeRelevantFiles(ctx) {
   }
 }
 
-/** Add a relative path to the relevant set, resolving against srcDir and authorDir.
- * Stores the LITERAL srcDir/authorDir paths (not realpathSync'd) — downstream
- * consumers (readPaperScope, the daemon watch filter) work in literal space, and
- * existsSync already follows the symlink so the existence check is correct. */
+/** Add a project-relative path to the relevant set, if it exists in either
+ * root. One entry per paper file — the server mirror and the author's machine
+ * name the same file with the same relative path, so there is nothing to
+ * reconcile downstream. */
 function addRelevantPath(relevant, relPath, srcDir, authorDir) {
-  const mirrorPath = join(srcDir, relPath)
-  if (existsSync(mirrorPath)) relevant.add(mirrorPath)
-  if (authorDir) {
-    const authorPath = join(authorDir, relPath)
-    if (existsSync(authorPath)) relevant.add(authorPath)
-  }
+  if (existsInProject(relPath, srcDir, authorDir)) relevant.add(relPath)
+}
+
+/** Does this project-relative path exist in the server mirror or the author's
+ * copy? Either one means the file is real; consumers resolve against whichever
+ * root they hold. */
+function existsInProject(relPath, srcDir, authorDir) {
+  if (existsSync(join(srcDir, relPath))) return true
+  return Boolean(authorDir) && existsSync(join(authorDir, relPath))
 }
 
 /** realpathSync(dir), or the dir itself if it can't be resolved (e.g. doesn't
@@ -1498,39 +1499,34 @@ function realDirOf(dir) {
 }
 
 /**
- * Map one .fls INPUT path to the relevant-file paths it contributes (possibly
- * empty). System/texlive paths and anything outside the project's source/author
- * dirs return []. Symlink-safe: the input is realpath-resolved (so it may land
- * under Fly's persist volume), compared against the RESOLVED source/author dirs,
- * but emitted in the LITERAL srcDir/authorDir space that readPaperScope and the
- * daemon watch filter expect — never the resolved/persist path.
+ * Map one .fls INPUT path to the project-relative path it contributes, or null
+ * if it is not a paper file.
  *
- * `dirs` = { srcDir, authorDir, realSrcDir, realAuthorDir }. Exported for tests.
+ * THIS IS WHERE SCOPE IS DECIDED, and the only place it can be. An input that
+ * does not live under the project's source or author dir — /usr/share/texmf,
+ * the texlive tree, anything else on the build machine — is not part of the
+ * paper and must never enter a version. A relative path cannot express "outside
+ * the project", which is exactly the point of using one; it also means this
+ * exclusion cannot move downstream. Do not re-add a prefix check in a consumer.
+ *
+ * The result is relative, so it is the same string in the server mirror and on
+ * the author's machine, and each consumer joins it against the root it holds.
+ * Symlink-safe: the input is realpath-resolved (on Fly the project dirs are
+ * symlinks into the persist volume) and compared against the RESOLVED dirs.
+ *
+ * `dirs` = { srcDir, realSrcDir, realAuthorDir }. Exported for tests.
  */
-export function relevantPathsForInput(raw, { srcDir, authorDir, realSrcDir, realAuthorDir }) {
-  let p = raw
-  if (!p) return []
-  // Absolute texlive / system paths: skip unless under the source/author dir
-  // (test both literal and resolved forms — the symlink makes them differ).
-  if (p.startsWith('/') &&
-      !p.startsWith(srcDir) && !p.startsWith(realSrcDir) &&
-      !(authorDir && (p.startsWith(authorDir) || (realAuthorDir && p.startsWith(realAuthorDir))))) {
-    return []
-  }
-  // Relative paths: resolve against srcDir (pdflatex's source base).
-  if (!p.startsWith('/')) p = join(srcDir, p)
+export function relevantPathForInput(raw, { srcDir, realSrcDir, realAuthorDir }) {
+  if (!raw) return null
+  // Relative inputs are relative to srcDir — pdflatex's source base.
+  let p = raw.startsWith('/') ? raw : join(srcDir, raw)
   // Resolve symlinks / collapse .. so the prefix test is apples-to-apples.
+  // A path that no longer resolves is a file that is gone, and a file that is
+  // gone is not paper scope — it falls out of both tests below.
   try { p = realpathSync(p) } catch { /* file may not exist anymore */ }
-  const out = []
-  if (p.startsWith(realSrcDir + '/')) {
-    const rel = p.slice(realSrcDir.length + 1)
-    if (authorDir) out.push(join(authorDir, rel))
-    out.push(join(srcDir, rel)) // literal mirror path (what readPaperScope expects)
-  } else if (realAuthorDir && p.startsWith(realAuthorDir + '/')) {
-    const rel = p.slice(realAuthorDir.length + 1)
-    out.push(join(authorDir, rel))
-  }
-  return out
+  if (realSrcDir && p.startsWith(realSrcDir + '/')) return p.slice(realSrcDir.length + 1)
+  if (realAuthorDir && p.startsWith(realAuthorDir + '/')) return p.slice(realAuthorDir.length + 1)
+  return null
 }
 
 // Detect xr-referenced sibling .tex files in the project's primary main.
@@ -1645,9 +1641,8 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
   let parsed
   try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch (e) { console.warn(`[build] corrupt relevant-files.json for ${name}: ${e.message}`); return }
   const files = Array.isArray(parsed?.files) ? parsed.files : []
-  const scope = files
-    .filter(p => typeof p === 'string' && p.startsWith(sourceDir + '/'))
-    .map(p => p.slice(sourceDir.length + 1))
+  // Scope is project-relative; the working copy at sourceDir uses the same names.
+  const scope = files.filter(p => typeof p === 'string' && p.length > 0)
   if (scope.length === 0) return
 
   // Move existing blank shadow out of the way so initShadowFromProjectRepo
@@ -2066,7 +2061,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
         join(outDir, 'relevant-files.json'),
         JSON.stringify({
           generated_at: new Date().toISOString(),
-          source_dir: project?.sourceDir || srcDir,
           targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
           files: [...union].sort(),
         }, null, 2),

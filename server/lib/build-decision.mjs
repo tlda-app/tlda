@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
-import { outputDir, sourceDir as getSourceDir } from './project-store.mjs'
+import { outputDir } from './project-store.mjs'
 
 /**
  * Decide whether a file push should trigger a build.
@@ -56,17 +56,11 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
     }
 
     try {
+      // Scope and changedFiles are both project-relative — compare directly.
       const { files: relevantList } = JSON.parse(readFileSync(relevantPath, 'utf8'))
       const relevantSet = new Set(relevantList || [])
-      const mirrorDir = getSourceDir(name)
-      const authorDir = project.sourceDir
 
-      const anyRelevant = changedFiles.some(f => {
-        const mirrorPath = join(mirrorDir, f)
-        if (relevantSet.has(mirrorPath)) return true
-        if (authorDir && relevantSet.has(join(authorDir, f))) return true
-        return false
-      })
+      const anyRelevant = changedFiles.some(f => relevantSet.has(f))
 
       if (!anyRelevant) {
         return { build: false, eager: false, reason: 'outside-tree' }
