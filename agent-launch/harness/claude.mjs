@@ -10,7 +10,7 @@ import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 import { claudeJsonlPath } from '../resume.mjs'
 
-const LOGIN_PROMPT = 'Call login() with the fleet MCP server. Then call inbox() to check for a pending task.'
+const LOGIN_PROMPT = 'Call login() with the tlda MCP server. Then call inbox() to check for a pending task.'
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 const execFileP = promisify(execFile)
 

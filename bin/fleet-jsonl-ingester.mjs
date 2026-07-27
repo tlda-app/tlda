@@ -211,7 +211,7 @@ export function terminalChatFromRecord(parsed) {
   if (text.length > 2000) text = text.substring(0, 2000)
   if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
       text.startsWith('<channel') || text.startsWith('📬') ||
-      /^Call (?:login|register)\([^)]*\) with the fleet MCP server\b/.test(text)) return null
+      /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/.test(text)) return null
   const ts = parsed.timestamp || null
   if (!ts) return null
   return { text, ts }
