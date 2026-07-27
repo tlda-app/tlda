@@ -174,7 +174,7 @@ type FigureBinding = {
 const attached = new WeakMap<HTMLIFrameElement, () => void>()
 
 /**
- * Bind every rgl figure in a deck iframe to the deck shape's props.
+ * Bind every rgl figure in a deck iframe to the deck shape's meta.
  * Returns a teardown. Calling it twice on the same iframe returns the first one.
  */
 export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: HTMLIFrameElement) {
@@ -203,9 +203,9 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
     // debug. The store-level write is the path this file already uses for the
     // same locked shape in the `tlda-resize` handler.
     //
-    // The other idiom in this repo is unlock-then-`updateShape` (SvgDocument,
-    // FleetChatShape, and the `fleet-docview` branch below). Deliberately not
-    // that one: it is for a deliberate user action on one shape, whereas this
+    // The other idiom in this repo is unlock-then-`updateShape` (SvgDocument.tsx,
+    // FleetChatShape.tsx, and HtmlPageShape.tsx's `fleet-docview` branch).
+    // Deliberately not that one: it is for a deliberate user action, whereas this
     // fires every animation frame of a drag, and leaving the deck unlocked would
     // make it draggable on the canvas — a product change nobody asked for.
     //
