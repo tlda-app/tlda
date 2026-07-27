@@ -20,7 +20,7 @@ const CLUSTER_GAP = 5000 // ms — shapes within this window share an anchor
 const ANCHORABLE_TYPES = new Set(['draw', 'highlight', 'arrow', 'geo', 'text', 'line'])
 
 /** System shape ID prefixes to skip (deterministic IDs from overlays). */
-const SYSTEM_PREFIXES = ['build-error-', 'diff-', 'proof-', 'hist-']
+const SYSTEM_PREFIXES = ['diff-', 'proof-', 'hist-']
 
 interface ActiveCluster {
   anchor: AnnotationSourceAnchor

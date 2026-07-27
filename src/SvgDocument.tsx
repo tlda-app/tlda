@@ -592,15 +592,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       const errors = signal.errors || []
       setBuildErrors(errors)
       setTexWarnings((signal.warnings || []).map(w => ({ ...w, category: 'tex' as const })))
-      // When errors clear, immediately clean up error shapes on the canvas
-      // (belt-and-suspenders — BuildErrorOverlay also cleans up on unmount)
-      if (errors.length === 0 && editorRef.current) {
-        const editor = editorRef.current
-        const toDelete = editor.getCurrentPageShapes()
-          .filter(s => s.id.startsWith('shape:build-error-') || (s.type === 'text' && s.isLocked && s.x >= 800))
-          .map(s => s.id)
-        if (toDelete.length > 0) editor.store.remove(toDelete)
-      }
     })
   }, [])
 
@@ -1310,14 +1301,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // With @tldraw/sync, the store already has synced shapes when onMount fires.
           // Ensure page backgrounds are at the bottom of the z-order.
           editorSetup.ensurePagesAtBottom()
-
-          // Clean up stale build-error shapes that may have persisted in the sync store
-          {
-            const toDelete = editor.getCurrentPageShapes()
-              .filter(s => s.id.startsWith('shape:build-error-') || (s.type === 'text' && s.isLocked && s.x >= 800))
-              .map(s => s.id)
-            if (toDelete.length > 0) editor.store.remove(toDelete)
-          }
 
           // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
