@@ -9,8 +9,32 @@ import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, normalizeSourceM
 export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
   const revisions = new Map()
   const pending = new Map()
+  const pendingProjects = new Set()
+  const queued = new Map()
   const blocked = new Set()
   const retries = []
+
+  function mergePayloads(previous, next) {
+    if (!previous) return next
+    const merged = { ...previous }
+    for (const [key, value] of Object.entries(next)) {
+      if (value !== undefined) merged[key] = value
+    }
+    const files = new Map((previous.files || []).map(file => [file.path, file]))
+    const deleted = new Set(previous.deletedFiles || [])
+    for (const file of next.files || []) {
+      files.set(file.path, file)
+      deleted.delete(file.path)
+    }
+    for (const file of next.deletedFiles || []) {
+      files.delete(file)
+      deleted.add(file)
+    }
+    merged.files = [...files.values()]
+    merged.deletedFiles = [...deleted]
+    return merged
+  }
+
   return {
     seed(project, revision) {
       const nextRevision = revision ?? null
@@ -19,15 +43,37 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
     },
     prepare(payload, retried = false) {
       if (blocked.has(payload.project)) return null
+      if (pendingProjects.has(payload.project)) {
+        queued.set(payload.project, mergePayloads(queued.get(payload.project), payload))
+        return null
+      }
       const requestId = makeId()
+      const message = { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null }
       pending.set(requestId, { project: payload.project, payload, retried })
-      return { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null }
+      pendingProjects.add(payload.project)
+      return message
+    },
+    beginReconnect() {
+      // The old request's fate is unknowable, and result caches are scoped to
+      // its dead WebSocket. Fold its bytes into the newest queued edit, then
+      // wait for sync() to seed the server's current revision.
+      for (const request of pending.values()) {
+        queued.set(request.project, mergePayloads(request.payload, queued.get(request.project)))
+      }
+      pending.clear()
+      pendingProjects.clear()
+    },
+    finishReconnect() {
+      const payloads = [...queued.values()]
+      queued.clear()
+      return payloads
     },
     handle(message) {
       const request = pending.get(message.requestId)
       if (!request || request.project !== message.project) return false
       pending.delete(message.requestId)
       const project = request.project
+      pendingProjects.delete(project)
       if (message.ok && typeof message.sourceRevision === 'string') revisions.set(project, message.sourceRevision)
       else {
         const currentRevision = message.authority?.currentRevision
@@ -44,6 +90,11 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
         }
         log.warn(`source change rejected for ${project}: ${message.error || message.status || 'unknown'}`)
       }
+      const queuedPayload = queued.get(project)
+      if (queuedPayload && !blocked.has(project)) {
+        queued.delete(project)
+        retries.push({ payload: queuedPayload, retried: false })
+      }
       return true
     },
     takeRetry() { return retries.shift() ?? null },
@@ -58,7 +109,14 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
         if (retries[i].payload?.project === project) retries.splice(i, 1)
       }
     },
-    state(project) { return { revision: revisions.get(project) ?? null, blocked: blocked.has(project) } },
+    state(project) {
+      return {
+        revision: revisions.get(project) ?? null,
+        blocked: blocked.has(project),
+        pending: pendingProjects.has(project),
+        queued: queued.has(project),
+      }
+    },
   }
 }
 
@@ -68,7 +126,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   function sendSourceChange(payload, retried = false) {
     const message = sourceCorrelation.prepare(payload, retried)
-    if (!message) { log.warn(`source authority blocked for ${payload.project}; refresh/reconcile required`); return false }
+    if (!message) {
+      const state = sourceCorrelation.state(payload.project)
+      if (state.queued) log.info(`source change queued behind in-flight request for ${payload.project}`)
+      else log.warn(`source authority blocked for ${payload.project}; refresh/reconcile required`)
+      return false
+    }
     return sendMsg(message)
   }
 
@@ -715,6 +778,13 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
+  function beginReconnect() {
+    sourceCorrelation.beginReconnect()
+  }
+
+  function finishReconnect() {
+    for (const payload of sourceCorrelation.finishReconnect()) sendSourceChange(payload)
+  }
 
 
   function getSourceDir(project) {
@@ -728,6 +798,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   return {
     sync,
+    beginReconnect,
+    finishReconnect,
     flushPending,
     getSourceDir,
     closeAll,

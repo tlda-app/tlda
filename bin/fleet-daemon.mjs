@@ -1417,7 +1417,13 @@ function handleServerMessage(msg, wsAttemptId) {
     })
     _serverReady = true
     serverProjects = msg.projects || []
+    // beginReconnect first: applyProjectWorldOwnership calls sourceSync.sync,
+    // which seeds each project's current revision. Anything still in flight on
+    // the dead socket has to be folded into the queue before that seed lands,
+    // and re-sent after it.
+    sourceSync.beginReconnect()
     applyProjectWorldOwnership('daemon-welcome')
+    sourceSync.finishReconnect()
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`connected work received: ${projects.length} projects`)
     daemonDelivery.noteReady()
