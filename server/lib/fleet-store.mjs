@@ -25,7 +25,7 @@ import os from 'os';
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
-import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs';
+import { fleetRosterCategory, isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 
@@ -1596,10 +1596,11 @@ export class FleetStore {
     this._getAllAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} ORDER BY agents.last_seen DESC`);
     // Live-only roster (the agents panel never shows dead agents). Indexed by
     // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
-    this._getAliveAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 ORDER BY agents.last_seen DESC`);
+    this._getAliveAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1 ORDER BY agents.last_seen DESC`);
     this._getAliveAgentsPage = this.db.prepare(`
       SELECT ${AGENT_SELECT} ${AGENT_JOIN}
       WHERE agents.dead = 0
+        AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1
         AND (agents.last_seen < @lastSeen OR (agents.last_seen = @lastSeen AND agents.id < @id))
       ORDER BY agents.last_seen DESC, agents.id DESC
       LIMIT @limit
@@ -2186,7 +2187,7 @@ export class FleetStore {
     if (!this._agentRegistry || !this._aliveAgentRegistry) return;
     const rows = this._getAllAgents.all().map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
     const ids = new Set(rows.map(a => a.id));
-    const aliveIds = new Set(rows.filter(a => !a.dead).map(a => a.id));
+    const aliveIds = new Set(rows.filter(isFleetRosterAgent).map(a => a.id));
     this._agentRegistry.bulk(s => {
       for (const a of rows) s.upsert(a);
       for (const a of s.all()) {
@@ -2195,7 +2196,7 @@ export class FleetStore {
     });
     this._aliveAgentRegistry.bulk(s => {
       for (const a of rows) {
-        if (a.dead) s.remove(a.id);
+        if (!isFleetRosterAgent(a)) s.remove(a.id);
         else s.upsert(a);
       }
       for (const a of s.all()) {
@@ -2214,7 +2215,7 @@ export class FleetStore {
       return;
     }
     this._agentRegistry.upsert(agent);
-    if (agent.dead) this._aliveAgentRegistry.remove(id);
+    if (!isFleetRosterAgent(agent)) this._aliveAgentRegistry.remove(id);
     else this._aliveAgentRegistry.upsert(agent);
   }
 

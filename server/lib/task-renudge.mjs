@@ -60,7 +60,7 @@ export function decideTaskRenudges({
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
     const status = String(runtimeStatusName(agent) || '').toLowerCase()
-    if (status === 'dead' || status === 'shell') continue
+    if (status === 'dead') continue
     // Skip agents whose wake breaker is open (consecutive wake failures →
     // exponential backoff). Prevents the endless futile respawns of agents whose
     // session can't be resolved. Reset on recovery (register / successful wake).

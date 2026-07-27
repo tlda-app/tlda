@@ -4,9 +4,7 @@ export const HUMAN_HEARTBEAT_TTL_MS = POSITIVE_LIVENESS_TTL_MS
 export const RUNTIME_STATUS = Object.freeze({
   AWAKE: 'awake',
   HIBERNATING: 'hibernating',
-  UNAVAILABLE: 'unavailable',
   DEAD: 'dead',
-  SHELL: 'shell',
   HUMAN: 'human',
   HUMAN_AWAY: 'human-away',
 })
@@ -216,7 +214,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (metadata.shell) {
     return runtimeProjection({
-      status: RUNTIME_STATUS.SHELL,
+      status: RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
       route,
       evidence: baseEvidence,
@@ -227,7 +225,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.DEAD || evidence?.liveness === LIVENESS.WEDGED) {
     return runtimeProjection({
-      status: seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING,
+      status: RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
       route,
       evidence: baseEvidence,
@@ -240,7 +238,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     const ageMs = Number.isFinite(evidence.liveness_at_ms) ? nowMs - evidence.liveness_at_ms : Infinity
     const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && ageMs <= ttlMs
     return runtimeProjection({
-      status: currentPositiveEvidence ? RUNTIME_STATUS.AWAKE : (seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING),
+      status: currentPositiveEvidence ? RUNTIME_STATUS.AWAKE : RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
       route,
       evidence: { ...baseEvidence, positive_age_ms: Number.isFinite(ageMs) ? Math.max(0, ageMs) : null },
@@ -254,7 +252,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   }
 
   return runtimeProjection({
-    status: seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING,
+    status: RUNTIME_STATUS.HIBERNATING,
     activity: baseEvidence.activity,
     route,
     evidence: baseEvidence,

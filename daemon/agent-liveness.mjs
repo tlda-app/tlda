@@ -84,9 +84,15 @@ export function createAgentLiveness({
     // Resolve the RUNNING sessions to agent ids — iteration is over what is
     // running (~20), not over what was ever hosted. The server is not told about
     // tmux at all; session naming is local information and stays on this box.
+    const agents = getAgents?.() || []
     const agentIdBySession = new Map()
-    for (const agent of getAgents?.() || []) {
+    const absent_agent_ids = []
+    for (const agent of agents) {
       if (agent?.tmux_session && agent.id) agentIdBySession.set(agent.tmux_session, agent.id)
+    }
+    for (const agent of agents) {
+      if (!agent?.id || !agent.tmux_session) continue
+      if (!liveSessions.has(agent.tmux_session)) absent_agent_ids.push(agent.id)
     }
     const running_agent_ids = []
     for (const session of liveSessions) {
@@ -98,6 +104,8 @@ export function createAgentLiveness({
     sendMsg({
       type: 'agent-liveness-snapshot',
       running_agent_ids,
+      absent_agent_ids,
+      snapshot_complete: true,
       reason,
       ts: reportedAt,
       daemon_key: daemonKey,
