@@ -1,1 +1,0 @@
-{"version":3,"file":"LineShapeTool.d.ts","sourceRoot":"","sources":["../../../../src/lib/shapes/line/LineShapeTool.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,sBAAsB,EAAE,MAAM,gBAAgB,CAAA;AAIlE,cAAc;AACd,qBAAa,aAAc,SAAQ,SAAS;IAC3C,OAAgB,EAAE,SAAS;IAC3B,OAAgB,OAAO,SAAS;IAChC,OAAgB,QAAQ,IAAI,sBAAsB,EAAE,CAEnD;IAEQ,SAAS,SAAS;CAC3B"}

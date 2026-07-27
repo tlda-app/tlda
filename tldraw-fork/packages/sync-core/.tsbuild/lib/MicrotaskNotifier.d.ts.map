@@ -1,1 +1,0 @@
-{"version":3,"file":"MicrotaskNotifier.d.ts","sourceRoot":"","sources":["../../src/lib/MicrotaskNotifier.ts"],"names":[],"mappings":"AAAA;;;GAGG;AACH,qBAAa,iBAAiB,CAAC,CAAC,SAAS,OAAO,EAAE;IACjD,OAAO,CAAC,SAAS,CAAmC;IAEpD,MAAM,CAAC,GAAG,KAAK,EAAE,CAAC,QAUjB;IAED,QAAQ,CAAC,SAAS,EAAE,CAAC,GAAG,KAAK,EAAE,CAAC,KAAK,IAAI,cAiBxC;CACD"}

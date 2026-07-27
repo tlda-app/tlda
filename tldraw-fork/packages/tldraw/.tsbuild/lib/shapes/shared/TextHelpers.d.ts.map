@@ -1,1 +1,0 @@
-{"version":3,"file":"TextHelpers.d.ts","sourceRoot":"","sources":["../../../../src/lib/shapes/shared/TextHelpers.ts"],"names":[],"mappings":"AAAA,cAAc;AACd,eAAO,MAAM,MAAM,OAAO,CAAA;AAE1B,gBAAgB;AAChB,qBAAa,WAAW;IACvB,MAAM,CAAC,WAAW,SAAc;IAEhC,MAAM,CAAC,aAAa,CAAC,IAAI,EAAE,MAAM,UAEhC;IAED,MAAM,CAAC,mBAAmB,CAAC,IAAI,EAAE,MAAM,UAMtC;CACD"}

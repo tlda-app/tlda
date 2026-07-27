@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["../../../src/lib/utils/getPointerInfo.ts"],
-  "sourcesContent": ["import type React from 'react'\nimport { Editor } from '../editor/Editor'\nimport { TLViewportId } from '../editor/viewports/TLViewport'\nimport { isAccelKey } from './keyboard'\nimport { getPointerEventButton } from './pointer'\n\n/** @public */\nexport function getPointerInfo(\n\teditor: Editor,\n\te: React.PointerEvent | PointerEvent,\n\topts?: { viewportId?: TLViewportId }\n) {\n\teditor.markEventAsHandled(e)\n\n\treturn {\n\t\tviewportId: opts?.viewportId,\n\t\tpoint: {\n\t\t\tx: e.clientX,\n\t\t\ty: e.clientY,\n\t\t\tz: e.pressure,\n\t\t},\n\t\tshiftKey: e.shiftKey,\n\t\taltKey: e.altKey,\n\t\tctrlKey: e.metaKey || e.ctrlKey,\n\t\tmetaKey: e.metaKey,\n\t\taccelKey: isAccelKey(e),\n\t\tpointerId: e.pointerId,\n\t\tbutton: getPointerEventButton(e),\n\t\tisPen: e.pointerType === 'pen',\n\t}\n}\n"],
-  "mappings": ";;;;;;;;;;;;;;;;;;AAAA;AAAA;AAAA;AAAA;AAAA;AAGA,sBAA2B;AAC3B,qBAAsC;AAG/B,SAAS,eACf,QACA,GACA,MACC;AACD,SAAO,mBAAmB,CAAC;AAE3B,SAAO;AAAA,IACN,YAAY,MAAM;AAAA,IAClB,OAAO;AAAA,MACN,GAAG,EAAE;AAAA,MACL,GAAG,EAAE;AAAA,MACL,GAAG,EAAE;AAAA,IACN;AAAA,IACA,UAAU,EAAE;AAAA,IACZ,QAAQ,EAAE;AAAA,IACV,SAAS,EAAE,WAAW,EAAE;AAAA,IACxB,SAAS,EAAE;AAAA,IACX,cAAU,4BAAW,CAAC;AAAA,IACtB,WAAW,EAAE;AAAA,IACb,YAAQ,sCAAsB,CAAC;AAAA,IAC/B,OAAO,EAAE,gBAAgB;AAAA,EAC1B;AACD;",
-  "names": []
-}
