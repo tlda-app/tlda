@@ -397,6 +397,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const editorRef = useRef<Editor | null>(null)
   const restoredEditorRef = useRef<Editor | null>(null)
+  const initialHistoryPageHandledRef = useRef(false)
 
   // --- Cross-cutting refs shared by hooks ---
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
@@ -534,6 +535,20 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowColumnX, shadowYOffset, shadowChangelog,
     toggleShadowOverlay, hideShadowOverlay, handleShadowScrubTime, handleShadowStep, realignShadow,
   } = useShadowOverlay(editorRef, document, projectName, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef)
+
+  useEffect(() => {
+    if (initialHistoryPageHandledRef.current || editorMounted === 0) return
+    const pageNumber = Number(new URLSearchParams(window.location.search).get('page'))
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > document.pages.length) return
+    const page = document.pages[pageNumber - 1]
+    const editor = editorRef.current
+    if (!editor) return
+    initialHistoryPageHandledRef.current = true
+    editor.centerOnPoint({
+      x: page.bounds.x + page.bounds.w / 2,
+      y: page.bounds.y + page.bounds.h / 2,
+    })
+  }, [document, editorMounted])
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)

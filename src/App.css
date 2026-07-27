@@ -211,6 +211,160 @@ body.tlda-pan-mode * {
   height: 100%;
 }
 
+.project-index {
+  width: 100%;
+  min-width: 680px;
+}
+
+.project-index-axis,
+.project-index-row {
+  display: grid;
+  grid-template-columns: 200px minmax(420px, 1fr) 36px;
+  column-gap: 14px;
+}
+
+.project-index-axis {
+  align-items: end;
+  height: 32px;
+  border-bottom: 1px solid #e2e8f0;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.project-index-axis-label {
+  padding: 0 0 7px 10px;
+}
+
+.project-index-axis-ticks {
+  position: relative;
+  height: 100%;
+}
+
+.project-index-axis-ticks span {
+  position: absolute;
+  bottom: 7px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.project-index-axis-ticks span:first-child {
+  transform: none;
+}
+
+.project-index-axis-ticks span:last-child {
+  transform: translateX(-100%);
+}
+
+.project-index-row {
+  min-height: 82px;
+  align-items: stretch;
+  cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.project-index-row:hover {
+  background: #f8fafc;
+}
+
+.project-index-loading {
+  padding: 28px 10px;
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
+.project-index-loading-error {
+  color: #b91c1c;
+}
+
+.project-index-name {
+  align-self: center;
+  min-width: 0;
+  padding: 10px;
+}
+
+.project-index-name a {
+  display: block;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-index-row:hover .project-index-name a {
+  color: #3b82f6;
+}
+
+.project-index-name .picker-date {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+}
+
+.project-index-history {
+  position: relative;
+  min-width: 0;
+  padding: 9px 0;
+}
+
+.project-index-history-status {
+  position: absolute;
+  top: 50%;
+  left: 24px;
+  transform: translateY(-50%);
+  color: #b91c1c;
+  font-size: 0.72rem;
+}
+
+.project-index-history-loading {
+  position: absolute;
+  top: 50%;
+  left: 24px;
+  transform: translateY(-50%);
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.project-index-spacetime.spacetime-panel {
+  height: 64px;
+  margin: 0;
+  opacity: 1;
+  pointer-events: all;
+}
+
+.project-index-spacetime .spacetime-field {
+  margin: 0;
+  border-right: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.project-index-spacetime .spacetime-dot {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 0;
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.85) 0 1px, transparent 1.5px);
+}
+
+.project-index-spacetime .spacetime-dot.multi {
+  width: 10px;
+  height: 10px;
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.9) 0 1.5px, transparent 2px);
+}
+
+.project-index-spacetime .spacetime-dot:hover {
+  width: 10px;
+  height: 10px;
+  background: radial-gradient(circle, rgb(245, 158, 11) 0 3px, transparent 3.5px);
+}
+
+.project-index-row .picker-archive {
+  align-self: center;
+}
+
 .picker-table {
   width: 100%;
   max-width: 640px;
@@ -286,21 +440,6 @@ body.tlda-pan-mode * {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
 }
 
-.picker-sync, .picker-sync-header {
-  width: 2.5rem;
-  text-align: center;
-}
-
-.picker-sync input[type="checkbox"] {
-  cursor: pointer;
-  opacity: 0.4;
-  transition: opacity 0.2s;
-}
-
-.picker-table tbody tr:hover .picker-sync input[type="checkbox"] {
-  opacity: 0.8;
-}
-
 .picker-archive {
   width: 2rem;
   text-align: center;
@@ -330,7 +469,6 @@ body.tlda-pan-mode * {
 .picker-search {
   display: block;
   width: 100%;
-  max-width: 640px;
   padding: 0.5rem 0.75rem;
   margin-bottom: 1rem;
   border: 1px solid #e2e8f0;

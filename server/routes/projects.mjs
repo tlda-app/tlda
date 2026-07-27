@@ -50,8 +50,22 @@ import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
+import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 
 const router = Router()
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = {}
+  let nextIndex = 0
+  const workerCount = Math.min(concurrency, items.length)
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++]
+      results[item] = await mapper(item)
+    }
+  }))
+  return results
+}
 
 // Formats that already write their own page-info.json via their own build
 // pipeline (server/lib/format-builders.mjs) — writing a parts-only one would
@@ -136,6 +150,62 @@ router.get('/meta', requireRead, (req, res) => {
     }
   }
   res.json(meta)
+})
+
+// Space-time changelogs for an explicit page of project rows. Whole history is
+// required so each row can be placed truthfully on the index's matching axes.
+router.post('/history/shadow/changelog/batch', requireRead, async (req, res) => {
+  const names = [...new Set(
+    (Array.isArray(req.body?.projects) ? req.body.projects : [])
+      .filter(name => typeof name === 'string' && name.length > 0),
+  )]
+  if (names.length === 0) return res.json({ projects: {} })
+  if (names.length > 50) {
+    return res.status(400).json({ error: 'At most 50 projects may be requested at once' })
+  }
+
+  const projects = await mapWithConcurrency(names, 4, async name => {
+    try {
+      return await readShadowChangelog(name, { limit: null })
+    } catch (error) {
+      return { commits: [], totalPages: 0, error: error.message }
+    }
+  })
+  res.json({ projects })
+})
+
+// Select real project histories and establish the shared clock before any row
+// strips render. A synthetic init or one build does not qualify as history.
+router.post('/history/shadow/index', requireRead, async (req, res) => {
+  const names = [...new Set(
+    (Array.isArray(req.body?.projects) ? req.body.projects : [])
+      .filter(name => typeof name === 'string' && name.length > 0),
+  )]
+  if (names.length === 0) return res.json({ projects: {}, oldest: null })
+  if (names.length > 500) {
+    return res.status(400).json({ error: 'At most 500 projects may be requested at once' })
+  }
+
+  const errors = {}
+  const scanned = await mapWithConcurrency(names, 8, async name => {
+    try {
+      return await readShadowIndexInfo(name)
+    } catch (error) {
+      errors[name] = error.message
+      return null
+    }
+  })
+  const projects = Object.fromEntries(
+    Object.entries(scanned).filter(([, info]) => info !== null),
+  )
+  const histories = Object.values(projects)
+  res.json({
+    projects,
+    oldest: histories.length > 0
+      ? Math.min(...histories.map(info => info.oldest.timestamp))
+      : null,
+    errors,
+  })
 })
 
 // GET /health — check sync health for all docs that have a snapshot

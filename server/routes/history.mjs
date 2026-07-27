@@ -22,6 +22,7 @@ import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBound
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
+import { readShadowChangelog } from '../lib/shadow-changelog.mjs'
 
 // ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
 const _PDF_WIDTH = 612, _TARGET_WIDTH = 800, _PDF_HEIGHT = 792, _PAGE_GAP = 32
@@ -983,96 +984,8 @@ router.get('/shadow/changelog', requireRead, async (req, res) => {
   const project = readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const repoDir = getShadowRepoDir(name)
-  if (!existsSync(join(repoDir, '.git'))) {
-    return res.json({ commits: [], totalPages: 0 })
-  }
-
-  // 1. Build file→pages map from the primary target's current lookup.json
-  const primaryTexBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
-  const lookupPath = join(outputDir(name), `${primaryTexBase}-lookup.json`)
-  const filePages = new Map()  // filename → Set<page>
-  let totalPages = project.pages || 0
-  if (existsSync(lookupPath)) {
-    try {
-      const lookup = JSON.parse(readFileSync(lookupPath, 'utf8'))
-      const lines = lookup.lines || {}
-      const mainFile = lookup.meta?.texFile || project.mainFile || 'main.tex'
-
-      for (const [key, entry] of Object.entries(lines)) {
-        if (!entry.page) continue
-        // Keys are either "123" (main file) or "appendix.tex:123" (input files)
-        const colonIdx = key.indexOf(':')
-        const file = colonIdx >= 0 ? key.slice(0, colonIdx) : mainFile
-        const lineNum = parseInt(colonIdx >= 0 ? key.slice(colonIdx + 1) : key, 10)
-        if (isNaN(lineNum)) continue
-        if (!filePages.has(file)) filePages.set(file, new Map())
-        // line → page
-        filePages.get(file).set(lineNum, entry.page)
-        if (entry.page > totalPages) totalPages = entry.page
-      }
-    } catch {}
-  }
-
-  // 2. Run git log with unified diff (zero context) to get hunk headers
   try {
-    const { stdout } = await execAsync(
-      `git log --format="COMMIT %H %at" -U0 --diff-filter=M -n ${limit}`,
-      { cwd: repoDir, timeout: 30000, maxBuffer: 50 * 1024 * 1024 },
-    )
-
-    const commits = []
-    let currentCommit = null
-    let currentFile = null
-
-    for (const line of stdout.split('\n')) {
-      if (line.startsWith('COMMIT ')) {
-        if (currentCommit) commits.push(currentCommit)
-        const parts = line.split(' ')
-        currentCommit = {
-          hash: parts[1],
-          timestamp: parseInt(parts[2], 10) * 1000,
-          changedPages: new Set(),
-        }
-        currentFile = null
-      } else if (line.startsWith('+++ b/')) {
-        currentFile = line.slice(6)
-      } else if (line.startsWith('@@ ') && currentCommit) {
-        // Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
-        const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/)
-        if (m) {
-          const newStart = parseInt(m[3], 10)
-          const newCount = parseInt(m[4] ?? '1', 10)
-          // Map changed lines to pages
-          const lineMap = currentFile ? filePages.get(currentFile) : null
-          if (lineMap) {
-            for (let l = newStart; l < newStart + newCount; l++) {
-              const page = lineMap.get(l)
-              if (page) currentCommit.changedPages.add(page)
-            }
-            // If no exact line match, find nearest mapped line
-            if (currentCommit.changedPages.size === 0) {
-              let bestDist = Infinity, bestPage = null
-              for (const [mappedLine, page] of lineMap) {
-                const dist = Math.abs(mappedLine - newStart)
-                if (dist < bestDist) { bestDist = dist; bestPage = page }
-              }
-              if (bestPage && bestDist < 50) currentCommit.changedPages.add(bestPage)
-            }
-          }
-        }
-      }
-    }
-    if (currentCommit) commits.push(currentCommit)
-
-    // Serialize Sets to arrays
-    const result = commits.map(c => ({
-      hash: c.hash,
-      timestamp: c.timestamp,
-      changedPages: [...c.changedPages].sort((a, b) => a - b),
-    }))
-
-    res.json({ commits: result, totalPages })
+    res.json(await readShadowChangelog(name, { limit }))
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -1147,7 +1060,7 @@ router.post('/ribbon-stale', requireRead, async (req, res) => {
     }
     const file = relFileFor(seg.file)
     if (file.includes('\0') || file.includes('\n')) { results[i] = { stale: false, reason: 'bad-file' }; return }
-    const key = `${seg.approvedAtCommit} ${file}`
+    const key = `${seg.approvedAtCommit}\0${file}`
     if (!groups.has(key)) groups.set(key, { commit: seg.approvedAtCommit, file, idxs: [] })
     groups.get(key).idxs.push(i)
   })

@@ -1,4 +1,4 @@
-import { useState, useEffect, Component, type ReactNode } from 'react'
+import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -7,6 +7,7 @@ import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
+import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import './App.css'
 import './themes.css'
 
@@ -56,6 +57,7 @@ interface DocConfig {
   members?: string[]
   buildStatus?: string
   autoSync?: boolean
+  lastBuild?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
 }
 
@@ -449,8 +451,16 @@ function App() {
   }
 }
 
-type SortKey = 'name' | 'lastBuild' | 'lastAnnotated'
 type ProjectMeta = Record<string, { lastBuild?: string; lastAnnotated?: string }>
+type ProjectChangelog = {
+  commits: ChangelogCommit[]
+  totalPages: number
+  error?: string
+}
+type ProjectHistoryIndex = {
+  projects: Record<string, { commitCount: number; oldest: { hash: string; timestamp: number } }>
+  oldest: number | null
+}
 
 function relativeTime(iso: string | undefined): string {
   if (!iso) return '—'
@@ -472,13 +482,16 @@ function DocumentPicker({ manifest, onSelect }: {
   onSelect: (key: string, config: DocConfig) => void
 }) {
   const [meta, setMeta] = useState<ProjectMeta>({})
-  const [sortKey, setSortKey] = useState<SortKey>('name')
-  const [sortAsc, setSortAsc] = useState(true)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
   const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
+  const [changelogs, setChangelogs] = useState<Record<string, ProjectChangelog>>({})
+  const [historyIndex, setHistoryIndex] = useState<ProjectHistoryIndex | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [timeAxisNow] = useState(() => Date.now())
+  const requestedHistoriesRef = useRef(new Set<string>())
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -509,50 +522,97 @@ function DocumentPicker({ manifest, onSelect }: {
   }
 
   const q = search.toLowerCase()
+  const indexProjectNames = Object.keys(manifest)
+    .filter(key => !bookMembers.has(key))
+    .sort()
+  const indexProjectKey = indexProjectNames.join('\n')
+
+  useEffect(() => {
+    if (!indexProjectKey) return
+    const projectNames = indexProjectKey.split('\n')
+    const controller = new AbortController()
+    fetch(`${ASSET_BASE}/api/projects/history/shadow/index`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: projectNames }),
+      signal: controller.signal,
+    })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(data => {
+        setHistoryError(null)
+        setHistoryIndex({
+          projects: data.projects || {},
+          oldest: Number.isFinite(data.oldest) ? data.oldest : null,
+        })
+      })
+      .catch(error => {
+        if (error.name !== 'AbortError') {
+          setHistoryError('Project history unavailable')
+          console.warn('[app] project history index fetch failed:', error.message)
+        }
+    })
+    return () => controller.abort()
+  }, [indexProjectKey])
 
   const entries = Object.entries(manifest)
     .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
+    .filter(([key]) => Boolean(historyIndex?.projects[key]))
     .filter(([key, config]) => !q || (config.name || key).toLowerCase().includes(q) || key.includes(q))
-    .sort(([keyA, a], [keyB, b]) => {
-      let cmp = 0
-      if (sortKey === 'name') {
-        cmp = (a.name || keyA).localeCompare(b.name || keyB)
-      } else {
-        const metaA = meta[keyA]?.[sortKey] || ''
-        const metaB = meta[keyB]?.[sortKey] || ''
-        cmp = metaA < metaB ? -1 : metaA > metaB ? 1 : 0
-      }
-      return sortAsc ? cmp : -cmp
+    .sort(([keyA, configA], [keyB, configB]) =>
+      String(meta[keyB]?.lastBuild || configB.lastBuild || '')
+        .localeCompare(String(meta[keyA]?.lastBuild || configA.lastBuild || ''))
+    )
+
+  const visibleEntries = entries
+  const visibleProjectNames = visibleEntries.map(([key]) => key)
+  const visibleProjectKey = visibleProjectNames.join('\n')
+
+  useEffect(() => {
+    const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
+      .filter(name => !requestedHistoriesRef.current.has(name))
+    if (projectNames.length === 0) return
+    for (const name of projectNames) requestedHistoriesRef.current.add(name)
+    fetch(`${ASSET_BASE}/api/projects/history/shadow/changelog/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: projectNames }),
     })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(data => {
+        setHistoryError(null)
+        setChangelogs(current => ({ ...current, ...(data.projects || {}) }))
+      })
+      .catch(error => {
+        for (const name of projectNames) requestedHistoriesRef.current.delete(name)
+        setHistoryError('History unavailable')
+        console.warn('[app] project history batch fetch failed:', error.message)
+      })
+  }, [visibleProjectKey])
+
+  const timeRange = historyIndex?.oldest
+    ? { oldest: historyIndex.oldest, newest: timeAxisNow }
+    : null
+
+  const dateTicks = timeRange
+    ? Array.from({ length: 5 }, (_, index) => {
+        const xProgress = index / 4
+        const ageFraction = Math.expm1((1 - xProgress) * Math.log1p(LOG_AGE_CURVE)) / LOG_AGE_CURVE
+        const timestamp = timeRange.newest - ageFraction * (timeRange.newest - timeRange.oldest)
+        return {
+          timestamp,
+          left: `${(index / 4) * 100}%`,
+          label: new Date(timestamp).toLocaleDateString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          }),
+        }
+      })
+    : []
 
   const archivedFiltered = archived
     .filter(p => !restoredKeys.has(p.name))
     .filter(p => (p.title || p.name).toLowerCase().includes(q) || p.name.includes(q))
-
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) setSortAsc(!sortAsc)
-    else { setSortKey(key); setSortAsc(key === 'name') }
-  }
-
-  const sortIndicator = (key: SortKey) =>
-    sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : ''
-
-  const toggleAutoSync = (key: string, current: boolean, e: React.MouseEvent) => {
-    e.stopPropagation()
-    const newVal = !current
-    // Optimistic update
-    if (manifest[key]) manifest[key].autoSync = newVal
-    setSearch(s => s) // force re-render
-    fetch(`${ASSET_BASE}/api/projects/${key}/auto-sync`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ autoSync: newVal }),
-    }).catch(() => {
-      // Revert on failure
-      if (manifest[key]) manifest[key].autoSync = current
-      setSearch(s => s)
-    })
-  }
 
   const archiveProject = (key: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -577,60 +637,94 @@ function DocumentPicker({ manifest, onSelect }: {
     })
   }
 
+  const openHistoryPoint = (project: string, commit: ChangelogCommit, page: number) => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('project', project)
+    url.searchParams.set('history', commit.hash)
+    url.searchParams.set('historyTime', String(commit.timestamp))
+    url.searchParams.set('page', String(page))
+    window.location.assign(url.toString())
+  }
+
   return (
     <div className="PickerScreen">
       <input
         className="picker-search"
         type="text"
-        placeholder="Search documents..."
+        placeholder="Search projects..."
         value={search}
         onChange={e => setSearch(e.target.value)}
         autoFocus
       />
-      <table className="picker-table">
-        <thead>
-          <tr>
-            <th onClick={() => toggleSort('name')}>Document{sortIndicator('name')}</th>
-            <th onClick={() => toggleSort('lastBuild')}>Last build{sortIndicator('lastBuild')}</th>
-            <th onClick={() => toggleSort('lastAnnotated')}>Last annotated{sortIndicator('lastAnnotated')}</th>
-            <th className="picker-sync-header" title="Git mirror sync">Sync</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map(([key, config]) => {
+      <div className="project-index">
+        <div className="project-index-axis" aria-hidden="true">
+          <span className="project-index-axis-label">Project</span>
+          <div className="project-index-axis-ticks">
+            {dateTicks.map(tick => (
+              <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
+            ))}
+          </div>
+          <span className="project-index-axis-spacer" />
+        </div>
+        <div className="project-index-rows">
+          {!historyIndex && !historyError && (
+            <div className="project-index-loading">Loading projects…</div>
+          )}
+          {historyError && (
+            <div className="project-index-loading project-index-loading-error">{historyError}</div>
+          )}
+          {visibleEntries.map(([key, config]) => {
             const health = docHealth[key]
             const isBroken = health && !health.ok
+            const changelog = changelogs[key]
+            const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
             return (
-              <tr key={key} onClick={() => onSelect(key, config)} className={isBroken ? 'picker-row-broken' : ''}>
-                <td>
+              <div
+                key={key}
+                className={`project-index-row${isBroken ? ' picker-row-broken' : ''}`}
+                onClick={() => onSelect(key, config)}
+              >
+                <div className="project-index-name">
                   {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
                   <a href={`?project=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
+                  <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
                   {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
-                </td>
-                <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>
-                <td className="picker-date">{relativeTime(meta[key]?.lastAnnotated)}</td>
-                <td className="picker-sync" onClick={e => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={config.autoSync !== false}
-                    onChange={() => {}}
-                    onClick={(e) => toggleAutoSync(key, config.autoSync !== false, e as unknown as React.MouseEvent)}
-                    title="Git mirror sync"
-                  />
-                </td>
-                <td className="picker-archive">
+                </div>
+                <div className="project-index-history">
+                  {!changelog && !historyError && (
+                    <span className="project-index-history-loading">Loading history…</span>
+                  )}
+                  {changelog && !hasPageEdits && (
+                    <span className="project-index-history-loading">No page edits</span>
+                  )}
+                  {changelog && hasPageEdits && timeRange && (
+                    <SpaceTimeDots
+                      changelog={changelog}
+                      timeRange={timeRange}
+                      timeScale="log-age"
+                      showPageLabels={false}
+                      className="project-index-spacetime"
+                      onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
+                    />
+                  )}
+                  {(historyError || changelog?.error) && (
+                    <span className="project-index-history-status">
+                      {changelog?.error || historyError}
+                    </span>
+                  )}
+                </div>
+                <div className="picker-archive">
                   <button
                     className="archive-btn"
                     title="Archive"
                     onClick={(e) => archiveProject(key, e)}
                   >&times;</button>
-                </td>
-              </tr>
+                </div>
+              </div>
             )
           })}
-        </tbody>
-      </table>
+        </div>
+      </div>
       {archivedFiltered.length > 0 && (
         <>
           <div className="picker-archived-header">Archived</div>
