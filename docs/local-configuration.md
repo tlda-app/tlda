@@ -52,16 +52,21 @@ Managed bots are configured in `~/.config/tlda/bots.yaml`:
 
 ```yaml
 bots:
-  - name: todd
+  todd:
     script: bin/bots/todd.mjs
-  - name: teacher
+  teacher:
     script: /absolute/path/to/teacher-bot.mjs
     machine_id: mini
+environments:
+  testing:
+    - todd
+    - teacher
 ```
 
-Each entry has `name`, `script`, and an optional `machine_id`; optional `env`
-values are passed to the bot process. With no `bots` array, the code defaults to
-Todd. Relative scripts resolve from the installed tlda root.
+`bots` is a map from bot name to definition. Each definition has `script` and
+may have `machine_id`; optional `env` values are passed to the bot process.
+`environments` maps each named environment to the bot names that run there.
+Relative scripts resolve from the installed tlda root.
 
 ## CLI preferences
 

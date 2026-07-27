@@ -48,17 +48,32 @@ Never expose the standard server port publicly with neither token authentication
 nor an authenticated network boundary. The application deliberately includes
 terminal and agent-control surfaces.
 
+### Providing agents for browser-only collaborators
+
+A collaborator using only the browser can still work with agents, but those
+agents must run on a machine whose daemon connects to the same tlda server. The
+operator can provide that machine; it does not have to be the collaborator's
+computer.
+
+The repository's Fly-for-friends path uses two Fly applications:
+`Dockerfile.live` runs the viewer, project build, and fleet server, while
+`Dockerfile.agent` with `scripts/fly-entrypoint-agent.sh` runs an outbound-only
+daemon and Codex agents. The agent application keeps Codex and tlda state on a
+volume, clones the friend's Git repository into its work directory, and seeds
+Codex authentication from a Fly secret.
+
+`tlda-fly friend plan` and `tlda-fly friend up` generate this render/agent pair.
+
 ## The live Fly deployment
 
 The authoritative live procedure remains `docs/live-deploy.md`. From a clean
-main checkout:
+main checkout, use the wrapper:
 
 ```bash
-node scripts/live-deploy-preflight.mjs
-npm run build
-fly deploy -c fly.live.toml
+npm run deploy:live
 ```
 
+The wrapper runs the preflight and build before `fly deploy -c fly.live.toml`.
 The live image is defined by `fly.live.toml`, `Dockerfile.live`, and
 `scripts/fly-entrypoint-live.sh`. The entrypoint mounts mutable projects, Yjs
 state, and server fleet state on the Fly volume; writes the server's named
@@ -68,6 +83,67 @@ to port 5176 with `tailscale serve`.
 Do not substitute plain `fly deploy`, `fly.toml`, or the old `tlda publish`
 snapshot path. After deploy, verify Fly status, `/health`, `/api/fleet-config`,
 the build-info commit, and the actual browser-visible behavior being shipped.
+
+## Optional services
+
+tlda runs without either service below. Browser voice remains available without
+Deepgram, and ordinary document collaboration works without LiveKit.
+
+### Deepgram
+
+Deepgram is an alternative voice backend that happens to work better than
+browser voice. Create an API key in a Deepgram project, then give the tlda
+server one runtime secret:
+
+```bash
+fly secrets set DEEPGRAM_API_KEY="<key>" --app <fly-app>
+```
+
+For a local server, export `DEEPGRAM_API_KEY` in the server process environment
+instead. The key does not belong in `daemon.yaml` or client-side configuration.
+The server exposes the Deepgram SDK bridge through its authenticated,
+same-origin `/voice/deepgram-sdk` WebSocket; the bridge runs beside the server,
+including on Fly.
+
+Check setup without exposing the key:
+
+```bash
+curl -fsS https://<host>/api/voice/backends
+```
+
+A configured server includes `{"value":"deepgram-sdk","label":"Deepgram"}` in
+the returned `backends` array, and the Settings voice-backend selector includes
+Deepgram. Without the secret, that option is absent. On 2026-07-27 this check
+passed on both project Fly environments; an end-to-end transcription was not
+performed as part of this documentation audit.
+
+### LiveKit
+
+LiveKit enables the document's mic/camera room controls, spatial remote audio,
+and remote video shapes. Create a LiveKit Cloud project (or provide an
+equivalent self-hosted server) and obtain its WebSocket URL, API key, and API
+secret. For this repository's Fly applications, put those three values in
+`~/.livekit` and run:
+
+```bash
+scripts/set-livekit-secrets.sh <fly-app>
+```
+
+The script sends `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
+`LIVEKIT_API_SECRET` directly to Fly secrets. For another deployment, set those
+three variables in the tlda server process environment.
+
+Check setup without exposing credentials:
+
+```bash
+curl -fsS https://<host>/api/livekit/config
+```
+
+Success is `{"configured":true,"url":"wss://..."}`. Missing configuration
+returns `{"configured":false,...}`, and the room controls cannot obtain a join
+token. On 2026-07-27 configuration and token issuance were checked on both
+project Fly environments; a two-participant media call was not performed as
+part of this documentation audit.
 
 ## Multi-machine rule
 
