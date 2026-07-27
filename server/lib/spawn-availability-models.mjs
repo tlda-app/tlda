@@ -16,14 +16,14 @@ export async function resolveFreshSpawnAvailabilityModels({
   if (!fleetStore) {
     return { ok: false, error: 'fleet store unavailable', aliases: [], defaultAlias: '' }
   }
-  const caller = fleetStore.getAgent?.(userId)
+  const caller = await fleetStore.getAgent(userId)
   if (!caller) {
     return { ok: false, error: `spawn caller ${userId} is not registered`, aliases: [], defaultAlias: '' }
   }
 
   let route
   try {
-    route = resolveSpawnMachine({
+    route = await resolveSpawnMachine({
       caller,
       fresh: true,
       respawn: false,

@@ -1468,7 +1468,10 @@ serverTimerScheduler = new ServerTimerScheduler({
   store: fleetStore,
   broadcast: broadcastEvent,
 })
-serverTimerScheduler.start()
+// Not awaited: this is module top level, where there is no async context to
+// await into. A failing first refresh is reported rather than becoming an
+// unhandled rejection at startup.
+serverTimerScheduler.start().catch(e => console.error(`[timer-scheduler] initial refresh failed: ${e?.message || e}`))
 
 function compactObject(obj = {}) {
   const out = {}
@@ -1939,7 +1942,7 @@ async function performSpawnRelay(caller, msg) {
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
   const requestedSpec = { model, project: doc }
-  const route = resolveSpawnMachine({
+  const route = await resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
     fresh: !!fresh || sessionMode,
@@ -5456,7 +5459,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     const metadata = { pending: true, fire_at, message }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
-    serverTimerScheduler?.refresh()
+    await serverTimerScheduler?.refresh()
     reply({ ok: true, id: event.id })
     return
   }
@@ -5467,15 +5470,15 @@ async function handleFleetWsMessage(ws, msg) {
       reply(timerTerminalInputFailureResult({ state, eventId }))
       return
     }
-    const event = fleetStore.getEventById?.(Number(eventId))
+    const event = await fleetStore.getEventById(Number(eventId))
     if (!event) {
       reply(timerTerminalInputFailureResult({ state, eventId }))
       return
     }
     try {
       const result = state === 'cancelled'
-        ? serverTimerScheduler.cancel(Number(eventId))
-        : serverTimerScheduler.fire(Number(eventId), { message: msg.message })
+        ? await serverTimerScheduler.cancel(Number(eventId))
+        : await serverTimerScheduler.fire(Number(eventId), { message: msg.message })
       reply(result)
     } catch (e) {
       reply(timerDeliveryFailureResult({ state, eventId, error: e }))
@@ -6606,7 +6609,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
     const fromAgent = from ? fleetStore.findAgent(from) : null
     const caller = fromAgent || (from ? { id: from } : null)
-    if (existingTask && !canReportTask({ caller, task: existingTask, fleetStore })) {
+    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
       error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
@@ -6747,7 +6750,7 @@ async function handleFleetWsMessage(ws, msg) {
       ? fleetStore.getTask?.(task_id)
       : fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
-    if (task_id && !canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
+    if (task_id && !await canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
       error('not authorized to report on this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
     if (close && task.metadata?.requires_approval) {
@@ -8602,7 +8605,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'native-task-event') {
-    const { changed } = applyNativeTaskEvents(fleetStore, msg)
+    const { changed } = await applyNativeTaskEvents(fleetStore, msg)
     if (changed) broadcastState()
     return
   }
@@ -8669,7 +8672,7 @@ async function handleDaemonWsMessage(ws, msg) {
     const sessionId = msg.session_id || msg.sessionId
     if (!agentId || !sessionId) return
     try {
-      recordAgentBindingEvent(fleetStore, msg, {
+      await recordAgentBindingEvent(fleetStore, msg, {
         machineId: ws._machineId,
         envName: ws._envName,
         daemonKey: ws._daemonKey,

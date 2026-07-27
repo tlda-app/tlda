@@ -96,7 +96,7 @@ export async function materializeTaskDocs({
     ? null
     : new Set((Array.isArray(projectNames) ? projectNames : [projectNames]).map(name => String(name)).filter(Boolean))
   const globalProjectNameSet = new Set((Array.isArray(globalProjectNames) ? globalProjectNames : [globalProjectNames]).map(name => String(name)).filter(Boolean))
-  const rawTasks = Array.isArray(taskRows) ? taskRows : (fleetStore.getActiveTasks?.() || [])
+  const rawTasks = Array.isArray(taskRows) ? taskRows : (await fleetStore.getActiveTasks() || [])
   const agentIds = new Set()
   for (const task of rawTasks) {
     if (task?.agent) agentIds.add(task.agent)
@@ -106,9 +106,11 @@ export async function materializeTaskDocs({
     if (change?.task?.agent) agentIds.add(change.task.agent)
     if (change?.task?.delegated_by) agentIds.add(change.task.delegated_by)
   }
-  const agents = typeof fleetStore.getAgentsByIds === 'function'
-    ? fleetStore.getAgentsByIds([...agentIds])
-    : (Array.isArray(fleetStore.getAllAgents?.()) ? fleetStore.getAllAgents() : [])
+  // No getAllAgents fallback. It existed to cover a store that might not have
+  // getAgentsByIds; every method on the manifest exists on both the store and
+  // its client, so the fallback could only ever fire on a store that was not a
+  // store — and it answered a bounded lookup with the entire roster.
+  const agents = await fleetStore.getAgentsByIds([...agentIds])
   const agentById = new Map(agents.map(agent => [agent.id, agent]))
   const projects = projectsProvider().map(project => ({
     ...project,

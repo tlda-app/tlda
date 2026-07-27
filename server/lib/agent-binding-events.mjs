@@ -1,4 +1,4 @@
-export function recordAgentBindingEvent(fleetStore, msg = {}, {
+export async function recordAgentBindingEvent(fleetStore, msg = {}, {
   machineId = null,
   envName = null,
   daemonKey = null,
@@ -15,7 +15,7 @@ export function recordAgentBindingEvent(fleetStore, msg = {}, {
   if (!agentId) throw new Error('agent-binding event missing agent_id')
 
   if (sessionId) {
-    fleetStore.insertAgentSeat({
+    await fleetStore.insertAgentSeat({
       agent_id: agentId,
       session_id: sessionId,
       resume_id: msg.resume_id || msg.resumeId || sessionId,
@@ -26,14 +26,14 @@ export function recordAgentBindingEvent(fleetStore, msg = {}, {
       created_by_event_id: msg.created_by_event_id || null,
     })
   }
-  const seat = fleetStore.activateAgentSeat({
+  const seat = await fleetStore.activateAgentSeat({
     agentId,
     sessionId,
     ...route,
     reason: msg.transition_reason || 'runtime-binding',
     activatedByEventId: msg.activated_by_event_id || null,
   })
-  fleetStore.mirrorAgentSeatIdentity?.({
+  await fleetStore.mirrorAgentSeatIdentity({
     agentId,
     session_id: seat.session_id,
     session_ids: seat.session_id ? [seat.session_id] : null,
