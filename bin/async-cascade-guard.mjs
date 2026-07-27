@@ -105,6 +105,7 @@ export const ASYNC_CASCADE = Object.freeze([
   'delegateWakeText',
   'requestTaskWake',
   '_broadcastStateNow',
+  'getTrustedIdleSeconds',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']
