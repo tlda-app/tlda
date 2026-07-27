@@ -93,6 +93,9 @@ export const ASYNC_CASCADE = Object.freeze([
   'currentSeatOrHttpError',
   'stampNames',
   'runTaskRenudgeSweep',
+  'taskInboxStatusFor',
+  'taskDelegateWakeText',
+  'qualLoadReadsFromDb',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']
