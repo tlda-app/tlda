@@ -138,7 +138,6 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
   const [navigationMode, setNavigationMode] = useState<SlidesNavigationMode>(() => getPref('slides-navigation-mode'))
   const slides = useMemo(() => getSlides(document), [document])
   const totalSlides = slides.length
-  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null)
   const pendingRemoteFragmentsRef = useRef(new Map<string, number>())
   const applyingRemoteFragmentRef = useRef(false)
   const applyingRemoteSlideRef = useRef(false)
@@ -341,42 +340,6 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     return () => window.removeEventListener('keydown', handler)
   }, [handleNext, handlePrev, orthogonalFragments, setFragmentCurrent, fragmentInfo])
 
-  // Touch swipe handling
-  const startTouch = useCallback((touch: Touch) => {
-    touchStartRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() }
-  }, [])
-
-  const endTouch = useCallback((touch: Touch) => {
-    if (!touchStartRef.current) return
-    const dx = touch.clientX - touchStartRef.current.x
-    const dy = touch.clientY - touchStartRef.current.y
-    const dt = Date.now() - touchStartRef.current.time
-    touchStartRef.current = null
-
-    // Require: horizontal > vertical, min 50px, max 800ms
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50 && dt < 800) {
-      if (dx < 0) handleNext()
-      else handlePrev()
-    }
-  }, [handleNext, handlePrev])
-
-  useEffect(() => {
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return
-      startTouch(e.touches[0])
-    }
-    const handleTouchEnd = (e: TouchEvent) => {
-      if (e.changedTouches.length !== 1) return
-      endTouch(e.changedTouches[0])
-    }
-    window.addEventListener('touchstart', handleTouchStart, { passive: true })
-    window.addEventListener('touchend', handleTouchEnd, { passive: true })
-    return () => {
-      window.removeEventListener('touchstart', handleTouchStart)
-      window.removeEventListener('touchend', handleTouchEnd)
-    }
-  }, [startTouch, endTouch])
-
   const containerStyle: React.CSSProperties = {
     position: 'fixed',
     inset: 0,
@@ -471,8 +434,6 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     </div>
   )
 
-  // Swipe detection overlay — transparent, covers the canvas, captures horizontal swipes
-  // while letting vertical + short touches through to TLDraw
   return createPortal(
     <>
       {nav}
