@@ -110,7 +110,7 @@ function pdfToCanvas(pdfPage, pdfX, pdfY) {
 // Resolve source anchor to new position
 async function resolveAnchor(anchor) {
   try {
-    const url = `${SYNCTEX_SERVER}/view?doc=${docName}&file=${anchor.file}&line=${anchor.line}&column=${anchor.column || 0}`
+    const url = `${SYNCTEX_SERVER}/view?project=${docName}&file=${anchor.file}&line=${anchor.line}&column=${anchor.column || 0}`
     const resp = await fetch(url)
     const data = await resp.json()
     if (data.error) {

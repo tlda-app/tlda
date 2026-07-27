@@ -1841,7 +1841,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           }}>
             {showDoc && docName ? (
               <iframe
-                src={appendToken(`/?doc=${docName}`)}
+                src={appendToken(`/?project=${docName}`)}
                 style={{
                   width: '100%',
                   height: '100%',

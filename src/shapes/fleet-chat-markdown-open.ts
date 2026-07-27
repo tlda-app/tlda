@@ -66,7 +66,7 @@ export type MaterializeChipResult = {
 
 // Writes the chip's markdown as a real, synced column (project part) of the
 // document currently open on canvas — not a separate project, not a
-// throwaway snapshot. The target project is whatever `?doc=` is loaded; the
+// throwaway snapshot. The target project is whatever `?project=` is loaded; the
 // server writes the file and rebuilds, so the existing reload/signal
 // pipeline that already keeps project parts live also keeps this part live.
 export async function materializeMarkdownChip({
@@ -80,7 +80,7 @@ export async function materializeMarkdownChip({
   sourcePath?: string
   sourceSection?: string
 }): Promise<MaterializeChipResult> {
-  const docName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('doc')
+  const docName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
   if (!docName) return { ok: false, error: 'no open document to attach to' }
   try {
     const res = await fetch(`/api/projects/${docName}/parts`, {
@@ -121,7 +121,7 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
       }
     : chipAnchor
 
-  const docName = new URLSearchParams(window.location.search).get('doc')
+  const docName = new URLSearchParams(window.location.search).get('project')
 
   void materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
     if (!materialized.ok || !materialized.outputFile || !docName) {

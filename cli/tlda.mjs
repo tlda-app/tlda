@@ -452,7 +452,7 @@ async function cmdBook() {
   for (const m of members) console.log(dim(`  ${m}`))
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
 }
 
 async function cmdScratch() {
@@ -523,7 +523,7 @@ async function cmdScratch() {
   }
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${bookName}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${bookName}`)}`)
 }
 
 async function cmdCreate() {
@@ -614,7 +614,7 @@ async function cmdCreate() {
     console.log(green('Slides processed.'))
 
     const server = getServer()
-    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
   }
 
@@ -669,7 +669,7 @@ async function cmdCreate() {
     console.log(green('HTML project processed.'))
 
     const server = getServer()
-    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
   }
 
@@ -720,7 +720,7 @@ async function cmdCreate() {
     console.log(green('Markdown project processed.'))
 
     const server = getServer()
-    console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
     return
   }
 
@@ -770,7 +770,7 @@ async function cmdCreate() {
   }
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
 }
 
 async function cmdPush() {
@@ -985,13 +985,13 @@ async function cmdInit() {
       console.warn(yellow(`  Server registration failed: ${e.message}`))
       console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda doc link ${name} ${mainFile}\` when the server is up.`))
       const server = getServer()
-      console.log(`\nViewer (once registered): ${cyan(`${server}/?doc=${name}`)}`)
+      console.log(`\nViewer (once registered): ${cyan(`${server}/?project=${name}`)}`)
       return
     }
   }
 
   const server = getServer()
-  console.log(`\nViewer: ${cyan(`${server}/?doc=${name}`)}`)
+  console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
 }
 
 // Fleet-daemon control: `tlda daemon start | stop | status | log | run`
@@ -2400,7 +2400,7 @@ async function cmdOpen() {
   const server = getServer()
   const token = getToken()
   const browser = getFlag('browser') || loadCliConfig().browser || null
-  const redirect = name ? `/?doc=${name}` : '/'
+  const redirect = name ? `/?project=${name}` : '/'
   const url = token
     ? `${server}/auth/login?token=${token}&redirect=${encodeURIComponent(redirect)}`
     : `${server}${redirect}`
@@ -2601,7 +2601,7 @@ async function cmdMoveProject() {
     console.log(`[dry-run] would ${alreadyOwned ? 'ensure' : 'move'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}`)
     console.log(`  working directory stays: ${sourceDir}`)
     console.log(`  daemon ownership becomes: ${targetConfig}`)
-    console.log(`  target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`)
+    console.log(`  target viewer: ${targetServer}/?project=${encodeURIComponent(name)}`)
     if (associatedAgents.length) {
       console.log(`  associated agents: ${associatedAgents.map(agent => agent.friendly_name || agent.name || agent.id).join(', ')}`)
       for (const agent of associatedAgents) {
@@ -2648,7 +2648,7 @@ async function cmdMoveProject() {
   console.log(green(`${alreadyOwned ? 'Confirmed' : 'Moved'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}.`))
   console.log(dim(`  Working directory unchanged: ${sourceDir}`))
   console.log(dim(`  Daemon ownership: ${targetConfig}`))
-  console.log(dim(`  Target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`))
+  console.log(dim(`  Target viewer: ${targetServer}/?project=${encodeURIComponent(name)}`))
   console.log(green(`  ${targetConfig} daemon world is running.`))
   if (!associatedAgents.length) {
     console.log(dim('  Associated agents: none'))
@@ -3037,7 +3037,7 @@ async function cmdDeploy() {
       const projects = data.projects || data || []
       const first = projects[0]
       if (first?.name) {
-        const docRes = await fetch(`${serverUrl}/?doc=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
+        const docRes = await fetch(`${serverUrl}/?project=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
         const docBody = await docRes.text()
         if (docRes.ok && docBody.includes('<div id="root">')) {
           pass(first.name)
@@ -5795,7 +5795,7 @@ async function cmdFleetDev() {
   console.log(dim('  If shapes look stale: tlda server stop && tlda server start'))
 
   const server = getServer()
-  console.log(`\n  ${server}/?doc=fleet-dev\n`)
+  console.log(`\n  ${server}/?project=fleet-dev\n`)
   console.log(dim('  Click the page in TOC to zoom to the fleet shapes area.'))
 
   function rec(id, type, x, y, props, index, locked = false) {

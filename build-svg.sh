@@ -129,7 +129,7 @@ echo "Updating manifest..."
 node "$SCRIPT_DIR/scripts/manifest.mjs" set "$DOC_NAME" --name "$DOC_TITLE" --pages "$PAGE_COUNT" --texFile "$TEX_DIR/$TEX_BASE.tex"
 
 echo ""
-echo "Done! Access at: ?doc=$DOC_NAME"
+echo "Done! Access at: ?project=$DOC_NAME"
 echo ""
 echo "Available documents:"
 node -e "

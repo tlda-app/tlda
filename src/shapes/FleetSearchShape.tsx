@@ -663,7 +663,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
                   className="fleet-search-doc-result"
                   onPointerDown={(e) => {
                     stopEventPropagation(e)
-                    window.open(appendToken(`${window.location.origin}/?doc=${encodeURIComponent(d.doc)}`), '_blank')
+                    window.open(appendToken(`${window.location.origin}/?project=${encodeURIComponent(d.doc)}`), '_blank')
                   }}
                 >
                   <span style={{ fontSize: 12 }}>📄</span>

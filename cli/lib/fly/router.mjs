@@ -292,7 +292,7 @@ async function buildFriendPlan(flags, verb) {
   const codexAuthJson = flags['codex-auth-json'] || join(process.env.HOME || '~', '.codex', 'auth.json')
   const shipConfig = !!flags['ship-config']
   const configBundle = shipConfig ? join(mkdtempSync(join(tmpdir(), 'tlda-fly-config-')), 'agent-config.tgz') : null
-  const viewerPath = `/?doc=${project}`
+  const viewerPath = `/?project=${project}`
   const editorUrl = `${renderUrl}/auth/login?token=${encodeURIComponent(rwToken)}&redirect=${encodeURIComponent(viewerPath)}`
   const shareUrl = `${renderUrl}/auth/login?token=${encodeURIComponent(readToken)}&redirect=${encodeURIComponent(viewerPath)}`
 

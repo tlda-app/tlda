@@ -19,7 +19,7 @@
  * Usage:
  *   tlda-dev pw <verb> [args...]   forward a playwright-cli verb to MY tab
  *   tlda-dev pw acquire            open my assigned shared browser + ensure my tab
- *   tlda-dev pw setup --doc NAME   open an unused doc in the real environment
+ *   tlda-dev pw setup --project NAME   open an unused project in the real environment
  *   tlda-dev pw release            close my tab (browser stays up for others)
  *   tlda-dev pw status             session state + my tab + current URL
  *   tlda-dev pw sweep              park stale/error tabs in my assigned browser
@@ -769,17 +769,17 @@ function rewriteGoto(rest) {
 }
 
 export function pwSetupUrl(args, serverUrl = getServerUrl()) {
-  let doc = null
+  let project = null
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--doc' && args[i + 1]) {
-      doc = args[++i]
+    if (args[i] === '--project' && args[i + 1]) {
+      project = args[++i]
       continue
     }
     throw new Error(`setup: unknown or incomplete argument "${args[i]}"`)
   }
-  if (!doc) throw new Error('setup: --doc NAME is required; choose a document Skip is not using')
+  if (!project) throw new Error('setup: --project NAME is required; choose a project Skip is not using')
   const url = new URL(serverUrl)
-  url.searchParams.set('doc', doc)
+  url.searchParams.set('project', project)
   url.searchParams.set('pw', '1')
   url.searchParams.set('name', myTabKey())
   return url.toString()
@@ -900,7 +900,7 @@ export async function cmdPw(args, repoRoot) {
         'tlda-dev pw — bounded shared browser pool, a private tab per agent',
         '',
         '  tlda-dev pw acquire           open my assigned shared browser + ensure my tab',
-        '  tlda-dev pw setup --doc NAME  real environment, unused doc, default fleet layout',
+        '  tlda-dev pw setup --project NAME  real environment, unused project, default fleet layout',
         '  tlda-dev pw release           close my tab (browser stays up for others)',
         '  tlda-dev pw status            session state + my tab + URL',
         '  tlda-dev pw sweep             park stale/error tabs in my assigned browser',

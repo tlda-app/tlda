@@ -224,7 +224,7 @@ if (probe.isEnabled('frame')) {
       camera: camera ? { x: camera.x, y: camera.y, z: camera.z } : undefined,
       visiblePageCount: visiblePageCount(),
       visibleDocviewCount: visibleDocviewCount(),
-      doc: new URLSearchParams(window.location.search).get('doc') || undefined,
+      doc: new URLSearchParams(window.location.search).get('project') || undefined,
     })
 
     interaction = null

@@ -78,7 +78,7 @@ type State =
 // Doc assets come from the active config's STORE (http), injected by the server.
 const ASSET_BASE = STORE_HTTP
 
-// Fetch a single document config from the API — fast path for ?doc=X
+// Fetch a single document config from the API — fast path for ?project=X
 async function fetchDocConfig(docName: string): Promise<DocConfig | null> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
@@ -157,7 +157,7 @@ function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const docName = params.get('doc')
+    const docName = params.get('project')
 
     if (docName) {
       const roomId = `doc-${docName}`
@@ -182,7 +182,7 @@ function App() {
             if (docs.length === 1) {
               const name = docs[0]
               const newUrl = new URL(window.location.href)
-              newUrl.searchParams.set('doc', name)
+              newUrl.searchParams.set('project', name)
               window.history.replaceState({}, '', newUrl.toString())
               const roomId = `doc-${name}`
               setState({ phase: 'loading', message: `Loading ${name}...`, roomId })
@@ -417,9 +417,9 @@ function App() {
           <IdentityPicker />
           <DocumentPicker manifest={state.manifest} onSelect={(key, config) => {
             const newUrl = new URL(window.location.href)
-            newUrl.searchParams.set('doc', key)
+            newUrl.searchParams.set('project', key)
             // replaceState, not pushState: the address bar keeps naming the
-            // document you are in, so ?doc= links, bookmarks and agent probes
+            // document you are in, so ?project= links, bookmarks and agent probes
             // keep working — but choosing a document does not put an entry on
             // the browser's stack, because back is not an in-app control.
             window.history.replaceState({}, '', newUrl.toString())
@@ -605,7 +605,7 @@ function DocumentPicker({ manifest, onSelect }: {
               <tr key={key} onClick={() => onSelect(key, config)} className={isBroken ? 'picker-row-broken' : ''}>
                 <td>
                   {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
-                  <a href={`?doc=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
+                  <a href={`?project=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
                   {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
                 </td>
                 <td className="picker-date">{relativeTime(meta[key]?.lastBuild)}</td>

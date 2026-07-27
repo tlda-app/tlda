@@ -3,7 +3,7 @@ import test from 'node:test'
 
 function installBrowserGlobals() {
   const listeners = new Map()
-  const location = { protocol: 'http:', search: '', href: 'http://example.test/?doc=test' }
+  const location = { protocol: 'http:', search: '', href: 'http://example.test/?project=test' }
   globalThis.location = location
   globalThis.window = {
     __TLDA_CONFIG__: {

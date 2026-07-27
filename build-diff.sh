@@ -172,7 +172,7 @@ node "$SCRIPT_DIR/scripts/manifest.mjs" set "$DIFF_DOC_NAME" \
 rm -rf "$TMPDIR"
 
 echo ""
-echo "Done! Access at: ?doc=$DIFF_DOC_NAME"
+echo "Done! Access at: ?project=$DIFF_DOC_NAME"
 echo ""
 echo "  Current: $CURRENT_PAGE_COUNT pages"
 echo "  Old ($GIT_REF): $OLD_PAGE_COUNT pages"

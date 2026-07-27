@@ -175,7 +175,7 @@ export async function resolvAnchor(
 
     // If we have a content fingerprint, try to find the current line
     if (anchor.content) {
-      const findUrl = `${SYNCTEX_SERVER}/find?doc=${encodeURIComponent(docName)}&file=${encodeURIComponent(anchor.file)}&content=${encodeURIComponent(anchor.content)}&hint=${anchor.line}`
+      const findUrl = `${SYNCTEX_SERVER}/find?project=${encodeURIComponent(docName)}&file=${encodeURIComponent(anchor.file)}&content=${encodeURIComponent(anchor.content)}&hint=${anchor.line}`
       const findResp = await fetch(findUrl, { signal: AbortSignal.timeout(2000) })
       const findData = await findResp.json()
 
@@ -188,7 +188,7 @@ export async function resolvAnchor(
       }
     }
 
-    const url = `${SYNCTEX_SERVER}/view?doc=${encodeURIComponent(docName)}&file=${encodeURIComponent(anchor.file)}&line=${resolvedLine}&column=${anchor.column || 0}`
+    const url = `${SYNCTEX_SERVER}/view?project=${encodeURIComponent(docName)}&file=${encodeURIComponent(anchor.file)}&line=${resolvedLine}&column=${anchor.column || 0}`
     const resp = await fetch(url, { signal: AbortSignal.timeout(2000) })
     const data = await resp.json()
     if (!data.error) {

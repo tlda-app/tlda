@@ -128,7 +128,7 @@ fi
 
 # --- Open browser ---
 
-open "http://localhost:5173/claude-tldraw/?doc=${DOC}"
+open "http://localhost:5173/claude-tldraw/?project=${DOC}"
 
 # --- Wait for background builds ---
 

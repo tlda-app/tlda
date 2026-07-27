@@ -1793,17 +1793,17 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /annotations?doc=<name>
+  // GET /annotations?project=<name>
   if (req.method === 'GET' && req.url?.startsWith('/annotations')) {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const doc = url.searchParams.get('doc');
-    if (!doc) {
+    const project = url.searchParams.get('project');
+    if (!project) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required parameter: doc' }));
+      res.end(JSON.stringify({ error: 'Missing required parameter: project' }));
       return;
     }
     try {
-      const result = await listAnnotations(doc);
+      const result = await listAnnotations(project);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
@@ -1813,18 +1813,18 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /shapes?doc=<name> — read all shapes from sync room + signals from Yjs
+  // GET /shapes?project=<name> — read all shapes from sync room + signals from Yjs
   if (req.method === 'GET' && req.url?.startsWith('/shapes')) {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const docName = url.searchParams.get('doc');
-    if (!docName) {
+    const projectName = url.searchParams.get('project');
+    if (!projectName) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required parameter: doc' }));
+      res.end(JSON.stringify({ error: 'Missing required parameter: project' }));
       return;
     }
     try {
       // Shapes from @tldraw/sync room via REST
-      const records = await fetchShapes(docName);
+      const records = await fetchShapes(projectName);
       const shapes = records.filter(r => r.id?.startsWith('shape:') || r.id?.startsWith('binding:'));
 
       // Signals from cache (no longer in Yjs)
@@ -2880,7 +2880,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     const tok = resolveToken();
     const tokParam = tok ? `&token=${tok}` : '';
-    const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
+    const viewUrl = `${getServerUrl()}/?project=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 

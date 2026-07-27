@@ -129,6 +129,6 @@ export function selectDevShareBase({ scheme, port, tailscaleIp = null, lanIp = n
 }
 
 export function viewerLoginUrl(base, docName, token) {
-  const redirect = docName ? `/?doc=${docName}` : '/'
+  const redirect = docName ? `/?project=${docName}` : '/'
   return `${base.replace(/\/+$/, '')}/auth/login?token=${encodeURIComponent(token)}&redirect=${encodeURIComponent(redirect)}`
 }

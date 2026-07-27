@@ -46,7 +46,7 @@ if (cmd === 'pw') {
   process.exit(0)
 }
 
-// The one dev bring-up command. `tlda-dev serve [--sandbox] [--doc X] [--port N]`
+// The one dev bring-up command. `tlda-dev serve [--sandbox] [--project X] [--port N]`
 // stands up THIS worktree's branch as an isolated, reachable, tokenless stack with
 // the SPA config pointed at the reachable host. `--sandbox` is its fully-isolated
 // mode (own DB/projects/chat + a daemon wired ONLY to this sandbox). It delegates

@@ -895,7 +895,7 @@ ${processedChunks[i].html.join('\n')}
 
   console.log('')
   console.log(`Done! ${pageFiles.length} pages written to ${outDir}`)
-  console.log(`Access at: ?doc=${docName}`)
+  console.log(`Access at: ?project=${docName}`)
 }
 
 main().catch(e => {
