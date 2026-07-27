@@ -5613,7 +5613,7 @@ async function handleFleetWsMessage(ws, msg) {
     const eventText = isShellReservation
       ? `${lifecycleLabel} shell reserved`
       : `${lifecycleLabel} registered`
-    fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
+    void fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
     const storedAgent = fleetStore.getAgent?.(agentId) || agent
     broadcastState(storedAgent)
     // Push through the current-seat projection; seatless reservations have no
@@ -5669,7 +5669,7 @@ async function handleFleetWsMessage(ws, msg) {
       fleetStore.upsertAgent(agent)
       const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(agent_id) || agent) || fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
-      fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
+      void fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
       markAgentAlive(agent_id, Date.now(), { source: 'agent-login' })
       touchActivity(agent_id)
       spawnLibrarian.observeLiveness({
@@ -7436,7 +7436,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
-    const event = fleetStore.share?.({
+    const event = await fleetStore.share?.({
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
       metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
     })
@@ -9074,7 +9074,7 @@ async function handleDaemonWsMessage(ws, msg) {
         fleetStore?.updateEventText(existing.eventId, updatedText)
         broadcastEvent('event-update', { id: existing.eventId, text: updatedText })
       } else {
-        const event = fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })
+        const event = await fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })
         if (event) {
           fleetStore?.addUnread?.(event.id, to)
           broadcastEvent('fleet-event', { type: 'chat', from: 'fleet:tlda', to, id: event.id, text: baseText, event_id: event.id })
