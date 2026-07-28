@@ -109,7 +109,8 @@ export function createTerminalRpc({
   }
 
   async function rpcSendKey(args = {}) {
-    const { tmuxSession } = resolveTerminalEndpoint(args)
+    if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
+    const { tmux_session: tmuxSession } = resolveAgentRoute(args)
     const { key } = args
     checkSession(tmuxSession)
     if (!key) throw new Error('missing key')

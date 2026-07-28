@@ -7397,10 +7397,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, key } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
-    if (!seat) { error(seatError); return }
+    const route = resolveRpc('send-key', agent)
+    if (route.via === 'none') { error(route.error); return }
     try {
-      const result = await sendDaemonDurable(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key }))
+      const result = await sendDaemonDurable(route.machine_id, 'send-key', { agent_id: agent.id, key })
       reply(result)
     } catch (e) { error(e.message) }
     return
