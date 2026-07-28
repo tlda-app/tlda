@@ -110,7 +110,7 @@ import { useDiffToggle } from './hooks/useDiffToggle'
 import { useProofToggle } from './hooks/useProofToggle'
 import { useYjsSignals } from './hooks/useYjsSignals'
 import { useSyncedPlayback } from './hooks/useSyncedPlayback'
-import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
+import { getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { usePanMode } from './hooks/usePanMode'
@@ -492,9 +492,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     })
     return unsub
   }, [])
-  // Sync theme from fleet dashboard (cross-origin SSE)
-  useFleetTheme()
-
   // Auto-open shared docs pushed via fleet
   useDocAutoOpen(editorRef, document, projectName)
 
