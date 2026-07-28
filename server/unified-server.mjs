@@ -1425,8 +1425,11 @@ function broadcastEvent(type, data) {
       },
     })
   }
+  if (type === 'fleet-event') {
+    if (isChatHistoryEventType(data?.type)) void pushFilteredEvent(data)
+    return
+  }
   broadcastFleet({ event: type, data })
-  if (type === 'fleet-event' && isChatHistoryEventType(data?.type)) void pushFilteredEvent(data)
 }
 
 serverTimerScheduler = new ServerTimerScheduler({
@@ -2367,9 +2370,6 @@ async function reportDaemonEventFailure(msg, operation, error) {
 onGlobalEvent(async (event) => {
   if (event?.type === 'project-changed') {
     broadcastEvent('projects-updated', { name: event.name })
-  }
-  if (event?.type === 'source-edit') {
-    broadcastEvent('fleet-event', event)
   }
   if (event?.type === 'version-committed') {
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
@@ -7049,7 +7049,6 @@ async function handleFleetWsMessage(ws, msg) {
     if (route.via === 'none') { error(route.error); return }
     try {
       const result = await sendDaemonDurable(route.machine_id, 'kick', { agent_id: agent.id })
-      broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
       reply(result)
     } catch (e) { error(e.message) }
     return

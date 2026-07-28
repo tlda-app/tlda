@@ -776,14 +776,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- POST /api/kick ---
   // Kick = touch a signal file inside the agent's machine's ~/.fleet/signals.
   // Routed through the daemon so the file lands on the right host. The
-  // server still emits the broadcast itself.
   router.post('/api/kick', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
     const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const result = await rpcAgent(res, agent, 'kick', { agent_id: agent.id })
     if (result === null) return // rpcAgent already wrote the response
-    broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
     res.json(result)
   })
 
@@ -1061,15 +1059,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, resolvedMessage, inlineAttachments: inlineAttachments || [] })
   })
 
-  // --- POST /api/fleet-event ---
-  router.post('/api/fleet-event', (req, res) => {
-    const event = req.body
-    if (event && event.type) {
-      broadcastEvent('fleet-event', event)
-    }
-    res.json({ ok: true })
-  })
-
   // --- POST /api/agents/move-daemon ---
   // Runtime route changes must be recorded by the daemon route path.
   // Do not let an operator/API edit the legacy agent row into becoming route
@@ -1210,15 +1199,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         agentId: agent.id,
         agentLabel: label,
       }),
-    })
-    broadcastEvent('fleet-event', {
-      type: 'terminal_card',
-      from: agent.id,
-      to: SERVER_OWNER_ID,
-      id: event?.id,
-      event_id: event?.id,
-      text,
-      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
     })
     res.json({ ok: true, event_id: event?.id })
   })

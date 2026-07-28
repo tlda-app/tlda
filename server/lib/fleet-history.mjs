@@ -12,6 +12,7 @@ export const CHAT_HISTORY_EVENT_TYPES = Object.freeze([
   'plan_approval',
   'kill-session',
   'interrupt',
+  'amend',
 ])
 
 export function isChatHistoryEventType(type) {
