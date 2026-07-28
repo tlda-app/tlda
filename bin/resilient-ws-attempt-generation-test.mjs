@@ -49,6 +49,15 @@ function makeHarness(overrides = {}) {
   return { rws, created, events }
 }
 
+async function waitFor(predicate, timeoutMs = 1_000) {
+  const startedAt = Date.now()
+  while (!predicate()) {
+    if (Date.now() - startedAt >= timeoutMs) return false
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  return true
+}
+
 test('URL-resolution failure does not mint an attempt id', () => {
   const { rws, created } = makeHarness({
     url: () => { throw new Error('config not ready') },
@@ -98,22 +107,55 @@ test('error+close on one socket yields exactly one onClose transition', () => {
   }
 })
 
-test('heartbeat-timeout and manual-reconnect reasons are distinct from close/error', () => {
+test('heartbeat-timeout and manual-reconnect reasons are distinct from close/error', async () => {
   const { rws, created, events } = makeHarness({ heartbeatTimeoutMs: 10 })
-  rws.connect()
-  created[0].fakeOpen()
-  return new Promise((resolve) => {
+  try {
+    rws.connect()
+    created[0].fakeOpen()
+    assert.equal(await waitFor(() => events.some(e => e[0] === 'onClose')), true)
+    const closeEvents = events.filter(e => e[0] === 'onClose')
+    assert.equal(closeEvents.length, 1)
+    assert.equal(closeEvents[0][1], 'heartbeat-timeout')
+  } finally {
+    rws.close()
+  }
+})
+
+test('queued liveness after a starved heartbeat timer keeps the same OPEN generation', async () => {
+  const { rws, created, events } = makeHarness({ heartbeatTimeoutMs: 10 })
+  let keepAlive = null
+  try {
+    rws.connect()
+    created[0].fakeOpen()
     setTimeout(() => {
-      try {
-        const closeEvents = events.filter(e => e[0] === 'onClose')
-        assert.equal(closeEvents.length, 1)
-        assert.equal(closeEvents[0][1], 'heartbeat-timeout')
-      } finally {
-        rws.close()
-        resolve()
-      }
-    }, 30)
-  })
+      created[0].emit('ping')
+      keepAlive = setInterval(() => created[0].emit('ping'), 5)
+    }, 10)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(created.length, 1)
+    assert.equal(rws.attemptId, '1')
+    assert.equal(rws.connected, true)
+    assert.equal(events.filter(e => e[0] === 'retryScheduled').length, 0)
+    assert.equal(events.filter(e => e[0] === 'onClose').length, 0)
+  } finally {
+    if (keepAlive) clearInterval(keepAlive)
+    rws.close()
+  }
+})
+
+test('genuinely silent OPEN socket still reconnects after heartbeat timeout', async () => {
+  const { rws, created, events } = makeHarness({ heartbeatTimeoutMs: 10 })
+  try {
+    rws.connect()
+    created[0].fakeOpen()
+    assert.equal(await waitFor(() => created.length === 2), true)
+    assert.equal(created.length, 2)
+    assert.equal(rws.attemptId, '2')
+    assert.ok(events.some(e => e[0] === 'onClose' && e[1] === 'heartbeat-timeout' && e[2] === '1'))
+    assert.ok(events.some(e => e[0] === 'retryScheduled' && e[1] === '1'))
+  } finally {
+    rws.close()
+  }
 })
 
 test('manual reconnect() reports reason manual-reconnect', () => {

@@ -262,10 +262,18 @@ export class ResilientWS {
   _resetHeartbeat(ws, attemptId) {
     if (!this._heartbeatTimeoutMs) return
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer)
+    const activityGeneration = (ws._tldaActivityGeneration || 0) + 1
+    ws._tldaActivityGeneration = activityGeneration
     this._heartbeatTimer = setTimeout(() => {
-      this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${attemptId})`)
-      if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-      if (this._cleanup(ws, 'heartbeat-timeout', attemptId)) this._scheduleRetry(attemptId)
+      setImmediate(() => {
+        if (this._ws !== ws) return
+        if (ws._tldaActivityGeneration !== activityGeneration) return
+        const openState = this._WebSocketImpl.OPEN ?? WebSocket.OPEN
+        if (ws.readyState !== openState) return
+        this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${attemptId})`)
+        try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) }
+        if (this._cleanup(ws, 'heartbeat-timeout', attemptId)) this._scheduleRetry(attemptId)
+      })
     }, this._heartbeatTimeoutMs)
   }
 
