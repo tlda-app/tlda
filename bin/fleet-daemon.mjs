@@ -1320,12 +1320,9 @@ function connect() {
       const now = Date.now()
       const uptimeMs = daemonWsConnectedAtMs == null ? null : now - daemonWsConnectedAtMs
       daemonWsConnectedAtMs = null
-      daemonActivityDeliveryCounters.record(
-        ACTIVITY_DELIVERY_STAGES.DAEMON_WS_DISCONNECTED,
-        { type: 'fleet-daemon-ws' },
-        1,
-        { error: `${reason || 'unknown'}${uptimeMs == null ? '' : ` uptimeMs=${uptimeMs}`}` }
-      )
+      // Deliberately ungated: this traces the attempt lifecycle, so a failed
+      // attempt is exactly what it is for. Only claims about a *connection*
+      // move below the gate.
       traceGate1('client-close-detected', {
         daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
         boot_id: BOOT_ID,
@@ -1346,6 +1343,19 @@ function connect() {
       // Raising the timeout is not the fix: at any value the teardown-per-attempt
       // is wrong, a longer timeout only makes it rarer.
       if (!established) return
+      // A disconnect is the loss of a connection. Counting a connect attempt
+      // that never opened as one inflated this by an order of magnitude -- 237
+      // non-connections against 30 real drops on 2026-07-28 -- and an inflated
+      // counter is how someone later builds a theory on a number that was never
+      // real. Nothing reads its value (only the constant and a structural
+      // regression test reference it), so gating changes the count without
+      // changing what it means to any reader.
+      daemonActivityDeliveryCounters.record(
+        ACTIVITY_DELIVERY_STAGES.DAEMON_WS_DISCONNECTED,
+        { type: 'fleet-daemon-ws' },
+        1,
+        { error: `${reason || 'unknown'}${uptimeMs == null ? '' : ` uptimeMs=${uptimeMs}`}` }
+      )
       _serverReady = false
       agentLiveness.stop()
       agentLiveness.clearTransientMissingState()

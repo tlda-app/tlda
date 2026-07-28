@@ -102,7 +102,15 @@ if (start === -1) {
 } else {
   const body = src.slice(start, src.indexOf('\n    },', start))
   const gateAt = body.search(/if \(!established\)\s*return/)
-  const TEARDOWN = ['teardownWatchers()', 'agentLiveness.stop()', '_serverReady = false']
+  // Anything that asserts something about a CONNECTION. The counter is here
+  // because recording a disconnect for a socket that never opened is the same
+  // false claim as tearing down state it never held.
+  const TEARDOWN = [
+    'teardownWatchers()',
+    'agentLiveness.stop()',
+    '_serverReady = false',
+    'ACTIVITY_DELIVERY_STAGES.DAEMON_WS_DISCONNECTED',
+  ]
   if (gateAt === -1) {
     failures.push(`bin/fleet-daemon.mjs onClose: no \`if (!established) return\` — every failed connect attempt tears down again`)
   } else {
