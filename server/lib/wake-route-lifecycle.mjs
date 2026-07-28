@@ -48,7 +48,6 @@ export async function runWakeRouteLifecycle({
   sendDaemonDurable,
   sendDaemonEphemeral,
   spawnLibrarian,
-  recordWakeAttempt,
   appendControlTrace = () => {},
   sendWakeNudge,
   getCurrentSeat,
@@ -59,7 +58,6 @@ export async function runWakeRouteLifecycle({
   recordRuntimeLiveness = () => {},
 }) {
   if (traceId) {
-    await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'attempted', reason: 'daemon-route-selected', evidence: { daemon: daemonKey } })
     appendControlTrace({
       trace_id: traceId,
       component: 'server',
@@ -84,29 +82,9 @@ export async function runWakeRouteLifecycle({
     }))
   spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
   recordRuntimeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
-  if (traceId) {
-    await recordWakeAttempt({
-      agentId,
-      traceId,
-      ...source,
-      outcome: liveness.state === 'unknown' ? 'deferred' : 'attempted',
-      reason: 'check-alive',
-      nextAction: liveness.state === 'unknown' ? 'classify-liveness' : 'none',
-      evidence: { liveness: liveness.state, livenessReason: liveness.reason || null },
-    })
-  }
 
   const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive: serverAlive || liveness.state === 'alive' })
   if (traceId) {
-    await recordWakeAttempt({
-      agentId,
-      traceId,
-      ...source,
-      outcome: decision.action === 'hold' || decision.action === 'queue' ? 'deferred' : 'attempted',
-      reason: `spawn-librarian:${decision.action}`,
-      nextAction: decision.action === 'queue' ? 'retry' : decision.action === 'hold' ? 'escalate' : 'none',
-      evidence: { liveness: liveness.state },
-    })
     appendControlTrace({
       trace_id: traceId,
       component: 'server',
@@ -118,7 +96,6 @@ export async function runWakeRouteLifecycle({
 
   if (decision.action === 'deliver') {
     if (traceId) {
-      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'already-awake', evidence: { daemon: daemonKey } })
       appendControlTrace({
         trace_id: traceId,
         component: 'server',
@@ -157,7 +134,6 @@ export async function runWakeRouteLifecycle({
     'wake-route',
   )
   if (traceId) {
-    await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: nextSeat.daemon_key, phase: 'respawn' } })
     awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     appendControlTrace({
       trace_id: traceId,

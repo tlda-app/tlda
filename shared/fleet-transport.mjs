@@ -20,5 +20,4 @@ export const FLEET_TRANSPORT_PRIMITIVES = Object.freeze({
   REQUEST_RESPONSE: 'request-response',
   TRANSIENT_SIGNAL: 'transient-signal',
   LATEST_WINS_STATE: 'latest-wins-state',
-  NOTIFICATION_ATTEMPT: 'notification-attempt',
 })

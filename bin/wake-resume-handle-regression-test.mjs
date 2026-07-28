@@ -37,7 +37,6 @@ function memoryLedger() {
 
 async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
   let spawnCalls = 0
-  const wakeAttempts = []
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const result = await runWakeRouteLifecycle({
       agentId: 'fleet:live',
@@ -66,13 +65,11 @@ async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
           return { action: 'deliver' }
         },
       },
-      recordWakeAttempt: async event => { wakeAttempts.push(event) },
       recordRuntimeLiveness() {},
     })
     assert.equal(result.action, 'already-awake')
   }
   assert.equal(spawnCalls, 0)
-  assert.equal(wakeAttempts.filter(event => event.reason === 'already-awake' && event.outcome === 'delivered').length, 2)
 }
 
 async function testFreshStartRetainsRuntimeWhenDurableRecoveryCannotBePersisted() {
@@ -356,7 +353,7 @@ async function testRestartReplayReusesExactBoundSeatAndCapability() {
           observeLiveness() {},
           decideWake: () => ({ action: 'deliver' }),
         },
-        recordWakeAttempt: async () => {}, recordRuntimeLiveness() {},
+        recordRuntimeLiveness() {},
       })
       assert.equal(wake.action, 'already-awake')
     }

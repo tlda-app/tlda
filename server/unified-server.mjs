@@ -133,7 +133,6 @@ import {
   renderTelemetryStatusMarkdown,
 } from './lib/observability/telemetry-status.mjs'
 import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
-import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
 import { currentSeatForDaemonEvent, daemonEventSeatDecision, isForeignDaemonRejection } from './lib/daemon-event-route-authority.mjs'
@@ -156,7 +155,6 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
-const notificationAttemptLog = createBackendLogger('notification-attempts')
 const agentLivenessTrace = createAgentLivenessTraceStore()
 
 // Per daemon: the agent ids it last reported as running. This is the list the
@@ -2505,12 +2503,6 @@ async function reportDaemonEventFailure(msg, operation, error) {
     }, 'daemon event incident reporting failed')
   }
 }
-
-const notificationAttempts = createNotificationAttemptRecorder({
-  fleetStore,
-  logger: notificationAttemptLog,
-  reportIncident: reportFleetIncident,
-})
 
 // When a project is created or its sourceDir changes, push the new
 // project list to all connected fleet-daemons so they can start
@@ -5436,20 +5428,6 @@ async function handleFleetWsMessage(ws, msg) {
     }
   }
 
-  if (type === 'notification-attempt') {
-    const actor = ws._tldaAgentId || ws._tldaHumanId || msg.agentId || null
-    const result = await notificationAttempts.record({
-      ...msg.attempt,
-      agentId: msg.attempt?.agentId || actor,
-      evidence: {
-        ...(msg.attempt?.evidence || {}),
-        reportingPeer: describeFleetWsPeer(ws),
-      },
-    })
-    reply(result)
-    return
-  }
-
   if (type === 'notify') {
     try {
       if (msg.action === 'dismiss') {
@@ -6093,7 +6071,6 @@ async function handleFleetWsMessage(ws, msg) {
       const pending = _pendingWakeAcks.get(traceId)
       if (!pending) return
       _pendingWakeAcks.delete(traceId)
-      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'send-failed', reason: 'ack-timeout', nextAction: 'surface-to-asker', evidence: { deadlineMs: WAKE_ACK_DEADLINE_MS } })
       broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
       if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
     }, WAKE_ACK_DEADLINE_MS)
@@ -6107,10 +6084,6 @@ async function handleFleetWsMessage(ws, msg) {
     _pendingWakeAcks.delete(traceId)
     return true
   }
-  async function recordWakeAttempt({ agentId, traceId, sourceEventId = null, sourceTaskId = null, priority = 'urgent', intendedSurface = 'tmux', outcome, reason, nextAction = 'none', evidence = {} }) {
-    return notificationAttempts.record({ agentId, traceId, sourceEventId, sourceTaskId, priority, intendedSurface, policy: 'wake', outcome, nextAction, evidence: { reason, ...evidence } })
-  }
-
   function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -6123,7 +6096,6 @@ async function handleFleetWsMessage(ws, msg) {
         ts: new Date().toISOString(),
       })
       if (traceId) {
-        void recordWakeAttempt({ agentId, traceId, ...source, outcome: 'deferred', reason: 'reserved-shell', nextAction: 'await-login' })
         controlPlaneTraces.append({
           trace_id: traceId,
           component: 'server',
@@ -6136,7 +6108,6 @@ async function handleFleetWsMessage(ws, msg) {
     }
     if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
       if (traceId) {
-        void recordWakeAttempt({ agentId, traceId, ...source, outcome: 'deferred', reason: 'wake-breaker-open', nextAction: 'retry-after-backoff' })
         controlPlaneTraces.append({
           trace_id: traceId,
           component: 'server',
@@ -6155,7 +6126,6 @@ async function handleFleetWsMessage(ws, msg) {
       source: Object.keys(source || {}).length ? source : (prev?.source || {}),
     })
     if (traceId) {
-      void recordWakeAttempt({ agentId, traceId, ...source, outcome: 'queued', reason: 'wake-requested', nextAction: 'drain-wake-queue' })
       controlPlaneTraces.append({
         trace_id: traceId,
         component: 'server',
@@ -6192,7 +6162,6 @@ async function handleFleetWsMessage(ws, msg) {
       const daemonKeys = [...daemonConnections.keys()]
       if (daemonKeys.length === 0) {
         if (traceId) {
-          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'no-route', reason: 'no-daemon-connected', nextAction: 'retry-on-daemon-reconnect' })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -6205,9 +6174,6 @@ async function handleFleetWsMessage(ws, msg) {
       }
       const seat = fleetStore?.getCurrentAgentSeat?.(agentId)
       if (!seat) {
-        if (traceId) {
-          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'no-route', reason: 'no-current-durable-seat', nextAction: 'retry-after-seat-enrollment' })
-        }
         continue
       }
       const daemonKey = seat.daemon_key
@@ -6226,7 +6192,6 @@ async function handleFleetWsMessage(ws, msg) {
           sendDaemonDurable,
           sendDaemonEphemeral,
           spawnLibrarian,
-          recordWakeAttempt,
           appendControlTrace: (event) => controlPlaneTraces.append(event),
           sendWakeNudge,
           getCurrentSeat: (id) => fleetStore.getCurrentAgentSeat(id),
@@ -6254,7 +6219,6 @@ async function handleFleetWsMessage(ws, msg) {
         b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
         _wakeBreaker.set(agentId, b)
         if (traceId) {
-          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'send-failed', reason: 'wake-error', nextAction: 'surface-to-asker', evidence: { error: e.message } })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -6545,24 +6509,6 @@ async function handleFleetWsMessage(ws, msg) {
         wokeRecipient: deliveryDecision.wokeRecipient,
         notifyBy: deliveryDecision.notifyBy,
       })
-      if (recipientAgent && !recipientAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(to)) {
-        await notificationAttempts.record({
-          agentId: to,
-          reason: 'chat',
-          sourceEventId: eventId,
-          priority: basePriority,
-          intendedSurface: 'channel',
-          policy: deliveryDecision.delivery === 'batched' ? 'batched' : inboxStatus,
-          outcome: 'deferred',
-          evidence: {
-            inboxStatus,
-            delivery: deliveryDecision.delivery,
-            activeChannelSocket: false,
-          },
-          nextAction: deliveryDecision.notifyBy ? 'retry-at' : 'retry-on-reconnect',
-          nextAttemptAt: deliveryDecision.notifyBy || null,
-        })
-      }
       // Echo _tempId on the broadcast so a client whose WS reply was lost during
       // a hiccup can still bind this echo to its orphaned optimistic entry
       // (the reply, not the DB row, is what normally carries _tempId).
@@ -6787,26 +6733,6 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'stored',
       detail: { task_id: taskId, event_id: delegateEvent?.id, from, to: resolved.id },
     })
-    const targetAgent = fleetStore.getAgent?.(resolved.id)
-    const deliveryChannel = normalizeDeliveryChannel(targetAgent?.metadata?.deliveryChannel)
-    if (targetAgent && !targetAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(resolved.id)) {
-      const inboxStatus = normalizeInboxStatus(targetAgent?.metadata?.inboxStatus)
-      await notificationAttempts.record({
-        agentId: resolved.id,
-        reason: 'delegate',
-        sourceEventId: delegateEvent?.id || null,
-        sourceTaskId: taskId,
-        priority: 'urgent',
-        intendedSurface: 'channel',
-        policy: inboxStatus,
-        outcome: 'deferred',
-        evidence: {
-          inboxStatus,
-          activeChannelSocket: false,
-        },
-        nextAction: 'retry-on-reconnect',
-      })
-    }
     broadcastState(resolved.id)
     reply({
       ok: true,
@@ -7021,19 +6947,6 @@ async function handleFleetWsMessage(ws, msg) {
         const traceId = traceIdFromFleetEvent(message)
         if (!traceId) continue
         acknowledgeWakeTrace(traceId, agentId)
-        await notificationAttempts.record({
-          agentId,
-          traceId,
-          reason: 'inbox-acknowledgment',
-          sourceEventId: message.id,
-          sourceTaskId: message.task_id || message.metadata?.task_id || null,
-          priority: message.metadata?.priority || (message.type === 'delegate' ? 'urgent' : 'normal'),
-          intendedSurface: message.metadata?.delivery_channel || 'channel',
-          policy: 'wake',
-          outcome: 'acknowledged',
-          evidence: { readEventId: message.id },
-          nextAction: 'none',
-        })
       }
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     } else {
