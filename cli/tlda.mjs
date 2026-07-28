@@ -3257,30 +3257,43 @@ function printLocalDaemonOutcome(result = {}) {
 }
 
 // `mint` makes a FRESH agent only. Adopting an already-running external session
-// is a separate verb (`enroll`) so the two are never confused (Skip: "the create
+// is a separate verb (`enlist`) so the two are never confused (Skip: "the create
 // command now is overloaded, to both create fresh agents and enroll extant agents").
 function agentMintArgs(rawArgs) {
   if (flagFromRaw(rawArgs, 'session')) {
-    console.error(red('`tlda agent mint` makes a FRESH agent. To adopt an existing session, use:\n  tlda agent enroll --session <uuid> --kind <codex|claude> [name]'))
+    console.error(red('`tlda agent mint` makes a FRESH agent. To adopt an existing session, use:\n  tlda agent enlist --kind <codex|claude> <session-id> [name]'))
     process.exit(1)
   }
   return hasRawFlag(rawArgs, 'fresh') ? rawArgs : ['--fresh', ...rawArgs]
 }
 
-// `enroll` adopts an already-running external session as a fleet agent. The harness
+function takeFirstRawPositional(rawArgs) {
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i]
+    if (arg.startsWith('--')) {
+      if (VALUE_FLAGS.has(arg.slice(2))) i++
+      continue
+    }
+    return { value: arg, rest: [...rawArgs.slice(0, i), ...rawArgs.slice(i + 1)] }
+  }
+  return { value: null, rest: rawArgs }
+}
+
+// `enlist` adopts an already-running external session as a fleet agent. The harness
 // KIND is required and explicit — session ids are not unique across harnesses, so
 // nothing is guessed.
-function agentEnrollArgs(rawArgs) {
-  if (!flagFromRaw(rawArgs, 'session')) {
-    console.error(red('Usage: tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]'))
+function agentEnlistArgs(rawArgs) {
+  const { value: session, rest } = takeFirstRawPositional(rawArgs)
+  if (!session) {
+    console.error(red('Usage: tlda agent enlist --kind <codex|claude> <session-id> [name] [--permissions <profile>]'))
     process.exit(1)
   }
   const kind = flagFromRaw(rawArgs, 'kind')
   if (kind !== 'codex' && kind !== 'claude') {
-    console.error(red('`tlda agent enroll` requires --kind <codex|claude> (session ids are not unique across harnesses).'))
+    console.error(red('`tlda agent enlist` requires --kind <codex|claude> (session ids are not unique across harnesses).'))
     process.exit(1)
   }
-  return hasRawFlag(rawArgs, 'enroll') ? rawArgs : ['--enroll', ...rawArgs]
+  return ['--enroll', '--session', session, ...rest]
 }
 
 export async function runFleetSpawn(spawnArgs, {
@@ -3330,11 +3343,11 @@ export async function runFleetSpawn(spawnArgs, {
       respawn: false,
       refresh: false,
     }, { onEvent: printMintLifecycleEvent })
-    if (!result?.ok) throw new Error(result?.error || result?.reason || `enroll failed for ${name || session}`)
+    if (!result?.ok) throw new Error(result?.error || result?.reason || `enlist failed for ${name || session}`)
     printLocalDaemonOutcome(result)
     const agentId = result.agent_id || result.fleet_id
-    if (!agentId) throw new Error(`enroll completed without a public fleet_id for ${name || session}`)
-    console.log(`Enrolled ${result.tmux_session || result.tmuxSession || result.name || name || session} (${agentId}) in ${cwd}`)
+    if (!agentId) throw new Error(`enlist completed without a public fleet_id for ${name || session}`)
+    console.log(`Enlisted ${result.tmux_session || result.tmuxSession || result.name || name || session} (${agentId}) in ${cwd}`)
     return
   }
   if (spawnMode === 'fresh') {
@@ -4110,7 +4123,7 @@ function usageAgent() {
 Usage:
   tlda agent list [--limit N]
   tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
-  tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]
+  tlda agent enlist --kind <codex|claude> <session-id> [name] [--permissions <profile>]
   tlda agent wake <agent> [--permissions <profile>]
   tlda agent reanimate <agent>
   tlda agent move <agent> [name@][box:]env
@@ -4809,7 +4822,7 @@ async function cmdAgent() {
     case 'list':
     case 'ls':        await listFleetAgents(); break
     case 'mint':      await runFleetSpawn(agentMintArgs(process.argv.slice(4))); break
-    case 'enroll':    await runFleetSpawn(agentEnrollArgs(process.argv.slice(4))); break
+    case 'enlist':    await runFleetSpawn(agentEnlistArgs(process.argv.slice(4))); break
     case 'wake':      await runFleetSpawn(process.argv.slice(4)); break
     case 'reanimate': await reanimateAgentCommand(getPositional(1)); break
     case 'move':      await cmdAgentMove(); break
@@ -4821,7 +4834,7 @@ async function cmdAgent() {
     case 'permissions': await cmdAgentPermissions(); break
     case 'models': await cmdAgentModels(); break
     default:
-      console.error('Usage: tlda agent <list|mint|enroll|wake|reanimate|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions|models> [name]')
+      console.error('Usage: tlda agent <list|mint|enlist|wake|reanimate|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions|models> [name]')
       process.exit(1)
   }
 }

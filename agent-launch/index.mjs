@@ -1090,7 +1090,7 @@ async function spawnSession(params) {
   if (!sessionId) throw new SpawnError('launch-failed', 'session spawn requires --session <uuid>')
   const kind = normalizeSessionKind(params.kind)
   if (!kind) {
-    throw new SpawnError('launch-failed', 'enroll requires --kind <codex|claude>: session ids are not unique across harnesses', { sessionId })
+    throw new SpawnError('launch-failed', 'enlist requires --kind <codex|claude>: session ids are not unique across harnesses', { sessionId })
   }
   if (kind === 'codex') {
     const codexPath = codexRolloutPath(sessionId, { sessionsBase: params.codexSessionsBase })
@@ -1142,6 +1142,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     mode: params.mode,
     explicitPermissionRequest: params.explicitPermissionRequest,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
+    harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
   await (deps.wsReserveShell || wsReserveShell)({
     fleetId,
@@ -1224,6 +1225,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     mode: params.mode,
     explicitPermissionRequest: params.explicitPermissionRequest,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
+    harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
   await (deps.wsReserveShell || wsReserveShell)({
     fleetId,
