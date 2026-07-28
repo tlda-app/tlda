@@ -71,6 +71,7 @@ for (const family of DAEMON_EVENT_ROUTE_FAMILIES) {
 }
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+const fleetStoreSource = fs.readFileSync(new URL('../server/lib/fleet-store.mjs', import.meta.url), 'utf8')
 const handlerStart = serverSource.indexOf('async function handleDaemonWsMessage')
 assert.notEqual(handlerStart, -1, 'handleDaemonWsMessage source not found')
 const nextHandlerStart = serverSource.indexOf('\nasync function ', handlerStart + 1)
@@ -99,9 +100,9 @@ function branchSource(typeLiteral) {
 
 const statusBranch = branchSource('agent-status')
 assertOrdered(statusBranch, [
-  'currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-agent-status'",
-  'if (!currentSeat) return',
+  'if (isForeignDaemonRejection(statusSeat)) return',
   'fleetStore.updateAgentStatus',
   'runtimeStatusStore.updateActivity',
 ], 'agent-status branch')
@@ -114,21 +115,49 @@ const snapshotBranch = branchSource('agent-liveness-snapshot')
 assertOrdered(snapshotBranch, [
   'fleetStore.getCurrentAgentSeats(reported)',
   'seats.get(id)?.daemon_key === ws._daemonKey',
-  'daemonRunningAgents.get(ws._daemonKey)',
   'markAgentAlive',
   'markAgentNotAlive',
   'daemonRunningAgents.set(ws._daemonKey, running)',
 ], 'agent-liveness-snapshot branch')
+assert.equal(
+  snapshotBranch.includes('retireCurrentAgentSeat'),
+  false,
+  'agent-liveness-snapshot must not retire the durable current seat',
+)
 
 const livenessBranch = branchSource('agent-liveness')
 assertOrdered(livenessBranch, [
-  'const currentSeat = currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-agent-liveness'",
-  'if (!currentSeat) return',
+  'if (isForeignDaemonRejection(livenessSeat)) return',
   'spawnLibrarian.observeLiveness',
   'markAgentAlive',
   'markAgentNotAlive',
 ], 'agent-liveness single branch')
+assert.equal(
+  livenessBranch.includes('retireCurrentAgentSeat'),
+  false,
+  'agent-liveness must not retire the durable current seat',
+)
+
+const allLivenessRouteCode = `${snapshotBranch}\n${livenessBranch}`
+assert.equal(
+  allLivenessRouteCode.includes('retireCurrentAgentSeat'),
+  false,
+  'no liveness path may retire the durable current seat',
+)
+
+const markDeadMethod = (() => {
+  const start = fleetStoreSource.indexOf('\n  markDead(id) {')
+  assert.notEqual(start, -1, 'markDead method not found')
+  const end = fleetStoreSource.indexOf('\n  markAlive(id) {', start)
+  assert.notEqual(end, -1, 'markAlive method not found after markDead')
+  return fleetStoreSource.slice(start, end)
+})()
+assert(
+  markDeadMethod.includes('_deleteCurrentAgentSeat'),
+  'explicit markDead must still retire the durable current seat',
+)
 
 const activityBranch = branchSource('agent-activity')
 assertOrdered(activityBranch, [
@@ -142,9 +171,9 @@ assertOrdered(activityBranch, [
 
 const activityEventBranch = branchSource('activity-event')
 assertOrdered(activityEventBranch, [
-  'currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-activity-event'",
-  'if (!currentSeat) return',
+  'if (isForeignDaemonRejection(seatDecision))',
   'markAgentAlive',
   'runtimeStatusStore.updateActivity',
   'serverActivityDeliveryCounters.record',
