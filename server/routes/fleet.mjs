@@ -405,7 +405,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         // UNION of two indexed scans — see FleetStore.queryAgentEvents.
         events = fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
       } else if (type && beforeId) {
-        // A bounded newest-first window for read-only consumers.
+        // A bounded newest-first window for read-only consumers such as Grafana.
         // `before` remains the ordered pagination cursor; reversing preserves the
         // endpoint's chronological response contract without scanning history.
         events = fleetStore.db.prepare(

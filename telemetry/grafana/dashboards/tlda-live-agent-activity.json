@@ -1,0 +1,260 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Current browser-side voice health from structured live-perf samples.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "targets": [{
+        "columns": [
+          { "selector": "backend", "text": "Backend", "type": "string" },
+          { "selector": "recording", "text": "Listening", "type": "string" },
+          { "selector": "liveness", "text": "Input", "type": "string" },
+          { "selector": "health", "text": "Health", "type": "string" },
+          { "selector": "relay_connected", "text": "Relay connected", "type": "string" },
+          { "selector": "recognizer_status", "text": "Recognizer", "type": "string" },
+          { "selector": "common_state", "text": "Voice state", "type": "string" },
+          { "selector": "mic_stream", "text": "Browser mic", "type": "string" },
+          { "selector": "bufferedAmount", "text": "Browser WS buffered", "type": "number" },
+          { "selector": "audioBacklogFrames", "text": "Browser backlog", "type": "number" },
+          { "selector": "proxy_pendingFrames", "text": "Proxy pending", "type": "number" },
+          { "selector": "bridge_upstreamConnected", "text": "Bridge upstream", "type": "string" },
+          { "selector": "last_mic_frame_ms", "text": "Mic frame age (ms)", "type": "number" },
+          { "selector": "last_audio_chunk_ms", "text": "Bridge send age (ms)", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "latest_browser", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Voice pipeline health",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Aligned Deepgram browser capture and send ages. Spikes show whether lag starts before or after browser audio relay.",
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 4 },
+      "id": 11,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "Time", "type": "timestamp" },
+          { "selector": "mic_frame_cadence_ms", "text": "Mic cadence", "type": "number" },
+          { "selector": "last_mic_frame_ms", "text": "Mic age", "type": "number" },
+          { "selector": "audio_chunk_cadence_ms", "text": "Chunk cadence", "type": "number" },
+          { "selector": "last_audio_chunk_ms", "text": "Chunk age", "type": "number" }
+        ],
+        "format": "timeseries", "parser": "backend", "refId": "A", "root_selector": "browser", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Deepgram mic and browser relay timing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Browser and Fly proxy audio queue depth. Growth here means speech is being delayed before the SDK bridge.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 4 },
+      "id": 12,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "Time", "type": "timestamp" },
+          { "selector": "bufferedAmount", "text": "Browser WS buffered", "type": "number" },
+          { "selector": "audioBacklogBytes", "text": "Browser backlog bytes", "type": "number" },
+          { "selector": "proxy_pendingBytes", "text": "Proxy pending bytes", "type": "number" },
+          { "selector": "proxy_oldestAgeMs", "text": "Proxy oldest age", "type": "number" }
+        ],
+        "format": "timeseries", "parser": "backend", "refId": "A", "root_selector": "browser", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Deepgram relay backlog",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Dropped/flushed Deepgram audio frames at browser, proxy, and bridge boundaries.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 11 },
+      "id": 13,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "Time", "type": "timestamp" },
+          { "selector": "droppedAudioFrames", "text": "Browser dropped", "type": "number" },
+          { "selector": "flushedAudioFrames", "text": "Browser flushed", "type": "number" },
+          { "selector": "proxy_droppedFrames", "text": "Proxy dropped", "type": "number" },
+          { "selector": "proxy_flushedFrames", "text": "Proxy flushed", "type": "number" },
+          { "selector": "bridge_droppedChunks", "text": "Bridge dropped", "type": "number" },
+          { "selector": "bridge_flushedChunks", "text": "Bridge flushed", "type": "number" }
+        ],
+        "format": "timeseries", "parser": "backend", "refId": "A", "root_selector": "browser", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Deepgram chunk drops and flushes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "SDK bridge and transcript timing. Pending-final age tracks intervals where Deepgram has interim text but no final segment yet.",
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 11 },
+      "id": 14,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "Time", "type": "timestamp" },
+          { "selector": "bridge_lastUpstreamAudioAgoMs", "text": "Bridge audio age", "type": "number" },
+          { "selector": "bridge_transcriptLatencyMs", "text": "Transcript latency", "type": "number" },
+          { "selector": "bridge_pendingFinalAgeMs", "text": "Pending final age", "type": "number" },
+          { "selector": "bridge_reconnectCount", "text": "Reconnect count", "type": "number" }
+        ],
+        "format": "timeseries", "parser": "backend", "refId": "A", "root_selector": "browser", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Deepgram SDK bridge and transcript timing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 18 },
+      "id": 1,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{
+        "columns": [{ "selector": "awake", "text": "Agents working now", "type": "number" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "totals", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200&view=activity-dashboard",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Agents working now",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 18 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{
+        "columns": [{ "selector": "hibernating", "text": "Agents resting", "type": "number" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "totals", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200&view=activity-dashboard",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Agents resting",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 18 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{
+        "columns": [{ "selector": "total", "text": "Agents shown", "type": "number" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "totals", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200&view=activity-dashboard",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Current agents",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Empty means the bounded 200-row roster contains every current agent. A value means another page exists and this view says so rather than hiding the limit.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 18 },
+      "id": 4,
+      "options": { "colorMode": "none", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [{
+        "columns": [{ "selector": "next_cursor", "text": "Roster coverage", "type": "string" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "pagination", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200&view=activity-dashboard",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Roster pagination",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "The current bounded roster projection from Fly. Status and activity are server-authoritative projections of existing daemon evidence.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 13, "w": 24, "x": 0, "y": 22 },
+      "id": 5,
+      "options": { "cellHeight": "sm", "showHeader": true, "sortBy": [{ "desc": false, "displayName": "Name" }] },
+      "targets": [{
+        "columns": [
+          { "selector": "friendly_name", "text": "Name", "type": "string" },
+          { "selector": "status", "text": "State", "type": "string" },
+          { "selector": "activity", "text": "Activity", "type": "string" },
+          { "selector": "activity_tool", "text": "Using", "type": "string" },
+          { "selector": "updated_at", "text": "Updated", "type": "timestamp" },
+          { "selector": "route_state", "text": "Reachable", "type": "string" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "agents", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200&view=activity-dashboard",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Every current agent",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Latest 250 persisted activity events, fetched through the existing ordered `before` cursor. The window is bounded and refreshes every five seconds.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 13, "w": 24, "x": 0, "y": 35 },
+      "id": 6,
+      "options": { "cellHeight": "sm", "showHeader": true, "sortBy": [{ "desc": true, "displayName": "When" }] },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "When", "type": "timestamp" },
+          { "selector": "from", "text": "Agent", "type": "string" },
+          { "selector": "tool", "text": "Activity", "type": "string" },
+          { "selector": "text", "text": "Detail", "type": "string" },
+          { "selector": "id", "text": "Event", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "events", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/store/events?type=activity&before=9007199254740991&limit=250&view=activity-dashboard",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Live activity",
+      "type": "table"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 40,
+  "tags": ["tlda", "fleet", "live"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Live agent activity",
+  "uid": "tlda-live-agent-activity",
+  "version": 1,
+  "weekStart": ""
+}
