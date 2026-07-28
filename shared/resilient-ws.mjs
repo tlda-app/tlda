@@ -18,7 +18,7 @@ export class ResilientWS {
    * @param {number}        [options.stableConnectionMs=10000] — reset retry ramp only after this long connected
    * @param {() => number}  [options.random=Math.random] — injected by tests
    * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
-   * @param {number}        [options.connectAttemptTimeoutMs=5000] — deadline while socket is CONNECTING; 0 = disabled
+   * @param {number}        [options.connectAttemptTimeoutMs=0] — explicit deadline while socket is CONNECTING; 0 = disabled
    * @param {(ws, attemptId: string) => void}  [options.onOpen] — called after connection opens,
    *   with the immutable attempt id captured at mint time for THIS socket generation
    * @param {(msg, attemptId: string) => void} options.onMessage — called with parsed JSON
@@ -54,11 +54,7 @@ export class ResilientWS {
     this._stableConnectionMs = options.stableConnectionMs ?? 10_000
     this._random = options.random ?? Math.random
     this._heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 0
-    // Healthy live fleet connects were measured at ~329ms during the 2026-07-25
-    // incident. 5s is deliberately an order-of-magnitude ceiling: it catches
-    // wedged CONNECTING sockets without treating ordinary connection latency as
-    // failure. Consumers with different tolerances can override it.
-    this._connectAttemptTimeoutMs = options.connectAttemptTimeoutMs ?? 5_000
+    this._connectAttemptTimeoutMs = options.connectAttemptTimeoutMs ?? 0
     this._onOpen = options.onOpen
     this._onMessage = options.onMessage
     this._onClose = options.onClose

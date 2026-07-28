@@ -139,7 +139,12 @@ test('a socket stuck CONNECTING times out and retries as a failed attempt', () =
   assert.equal(rws.attemptId, '1')
 
   return new Promise((resolve, reject) => {
-    setTimeout(() => {
+    const startedAt = Date.now()
+    const check = () => {
+      if (created.length < 2 && Date.now() - startedAt < 1_000) {
+        setTimeout(check, 10)
+        return
+      }
       try {
         assert.equal(created.length, 2, 'connect-timeout should schedule a replacement socket')
         assert.equal(rws.attemptId, '2')
@@ -153,8 +158,26 @@ test('a socket stuck CONNECTING times out and retries as a failed attempt', () =
         rws.close()
         reject(e)
       }
-    }, 30)
+    }
+    setTimeout(check, 10)
   })
+})
+
+test('default durable connection may open after 5s without minting a retry generation', async () => {
+  const { rws, created, events } = makeHarness()
+  try {
+    rws.connect()
+    assert.equal(created.length, 1)
+    await new Promise(resolve => setTimeout(resolve, 5_100))
+    assert.equal(created.length, 1, 'default connection attempt must not be replaced after 5s')
+    assert.equal(rws.attemptId, '1')
+    created[0].fakeOpen()
+    assert.equal(rws.connected, true)
+    assert.equal(events.filter(e => e[0] === 'retryScheduled').length, 0)
+    assert.deepEqual(events.filter(e => e[0] === 'attemptOpen').map(e => e[1]), ['1'])
+  } finally {
+    rws.close()
+  }
 })
 
 test('retry-scheduled carries the just-ended attempt id and a delay; next opened attempt is the following id', () => {
