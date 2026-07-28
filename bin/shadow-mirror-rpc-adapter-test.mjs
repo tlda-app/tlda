@@ -82,7 +82,8 @@ function handlerWith({ daemons, send, last = 'air:stable' }) {
   await assert.rejects(() => handler(args), /no daemon accepted the mirror for balancing-act/)
 }
 
-// No daemons at all is distinct from everyone declining.
+// No daemons at all means nobody currently has the project open. That is a
+// normal no-op, distinct from connected daemons all declining or failing.
 {
   const handler = createShadowMirrorRpcHandler({
     readProject: () => ({}),
@@ -90,7 +91,14 @@ function handlerWith({ daemons, send, last = 'air:stable' }) {
     listDaemonKeys: () => [],
     sendDaemonEphemeral: async () => { throw new Error('should not send') },
   })
-  await assert.rejects(() => handler(args), /no daemon connected to mirror balancing-act/)
+  const result = await handler(args)
+  assert.deepEqual(result, {
+    ok: true,
+    machine_id: null,
+    env_name: null,
+    mirrored: [],
+    declined: [],
+  })
 }
 
 console.log('shadow mirror fan-out: ok')

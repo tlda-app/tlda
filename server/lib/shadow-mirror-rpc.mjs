@@ -24,7 +24,15 @@ export function createShadowMirrorRpcHandler({
       ? daemonAddressFor(project.lastSourceMachineId, project.lastSourceEnvName)
       : null
     const keys = [...new Set([...(listDaemonKeys?.() || []), ...(lastKey ? [lastKey] : [])])]
-    if (keys.length === 0) throw new Error(`no daemon connected to mirror ${name}`)
+    if (keys.length === 0) {
+      return {
+        ok: true,
+        machine_id: null,
+        env_name: null,
+        mirrored: [],
+        declined: [],
+      }
+    }
 
     const settled = await Promise.allSettled(keys.map(async (key) => {
       const result = await sendDaemonEphemeral(key, 'mirror-shadow-ref', {
