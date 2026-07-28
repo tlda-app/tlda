@@ -5399,6 +5399,51 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'subagent-observed') {
+    const parentAgentId = msg.parent_agent_id || null
+    if (!parentAgentId) { error('subagent-observed requires parent_agent_id'); return }
+    const parent = await fleetStore.getAgent?.(parentAgentId)
+    if (!parent || parent.dead) { error(`subagent parent "${parentAgentId}" is not live`); return }
+
+    const childAgentId = mintFleetId()
+    const childPart = String(msg.child_name || 'subagent').trim() || 'subagent'
+    const requestedName = `${parent.friendly_name || parent.id}:${childPart}`
+    let assignedName
+    try {
+      assignedName = await fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: childAgentId })
+    } catch (e) {
+      error(e)
+      return
+    }
+    const now = new Date().toISOString()
+    const child = {
+      id: childAgentId,
+      parent_agent_id: parent.id,
+      friendly_name: assignedName,
+      cwd: parent.cwd || null,
+      labels: [],
+      registered_at: now,
+      last_seen: now,
+      dead: false,
+      human: false,
+      is_manager: false,
+      metadata: null,
+    }
+    await fleetStore.upsertAgent(child)
+    await fleetStore.ensureDefaultSubscription?.(child.id)
+    const stored = await fleetStore.getAgent?.(child.id) || child
+    void fleetStore.share?.({
+      type: 'lifecycle',
+      agent_id: child.id,
+      from: child.id,
+      to: parent.id,
+      text: `${stored.friendly_name || child.id} observed`,
+    })
+    broadcastState(stored)
+    reply({ ok: true, agent: stored })
+    return
+  }
+
   if (type === 'register' || type === 'reserve-shell' || type === 'mint-shell') {
     // Prefer agent_id over id: the transport adapter stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling
