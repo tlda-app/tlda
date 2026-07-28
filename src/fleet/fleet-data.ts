@@ -86,7 +86,13 @@ function keyOfEvent(event: Record<string, unknown>): string {
 function asFleetEvent(event: Record<string, unknown>): FleetEvent {
   const id = keyOfEvent(event)
   const previousId = eventIds.get(event)
-  if (previousId && previousId !== id) removeEventIdFromStores(previousId)
+  const storesToRekey: LiveStore<FleetEvent>[] = []
+  if (previousId && previousId !== id) {
+    if (eventStore.has(previousId)) storesToRekey.push(eventStore)
+    for (const buffer of eventBuffers.values()) {
+      if (buffer.store.has(previousId)) storesToRekey.push(buffer.store)
+    }
+  }
   eventIds.set(event, id)
   Object.defineProperty(event, 'id', {
     value: id,
@@ -94,7 +100,14 @@ function asFleetEvent(event: Record<string, unknown>): FleetEvent {
     configurable: true,
     writable: true,
   })
-  return event as FleetEvent
+  const fleetEvent = event as FleetEvent
+  for (const store of storesToRekey) {
+    store.bulk(() => {
+      store.remove(previousId!)
+      store.upsert(fleetEvent)
+    })
+  }
+  return fleetEvent
 }
 
 function eventTimestamp(event: FleetEvent): number {
@@ -403,10 +416,9 @@ export function upsertFleetEventsForBuffer(
 // filter decision, so it is the one write into a server-fed buffer that does not come
 // from the subscription, and fanoutEventToBuffers deliberately can't do it.
 //
-// It needs no removal counterpart: when the server echo binds the row, asFleetEvent
-// sees the key change tmp:<tempId> -> db:<id> and removeEventIdFromStores drops the
-// old key from every buffer, this one included. The server's copy then arrives through
-// applyFilterEvents under the new key, so the panel ends up with one row, not two.
+// When the server binds the row, asFleetEvent rekeys the same object in every store
+// that already contains it. The sender panel therefore keeps the row without waiting
+// for a second filter-event delivery, and that later delivery deduplicates by db id.
 //
 // Does not create the buffer. A buffer that doesn't exist yet has nothing rendering it,
 // and creating one here with a null filter would make the next eventBuffer() call see a
