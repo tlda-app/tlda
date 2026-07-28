@@ -38,7 +38,7 @@ export async function realizeProjectMarkdownArtifact({
   writebackOptions = {},
   logger = console,
 } = {}) {
-  const resolved = resolveArtifactProject({ project, cwd, projectsProvider })
+  const resolved = await resolveArtifactProject({ project, cwd, projectsProvider })
   if (!resolved) {
     return notReadyPayload({
       status: 'not materialized',
@@ -238,15 +238,15 @@ export async function writeProjectMarkdownArtifact({
   })
 }
 
-export function resolveArtifactProject({ project = null, cwd = null, projectsProvider = listProjects } = {}) {
-  const projects = projectsProvider().map(p => ({
+export async function resolveArtifactProject({ project = null, cwd = null, projectsProvider = listProjects } = {}) {
+  const projects = (await projectsProvider()).map(p => ({
     ...p,
-    partsRoot: p.partsRoot || safeProjectPartsRoot(p.name),
+    partsRoot: p.partsRoot || projectPartsRoot(p.name),
     sourceRoot: p.sourceDir || null,
   })).filter(p => p.name)
 
   if (project) {
-    const match = projects.find(p => p.name === project) || (readProject(project) ? { name: project, partsRoot: safeProjectPartsRoot(project) } : null)
+    const match = projects.find(p => p.name === project) || (await readProject(project) ? { name: project, partsRoot: projectPartsRoot(project) } : null)
     return match ? { name: match.name, root: match.partsRoot } : null
   }
 
@@ -514,15 +514,6 @@ function gitTopLevel(cwd) {
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
-  }
-}
-
-function safeProjectPartsRoot(name) {
-  try {
-    if (!name || !readProject(name)) return null
-    return projectPartsRoot(name)
-  } catch {
-    return null
   }
 }
 

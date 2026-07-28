@@ -166,7 +166,7 @@ router.get('/shadow/diff', requireRead, async (req, res) => {
 
   if (!ref1) return res.status(400).json({ error: 'ref1 is required' })
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const repoDir = getShadowRepoDir(name)
@@ -199,7 +199,7 @@ router.get('/shadow/source', requireRead, async (req, res) => {
   }
   if (!file) return res.status(400).json({ error: 'file is required' })
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -225,10 +225,10 @@ router.get('/shadow/source', requireRead, async (req, res) => {
  * GET /shadow/:hash7/lookup — SyncTeX lookup table for a shadow version.
  * Returns the lookup.json if compiled with synctex, 404 if not available.
  */
-router.get('/shadow/:hash7/lookup', requireRead, (req, res) => {
+router.get('/shadow/:hash7/lookup', requireRead, async (req, res) => {
   const { name, hash7 } = req.params
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   // Use the ensure system: chains lookup → synctex → DVI → source.
@@ -250,10 +250,10 @@ router.get('/shadow/:hash7/lookup', requireRead, (req, res) => {
  * GET /shadow/:hash7/meta — Page count and compile status for a shadow version.
  * Returns { pages, hash7, compiledAt } if compiled, or { pages: null } if not yet.
  */
-router.get('/shadow/:hash7/meta', requireRead, (req, res) => {
+router.get('/shadow/:hash7/meta', requireRead, async (req, res) => {
   const { name, hash7 } = req.params
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const metaPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'meta.json')
@@ -283,7 +283,7 @@ router.get('/shadow/:hash7/meta', requireRead, (req, res) => {
  */
 router.get('/shadow', requireRead, async (req, res) => {
   const { name } = req.params
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const ts = req.query.timestamp ? parseInt(req.query.timestamp, 10) : null
@@ -311,7 +311,7 @@ router.get('/shadow/at', requireRead, async (req, res) => {
   const { time } = req.query
   if (!time) return res.status(400).json({ error: 'time is required' })
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -331,7 +331,7 @@ router.get('/shadow/at', requireRead, async (req, res) => {
  */
 router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
   const { name, ref } = req.params
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -371,7 +371,7 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
  */
 router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
   const { name, ref } = req.params
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -429,7 +429,7 @@ router.post('/diff-region', requireRead, async (req, res) => {
     return res.status(400).json({ error: 'Required: hash7, page, pdfYMin, pdfYMax' })
   }
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   // 1. Reverse synctex: find source line range covering this y-region
@@ -558,7 +558,7 @@ router.post('/diff-region', requireRead, async (req, res) => {
  */
 router.get('/shadow/bounds', requireRead, async (req, res) => {
   const { name } = req.params
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -582,7 +582,7 @@ router.get('/shadow/adjacent', requireRead, async (req, res) => {
   if (!hash) return res.status(400).json({ error: 'hash is required' })
   if (dir !== 'older' && dir !== 'newer') return res.status(400).json({ error: 'dir must be older or newer' })
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -604,7 +604,7 @@ router.get('/shadow/changelog', requireRead, async (req, res) => {
   const { name } = req.params
   const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500)
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
@@ -658,7 +658,7 @@ router.post('/ribbon-stale', requireRead, async (req, res) => {
   const { name } = req.params
   const { segments = [], currentCommit = 'HEAD' } = req.body ?? {}
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   if (!Array.isArray(segments)) return res.status(400).json({ error: 'segments must be an array' })
   if (typeof currentCommit !== 'string' || !_COMMIT_RE.test(currentCommit)) {
@@ -730,11 +730,11 @@ router.post('/ribbon-stale', requireRead, async (req, res) => {
  * proposed range IS the change. (file is accepted but v1 treats statementLines as
  * main-file-relative; multi-file anchoring is a follow-up.)
  */
-router.post('/invalidation/dry-run', requireRead, (req, res) => {
+router.post('/invalidation/dry-run', requireRead, async (req, res) => {
   const { name } = req.params
   const { fromLine, toLine } = req.body ?? {}
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const lo = Number(fromLine)
   const hi = Number(toLine)

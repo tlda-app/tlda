@@ -19,7 +19,7 @@ export function createShadowMirrorRpcHandler({
   daemonAddressFor = daemonAddress,
 }) {
   return async function mirrorShadowViaDaemon({ name, hash, bundleBase64, sourceScope }) {
-    const project = readProject(name)
+    const project = await readProject(name)
     const lastKey = project?.lastSourceMachineId && project?.lastSourceEnvName
       ? daemonAddressFor(project.lastSourceMachineId, project.lastSourceEnvName)
       : null

@@ -54,7 +54,7 @@ const first = await processProjectPush('authority-http', {
 assert.equal(first.status, 200)
 assert.match(first.sourceRevision, /^sha256:/)
 assert.equal(readSourceFile('authority-http', 'main.tex'), 'base\n')
-assert.deepEqual(sourceLifecycleStore('authority-http').readCurrentFile('main.tex'), {
+assert.deepEqual((await sourceLifecycleStore('authority-http')).readCurrentFile('main.tex'), {
   sourceRevision: first.sourceRevision,
   content: Buffer.from('base\n'),
 })
@@ -73,7 +73,7 @@ const added = await processProjectPush('authority-http', {
 })
 assert.equal(added.status, 200)
 assert.equal(readSourceFile('authority-http', 'notes.tex'), 'notes\n')
-const addedRevision = sourceLifecycleStore('authority-http').readRevision(added.sourceRevision)
+const addedRevision = (await sourceLifecycleStore('authority-http')).readRevision(added.sourceRevision)
 assert.equal(addedRevision.byteSize, Buffer.byteLength('current\n') + Buffer.byteLength('notes\n'), 'unchanged snapshot bytes must not be base64-encoded again')
 
 const renamed = await processProjectPush('authority-http', {
@@ -103,7 +103,7 @@ const stale = await processProjectPush('authority-http', {
 assert.equal(stale.status, 409)
 assert.equal(stale.lifecycleStatus, 'stale-base')
 assert.equal(readSourceFile('authority-http', 'main.tex'), 'current\n')
-assert.equal(sourceLifecycleStore('authority-http').readAuthority().currentRevision, deleted.sourceRevision)
+assert.equal((await sourceLifecycleStore('authority-http')).readAuthority().currentRevision, deleted.sourceRevision)
 const evidenceRoot = join(root, 'authority-http', '.source-lifecycle', 'evidence')
 assert.ok(existsSync(evidenceRoot) && readdirSync(evidenceRoot).length === 1, 'stale evidence must survive transaction rollback')
 
@@ -114,7 +114,7 @@ const failed = await processProjectPush('authority-http', {
 }, { failAt: 'manifest' })
 assert.equal(failed.status, 409)
 assert.equal(readSourceFile('authority-http', 'main.tex'), 'current\n')
-assert.equal(sourceLifecycleStore('authority-http').readAuthority().currentRevision, deleted.sourceRevision)
+assert.equal((await sourceLifecycleStore('authority-http')).readAuthority().currentRevision, deleted.sourceRevision)
 const revisionsRoot = join(root, 'authority-http', '.source-lifecycle', 'revisions')
 assert.ok(readdirSync(revisionsRoot).length >= 4, 'immutable incoming revision must survive authority rollback')
 

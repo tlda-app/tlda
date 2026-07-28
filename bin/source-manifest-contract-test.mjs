@@ -42,8 +42,8 @@ function write(file, content) {
   fs.writeFileSync(file, content)
 }
 
-function bootstrapAuthority(name, manifest) {
-  const result = sourceLifecycleStore(name).bootstrap({
+async function bootstrapAuthority(name, manifest) {
+  const result = (await sourceLifecycleStore(name)).bootstrap({
     expectedRevision: null,
     sourceManifest: manifest,
     files: manifest.map(filePath => ({ path: filePath, content: readSourceFile(name, filePath) })),
@@ -79,7 +79,7 @@ async function snapshotProject(name) {
   }
   walkProject(projectDir(name))
   return {
-    project: readProject(name),
+    project: await readProject(name),
     files,
     projectFiles,
     manifest: await readClientSourceManifest(name),
@@ -90,9 +90,9 @@ async function assertSnapshotEqual(name, before) {
   assert.deepEqual(await snapshotProject(name), before)
 }
 
-function assertProjectJsonHasNoClientManifest(name) {
+async function assertProjectJsonHasNoClientManifest(name) {
   assert.equal(
-    Object.prototype.hasOwnProperty.call(readProject(name), 'clientSourceManifest'),
+    Object.prototype.hasOwnProperty.call(await readProject(name), 'clientSourceManifest'),
     false,
     `${name} project.json must not store clientSourceManifest`,
   )
@@ -133,11 +133,11 @@ async function setupOverleafProject(root, name) {
   git(['push', '-u', 'origin', 'HEAD:master'], seed)
 
   createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
-  updateProject(name, { pages: 1, buildStatus: 'success', overleafRemote: remote, autoSync: true })
+  await updateProject(name, { pages: 1, buildStatus: 'success', overleafRemote: remote, autoSync: true })
   write(path.join(sourceDir(name), 'main.tex'), 'old main\n')
   write(path.join(sourceDir(name), 'notes.tex'), 'old notes\n')
   await updateClientSourceManifest(name, ['main.tex', 'notes.tex'])
-  const expectedRevision = bootstrapAuthority(name, ['main.tex', 'notes.tex'])
+  const expectedRevision = await bootstrapAuthority(name, ['main.tex', 'notes.tex'])
 
   const clone = path.join(projectDir(name), 'overleaf-clone')
   git(['clone', remote, clone], root)
@@ -357,7 +357,7 @@ async function main() {
     assertInitCreatesOnlyRequestedMainFile()
 
     createProject({ name: 'latex-project', title: 'Latex', mainFile: 'main.tex', format: 'svg' })
-    updateProject('latex-project', { pages: 1, buildStatus: 'success' })
+    await updateProject('latex-project', { pages: 1, buildStatus: 'success' })
     assert.deepEqual(fs.readdirSync(sourceDir('latex-project')), [], 'Project creation must not invent source files')
     write(path.join(sourceDir('latex-project'), 'README.md'), '# legacy unowned file\n')
     write(path.join(sourceDir('latex-project'), 'main.synctex.gz'), 'generated\n')
@@ -371,9 +371,9 @@ async function main() {
     assert.equal(result.ok, true)
     let expectedRevision = result.sourceRevision
     assert.deepEqual(await readClientSourceManifest('latex-project'), ['main.tex'])
-    assertProjectJsonHasNoClientManifest('latex-project')
+    await assertProjectJsonHasNoClientManifest('latex-project')
     assert.deepEqual(Object.keys(await hashSourceFiles('latex-project')).sort(), ['main.tex'])
-    updateProject('latex-project', {
+    await updateProject('latex-project', {
       members: ['original-member'],
       sourceDir: '/tmp/original-source',
       session: 'original-session',
@@ -381,7 +381,7 @@ async function main() {
       lastEditedBy: 'original-editor',
       lastEditedByAt: 43,
     })
-    assertProjectJsonHasNoClientManifest('latex-project')
+    await assertProjectJsonHasNoClientManifest('latex-project')
 
     const legacyDir = path.join(root, 'legacy-json')
     fs.mkdirSync(path.join(legacyDir, 'source'), { recursive: true })
@@ -399,7 +399,7 @@ async function main() {
     }, null, 2))
     await initProjectStore(root)
     assert.deepEqual(await readClientSourceManifest('legacy-json'), ['main.tex', 'notes.tex'])
-    assertProjectJsonHasNoClientManifest('legacy-json')
+    await assertProjectJsonHasNoClientManifest('legacy-json')
     assert.deepEqual(Object.keys(await hashSourceFiles('legacy-json')).sort(), ['main.tex', 'notes.tex'])
 
     let beforeRejected = await snapshotProject('latex-project')
@@ -517,7 +517,7 @@ async function main() {
     assert.equal(readSourceFile('latex-project', 'main.tex'), null)
     assert.equal(readSourceFile('latex-project', 'notes.tex'), 'notes\n')
     assert.deepEqual(await readClientSourceManifest('latex-project'), ['notes.tex'])
-    assertProjectJsonHasNoClientManifest('latex-project')
+    await assertProjectJsonHasNoClientManifest('latex-project')
 
     result = await processProjectPush('latex-project', {
       expectedRevision,
@@ -529,7 +529,7 @@ async function main() {
     expectedRevision = result.sourceRevision
     assert.equal(readSourceFile('latex-project', 'notes.tex'), null)
     assert.deepEqual(await readClientSourceManifest('latex-project'), ['main.tex'])
-    assertProjectJsonHasNoClientManifest('latex-project')
+    await assertProjectJsonHasNoClientManifest('latex-project')
 
     for (const [failAt, body] of [
       ['write:2', {
@@ -572,7 +572,7 @@ async function main() {
     assert.deepEqual(await readClientSourceManifest('latex-project'), ['main.tex'])
 
     createProject({ name: 'overleaf-fail', title: 'Overleaf Fail', mainFile: 'main.tex', format: 'svg' })
-    updateProject('overleaf-fail', {
+    await updateProject('overleaf-fail', {
       pages: 1,
       buildStatus: 'success',
       overleafRemote: 'https://example.invalid/repo.git',
@@ -587,7 +587,7 @@ async function main() {
     write(path.join(sourceDir('overleaf-fail'), 'main.tex'), 'old main\n')
     write(path.join(sourceDir('overleaf-fail'), 'notes.tex'), 'old notes\n')
     await updateClientSourceManifest('overleaf-fail', ['main.tex', 'notes.tex'])
-    const overleafFailRevision = bootstrapAuthority('overleaf-fail', ['main.tex', 'notes.tex'])
+    const overleafFailRevision = await bootstrapAuthority('overleaf-fail', ['main.tex', 'notes.tex'])
 
     const originalConsoleError = console.error
     console.error = (...args) => {
@@ -729,7 +729,7 @@ async function main() {
     const journal = JSON.parse(fs.readFileSync(path.join(recoveryRoot, 'recovery.json'), 'utf8'))
     assert.equal(journal.state, 'publish-pending')
     assert.equal(journal.previousRemoteHead, priorRemoteHead)
-    assert.equal(journal.proposedRemoteHead, readProject('overleaf-compensation-race').overleafHead)
+    assert.equal(journal.proposedRemoteHead, await readProject('overleaf-compensation-race').overleafHead)
     assert.equal(fs.existsSync(path.join(recoveryRoot, 'overleaf-worktree', '.git')), false)
     assert.equal(
       fs.readdirSync(recoveryRoot, { recursive: true })
@@ -747,10 +747,10 @@ async function main() {
     assert.equal(fs.existsSync(recoveryRoot), true, 'unresolved recovery must survive restart cleanup')
 
     createProject({ name: 'journal-crash', title: 'Journal crash', mainFile: 'main.tex', format: 'svg' })
-    updateProject('journal-crash', { pages: 1, buildStatus: 'success' })
+    await updateProject('journal-crash', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('journal-crash'), 'main.tex'), 'unchanged\n')
     await updateClientSourceManifest('journal-crash', ['main.tex'])
-    const journalCrashRevision = bootstrapAuthority('journal-crash', ['main.tex'])
+    const journalCrashRevision = await bootstrapAuthority('journal-crash', ['main.tex'])
     beforeRejected = await snapshotProject('journal-crash')
     result = await processProjectPush('journal-crash', {
       expectedRevision: journalCrashRevision,
@@ -763,10 +763,10 @@ async function main() {
     assert.equal((await recoverProjectSourceTransactions('journal-crash'))[0].state, 'incomplete-journal-cleaned')
 
     createProject({ name: 'snapshot-ready-crash', title: 'Snapshot ready crash', mainFile: 'main.tex', format: 'svg' })
-    updateProject('snapshot-ready-crash', { pages: 1, buildStatus: 'success' })
+    await updateProject('snapshot-ready-crash', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('snapshot-ready-crash'), 'main.tex'), 'unchanged\n')
     await updateClientSourceManifest('snapshot-ready-crash', ['main.tex'])
-    const snapshotReadyRevision = bootstrapAuthority('snapshot-ready-crash', ['main.tex'])
+    const snapshotReadyRevision = await bootstrapAuthority('snapshot-ready-crash', ['main.tex'])
     beforeRejected = await snapshotProject('snapshot-ready-crash')
     const durabilitySteps = []
     result = await processProjectPush('snapshot-ready-crash', {
@@ -798,7 +798,7 @@ async function main() {
     await assertSnapshotEqual('snapshot-ready-crash', beforeRejected)
 
     createProject({ name: 'manifest-row-recovery', title: 'Manifest row recovery', mainFile: 'main.tex', format: 'svg' })
-    updateProject('manifest-row-recovery', { pages: 1, buildStatus: 'success' })
+    await updateProject('manifest-row-recovery', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('manifest-row-recovery'), 'main.tex'), 'original\n')
     await updateClientSourceManifest('manifest-row-recovery', ['main.tex'])
     beforeRejected = await snapshotProject('manifest-row-recovery')
@@ -852,20 +852,20 @@ async function main() {
     await assert.rejects(syncOverleaf('poll-retry', {
       testHooks: { processProjectPush: async () => ({ status: 409, ok: false, error: 'injected transaction rejection' }) },
     }), /injected transaction rejection/)
-    assert.equal(readProject('poll-retry').overleafSyncStatus, 'error')
+    assert.equal(await readProject('poll-retry').overleafSyncStatus, 'error')
     assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: path.join(projectDir('poll-retry'), 'overleaf-clone'), encoding: 'utf8',
     }).trim(), retryHead, 'failed poll must reset the clone so the same remote HEAD is retried')
     result = await syncOverleaf('poll-retry')
     assert.equal(result.changed > 0, true)
-    assert.equal(readProject('poll-retry').overleafSyncStatus, 'ok')
+    assert.equal(await readProject('poll-retry').overleafSyncStatus, 'ok')
     assert.equal(readSourceFile('poll-retry', 'third-party.tex'), 'third party work\n')
 
     await setupOverleafProject(root, 'resume-failure-first')
     await setupOverleafProject(root, 'resume-success-later')
     const resumedProjects = []
     const resumed = await resumeOverleafPollers(
-      () => [readProject('resume-failure-first'), readProject('resume-success-later')],
+      async () => [await readProject('resume-failure-first'), await readProject('resume-success-later')],
       {
         recover: async name => {
           if (name === 'resume-failure-first') throw new Error('injected recovery failure')
@@ -876,11 +876,11 @@ async function main() {
     )
     assert.equal(resumed, 1)
     assert.deepEqual(resumedProjects, ['resume-success-later'])
-    assert.equal(readProject('resume-failure-first').overleafSyncStatus, 'error')
+    assert.equal(await readProject('resume-failure-first').overleafSyncStatus, 'error')
 
     assert.equal(isSourceFilePath('README.md', { format: 'markdown', mainFile: 'README.md' }), true)
     createProject({ name: 'markdown-readme', title: 'Markdown', mainFile: 'README.md', format: 'svg' })
-    updateProject('markdown-readme', { pages: 1, buildStatus: 'success' })
+    await updateProject('markdown-readme', { pages: 1, buildStatus: 'success' })
     result = await processProjectPush('markdown-readme', {
       expectedRevision: null,
       files: [{ path: 'README.md', content: '# authored\n' }],
@@ -902,7 +902,7 @@ async function main() {
     assert.deepEqual(await readClientSourceManifest('markdown-readme'), [])
 
     createProject({ name: 'zero-first', title: 'Zero', mainFile: 'main.tex', format: 'svg' })
-    updateProject('zero-first', { pages: 1, buildStatus: 'success' })
+    await updateProject('zero-first', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('zero-first'), 'main.tex'), 'already here\n')
     await updateClientSourceManifest('zero-first', ['main.tex'])
     result = await processProjectPush('zero-first', {
@@ -914,7 +914,7 @@ async function main() {
     assert.deepEqual(Object.keys(await hashSourceFiles('zero-first')), ['main.tex'])
 
     createProject({ name: 'failed', title: 'Failed', mainFile: 'main.tex', format: 'svg' })
-    updateProject('failed', { pages: 1, buildStatus: 'success' })
+    await updateProject('failed', { pages: 1, buildStatus: 'success' })
     await updateClientSourceManifest('failed', ['main.tex'])
     write(path.join(sourceDir('failed'), 'main.tex'), 'kept\n')
     beforeRejected = await snapshotProject('failed')
@@ -958,11 +958,11 @@ async function main() {
       members: ['accepted-book-member'],
     })
     assert.equal(result.status, 200)
-    assert.deepEqual(readProject('book-project').members, ['accepted-book-member'])
+    assert.deepEqual(await readProject('book-project').members, ['accepted-book-member'])
 
     const localHashes = { 'main.tex': md5('delivered\n') }
     createProject({ name: 'summary', title: 'Summary', mainFile: 'main.tex', format: 'svg' })
-    updateProject('summary', { pages: 1, buildStatus: 'success' })
+    await updateProject('summary', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('summary'), 'main.tex'), 'delivered\n')
     await updateClientSourceManifest('summary', ['main.tex'])
     assert.deepEqual(diffSourceHashes(localHashes, await hashSourceFiles('summary')), {
@@ -970,8 +970,8 @@ async function main() {
       deletedFiles: [],
     })
 
-    assert.deepEqual(normalizeSourceManifest(['README.md'], readProject('markdown-readme')), ['README.md'])
-    assert.deepEqual(normalizeSourceManifest(['README.md'], readProject('latex-project')), [])
+    assert.deepEqual(normalizeSourceManifest(['README.md'], await readProject('markdown-readme')), ['README.md'])
+    assert.deepEqual(normalizeSourceManifest(['README.md'], await readProject('latex-project')), [])
 
     console.log('PASS source manifest contract')
   } finally {

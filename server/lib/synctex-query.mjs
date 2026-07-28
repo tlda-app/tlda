@@ -42,7 +42,7 @@ export async function loadSynctex(projectName, texBase, opts = {}) {
   if (cache.has(key)) return cache.get(key)
 
   const srcDir = sourceDir(projectName)
-  const proj = readProject(projectName)
+  const proj = await readProject(projectName)
   const mainFileDir = proj?.mainFile ? dirname(proj.mainFile) : '.'
   const synctexDir = (mainFileDir && mainFileDir !== '.') ? join(srcDir, mainFileDir) : srcDir
 
@@ -247,7 +247,7 @@ function collectPointHits(pageRecords, points) {
 }
 
 async function getSourceFromWordPath(projectName, page, points, target = '') {
-  const project = readProject(projectName)
+  const project = await readProject(projectName)
   const texBase = target || (project?.mainFile || 'main.tex').replace(/\.tex$/i, '').split('/').pop()
   const wordMap = readWordMap(projectName, texBase)
   if (!wordMap?.lineMap?.length) return null

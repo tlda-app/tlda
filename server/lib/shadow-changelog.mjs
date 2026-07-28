@@ -14,7 +14,7 @@ const execFileAsync = promisify(execFileCb)
  * history, which callers need when placing several projects on matching axes.
  */
 export async function readShadowChangelog(name, { limit = 200 } = {}) {
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) {
     const error = new Error('Project not found')
     error.code = 'PROJECT_NOT_FOUND'
