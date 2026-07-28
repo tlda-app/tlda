@@ -1540,10 +1540,25 @@ function toRenderableChatEvents(rows) {
  * Put a subscription's events into that panel's buffer. The ONE intake for a
  * server-fed chat panel — history page and live push both land here, converted
  * the same way, so a message renders identically whichever way it arrived.
+ *
+ * @param {string} bufferKey
+ * @param {readonly object[]} rows
+ * @param {{browserReceivedAtMs?: number|null}} [timing]
  */
-export function receiveFilterEvents(bufferKey, rows) {
+export function receiveFilterEvents(bufferKey, rows, { browserReceivedAtMs = null } = {}) {
   if (!bufferKey) return 0
-  const added = applyFilterEvents(bufferKey, toRenderableChatEvents(rows))
+  const events = toRenderableChatEvents(rows)
+  if (Number.isFinite(browserReceivedAtMs)) {
+    for (const event of events) {
+      if (!event?._activityLatency) continue
+      event._activityLatency = {
+        ...event._activityLatency,
+        browserReceivedAt: new Date(browserReceivedAtMs).toISOString(),
+        browserReceivedAtMs,
+      }
+    }
+  }
+  const added = applyFilterEvents(bufferKey, events)
   if (added) notify('messages', null)
   return added
 }

@@ -25,7 +25,7 @@ import { noteServerDelivery } from './filter-equivalence.mjs'
 
 const NS = 'chat-subscription'
 
-/** @type {Map<string, {filter: unknown, window: number, onEvents: (events: readonly object[], meta: object) => void}>} */
+/** @type {Map<string, {filter: unknown, window: number, onEvents: (events: readonly object[], meta: {subId: string, reason: string, browserReceivedAtMs?: number, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void}>} */
 const _subs = new Map()
 let _nextSubId = 1
 
@@ -40,7 +40,7 @@ export function setChatSubscriptionTransport(send) { _send = send }
  *   verbatim — the client never interprets it.
  * @param {number} window How many messages this chat can show. The shape knows
  *   its own size; there is no magic number here on purpose.
- * @param {(events: readonly object[], meta: {subId: string, reason: string, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void} onEvents
+ * @param {(events: readonly object[], meta: {subId: string, reason: string, browserReceivedAtMs?: number, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void} onEvents
  * @param {{humanId?: string|null, humanName?: string|null, correlationKey?: string|null}} [identity]
  */
 export function subscribeChat(filter, window, onEvents, { humanId = null, humanName = null, correlationKey = null } = {}) {
@@ -84,6 +84,7 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
  */
 export function dispatchFilterEvent(data) {
   if (!data || !data.subId) return false
+  const browserReceivedAtMs = Date.now()
   const sub = _subs.get(data.subId)
   if (!sub) {
     log.metric(NS, 'filter-event for an unknown subscription', { subId: data.subId })
@@ -95,7 +96,11 @@ export function dispatchFilterEvent(data) {
   // records its own verdict from the path it already runs; the comparison of the
   // two on real traffic is the gate before the old path is deleted.
   noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
-  sub.onEvents([event], { subId: data.subId, reason: data.reason || 'live' })
+  sub.onEvents([event], {
+    subId: data.subId,
+    reason: data.reason || 'live',
+    browserReceivedAtMs,
+  })
   return true
 }
 
