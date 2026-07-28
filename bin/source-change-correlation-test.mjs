@@ -81,6 +81,28 @@ assert.equal(daemon.handle({
   sourceRevision: 'revision-after-queued-edit',
 }), true)
 
+const lonePending = daemon.prepare({
+  type: 'source-change',
+  project: 'paper',
+  files: [{ path: 'main.tex', content: 'only edit before reconnect' }],
+})
+daemon.beginReconnect()
+daemon.seed('paper', 'revision-after-lone-reconnect', { authoritative: true })
+const [loneAfterReconnect] = daemon.finishReconnect()
+assert.deepEqual(
+  loneAfterReconnect.files,
+  [{ path: 'main.tex', content: 'only edit before reconnect' }],
+  'a reconnect preserves an in-flight edit even when no newer edit was queued',
+)
+const loneResumed = daemon.prepare(loneAfterReconnect)
+assert.notEqual(loneResumed.requestId, lonePending.requestId)
+assert.equal(daemon.handle({
+  requestId: loneResumed.requestId,
+  project: 'paper',
+  ok: true,
+  sourceRevision: 'revision-after-lone-edit',
+}), true)
+
 const stale = daemon.prepare({ type: 'source-change', project: 'paper', files: [] })
 assert.equal(daemon.handle({
   requestId: stale.requestId,

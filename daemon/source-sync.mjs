@@ -16,6 +16,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
 
   function mergePayloads(previous, next) {
     if (!previous) return next
+    if (!next) return previous
     const merged = { ...previous }
     for (const [key, value] of Object.entries(next)) {
       if (value !== undefined) merged[key] = value
