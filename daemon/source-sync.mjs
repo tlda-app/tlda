@@ -527,7 +527,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           closeSourceState(existing)
           sourceWatchers.delete(p.name)
         } else {
-          const newlyWatched = new Set([...watchSet].filter(rel => !existing.watchSet.has(rel)))
           existing.watchSet = watchSet
           existing.mainFile = p.mainFile
           existing.extraInputCommands = p.extraInputCommands || []
@@ -536,9 +535,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           existing.authorityManifest = new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : [])
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
-          if (newlyWatched.size > 0) {
-            pushWatchedFiles(p.name, sourceDir, newlyWatched, null, p.extraInputCommands, isMarkdown, p.format)
-          }
           continue
         }
       }
@@ -585,7 +581,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         state.reconcileTimer = setInterval(() => reconcileSourceWatcher(state), reconcileIntervalMs)
         state.reconcileTimer.unref?.()
         log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
-        pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown, p.format)
       } catch (e) {
         // One source watcher failing should not stop other projects from syncing.
         log.error(`source watcher failed for ${p.name}: ${e.message}`)
@@ -597,45 +592,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         sourceWatchers.delete(name)
       }
     }
-  }
-
-  /**
-   * Push source files to the server on connect.
-   * When mainFile is set (no .fls yet), scan it recursively for \input-like
-   * commands and push all discovered dependencies — the bootstrap path.
-   * Otherwise push the .fls-derived watchSet.
-   */
-  function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands, isMarkdown, format) {
-    let uploadPaths = new Set()
-    if (mainFile) {
-      // Bootstrap mode: no .fls yet. Scan the main file for its deps — \input-like
-      // commands for tex, referenced images for markdown — and push main + deps.
-      uploadPaths = isMarkdown
-        ? scanMarkdownInputs(sourceDir, mainFile)
-        : scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
-      log.info(`bootstrap scan for ${projectName}: ${uploadPaths.size} files from ${mainFile}`)
-    } else if (watchSet.size > 0) {
-      uploadPaths = new Set(watchSet)
-    }
-    const sourceManifest = collectSourceManifest(
-      sourceDir,
-      { format, mainFile },
-      uploadPaths,
-      sourceWatchers.get(projectName)?.authorityManifest ? [...sourceWatchers.get(projectName).authorityManifest] : null,
-    )
-    if (sourceManifest.length === 0) return
-    const files = []
-    for (const rel of normalizeSourceManifest([...uploadPaths], { format, mainFile })) {
-      const full = path.join(sourceDir, rel)
-      try { files.push({ path: rel, ...readFileForUpload(full) }) }
-      catch (e) {
-        // Per-file upload failures are surfaced; readable files still push.
-        log.error(`read ${full}: ${e.message}`)
-      }
-    }
-    if (files.length === 0) return
-    log.info(`connect push: ${files.length} files for ${projectName}`)
-    sendSourceChange({ type: 'source-change', project: projectName, files, sourceManifest })
   }
 
   const _pendingSourceProjects = new Set()
