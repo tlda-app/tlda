@@ -635,8 +635,6 @@ export function createJsonlIngestor({
       ts: patch.ts || new Date().toISOString(),
       last_known_good_at: patch.lastKnownGoodAt || null,
       last_activity_at: patch.lastActivityAt || null,
-      session_id: patch.sessionId || null,
-      jsonl_path: patch.jsonlPath || null,
     })
   }
 

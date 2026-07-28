@@ -84,8 +84,6 @@ export function normalizeActivityHealth(input = {}, now = new Date()) {
     ts,
     lastKnownGoodAt,
     lastActivityAt: input.lastActivityAt || null,
-    sessionId: input.sessionId || null,
-    jsonlPath: input.jsonlPath || null,
   }
 }
 
@@ -135,8 +133,6 @@ export function activityHealthIncidentPayload(agent, health, now = new Date()) {
       lastKnownGoodAt: health?.lastKnownGoodAt || null,
       lastKnownGoodAgeMs: activityHealthLastKnownGoodAgeMs(health, now.getTime()),
       lastActivityAt: health?.lastActivityAt || null,
-      sessionId: health?.sessionId || null,
-      jsonlPath: health?.jsonlPath || null,
     },
     error: null,
   }

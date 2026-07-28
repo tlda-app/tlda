@@ -2467,8 +2467,6 @@ async function updateAgentActivityHealth(agentId, patch) {
     ts: patch.ts,
     lastKnownGoodAt: patch.lastKnownGoodAt || previousHealth?.lastKnownGoodAt || null,
     lastActivityAt: patch.lastActivityAt || previousHealth?.lastActivityAt || null,
-    sessionId: patch.sessionId || null,
-    jsonlPath: patch.jsonlPath || null,
   })
   const updated = (await fleetStore.updateAgentActivityHealth(agentId, health))?.agent || await fleetStore.getAgent(agentId)
   const withIncidentState = await reconcileActivityHealthIncident(updated, health)
@@ -8629,7 +8627,6 @@ async function handleDaemonWsMessage(ws, msg) {
       ts: msg.ts,
       lastKnownGoodAt: msg.last_known_good_at || null,
       lastActivityAt: msg.last_activity_at || null,
-      jsonlPath: msg.jsonl_path || null,
     })
     return
   }
