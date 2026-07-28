@@ -86,7 +86,19 @@ export class ServerTimerScheduler {
     if (!event) return { ok: false, error: `timer fired event ${eventId} not found` }
     const to = event.to || event.from
     if (!to) return { ok: false, error: `timer fired event ${eventId} has no target` }
-    const metadataPatch = timerFirePatch({ to, now: new Date(this.now()).toISOString() })
+    const nowMs = this.now()
+    const taskId = event.metadata?.task_id
+    if (event.metadata?.task_expiry && taskId) {
+      this.store.retractTask?.(taskId, { retractedBy: 'timer' })
+      return this.cancel(eventId)
+    }
+    const expiresAtMs = Date.parse(event.metadata?.expires_at || '')
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) return this.cancel(eventId)
+    if (taskId) {
+      const task = this.store.getTask?.(taskId)
+      if (!task || ['done', 'retracted'].includes(task.status)) return this.cancel(eventId)
+    }
+    const metadataPatch = timerFirePatch({ to, now: new Date(nowMs).toISOString() })
     const claimed = this.store.claimTimerTerminal?.(Number(eventId), {
       to,
       metadataPatch,
@@ -94,7 +106,27 @@ export class ServerTimerScheduler {
     })
     if (!claimed) return { ok: true, to, notified: false, duplicate: true }
     this.broadcast?.('event-update', timerFireBroadcast({ event, to, metadataPatch, message }))
-    return { ok: true, to, notified: true }
+    const repeatSeconds = Number(event.metadata?.repeat_seconds)
+    if (Number.isFinite(repeatSeconds) && repeatSeconds > 0) {
+      const nextFireAt = new Date(nowMs + repeatSeconds * 1000).toISOString()
+      const nextFireMs = Date.parse(nextFireAt)
+      if (!Number.isFinite(expiresAtMs) || nextFireMs < expiresAtMs) {
+        const repeatPatch = {
+          pending: true,
+          state: 'pending',
+          fire_at: nextFireAt,
+          last_fired_at: metadataPatch.timer_fire_notified_at,
+        }
+        this.store.updateEventMetadata?.(Number(eventId), repeatPatch)
+        this.broadcast?.('event-update', {
+          ...timerFireBroadcast({ event, to, metadataPatch: repeatPatch, message }),
+          text: event.text || `⏱ ${event.metadata?.message || message || 'Timer'}`,
+        })
+        this.refresh()
+        return { ok: true, to, notified: true, recurring: true, next_fire_at: nextFireAt }
+      }
+    }
+    return { ok: true, to, notified: true, recurring: false }
   }
 
   cancel(eventId) {

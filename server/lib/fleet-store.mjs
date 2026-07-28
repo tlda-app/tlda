@@ -2121,10 +2121,10 @@ export class FleetStore {
     return this.share({ type: 'chat', from, to, text, metadata, unread: true, timestamp });
   }
 
-  delegate(from, to, taskId, description, metadata) {
+  delegate(from, to, taskId, description, metadata, { unread = true } = {}) {
     return this.share({
       type: 'delegate', from, to, text: description,
-      taskId, metadata, unread: true, // a delegate wakes its recipient (counts as awake)
+      taskId, metadata, unread,
     });
   }
 

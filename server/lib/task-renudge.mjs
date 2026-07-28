@@ -54,6 +54,10 @@ export function decideTaskRenudges({
     if (!task || task.synthetic) continue
     if (!isRenudgeableTaskStatus(task.status)) continue
     if (task.blockedBy?.length || task.metadata?.deferred || task.metadata?.retracted) continue
+    const notifyAt = timeOf(task.metadata?.notify_at)
+    if (notifyAt && now < notifyAt) continue
+    const expiresAt = timeOf(task.metadata?.expires_at)
+    if (expiresAt && now >= expiresAt) continue
     if (!event || event.type !== 'delegate') continue
     if (!state.unreadPending) continue
 

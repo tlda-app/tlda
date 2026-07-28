@@ -31,6 +31,10 @@ export function decideTaskKicks({
     if (!task || task.synthetic) continue
     if (!['pending', 'working', 'idle'].includes(task.status)) continue
     if (!task.delegated_by) continue
+    const notifyAt = Date.parse(task.metadata?.notify_at || '')
+    if (Number.isFinite(notifyAt) && now < notifyAt) continue
+    const expiresAt = Date.parse(task.metadata?.expires_at || '')
+    if (Number.isFinite(expiresAt) && now >= expiresAt) continue
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
     const status = String(runtimeStatusName(agent) || '').toLowerCase()

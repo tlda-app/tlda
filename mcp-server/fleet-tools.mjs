@@ -424,13 +424,11 @@ let _fleetTransportFlushInFlight = null;
 const _fleetTransportRecoveredAgents = new Set();
 
 const ENV_SCOPED_TOOL_NAMES = new Set([
-  'delegate', 'chat', 'notify',
-  'tasks', 'read_terminal', 'inbox',
-  'set_inbox_status', 'set_delivery_channel',
-  'name_agent', 'reanimate', 'spawn_models',
-  'search', 'observe', 'thread', 'get_refs',
-  'label_agent', 'interrupt', 'roster', 'viewing_context',
-  'timer', 'subscribe', 'subscriptions', 'unsubscribe',
+  'delegate', 'chat',
+  'tasks', 'terminal', 'inbox', 'configuration',
+  'label', 'lifecycle',
+  'search', 'thread', 'interrupt', 'roster', 'viewer',
+  'timer', 'subscription',
   'report',
 ]);
 
@@ -1361,6 +1359,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
+          help: { type: 'boolean', description: 'Return valid target-machine, harness, model, and permission-profile choices without delegating.' },
           agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using mint.' },
           task_id: { type: 'string', description: 'Existing task ID to transfer to `agent`. The task keeps its identity and history; `message` is appended as the remaining work.' },
           mint: {
@@ -1369,7 +1368,7 @@ export function getFleetTools() {
             properties: {
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
-              model: { type: 'string', description: 'Configured daemon model alias. Call spawn_models() for valid values.' },
+              model: { type: 'string', description: 'Configured daemon model alias.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
               permissionRequest: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permissionRequest },
             },
@@ -1377,7 +1376,10 @@ export function getFleetTools() {
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as name_agent). Not allowed with mint — a minted agent\'s only name is mint.name.' },
+          notify_at: { type: 'string', description: 'ISO time when this task should first notify/surface.' },
+          notify_every: { type: 'number', description: 'Optional recurring notification interval in seconds while the task remains open.' },
+          expires_at: { type: 'string', description: 'Optional ISO time when the scheduled task expires and stops notifying.' },
+          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as label with name). Not allowed with mint — a minted agent\'s only name is mint.name.' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
@@ -1403,7 +1405,7 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'dismiss_skill',
+      name: 'dismiss',
       description: 'Dismiss a required-skill block when you are genuinely sure the skill does not apply to what you are doing (e.g. you are editing a .tex file only to fix a build path, not to write prose). This is the ONE deliberate way past a sticky skill block — the alternative is to actually read the skill with the Skill tool. A reason is REQUIRED and is shown to Skip as a card, so dismiss honestly: if the skill might apply, read it instead. You can dismiss several skills at once. Edit-specific skills are dismissed for the current file; dispositional/tool skills for the session.',
       inputSchema: {
         type: 'object',
@@ -1412,57 +1414,6 @@ export function getFleetTools() {
           skills: { type: 'array', items: { type: 'string' }, description: 'Optional specific skill name(s) to dismiss. Omit to dismiss everything currently blocking you.' },
         },
         required: ['reason'],
-      },
-    },
-    {
-      name: 'request_terminal',
-      description: 'Voluntarily ask the user to look at your terminal — pops a live terminal card in their fleet chat that mirrors your tmux session. Use when you are stuck on something the user needs to do interactively (e.g. a permission prompt that survives `tlda daemon start`, an external login). Do NOT use for routine status — that is what `chat()` is for. The user can dismiss the card to freeze a snapshot.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          reason: { type: 'string', description: 'Short one-line reason that will be shown above the terminal card (e.g. "stuck on permission prompt", "need brew sudo password"). Optional but strongly preferred.' },
-        },
-      },
-    },
-    {
-      name: 'notify',
-      description: 'Raise or dismiss an actionable item for the human. Defaults by kind: bounce/mic-death → HUD notification; modal/suggest/task → list task; all items also live in chat.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['raise', 'dismiss'], description: 'Default raise. Use dismiss with id to remove an item.' },
-          id: { type: 'string', description: 'Stable item id. Re-raising the same id replaces the existing item.' },
-          userId: { type: 'string', description: 'Target human fleet id. Defaults to server owner.' },
-          kind: { type: 'string', description: 'bounce, modal, status, task, suggest, info, etc.' },
-          title: { type: 'string', description: 'One-line headline.' },
-          body: { type: 'string', description: 'Optional detail text.' },
-          actions: {
-            type: 'array',
-            description: 'Action buttons.',
-            items: {
-              type: 'object',
-              properties: {
-                label: { type: 'string' },
-                command: { type: 'string' },
-                target: { type: 'string' },
-                clientAction: { type: 'string' },
-              },
-              required: ['label'],
-            },
-          },
-          present: {
-            type: 'object',
-            properties: {
-              chat: { type: 'boolean' },
-              hud: { type: 'boolean' },
-              list: { type: 'boolean' },
-            },
-          },
-          payload: { type: 'object', description: 'Optional payload for later drag/drop consumers.' },
-          dropTarget: { type: 'string' },
-          ttl: { type: 'number', description: 'Milliseconds before expiry.' },
-          priority: { type: 'string', enum: ['low', 'normal', 'high'] },
-        },
       },
     },
     {
@@ -1477,7 +1428,7 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'read_terminal',
+      name: 'terminal',
       description: 'Read an agent\'s tmux terminal pane. Returns the visible output. Pass agent name or ID.',
       inputSchema: {
         type: 'object',
@@ -1489,7 +1440,7 @@ export function getFleetTools() {
     },
     {
       name: 'inbox',
-      description: 'Show this agent\'s current obligation inbox. View is read-time presentation only; notification status is controlled separately by set_inbox_status().',
+      description: 'Show this agent\'s current obligation inbox. View is read-time presentation only; notification status is controlled by configuration().',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1506,75 +1457,43 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'set_inbox_status',
-      description: 'Set this agent\'s visible notification status without reading or marking inbox items. Status controls future wake behavior; inbox views are chosen separately when calling inbox().',
+      name: 'configuration',
+      description: 'Update notification or document-rendering configuration. Agent notification fields apply to yourself unless `agent` names a managed agent. Document preamble requires `project` and is available on the full document MCP surface.',
       inputSchema: {
         type: 'object',
         properties: {
-          status: {
-            type: 'string',
-            enum: INBOX_STATUSES,
-            description: 'Notification status to advertise for this agent.',
-          },
-          tag: {
-            type: 'string',
-            description: 'Optional short advisory context, e.g. "spawn broken" or "writing patch". Does not change wake policy.',
-          },
+          agent: { type: 'string', description: 'Optional managed agent target. Omit for yourself.' },
+          status: { type: 'string', enum: INBOX_STATUSES, description: 'Visible notification status.' },
+          tag: { type: 'string', description: 'Optional short notification-status context.' },
+          channel: { type: 'string', enum: DELIVERY_CHANNELS, description: 'Wake delivery channel.' },
+          project: { type: 'string', description: 'Document project whose macros should become this agent\'s chat preamble.' },
+          version: { type: 'string', description: 'Optional document shadow version.' },
         },
-        required: ['status'],
       },
     },
     {
-      name: 'set_delivery_channel',
-      description: 'Set an agent\'s preferred delivery channel for wake pings. Defaults to yourself. You may set another agent only if you are that agent\'s manager/delegator.',
+      name: 'label',
+      description: 'Set an agent\'s friendly name and/or labels.',
       inputSchema: {
         type: 'object',
         properties: {
-          agent: {
-            type: 'string',
-            description: 'Target agent identifier. Omit to set your own delivery channel.',
-          },
-          channel: {
-            type: 'string',
-            enum: DELIVERY_CHANNELS,
-            description: 'channel = normal fleet/inbox notification channel; tmux = terminal nudge when a tmux route exists.',
-          },
-        },
-        required: ['channel'],
-      },
-    },
-    // ---- Agent Lifecycle ----
-    {
-      name: 'name_agent',
-      description: 'Set or change a friendly name for an agent.  Names are for manager/human communication — agents don\'t need to know their names.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name)' },
-          friendly_name: { type: 'string', description: 'Friendly name (e.g. "sims guy", "survival paper")' },
-        },
-        required: ['agent', 'friendly_name'],
-      },
-    },
-    {
-      name: 'reanimate',
-      description: 'Reanimate a dead agent: clear its dead bit, wake it, and tell it what happened while it was away.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent identifier — session UUID, fleet id, or friendly name' },
+          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name).' },
+          name: { type: 'string', description: 'Friendly name.' },
+          labels: { type: 'array', items: { type: 'string' }, description: 'Labels to set (replaces existing labels).' },
         },
         required: ['agent'],
       },
     },
     {
-      name: 'spawn_models',
-      description: 'List configured daemon fleet spawn model aliases grouped by their daemon-declared harness.',
+      name: 'lifecycle',
+      description: 'Change an agent lifecycle state.',
       inputSchema: {
         type: 'object',
         properties: {
-          verified_only: { type: 'boolean', description: 'Only show verified tool-calling models. Default false.' },
+          agent: { type: 'string', description: 'Agent identifier — session UUID, fleet id, or friendly name.' },
+          action: { type: 'string', enum: ['wake', 'hibernate', 'kill', 'reanimate'] },
         },
+        required: ['agent', 'action'],
       },
     },
     // ---- Search & History ----
@@ -1597,17 +1516,6 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'observe',
-      description: 'Gather structured summary of recent fleet activity for process review. Returns completed tasks, message traffic, agent lifecycle events, and potential patterns (dropped tasks, unanswered messages, rapid task cycling). Designed for the process observer agent.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          since: { type: 'string', description: 'ISO timestamp — activity since this time. Default: last 24 hours.' },
-          focus: { type: 'string', description: 'Optional focus area: "tasks", "messages", "lifecycle", or omit for all.' },
-        },
-      },
-    },
-    {
       name: 'thread',
       description: 'Read a conversation thread. This is the PRIMARY tool for reading what was said — use it whenever you need to understand a conversation, review what an agent did, or read task history. Returns complete formatted messages in chronological order. Do NOT read JSONL files directly — use this instead.',
       inputSchema: {
@@ -1625,24 +1533,7 @@ export function getFleetTools() {
         },
       },
     },
-    {
-      name: 'get_refs',
-      description: 'Get pinned reference material — conversation excerpts, files, and other artifacts marked as authoritative. Check this when starting a new task or when you need to understand what the human has approved.',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    // ---- Labels & Interrupts ----
-    {
-      name: 'label_agent',
-      description: 'Set labels on an agent. Labels are tags for filtering and grouping agents in the dashboard. ',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name)' },
-          labels: { type: 'array', items: { type: 'string' }, description: 'Array of label strings to set on the agent (replaces existing labels)' },
-        },
-        required: ['agent', 'labels'],
-      },
-    },
+    // ---- Interrupts ----
     {
       name: 'interrupt',
       description: 'Stop an agent through its owning daemon. Sends ESC repeatedly until the agent reaches its prompt (up to 5 attempts, ~12s max). Returns whether the agent was confirmed stopped. Use chat() separately if you need to send a message.',
@@ -1670,12 +1561,16 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'viewing_context',
-      description: "Get the user's current viewing position: which document, page, and source file/line they're scrolled to. Returns structured data so you can read/edit the exact location the user is looking at.",
+      name: 'viewer',
+      description: "Read or set the user's current document-viewer location. Omit location fields to read; pass project/page/file/line to move the viewer.",
       inputSchema: {
         type: 'object',
         properties: {
           user: { type: 'string', description: 'User fleet ID (default: server owner)' },
+          project: { type: 'string' },
+          page: { type: 'number' },
+          file: { type: 'string' },
+          line: { type: 'number' },
         },
       },
     },
@@ -1686,11 +1581,13 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          seconds: { type: 'number', description: 'Duration in seconds (1–600)' },
+          seconds: { type: 'number', description: 'Duration in seconds.' },
+          every: { type: 'number', description: 'Optional recurrence interval in seconds.' },
+          expires_at: { type: 'string', description: 'Optional ISO time after which recurrence stops.' },
+          cancel: { type: 'number', description: 'Cancel a timer by durable timer event id.' },
           message: { type: 'string', description: 'Reminder message delivered when timer fires (e.g. "check build status")' },
           to: { type: 'string', description: 'Optional agent target for the timer event. Defaults to the requesting agent.' },
         },
-        required: ['seconds', 'message'],
       },
     },
     // ---- Playback ----
@@ -1792,27 +1689,18 @@ export function getFleetTools() {
     },
     // ---- Report Gate ----
     {
-      name: 'subscribe',
-      description: 'Create one persisted server-side notification subscription. Two query forms: a fleet label expression, which CCs you on matching chat; or "doc:<name>", which notifies you when someone adds a note or drawing to that document. Delivery is immediate; batch(spec) and hold are stored but not yet enforced.',
+      name: 'subscription',
+      description: 'List, create, or remove persisted server-side notification subscriptions.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Required. Either a directional fleet label expression (e.g. "from:skip", "reviewers & !todd") or a single "doc:<name>". Anything else — event:, type:, since:, agent:, to:me, or a doc: term combined with other terms — is rejected.' },
-          notification_policy: { type: 'string', description: 'Required: immediate, batch(spec), or hold.' },
+          operation: { type: 'string', enum: ['list', 'create', 'remove'], description: 'Defaults to list when omitted.' },
+          query: { type: 'string', description: 'For create: fleet label expression or "doc:<name>".' },
+          policy: { type: 'string', description: 'For create: immediate, batch(spec), or hold. Defaults to immediate.' },
           target: { type: 'string', description: 'Target agent to configure. Defaults to this agent; cross-target use requires delegator authority.' },
+          id: { type: 'number', description: 'For remove: persisted subscription id.' },
         },
-        required: ['query', 'notification_policy'],
       },
-    },
-    {
-      name: 'subscriptions',
-      description: 'List persisted notification subscriptions for a target agent. Defaults to this agent; cross-target inspection requires delegator authority.',
-      inputSchema: { type: 'object', properties: { target: { type: 'string' } } },
-    },
-    {
-      name: 'unsubscribe',
-      description: 'Remove one persisted notification subscription by id. Server-side authority checks apply.',
-      inputSchema: { type: 'object', properties: { subscription_id: { type: 'number' } }, required: ['subscription_id'] },
     },
     {
       name: 'report',
@@ -1851,7 +1739,13 @@ export function getFleetTools() {
     schema.properties = { ...(schema.properties || {}), env: ENV_SCHEMA };
     tool.inputSchema = schema;
   }
-  return tools;
+  return tools.filter(tool => ![
+    'playback_record',
+    'playback_list',
+    'playback_get',
+    'playback_edit',
+    'playback_transcript',
+  ].includes(tool.name));
 }
 
 export function formatRecipientStatusSummary(recipients = [], agents = [], receipts = []) {
@@ -2374,6 +2268,16 @@ export async function handleFleetTool(name, args) {
   // ---- delegate ----
   if (name === 'delegate') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not logged in. Call login() first.' }], isError: true };
+    if (args.help) {
+      const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
+      const profiles = configuredSpawnProfileNames();
+      return {
+        content: [{
+          type: 'text',
+          text: `${formatSpawnModelSummary(catalog)}${catalog?.defaultAlias ? `\nDefault: ${catalog.defaultAlias}` : ''}\nPermission profiles: ${profiles.length ? profiles.join(', ') : '(none configured)'}`,
+        }],
+      };
+    }
 
     if (args.agent && args.mint) {
       return { content: [{ type: 'text', text: 'Provide agent or mint, not both.' }], isError: true };
@@ -2431,7 +2335,21 @@ export async function handleFleetTool(name, args) {
       });
 
       const operationId = args.operation_id || `${AGENT_ID}:mcp-delegate:${crypto.randomUUID()}`;
-      const delegateBody = { from: AGENT_ID, agent: targetAgent, task_id: args.task_id || undefined, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
+      const delegateBody = {
+        from: AGENT_ID,
+        agent: targetAgent,
+        task_id: args.task_id || undefined,
+        description,
+        message: routedMessage,
+        success_criteria: criteria.length ? criteria : undefined,
+        blocked_by: blockedBy.length ? blockedBy : undefined,
+        requires_approval: args.requires_approval || undefined,
+        notify_at: args.notify_at || undefined,
+        notify_every: args.notify_every || undefined,
+        expires_at: args.expires_at || undefined,
+        allow_pending_agent: opts.allowPendingAgent || undefined,
+        operation_id: operationId,
+      };
       const data = await mcpFleetTransport.durable('delegate', delegateBody, { operationId });
       rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
@@ -2513,7 +2431,7 @@ export async function handleFleetTool(name, args) {
 
   // ==== Messaging ====
 
-  if (name === 'dismiss_skill') {
+  if (name === 'dismiss') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not logged in. Call login() first.' }], isError: true };
     const reason = (args.reason || '').trim();
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
@@ -2981,6 +2899,9 @@ export async function handleFleetTool(name, args) {
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
+      if (t.metadata?.notify_at) status += ` | notify:${t.metadata.notify_at}`;
+      if (t.metadata?.notify_every) status += ` | every:${t.metadata.notify_every}s`;
+      if (t.metadata?.expires_at) status += ` | expires:${t.metadata.expires_at}`;
       if (t.metadata?.native) status += ` | Native task in ${nativeLabel || 'native harness'}`;
       if (!t.synthetic && (t.status === 'pending' || t.status === 'working') && age > 1440) {
         status += ` [stale — ${Math.round(age / 60)}h]`;
@@ -3184,8 +3105,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     return { content: [{ type: 'text', text: reviewPrompt }] };
   }
 
-  // ---- read_terminal (read agent's tmux pane) ----
-  if (name === 'read_terminal') {
+  // ---- terminal (read agent's tmux pane) ----
+  if (name === 'terminal') {
     if (!args.agent) {
       return { content: [{ type: 'text', text: 'Specify agent (name/ID).' }], isError: true };
     }
@@ -3230,7 +3151,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     }
 
     if (!result?.ok) {
-      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'daemon capture route unavailable'}. Agent was not marked dead by read_terminal.` }], isError: true };
+      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'daemon capture route unavailable'}. Agent was not marked dead by terminal.` }], isError: true };
     }
     idle = tmuxIsIdle(result.text);
 
@@ -3623,74 +3544,54 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     return { content: [{ type: 'text', text }] };
   }
 
-  // ---- set_inbox_status ----
-  if (name === 'set_inbox_status') {
+  // ---- configuration ----
+  if (name === 'configuration') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
-    const status = validateInboxStatus(args?.status);
-    if (!status) return { content: [{ type: 'text', text: `Bad inbox status: ${args?.status || '(missing)'}. Use one of: ${INBOX_STATUSES.join(', ')}.` }], isError: true };
-    const tag = typeof args?.tag === 'string' && args.tag.trim() ? args.tag.trim().slice(0, 80) : null;
-    _inboxStatus = status;
-    try {
-      await mcpFleetTransport.durable('inbox-status', { agent: AGENT_ID, status, tag });
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Could not publish inbox status "${status}" to tlda (${e.message}).` }], isError: true };
+    if (args.project) {
+      return { content: [{ type: 'text', text: 'Document preamble configuration requires the full document MCP surface.' }], isError: true };
     }
-    return { content: [{ type: 'text', text: `Inbox status set to ${status}${tag ? ` (${tag})` : ''}. Future wake behavior will use this status; choose presentation separately with inbox(view: ...).` }] };
-  }
-
-  // ---- set_delivery_channel ----
-  if (name === 'set_delivery_channel') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
-    const channel = validateDeliveryChannel(args?.channel);
-    if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args?.channel || '(missing)'}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
     const agent = typeof args?.agent === 'string' && args.agent.trim() ? args.agent.trim() : AGENT_ID;
+    const changes = [];
     try {
-      const data = await mcpFleetTransport.durable('delivery-channel', { caller: AGENT_ID, agent, channel });
-      if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
-      const target = data.target_label || data.agent || agent;
-      const ownerNote = data.self ? '' : ' as their manager';
-      return { content: [{ type: 'text', text: `Delivery channel for ${target} set to ${channel}${ownerNote}. Future notified messages for that agent will ping that channel; senders still use chat().` }] };
+      if (args.status != null || args.tag != null) {
+        if (agent !== AGENT_ID) return { content: [{ type: 'text', text: 'Notification status can only be set for the calling agent.' }], isError: true };
+        const status = validateInboxStatus(args.status);
+        if (!status) return { content: [{ type: 'text', text: `Bad inbox status: ${args.status || '(missing)'}. Use one of: ${INBOX_STATUSES.join(', ')}.` }], isError: true };
+        const tag = typeof args.tag === 'string' && args.tag.trim() ? args.tag.trim().slice(0, 80) : null;
+        _inboxStatus = status;
+        await mcpFleetTransport.durable('inbox-status', { agent: AGENT_ID, status, tag });
+        changes.push(`status=${status}${tag ? ` (${tag})` : ''}`);
+      }
+      if (args.channel != null) {
+        const channel = validateDeliveryChannel(args.channel);
+        if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args.channel}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
+        const data = await mcpFleetTransport.durable('delivery-channel', { caller: AGENT_ID, agent, channel });
+        if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
+        changes.push(`channel=${channel}`);
+      }
+      if (!changes.length) return { content: [{ type: 'text', text: 'Pass status/tag and/or channel.' }], isError: true };
+      return { content: [{ type: 'text', text: `Configuration updated for ${agent}: ${changes.join(', ')}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Could not publish delivery channel "${channel}" to tlda (${e.message}).` }], isError: true };
+      return { content: [{ type: 'text', text: `Configuration failed: ${e.message}` }], isError: true };
     }
   }
 
-  // ==== Agent Lifecycle ====
-
-  // ---- name_agent ----
-  if (name === 'name_agent') {
+  // ---- lifecycle ----
+  if (name === 'lifecycle') {
     try {
-      const data = await mcpFleetTransport.durable('rename', { agent: args.agent, name: args.friendly_name });
-      if (data.error) return { content: [{ type: 'text', text: `Rename failed: ${data.error}` }], isError: true };
-      return { content: [{ type: 'text', text: `Named ${args.agent}: "${args.friendly_name}"` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Rename failed: ${e.message}` }], isError: true };
-    }
-  }
-
-  // ---- reanimate ----
-  if (name === 'reanimate') {
-    try {
-      const data = await mcpFleetTransport.durable('reanimate', { agent: args.agent });
-      if (data.error) return { content: [{ type: 'text', text: `Reanimate failed: ${data.error}` }], isError: true };
+      const transportType = {
+        wake: 'spawn',
+        hibernate: 'hibernate-session',
+        kill: 'kill-session',
+        reanimate: 'reanimate',
+      }[args.action];
+      const payload = args.action === 'wake' ? { agent: args.agent, fresh: false } : { agent: args.agent };
+      const data = await mcpFleetTransport.durable(transportType, payload);
+      if (data.error) return { content: [{ type: 'text', text: `Lifecycle ${args.action} failed: ${data.error}` }], isError: true };
       const label = data.agent || data.agent_id || args.agent;
-      return { content: [{ type: 'text', text: `Reanimated ${label}.` }] };
+      return { content: [{ type: 'text', text: `${args.action} ${label}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Reanimate failed: ${e.message}` }], isError: true };
-    }
-  }
-
-  // ---- spawn_models ----
-  if (name === 'spawn_models') {
-    try {
-      const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
-      const text = formatSpawnModelSummary(catalog, {
-        verifiedOnly: !!args.verified_only,
-      });
-      const defaultModel = catalog?.defaultAlias ? `\nDefault: ${catalog.defaultAlias}` : '';
-      return { content: [{ type: 'text', text: `${text}${defaultModel}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `spawn_models failed: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Lifecycle ${args.action} failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -4420,12 +4321,21 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ==== Labels & Interrupts ====
 
-  // ---- label_agent ----
-  if (name === 'label_agent') {
+  if (name === 'label') {
     try {
-      const data = await mcpFleetTransport.durable('label', { agent: args.agent, labels: args.labels || [] });
-      if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
-      return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
+      const changes = [];
+      if (args.name != null) {
+        const renamed = await mcpFleetTransport.durable('rename', { agent: args.agent, name: args.name });
+        if (renamed.error) return { content: [{ type: 'text', text: `Label failed: ${renamed.error}` }], isError: true };
+        changes.push(`name="${args.name}"`);
+      }
+      if (args.labels != null) {
+        const labeled = await mcpFleetTransport.durable('label', { agent: args.agent, labels: args.labels });
+        if (labeled.error) return { content: [{ type: 'text', text: `Label failed: ${labeled.error}` }], isError: true };
+        changes.push(`labels=${(labeled.labels || []).join(',') || '(none)'}`);
+      }
+      if (!changes.length) return { content: [{ type: 'text', text: 'Pass name and/or labels.' }], isError: true };
+      return { content: [{ type: 'text', text: `Updated ${args.agent}: ${changes.join('; ')}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Label failed before transport ACK: ${e.message}` }], isError: true };
     }
@@ -4448,11 +4358,13 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ==== Fleet Operations ====
 
-  // ---- viewing_context ----
-  if (name === 'viewing_context') {
+  // ---- viewer ----
+  if (name === 'viewer') {
     try {
-      const userId = args.user
-      if (!userId) return { content: [{ type: 'text', text: 'Missing user — pass the fleet ID of the person whose viewport you want (e.g. "fleet:skip").' }], isError: true }
+      if (args.project || args.page || args.file || args.line) {
+        return { content: [{ type: 'text', text: 'Setting viewer location requires the full document MCP surface.' }], isError: true }
+      }
+      const userId = args.user || 'fleet:skip'
       const url = `${TLDA_FLEET_SERVER}/api/fleet/viewing?user=${encodeURIComponent(userId)}`
       const res = await fleetFetch(url)
       const data = await res.json()
@@ -4530,56 +4442,73 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ==== Utilities ====
 
-  if (name === 'subscribe') {
+  if (name === 'subscription') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
-      const data = await mcpFleetTransport.durable('subscribe', { caller: AGENT_ID, target: args.target || AGENT_ID, query: args.query, notification_policy: args.notification_policy });
-      if (data?.error) return { content: [{ type: 'text', text: `subscribe failed: ${data.error}` }], isError: true };
-      return { content: [{ type: 'text', text: `Subscribed #${data.subscription_id} for ${data.owner}: ${data.query} (${data.notification_policy}).` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `subscribe failed: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'subscriptions') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
-    try {
+      const operation = args.operation || 'list';
+      if (operation === 'create') {
+        if (!args.query) return { content: [{ type: 'text', text: 'subscription create requires query.' }], isError: true };
+        const data = await mcpFleetTransport.durable('subscribe', {
+          caller: AGENT_ID,
+          target: args.target || AGENT_ID,
+          query: args.query,
+          notification_policy: args.policy || 'immediate',
+        });
+        if (data?.error) return { content: [{ type: 'text', text: `subscription create failed: ${data.error}` }], isError: true };
+        return { content: [{ type: 'text', text: `Subscribed #${data.subscription_id} for ${data.owner}: ${data.query} (${data.notification_policy}).` }] };
+      }
+      if (operation === 'remove') {
+        if (args.id == null) return { content: [{ type: 'text', text: 'subscription remove requires id.' }], isError: true };
+        const data = await mcpFleetTransport.durable('unsubscribe', { caller: AGENT_ID, subscription_id: args.id });
+        if (data?.error) return { content: [{ type: 'text', text: `subscription remove failed: ${data.error}` }], isError: true };
+        return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
+      }
       const rows = await mcpFleetTransport.ephemeral('subscriptions', { caller: AGENT_ID, target: args.target || AGENT_ID });
-      if (rows?.error) return { content: [{ type: 'text', text: `subscriptions failed: ${rows.error}` }], isError: true };
+      if (rows?.error) return { content: [{ type: 'text', text: `subscription list failed: ${rows.error}` }], isError: true };
       if (!rows.length) return { content: [{ type: 'text', text: 'No subscriptions.' }] };
       return { content: [{ type: 'text', text: rows.map(r => `#${r.subscription_id} ${r.owner}: ${r.query} (${r.notification_policy})`).join('\n') }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `subscriptions failed: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'unsubscribe') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
-    try {
-      const data = await mcpFleetTransport.durable('unsubscribe', { caller: AGENT_ID, subscription_id: args.subscription_id });
-      if (data?.error) return { content: [{ type: 'text', text: `unsubscribe failed: ${data.error}` }], isError: true };
-      return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `unsubscribe failed: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `subscription failed: ${e.message}` }], isError: true };
     }
   }
 
   // ---- timer (non-blocking) ----
   if (name === 'timer') {
-    const seconds = Math.min(Math.max(args.seconds || 10, 1), 600);
+    if (args.cancel != null) {
+      try {
+        const data = await mcpFleetTransport.durable('timer-cancel', { event_id: args.cancel });
+        if (data?.error) return { content: [{ type: 'text', text: `timer cancel failed: ${data.error}` }], isError: true };
+        return { content: [{ type: 'text', text: `Timer #${args.cancel} cancelled.` }] };
+      } catch (e) {
+        return { content: [{ type: 'text', text: `timer cancel failed: ${e.message}` }], isError: true };
+      }
+    }
+    const seconds = Math.max(Number(args.seconds) || 10, 1);
+    const every = args.every == null ? null : Math.max(Number(args.every) || 0, 1);
     const message = args.message || 'Timer fired';
     const fireAt = new Date(Date.now() + seconds * 1000).toISOString();
+    const expiresAt = args.expires_at || null;
+    if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
+      return { content: [{ type: 'text', text: 'timer expires_at must be an ISO timestamp.' }], isError: true };
+    }
 
     // Store timer-set event immediately; the server owns scheduling, restart
     // recovery, and terminal fire/cancel delivery from the persisted row.
     let timerEventId = null;
     try {
-      timerEventId = timerSetEventIdFromAck(await mcpFleetTransport.durable('timer-set', timerSetMessage({ agentId: AGENT_ID, message, fireAt, to: args.to })));
+      timerEventId = timerSetEventIdFromAck(await mcpFleetTransport.durable('timer-set', timerSetMessage({
+        agentId: AGENT_ID,
+        message,
+        fireAt,
+        to: args.to,
+        repeatSeconds: every,
+        expiresAt,
+      })));
     } catch (e) {
       return { content: [{ type: 'text', text: `timer failed: ${e.message}` }], isError: true };
     }
 
-    return { content: [{ type: 'text', text: `Timer set: ${seconds}s → "${message}". You'll get ⏰ when it fires.` }] };
+    return { content: [{ type: 'text', text: `Timer #${timerEventId} set: ${seconds}s${every ? `, every ${every}s` : ''} → "${message}".` }] };
   }
 
   // ==== Playback ====

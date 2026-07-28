@@ -1,9 +1,12 @@
-export function timerSetMessage({ agentId, message, fireAt, to }) {
+export function timerSetMessage({ agentId, message, fireAt, to, repeatSeconds, expiresAt, taskId }) {
   return {
     agent: agentId,
     to: to || agentId,
     message,
     fire_at: fireAt,
+    repeat_seconds: repeatSeconds,
+    expires_at: expiresAt,
+    task_id: taskId,
   }
 }
 

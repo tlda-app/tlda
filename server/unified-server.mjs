@@ -5625,7 +5625,7 @@ async function handleFleetWsMessage(ws, msg) {
   // format, so bots speak the same language as real agents. timer-set stores +
   // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
   if (type === 'timer-set') {
-    const { agent, message, fire_at, to: toAgent } = msg
+    const { agent, message, fire_at, to: toAgent, repeat_seconds, expires_at, task_id } = msg
     // Address the countdown to the conversation it belongs to (e.g. the agent
     // being handed off). A chat panel only renders events whose from/to matches
     // its target agent, so a countdown hardcoded to the server owner never
@@ -5636,7 +5636,14 @@ async function handleFleetWsMessage(ws, msg) {
       findAgent: fleetStore.findAgent?.bind(fleetStore),
       fallbackOwner: SERVER_OWNER_ID,
     })
-    const metadata = { pending: true, fire_at, message }
+    const metadata = {
+      pending: true,
+      fire_at,
+      message,
+      ...(repeat_seconds ? { repeat_seconds: Number(repeat_seconds) } : {}),
+      ...(expires_at ? { expires_at } : {}),
+      ...(task_id ? { task_id } : {}),
+    }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
     serverTimerScheduler?.refresh()
     reply({ ok: true, id: event.id })
@@ -6743,7 +6750,21 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delegate') {
-    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent, operation_id, task_id } = msg
+    const {
+      agent: agentQuery,
+      description,
+      message: taskMsg,
+      success_criteria,
+      blocked_by,
+      from,
+      requires_approval,
+      notify_at,
+      notify_every,
+      expires_at,
+      allow_pending_agent,
+      operation_id,
+      task_id,
+    } = msg
     if (!agentQuery || (!description && !task_id)) { error('missing agent or description'); return }
     if (task_id && !taskMsg) { error('missing message for existing task delegation'); return }
     const previous = operation_id ? fleetStore.getDelegateOperationResult?.(operation_id) : null
@@ -6783,12 +6804,21 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const now = new Date().toISOString()
+    const notifyAtMs = notify_at ? Date.parse(notify_at) : (notify_every ? Date.now() + Number(notify_every) * 1000 : NaN)
+    const expiresAtMs = expires_at ? Date.parse(expires_at) : NaN
+    if (notify_at && !Number.isFinite(notifyAtMs)) { error('notify_at must be an ISO timestamp'); return }
+    if (notify_every != null && (!Number.isFinite(Number(notify_every)) || Number(notify_every) <= 0)) { error('notify_every must be a positive number of seconds'); return }
+    if (expires_at && !Number.isFinite(expiresAtMs)) { error('expires_at must be an ISO timestamp'); return }
+    if (Number.isFinite(expiresAtMs) && Number.isFinite(notifyAtMs) && expiresAtMs <= notifyAtMs) { error('expires_at must be later than notify_at'); return }
     const metadata = {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
       ...(requires_approval ? { requires_approval: true } : {}),
       ...(allow_pending_agent && !fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
       ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
+      ...(Number.isFinite(notifyAtMs) ? { notify_at: new Date(notifyAtMs).toISOString() } : {}),
+      ...(notify_every ? { notify_every: Number(notify_every) } : {}),
+      ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
     }
     const delegateMetadata = {
       trace_id: traceId,
@@ -6823,7 +6853,43 @@ async function handleFleetWsMessage(ws, msg) {
         metadata: Object.keys(metadata).length ? metadata : undefined,
       }
       fleetStore.upsertTask(task)
-      delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata)
+      delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata, {
+        unread: !Number.isFinite(notifyAtMs) || notifyAtMs <= Date.now(),
+      })
+    }
+    if (!existingTask && Number.isFinite(notifyAtMs)) {
+      await fleetStore.share({
+        type: 'timer',
+        from: from || resolved.id,
+        to: resolved.id,
+        text: `⏱ ${description}`,
+        metadata: {
+          pending: true,
+          fire_at: new Date(notifyAtMs).toISOString(),
+          message: `Task reminder: ${description}`,
+          task_id: taskId,
+          ...(notify_every ? { repeat_seconds: Number(notify_every) } : {}),
+          ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
+        },
+        unread: false,
+      })
+      serverTimerScheduler?.refresh()
+    }
+    if (!existingTask && Number.isFinite(expiresAtMs)) {
+      await fleetStore.share({
+        type: 'timer',
+        from: from || resolved.id,
+        to: resolved.id,
+        text: `Task expired: ${description}`,
+        metadata: {
+          pending: true,
+          fire_at: new Date(expiresAtMs).toISOString(),
+          task_id: taskId,
+          task_expiry: true,
+        },
+        unread: false,
+      })
+      serverTimerScheduler?.refresh()
     }
     controlPlaneTraces.append({
       trace_id: traceId,
@@ -6842,7 +6908,9 @@ async function handleFleetWsMessage(ws, msg) {
       operation_id: operation_id || null,
       trace_id: traceId,
     })
-    requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+    if (!Number.isFinite(notifyAtMs) || notifyAtMs <= Date.now()) {
+      requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+    }
     return
   }
 

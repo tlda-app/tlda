@@ -442,7 +442,7 @@ function findLabelLine(sourceDir, sourceMap, mainFile, label) {
 // call we BLOCK and name the owed skill(s). Goose clears that by loading the
 // skill with native Summon; other non-Claude agents clear it by reading the
 // SKILL.md natively. Any agent may instead call
-// `dismiss_skill(skills:[…], reason:"…")` if it judges one irrelevant, which
+// `dismiss(skills:[…], reason:"…")` if it judges one irrelevant, which
 // records the dismissal and shows Skip the reason. The block is sticky: the
 // server re-derives the owed set each call, so it lifts only once the agent has
 // loaded/read or dismissed every required skill, exactly like the Claude gate.
@@ -525,7 +525,7 @@ async function educationGate(name, args) {
     `Do ONE of these for each, then call \`${name}\` again:`,
     ...satisfyLines,
     `• Or, if it genuinely does not apply to what you are doing, decline it —`,
-    `  dismiss_skill(skills: [${dismissArg}], reason: "<why it does not apply>").`,
+    `  dismiss(skills: [${dismissArg}], reason: "<why it does not apply>").`,
     `  A reason is required and is shown to Skip.`,
     ``,
     `The block lifts once every required skill is loaded/read or dismissed.`,
@@ -1964,7 +1964,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: FLEET_ONLY_MCP ? getFleetTools() : [
     {
       name: 'screenshot',
-      description: 'Capture an image of part of the document viewer: the current document viewport, an annotation region (via screenshotRef from a read_annotations result), requested shapes, or explicit canvas bounds. This does not capture the user\'s screen or browser UI.',
+      description: 'Capture an image of part of the document viewer: the current document viewport, an annotation region (via screenshotRef from an annotations result), requested shapes, or explicit canvas bounds. This does not capture the user\'s screen or browser UI.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2003,12 +2003,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'add_note',
-      description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. Supports @label cross-references (e.g. @thm:bias-decomp) — broken refs are reported in the response. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
+      name: 'note',
+      description: 'Write note text at a location. A source/page location creates a note; an existing note id appends to that note.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Project name (e.g. "bregman")' },
+          id: { type: 'string', description: 'Existing note shape id. When present, append text to that note instead of creating one.' },
           line: { type: 'number', description: 'Source line number to anchor the note to. Required unless page is given.' },
           page: { type: 'number', description: 'Page number to place the note on (use when no source line is available).' },
           text: { type: 'string', description: 'Note content (supports $math$ and $$display math$$). Required unless `options_file` or `file` is given.' },
@@ -2019,15 +2020,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           height: { type: 'number', description: 'Explicit height in pixels (overrides size preset).' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
           file: { type: 'string', description: 'Path to a file whose content becomes the note text. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
-          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection readable via read_annotations. Mutually exclusive with `options_file`.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection is readable via annotations. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
         required: ['project'],
       },
     },
     {
-      name: 'read_project',
-      description: 'Read a tlda project\'s source (read-only) — project- and version-aware. Resolves the project name to a source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a past version from the project\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. For annotations use read_annotations.',
+      name: 'ref',
+      description: 'Read a tlda project\'s source (read-only) — project- and version-aware. Resolves the project name to a source file and reads a paginated line window (default 400 lines). Pass `version` (a git hash) to read a past version from the project\'s history, or `ref` (a label/theorem number like "thm:main" or "2.1") to jump straight to that location. Header reports the window + total lines, with a hint to page. For annotations use annotations.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2038,13 +2039,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           lines: { type: 'number', description: 'Window height: how many lines to read (default 400 for a plain read, 80 for a ref).' },
           version: { type: 'string', description: 'Git hash to read a past version of the source (optional).' },
           ref: { type: 'string', description: 'Label or theorem number to jump to, e.g. "thm:main" or "2.1" (optional).' },
+          include: { type: 'string', enum: ['location', 'source'], description: 'For a ref lookup, return only its resolved location or include surrounding source. Defaults to source.' },
           before: { type: 'number', description: 'With `ref`: how many lines above the anchor to start (default 3).' },
         },
         required: ['project'],
       },
     },
     {
-      name: 'read_annotations',
+      name: 'annotations',
       description: 'Read all annotations in a document: math notes, highlighter strokes, pen strokes, arrows, rectangles/ellipses. Returns formatted text with highlighted regions marked using ⟦⟧ brackets. Sorted by document position (default) or time.',
       inputSchema: {
         type: 'object',
@@ -2078,7 +2080,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'delete_annotation',
+      name: 'delete',
       description: 'Delete an annotation by its shape ID.',
       inputSchema: {
         type: 'object',
@@ -2090,19 +2092,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'draw_highlight',
-      description: 'Draw a highlighter stroke over source lines on the canvas. Creates a visible highlight mark (like a physical highlighter) spanning the given line range.',
+      name: 'draw',
+      description: 'Draw a highlight or arrow annotation.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Project name (e.g. "bregman")' },
+          type: { type: 'string', enum: ['highlight', 'arrow'] },
           startLine: { type: 'number', description: 'First source line to highlight' },
           endLine: { type: 'number', description: 'Last source line to highlight (same as startLine for single line). Optional when text is provided.' },
           color: { type: 'string', description: 'Highlight color: yellow, light-blue, light-green, light-violet, light-red, orange (default: orange)' },
           file: { type: 'string', description: 'Source file path or name (for multi-file projects). Omit for main file.' },
           text: { type: 'string', description: 'Specific text to highlight (substring from the source). When provided, highlights just this text instead of full lines. startLine is used as a hint for where to search.' },
+          fromLine: { type: 'number', description: 'Arrow start line.' },
+          toLine: { type: 'number', description: 'Arrow end line.' },
+          label: { type: 'string', description: 'Optional arrow label.' },
+          toFile: { type: 'string', description: 'Optional arrow destination file.' },
+          side: { type: 'string', enum: ['left', 'right'] },
         },
-        required: ['project', 'startLine'],
+        required: ['project', 'type'],
       },
     },
     {
@@ -2299,7 +2307,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     ...getFleetTools(),
-  ],
+  ].filter(tool => ![
+    'reply_note',
+    'draw_arrow',
+    'set_understanding',
+    'get_understanding',
+    'scroll_to_line',
+    'set_chat_target',
+    'project_version',
+    'build',
+    'push',
+    'lookup_theorem',
+    'input_scratch',
+    'inline_scratch',
+    'extract_to_scratch',
+    'set_preamble',
+  ].includes(tool.name)),
 }));
 
 // Track last ping timestamp (consumed by get_feedback)
@@ -2454,11 +2477,10 @@ function formatStrokeResult(r, projectName, prefix, entry, agent) {
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
   'screenshot',
-  'add_note',
-  'scroll_to_line', 'read_annotations',
-  'draw_highlight', 'draw_arrow',
-  'set_understanding', 'get_understanding',
-  'lookup_theorem', 'extract_to_scratch',
+  'note',
+  'viewer', 'annotations',
+  'draw',
+  'ref',
 ]);
 
 // Handle tool calls
@@ -2487,15 +2509,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
 
-  if (name === 'read_project') {
+  if (name === 'ref') {
     // Project- and version-aware source read. The store server owns both the
     // current source and the per-project Git history; the MCP process may be
     // running on another machine and must not look for a local server checkout.
     const doc = args?.project;
-    if (!doc) return { content: [{ type: 'text', text: 'read_project: `project` is required.' }], isError: true };
+    if (!doc) return { content: [{ type: 'text', text: 'ref: `project` is required.' }], isError: true };
     let cfg;
     try { cfg = await serverFetch(`/api/projects/${encodeURIComponent(doc)}`); }
-    catch (e) { return { content: [{ type: 'text', text: `read_project: unknown project "${doc}" (${e.message}).` }], isError: true }; }
+    catch (e) { return { content: [{ type: 'text', text: `ref: unknown project "${doc}" (${e.message}).` }], isError: true }; }
     const mainFile = cfg.mainFile || cfg.main;
     const file = args.file || mainFile;
     if (!file) return { content: [{ type: 'text', text: `read_project: no file given and project "${doc}" has no mainFile.` }], isError: true };
@@ -2518,6 +2540,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // .aux file, which records page/number/title but NOT the source line — so we
     // resolve the line from the actual `\label{...}` location in source.
     let anchorLine = 0;
+    let resolvedRef = null;
     let refNote = '';
     if (args.ref && !(args.startLine > 0)) {
       const texBase = String(mainFile || 'main').replace(/\.tex$/, '');
@@ -2556,7 +2579,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!found) return { content: [{ type: 'text', text: `read_project: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the project may need a rebuild.` }], isError: true };
       anchorLine = found.line;
       relFile = found.file;   // read the file the label actually lives in
+      resolvedRef = { query: q, label: e.label, number: e.number || null, page: e.page || null, file: found.file, line: found.line };
       refNote = ` (ref "${q}" → ${e.number || e.label} @ ${found.file}:${found.line})`;
+    }
+    if (args.include === 'location' && resolvedRef) {
+      return { content: [{ type: 'text', text: JSON.stringify({ project: doc, version: args.version || null, ...resolvedRef }, null, 2) }] };
     }
 
     // Read current source or a past source directly from the store server.
@@ -2700,7 +2727,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return operationMailboxStartedResult(mailbox, { extra: `doc: ${projectName}` });
   }
 
-  if (name === 'add_note') {
+  if (name === 'note' && !args.id) {
     const { project: doc, line, page: pageNum, color, size, width, height, side, text_anchor, options_file: optionsFile } = args;
     let { text, choices, file } = args;
     let effectiveSize = size;
@@ -2749,7 +2776,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'read_annotations') {
+  if (name === 'annotations') {
     const { project: doc } = args;
     const typeFilter = args.type || null;
     const sortOrder = args.sort || 'document';
@@ -2845,7 +2872,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'reply_note') {
+  if (name === 'note' && args.id) {
     const { project: doc, id, text } = args;
     if (!doc || !id || !text) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
     try {
@@ -2868,7 +2895,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'delete_annotation') {
+  if (name === 'delete') {
     const { project: doc, id } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
     try {
@@ -2895,7 +2922,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'scroll_to_line') {
+  if (name === 'viewer' && (args.project || args.line || args.file || args.page)) {
     const { project: doc, line, file } = args;
     if (!doc || !line) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, line' }], isError: true };
@@ -2913,7 +2940,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
 
-  if (name === 'draw_highlight') {
+  if (name === 'draw' && args.type === 'highlight') {
     const { project: doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
     if (!doc || startLine == null) {
       return { content: [{ type: 'text', text: 'Missing required parameters: project, startLine' }], isError: true };
@@ -3149,7 +3176,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // --- Full-line highlighting (original behavior) ---
       // Staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
       // drill teacher stages line-range highlights through the same code path.
-      const r = await stageHighlight(project, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
+      const r = await stageHighlight(doc, startLine, endLine, { color, file, server: TLDA_SYNC_SERVER });
       if (!r.ok) return { content: [{ type: 'text', text: r.error }], isError: true };
       return { content: [{ type: 'text', text: `Highlight drawn: lines ${startLine}–${endLine}, page ${r.page}, ${color} (${r.shapeId})` }] };
     } catch (e) {
@@ -3157,7 +3184,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'draw_arrow') {
+  if (name === 'draw' && args.type === 'arrow') {
     const { project: doc, fromLine, toLine, label, color = 'orange', file, toFile, side = 'left' } = args;
     if (!doc || fromLine == null || toLine == null) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, fromLine, toLine' }], isError: true };
@@ -3255,7 +3282,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     try {
       // Look up canvas positions for start and end lines
-      const startPos = await lookupLineAsync(project, startLine, file);
+      const startPos = await lookupLineAsync(doc, startLine, file);
       const endPos = await lookupLineAsync(doc, endLine, file);
       if (!startPos) return { content: [{ type: 'text', text: `Line ${startLine} not found in lookup` }], isError: true };
       if (!endPos) return { content: [{ type: 'text', text: `Line ${endLine} not found in lookup` }], isError: true };
@@ -3729,7 +3756,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const mdPath = path.join(scratchDir, `${scratchName}.md`);
       fs.writeFileSync(mdPath, mdContent, 'utf8');
 
-      const result = await addAnnotation(project, startLine, mdContent, {
+      const result = await addAnnotation(doc, startLine, mdContent, {
         color: 'violet', size: 'lg', side: 'right',
       });
 
@@ -3756,7 +3783,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'set_preamble') {
+  if (name === 'configuration' && args.project) {
     const doc = args.project;
     const version = args.version || null;
     if (!doc) {
