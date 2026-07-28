@@ -74,7 +74,7 @@ import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
-import { createAgentRuntimeStatusStore, POSITIVE_LIVENESS_TTL_MS } from './lib/agent-runtime-status.mjs'
+import { createAgentRuntimeStatusStore } from './lib/agent-runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
@@ -135,7 +135,6 @@ import {
 import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
-import { currentSeatForDaemonEvent, daemonEventSeatDecision, isForeignDaemonRejection } from './lib/daemon-event-route-authority.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
@@ -157,10 +156,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
 const agentLivenessTrace = createAgentLivenessTraceStore()
 
-// Per daemon: the agent ids it last reported as running. This is the list the
-// snapshot REPLACES — it exists only to notice which agents stopped being
-// reported, so each departure is marked once instead of re-asserted forever.
-const daemonRunningAgents = new Map()
 const terminalBridgeLog = createBackendLogger('terminal-bridge')
 const syncSignalLog = createBackendLogger('sync-signals')
 const daemonEventLog = createBackendLogger('daemon-events')
@@ -170,7 +165,6 @@ const serverActivityDeliveryCounters = createActivityDeliveryCounters({ origin: 
 // binding that never lands doesn't reprint every few seconds — the daemon's own
 // "pending seat binding rejected locally" loop wrote 431,202 lines that way on
 // 2026-07-25 and buried the signal it was trying to give.
-const seatlessActivityAgents = new Set()
 const daemonActivityDeliverySnapshots = new Map()
 const SERVER_PERF_MAX_EVENTS = Number(process.env.TLDA_SERVER_PERF_MAX_EVENTS || 500)
 const serverPerfEvents = []
@@ -397,15 +391,13 @@ function traceGate1(stage, detail) {
   console.log(`[gate1-trace] ${stage} ${JSON.stringify({ ts: new Date().toISOString(), ...detail })}`)
 }
 
-// Runtime status truth. Positive process evidence expires after three missed
-// hosted-session refresh intervals (90s); explicit dead/wedged evidence wins
-// immediately. Durable seats are route identity, not liveness proof.
+// Runtime status truth. Positive process evidence remains true until the daemon
+// explicitly reports absence/death. A missing heartbeat, a daemon disconnect,
+// or copied route state does not fabricate hibernation.
 const _aliveAgents = new Set()              // Set<agent_id>
 const _aliveSince = new Map()               // agent_id -> first ms in current alive run
-const _runtimeExpiryTimers = new Map()
 
 const runtimeStatusStore = createAgentRuntimeStatusStore({
-  ttlMs: POSITIVE_LIVENESS_TTL_MS,
   isDaemonConnected: daemonKey => !!daemonKey && daemonConnections.get(daemonKey)?.readyState === 1,
   onChange: agentId => {
     // Not awaited, and these three are the only refreshes treated this way.
@@ -437,35 +429,17 @@ function isAgentAwake(agent) { return runtimeStatusStore.project(agent).status =
 
 // The two facts the store needs to count the roster, and the reason they are
 // assembled at the call site rather than kept anywhere: they are inputs to one
-// computation. `liveEvidenceIds` is the agents whose positive evidence is still
-// inside the TTL; `connectedDaemonKeys` is who holds a socket right now. Both
-// are read fresh from this thread's own state every time.
+// computation. `liveEvidenceIds` is the agents for which the daemon/process has
+// supplied positive evidence without a later explicit negative observation.
 function rosterCountInputs() {
   const nowMs = Date.now()
   const liveEvidenceIds = []
   for (const agentId of _aliveAgents) {
     const evidence = runtimeStatusStore.evidenceFor(agentId)
     if (evidence?.liveness !== 'alive') continue
-    const at = Number(evidence.liveness_at_ms)
-    if (!Number.isFinite(at) || (nowMs - at) > POSITIVE_LIVENESS_TTL_MS) continue
     liveEvidenceIds.push(agentId)
   }
-  const connectedDaemonKeys = []
-  for (const [key, ws] of daemonConnections) if (ws?.readyState === 1) connectedDaemonKeys.push(key)
-  return { liveEvidenceIds, connectedDaemonKeys, nowMs }
-}
-
-function scheduleRuntimeExpiry(agentId) {
-  if (!agentId) return
-  const previous = _runtimeExpiryTimers.get(agentId)
-  if (previous) clearTimeout(previous)
-  const timer = setTimeout(async () => {
-    _runtimeExpiryTimers.delete(agentId)
-    await fleetStore?.refreshAgentLiveness?.(agentId)
-    broadcastState(agentId)
-  }, POSITIVE_LIVENESS_TTL_MS + 50)
-  timer?.unref?.()
-  _runtimeExpiryTimers.set(agentId, timer)
+  return { liveEvidenceIds, nowMs }
 }
 
 function isReservedShellAgent(agent) {
@@ -474,10 +448,10 @@ function isReservedShellAgent(agent) {
 
 function markAgentAlive(agentId, now = Date.now(), detail = {}) {
   const wasAlive = _aliveAgents.has(agentId)
+  const evidence = runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
+  if (evidence?.liveness !== 'alive') return
   if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
   _aliveAgents.add(agentId)
-  runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
-  scheduleRuntimeExpiry(agentId)
   if (!wasAlive) {
     // Fire-and-forget for the reason given where onChange does the same.
     fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
@@ -489,13 +463,12 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
 
 function markAgentNotAlive(agentId, detail = {}) {
   const wasAlive = _aliveAgents.has(agentId)
+  const evidence = detail.unknown
+    ? runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
+    : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
+  if (evidence?.liveness === 'alive') return
   _aliveAgents.delete(agentId)
   _aliveSince.delete(agentId)
-  const timer = _runtimeExpiryTimers.get(agentId)
-  if (timer) clearTimeout(timer)
-  _runtimeExpiryTimers.delete(agentId)
-  if (detail.unknown) runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
-  else runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   clearEphemeralState(agentId)
   // Fire-and-forget for the reason given where onChange does the same.
   if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
@@ -5293,14 +5266,8 @@ server.on('upgrade', async (req, socket, head) => {
           })
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
-          // Drop the running set with the connection. A snapshot describes what a
-          // daemon sees RIGHT NOW, so once it stops reporting the set is stale and
-          // must not keep asserting those agents are running. Critically this is a
-          // delete, not a sweep to hibernating: silence from a daemon means we do
-          // not know, and marking live agents asleep because nobody is talking is
-          // the roster lying about live agents — the failure this whole change
-          // exists to remove.
-          daemonRunningAgents.delete(ws._daemonKey)
+          // A disconnect is transient. Preserve the daemon's last explicit
+          // process observations; silence is not a hibernation report.
           await fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           // Not awaited: this runs in a socket close/error handler, which is
           // not async and must not become so. Rejections are reported rather
@@ -5335,14 +5302,8 @@ server.on('upgrade', async (req, socket, head) => {
           })
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
-          // Drop the running set with the connection. A snapshot describes what a
-          // daemon sees RIGHT NOW, so once it stops reporting the set is stale and
-          // must not keep asserting those agents are running. Critically this is a
-          // delete, not a sweep to hibernating: silence from a daemon means we do
-          // not know, and marking live agents asleep because nobody is talking is
-          // the roster lying about live agents — the failure this whole change
-          // exists to remove.
-          daemonRunningAgents.delete(ws._daemonKey)
+          // A disconnect is transient. Preserve the daemon's last explicit
+          // process observations; silence is not a hibernation report.
           await fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           // Not awaited: this runs in a socket close/error handler, which is
           // not async and must not become so. Rejections are reported rather
@@ -8710,22 +8671,12 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
-    // Same rule as activity: drop only what belongs to ANOTHER daemon. A missing
-    // seat row is bookkeeping, and an agent that is visibly running a tool has a
-    // status whether or not we know which seat it sits in.
-    //
-    // Skip: "status in the app is horrible." This is one mechanism behind that —
-    // a seatless agent reported no status at all, silently, so the roster showed
-    // it doing nothing while the daemon described its every tool call.
-    const statusSeat = await daemonEventSeatDecision(fleetStore, {
-      agentId,
-      daemonKey: ws._daemonKey,
-      family: 'daemon-agent-status',
-    })
-    if (isForeignDaemonRejection(statusSeat)) return
     await fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
-    // Display feed only — no liveness publishing (see the identical rule on
-    // the WS agent-status handler above).
+    markAgentAlive(agentId, Date.parse(ts) || Date.now(), {
+      source: 'daemon-agent-status',
+      daemon_key: ws._daemonKey,
+      daemon_boot_id: ws._bootId,
+    })
     runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
     broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
     broadcastState()
@@ -8736,12 +8687,9 @@ async function handleDaemonWsMessage(ws, msg) {
   // Present means running, absent means hibernating. No diff is sent and none is
   // needed — see docs/fleet-design-rules.md, "Liveness protocol".
   //
-  // This is also the ONLY producer of positive liveness evidence. The real-time
-  // `agent-status` path above is display-only by explicit design (it calls
-  // updateActivity, never markAlive), and AWAKE requires ALIVE evidence younger
-  // than POSITIVE_LIVENESS_TTL_MS (90s). So this report must keep arriving well
-  // inside that window or every agent projects hibernating — the daemon sends it
-  // every 30s, giving three chances before anything expires.
+  // Status and activity events also prove a process exists. This snapshot is
+  // the authoritative complete observation that can explicitly move an agent
+  // back to hibernating when the daemon says it is absent.
   if (type === 'agent-liveness-snapshot') {
     if (!fleetStore) return
     // Message integrity: this socket's daemon speaks for itself only.
@@ -8755,12 +8703,8 @@ async function handleDaemonWsMessage(ws, msg) {
       ? [...new Set((msg.absent_agent_ids || []).filter(id => typeof id === 'string' && id))]
       : []
 
-    // Ownership, one query: a daemon may only report agents whose current seat
-    // lives on it, so it can never keep another daemon's agent looking awake.
-    const seats = await fleetStore.getCurrentAgentSeats(reported)
-    const running = new Set(reported.filter(id => seats.get(id)?.daemon_key === ws._daemonKey))
-    const absentSeats = await fleetStore.getCurrentAgentSeats(reportedAbsent)
-    const absent = new Set(reportedAbsent.filter(id => absentSeats.get(id)?.daemon_key === ws._daemonKey))
+    const running = new Set(reported)
+    const absent = new Set(reportedAbsent)
 
     for (const id of running) {
       spawnLibrarian.observeLiveness({ type, agent_id: id, state: 'alive', ts: reportedTs })
@@ -8782,12 +8726,12 @@ async function handleDaemonWsMessage(ws, msg) {
       markAgentNotAlive(id, {
         source: 'daemon-running-process-snapshot',
         reason: 'absent from daemon running-process snapshot',
+        atMs,
         daemon_key: msg.daemon_key,
         daemon_boot_id: msg.daemon_boot_id,
         report_seq: msg.report_seq,
       })
     }
-    daemonRunningAgents.set(ws._daemonKey, running)
     broadcastState()
     return
   }
@@ -8795,20 +8739,6 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-liveness') {
     const { agent_id, state, pid, reason, ts } = msg
     if (!agent_id || !state) return
-    // Same rule again, and the liveness BATCH handler already worked this way:
-    // it honours a death report for an unseated agent rather than dropping it.
-    // This single-agent path disagreed with its own batch sibling, so whether an
-    // agent counted as alive depended on which message carried the news.
-    //
-    // A process either exists or it does not. Making that answer conditional on
-    // a seat row is how the roster comes to say an agent is hibernating while it
-    // is running — and a wrongly-hibernating agent can get reaped.
-    const livenessSeat = await daemonEventSeatDecision(fleetStore, {
-      agentId: agent_id,
-      daemonKey: ws._daemonKey,
-      family: 'daemon-agent-liveness',
-    })
-    if (isForeignDaemonRejection(livenessSeat)) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, pid, reason, ts })
     if (state === 'alive') {
       // Liveness ≠ activity (see the batch handler above): this is a 30s "process
@@ -8818,6 +8748,8 @@ async function handleDaemonWsMessage(ws, msg) {
         source: 'daemon-agent-liveness',
         reason,
         pid,
+        daemon_key: ws._daemonKey,
+        daemon_boot_id: ws._bootId,
       })
     } else if (state === 'dead' || state === 'wedged') {
       markAgentNotAlive(agent_id, {
@@ -8825,6 +8757,9 @@ async function handleDaemonWsMessage(ws, msg) {
         state,
         reason,
         pid,
+        atMs: Date.parse(ts) || Date.now(),
+        daemon_key: ws._daemonKey,
+        daemon_boot_id: ws._bootId,
       })
     }
     broadcastState()
@@ -8834,15 +8769,11 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
-    const currentSeat = await currentSeatForDaemonEvent(fleetStore, {
-      agentId: agent_id,
-      daemonKey: ws._daemonKey,
-      family: 'daemon-agent-activity',
-    })
-    if (!currentSeat) return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
     markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
       source: 'agent-activity',
+      daemon_key: ws._daemonKey,
+      daemon_boot_id: ws._bootId,
     })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
@@ -8886,36 +8817,10 @@ async function handleDaemonWsMessage(ws, msg) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
-    // Reject only what this authority exists to reject: an event from a daemon
-    // that does not own the agent. A missing seat row is a bookkeeping gap, not
-    // a routing error — nobody else claims the agent, and the tool call it is
-    // reporting genuinely happened.
-    //
-    // This used to be `if (!currentSeat) return`, a bare return with no log and
-    // no counter. On 2026-07-25 chief3 had no seat row, so every activity event
-    // the daemon extracted for it was destroyed at this line — its cards were
-    // absent from Skip's view for hours while the daemon shipped them every few
-    // seconds and every layer reported healthy.
-    const seatDecision = await daemonEventSeatDecision(fleetStore, {
-      agentId: agent_id,
-      daemonKey: ws._daemonKey,
-      family: 'daemon-activity-event',
-    })
-    if (isForeignDaemonRejection(seatDecision)) {
-      console.warn(`[fleet-daemon] ignored activity for ${agent_id}: seat daemon=${seatDecision.seat_daemon_key || 'none'} ws daemon=${ws._daemonKey}`)
-      return
-    }
-    const currentSeat = seatDecision.seat
-    if (!currentSeat && !seatlessActivityAgents.has(agent_id)) {
-      // Said out loud, once per agent: accepting this is correct, but an agent
-      // emitting activity with no seat row is still a defect upstream, and it
-      // must be visible WITHOUT anyone first noticing that cards are missing.
-      // Silence is what made this cost hours.
-      seatlessActivityAgents.add(agent_id)
-      console.warn(`[fleet-daemon] accepting activity for ${agent_id} with no current seat — seat binding is behind; cards will render but the seat row is missing`)
-    }
     markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
       source: 'daemon-activity-event',
+      daemon_key: ws._daemonKey,
+      daemon_boot_id: ws._bootId,
     })
     runtimeStatusStore.updateActivity(agent_id, tool ? `tool_call:${tool}` : 'activity', {
       tool,

@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemon/agent-liveness.mjs'
 import { createAgentRuntimeStatusStore } from '../server/lib/agent-runtime-status.mjs'
-import { daemonEventSeatDecision } from '../server/lib/daemon-event-route-authority.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
@@ -62,14 +61,6 @@ assert.deepEqual(localReports[1].running_agent_ids, ['local-agent'])
 assert.deepEqual(localReports[1].absent_agent_ids, [])
 assert.equal(localReports[1].report_seq, 2)
 
-const seat = { daemon_key: 'mini:default', terminal_capability: 'redacted-in-diagnostics' }
-const fleetStore = { getCurrentAgentSeat: id => id === 'known' ? seat : null }
-assert.deepEqual(await daemonEventSeatDecision(fleetStore, { agentId: 'known', daemonKey: 'mini:default' }), {
-  seat, accepted: true, rejection_reason: null,
-})
-assert.equal((await daemonEventSeatDecision(fleetStore, { agentId: 'known', daemonKey: 'other' })).rejection_reason, 'daemon-key-mismatch')
-assert.equal((await daemonEventSeatDecision(fleetStore, { agentId: 'missing', daemonKey: 'mini:default' })).rejection_reason, 'no-current-seat')
-
 let nowMs = 1_000
 const runtime = createAgentRuntimeStatusStore({
   now: () => nowMs,
@@ -83,11 +74,8 @@ runtime.markAlive('known', 'daemon-hosted-session-refresh', {
   daemon_boot_id: generation.daemon_boot_id,
   report_seq: generation.report_seq,
 })
-// The seat facts ride the agent row now, rather than being fetched by a
-// getSeat closure the store was configured with. Same three facts, same
-// projection — supplied by the caller that already has the row.
-const seated = { id: 'known', metadata: {}, seat_present: true, seat_daemon_key: seat.daemon_key, seat_terminal_capability: seat.terminal_capability }
-let projected = runtime.project(seated)
+const seatless = { id: 'known', metadata: {}, seat_present: false }
+let projected = runtime.project(seatless)
 assert.equal(projected.status, 'awake')
 assert.deepEqual(projected.evidence.liveness_generation, generation)
 runtime.markNotAlive('known', 'daemon-hosted-session-refresh', {
@@ -97,11 +85,7 @@ runtime.markNotAlive('known', 'daemon-hosted-session-refresh', {
   daemon_boot_id: generation.daemon_boot_id,
   report_seq: generation.report_seq,
 })
-// The seated row is this branch's fixture — seat facts ride the agent now.
-// `hibernating` is main's expectation: three-agent-states removed `unavailable`
-// from the vocabulary, so a seated agent with negative evidence is simply not
-// running rather than being its own state.
-projected = runtime.project(seated)
+projected = runtime.project(seatless)
 assert.equal(projected.status, 'hibernating')
 assert.deepEqual(projected.evidence.liveness_generation, generation)
 
@@ -109,8 +93,7 @@ assert.deepEqual(projected.evidence.liveness_generation, generation)
 // its per-agent ingress trace were deleted with the 378-agent walk they served.
 // The daemon now sends a complete running-process snapshot and the server
 // replaces its list, so there is no per-agent accept/reject decision to trace.
-// Snapshot emission is asserted at the top of this file; the seat-ownership rule
-// it still relies on is asserted above via daemonEventSeatDecision.
+// Snapshot emission is asserted at the top of this file.
 
 // recordLivenessProjection is still live -- _broadcastStateNow uses it -- so it
 // keeps its coverage, now with a locally-built store and generation instead of

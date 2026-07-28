@@ -1,5 +1,4 @@
-export const POSITIVE_LIVENESS_TTL_MS = 90_000
-export const HUMAN_HEARTBEAT_TTL_MS = POSITIVE_LIVENESS_TTL_MS
+export const HUMAN_HEARTBEAT_TTL_MS = 90_000
 
 export const RUNTIME_STATUS = Object.freeze({
   AWAKE: 'awake',
@@ -24,7 +23,6 @@ export const LIVENESS = Object.freeze({
 })
 
 export function createAgentRuntimeStatusStore({
-  ttlMs = POSITIVE_LIVENESS_TTL_MS,
   now = () => Date.now(),
   isDaemonConnected = () => false,
   onChange = () => {},
@@ -56,10 +54,10 @@ export function createAgentRuntimeStatusStore({
   function markAlive(agentId, source, detail = {}) {
     const atMs = Number.isFinite(detail.atMs) ? detail.atMs : now()
     const previous = evidenceFor(agentId)
+    if (Number.isFinite(previous?.liveness_at_ms) && atMs < previous.liveness_at_ms) return previous
     const previousAliveAt = Number(previous?.liveness_at_ms)
     const continuouslyAlive = previous?.liveness === LIVENESS.ALIVE
       && Number.isFinite(previousAliveAt)
-      && (atMs <= previousAliveAt || (atMs - previousAliveAt) <= ttlMs)
     const livenessAtMs = continuouslyAlive ? Math.max(atMs, previousAliveAt) : atMs
     return update(agentId, {
       liveness: LIVENESS.ALIVE,
@@ -78,13 +76,16 @@ export function createAgentRuntimeStatusStore({
   }
 
   function markNotAlive(agentId, source, detail = {}) {
+    const atMs = Number.isFinite(detail.atMs) ? detail.atMs : now()
+    const previous = evidenceFor(agentId)
+    if (Number.isFinite(previous?.liveness_at_ms) && atMs < previous.liveness_at_ms) return previous
     const state = detail.state === LIVENESS.WEDGED ? LIVENESS.WEDGED : LIVENESS.DEAD
     return update(agentId, {
       liveness: state,
       liveness_source: source,
       liveness_reason: detail.reason || null,
-      liveness_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
-      liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
+      liveness_at_ms: atMs,
+      liveness_at: new Date(atMs).toISOString(),
       alive_since_ms: null,
       alive_since: null,
       pid: detail.pid || null,
@@ -96,12 +97,15 @@ export function createAgentRuntimeStatusStore({
   }
 
   function markUnknown(agentId, source, detail = {}) {
+    const atMs = Number.isFinite(detail.atMs) ? detail.atMs : now()
+    const previous = evidenceFor(agentId)
+    if (Number.isFinite(previous?.liveness_at_ms) && atMs < previous.liveness_at_ms) return previous
     return update(agentId, {
       liveness: LIVENESS.UNKNOWN,
       liveness_source: source,
       liveness_reason: detail.reason || null,
-      liveness_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
-      liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
+      liveness_at_ms: atMs,
+      liveness_at: new Date(atMs).toISOString(),
       alive_since_ms: null,
       alive_since: null,
       pid: detail.pid || null,
@@ -133,7 +137,6 @@ export function createAgentRuntimeStatusStore({
   function project(agent) {
     return projectAgentRuntimeStatus(agent, evidenceFor(agent?.id), {
       nowMs: now(),
-      ttlMs,
       isDaemonConnected,
     })
   }
@@ -147,13 +150,11 @@ export function createAgentRuntimeStatusStore({
     updateActivity,
     clear,
     project,
-    ttlMs,
   }
 }
 
 export function projectAgentRuntimeStatus(agent, evidence = null, {
   nowMs = Date.now(),
-  ttlMs = POSITIVE_LIVENESS_TTL_MS,
   isDaemonConnected = () => false,
 } = {}) {
   const metadata = agent?.metadata || {}
@@ -231,18 +232,12 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   }
 
   if (evidence?.liveness === LIVENESS.ALIVE) {
-    const ageMs = Number.isFinite(evidence.liveness_at_ms) ? nowMs - evidence.liveness_at_ms : Infinity
-    const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && ageMs <= ttlMs
     return runtimeProjection({
-      status: currentPositiveEvidence ? RUNTIME_STATUS.AWAKE : RUNTIME_STATUS.HIBERNATING,
+      status: RUNTIME_STATUS.AWAKE,
       activity: baseEvidence.activity,
       route,
-      evidence: { ...baseEvidence, positive_age_ms: Number.isFinite(ageMs) ? Math.max(0, ageMs) : null },
-      reason: currentPositiveEvidence
-        ? (evidence.liveness_source || 'positive-runtime-evidence')
-        : route.state !== ROUTE_STATE.ROUTABLE
-          ? route.reason
-          : 'positive-runtime-evidence-expired',
+      evidence: baseEvidence,
+      reason: evidence.liveness_source || 'positive-runtime-evidence',
       nowMs,
     })
   }

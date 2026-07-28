@@ -3060,9 +3060,8 @@ export class FleetStore {
   // aggregate over the whole non-dead roster.  Keep that distinction explicit:
   // callers must not derive footer counts from a page or virtualized rows.
   // Counting is a JOIN, and the two sides of it live on different threads.
-  // Roster membership and seats are here; who is alive and which daemons hold a
-  // socket are on the main thread. So one side has to cross, and the choice of
-  // WHICH is the whole design.
+  // Roster membership is here; which agents have positive daemon/process
+  // evidence is on the main thread. So one side has to cross.
   //
   // Shipping the roster OUT to be counted was measured and rejected: p99
   // 63/75/120 ms at 1000/5000/9000 rows, on every agents-delta broadcast, which
@@ -3076,8 +3075,8 @@ export class FleetStore {
   //
   // THESE ARE PARAMETERS. THEY ARE NOT STORED.
   //
-  // Nothing on this instance remembers liveEvidenceIds or connectedDaemonKeys
-  // after this call returns, and nothing else may read them. That is deliberate
+  // Nothing on this instance remembers liveEvidenceIds after this call returns,
+  // and nothing else may read them. That is deliberate
   // and it is the condition on which this design was accepted: a retained copy
   // of live state is the thing that goes stale and reaps working agents, and a
   // set sitting on the store as a field would look authoritative enough that the
@@ -3088,14 +3087,13 @@ export class FleetStore {
   // the same inputs — it is not a cache and not an approximation. `human` vs
   // `human-away` is derived from last_seen against nowMs on EVERY call, which is
   // why no timer is needed to keep the count honest as a human goes idle.
-  getAliveAgentCounts({ liveEvidenceIds = [], connectedDaemonKeys = [], nowMs = Date.now() } = {}) {
+  getAliveAgentCounts({ liveEvidenceIds = [], nowMs = Date.now() } = {}) {
     this._ensureAgentRegistryLoaded();
     const alive = liveEvidenceIds instanceof Set ? liveEvidenceIds : new Set(liveEvidenceIds);
-    const daemons = connectedDaemonKeys instanceof Set ? connectedDaemonKeys : new Set(connectedDaemonKeys);
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (this._countsAsAwake(agent, alive, daemons, nowMs)) totals.awake += 1;
+      if (this._countsAsAwake(agent, alive, nowMs)) totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;
@@ -3104,10 +3102,10 @@ export class FleetStore {
   // fleetRosterCategory(agent) === 'awake', with the projection inlined against
   // the row's own fields. Mirrors projectAgentRuntimeStatus branch for branch:
   // dead, then human by heartbeat recency, then shell, then positive evidence
-  // over a routable seat. Anything else is hibernating.
+  // from the daemon. Anything else is hibernating.
   //
   // Note what this does NOT consult: agent.runtime_status. It computes from
-  // dead / human / last_seen / evidence / seat directly, so the `unknown` that
+  // dead / human / last_seen / evidence directly, so the `unknown` that
   // runtimeStatusForAgent now returns for an unstamped row can never reach the
   // count and be silently bucketed as hibernating. That was the fabrication
   // coming back through a different door, and this shape is immune to it by
@@ -3117,16 +3115,14 @@ export class FleetStore {
   // from the roster this iterates. It costs one property read, and it keeps this
   // predicate a faithful mirror of the projection rather than something that is
   // only correct given a filter applied somewhere else.
-  _countsAsAwake(agent, aliveIds, connectedDaemonKeys, nowMs) {
+  _countsAsAwake(agent, aliveIds, nowMs) {
     if (!agent || agent.dead) return false;
     if (agent.human) {
       if (!agent.last_seen) return false;
       return (nowMs - new Date(agent.last_seen).getTime()) < HUMAN_HEARTBEAT_TTL_MS;
     }
     if (agent.metadata?.shell) return false;
-    if (!aliveIds.has(agent.id)) return false;
-    if (!agent.seat_present || !agent.seat_daemon_key || !agent.seat_terminal_capability) return false;
-    return connectedDaemonKeys.has(agent.seat_daemon_key);
+    return aliveIds.has(agent.id);
   }
 
   removeAgent(id) {
