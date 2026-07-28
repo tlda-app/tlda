@@ -4137,7 +4137,7 @@ Usage:
 Permission profiles (from daemon.yaml):
 ${daemonProfileHelpBlock()}
 
-mint starts a FRESH agent; enroll adopts an already-running external session (kind
+mint starts a FRESH agent; enlist adopts an already-running external session (kind
 required); wake brings back an existing hibernating agent. All are local-operator gated
 by machine access, and write the child grant to the daemon ledger.
 --permissions names one of the profiles above; without it, fresh uses the configured default and wake restores the durable grant.
