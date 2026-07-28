@@ -1768,7 +1768,7 @@ function inboxTaskSummary(task) {
   const nativeSystem = task.metadata?.native_system || task.metadata?.native?.system || null;
   const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
   const lines = [
-    `[task:${task.id}] ${task.description || '(untitled task)'}`,
+    `[${task.id}] ${task.description || '(untitled task)'}`,
     `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
   ];
   if (task.metadata?.native) lines.push(`Native task in ${nativeLabel || 'native harness'}`);
