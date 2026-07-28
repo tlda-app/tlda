@@ -21,6 +21,44 @@
 // `reason` cannot substitute for `established`: 'error' and 'close' both fire for
 // a socket that died mid-handshake, which is exactly what a booting server does.
 // That is why case 2 and 3 below exist.
+//
+// ---------------------------------------------------------------------------
+// IF YOU ARE CONSOLIDATING THE TRANSPORT LAYER, READ THIS FIRST.
+//
+// This bug was CREATED by a consolidation, and the same shape will recreate it.
+//
+// Before `516268e2e` (2026-05-22, "extract shared config, HTTP client,
+// WebSocket, and build decision modules") the daemon held three handlers with
+// three different behaviours:
+//
+//     ws.on('close')       -> teardownWatchers(); scheduleReconnect()
+//     ws.on('error')       -> scheduleReconnect()      // no teardown
+//     WebSocket ctor throw -> scheduleReconnect()      // no teardown
+//
+// The extraction replaced them with `ResilientWS({ onClose: teardownWatchers })`.
+// `_cleanup` fires `_onClose` from both the close and error paths, so teardown
+// silently widened to paths that had never triggered it. No commit message says
+// that was intended. It stayed wrong for two months.
+//
+// The information did not live in a variable. It lived in the SHAPE of the code
+// -- three handlers, three behaviours -- and collapsing them into one callback
+// plus a `reason` string destroyed it. A reason string cannot carry the
+// distinction, because 'error' and 'close' each occur both before and after
+// OPEN.
+//
+// So the rule for any future transport library: an outcome channel that is only
+// a reason string will lose this again, and by then nobody will remember why.
+// Whatever replaces ResilientWS must keep a first-class answer to
+// "was a connection ever established?" -- and consumers must be able to gate on
+// it, because the cost of getting it wrong is a fleet that un-addresses itself
+// for the length of a cold start.
+//
+// The fleet design (scratch/fleet-design-2026-07-28.md, confirmed by Skip)
+// states the general form: nothing is removed by absence, silence, a missed
+// heartbeat, or a connection dropping. Removal is always an explicit operation.
+// A consolidation that silently converts "the connection dropped" into "this
+// thing is gone" is precisely what that rule exists to prevent.
+// ---------------------------------------------------------------------------
 
 import fs from 'fs'
 import path from 'path'
