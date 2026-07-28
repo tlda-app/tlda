@@ -102,6 +102,7 @@ import {
 } from '../daemon/jsonl-local-bindings.mjs'
 import { createMachineRpc } from '../daemon/machine-rpc.mjs'
 import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
+import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
 import { createBackingFiles } from '../daemon/backing-files.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
@@ -1045,8 +1046,13 @@ const machineRpc = createMachineRpc({
   getPid: () => process.pid,
   executionDbPath: path.join(CONFIG_DIR, 'daemon-rpc-executions.sqlite'),
 })
+const resolveAgentRoute = createAgentRouteResolver({
+  permissionLedger,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+})
 
 machineRpc.register({
+  'resolve-agent-route': resolveAgentRoute,
   ...terminalRpc.handlers,
   'kick': rpcKick,
   ...agentLauncher.handlers,
