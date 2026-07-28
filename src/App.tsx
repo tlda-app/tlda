@@ -8,6 +8,7 @@ import { IdentityPicker } from './IdentityPicker'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
+import { useFleetTheme } from './hooks/useFleetTheme'
 import './App.css'
 import './themes.css'
 
@@ -147,6 +148,7 @@ function parseInitialCamera(): { x: number; y: number; z: number; page?: string 
 function App() {
   const [state, setState] = useState<State | null>(null)
   const [initialCamera] = useState(parseInitialCamera)
+  const isDark = useFleetTheme()
 
   // The browser's back button does not drive this app — see AGENTS.md
   // "Project as world". It used to reload the whole viewer on popstate, which
@@ -417,7 +419,7 @@ function App() {
       return (
         <div className="App">
           <IdentityPicker />
-          <DocumentPicker manifest={state.manifest} onSelect={(key, config) => {
+          <DocumentPicker isDark={isDark} manifest={state.manifest} onSelect={(key, config) => {
             const newUrl = new URL(window.location.href)
             newUrl.searchParams.set('project', key)
             // replaceState, not pushState: the address bar keeps naming the
@@ -477,7 +479,8 @@ function relativeTime(iso: string | undefined): string {
 
 interface ArchivedProject { name: string; title?: string }
 
-function DocumentPicker({ manifest, onSelect }: {
+function DocumentPicker({ isDark, manifest, onSelect }: {
+  isDark: boolean
   manifest: Record<string, DocConfig>
   onSelect: (key: string, config: DocConfig) => void
 }) {
@@ -647,7 +650,7 @@ function DocumentPicker({ manifest, onSelect }: {
   }
 
   return (
-    <div className="PickerScreen">
+    <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
       <input
         className="picker-search"
         type="text"

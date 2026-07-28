@@ -365,6 +365,94 @@ body.tlda-pan-mode * {
   align-self: center;
 }
 
+.PickerScreen.tl-theme__dark {
+  background: var(--tl-color-background);
+  color: var(--tl-color-text-1);
+}
+
+.tl-theme__dark .project-index-axis {
+  border-bottom-color: var(--tl-color-divider);
+  color: var(--tl-color-text-3);
+}
+
+.tl-theme__dark .project-index-row {
+  border-bottom-color: var(--tl-color-divider);
+}
+
+.tl-theme__dark .project-index-row:hover,
+.tl-theme__dark .picker-table tbody tr:hover {
+  background: var(--tl-color-muted-2);
+}
+
+.tl-theme__dark .project-index-loading,
+.tl-theme__dark .project-index-history-loading,
+.tl-theme__dark .picker-date,
+.tl-theme__dark .picker-archived-header,
+.tl-theme__dark .picker-table-archived td {
+  color: var(--tl-color-text-3);
+}
+
+.tl-theme__dark .project-index-loading-error,
+.tl-theme__dark .project-index-history-status,
+.tl-theme__dark .picker-error-hint {
+  color: var(--tl-color-danger);
+}
+
+.tl-theme__dark .project-index-row:hover .project-index-name a,
+.tl-theme__dark .picker-table tbody tr:hover a {
+  color: var(--tl-color-primary);
+}
+
+.tl-theme__dark .project-index-spacetime .spacetime-field,
+.tl-theme__dark .picker-table thead th,
+.tl-theme__dark .picker-table td {
+  border-color: var(--tl-color-divider);
+}
+
+.tl-theme__dark .picker-row-broken,
+.tl-theme__dark .picker-row-broken:hover {
+  background: color-mix(in srgb, var(--tl-color-danger) 10%, var(--tl-color-background)) !important;
+}
+
+.tl-theme__dark .picker-health-dot {
+  background: var(--tl-color-danger);
+}
+
+.tl-theme__dark .archive-btn {
+  color: var(--tl-color-text-disabled);
+}
+
+.tl-theme__dark .archive-btn:hover {
+  color: var(--tl-color-danger);
+  background: var(--tl-color-muted-1);
+}
+
+.tl-theme__dark .picker-search {
+  border-color: var(--tl-color-divider);
+  background: var(--tl-color-panel);
+  color: var(--tl-color-text-1);
+}
+
+.tl-theme__dark .picker-search::placeholder {
+  color: var(--tl-color-text-disabled);
+}
+
+.tl-theme__dark .picker-search:focus {
+  border-color: var(--tl-color-primary);
+  box-shadow: 0 0 0 2px var(--tl-color-selection-fill);
+}
+
+.tl-theme__dark .restore-btn {
+  border-color: var(--tl-color-divider);
+  color: var(--tl-color-text-3);
+}
+
+.tl-theme__dark .restore-btn:hover {
+  border-color: var(--tl-color-primary);
+  background: var(--tl-color-muted-1);
+  color: var(--tl-color-primary);
+}
+
 .picker-table {
   width: 100%;
   max-width: 640px;

@@ -9,7 +9,7 @@
  * When scheme='system', re-applies on prefers-color-scheme change.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 export type ThemeFamily = 'fog' | 'warm' | 'lilac' | null
 export type ColorScheme = 'dark' | 'light' | 'system'
@@ -76,12 +76,20 @@ export function applyThemeClass(family: ThemeFamily, scheme: ColorScheme) {
 }
 
 export function useFleetTheme() {
+  const [isDark, setIsDark] = useState(() => resolveIsDark(getStoredScheme()))
+
   useEffect(() => {
-    applyThemeClass(getStoredFamily(), getStoredScheme())
+    const applyStoredTheme = () => {
+      const scheme = getStoredScheme()
+      applyThemeClass(getStoredFamily(), scheme)
+      setIsDark(resolveIsDark(scheme))
+    }
+    applyStoredTheme()
 
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = () => applyThemeClass(getStoredFamily(), getStoredScheme())
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
+    mq.addEventListener('change', applyStoredTheme)
+    return () => mq.removeEventListener('change', applyStoredTheme)
   }, [])
+
+  return isDark
 }
