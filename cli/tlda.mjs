@@ -215,7 +215,7 @@ const COMMAND_HELP = {
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   config:  'tlda config [init | apply | mcp-setup | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
 }
@@ -5364,9 +5364,14 @@ async function cmdDoctorYolo() {
   const cwd = resolve(getFlag('cwd') || process.cwd())
   const tmuxSocket = process.env.TMUX_SOCKET || null
   const dryRun = hasFlag('dry-run')
-  const modelAlias = String(getFlag('model') || '')
-  const kind = String(getFlag('kind', 'codex') || 'codex').trim().toLowerCase()
-  if (!modelAlias) throw new Error('tlda doctor yolo requires --model <provider-model>')
+  const requestedModel = String(getFlag('model') || '').trim()
+  const requestedKind = String(getFlag('kind') || '').trim().toLowerCase()
+  const config = withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
+  const defaultAlias = config.modelCatalog?.default
+  const defaultSpec = defaultAlias ? config.modelCatalog?.values?.[defaultAlias] : null
+  const modelAlias = requestedModel || String(defaultSpec?.id || '').trim()
+  const kind = requestedKind || (requestedModel ? 'codex' : String(defaultSpec?.harness || '').trim().toLowerCase())
+  if (!modelAlias || !kind) throw new Error('tlda doctor yolo has no configured default model; pass --model <provider-model> [--kind <harness>]')
 
   if (dryRun) {
     console.log('tlda doctor yolo dry run')

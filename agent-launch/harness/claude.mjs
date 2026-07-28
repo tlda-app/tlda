@@ -94,10 +94,6 @@ export function buildCmd({
   if (configName) parts.push(`TLDA_ENV=${sq(configName)}`)
   if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
   for (const [key, value] of passthroughConfigEnv(env)) parts.push(`${key}=${sq(value)}`)
-  const fleetOauthToken = path.join(env.HOME || process.env.HOME || '', '.claude', '.fleet-oauth-token')
-  if (fs.existsSync(fleetOauthToken)) {
-    parts.push(`CLAUDE_CODE_OAUTH_TOKEN=$(cat ${sq(fleetOauthToken)})`)
-  }
   const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
   if (dnsAlias && dnsAliasPreload) {
     parts.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)
