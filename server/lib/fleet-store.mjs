@@ -780,24 +780,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agent_cwd_segments_segment
         ON agent_cwd_segments(segment, source, agent_id);
     `);
-    const hasCurrentSeats = this.db.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_current_seats'"
-    ).get();
-    if (hasCurrentSeats) {
-      this.db.exec(`
-        INSERT OR REPLACE INTO agent_daemon_routes (agent_id, daemon_key)
-        SELECT agent_id, daemon_key FROM agent_current_seats
-        WHERE daemon_key IS NOT NULL AND daemon_key != '';
-      `);
-    }
-    const routeMigrationAgentCols = this.db.prepare('PRAGMA table_info(agents)').all();
-    if (routeMigrationAgentCols.some(c => c.name === 'daemon_key')) {
-      this.db.exec(`
-        INSERT OR IGNORE INTO agent_daemon_routes (agent_id, daemon_key)
-        SELECT id, daemon_key FROM agents
-        WHERE daemon_key IS NOT NULL AND daemon_key != '';
-      `);
-    }
     this.db.exec(`
       DROP TABLE IF EXISTS agent_seat_binding_obligations;
       DROP TABLE IF EXISTS agent_current_seats;
