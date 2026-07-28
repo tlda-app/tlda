@@ -801,6 +801,66 @@ export class PermissionLedger {
     return updated
   }
 
+  moveAddressSync(id, {
+    fromMachineId,
+    fromEnvName,
+    toMachineId,
+    toEnvName,
+    lastSeen = nowIso(),
+  } = {}) {
+    const key = String(id || '').trim()
+    const sourceMachine = String(fromMachineId || '').trim()
+    const sourceEnv = String(fromEnvName || '').trim()
+    const targetMachine = String(toMachineId || '').trim()
+    const targetEnv = String(toEnvName || '').trim()
+    if (!key) throw new Error('cannot move daemon address without fleet id')
+    if (!sourceMachine || !sourceEnv || !targetMachine || !targetEnv) {
+      throw new Error('daemon address move requires complete source and target addresses')
+    }
+    const move = this.db.transaction(() => {
+      const existing = this.get(key)
+      if (!existing) throw new Error(`cannot move missing daemon ledger entry ${key}`)
+      const currentMachine = String(existing.machineId || '').trim()
+      const currentEnv = String(existing.envName || '').trim()
+      if (currentMachine === targetMachine && currentEnv === targetEnv) {
+        return { row: existing, alreadyMoved: true }
+      }
+      if (currentMachine !== sourceMachine || currentEnv !== sourceEnv) {
+        throw new Error(
+          `daemon ledger address conflict for ${key}: current=${currentMachine || '?'}:${currentEnv || '?'} `
+          + `expected=${sourceMachine}:${sourceEnv}`,
+        )
+      }
+      const changed = this.db.prepare(`
+        UPDATE permission_grants SET
+          machine_id = ?,
+          env_name = ?,
+          daemon_key = ?,
+          terminal_capability = NULL,
+          last_seen = ?
+        WHERE id = ? AND machine_id = ? AND env_name = ?
+      `).run(
+        targetMachine,
+        targetEnv,
+        `${targetMachine}:${targetEnv}`,
+        lastSeen,
+        key,
+        sourceMachine,
+        sourceEnv,
+      )
+      if (changed.changes !== 1) {
+        throw new Error(`daemon ledger address move for ${key} did not land`)
+      }
+      return { row: this.get(key), alreadyMoved: false }
+    })
+    const existing = this.get(key)
+    const result = move()
+    if (processBindingSignature(result.row) !== processBindingSignature(existing)) {
+      this.notifyProcessBindingChange({ id: key, row: result.row, previous: existing })
+    }
+    return result
+  }
+
   rotateTerminalCapabilitySync(id) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot mint terminal capability without fleet id')

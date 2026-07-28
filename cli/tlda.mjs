@@ -4203,14 +4203,25 @@ async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', config
   }
 }
 
-async function clearLocalSessionBinding(agentId, { configDir = CONFIG_DIR } = {}) {
+async function moveLocalAgentAddress(agentId, {
+  fromMachineId,
+  fromEnvName,
+  toMachineId,
+  toEnvName,
+  configDir = CONFIG_DIR,
+} = {}) {
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
   const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
   try {
     if (!ledger.get(agentId)) {
-      throw new Error(`Agent ${agentId} has no daemon permission ledger entry; refusing to clear its local session binding`)
+      throw new Error(`Agent ${agentId} has no daemon permission ledger entry; refusing to move its local address`)
     }
-    ledger.clearSessionSync(agentId)
+    return ledger.moveAddressSync(agentId, {
+      fromMachineId,
+      fromEnvName,
+      toMachineId,
+      toEnvName,
+    })
   } finally {
     await ledger.close()
   }
@@ -4253,7 +4264,6 @@ async function moveAgentToEnvironment({
   targetEnv = null,
   sourceEnv = null,
   dryRun = hasFlag('dry-run'),
-  allowAlready = true,
   log = console,
   logPrefix = '',
 } = {}) {
@@ -4285,12 +4295,8 @@ async function moveAgentToEnvironment({
   if (targetMachine !== sourceMachine) {
     throw new Error('cross-box agent move is not wired to the durable remote wake path yet; refusing to report a move without target-seat readback')
   }
-  if (agent.env_name === targetEnv) {
-    if (!allowAlready) throw new Error(`Agent ${agent.id} is already on ${describeAgentAddress(targetMachine, targetEnv)}.`)
-    log.log(`${logPrefix}${name} (${agent.id}) already on ${describeAgentAddress(targetMachine, targetEnv)}.`)
-    return { ok: true, already: true, agent, name }
-  }
-  if (agent.env_name !== effectiveSourceEnv) {
+  const alreadyOnTarget = agent.env_name === targetEnv
+  if (!alreadyOnTarget && agent.env_name !== effectiveSourceEnv) {
     throw new Error(`Agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}, not expected source ${describeAgentAddress(sourceMachine, effectiveSourceEnv)}.`)
   }
 
@@ -4300,18 +4306,28 @@ async function moveAgentToEnvironment({
   const targetSocket = fleetDaemonSocketForConfig(targetEnv)
   const targetServer = getFleetServerUrl(targetEnv)
   if (dryRun) {
-    log.log(`${logPrefix}[dry-run] would move ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
+    log.log(`${logPrefix}[dry-run] would ${alreadyOnTarget ? 'repair' : 'move'} ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
     log.log(`${logPrefix}  mode: same-box durable wake`)
-    log.log(`${logPrefix}  hibernate: ${hibernateName}`)
+    if (!alreadyOnTarget) log.log(`${logPrefix}  hibernate: ${hibernateName}`)
     log.log(`${logPrefix}  wake kind: ${meta.kind}`)
     log.log(`${logPrefix}  wake socket: ${targetSocket}`)
     return { ok: true, dryRun: true, agent, name }
   }
 
-  log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
-  const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
-  if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
-  await clearLocalSessionBinding(agent.id)
+  const wakeGrant = await ensureAgentWakeGrant(agent, meta)
+  if (!alreadyOnTarget) {
+    log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
+    const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
+    if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
+  } else {
+    log.log(`${logPrefix}Repairing ${name} (${agent.id}) on ${describeAgentAddress(targetMachine, targetEnv)}`)
+  }
+  await moveLocalAgentAddress(agent.id, {
+    fromMachineId: sourceMachine,
+    fromEnvName: effectiveSourceEnv,
+    toMachineId: targetMachine,
+    toEnvName: targetEnv,
+  })
   // Environments are sealed databases: the agent's identity row lives on the
   // SOURCE server and does not exist on the target. Without a shell there,
   // login() is rejected ("No live shell for agent …") and the agent comes up
@@ -4326,7 +4342,6 @@ async function moveAgentToEnvironment({
     envName: targetEnv,
     api: targetServer,
   })
-  const wakeGrant = await ensureAgentWakeGrant(agent, meta)
   const wake = await callLocalDaemonLifecycle('wake', { fleet_id: agent.id, ...wakeGrant }, { socketPath: targetSocket, timeoutMs: 120000 })
   if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
   log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(targetMachine, targetEnv)}.`)
@@ -4373,7 +4388,7 @@ async function cmdAgentMove() {
     process.exit(1)
   }
   await assertNotAgentContext()
-  await moveAgentToEnvironment({ agentQuery, rawTarget, allowAlready: false })
+  await moveAgentToEnvironment({ agentQuery, rawTarget })
 }
 
 async function cmdAgentPermissions() {
