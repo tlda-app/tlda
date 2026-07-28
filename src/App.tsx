@@ -76,6 +76,9 @@ interface FleetConfigResponse {
 
 type ErrorType = 'not-found' | 'auth' | 'generic'
 
+const HISTORY_INDEX_BATCH_SIZE = 500
+const HISTORY_CHANGELOG_BATCH_SIZE = 50
+
 type State =
   | { phase: 'loading'; message: string; roomId: string }
   | { phase: 'error'; message: string; errorType?: ErrorType }
@@ -545,19 +548,33 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     if (!indexProjectKey) return
     const projectNames = indexProjectKey.split('\n')
     const controller = new AbortController()
-    fetch(`${ASSET_BASE}/api/projects/history/shadow/index`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projects: projectNames }),
-      signal: controller.signal,
-    })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+    async function fetchHistoryIndex() {
+      const batches: string[][] = []
+      for (let i = 0; i < projectNames.length; i += HISTORY_INDEX_BATCH_SIZE) {
+        batches.push(projectNames.slice(i, i + HISTORY_INDEX_BATCH_SIZE))
+      }
+      const parts = await Promise.all(batches.map(async batch => {
+        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/index`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projects: batch }),
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.json()
+      }))
+      return parts.reduce((acc, data) => {
+        const oldest = Number.isFinite(data.oldest) ? data.oldest : null
+        return {
+          projects: { ...acc.projects, ...(data.projects || {}) },
+          oldest: oldest == null ? acc.oldest : (acc.oldest == null ? oldest : Math.min(acc.oldest, oldest)),
+        }
+      }, { projects: {}, oldest: null } as ProjectHistoryIndex)
+    }
+    fetchHistoryIndex()
       .then(data => {
         setHistoryError(null)
-        setHistoryIndex({
-          projects: data.projects || {},
-          oldest: Number.isFinite(data.oldest) ? data.oldest : null,
-        })
+        setHistoryIndex(data)
       })
       .catch(error => {
         if (error.name !== 'AbortError') {
@@ -586,15 +603,26 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .filter(name => !requestedHistoriesRef.current.has(name))
     if (projectNames.length === 0) return
     for (const name of projectNames) requestedHistoriesRef.current.add(name)
-    fetch(`${ASSET_BASE}/api/projects/history/shadow/changelog/batch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projects: projectNames }),
-    })
-      .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+    async function fetchChangelogs() {
+      const batches: string[][] = []
+      for (let i = 0; i < projectNames.length; i += HISTORY_CHANGELOG_BATCH_SIZE) {
+        batches.push(projectNames.slice(i, i + HISTORY_CHANGELOG_BATCH_SIZE))
+      }
+      const parts = await Promise.all(batches.map(async batch => {
+        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/changelog/batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projects: batch }),
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.json()
+      }))
+      return parts.reduce((projects, data) => ({ ...projects, ...(data.projects || {}) }), {} as Record<string, ProjectChangelog>)
+    }
+    fetchChangelogs()
       .then(data => {
         setHistoryError(null)
-        setChangelogs(current => ({ ...current, ...(data.projects || {}) }))
+        setChangelogs(current => ({ ...current, ...data }))
       })
       .catch(error => {
         for (const name of projectNames) requestedHistoriesRef.current.delete(name)

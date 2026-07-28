@@ -213,13 +213,12 @@ body.tlda-pan-mode * {
 
 .project-index {
   width: 100%;
-  min-width: 680px;
 }
 
 .project-index-axis,
 .project-index-row {
   display: grid;
-  grid-template-columns: 200px minmax(420px, 1fr) 36px;
+  grid-template-columns: minmax(160px, 200px) minmax(0, 1fr) 36px;
   column-gap: 14px;
 }
 
@@ -282,6 +281,7 @@ body.tlda-pan-mode * {
 
 .project-index-tools {
   display: flex;
+  flex-wrap: wrap;
   gap: 14px;
   margin: 16px 10px 0;
   color: #64748b;
@@ -380,6 +380,55 @@ body.tlda-pan-mode * {
 
 .project-index-row .picker-archive {
   align-self: center;
+}
+
+@media (max-width: 520px) {
+  .PickerScreen {
+    padding: 1rem;
+  }
+
+  .project-index-axis,
+  .project-index-row {
+    grid-template-columns: minmax(0, 1fr) 32px;
+    column-gap: 8px;
+  }
+
+  .project-index-axis {
+    height: 28px;
+  }
+
+  .project-index-axis-ticks {
+    display: none;
+  }
+
+  .project-index-row {
+    min-height: 126px;
+  }
+
+  .project-index-name {
+    padding: 10px 8px 6px;
+  }
+
+  .project-index-history {
+    grid-column: 1 / -1;
+    min-height: 64px;
+    padding: 0 8px 10px;
+  }
+
+  .project-index-history-loading,
+  .project-index-history-status {
+    left: 8px;
+  }
+
+  .project-index-row .picker-archive {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .project-index-tools {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
 }
 
 .PickerScreen.tl-theme__dark {
