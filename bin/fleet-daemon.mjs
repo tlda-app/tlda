@@ -1242,7 +1242,18 @@ class PermanentPendingSeatBindingError extends Error {
   }
 }
 
-function teardownWatchers({ jsonl = true } = {}) {
+function teardownWatchers({ jsonl = true, reason = 'unspecified' } = {}) {
+  // This path emitted nothing, so "did teardown actually run?" was unanswerable
+  // from the log -- grepping for it returned zero hits from a path that
+  // definitely runs, which reads identically to "it never happened."
+  //
+  // That cost a real answer on 2026-07-28: across a live deploy, whether an
+  // established-connection loss still tore down could only be INFERRED from the
+  // code, while the never-established case was directly measurable (8 of 10
+  // onClose events). Same class as slowquery.log wrapping .all()/.get() and
+  // never .run() -- an instrument structurally blind to the thing it is aimed
+  // at. `log.info` so it lands with no flag to set.
+  log.info(`teardown watchers (${reason})${jsonl ? '' : ' [jsonl retained]'}`)
   if (jsonl) {
     jsonlIngestor.teardown()
     _lastSessionWatcherRosterSig = ''
@@ -1366,7 +1377,7 @@ function connect() {
       _serverReady = false
       agentLiveness.stop()
       agentLiveness.clearTransientMissingState()
-      teardownWatchers()
+      teardownWatchers({ reason: `connection-lost:${reason || 'unknown'}` })
     },
   })
   _rws.connect()
@@ -1521,7 +1532,7 @@ function handleServerMessage(msg, wsAttemptId) {
     // No replacement boot_id = server restarted and lost our connection.
     // Reconnect — the daemon should survive server restarts.
     log.warn(`evicted (${msg.reason || 'unknown'}) — reconnecting`)
-    teardownWatchers()
+    teardownWatchers({ reason: 'evicted-reconnecting' })
     // reconnect() drops the current socket and re-arms backoff WITHOUT marking
     // the client permanently closed. The old code called a never-defined
     // scheduleReconnect() (→ uncaught ReferenceError crashing the evicted daemon)
@@ -1595,7 +1606,7 @@ function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   jsonlIngestor.shutdown()
-  teardownWatchers({ jsonl: false })
+  teardownWatchers({ jsonl: false, reason: 'shutdown' })
   unlinkPidfileIfOwnPid(PID_FILE, process.pid)
   _rws?.close()
   process.exit(0)

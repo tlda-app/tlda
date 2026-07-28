@@ -143,8 +143,13 @@ if (start === -1) {
   // Anything that asserts something about a CONNECTION. The counter is here
   // because recording a disconnect for a socket that never opened is the same
   // false claim as tearing down state it never held.
+  // Match the call, not one spelling of its arguments. `teardownWatchers()`
+  // silently stopped matching the moment the call gained a `reason` argument --
+  // indexOf returned -1, the check skipped, and the guard reported OK. A guard
+  // that goes blind looks exactly like a guard that passes, which is the same
+  // failure this whole file exists to prevent.
   const TEARDOWN = [
-    'teardownWatchers()',
+    'teardownWatchers(',
     'agentLiveness.stop()',
     '_serverReady = false',
     'ACTIVITY_DELIVERY_STAGES.DAEMON_WS_DISCONNECTED',
@@ -154,7 +159,14 @@ if (start === -1) {
   } else {
     for (const call of TEARDOWN) {
       const at = body.indexOf(call)
-      if (at !== -1 && at < gateAt) {
+      if (at === -1) {
+        // Not "nothing to check" -- either the call was renamed (this guard is
+        // now blind to it) or it was removed (the behaviour changed and nobody
+        // said so). Both need a human, and silence would hide both.
+        failures.push(`bin/fleet-daemon.mjs onClose: \`${call}\` not found — it was renamed (this guard is blind to it) or removed (behaviour changed silently). Update this list deliberately.`)
+        continue
+      }
+      if (at < gateAt) {
         failures.push(`bin/fleet-daemon.mjs onClose: \`${call}\` runs BEFORE the established check — reachable from a failed connect attempt`)
       }
     }
