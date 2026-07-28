@@ -2559,18 +2559,11 @@ export async function handleFleetTool(name, args) {
       if (bareId !== AGENT_ID) recipients.push(bareId);
     } else {
       try {
-        agents = (await mcpFleetTransport.ephemeral('store-agents')) || [];
-        if (agents.length === 0) {
-          rosterUnavailable = true;
-        } else {
-          for (const a of agents) {
-            if (a.id === AGENT_ID) continue;
-            const labels = agentSetLabelsForChat(a);
-            if (evalExpr(filterAst, labels)) {
-              recipients.push(a.id);
-            }
-          }
-        }
+        const resolved = await mcpFleetTransport.ephemeral('resolve-chat-recipients', {
+          to: args.to,
+          from: AGENT_ID,
+        });
+        recipients = resolved?.recipients || [];
       } catch (e) {
         rosterUnavailable = true;
       }
@@ -2621,11 +2614,13 @@ export async function handleFleetTool(name, args) {
       // Upload the shared file itself, not only its images, so its chip opens.
       ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, activeFleetServerUrl()));
     } else {
-      if (!agents.length) {
+      if (!agents.length && recipients.length) {
         try {
-          agents = (await mcpFleetTransport.ephemeral('store-agents')) || [];
+          agents = (await mcpFleetTransport.ephemeral('store-agents-by-ids', {
+            ids: [AGENT_ID, ...recipients],
+          })) || [];
         } catch (e) {
-          process.stderr.write(`[fleet] store-agents fetch failed for local-path preservation: ${e.message}\n`);
+          process.stderr.write(`[fleet] bounded agent fetch failed for local-path preservation: ${e.message}\n`);
         }
       }
       const preserveBarePath = barePathPreserverForRecipients(agents, recipients, agentCwd);

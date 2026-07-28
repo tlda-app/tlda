@@ -5981,8 +5981,30 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'store-agents') {
-    reply(await fleetStore.getAliveAgents())
+  if (type === 'resolve-chat-recipients') {
+    let filterAst
+    try {
+      filterAst = parseFilter(msg.to)
+    } catch (e) {
+      error(`bad filter "${msg.to}": ${e.message}`)
+      return
+    }
+    reply({
+      recipients: await fleetStore.resolveChatRecipients(filterAst, {
+        from: msg.from || null,
+        filter: msg.to || '',
+      }),
+    })
+    return
+  }
+
+  if (type === 'store-agents-by-ids') {
+    const ids = [...new Set((msg.ids || []).filter(id => typeof id === 'string' && id))]
+    if (ids.length > 20) {
+      error('store-agents-by-ids accepts at most 20 ids')
+      return
+    }
+    reply(await fleetStore.getAgentsByIds(ids))
     return
   }
 
