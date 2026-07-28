@@ -4765,7 +4765,6 @@ const fleetWss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: { threshold: 1024 },
 })
-const daemonWss = new WebSocketServer({ noServer: true })
 const terminalWss = new WebSocketServer({ noServer: true })
 const voiceWss = new WebSocketServer({ noServer: true })
 
@@ -5065,7 +5064,7 @@ server.on('upgrade', async (req, socket, head) => {
   if (url.pathname === '/ws/fleet-daemon') {
     const remoteAddr = req.socket.remoteAddress
     const remotePort = req.socket.remotePort
-    daemonWss.handleUpgrade(req, socket, head, (ws) => {
+    fleetWss.handleUpgrade(req, socket, head, (ws) => {
       ws._bootId = null
       ws._machineId = null
       ws._remoteAddr = remoteAddr  // captured so reaper can route kill RPC by chromium's source IP
