@@ -3601,7 +3601,8 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 
 /* A subtle clickable character, not a button — like the chat field's inline
    affordances. */
-.fleet-chat-shape .fleet-terminal-hover-ctrl-c {
+.fleet-chat-shape .fleet-terminal-hover-ctrl-c,
+.fleet-chat-shape .fleet-terminal-hover-jump-bottom {
   position: absolute;
   right: 12px;
   top: 7px;
@@ -3614,6 +3615,13 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: 9px;
   line-height: 1.4;
   transition: color 0.15s;
+}
+
+/* Sits immediately left of ^C, sharing its weight and colour. It has no :hover
+   rule on purpose — ^C's red reads as destructive, and inventing a second
+   colour here would be an appearance decision nobody asked for. */
+.fleet-chat-shape .fleet-terminal-hover-jump-bottom {
+  right: 30px;
 }
 
 .fleet-chat-shape .fleet-terminal-hover-ctrl-c:hover {

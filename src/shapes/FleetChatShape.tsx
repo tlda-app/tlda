@@ -32,7 +32,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, getLastEventId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
 // surviving a remount is informative — the viewport-driven unmount at the bottom
 // of this file tears down every subscription, and a remount whose tail goes
@@ -751,6 +751,20 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     refreshHistory()
   }
 
+  // Jump the terminal to its newest output. This deliberately does NOT go
+  // through sendInput(): that writes raw bytes to the attached PTY, and the
+  // scrollback being jumped out of belongs to tmux, not to the program inside
+  // it. Ctrl+End has to arrive as a tmux key, which is what send-key does.
+  const jumpToBottom = () => {
+    sendKey(agentId, 'C-End').then(refreshHistory).catch((e: unknown) => {
+      // A control that silently does nothing is the complaint that started
+      // this, so a failed jump has to be visible in the pane.
+      setStatus('error')
+      const message = e instanceof Error ? e.message : String(e)
+      termRef.current?.write(`\r\nJump to bottom failed: ${message}\r\n`)
+    })
+  }
+
   const shortId = agentId.replace('fleet:', '')
 
   // Make this field the active voice target — dictation flows in, and saying
@@ -919,7 +933,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
               background: 'transparent',
               border: '1px solid rgba(128, 128, 128, 0.15)',
               borderRadius: 4,
-              padding: '3px 26px 3px 18px',
+              padding: '3px 50px 3px 18px',
               fontSize: 11,
               color: 'inherit',
               outline: 'none',
@@ -931,6 +945,13 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
               boxSizing: 'border-box',
             } as any}
           />
+          <button
+            className="fleet-terminal-hover-jump-bottom"
+            title="Send Ctrl+End"
+            onPointerDown={(e) => { stopEventPropagation(e); jumpToBottom() }}
+          >
+            ^End
+          </button>
           <button
             className="fleet-terminal-hover-ctrl-c"
             title="Send Ctrl+C"
