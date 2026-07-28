@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tlda"
 PASSWORD_FILE="$CONFIG_DIR/grafana-admin-password"
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 if [[ ! -s "$PASSWORD_FILE" ]]; then
