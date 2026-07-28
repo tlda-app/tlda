@@ -318,7 +318,6 @@ async function wsIdentityMessage(type, {
     msg.env_name = resolvedEnvName
     if (resolvedMachineId) msg.daemon_key = `${resolvedMachineId}:${resolvedEnvName}`
   }
-  if (sessionId) msg.session_id = sessionId
   const meta = { ...(metadata || {}) }
   if (model) meta.model = model
   if (effort) meta.effort = effort

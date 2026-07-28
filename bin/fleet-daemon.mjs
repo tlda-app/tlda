@@ -117,12 +117,9 @@ import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
-import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
 import { wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
-import { cleanupPendingSeatBinding, completePendingSeatBinding, createPendingSeatBindingManager, reuseExactPendingSeatBinding } from '../agent-launch/pending-seat-binding.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
@@ -335,7 +332,6 @@ let serverProjects = []           // unfiltered project list from this world ser
 let projects = []                 // projects owned by this daemon config
 let _lastSessionWatcherRosterSig = ''
 let jsonlBindingReconciler
-const terminalCapabilitiesRegisteredThisBoot = new Set()
 let terminalRpc
 let activityDeliveryMetricsTimer = null
 let daemonWsConnectedAtMs = null
@@ -414,35 +410,18 @@ function bufferActivity(agentId, evts) {
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
 }
 
-function registerHostedTerminalCapabilities(reason) {
+function registerHostedAgentRoutes() {
   const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
   for (const row of permissionLedger.listProcessBindings()) {
-    if (!row?.id || row.daemonKey !== daemonKey || !row.sessionId || !row.tmuxSession) continue
-    if (!row.sessionKind || !row.model || !row.cwd) continue
+    if (!row?.id || row.daemonKey !== daemonKey) continue
     try {
-      const terminalCapability = terminalCapabilitiesRegisteredThisBoot.has(row.id)
-        ? row.terminalCapability
-        : permissionLedger.rotateTerminalCapabilitySync(row.id)
-      if (!terminalCapability) continue
-      terminalCapabilitiesRegisteredThisBoot.add(row.id)
       sendMsg({
-        type: 'agent-seat',
+        type: 'agent-route',
         agent_id: row.id,
-        session_id: row.sessionId,
-        resume_id: row.sessionId,
-        kind: row.sessionKind,
-        model: row.model,
-        cwd: row.cwd,
-        machine_id: MACHINE_ID,
-        env_name: ACTIVE_ENV,
         daemon_key: daemonKey,
-        terminal_capability: terminalCapability,
-        created_source: 'daemon-terminal-capability-refresh',
-        transition_reason: reason,
       })
     } catch (e) {
-      // Keep registering other hosted seats; this row will retry on the next roster reconciliation.
-      log.warn(`terminal capability registration failed for ${row.id}: ${e.message}`)
+      log.warn(`agent route registration failed for ${row.id}: ${e.message}`)
     }
   }
 }
@@ -676,9 +655,9 @@ terminalRpc = createTerminalRpc({
     }
     return true
   },
-  resolveTerminalCapability: ({ agentId, terminalCapability }) => (
+  resolveTerminalAgent: ({ agentId }) => (
     (() => {
-      const row = permissionLedger.resolveTerminalCapability({ agentId, terminalCapability })
+      const row = permissionLedger.get(agentId)
       return row?.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}` ? row : null
     })()
   ),
@@ -726,7 +705,6 @@ const agentLauncher = createAgentLauncher({
       tmuxSocket: TMUX_SOCKET,
     })
   },
-  persistPendingSeatBinding: payload => daemonApi('POST', '/api/agent-seat-binding-obligation', payload),
 })
 
 const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'))
@@ -740,10 +718,6 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
     permissionGrant: processFact.permission_grant,
     source: createdSource,
   })
-  const terminalCapability = permissionLedger.rotateTerminalCapabilitySync(facts.fleetId)
-  if (!terminalCapability) {
-    throw new Error(`mint binding requires daemon-minted terminal capability for ${facts.fleetId}`)
-  }
   permissionLedger.setSessionSync(facts.fleetId, {
     sessionId: facts.sessionId,
     sessionKind: processFact.harness,
@@ -755,7 +729,6 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
     daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
     cwd: processFact.cwd,
     friendlyName: facts.friendlyName,
-    terminalCapability,
   })
 }
 
@@ -942,105 +915,6 @@ async function rpcMint(params = {}) {
 
 async function rpcWake(params = {}) {
   return wakeMint(params)
-}
-
-const pendingSeatBindings = createPendingSeatBindingManager({
-  watchPath: obligation => obligation.kind === 'codex'
-    ? path.join(os.homedir(), '.codex', 'sessions')
-    : path.join(os.homedir(), '.claude'),
-  tmuxAlive: async tmuxSession => {
-    try { await tmux('has-session', '-t', tmuxSession); return true } catch { return false }
-  },
-  resolveIdentity: obligation => {
-    const resolver = obligation.kind === 'codex'
-      ? resolveLiveCodexSessionIdentity
-      : resolveLiveClaudeSessionIdentity
-    return resolver({
-      agent: {
-        id: obligation.agent_id,
-        session_id: obligation.session_id || null,
-        friendly_name: obligation.friendly_name,
-        cwd: obligation.cwd,
-        registered_at: obligation.created_at,
-      },
-      tmuxSession: obligation.tmux_session,
-      tmuxArgs: TMUX_ARGS,
-      tmuxSocket: TMUX_SOCKET,
-    })
-  },
-  complete: (obligation, identity) => completePendingSeatBinding({
-    obligation,
-    identity,
-    readExistingBinding: async () => {
-      const result = await daemonApi('GET', `/api/agent-seat?agent=${encodeURIComponent(obligation.agent_id)}`).catch(error => {
-        if (error?.status === 404) return null
-        throw error
-      })
-      const seat = result?.seat || null
-      const local = permissionLedger.get(obligation.agent_id)
-      return reuseExactPendingSeatBinding({ obligation, identity, seat, local })
-    },
-    bindSeat: () => bindAgentSeat({
-      ledger: permissionLedger,
-      identity: {
-        agentId: obligation.agent_id,
-        sessionId: identity.sessionId,
-        resumeId: identity.sessionId,
-        kind: obligation.kind,
-        model: identity.model,
-        cwd: obligation.cwd,
-        sessionPath: identity.jsonlPath,
-        friendlyName: obligation.friendly_name,
-      },
-      route: {
-        machineId: obligation.machine_id,
-        envName: obligation.env_name,
-        daemonKey: obligation.daemon_key,
-        tmuxSession: obligation.tmux_session,
-      },
-      submit: payload => daemonApi('POST', '/api/agent-seat', payload),
-      readback: agentId => daemonApi('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
-      requireReadback: true,
-      createdSource: 'cli-pending-exact-process',
-      transitionReason: 'cli-pending-exact-process',
-    }),
-    emitComplete: message => sendMsg(message),
-  }),
-  terminal: (obligation, error) => cleanupPendingSeatBinding({
-    obligation,
-    error,
-    terminateTmux: async tmuxSession => { try { await tmux('kill-session', '-t', tmuxSession) } catch {} },
-    tmuxAlive: async tmuxSession => { try { await tmux('has-session', '-t', tmuxSession); return true } catch { return false } },
-    permissionLedger,
-    openLocalLedger: () => createLocalAgentLedger(path.join(CONFIG_DIR, 'fleet-daemon.db')),
-    retireServerReservation: agentId => daemonApi(
-      'POST',
-      `/api/agent-seat-binding-obligation/${encodeURIComponent(obligation.obligation_id)}/retire`,
-      { agent_id: agentId, daemon_key: obligation.daemon_key },
-    ),
-    emitTerminal: message => sendMsg(message),
-  }),
-  log,
-})
-
-function hydratePendingSeatBindingObligation(obligation) {
-  if (!obligation?.local_agent_id) {
-    throw new PermanentPendingSeatBindingError(`pending seat binding ${obligation?.obligation_id || 'unknown'} is missing local_agent_id`)
-  }
-  const localLedger = createLocalAgentLedger(path.join(CONFIG_DIR, 'fleet-daemon.db'))
-  try {
-    const local = localLedger.get(obligation.local_agent_id)
-    const tmuxSession = local?.process?.tmuxName || null
-    if (!tmuxSession) {
-      throw new PermanentPendingSeatBindingError(`pending seat binding ${obligation.obligation_id} has no local tmux recipe for ${obligation.local_agent_id}`)
-    }
-    return {
-      ...obligation,
-      tmux_session: tmuxSession,
-    }
-  } finally {
-    localLedger.close()
-  }
 }
 
 const machineRpc = createMachineRpc({
@@ -1231,14 +1105,6 @@ function errorServerDaemonOutboxMessage(msg, error) {
   })
 }
 
-class PermanentPendingSeatBindingError extends Error {
-  constructor(message) {
-    super(message)
-    this.name = 'PermanentPendingSeatBindingError'
-    this.permanent = true
-  }
-}
-
 function teardownWatchers({ jsonl = true, reason = 'unspecified' } = {}) {
   // This path emitted nothing, so "did teardown actually run?" was unanswerable
   // from the log -- grepping for it returned zero hits from a path that
@@ -1388,7 +1254,7 @@ function reconcileRoster(reason) {
     syncIdentityNames: roster => jsonlIngestor.syncIdentityNames(roster),
     syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
     onChanged: () => {
-      registerHostedTerminalCapabilities(reason)
+      registerHostedAgentRoutes()
       void agentLiveness.reportHostedSessions(reason)
     },
   })
@@ -1434,22 +1300,6 @@ function handleServerMessage(msg, wsAttemptId) {
     }
     return
   }
-  if (msg.type === 'agent-seat-binding-obligation') {
-    try {
-      const accepted = pendingSeatBindings.accept(hydratePendingSeatBindingObligation(msg))
-      if (!accepted && !pendingSeatBindings.has(msg.obligation_id)) {
-        throw new Error(`pending seat binding ${msg.obligation_id || 'unknown'} was not accepted locally`)
-      }
-    } catch (e) {
-      log.warn?.(`pending seat binding ${msg.obligation_id || 'unknown'} rejected locally: ${e.message}`)
-      errorServerDaemonOutboxMessage(msg, e)
-      return
-    }
-    // This acknowledges transport receipt only. The server-held obligation is
-    // cleared later by the exact seat/readback completion or terminal event.
-    ackServerDaemonOutboxMessage(msg)
-    return
-  }
   if (msg.type === 'daemon-welcome') {
     traceGate1('welcome-received', {
       daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
@@ -1473,7 +1323,7 @@ function handleServerMessage(msg, wsAttemptId) {
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.flushPending()
     reconcileJsonlProcessBindings('daemon-welcome')
-    registerHostedTerminalCapabilities('daemon-welcome')
+    registerHostedAgentRoutes()
     jsonlIngestor.resumeAfterServerReady()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
@@ -1552,14 +1402,13 @@ function handleServerMessage(msg, wsAttemptId) {
 function surfaceDaemonOutboxError(msg) {
   const row = daemonOutbox.get(msg.outbox_id)
   const payload = row?.payload || null
-  if (payload?.type !== 'agent-seat') return
+  if (payload?.type !== 'agent-route') return
   const error = msg.error || 'delivery failed'
-  log.warn(`agent-seat delivery failed for ${payload.agent_id || 'unknown'}: ${error}`)
+  log.warn(`agent-route delivery failed for ${payload.agent_id || 'unknown'}: ${error}`)
   sendMsg({
     type: 'daemon-warning',
-    warning: 'agent-seat-delivery-failed',
+    warning: 'agent-route-delivery-failed',
     fleet_id: payload.agent_id || null,
-    session_id: payload.session_id || null,
     error,
     permanent: msg.permanent === true,
   })

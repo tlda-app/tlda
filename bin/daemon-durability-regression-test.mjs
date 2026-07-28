@@ -250,21 +250,19 @@ test('daemon records drop and websocket lifecycle counters', () => {
   assert.match(daemonSource, /activityDeliveryCounters: daemonActivityDeliveryCounters/)
 })
 
-test('agent-seat daemon outbox errors surface as visible warnings', () => {
+test('agent-route daemon outbox errors surface as visible warnings', () => {
   assert.match(daemonSource, /function surfaceDaemonOutboxError\(msg\)/)
-  assert.match(daemonSource, /payload\?\.type !== 'agent-seat'/)
-  assert.match(daemonSource, /warning: 'agent-seat-delivery-failed'/)
+  assert.match(daemonSource, /payload\?\.type !== 'agent-route'/)
+  assert.match(daemonSource, /warning: 'agent-route-delivery-failed'/)
   assert.match(daemonSource, /fleet_id: payload\.agent_id \|\| null/)
   assert.match(daemonSource, /error,\n\s+permanent: msg\.permanent === true/)
 })
 
-test('CLI mint joins through the daemon-owned local session and terminal route', () => {
+test('CLI mint records the daemon-owned local process', () => {
   const bindMintSeatSource = daemonSource.match(/async function bindMintSeat\([\s\S]*?\n\}/)?.[0] || ''
-  assert.match(bindMintSeatSource, /permissionLedger\.rotateTerminalCapabilitySync\(facts\.fleetId\)/)
   assert.match(bindMintSeatSource, /permissionLedger\.setSessionSync\(facts\.fleetId/)
   assert.match(bindMintSeatSource, /sessionId: facts\.sessionId/)
-  assert.match(bindMintSeatSource, /terminalCapability,/)
-  assert.doesNotMatch(bindMintSeatSource, /daemonApi|sendMsg|bindAgentSeat/)
+  assert.doesNotMatch(bindMintSeatSource, /terminalCapability|daemonApi|sendMsg/)
 })
 
 test('daemon welcome carries no roster and restores local-binding liveness plus JSONL lifecycle', () => {
@@ -275,7 +273,7 @@ test('daemon welcome carries no roster and restores local-binding liveness plus 
   assert.match(welcomeHandler, /agentLiveness\.start\(\)/)
   assert.doesNotMatch(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
   assert.match(welcomeHandler, /reconcileJsonlProcessBindings\('daemon-welcome'\)/)
-  assert.match(welcomeHandler, /registerHostedTerminalCapabilities\('daemon-welcome'\)/)
+  assert.match(welcomeHandler, /registerHostedAgentRoutes\(\)/)
   assert.match(welcomeHandler, /jsonlIngestor\.resumeAfterServerReady\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)
   assert.match(daemonSource, /getAgents: \(\) => livenessAgentsFromProcessBindings\(permissionLedger\.listProcessBindings\(\)/)

@@ -47,7 +47,7 @@ export function createTerminalRpc({
   hasPlanMode,
   resolveAgentRoute,
   validateTmuxOwner,
-  resolveTerminalCapability,
+  resolveTerminalAgent,
   execFileImpl = execFileP,
 }) {
   const TMUX_ARGS = tmuxArgs || []
@@ -67,16 +67,15 @@ export function createTerminalRpc({
     if (result === false) throw new Error(`tmux endpoint ownership rejected for ${agentId}/${tmuxSession}`)
   }
 
-  function resolveTerminalEndpoint({ agent_id, agentId, terminal_capability, terminalCapability } = {}, { allowUnavailable = false } = {}) {
+  function resolveTerminalEndpoint({ agent_id, agentId } = {}, { allowUnavailable = false } = {}) {
     const fleetId = agent_id || agentId
-    const capability = terminal_capability || terminalCapability
-    if (!fleetId || !capability) throw new Error('terminal capability required')
-    if (!resolveTerminalCapability) throw new Error('terminal capability resolution unavailable')
-    const row = resolveTerminalCapability({ agentId: fleetId, terminalCapability: capability })
-    if (!row) throw new Error(`terminal capability unavailable for ${fleetId}`)
+    if (!fleetId) throw new Error('agent id required')
+    if (!resolveTerminalAgent) throw new Error('terminal agent resolution unavailable')
+    const row = resolveTerminalAgent({ agentId: fleetId })
+    if (!row) throw new Error(`terminal unavailable for ${fleetId}`)
     if (!row.tmuxSession || !row.sessionId) {
       if (allowUnavailable) return { unavailable: true, reason: 'terminal already unavailable', agentId: row.id || fleetId }
-      throw new Error(`terminal capability unavailable for ${fleetId}`)
+      throw new Error(`terminal unavailable for ${fleetId}`)
     }
     return { tmuxSession: row.tmuxSession, sessionId: row.sessionId, agentId: row.id }
   }

@@ -285,9 +285,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const query = req.query.agent || req.query.id
     const agent = await fleetStore?.findAgent(query)
     if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const seat = await fleetStore?.getAgentDaemonRoute?.(agent.id)
-    if (!seat) { res.status(404).json({ ok: false, error: 'agent has no daemon route' }); return }
-    res.json({ ok: true, seat })
+    const route = await fleetStore?.getAgentDaemonRoute?.(agent.id)
+    if (!route) { res.status(404).json({ ok: false, error: 'agent has no daemon route' }); return }
+    res.json({ ok: true, route })
   })
 
   router.post('/api/agent-route', async (req, res) => {
@@ -300,11 +300,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const envName = body.env_name || body.envName || null
     const daemonKey = body.daemon_key || body.daemonKey || (machineId && envName ? `${machineId}:${envName}` : null)
     try {
-      const seat = await recordAgentRouteEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
+      const route = await recordAgentRouteEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
         daemonKey,
       })
       broadcastState()
-      res.json({ ok: true, seat })
+      res.json({ ok: true, route })
     } catch (e) {
       res.status(409).json({ ok: false, error: e.message })
     }

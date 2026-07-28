@@ -5,10 +5,9 @@ import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-gua
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
-import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
-import { bindAgentSeat } from './seat-binding.mjs'
+import { bindAgentRoute } from './route-binding.mjs'
 import { wsReserveShell } from './register.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
@@ -38,8 +37,7 @@ export function createAgentLauncher({
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
   liveCodexSessionIdentityResolver = null,
   liveClaudeSessionIdentityResolver = null,
-  bindAgentSeatImpl = bindAgentSeat,
-  persistPendingSeatBinding = null,
+  bindAgentRouteImpl = bindAgentRoute,
   liveSessionIdentityTimeoutMs = 20_000,
   liveSessionIdentityPollMs = 500,
   liveSessionIdentityNow = Date.now,
@@ -130,53 +128,17 @@ export function createAgentLauncher({
     }
   }
 
-  async function emitAgentSeatBinding({
+  async function emitAgentRoute({
     fleetId,
-    sessionId,
-    sessionPath,
-    resumeId = sessionId,
-    harness,
-    model,
-    cwd,
-    tmuxSession,
-    agentName,
-    source,
   }) {
-    if (!fleetId || !sessionId || !harness || !model || !cwd || !tmuxSession) return false
+    if (!fleetId) return false
     const daemonKey = `${machineId}:${activeEnvName}`
-    const binding = await bindAgentSeatImpl({
-      ledger: permissionLedger,
-      identity: {
-        agentId: fleetId,
-        sessionId,
-        resumeId,
-        kind: harness,
-        model,
-        cwd,
-        sessionPath,
-        friendlyName: agentName,
-      },
-      route: {
-        machineId,
-        envName: activeEnvName,
-        daemonKey,
-        tmuxSession,
-      },
-      createdSource: source,
-      submit: async (payload) => sendMsg({ type: 'agent-seat', ...payload }),
+    const binding = await bindAgentRouteImpl({
+      agentId: fleetId,
+      daemonKey,
+      submit: async payload => sendMsg({ type: 'agent-route', ...payload }),
     })
-    if (binding?.bound !== true) return false
-    const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
-    try {
-      const local = localLedger.get(fleetId)
-      if (local) {
-        localLedger.updateConversation(local.localAgentId, { sessionId, harness, model })
-        localLedger.updateProcess(local.localAgentId, { tmuxName: tmuxSession, cwd })
-      }
-    } finally {
-      localLedger.close()
-    }
-    return true
+    return binding?.bound === true
   }
 
   async function reserveAlreadyLiveShell({ launched, agentName, cwd, grant, sessionId }) {
@@ -200,25 +162,6 @@ export function createAgentLauncher({
       machineId,
       envName: activeEnvName,
     })
-  }
-
-  async function persistIdentityRecoveryObligation({ launched, agentName, cwd, launchKind, launchModel }) {
-    if (!persistPendingSeatBinding || !launched?.fleetId || !launched?.localAgentId || !launched?.tmuxSession) return null
-    const daemonKey = `${machineId}:${activeEnvName}`
-    const result = await persistPendingSeatBinding({
-      agent_id: launched.fleetId,
-      daemon_key: daemonKey,
-      local_agent_id: launched.localAgentId,
-      cwd,
-      kind: launched.harness || launchKind,
-      model: launched.model || launchModel,
-      friendly_name: agentName,
-      session_id: launched.resumeId || null,
-    })
-    if (result?.ok !== true || result?.pending !== true || !result?.obligation?.obligation_id) {
-      throw new Error(`durable identity-recovery obligation was not acknowledged for ${launched.fleetId}`)
-    }
-    return result.obligation
   }
 
   async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn, crash_log_path }) {
@@ -579,8 +522,6 @@ export function createAgentLauncher({
         }
       }
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
-      const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
-      const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
       if (launched.registrationDeferred && !launched.fleetId) {
         let ledgerCleanupError = null
         if (shouldWriteLedgerRow && preallocatedAgentId) {
@@ -620,47 +561,8 @@ export function createAgentLauncher({
           ...(ledgerCleanupError ? { cleanup_error: ledgerCleanupError } : {}),
         }
       }
-      if (!durableSessionId) {
-        try {
-          const obligation = await persistIdentityRecoveryObligation({
-            launched,
-            agentName,
-            cwd: resolvedCwd,
-            launchKind,
-            launchModel,
-          })
-          if (obligation) {
-            return {
-              ok: true,
-              pending: true,
-              name: launched.name || agentName,
-              agent_id: launched.fleetId,
-              tmux_session: launched.tmuxSession,
-              resume_id: null,
-              binding_obligation_id: obligation.obligation_id,
-              spawnerPermission: grant.spawnerPermission,
-              projectPermission: grant.projectPermission,
-              modelPermission: grant.modelPermission,
-              permissionSet: grant.permissionSet,
-              permissionGrant: grant.permissionGrant,
-            }
-          }
-        } catch (error) {
-          // Retain the exact runtime so its on-disk rollout remains recoverable.
-          log.warn(`could not persist identity-recovery obligation for ${agentName}: ${error.message}`)
-        }
-      }
-      const bindingWritten = await emitAgentSeatBinding({
+      const bindingWritten = await emitAgentRoute({
         fleetId: launched.fleetId,
-        sessionId: durableSessionId,
-        sessionPath: durableSessionPath,
-        resumeId: durableSessionId,
-        harness: launched.harness || ledgerRow?.sessionKind || launchKind,
-        model: launched.model || liveIdentity?.model || ledgerRow?.model || launchModel,
-        cwd: resolvedCwd || ledgerRow?.cwd || null,
-        tmuxSession: launched.tmuxSession || ledgerRow?.tmuxSession || null,
-        agentName,
-        source: launched.alreadyAlive ? 'spawn-runtime-already-live' : 'spawn-runtime',
       })
       if (!bindingWritten) {
         return {
@@ -668,9 +570,9 @@ export function createAgentLauncher({
           name: agentName,
           agent_id: launched.fleetId,
           tmux_session: launched.tmuxSession,
-          code: 'missing-resume-handle',
-          reason: 'missing-resume-handle',
-          error: 'spawn launcher could not persist a durable resume handle or recovery obligation at session start; exact process retained for on-disk session recovery',
+          code: 'route-publication-failed',
+          reason: 'route-publication-failed',
+          error: 'spawn launcher could not publish its daemon route',
           ownership_retained: true,
         }
       }

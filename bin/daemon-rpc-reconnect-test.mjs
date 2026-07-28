@@ -52,26 +52,20 @@ function deferred() {
 
 test('rpc replies are durable and canonical fingerprints ignore object key order', () => {
   assert.equal(daemonDeliveryPolicy({ type: 'rpc-reply', id: 'r1' }), DELIVERY_DURABLE_FIFO)
-  assert.equal(daemonDeliveryPolicy({ type: 'agent-seat' }), DELIVERY_DURABLE_FIFO)
+  assert.equal(daemonDeliveryPolicy({ type: 'agent-route' }), DELIVERY_DURABLE_FIFO)
   assert.equal(
     rpcRequestFingerprint({ type: 'rpc', id: 'a', op: 'send-text', body: { a: 1, b: 2 } }),
     rpcRequestFingerprint({ type: 'rpc', id: 'b', op: 'send-text', body: { b: 2, a: 1 } }),
   )
 })
 
-test('agent seats are durable and replay after reconnect', t => {
+test('agent routes are durable and replay after reconnect', t => {
   const h = harness(t)
   h.disconnect()
 
   assert.equal(h.delivery.send({
-    type: 'agent-seat',
+    type: 'agent-route',
     agent_id: 'fleet:seat',
-    session_id: 'session-1',
-    kind: 'codex',
-    model: 'gpt-5.5',
-    cwd: '/tmp/project',
-    machine_id: 'mini',
-    env_name: 'testing',
     daemon_key: 'mini:testing',
   }), true)
   assert.equal(h.sent.length, 0)
@@ -80,7 +74,7 @@ test('agent seats are durable and replay after reconnect', t => {
   h.reconnect()
 
   assert.equal(h.sent.length, 1)
-  assert.equal(h.sent[0].type, 'agent-seat')
+  assert.equal(h.sent[0].type, 'agent-route')
   assert.equal(h.sent[0].agent_id, 'fleet:seat')
   assert.ok(h.sent[0].__daemon_outbox_id)
 })

@@ -342,7 +342,7 @@ function assertTailCount(harness, expected) {
       }],
     })
     assert.equal(harness.sentToServer.some(message =>
-      message.type === 'agent-seat'
+      message.type === 'agent-route'
     ), false)
     assert.equal(permissionLedger.get('fleet:jsonl-owner').sessionId, sessionUuid)
     assert.equal(recordedMarkers[0].session_id, sessionUuid)
@@ -387,7 +387,7 @@ function assertTailCount(harness, expected) {
         },
       }],
     })
-    assert.equal(harness.sentToServer.some(message => message.type === 'agent-seat'), false)
+    assert.equal(harness.sentToServer.some(message => message.type === 'agent-route'), false)
   } finally {
     harness.cleanup()
   }
@@ -425,7 +425,7 @@ function assertTailCount(harness, expected) {
         },
       }],
     })
-    assert.equal(harness.sentToServer.some(message => message.type === 'agent-seat'), false)
+    assert.equal(harness.sentToServer.some(message => message.type === 'agent-route'), false)
   } finally {
     harness.cleanup()
   }
@@ -474,7 +474,7 @@ function assertTailCount(harness, expected) {
       message.warning === 'daemon-ledger-session-identity-write-failed' &&
       message.fleet_id === 'fleet:jsonl-owner'
     ), true)
-    assert.equal(harness.sentToServer.some(message => message.type === 'agent-seat'), false)
+    assert.equal(harness.sentToServer.some(message => message.type === 'agent-route'), false)
   } finally {
     harness.cleanup()
   }

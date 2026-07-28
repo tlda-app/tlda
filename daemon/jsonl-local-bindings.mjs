@@ -21,7 +21,6 @@ export function projectJsonlAgentsFromProcessBindings(rows = [], { daemonKey } =
       machine_id: row.machineId || null,
       env_name: row.envName || null,
       daemon_key: row.daemonKey || null,
-      terminal_capability: row.terminalCapability || null,
       dead: false,
       human: false,
     }))

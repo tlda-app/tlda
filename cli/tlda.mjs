@@ -70,7 +70,7 @@ import {
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
-import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
+import { bindAgentRoute } from '../agent-launch/route-binding.mjs'
 import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
@@ -3162,18 +3162,18 @@ export async function attachToAgent(name, {
     exitImpl(1)
     return { ok: false, error: 'agent-not-found' }
   }
-  const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agent.id)}`)
-  const seat = data?.seat || null
-  if (!seat?.terminal_capability) {
-    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: current durable seat has no terminal capability.`)
+  const data = await apiImpl('GET', `/api/agent-route?agent=${encodeURIComponent(agent.id)}`)
+  const route = data?.route || null
+  if (!route?.daemon_key) {
+    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: no daemon route is published.`)
     exitImpl(1)
-    return { ok: false, error: 'seat-missing-terminal-capability', agent, seat }
+    return { ok: false, error: 'route-missing', agent, route }
   }
   const localDaemonKey = localDaemonKeyImpl()
-  if (seat.daemon_key !== localDaemonKey) {
-    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: current durable seat belongs to ${seat.daemon_key}, not local ${localDaemonKey}.`)
+  if (route.daemon_key !== localDaemonKey) {
+    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: daemon route belongs to ${route.daemon_key}, not local ${localDaemonKey}.`)
     exitImpl(1)
-    return { ok: false, error: 'seat-not-local', agent, seat }
+    return { ok: false, error: 'route-not-local', agent, route }
   }
   const ledger = openLedger()
   let localRoute = null
@@ -3183,19 +3183,17 @@ export async function attachToAgent(name, {
     await ledger.close()
   }
   if (
-    !localRoute?.tmuxSession ||
-    localRoute.sessionId !== seat.session_id ||
-    localRoute.terminalCapability !== seat.terminal_capability
+    !localRoute?.tmuxSession
   ) {
-    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: current durable seat has no matching local terminal route.`)
+    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: daemon has no matching local terminal process.`)
     exitImpl(1)
-    return { ok: false, error: 'seat-route-mismatch', agent, seat }
+    return { ok: false, error: 'route-process-missing', agent, route }
   }
   const spawnSync = spawnSyncImpl || (await import('child_process')).spawnSync
   const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(localRoute.tmuxSession)], { stdio: 'inherit' })
   const status = result.status ?? 0
   exitImpl(status)
-  return { ok: status === 0, status, agent, seat, tmuxSession: localRoute.tmuxSession }
+  return { ok: status === 0, status, agent, route, tmuxSession: localRoute.tmuxSession }
 }
 
 async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = 120000, onEvent = null } = {}) {
@@ -3560,8 +3558,7 @@ export async function runFleetSpawn(spawnArgs, {
       throw e
     }
     // A local-origin launch receives its fleet id from mint-shell. Persist the
-    // already-authorized grant under that server id before runtime binding so
-    // bindAgentSeat can mint the terminal capability for the same agent.
+    // already-authorized grant under that server id before runtime binding.
     await persistAssignedAgentGrant({ ledger, result, grant, grantedProfile, preallocatedAgentId, params })
     let boundResume
     try {
@@ -3765,23 +3762,10 @@ async function postLifecycleSeatBinding(result, {
   if (!api) return { bound: false, pending: true }
   const agentId = result?.fleetId || result?.agent_id || result?.agentId
   const tmuxSession = result?.tmuxSession || result?.tmux_session
-  const binding = await bindAgentSeat({
-    ledger,
-    identity: {
-      agentId,
-      sessionId,
-      resumeId: sessionId,
-      kind,
-      model,
-      cwd,
-      sessionPath,
-      friendlyName: name || result?.name || agentId,
-    },
-    route: { machineId, envName, daemonKey, tmuxSession },
-    submit: (payload) => api('POST', '/api/agent-seat', payload),
-    readback: (agentId) => api('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
-    requireReadback,
-    transitionReason,
+  const binding = await bindAgentRoute({
+    agentId,
+    daemonKey,
+    submit: payload => api('POST', '/api/agent-route', payload),
   })
   return { ...binding, existing }
 }
@@ -4112,18 +4096,18 @@ export async function dismissAgent(name, {
     log.log(`${label} is already dismissed.`)
     return { ok: true, already: true, agent }
   }
-  let seat = null
+  let route = null
   try {
-    const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agent.id)}`)
-    seat = data?.seat || null
+    const data = await apiImpl('GET', `/api/agent-route?agent=${encodeURIComponent(agent.id)}`)
+    route = data?.route || null
   } catch (e) {
     if (e?.status && e.status !== 404) {
-      log.error(`Failed to inspect current seat for ${label}; not marking it dismissed: ${e?.message || e}`)
+      log.error(`Failed to inspect daemon route for ${label}; not marking it dismissed: ${e?.message || e}`)
       exitImpl(1)
-      return { ok: false, error: 'seat-check-failed' }
+      return { ok: false, error: 'route-check-failed' }
     }
   }
-  if (seat?.terminal_capability) {
+  if (route?.daemon_key) {
     try {
       await apiImpl('POST', '/api/kill-session', { agent: agent.id })
     } catch (e) {
@@ -4134,7 +4118,7 @@ export async function dismissAgent(name, {
   }
   await apiImpl('POST', `/api/agents/${encodeURIComponent(agent.id)}/mark-dead`)
   log.log(`Dismissed ${label} (${agent.id}) — marked dead and removed from the live roster.`)
-  return { ok: true, agent, seat, killed: !!seat?.terminal_capability }
+  return { ok: true, agent, route, killed: !!route?.daemon_key }
 }
 
 // The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it
@@ -4310,15 +4294,15 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   if (!agent) return { ok: false, query, error: 'agent not found' }
   const meta = normalizeAgentMetadata(agent.metadata)
   const expectedKind = meta.kind || null
-  let seat = null
+  let route = null
   try {
-    const data = await apiGet('GET', `/api/agent-seat?agent=${encodeURIComponent(agent.id)}`)
-    seat = data?.seat || null
+    const data = await apiGet('GET', `/api/agent-route?agent=${encodeURIComponent(agent.id)}`)
+    route = data?.route || null
   } catch (e) {
-    return { ok: false, query, agent, error: `current durable seat missing: ${e.message}` }
+    return { ok: false, query, agent, error: `daemon route missing: ${e.message}` }
   }
-  if (!seat?.terminal_capability) return { ok: false, query, agent, seat, error: 'current durable seat has no terminal capability' }
-  if (seat.agent_id && seat.agent_id !== agent.id) return { ok: false, query, agent, seat, error: `current durable seat owner mismatch: ${seat.agent_id} != ${agent.id}` }
+  if (!route?.daemon_key) return { ok: false, query, agent, route, error: 'agent has no daemon route' }
+  if (route.agent_id && route.agent_id !== agent.id) return { ok: false, query, agent, route, error: `daemon route owner mismatch: ${route.agent_id} != ${agent.id}` }
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
   const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
   let localRoute = null
@@ -4328,11 +4312,11 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
     await ledger.close()
   }
   const localDaemonKey = `${localMachineId()}:${getActiveEnvName()}`
-  if (seat.daemon_key !== localDaemonKey) {
-    return { ok: false, query, agent, seat, error: `current durable seat belongs to ${seat.daemon_key}, not local ${localDaemonKey}` }
+  if (route.daemon_key !== localDaemonKey) {
+    return { ok: false, query, agent, route, error: `daemon route belongs to ${route.daemon_key}, not local ${localDaemonKey}` }
   }
-  if (!localRoute?.tmuxSession || localRoute.terminalCapability !== seat.terminal_capability) {
-    return { ok: false, query, agent, seat, error: 'current durable seat capability has no matching local terminal route' }
+  if (!localRoute?.tmuxSession) {
+    return { ok: false, query, agent, route, error: 'daemon has no matching local terminal process' }
   }
   const sess = localRoute.tmuxSession
   const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', exactTmuxTarget(sess)], { stdio: 'ignore' }).status === 0
@@ -4359,7 +4343,7 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
     : null
   const ok = !agent.dead && hasSession && runtime.ok && !!recentLogin
   return {
-    ok, query, agent, seat, tableRow: row, session: sess, hasSession, panes, runtime,
+    ok, query, agent, route, tableRow: row, session: sess, hasSession, panes, runtime,
     recentLogin, recentInbox, incoming, replyAfterIncoming,
   }
 }
@@ -4374,7 +4358,7 @@ function printAgentReadiness(r) {
   console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
   if (r.warning) console.log(`  warning: ${r.warning}`)
   console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || runtimeStatusName(agent) || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
-  console.log(`  current seat: ${r.seat ? `${r.seat.session_id || 'no-session'} @ ${r.seat.daemon_key || 'no-daemon'}` : 'missing'}`)
+  console.log(`  daemon route: ${r.route?.daemon_key || 'missing'}`)
   console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
   console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
   console.log(`  login event: ${r.recentLogin ? `${r.recentLogin.timestamp} #${r.recentLogin.id}` : 'missing'}`)
@@ -4518,24 +4502,23 @@ async function resolveFleetPrefUserId(query) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-async function waitForAgentSeatAddress(agentId, { machineId, envName, apiImpl = api, timeoutMs = 120000 } = {}) {
+async function waitForAgentRoute(agentId, { machineId, envName, apiImpl = api, timeoutMs = 120000 } = {}) {
   const deadline = Date.now() + timeoutMs
-  let lastSeat = null
+  let lastRoute = null
   let lastError = null
+  const daemonKey = `${machineId}:${envName}`
   do {
     try {
-      const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`)
-      const seat = data?.seat || null
-      lastSeat = seat
-      if (seat?.machine_id === machineId && seat?.env_name === envName) return seat
+      const data = await apiImpl('GET', `/api/agent-route?agent=${encodeURIComponent(agentId)}`)
+      const route = data?.route || null
+      lastRoute = route
+      if (route?.daemon_key === daemonKey) return route
     } catch (e) {
       lastError = e
     }
     await sleep(1000)
   } while (Date.now() < deadline)
-  const observed = lastSeat
-    ? describeAgentAddress(lastSeat.machine_id, lastSeat.env_name)
-    : (lastError?.message || 'no readable seat')
+  const observed = lastRoute?.daemon_key || lastError?.message || 'no readable route'
   throw new Error(`agent ${agentId} did not land on ${describeAgentAddress(machineId, envName)}; observed ${observed}`)
 }
 
@@ -4728,9 +4711,9 @@ async function moveAgentToEnvironment({
   } finally {
     await ledger.close()
   }
-  const seat = await waitForAgentSeatAddress(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl: targetApi })
-  log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(seat.machine_id, seat.env_name)}.`)
-  return { ok: true, agent, name, seat, wake }
+  const route = await waitForAgentRoute(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl: targetApi })
+  log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(targetMachine, targetEnv)}.`)
+  return { ok: true, agent, name, route, wake }
 }
 
 async function cmdAgentSetSpawnMachine() {
