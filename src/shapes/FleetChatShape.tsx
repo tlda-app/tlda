@@ -6071,7 +6071,7 @@ function useChatFilterSubscription(shape: any) {
       // and refilled the list under a reader who had not asked for anything —
       // and the scroller went to the top. Clearing on a genuine filter CHANGE is
       // handled where the filter is known, in fleet-data's eventBuffer.
-      (events) => { receiveFilterEvents(bufferKey, events) },
+      (events, meta) => { receiveFilterEvents(bufferKey, events, meta) },
       { humanId: getHumanId(), humanName: getHumanName(), correlationKey: bufferKey },
     )
   }, [dnf, shape.id])
