@@ -4242,10 +4242,10 @@ app.post('/api/send-text', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
-  if (!seat) return
+  const route = resolveRpc('send-text', agent)
+  if (route.via === 'none') return res.status(route.code).json({ error: route.error })
   try {
-    const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
+    const result = await sendDaemonDurable(route.machine_id, 'send-text', { agent_id: agent.id, text, enter: enter !== false })
     res.json(result || { ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
