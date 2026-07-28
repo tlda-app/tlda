@@ -856,8 +856,6 @@ function ensureLocalDaemon() {
 // Each entry is the shared ws-request-policy shape plus { machine_id, env_name }.
 const pendingRpcs = new Map()
 let _rpcSeq = 0
-const RPC_TIMEOUT_MS = 10_000
-const SPAWN_RPC_TIMEOUT_MS = 120_000
 const DAEMON_RPC_RECONNECT_GRACE_MS = Number(process.env.TLDA_DAEMON_RPC_RECONNECT_GRACE_MS || 15_000)
 const pendingRpcFailureTimers = new Map()
 
@@ -1273,7 +1271,7 @@ async function sendDaemonRpcAttempt(machineId, op, params = {}, opts = {}) {
   // wrapped in sendDaemonDurable pass a short per-attempt timeout so a stale-but-"open"
   // WS is abandoned quickly and retried on the fresh reconnect, rather than blocking
   // the full 10s each time.
-  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : (op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS)
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : null
   const promise = startWsRequest({
     pending: pendingRpcs,
     id,
@@ -1346,8 +1344,6 @@ function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnec
 // wrapper waits (event-driven, not a busy-poll) for the daemon to (re)register and
 // retries, bounded by a total deadline. Every attempt uses the same request id;
 // the daemon rejects mismatched reuse and replays an exact match.
-const RPC_RECONNECT_DEADLINE_MS = 30_000
-const RPC_RESILIENT_ATTEMPT_MS = 5_000
 const daemonReadyWaiters = new Map() // daemonKey -> Set<{ resolve, timer }>
 
 // Called when a daemon (re)registers — wakes anything waiting to retry an RPC to it.
@@ -1365,19 +1361,21 @@ function notifyDaemonReady(daemonKey) {
 
 // Resolves immediately if a ready WS exists for the key, else when one registers,
 // else rejects at the deadline. Purely event-driven (notifyDaemonReady + a timer).
-function waitForDaemonReady(daemonKey, deadlineMs) {
+function waitForDaemonReady(daemonKey, deadlineMs = null) {
   const dws = daemonConnections.get(daemonKey)
   if (dws && dws.readyState === 1) return Promise.resolve()
-  if (!(deadlineMs > 0)) return Promise.reject(new Error(`daemon ${daemonKey} not connected`))
+  if (deadlineMs !== null && !(deadlineMs > 0)) return Promise.reject(new Error(`daemon ${daemonKey} not connected`))
   return new Promise((resolve, reject) => {
     let set = daemonReadyWaiters.get(daemonKey)
     if (!set) { set = new Set(); daemonReadyWaiters.set(daemonKey, set) }
     const w = { resolve, timer: null }
-    w.timer = setTimeout(() => {
-      set.delete(w)
-      if (set.size === 0) daemonReadyWaiters.delete(daemonKey)
-      reject(new Error(`daemon ${daemonKey} did not reconnect within ${deadlineMs}ms`))
-    }, deadlineMs)
+    if (deadlineMs !== null) {
+      w.timer = setTimeout(() => {
+        set.delete(w)
+        if (set.size === 0) daemonReadyWaiters.delete(daemonKey)
+        reject(new Error(`daemon ${daemonKey} did not reconnect within ${deadlineMs}ms`))
+      }, deadlineMs)
+    }
     set.add(w)
   })
 }
@@ -1401,8 +1399,8 @@ function isTransientRpcError(err) {
 // Event-based retry across reconnect for idempotent control ops. Retries only on
 // transient (reconnect-class) failures; op-level errors propagate immediately.
 async function sendDaemonRpcDurableAttempt(machineId, op, params = {}, {
-  totalDeadlineMs = RPC_RECONNECT_DEADLINE_MS,
-  attemptTimeoutMs = RPC_RESILIENT_ATTEMPT_MS,
+  totalDeadlineMs = null,
+  attemptTimeoutMs = null,
   requestId = null,
 } = {}) {
   const key = rpcDaemonKey(machineId, params)
@@ -1410,8 +1408,8 @@ async function sendDaemonRpcDurableAttempt(machineId, op, params = {}, {
   const start = Date.now()
   let lastErr = null
   while (true) {
-    const remaining = totalDeadlineMs - (Date.now() - start)
-    if (remaining <= 0) break
+    const remaining = Number.isFinite(totalDeadlineMs) ? totalDeadlineMs - (Date.now() - start) : null
+    if (remaining !== null && remaining <= 0) break
     const dws = daemonConnections.get(key)
     if (!dws || dws.readyState !== 1) {
       try { await waitForDaemonReady(key, remaining) } catch (e) { lastErr = e; break }
@@ -1419,15 +1417,17 @@ async function sendDaemonRpcDurableAttempt(machineId, op, params = {}, {
     try {
       return await sendDaemonRpcAttempt(machineId, op, params, {
         requestId: stableRequestId,
-        timeoutMs: Math.min(attemptTimeoutMs, Math.max(1, totalDeadlineMs - (Date.now() - start))),
+        timeoutMs: Number.isFinite(attemptTimeoutMs)
+          ? (remaining === null ? attemptTimeoutMs : Math.min(attemptTimeoutMs, Math.max(1, remaining)))
+          : null,
       })
     } catch (e) {
       lastErr = e
       if (!isTransientRpcError(e)) throw e
       // A stale-but-"open" WS would re-hit the same dead socket; wait for a fresh
       // ready daemon (the close handler evicts the dead WS, the new hello notifies).
-      const left = totalDeadlineMs - (Date.now() - start)
-      if (left <= 0) break
+      const left = Number.isFinite(totalDeadlineMs) ? totalDeadlineMs - (Date.now() - start) : null
+      if (left !== null && left <= 0) break
       try { await waitForDaemonReady(key, left) } catch (we) { lastErr = we; break }
     }
   }
@@ -6169,27 +6169,6 @@ async function handleFleetWsMessage(ws, msg) {
   // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
   const _wakeFailWarned = new Map() // agentId → last-warned ms
   const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
-  const _pendingWakeAcks = new Map()
-  function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
-    if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
-    const timer = setTimeout(async () => {
-      const pending = _pendingWakeAcks.get(traceId)
-      if (!pending) return
-      _pendingWakeAcks.delete(traceId)
-      broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
-      if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
-    }, WAKE_ACK_DEADLINE_MS)
-    timer.unref?.()
-    _pendingWakeAcks.set(traceId, { agentId, timer })
-  }
-  function acknowledgeWakeTrace(traceId, agentId) {
-    const pending = _pendingWakeAcks.get(traceId)
-    if (!pending || pending.agentId !== agentId) return false
-    clearTimeout(pending.timer)
-    _pendingWakeAcks.delete(traceId)
-    return true
-  }
   function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -6291,7 +6270,6 @@ async function handleFleetWsMessage(ws, msg) {
           daemonKey,
           ownerDaemon: daemonConnections.get(daemonKey),
           nudgeText: withAgentReturnNotice(agent, nudgeText),
-          asker,
           traceId,
           source,
           isAgentAlive,
@@ -6302,7 +6280,6 @@ async function handleFleetWsMessage(ws, msg) {
           sendWakeNudge,
           getCurrentSeat: (id) => fleetStore.getCurrentAgentSeat(id),
           recordRuntimeLiveness: recordExplicitCheckAliveLiveness,
-          awaitWakeAcknowledgment,
           queueRetry: () => setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.(),
           broadcastEvent,
           insertWakeLifecycleEvent: async () => {
@@ -7113,7 +7090,6 @@ async function handleFleetWsMessage(ws, msg) {
       for (const message of unread) {
         const traceId = traceIdFromFleetEvent(message)
         if (!traceId) continue
-        acknowledgeWakeTrace(traceId, agentId)
       }
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     } else {

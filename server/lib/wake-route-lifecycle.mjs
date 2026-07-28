@@ -41,7 +41,6 @@ export async function runWakeRouteLifecycle({
   daemonKey,
   ownerDaemon,
   nudgeText = null,
-  asker = null,
   traceId = null,
   source = {},
   isAgentAlive,
@@ -51,7 +50,6 @@ export async function runWakeRouteLifecycle({
   appendControlTrace = () => {},
   sendWakeNudge,
   getCurrentSeat,
-  awaitWakeAcknowledgment = () => {},
   queueRetry = () => {},
   broadcastEvent = () => {},
   insertWakeLifecycleEvent = async () => {},
@@ -134,7 +132,6 @@ export async function runWakeRouteLifecycle({
     'wake-route',
   )
   if (traceId) {
-    awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     appendControlTrace({
       trace_id: traceId,
       component: 'server',

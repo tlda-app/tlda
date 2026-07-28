@@ -4659,7 +4659,7 @@ let _channelRWS = null;  // ResilientWS instance
 
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
-const WS_REQUEST_IDLE_MS = 45_000;
+const FLEET_TOOL_READ_WAIT_MS = 45_000;
 const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRWS?.connected });
 
 /**
@@ -4671,8 +4671,8 @@ const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRW
 function _sendWSOnce(type, params = {}, opts = {}) {
   if (!_channelRWS?.connected) return null;
   const id = crypto.randomUUID();
-  const idleTimeoutMs = opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
-  const deadlineMs = opts.deadlineMs;
+  const idleTimeoutMs = Object.hasOwn(opts, 'idleTimeoutMs') ? opts.idleTimeoutMs : null;
+  const deadlineMs = Object.hasOwn(opts, 'deadlineMs') ? opts.deadlineMs : null;
   return startWsRequest({
     pending: _wsPending,
     id,
@@ -4700,7 +4700,16 @@ function _sendWSOnce(type, params = {}, opts = {}) {
 async function sendFleetRequestAttempt(type, params = {}, opts = {}) {
   if (_activeToolEnv) return sendOneShotWS(_activeToolEnv, type, params, opts);
   const startedAt = Date.now();
-  const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
+  const deadlineMs = Number.isFinite(opts.deadlineMs)
+    ? opts.deadlineMs
+    : (Number.isFinite(opts.idleTimeoutMs) ? opts.idleTimeoutMs : null);
+  if (deadlineMs === null) {
+    while (true) {
+      const result = _sendWSOnce(type, params, { ...opts, idleTimeoutMs: null, deadlineMs: null });
+      if (result !== null) return await result;
+      await _reconnectBuffer.waitForConnection(5_000);
+    }
+  }
   while (Date.now() - startedAt < deadlineMs) {
     const result = _sendWSOnce(type, params, opts);
     if (result !== null) return await result;
@@ -4725,7 +4734,7 @@ function scheduleFleetTransportFlush(delayMs = 1000) {
   }, Math.max(0, delayMs));
 }
 
-async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = 5000, agentId = AGENT_ID } = {}) {
+async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = null, agentId = AGENT_ID } = {}) {
   if (!agentId) return null;
   if (_activeToolEnv) return null;
   if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
@@ -4806,7 +4815,11 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
 
 const mcpFleetTransport = createFleetOperationTransport({
   name: 'mcp-fleet',
-  sendEphemeral: sendFleetRequestAttempt,
+  sendEphemeral: (operation, payload, options = {}) =>
+    sendFleetRequestAttempt(operation, payload, {
+      deadlineMs: Number.isFinite(options.deadlineMs) ? options.deadlineMs : null,
+      idleTimeoutMs: Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : null,
+    }),
   sendDurable: sendDurableFleet,
   resolveSender: () => AGENT_ID,
   resolveDestination: ({ payload }) => (
@@ -4831,7 +4844,7 @@ async function flushFleetTransportOpportunistically(toolName) {
 async function _flushUnread() {
   if (!AGENT_ID || !_channelRWS?.connected) return;
   try {
-    const data = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: true });
+    const data = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: true }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
     if (!data) return;
     const msgs = (data.messages || []).filter(m => !m.read);
     // Unread is the whole trigger. This runs on every socket reconnect, and an
@@ -5114,7 +5127,7 @@ function reportStatus(state, toolName) {
     state,
     tool: toolName || null,
     ts: new Date().toISOString(),
-  }).catch((error) => {
+  }, { deadlineMs: 5_000 }).catch((error) => {
     console.error(`[fleet-transport] agent-status failed: ${error.message}`);
   });
 }
