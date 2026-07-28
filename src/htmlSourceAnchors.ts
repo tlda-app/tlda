@@ -49,7 +49,7 @@ function htmlAnchorContext(
   const pageY = boundsValue(bounds, 'y')
   const pageH = boundsValue(bounds, 'h') || Number(shape?.props?.h || 0)
   const iframeH = iframe.clientHeight || pageH
-  const scrollY = iframe.contentWindow?.scrollY || doc.documentElement.scrollTop || doc.body.scrollTop || 0
+  const scrollY = iframe.contentWindow?.scrollY || doc.documentElement?.scrollTop || doc.body?.scrollTop || 0
   return { ok: true as const, file, shapeId, iframe, doc, pageY, pageH, iframeH, scrollY }
 }
 
