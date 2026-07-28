@@ -610,25 +610,6 @@ export class FleetStore {
         PRIMARY KEY (daemon_key, local_agent_id)
       );
 
-      -- Daemon registry: durable record of scoped daemon identities. This is
-      -- the authority for "which daemon is allowed to do which job"; websocket
-      -- connections are just the current live transport for a registry row.
-      CREATE TABLE IF NOT EXISTS daemon_registry (
-        daemon_key TEXT PRIMARY KEY,
-        machine_id TEXT NOT NULL,
-        env_name TEXT NOT NULL,
-        install_path TEXT,
-        user TEXT,
-        hostname TEXT,
-        version TEXT,
-        boot_id INTEGER,
-        status TEXT NOT NULL DEFAULT 'disconnected',
-        connected_at TEXT,
-        disconnected_at TEXT,
-        last_seen TEXT,
-        metadata TEXT
-      );
-
       -- Materialized task state (cache, rebuilt from events)
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -795,7 +776,7 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents DROP COLUMN tmux_session");
     }
     if (!agentCols.some(c => c.name === 'pretty_name')) this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_daemon_registry_status ON daemon_registry(status, machine_id, env_name)");
+    this.db.exec("DROP TABLE IF EXISTS daemon_registry");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS agent_cwd_segments (
         source TEXT NOT NULL,
@@ -1448,31 +1429,6 @@ export class FleetStore {
       INSERT INTO daemon_agent_bindings (daemon_key, local_agent_id, agent_id, created_at)
       VALUES (?, ?, ?, ?)
     `);
-    this._upsertDaemonRegistration = this.db.prepare(`
-      INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(daemon_key) DO UPDATE SET
-        machine_id = excluded.machine_id,
-        env_name = excluded.env_name,
-        install_path = excluded.install_path,
-        user = excluded.user,
-        hostname = excluded.hostname,
-        version = excluded.version,
-        boot_id = excluded.boot_id,
-        status = excluded.status,
-        connected_at = excluded.connected_at,
-        disconnected_at = excluded.disconnected_at,
-        last_seen = excluded.last_seen,
-        metadata = excluded.metadata
-    `);
-    this._markDaemonDisconnected = this.db.prepare(`
-      UPDATE daemon_registry
-      SET status = 'disconnected', disconnected_at = ?, last_seen = ?
-      WHERE daemon_key = ?
-    `);
-    this._getDaemonRegistration = this.db.prepare('SELECT * FROM daemon_registry WHERE daemon_key = ?');
-    this._listDaemonRegistrations = this.db.prepare('SELECT * FROM daemon_registry ORDER BY daemon_key');
-
     this._nameHistoryStmt = this.db.prepare(`
       SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
       ORDER BY from_ts ASC
@@ -2267,43 +2223,6 @@ export class FleetStore {
     };
   }
 
-  upsertDaemonRegistration(daemon) {
-    const now = daemon.last_seen || new Date().toISOString();
-    this._upsertDaemonRegistration.run(
-      daemon.daemon_key,
-      daemon.machine_id,
-      daemon.env_name,
-      daemon.install_path || null,
-      daemon.user || null,
-      daemon.hostname || null,
-      daemon.version || null,
-      daemon.boot_id || null,
-      daemon.status || 'connected',
-      daemon.connected_at || now,
-      null,
-      now,
-      daemon.metadata ? JSON.stringify(daemon.metadata) : null
-    );
-  }
-
-  markDaemonDisconnected(daemonKey, ts = new Date().toISOString()) {
-    if (!daemonKey) return;
-    this._markDaemonDisconnected.run(ts, ts, daemonKey);
-  }
-
-  getDaemonRegistration(daemonKey) {
-    const row = this._getDaemonRegistration.get(daemonKey);
-    if (!row) return null;
-    return { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null };
-  }
-
-  listDaemonRegistrations() {
-    return this._listDaemonRegistrations.all().map(row => ({
-      ...row,
-      metadata: row.metadata ? JSON.parse(row.metadata) : null,
-    }));
-  }
-
   getAgent(id) {
     const row = this._getAgent.get(id);
     return row ? this.projectAgentDaemonRoute(this._hydrateAgent(row)) : null;
@@ -2457,12 +2376,17 @@ export class FleetStore {
     `).get() || {};
     const byMachine = {};
     for (const row of this.db.prepare(`
-      SELECT COALESCE(d.machine_id, '(none)') AS machine_id, COUNT(*) AS count
+      SELECT COALESCE(
+        CASE
+          WHEN instr(r.daemon_key, ':') > 0 THEN substr(r.daemon_key, 1, instr(r.daemon_key, ':') - 1)
+          ELSE r.daemon_key
+        END,
+        '(none)'
+      ) AS machine_id, COUNT(*) AS count
       FROM agents a
       LEFT JOIN agent_daemon_routes r ON r.agent_id = a.id
-      LEFT JOIN daemon_registry d ON d.daemon_key = r.daemon_key
       WHERE a.dead = 0
-      GROUP BY COALESCE(d.machine_id, '(none)')
+      GROUP BY machine_id
     `).all()) {
       byMachine[row.machine_id] = row.count;
     }

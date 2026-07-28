@@ -5193,7 +5193,6 @@ server.on('upgrade', async (req, socket, head) => {
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           // A disconnect is transient. Preserve the daemon's last explicit
           // process observations; silence is not a hibernation report.
-          await fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           // Not awaited: this runs in a socket close/error handler, which is
           // not async and must not become so. Rejections are reported rather
           // than dropped — a route refresh that fails leaves the roster
@@ -5229,7 +5228,6 @@ server.on('upgrade', async (req, socket, head) => {
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           // A disconnect is transient. Preserve the daemon's last explicit
           // process observations; silence is not a hibernation report.
-          await fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           // Not awaited: this runs in a socket close/error handler, which is
           // not async and must not become so. Rejections are reported rather
           // than dropped — a route refresh that fails leaves the roster
@@ -8194,14 +8192,6 @@ const {
   socketCanAcceptMore,
 })
 
-async function knownDaemonKeys() {
-  const keys = new Set([...daemonConnections.keys()])
-  for (const row of await fleetStore?.listDaemonRegistrations?.() || []) {
-    if (row.daemon_key) keys.add(row.daemon_key)
-  }
-  return [...keys].sort()
-}
-
 async function projectsForDaemon() {
   // Returns the project list a daemon needs to watch source dirs for,
   // including each project's relevant-files set (from the last build's
@@ -8271,7 +8261,7 @@ function broadcastDaemonAgentsUpdated(agentUpdates = null) {
 }
 
 async function broadcastDaemonProjectsUpdated() {
-  const daemonKeys = await knownDaemonKeys()
+  const daemonKeys = [...daemonConnections.keys()].sort()
   if (daemonKeys.length === 0) return
   const projects = await projectsForDaemon()
   for (const daemonKey of daemonKeys) {
@@ -8498,19 +8488,6 @@ async function handleDaemonWsMessage(ws, msg) {
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
-    await fleetStore?.upsertDaemonRegistration?.({
-      daemon_key: daemonKey,
-      machine_id,
-      env_name,
-      install_path,
-      user,
-      hostname,
-      version,
-      boot_id: boot_id || 0,
-      status: 'connected',
-      connected_at: new Date().toISOString(),
-      metadata: { scope: 'machine-env' },
-    })
     if (daemonConnections.get(daemonKey) !== ws) {
       console.error(`[fleet-daemon] routability invariant failed after welcome setup: daemon=${daemonKey}`)
     }
