@@ -82,11 +82,6 @@ html[data-theme="dark"] .version-stamp-entry:hover {
   pointer-events: all;
   user-select: none;
   white-space: nowrap;
-  animation: pulse-offline 2s ease-in-out infinite;
-}
-@keyframes pulse-offline {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
 }
 
 .version-stamp-hash {
