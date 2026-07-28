@@ -740,28 +740,22 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
     permissionGrant: processFact.permission_grant,
     source: createdSource,
   })
-  await bindAgentSeat({
-    ledger: permissionLedger,
-    identity: {
-      agentId: facts.fleetId,
-      sessionId: facts.sessionId,
-      resumeId: facts.sessionId,
-      kind: processFact.harness,
-      model: processFact.model,
-      cwd: processFact.cwd,
-      sessionPath: facts.sessionPath,
-      friendlyName: facts.friendlyName,
-    },
-    route: {
-      machineId: MACHINE_ID,
-      envName: ACTIVE_ENV,
-      daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
-      tmuxSession: processFact.tmux_session,
-    },
-    createdSource,
-    submit: payload => daemonApi('POST', '/api/agent-seat', payload),
-    readback: agentId => daemonApi('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
-    requireReadback: true,
+  const terminalCapability = permissionLedger.rotateTerminalCapabilitySync(facts.fleetId)
+  if (!terminalCapability) {
+    throw new Error(`mint binding requires daemon-minted terminal capability for ${facts.fleetId}`)
+  }
+  permissionLedger.setSessionSync(facts.fleetId, {
+    sessionId: facts.sessionId,
+    sessionKind: processFact.harness,
+    sessionPath: facts.sessionPath,
+    tmuxSession: processFact.tmux_session,
+    model: processFact.model,
+    machineId: MACHINE_ID,
+    envName: ACTIVE_ENV,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+    cwd: processFact.cwd,
+    friendlyName: facts.friendlyName,
+    terminalCapability,
   })
 }
 

@@ -7,7 +7,6 @@ import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
-import { sessionIdentitySeatEvent } from '../daemon/jsonl-ingestor.mjs'
 import { buildDaemonActivityRecord } from '../server/lib/daemon-activity-ingest.mjs'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 
@@ -43,18 +42,6 @@ try {
   })
   assert.equal(Object.hasOwn(harnessRuntime.harnessForAgent(agent).activity, 'resolve' + 'Jsonl'), false)
   assert.equal(livePaneCalls, 0)
-
-  const seatEvent = sessionIdentitySeatEvent({
-    fleet_id: agent.id,
-    session_id: agent.session_id,
-    harness_kind: 'codex',
-    model: 'gpt-test',
-    cwd: dir,
-  }, daemonIdentity)
-  assert.equal(seatEvent.agent_id, agent.id)
-  assert.equal(seatEvent.session_id, agent.session_id)
-  assert.equal(seatEvent.daemon_key, daemonIdentity.daemonKey)
-  assert(!Object.hasOwn(seatEvent, 'tmux_session'))
 
   outbox = new DaemonOutbox(outboxPath)
   const sent = []

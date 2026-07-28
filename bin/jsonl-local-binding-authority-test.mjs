@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -117,6 +117,7 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
     },
     jsonlTranscriptRoots: [projectsDir],
     permissionLedger,
+    recordMintMarker,
     resolveMintFacts,
     bufferActivity(agentId, activity) { bufferedActivity.push({ agentId, activity }) },
     extractActivityEvents() { return [] },
@@ -290,9 +291,16 @@ function assertTailCount(harness, expected) {
 
 {
   const sessionUuid = '019fa554-0000-7000-8000-000000000001'
+  const recordedMarkers = []
+  let localBinding = null
+  const permissionLedger = {
+    get: () => localBinding,
+    setSessionSync: (_agentId, binding) => { localBinding = binding },
+  }
   const harness = createHarness({
     jsonlFileName: `rollout-2026-07-27T17-00-00-${sessionUuid}.jsonl`,
-    permissionLedger: { setSessionSync() {} },
+    permissionLedger,
+    recordMintMarker: marker => recordedMarkers.push(marker),
     resolveMintFacts: marker => marker.mint_id === 'mint-jsonl-owner'
       ? {
           fleetId: 'fleet:jsonl-owner',
@@ -334,11 +342,10 @@ function assertTailCount(harness, expected) {
       }],
     })
     assert.equal(harness.sentToServer.some(message =>
-      message.type === 'agent-seat' &&
-      message.agent_id === 'fleet:jsonl-owner' &&
-      message.session_id === sessionUuid &&
-      message.model === 'gpt-from-mint'
-    ), true)
+      message.type === 'agent-seat'
+    ), false)
+    assert.equal(permissionLedger.get('fleet:jsonl-owner').sessionId, sessionUuid)
+    assert.equal(recordedMarkers[0].session_id, sessionUuid)
   } finally {
     harness.cleanup()
   }
@@ -380,12 +387,7 @@ function assertTailCount(harness, expected) {
         },
       }],
     })
-    assert.equal(harness.sentToServer.some(message =>
-      message.type === 'agent-seat' &&
-      message.agent_id === 'fleet:jsonl-owner' &&
-      message.session_id === sessionUuid &&
-      message.model === 'gpt-from-marker'
-    ), true)
+    assert.equal(harness.sentToServer.some(message => message.type === 'agent-seat'), false)
   } finally {
     harness.cleanup()
   }
@@ -472,11 +474,7 @@ function assertTailCount(harness, expected) {
       message.warning === 'daemon-ledger-session-identity-write-failed' &&
       message.fleet_id === 'fleet:jsonl-owner'
     ), true)
-    assert.equal(harness.sentToServer.some(message =>
-      message.type === 'agent-seat' &&
-      message.agent_id === 'fleet:jsonl-owner' &&
-      message.session_id === '019fa553-eb8e-7d41-9ea8-9c71c3bab5f4'
-    ), true)
+    assert.equal(harness.sentToServer.some(message => message.type === 'agent-seat'), false)
   } finally {
     harness.cleanup()
   }

@@ -112,36 +112,6 @@ export function jsonlRuntimeFailureActivityHealth(pw, kind, detail = {}) {
   }
 }
 
-export function sessionIdentitySeatEvent(input = {}, {
-  machineId = null,
-  envName = null,
-  daemonKey = null,
-} = {}) {
-  const fleetId = input?.fleet_id
-  const sessionId = ledgerSessionId(input)
-  const effectiveMachineId = input.machine_id || machineId
-  const effectiveEnvName = input.env_name || envName
-  const effectiveDaemonKey = input.daemon_key || daemonKey || (effectiveMachineId && effectiveEnvName ? `${effectiveMachineId}:${effectiveEnvName}` : null)
-  if (!fleetId || !sessionId || !input.harness_kind || !input.model || !input.cwd || !effectiveMachineId || !effectiveEnvName || !effectiveDaemonKey) {
-    return null
-  }
-  const event = {
-    type: 'agent-seat',
-    agent_id: fleetId,
-    session_id: sessionId,
-    resume_id: input.resume_id || sessionId,
-    kind: input.harness_kind,
-    model: input.model,
-    cwd: input.cwd,
-    machine_id: effectiveMachineId,
-    env_name: effectiveEnvName,
-    daemon_key: effectiveDaemonKey,
-    created_source: input.created_source || 'daemon-session-observed',
-  }
-  if (input.tmux_session) event.tmux_session = input.tmux_session
-  return event
-}
-
 export function jsonlOwnershipState(entry = {}, daemonKey = null) {
   const owner = entry?.owner || {}
   if (owner.state === 'ignore') return 'ignore'
@@ -328,7 +298,6 @@ export function createJsonlIngestor({
     // not independently resumable fleet seats. Watching their activity is
     // valid; replacing the parent's durable resume identity with them is not.
     if (input.harness_kind === 'codex' && !codexRolloutIsTopLevel(input.jsonl_path)) return
-    const event = sessionIdentitySeatEvent(input, { machineId, envName, daemonKey })
     try {
       permissionLedger.setSessionSync(fleetId, {
         sessionId,
@@ -336,9 +305,9 @@ export function createJsonlIngestor({
         sessionPath: input.jsonl_path,
         tmuxSession: input.tmux_session,
         model: input.model,
-        machineId: event?.machine_id || input.machine_id || machineId,
-        envName: event?.env_name || input.env_name || envName,
-        daemonKey: event?.daemon_key || input.daemon_key || daemonKey,
+        machineId: input.machine_id || machineId,
+        envName: input.env_name || envName,
+        daemonKey: input.daemon_key || daemonKey,
         cwd: input.cwd,
         friendlyName: input.friendly_name,
       })
@@ -352,7 +321,6 @@ export function createJsonlIngestor({
         error: e?.message || String(e),
       })
     }
-    if (event) sendMsg(event)
   }
 
   function cleanString(value) {
@@ -389,7 +357,11 @@ export function createJsonlIngestor({
     try {
       recordMintMarker?.({
         ...marker,
-        session_id: marker.session_id || sessionId,
+        session_id: ledgerSessionId({
+          session_id: marker.session_id || sessionId,
+          harness_kind: marker.harness_kind || harnessKind,
+          jsonl_path: jsonlPath,
+        }),
         session_path: jsonlPath,
         harness_kind: marker.harness_kind || harnessKind,
       })
