@@ -72,12 +72,6 @@ function statementArgs(params) {
   return Array.isArray(params) ? params : [params];
 }
 
-function cwdPathSegments(cwd) {
-  const normalized = String(cwd || '').trim().replace(/\/+$/, '');
-  if (!normalized) return [];
-  return [...new Set(normalized.split('/').filter(Boolean))];
-}
-
 // Newest first, bucketed to the MINUTE — Skip's design, from the screen rather
 // than from a profile:
 //
@@ -157,16 +151,11 @@ function serializePrettyName(value) {
   return JSON.stringify(value);
 }
 
-const PROTECTED_AGENT_UPSERT_FIELDS = [
-  'cwd',
-];
-
 // Clears the fields that belong to the durable daemon-route projection, not to
 // the mutable agents row. The flat seat_* fields are what runtime routing reads.
 function withoutProtectedAgentFields(agent) {
   if (!agent) return agent;
   const next = { ...agent };
-  for (const field of PROTECTED_AGENT_UPSERT_FIELDS) next[field] = null;
   next.route_present = false;
   next.route_daemon_key = null;
   return next;
@@ -307,8 +296,6 @@ export class FleetStore {
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
     this._closed = false;
-    this._cwdSegmentBackfillImmediate = null;
-    this._scheduleCwdSegmentBackfill();
     this._initAgentRegistry();
     this._wiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
@@ -326,54 +313,6 @@ export class FleetStore {
   _wAwait(stmtOrSql, params) {
     const stmt = typeof stmtOrSql === 'string' ? this.db.prepare(stmtOrSql) : stmtOrSql;
     return stmt.run(...statementArgs(params));
-  }
-
-  _replaceCwdSegments(source, agentId, cwd) {
-    if (!source || !agentId) return;
-    const segments = cwdPathSegments(cwd);
-    const tx = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM agent_cwd_segments WHERE source = ? AND agent_id = ?').run(source, agentId);
-      const insert = this.db.prepare('INSERT OR IGNORE INTO agent_cwd_segments (source, agent_id, segment) VALUES (?, ?, ?)');
-      for (const segment of segments) insert.run(source, agentId, segment);
-    });
-    tx();
-  }
-
-  _scheduleCwdSegmentBackfill() {
-    const batchSize = Math.max(1, Number(process.env.TLDA_CWD_SEGMENT_BACKFILL_BATCH || 50) || 50);
-    // Advance by cursor, not by "rows that still lack segments". A cwd of "/"
-    // normalizes to no segments, so nothing is inserted for it and the
-    // NOT EXISTS predicate stays true forever: the batch re-selects the same
-    // rows and setImmediate reschedules itself without end. Progress must not
-    // depend on the write having had an effect.
-    const selectAgents = this.db.prepare(`
-      SELECT id AS agent_id, cwd FROM agents
-      WHERE cwd IS NOT NULL AND cwd != '' AND id > ?
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_cwd_segments cs
-          WHERE cs.source = 'agent' AND cs.agent_id = agents.id
-        )
-      ORDER BY id
-      LIMIT ?
-    `);
-    let agentCursor = '';
-    const runBatch = () => {
-      this._cwdSegmentBackfillImmediate = null;
-      if (this._closed || !this.db.open) return;
-      let rows = [];
-      try {
-        const agents = selectAgents.all(agentCursor, batchSize).map(r => ({ ...r, source: 'agent' }));
-        if (agents.length) agentCursor = agents[agents.length - 1].agent_id;
-        rows = agents;
-        for (const row of rows) this._replaceCwdSegments(row.source, row.agent_id, row.cwd);
-      } catch (e) {
-        if (this._closed || !this.db.open) return;
-        console.warn(`[fleet-store] cwd segment backfill failed: ${e.message}`);
-        return;
-      }
-      if (rows.length > 0 && !this._closed) this._cwdSegmentBackfillImmediate = setImmediate(runBatch);
-    };
-    this._cwdSegmentBackfillImmediate = setImmediate(runBatch);
   }
 
   _wBatchAwait(ops) {
@@ -539,7 +478,6 @@ export class FleetStore {
         id TEXT PRIMARY KEY,
         friendly_name TEXT,
         pretty_name TEXT,              -- JSON string/array or plain string, display-only
-        cwd TEXT,
         labels TEXT,                  -- JSON array
         registered_at TEXT,
         last_seen TEXT,
@@ -722,16 +660,7 @@ export class FleetStore {
     if (!agentCols.some(c => c.name === 'pretty_name')) this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     this.db.exec("DROP TABLE IF EXISTS daemon_registry");
     this.db.exec("DROP TABLE IF EXISTS daemon_agent_bindings");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS agent_cwd_segments (
-        source TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        segment TEXT NOT NULL,
-        PRIMARY KEY (source, agent_id, segment)
-      );
-      CREATE INDEX IF NOT EXISTS idx_agent_cwd_segments_segment
-        ON agent_cwd_segments(segment, source, agent_id);
-    `);
+    this.db.exec("DROP TABLE IF EXISTS agent_cwd_segments");
     this.db.exec(`
       DROP TABLE IF EXISTS agent_seat_binding_obligations;
       DROP TABLE IF EXISTS agent_current_seats;
@@ -744,7 +673,7 @@ export class FleetStore {
       DROP INDEX IF EXISTS idx_agents_machine_env_alive;
       DROP INDEX IF EXISTS idx_agents_daemon_key;
     `);
-    for (const column of ['session_id', 'session_ids', 'resume_id', 'machine_id', 'env_name', 'daemon_key']) {
+    for (const column of ['cwd', 'session_id', 'session_ids', 'resume_id', 'machine_id', 'env_name', 'daemon_key']) {
       if (this.db.prepare('PRAGMA table_info(agents)').all().some(c => c.name === column)) {
         this.db.exec(`ALTER TABLE agents DROP COLUMN ${column}`);
       }
@@ -1165,8 +1094,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
-      CREATE INDEX IF NOT EXISTS idx_agents_cwd ON agents(cwd, id);
-      CREATE INDEX IF NOT EXISTS idx_agents_cwd_trimmed ON agents(rtrim(cwd, '/'), id);
       CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
     `);
 
@@ -1305,8 +1232,8 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, pretty_name, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, friendly_name, pretty_name, labels, registered_at, last_seen, dead, human, is_manager, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
@@ -2077,7 +2004,6 @@ export class FleetStore {
         agent.id,
         agent.friendly_name || null,
         serializePrettyName(agent.pretty_name),
-        agent.cwd || null,
         agent.labels ? JSON.stringify(agent.labels) : null,
         agent.registered_at || null,
         agent.last_seen || new Date().toISOString(),
@@ -2086,7 +2012,6 @@ export class FleetStore {
         agent.is_manager ? 1 : 0,
         agent.metadata ? JSON.stringify(agent.metadata) : null
       );
-      if (agent.cwd != null) this._replaceCwdSegments('agent', agent.id, agent.cwd);
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
     } catch (e) {
@@ -4443,183 +4368,6 @@ export class FleetStore {
     };
   }
 
-  searchProjectAgents(projectOrCwd, { limit = 50, since = null, before = null, agentIds = null } = {}) {
-    const raw = String(projectOrCwd || '').trim();
-    if (!raw) return [];
-    const cap = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-    const explicitAgentIds = Array.isArray(agentIds) ? agentIds.filter(Boolean) : [];
-    const isPath = raw.includes('/') || raw.startsWith('~');
-    const normalized = raw.replace(/\/+$/, '');
-    const params = [];
-    let candidateRawSql;
-    if (isPath) {
-      candidateRawSql = `
-        SELECT id AS agent_id, cwd, registered_at AS seat_created_at FROM agents WHERE rtrim(cwd, '/') = ?
-      `;
-      params.push(normalized);
-    } else {
-      candidateRawSql = `
-        SELECT a.id AS agent_id, a.cwd, a.registered_at AS seat_created_at
-        FROM agent_cwd_segments cs
-        JOIN agents a ON a.id = cs.agent_id
-        WHERE cs.segment = ? AND cs.source = 'agent'
-      `;
-      params.push(raw);
-    }
-    const sql = `
-      WITH candidate_raw AS (
-        ${candidateRawSql}
-      ),
-      candidate AS (
-        SELECT agent_id, max(cwd) AS cwd, max(seat_created_at) AS seat_created_at
-        FROM candidate_raw
-        WHERE agent_id IS NOT NULL AND agent_id != ''
-        GROUP BY agent_id
-      )
-      SELECT c.agent_id, c.cwd, c.seat_created_at,
-             a.friendly_name, a.pretty_name, a.dead, a.last_seen, a.last_active, a.registered_at
-      FROM candidate c
-      LEFT JOIN agents a ON a.id = c.agent_id
-      ${explicitAgentIds.length ? `WHERE c.agent_id IN (${explicitAgentIds.map(() => '?').join(',')})` : ''}
-      ORDER BY coalesce(a.last_active, a.last_seen, c.seat_created_at, a.registered_at, '') DESC
-      LIMIT ?
-    `;
-    const candidateCap = Math.min(Math.max(cap * 5, 50), 500);
-    const rows = this.db.prepare(sql).all(...params, ...params, ...explicitAgentIds, candidateCap);
-
-    const eventTimeClauses = [];
-    const eventTimeParams = [];
-    if (since) { eventTimeClauses.push('timestamp >= ?'); eventTimeParams.push(since); }
-    if (before) { eventTimeClauses.push('timestamp < ?'); eventTimeParams.push(before); }
-    const eventTimeWhere = eventTimeClauses.length ? `AND ${eventTimeClauses.join(' AND ')}` : '';
-    const sessionTimeWhere = eventTimeClauses.length ? `AND ${eventTimeClauses.join(' AND ')}` : '';
-    const eventSelect = `${this._EVTE}, 'fleet' AS source, NULL AS role, NULL AS session_id`;
-    const eventByFrom = this.db.prepare(`
-      SELECT ${eventSelect}
-      FROM events e
-      WHERE from_id = ? ${eventTimeWhere}
-      ORDER BY timestamp DESC, id DESC
-      LIMIT 1
-    `);
-    const eventByTo = this.db.prepare(`
-      SELECT ${eventSelect}
-      FROM events e
-      WHERE to_id = ? ${eventTimeWhere}
-      ORDER BY timestamp DESC, id DESC
-      LIMIT 1
-    `);
-    const eventByAgent = this.db.prepare(`
-      SELECT ${eventSelect}
-      FROM events e
-      WHERE agent_id = ? ${eventTimeWhere}
-      ORDER BY timestamp DESC, id DESC
-      LIMIT 1
-    `);
-    const sessionByAgent = this.db.prepare(`
-      SELECT id, agent_id, timestamp, text, 'session' AS source, NULL AS type, NULL AS metadata,
-             NULL AS from_id, NULL AS to_id, role, session_id
-      FROM session_entries
-      WHERE agent_id = ? ${sessionTimeWhere}
-      ORDER BY timestamp DESC, id DESC
-      LIMIT 1
-    `);
-    const latestFor = (agentId) => {
-      const args = [agentId, ...eventTimeParams];
-      const candidates = [
-        eventByFrom.get(...args),
-        eventByTo.get(...args),
-        eventByAgent.get(...args),
-        sessionByAgent.get(...args),
-      ].filter(Boolean);
-      candidates.sort((a, b) => {
-        const tc = (b.timestamp || '').localeCompare(a.timestamp || '');
-        return tc || ((b.id || 0) - (a.id || 0));
-      });
-      return candidates[0] || null;
-    };
-
-    return rows.map(r => {
-      const latest = latestFor(r.agent_id);
-      return {
-        source: 'fleet',
-        id: latest?.id || `project-agent:${r.agent_id}`,
-        type: 'project_agent',
-        timestamp: latest?.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
-        from: r.agent_id,
-        to: null,
-        agentId: r.agent_id,
-        agentName: r.friendly_name || null,
-        agentNameNow: r.friendly_name || null,
-        text: latest?.text || '',
-        snippet: (latest?.text || '').slice(0, 220),
-        agent_id: r.agent_id,
-        friendly_name: r.friendly_name || null,
-        cwd: r.cwd || null,
-        project: r.cwd ? path.basename(String(r.cwd).replace(/\/+$/, '')) : null,
-        latest_relevant_at: latest?.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
-        latest_activity: {
-          source: latest?.source || 'agent_seat',
-          type: latest?.type || latest?.role || 'seat',
-          event_id: latest?.source === 'fleet' ? latest.id : null,
-          session_id: latest?.session_id || null,
-          summary: (latest?.text || '').slice(0, 220),
-        },
-        status: {
-          dead: !!r.dead,
-          last_seen: r.last_seen || null,
-          last_active: r.last_active || null,
-        },
-        thread: {
-          agent: r.agent_id,
-          query: `thread(agent: "${r.agent_id}")`,
-        },
-      }
-    }).sort((a, b) => (b.latest_relevant_at || '').localeCompare(a.latest_relevant_at || '')).slice(0, cap);
-  }
-
-  projectAgentRows(projectOrCwd, agentIds, { limit = 50, since = null, before = null } = {}) {
-    const wanted = new Set(Array.isArray(agentIds) ? agentIds.filter(Boolean) : []);
-    if (!wanted.size) return [];
-    return this.searchProjectAgents(projectOrCwd, {
-      limit,
-      since,
-      before,
-      agentIds: [...wanted],
-    }).filter(row => wanted.has(row.agentId)).slice(0, limit);
-  }
-
-  projectAgentIds(projectOrCwd) {
-    const raw = String(projectOrCwd || '').trim();
-    if (!raw) return [];
-    const isPath = raw.includes('/') || raw.startsWith('~');
-    const normalized = raw.replace(/\/+$/, '');
-    const params = [];
-    let candidateRawSql;
-    if (isPath) {
-      candidateRawSql = `
-        SELECT id AS agent_id FROM agents WHERE rtrim(cwd, '/') = ?
-      `;
-      params.push(normalized);
-    } else {
-      candidateRawSql = `
-        SELECT a.id AS agent_id
-        FROM agent_cwd_segments cs
-        JOIN agents a ON a.id = cs.agent_id
-        WHERE cs.segment = ? AND cs.source = 'agent'
-      `;
-      params.push(raw);
-    }
-    const sql = `
-      WITH candidate_raw AS (
-        ${candidateRawSql}
-      )
-      SELECT agent_id
-      FROM candidate_raw
-      WHERE agent_id IS NOT NULL AND agent_id != ''
-    `;
-    return this.db.prepare(sql).all(...params, ...params).map(r => r.agent_id);
-  }
-
   // Get N chat events before/after a timestamp (for search context).
   getChatContext(timestamp, window = 3) {
     const cap = Math.min(window, 20);
@@ -4842,8 +4590,6 @@ export class FleetStore {
 
   close() {
     this._closed = true;
-    if (this._cwdSegmentBackfillImmediate) clearImmediate(this._cwdSegmentBackfillImmediate);
-    this._cwdSegmentBackfillImmediate = null;
     this.db.close();
   }
 }

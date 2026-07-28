@@ -6024,31 +6024,7 @@ async function handleFleetWsMessage(ws, msg) {
         const ids = await fleetStore.resolveAgentQuery(msg.agentQuery);
         searchAgent = ids.length ? ids : [noMatch];
       }
-      const projectAgentQuery = String(msg.cwd || msg.project || '').trim()
       const hasText = (msg.query || '').trim().length > 0;
-      if (projectAgentQuery && !hasText) {
-        const results = await stampNames(await fleetStore.searchProjectAgents(projectAgentQuery, {
-          limit: msg.limit,
-          since: msg.since,
-          before: msg.before,
-        }))
-        reply({ results })
-        return
-      }
-      if (projectAgentQuery) {
-        const projectAgentIds = await fleetStore.projectAgentIds(projectAgentQuery)
-        if (!projectAgentIds.length) {
-          reply({ results: [] })
-          return
-        }
-        searchAgent = searchAgent
-          ? (Array.isArray(searchAgent) ? searchAgent : [searchAgent]).filter(id => projectAgentIds.includes(id))
-          : projectAgentIds
-        if (!searchAgent.length) {
-          reply({ results: [] })
-          return
-        }
-      }
       let results = await fleetStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
@@ -6058,24 +6034,6 @@ async function handleFleetWsMessage(ws, msg) {
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
       })
-      if (projectAgentQuery && hasText) {
-        const projectIds = new Set(searchAgent)
-        const nameIds = (await fleetStore.resolveAgentQuery(msg.query || '')).filter(id => projectIds.has(id))
-        const agentRows = await fleetStore.projectAgentRows(projectAgentQuery, nameIds, {
-          limit: msg.limit || 50,
-          since: msg.since,
-          before: msg.before,
-        })
-        const seen = new Set(results.map(r => `${r.source}:${r.id}`))
-        for (const row of agentRows) {
-          const key = `${row.source}:${row.id}`
-          if (!seen.has(key)) {
-            seen.add(key)
-            results.push(row)
-          }
-        }
-        results = results.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, msg.limit || 50)
-      }
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         const ids = [...new Set((await Promise.all(naturalQueries.map(async query => (
