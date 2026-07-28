@@ -100,7 +100,13 @@ function useAgents(): { agents: Agent[]; error: string } {
     let cancelled = false
     async function load() {
       try {
-        const list: Agent[] = await fleetEphemeral('store-agents') || []
+        const list: Agent[] = []
+        let cursor: string | null = null
+        do {
+          const page = await fleetEphemeral('agents-page', { limit: 200, cursor })
+          list.push(...(page?.agents || []))
+          cursor = page?.nextCursor || null
+        } while (cursor && !cancelled)
         if (!cancelled) {
           setAgents(list.filter(a => !a.dead && a.runtime_status?.status === 'awake' && (!a.runtime_status?.route_state || a.runtime_status.route_state === 'routable')))
           setError('')

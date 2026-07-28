@@ -388,11 +388,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
-  // --- GET /api/store/agents ---
-  router.get('/api/store/agents', (req, res) => {
-    res.status(410).json({ error: 'Full agent store dumps are disabled; use /api/agents, /api/agents/lookup, or search.' })
-  })
-
   router.get('/api/agents/summary', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try { res.json(await fleetStore.getAgentSummary?.() || { total: 0, live: 0, dead: 0, byMachine: {} }) }
@@ -451,14 +446,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
-  // --- GET /api/store/tasks ---
-  router.get('/api/store/tasks', (req, res) => {
-    res.status(410).json({ error: 'Full task store dumps are disabled; use /api/tasks or search.' })
-  })
-
   // --- GET /api/tasks?limit=100&cursor=<opaque> ---
-  // Automatic browser surfaces use this bounded first page plus task_delta. The
-  // unbounded /api/store/tasks endpoint remains explicit tooling/history.
+  // Automatic browser surfaces use this bounded first page plus task_delta.
   router.get('/api/tasks', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const requested = Number.parseInt(req.query.limit, 10)

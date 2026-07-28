@@ -66,7 +66,7 @@ import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requ
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
+import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
 import { FleetStoreClient } from './lib/fleet-store-client.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
@@ -5879,24 +5879,26 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Full roster INCLUDING dead agents — history tooling (thread,
-  // search) must keep dead agents addressable by name.
-  if (type === 'store-agents-all') {
-    error('Full agent store dumps are disabled; use resolve-agent, paged agents, or search.')
-    return
-  }
-
   if (type === 'resolve-agent') {
     reply({ agent: await fleetStore.findAgent(msg.agent) || null })
     return
   }
 
-  if (type === 'store-tasks') {
-    if (msg.active === false) {
-      error('Full task store dumps are disabled; use paged tasks or search.')
+  if (type === 'task-by-id') {
+    if (!msg.task_id) {
+      error('task-by-id requires task_id')
       return
     }
-    reply((await fleetStore.getActiveTasksPage({ limit: 100 }))?.tasks || [])
+    reply({ task: await fleetStore.getTask(msg.task_id) || null })
+    return
+  }
+
+  if (type === 'active-task-by-agent') {
+    if (!msg.agent) {
+      error('active-task-by-agent requires agent')
+      return
+    }
+    reply({ task: await fleetStore.getTaskByAgent(msg.agent) || null })
     return
   }
 

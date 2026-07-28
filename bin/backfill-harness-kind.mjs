@@ -66,6 +66,19 @@ async function request(path, { method = 'GET', body = null } = {}) {
   return data
 }
 
+async function requestAllAgents() {
+  const agents = []
+  let cursor = null
+  do {
+    const params = new URLSearchParams({ limit: '200' })
+    if (cursor) params.set('cursor', cursor)
+    const page = await request(`/api/agents?${params}`)
+    agents.push(...(page.agents || []))
+    cursor = page.nextCursor || null
+  } while (cursor)
+  return agents
+}
+
 function expandPath(p) {
   if (!p) return p
   if (p === '~') return homedir()
@@ -185,7 +198,7 @@ function inferKind(agent, args) {
 }
 
 const args = parseArgs(process.argv.slice(2))
-const agents = args.db ? loadAgentsFromDb(args.db) : await request('/api/store/agents')
+const agents = args.db ? loadAgentsFromDb(args.db) : await requestAllAgents()
 const candidates = agents.filter(agent => {
   if (args.agent && agent.id !== args.agent && agent.friendly_name !== args.agent) return false
   return !agent.metadata?.kind

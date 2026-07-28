@@ -28,14 +28,14 @@ function parseArgs(argv) {
     else if (arg === '--examples') out.examples = Number(argv[++i] || out.examples)
     else if (arg === '--scope') out.scope = argv[++i] || out.scope
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node scripts/audit-agent-resume-handles.mjs [--scope hibernating|all-active|all] [--server URL] [--config-dir DIR] [--json] [--examples N]')
+      console.log('Usage: node scripts/audit-agent-resume-handles.mjs [--scope hibernating|all-active] [--server URL] [--config-dir DIR] [--json] [--examples N]')
       process.exit(0)
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
-  if (!['hibernating', 'all-active', 'all'].includes(out.scope)) {
-    throw new Error(`unknown --scope ${out.scope}; expected hibernating, all-active, or all`)
+  if (!['hibernating', 'all-active'].includes(out.scope)) {
+    throw new Error(`unknown --scope ${out.scope}; expected hibernating or all-active`)
   }
   return out
 }
@@ -109,7 +109,6 @@ function rowSummary(agent) {
 function inScope(agent, scope) {
   const status = runtimeStatusName(agent)
   if (agent.human) return false
-  if (scope === 'all') return true
   if (scope === 'all-active') return !agent.dead && status !== 'dead'
   return status === 'hibernating'
 }
@@ -238,7 +237,7 @@ function summarize({ allAgents, audited, results, options }) {
     source: {
       server: options.server,
       env_name: options.envName,
-      endpoint: '/api/store/agents',
+      endpoint: '/api/agents',
       scope: options.scope,
     },
     resolver_citations: {
@@ -248,12 +247,11 @@ function summarize({ allAgents, audited, results, options }) {
       codex_resolver: 'bin/lib/codex-resume-resolver.mjs:163',
     },
     totals: {
-      authoritative_rows: allAgents.length,
+      active_roster_rows: allAgents.length,
       humans: allAgents.filter(a => a.human).length,
       non_human_agents: nonHuman.length,
       awake: nonHuman.filter(a => runtimeStatusName(a) === 'awake').length,
       hibernating: nonHuman.filter(a => runtimeStatusName(a) === 'hibernating').length,
-      dead: nonHuman.filter(a => runtimeStatusName(a) === 'dead' || a.dead).length,
       audited: audited.length,
       fully_spawnable: results.filter(r => r.ok).length,
       lost_or_unresolvable_pointer: results.filter(r => r.category === 'unresolvable-pointer').length,
@@ -305,11 +303,18 @@ function printText(summary) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const rows = await tldaFetch('/api/store/agents', {
-    server: options.server,
-    timeoutMs: 60000,
-  })
-  if (!Array.isArray(rows)) throw new Error('expected /api/store/agents to return an array')
+  const rows = []
+  let cursor = null
+  do {
+    const params = new URLSearchParams({ limit: '200' })
+    if (cursor) params.set('cursor', cursor)
+    const page = await tldaFetch(`/api/agents?${params}`, {
+      server: options.server,
+      timeoutMs: 60000,
+    })
+    rows.push(...(page.agents || []))
+    cursor = page.nextCursor || null
+  } while (cursor)
   const seen = new Set()
   const allAgents = []
   for (const row of rows) {

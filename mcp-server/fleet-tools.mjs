@@ -829,34 +829,6 @@ let _lastAgentPrune = 0;
 // Notifications handled by fleet-notify daemon (bin/fleet-notify), not the MCP server.
 // Daemon holds SSE connection, touches signal files, kicks tmux.
 
-// ---- State helpers ----
-
-// Bootstrap-only: sync state file read for identity resolution at startup.
-// loadState: fetch from server. Returns { agents, tasks, messages } structure for compat.
-// Callers should prefer specific API endpoints over loadState() where possible.
-async function loadState() {
-  try {
-    const [agents, tasks] = await Promise.all([mcpFleetTransport.ephemeral('store-agents'), mcpFleetTransport.ephemeral('store-tasks')]);
-    return { agents: agents || [], tasks: tasks || [], messages: [] };
-  } catch (e) {
-    process.stderr.write(`[fleet] loadState failed: ${e.message}\n`);
-    return { tasks: [], messages: [], agents: [] };
-  }
-}
-
-// Like loadState but the agent roster INCLUDES dead agents. Used for name→id
-// resolution in history tooling (thread, search): a dead agent must
-// stay addressable by name — search is the only handle on it.
-async function loadStateAll() {
-  try {
-    const [agents, tasks] = await Promise.all([mcpFleetTransport.ephemeral('store-agents-all'), mcpFleetTransport.ephemeral('store-tasks')]);
-    return { agents: agents || [], tasks: tasks || [], messages: [] };
-  } catch (e) {
-    process.stderr.write(`[fleet] loadStateAll failed: ${e.message}\n`);
-    return { tasks: [], messages: [], agents: [] };
-  }
-}
-
 async function resolveAgent(query) {
   let data;
   try {
@@ -1030,32 +1002,6 @@ function now() {
 function requireManager() {
   if (!AGENT_ID) return 'Cannot identify caller — no session ID detected.';
   return null; // No permission gating — any agent can do anything
-}
-
-// ---- Agent registry ----
-
-function getAgent(state, id) {
-  if (!state.agents) return null;
-  const idAlias = id && !String(id).startsWith('fleet:') ? `fleet:${id}` : null;
-  // Phase is encoded in the friendly name now ("base:day"/"base:dusk"; dawn is
-  // the bare base), so a lineage address is a plain name lookup.
-  const exact = state.agents.find(a =>
-    a.id === id || (idAlias && a.id === idAlias) || a.friendly_name === id ||
-    a.session_id === id || (a.session_ids && a.session_ids.includes(id))
-  );
-  if (exact) return exact;
-  // ":dawn" is an alias for the bare base name (dawn carries no suffix).
-  if (id.endsWith(':dawn')) {
-    const base = id.slice(0, -':dawn'.length);
-    return state.agents.find(a => a.friendly_name === base) || null;
-  }
-  return null;
-}
-
-/** Check if an ID belongs to a human agent (by registry lookup, not aliases) */
-function isHuman(state, id) {
-  const agent = getAgent(state, id);
-  return !!(agent?.human);
 }
 
 export function classifyTaskAgentHealth(task, agent, options = {}) {
@@ -2193,10 +2139,7 @@ export async function handleFleetTool(name, args) {
   async function harnessKindForDelegateTarget(agent, spawnOpts) {
     if (!agent) return null;
     try {
-      const agents = await mcpFleetTransport.ephemeral('store-agents');
-      const target = Array.isArray(agents)
-        ? agents.find(a => a.id === agent || a.friendly_name === agent)
-        : null;
+      const target = await resolveAgent(agent);
       return target?.metadata?.kind || null;
     } catch (e) {
       process.stderr.write(`[fleet] could not resolve delegate target harness: ${e.message}\n`);
@@ -2204,9 +2147,12 @@ export async function handleFleetTool(name, args) {
     }
   }
 
-  async function getRoster() {
-    const agents = await mcpFleetTransport.ephemeral('store-agents');
-    return Array.isArray(agents) ? agents : [];
+  async function getRoster(targetAgentId) {
+    const rows = await Promise.all([
+      resolveAgent(AGENT_ID).catch(() => null),
+      resolveAgent(targetAgentId).catch(() => null),
+    ]);
+    return rows.filter(Boolean);
   }
 
   function agentMatches(agent, id) {
@@ -2255,7 +2201,7 @@ export async function handleFleetTool(name, args) {
   }
 
   async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
-    const agents = await getRoster();
+    const agents = await getRoster(targetAgentId);
     const fromAgent = agents.find(a => a.id === AGENT_ID) || { id: AGENT_ID, cwd: getAgentCwd() };
     const toAgent = agents.find(a => agentMatches(a, targetAgentId));
     if (!toAgent) return null;
@@ -2824,18 +2770,30 @@ export async function handleFleetTool(name, args) {
     // does not cover it, so the surface can never imply completeness it lacks.
     const requestedLimit = Number(args.limit);
     const pageLimit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
-    let agents, page;
+    let page;
     try {
-      [agents, page] = await Promise.all([
-        mcpFleetTransport.ephemeral('store-agents'),
-        mcpFleetTransport.ephemeral('tasks-page', { limit: pageLimit, cursor: args.cursor || null }),
-      ]);
-      if (agents.error) return { content: [{ type: 'text', text: `tasks failed: ${agents.error}` }], isError: true };
+      page = await mcpFleetTransport.ephemeral('tasks-page', {
+        limit: pageLimit,
+        cursor: args.cursor || null,
+      });
       if (page.error) return { content: [{ type: 'text', text: `tasks failed: ${page.error}` }], isError: true };
     } catch (e) {
       return { content: [{ type: 'text', text: `tasks failed before transport ACK: ${e.message}` }], isError: true };
     }
     const active = page.tasks || [];
+    const agentIds = [...new Set(active.flatMap(task => [task.agent, task.delegated_by]).filter(Boolean))];
+    let agents = [];
+    try {
+      const batches = [];
+      for (let i = 0; i < agentIds.length; i += 20) {
+        batches.push(mcpFleetTransport.ephemeral('store-agents-by-ids', {
+          ids: agentIds.slice(i, i + 20),
+        }));
+      }
+      agents = (await Promise.all(batches)).flat();
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tasks agent lookup failed: ${e.message}` }], isError: true };
+    }
     const total = Number.isFinite(page.total) ? page.total : active.length;
 
     let text = '';
@@ -3106,19 +3064,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return { content: [{ type: 'text', text: 'Specify agent (name/ID).' }], isError: true };
     }
 
-    // Look up agent via server API
-    let agents;
+    let agentEntry;
     try {
-      agents = await mcpFleetTransport.ephemeral('store-agents');
-      if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
+      agentEntry = await resolveAgent(args.agent);
     } catch (e) {
       return { content: [{ type: 'text', text: `task_check failed before transport ACK: ${e.message}` }], isError: true };
     }
-
-    const agentEntry = agents.find(a =>
-      a.id === args.agent || a.friendly_name === args.agent ||
-      a.session_id === args.agent || (a.session_ids && a.session_ids.includes(args.agent))
-    );
     if (!agentEntry) {
       return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
     }
@@ -3151,22 +3102,24 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     idle = tmuxIsIdle(result.text);
 
     // Fetch tasks to find active task for this agent
-    let tasks;
+    let task = null;
+    let taskLookupError = null;
     try {
-      tasks = await mcpFleetTransport.ephemeral('store-tasks', { active: true });
-    } catch {
-      tasks = [];
+      task = (await mcpFleetTransport.ephemeral('active-task-by-agent', {
+        agent: agentEntry.id,
+      }))?.task || null;
+    } catch (e) {
+      taskLookupError = e.message;
     }
-
-    const agentId = agentEntry.id;
-    const task = agentId ? tasks.find(t => t.agent === agentId && t.status !== 'done') : null;
     if (task) {
       // TODO: Need server endpoint to update task status (idle/working) and last_checked
       // POST /api/tasks/update-status { task_id, status, last_checked }
     }
 
     const statusStr = idle ? 'IDLE' : 'WORKING';
-    let taskStr = ' [no recorded task]';
+    let taskStr = taskLookupError
+      ? ` [task lookup unavailable: ${taskLookupError}]`
+      : ' [no recorded task]';
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       taskStr = ` [${task.id}: ${task.description} | ${age}m ago]`;
@@ -3377,8 +3330,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
             if (ev) {
               let agents = []
               try {
-                const stateData = await mcpFleetTransport.ephemeral('store-agents')
-                agents = Array.isArray(stateData) ? stateData : []
+                agents = await mcpFleetTransport.ephemeral('store-agents-by-ids', {
+                  ids: [ev.from, ev.to].filter(Boolean),
+                }) || []
               } catch {}
               resolved = resolved.replace(match[0], '\n' + formatMessage(ev, agents) + '\n')
             }
@@ -3437,9 +3391,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
           let agents = []
           try {
-            const stateData = await mcpFleetTransport.ephemeral('store-agents')
-            agents = Array.isArray(stateData) ? stateData : []
-          } catch (e) { process.stderr.write(`[fleet] store-agents fetch failed: ${e.message}\n`); }
+            agents = await mcpFleetTransport.ephemeral('store-agents-by-ids', {
+              ids: [resolvedAgentId].filter(Boolean),
+            }) || []
+          } catch (e) { process.stderr.write(`[fleet] bounded agent fetch failed: ${e.message}\n`); }
           resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
         }
       }
@@ -3468,7 +3423,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
               try {
-                const agents = await mcpFleetTransport.ephemeral('store-agents')
+                const agents = await mcpFleetTransport.ephemeral('store-agents-by-ids', {
+                  ids: [ev.from].filter(Boolean),
+                })
                 const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
                 if (a) agentName = a.friendly_name || a.name || agentName
               } catch {}
@@ -3612,125 +3569,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   }
 
   // ==== Search & History ====
-
-  // ---- observe (process observer data gathering) ----
-  if (name === 'observe') {
-    const state = await loadState();
-    const sinceMs = args.since
-      ? new Date(args.since).getTime()
-      : Date.now() - 24 * 60 * 60 * 1000; // default: last 24h
-    const focus = args.focus || 'all';
-
-    const sections = [];
-
-    // 1. Agent lifecycle: who registered, died, respawned
-    if (focus === 'all' || focus === 'lifecycle') {
-      const lifecycleEvents = [];
-      // Read JSONL for lifecycle events
-      if (fs.existsSync(LOG_FILE)) {
-        const lines = fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n');
-        for (const line of lines) {
-          try {
-            const ev = JSON.parse(line);
-            const evTime = new Date(ev.timestamp).getTime();
-            if (evTime < sinceMs) continue;
-            if (['register', 'auto_prune', 'cleanup', 'respawn', 'spawn'].includes(ev.type)) {
-              const agentEntry = ev.agent ? getAgent(state, ev.agent) : null;
-              lifecycleEvents.push({
-                time: ev.timestamp,
-                type: ev.type,
-                agent: agentEntry?.friendly_name || ev.name || ev.agent,
-                detail: ev.reason ?? ev.description ?? '',
-              });
-            }
-          } catch {}
-        }
-      }
-      if (lifecycleEvents.length) {
-        sections.push(`## Agent Lifecycle (${lifecycleEvents.length} events)\n\n` +
-          lifecycleEvents.map(e => `- **${new Date(e.time).toLocaleTimeString(undefined, displayZoneOptions())}** ${e.type}: ${e.agent}${e.detail ? ` (${e.detail})` : ''}`).join('\n'));
-      }
-    }
-
-    // 2. Task history: delegated, completed, bounced, duration
-    if (focus === 'all' || focus === 'tasks') {
-      const taskEvents = [];
-      if (fs.existsSync(LOG_FILE)) {
-        const lines = fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n');
-        for (const line of lines) {
-          try {
-            const ev = JSON.parse(line);
-            const evTime = new Date(ev.timestamp).getTime();
-            if (evTime < sinceMs) continue;
-            if (['delegate', 'task_done', 'report'].includes(ev.type)) {
-              const agentEntry = ev.agent ? getAgent(state, ev.agent) : null;
-              taskEvents.push({
-                time: ev.timestamp,
-                type: ev.type,
-                agent: agentEntry?.friendly_name || ev.agent,
-                task: ev.description ?? ev.task_id ?? '',
-                summary: ev.summary ?? '',
-              });
-            }
-          } catch {}
-        }
-      }
-
-      // Also check current tasks for anomalies
-      const activeTasks = (state.tasks || []).filter(t => t.status !== 'done' && !t.synthetic);
-      const staleTaskThreshold = 30 * 60 * 1000; // 30 min without progress
-      const staleTasks = activeTasks.filter(t => {
-        const taskAge = Date.now() - new Date(t.delegated_at || t.last_checked || 0).getTime();
-        return taskAge > staleTaskThreshold;
-      });
-
-      if (taskEvents.length || staleTasks.length) {
-        let taskSection = `## Task Activity (${taskEvents.length} events)\n\n`;
-        taskSection += taskEvents.map(e =>
-          `- **${new Date(e.time).toLocaleTimeString(undefined, displayZoneOptions())}** ${e.type}: ${e.agent} — ${e.task}${e.summary ? `\n  Summary: ${e.summary}` : ''}`
-        ).join('\n');
-        if (staleTasks.length) {
-          taskSection += `\n\n### Potentially Stale Tasks\n\n` +
-            staleTasks.map(t => {
-              const agentEntry = getAgent(state, t.agent);
-              const age = Math.round((Date.now() - new Date(t.delegated_at).getTime()) / 60000);
-              return `- **${agentEntry?.friendly_name || t.agent}**: "${t.description}" (${t.status}, ${age}m old)`;
-            }).join('\n');
-        }
-        sections.push(taskSection);
-      }
-    }
-
-    // 3. Summary stats
-    const liveAgents = (state.agents || []).filter(a => !a.dead && !a.human);
-    const deadAgents = (state.agents || []).filter(a => a.dead);
-    const activeTasks = (state.tasks || []).filter(t => t.status !== 'done' && !t.synthetic);
-    const doneTasks = (state.tasks || []).filter(t => t.status === 'done' && !t.synthetic);
-
-    const summary = `## Fleet Summary\n\n- **Live agents:** ${liveAgents.length}\n- **Dead agents:** ${deadAgents.length}\n- **Active tasks:** ${activeTasks.length}\n- **Completed tasks (in state):** ${doneTasks.length}\n- **Period:** since ${new Date(sinceMs).toLocaleString(undefined, displayZoneOptions())}`;
-    sections.unshift(summary);
-
-    const output = `# Process Observer — Activity Report\n\n${sections.join('\n\n---\n\n')}
-
----
-
-## Your Job as Observer
-
-Analyze the data above for patterns. Look for:
-1. **Dropped tasks** — delegated but never completed, no report filed
-2. **Ignored feedback** — Skip sent corrections that weren't acted on
-3. **Thrashing** — agent doing many small changes without progress
-4. **Find-and-replace fixes** — mechanical changes instead of understanding the problem
-5. **Communication gaps** — unanswered messages, missed handoffs
-6. **Stale agents** — registered but not producing work
-
-Write your analysis to \`scratch/process-review-${new Date().toISOString().slice(0, 10)}.md\` with:
-- Specific vignettes (agent X did Y, causing Z)
-- Proposed fixes (tooling changes, guidance updates, process changes)
-- Severity assessment (blocking, friction, minor)`;
-
-    return { content: [{ type: 'text', text: output }] };
-  }
 
   // ---- search ----
   if (name === 'search') {
@@ -4000,7 +3838,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- thread ----
   if (name === 'thread') {
-    const tasks = args.task_id ? ((await mcpFleetTransport.ephemeral('store-tasks')) || []) : [];
+    const task = args.task_id
+      ? (await mcpFleetTransport.ephemeral('task-by-id', { task_id: args.task_id }))?.task || null
+      : null;
     const resolvedAgents = new Map();
     let filtered = [];
     let overflow = false;
@@ -4109,7 +3949,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     let primaryId = null;
     if (args.task_id) {
-      const task = tasks.find(t => t.id === args.task_id);
       if (!task) {
         return { content: [{ type: 'text', text: `Task ${args.task_id} not found.` }], isError: true };
       }

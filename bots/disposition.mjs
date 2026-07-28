@@ -120,7 +120,14 @@ async function refreshPrefs() {
 // pick the lane-specific poke. cwd rarely changes, so polling alongside prefs
 // (20s) is plenty fresh. Best-effort: a failed request leaves the prior cache intact.
 async function refreshRoster() {
-  const agents = await wsRequest('store-agents', {}).catch(() => null)
+  const agents = []
+  let cursor = null
+  do {
+    const page = await wsRequest('agents-page', { limit: 200, cursor }).catch(() => null)
+    if (!page) return
+    agents.push(...(page.agents || []))
+    cursor = page.nextCursor || null
+  } while (cursor)
   wiring.updateRoster(agents)
 }
 
@@ -149,18 +156,11 @@ async function handleManualKick(text) {
   }
 }
 
-// Resolve a friendly name or id to a fleet id via the live alive-roster WS
-// request (store-agents). `fleet:` ids pass straight through.
+// Resolve a friendly name or id through the targeted registry lookup.
 async function resolveAgent(query) {
   if (/^fleet:/.test(query)) return query
-  const agents = await wsRequest('store-agents', {}).catch(() => null)
-  if (!Array.isArray(agents)) return null
-  const q = query.toLowerCase()
-  const hit = agents.find(a =>
-    (a.friendly_name && a.friendly_name.toLowerCase() === q) ||
-    (a.name && a.name.toLowerCase() === q) ||
-    (a.id && a.id.toLowerCase() === q))
-  return hit ? hit.id : null
+  const result = await wsRequest('resolve-agent', { agent: query }).catch(() => null)
+  return result?.agent?.id || null
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -201,7 +201,7 @@ function send(msg) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg }))
 }
 
-// Request/response over the fleet WS (store-agents etc.): correlate by id.
+// Request/response over the fleet WS: correlate by id.
 function wsRequest(type, extra = {}) {
   const id = msgId++
   return startWsRequest({

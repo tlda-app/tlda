@@ -88,26 +88,46 @@ async function fetchJson(url) {
   return res.json()
 }
 
+async function fetchFleetPages(fleetServer, path, field, { limit = 200, stopAfterFirst = false } = {}) {
+  const rows = []
+  let cursor = null
+  let nextCursor = null
+  let total = 0
+  do {
+    const url = new URL(path, fleetServer)
+    url.searchParams.set('limit', String(limit))
+    if (cursor) url.searchParams.set('cursor', cursor)
+    const page = await fetchJson(url.toString())
+    rows.push(...(Array.isArray(page?.[field]) ? page[field] : []))
+    total = Number.isFinite(page?.total) ? page.total : rows.length
+    nextCursor = page?.nextCursor || null
+    cursor = stopAfterFirst ? null : nextCursor
+  } while (cursor)
+  return { rows, total, nextCursor }
+}
+
 async function taskDocFleetSource(localFleetStore, { boundedTasksLimit = null } = {}) {
   const fleetServer = getFleetServerUrl()
   const storeServer = getServerUrl()
   if (sameOrigin(fleetServer, storeServer)) return localFleetStore
 
-  const tasksUrl = Number.isFinite(boundedTasksLimit)
-    ? new URL(`/api/tasks?limit=${boundedTasksLimit}`, fleetServer).toString()
-    : new URL('/api/store/tasks', fleetServer).toString()
-  const [agents, taskPayload] = await Promise.all([
-    fetchJson(new URL('/api/store/agents', fleetServer).toString()),
-    fetchJson(tasksUrl),
-  ])
-  const tasks = Number.isFinite(boundedTasksLimit)
-    ? (Array.isArray(taskPayload?.tasks) ? taskPayload.tasks : [])
-    : (Array.isArray(taskPayload) ? taskPayload : [])
-  const taskTotal = Number.isFinite(taskPayload?.total) ? taskPayload.total : tasks.length
-  const nextCursor = taskPayload?.nextCursor || null
+  const taskPage = await fetchFleetPages(fleetServer, '/api/tasks', 'tasks', {
+    limit: Number.isFinite(boundedTasksLimit) ? boundedTasksLimit : 200,
+    stopAfterFirst: Number.isFinite(boundedTasksLimit),
+  })
+  const tasks = taskPage.rows
+  const taskTotal = taskPage.total
+  const nextCursor = taskPage.nextCursor
   return {
-    getAllAgents() {
-      return Array.isArray(agents) ? agents : []
+    async getAgentsByIds(ids) {
+      const agents = []
+      for (let i = 0; i < ids.length; i += 200) {
+        const url = new URL('/api/agents/lookup', fleetServer)
+        url.searchParams.set('ids', ids.slice(i, i + 200).join(','))
+        const payload = await fetchJson(url.toString())
+        agents.push(...(payload.agents || []))
+      }
+      return agents
     },
     getActiveTasks() {
       return tasks

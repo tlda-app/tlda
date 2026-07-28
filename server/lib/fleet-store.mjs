@@ -34,6 +34,9 @@ import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
 // derives human-vs-human-away from last_seen on every call. Importing the same
 // number the projector uses is what stops the two drifting apart.
 import { HUMAN_HEARTBEAT_TTL_MS } from './agent-runtime-status.mjs';
+import { CHAT_HISTORY_EVENT_TYPES, resolveNameAt } from './fleet-history.mjs';
+
+export { CHAT_HISTORY_EVENT_TYPES } from './fleet-history.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -222,57 +225,6 @@ function rankUnifiedSearchRows(rows, { terms = [], query = '', explicitActivityS
 // shadow the routing category. Single source of truth: shared/fleet-labels.mjs
 // (statusLabels), re-exported here for the name-collision checks.
 export { PSEUDO_LABELS };
-
-export const CHAT_HISTORY_EVENT_TYPES = Object.freeze([
-  'chat',
-  'delegate',
-  'task_done',
-  'terminal_user',
-  'terminal_assistant',
-  'timer',
-  'compacting',
-  'activity',
-  'terminal_attention',
-  'terminal_card',
-  'plan_approval',
-  'kill-session',
-  'interrupt',
-]);
-
-export function isChatHistoryEventType(type) {
-  return CHAT_HISTORY_EVENT_TYPES.includes(type);
-}
-
-// The one place the "what was this agent called at instant ts" rule lives.
-// Pure, and resolved against one entry from nameSpansFor(), so naming a page of
-// events is in-memory work over data already fetched rather than a query per
-// row. `entry.spans` is every name_history row for the agent, oldest first.
-//
-// The three no-covering-span outcomes are DIFFERENT and must stay that way:
-// before all recorded history is the earliest known name, after the last span
-// is null (the agent aged out and is genuinely nameless then), and no history
-// at all is the current name. Flattening them silently rewrites history in
-// every thread view. Comparisons are on the ISO strings, matching the TEXT
-// comparison the SQL did.
-//
-// The ID is always the durable handle — callers pair this name WITH the id.
-export function resolveNameAt(entry, ts) {
-  if (!entry) return null;
-  const spans = entry.spans;
-  if (ts && spans.length) {
-    // Newest qualifying span wins. Spans arrive oldest-first, so walking back
-    // and taking the first match is the one `ORDER BY from_ts DESC LIMIT 1`
-    // returned.
-    for (let i = spans.length - 1; i >= 0; i -= 1) {
-      const span = spans[i];
-      if (span.from_ts <= ts && (span.to_ts == null || span.to_ts > ts)) {
-        return span.friendly_name; // may be null (nameless span)
-      }
-    }
-    return ts < spans[0].from_ts ? spans[0].friendly_name : null;
-  }
-  return entry.current ?? null;
-}
 
 export class FleetStore {
   constructor(dbPath, options = {}) {

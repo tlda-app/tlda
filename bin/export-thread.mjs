@@ -97,12 +97,10 @@ function makeClient() {
 }
 
 // ---- agent name resolution ----
-function resolveAgent(agents, ref) {
+async function resolveAgent(call, ref) {
   if (!ref) return null;
-  const exact = agents.find(a => a.id === ref || a.friendly_name === ref || a.id === `fleet:${ref}`);
-  if (exact) return exact.id;
-  const pref = agents.find(a => a.id.startsWith(ref));
-  return pref ? pref.id : ref; // fall back to the raw ref (may already be a fleet:UUID)
+  const result = await call({ type: 'resolve-agent', agent: ref });
+  return result?.agent?.id || ref;
 }
 
 // ---- fetch the complete thread for one agent over [since, until) ----
@@ -145,8 +143,8 @@ function bodyFor(e) {
 }
 
 function renderEvent(e, nameOf) {
-  const from = nameOf(e.from || e.from_id) || '?';
-  const to = nameOf(e.to || e.to_id) || '?';
+  const from = e.fromName || nameOf(e.from || e.from_id) || '?';
+  const to = e.toName || nameOf(e.to || e.to_id) || '?';
   const tag = (e.type && e.type !== 'chat') ? ` (${e.type})` : '';
   return `[${fmtTs(e.timestamp)}] ${from} → ${to}${tag}\n${bodyFor(e)}`;
 }
@@ -212,14 +210,12 @@ async function main() {
   const { ready, call, close } = makeClient();
   try { await ready; } catch (e) { console.error('Could not connect to fleet WS:', e.message); process.exit(1); }
 
-  const agents = (await call({ type: 'store-agents' })) || [];
   const nameMap = new Map();
-  for (const ag of agents) nameMap.set(ag.id, ag.friendly_name || ag.id);
   const nameOf = (id) => id ? (nameMap.get(id) || id) : null;
 
   const results = [];
   for (const j of rawJobs) {
-    const agentId = resolveAgent(agents, j.agent);
+    const agentId = await resolveAgent(call, j.agent);
     const types = j.types ? (Array.isArray(j.types) ? j.types : String(j.types).split(',')) : undefined;
     const label = `${j.agent} ${j.since || ''}–${j.until || ''}`.trim();
     try {

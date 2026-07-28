@@ -153,12 +153,6 @@ async function fetchJson(url, token) {
   return response.json()
 }
 
-async function loadServerAgents(args) {
-  const payload = await fetchJson(`${args.server}/api/store/agents`, args.token)
-  const rows = Array.isArray(payload) ? payload : payload.agents || []
-  return new Map(rows.map(row => [row.id, row.friendly_name || row.name || row.id]))
-}
-
 function normalizeEventRow(event) {
   return {
     id: event.id,
@@ -171,6 +165,7 @@ function normalizeEventRow(event) {
     metadata: event.metadata,
     task_id: event.task_id || event.taskId,
     agent_id: event.agent_id || event.agentId,
+    fromName: event.fromName || null,
   }
 }
 
@@ -280,10 +275,10 @@ async function main() {
   let scannedEvents = null
 
   if (args.source === 'server') {
-    agents = await loadServerAgents(args)
     const loaded = await loadServerChatRows(args)
     chatRows = loaded.rows
     scannedEvents = loaded.scannedEvents
+    agents = new Map(chatRows.map(row => [row.from_id, row.fromName || row.from_id]))
   } else {
     const db = new Database(args.db, { readonly: true, fileMustExist: true })
     agents = loadAgents(db)

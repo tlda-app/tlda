@@ -39,12 +39,14 @@ function loadOrCreateFleetId(file) {
 }
 
 async function confirmRegisteredFromRoster(server, id, timeoutMs = 10_000) {
-  const res = await fetch(`${server}/api/store/agents`, {
+  const url = new URL('/api/agents/lookup', server);
+  url.searchParams.set('ids', id);
+  const res = await fetch(url, {
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) throw new Error(`roster check failed: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`agent lookup failed: HTTP ${res.status}`);
   const data = await res.json();
-  const agents = Array.isArray(data) ? data : (data?.agents || []);
+  const agents = data?.agents || [];
   return agents.find(a => a?.id === id && !a?.dead) || null;
 }
 

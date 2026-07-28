@@ -17,7 +17,7 @@ Environment:
   QA_MODEL            — model to use (default: deepseek/deepseek-chat)
 """
 
-import json, os, sys, time, urllib.request, threading, socket, base64, pathlib
+import json, os, sys, time, urllib.parse, urllib.request, threading, socket, base64, pathlib
 
 FLEET_HOST = os.environ.get('FLEET_DASH_HOST', '127.0.0.1')
 FLEET_PORT = os.environ.get('FLEET_DASH_PORT', '5176')
@@ -58,6 +58,18 @@ def fleet_post(path, data):
 def fleet_get(path):
     req = urllib.request.Request(f"{FLEET_API}{path}")
     return json.loads(urllib.request.urlopen(req, timeout=30).read())
+
+def fleet_agents():
+    agents, cursor = [], None
+    while True:
+        path = "/api/agents?limit=200"
+        if cursor:
+            path += "&cursor=" + urllib.parse.quote(cursor, safe="")
+        page = fleet_get(path)
+        agents.extend(page.get("agents", []))
+        cursor = page.get("nextCursor")
+        if not cursor:
+            return agents
 
 _ws_conn = None  # set by watch_ws
 
@@ -133,12 +145,12 @@ def login():
 
 def get_all_agents():
     try:
-        agents = fleet_get("/api/store/agents")
+        agents = fleet_agents()
         return {a['id']: a.get('friendly_name', a['id']) for a in agents}
     except: return {}
 
 def find_agent_id(query):
-    agents = fleet_get("/api/store/agents")
+    agents = fleet_agents()
     for a in agents:
         if a.get('id') == query or a.get('friendly_name') == query:
             return a['id'], a.get('friendly_name', a['id'])
