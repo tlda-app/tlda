@@ -1393,6 +1393,7 @@ function rpcDaemonKey(machineId, params = {}) {
 
 function isTransientRpcError(err) {
   if (err?.code === 'NO_DAEMON') return true
+  if (err?.code === 'RPC_DEADLINE') return true
   const m = rpcErrorMessage(err)
   return /RPC timeout after|daemon disconnected|not connected|did not reconnect/i.test(m)
 }
@@ -1430,7 +1431,12 @@ async function sendDaemonRpcDurableAttempt(machineId, op, params = {}, {
       try { await waitForDaemonReady(key, left) } catch (we) { lastErr = we; break }
     }
   }
-  throw lastErr || new Error(`RPC ${op} to ${key} failed after ${totalDeadlineMs}ms`)
+  // Exhausting the retry budget is not a verdict either -- nothing refused the
+  // op, we stopped waiting. Carry a code so callers can tell that apart from a
+  // daemon-reported failure, the same way NoDaemonError does.
+  const exhausted = new Error(`RPC ${op} to ${key} gave no response within ${totalDeadlineMs}ms`)
+  exhausted.code = 'RPC_DEADLINE'
+  throw lastErr || exhausted
 }
 
 const serverDaemonTransport = createFleetOperationTransport({
@@ -2175,7 +2181,22 @@ async function performSpawnRelay(caller, msg) {
           }
         }
       } catch (e) {
-        if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
+        // A transport error is not a launch failure. The daemon may still be
+        // running rpcMint; nothing rejected this spawn, we just stopped hearing
+        // about it. Treat it as still-in-flight and let the late-login path
+        // settle it.
+        //
+        // This tested `/RPC timeout .*op=spawn/`, which could never match: the
+        // op above is 'mint' whenever pendingAgentId is set, and 'spawn' only
+        // when it is not -- so the two halves of the condition were mutually
+        // exclusive and this branch never ran once. Every RPC timeout on the
+        // spawn path therefore reported `spawn mailbox failed` while the agent
+        // was still coming up, which is the false-failure run recorded in
+        // AGENTS.md ("seven times in one evening for agents that were alive and
+        // working"). Matching the op name by prose is what made it silently
+        // dead; isTransientRpcError is the predicate this file already uses for
+        // "no verdict came back".
+        if (pendingAgentId && isTransientRpcError(e)) {
           result = { ok: false, reason: 'spawning' }
         } else if (isIndeterminateSpawnOutcome(e)) {
           result = {
