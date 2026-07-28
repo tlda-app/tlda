@@ -1078,8 +1078,9 @@ function startLocalLifecycleRpc() {
       try {
         request = JSON.parse(raw || '{}')
         const op = String(request.op || '').trim()
-        if (op !== 'mint' && op !== 'wake') throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
-        const handler = op === 'mint' ? rpcMint : rpcWake
+        const handlers = { mint: rpcMint, wake: rpcWake, spawn: agentLauncher.handlers.spawn }
+        const handler = handlers[op]
+        if (!handler) throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
         const params = {
           ...(request.params || {}),
           onLifecycleEvent: (event, data = {}) => writeFrame({ event, data }),

@@ -3294,8 +3294,6 @@ export async function runFleetSpawn(spawnArgs, {
     console.log(JSON.stringify(listModels(withDaemonModelAliases({}, daemonConfig)), null, 2))
     return
   }
-  const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
-  const spawn = spawnImpl || defaultSpawn
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
@@ -3311,6 +3309,30 @@ export async function runFleetSpawn(spawnArgs, {
   const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
   const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
+  if (spawnMode === 'session') {
+    const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+    const result = await lifecycleImpl('spawn', {
+      name,
+      model: flagFromRaw(spawnArgs, 'model') || undefined,
+      kind: flagFromRaw(spawnArgs, 'kind') || undefined,
+      cwd,
+      effort: flagFromRaw(spawnArgs, 'effort') || undefined,
+      mode: flagFromRaw(spawnArgs, 'mode') || undefined,
+      permissionRequest: explicitPermissionArg ? permissionsFromRaw(spawnArgs) : undefined,
+      acknowledgeNoSecurity: hasRawFlag(spawnArgs, 'i-like-to-live-dangerously'),
+      requester: { id: 'localhost', human: true },
+      session_id: session,
+      enroll: hasRawFlag(spawnArgs, 'enroll'),
+      respawn: false,
+      refresh: false,
+    }, { onEvent: printMintLifecycleEvent })
+    if (!result?.ok) throw new Error(result?.error || result?.reason || `enroll failed for ${name || session}`)
+    printLocalDaemonOutcome(result)
+    const agentId = result.agent_id || result.fleet_id
+    if (!agentId) throw new Error(`enroll completed without a public fleet_id for ${name || session}`)
+    console.log(`Enrolled ${result.tmux_session || result.tmuxSession || result.name || name || session} (${agentId}) in ${cwd}`)
+    return
+  }
   if (spawnMode === 'fresh') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
     const result = await lifecycleImpl('mint', {
@@ -3355,13 +3377,15 @@ export async function runFleetSpawn(spawnArgs, {
     console.log(`Woke ${result.tmux_session || result.tmuxSession || restored.agentId} (${result.agent_id || result.fleetId || restored.agentId}) in ${restored.cwd}`)
     return
   }
+  const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
+  const spawn = spawnImpl || defaultSpawn
   let permissionArg = explicitPermissionArg
   let permissionRequest = explicitPermissionArg ? permissionsFromRaw(spawnArgs) : undefined
   let cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   let wakeLocalAgentId = null
   let wakeAgentId = null
   const model = flagFromRaw(spawnArgs, 'model') || undefined
-  const kind = spawnMode === 'session' ? (flagFromRaw(spawnArgs, 'kind') || undefined) : undefined
+  const kind = undefined
   const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
   let ledger = null
   try {
@@ -3472,15 +3496,12 @@ export async function runFleetSpawn(spawnArgs, {
         cwd,
         name,
         api: apiImpl,
-        requireReadback: spawnMode === 'fresh' || spawnMode === 'session',
+        requireReadback: false,
       } })
     } catch (e) {
       throw e
     }
     const promptDeliveryFailed = result?.promptDelivery?.ok === false
-    if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
-      await createLifecycleSeatBindingObligation(result, { api: apiImpl, cwd, name })
-    }
     if (!boundResume.bound && (boundResume.submitError || boundResume.readError)) {
       throw boundResume.submitError || boundResume.readError
     }
@@ -3525,34 +3546,6 @@ export async function persistAssignedAgentGrant({ ledger, result, grant, granted
     source: 'agent-lifecycle-cli',
   })
   return true
-}
-
-export async function createLifecycleSeatBindingObligation(result, {
-  api,
-  cwd,
-  name,
-} = {}) {
-  if (!api || !result?.fleetId || !result.localAgentId || !['codex', 'claude'].includes(result.harness)) {
-    throw new Error('fresh/session pending requires an exact durable seat-binding obligation')
-  }
-  const machineId = localMachineId()
-  const envName = getActiveEnvName()
-  const response = await api('POST', '/api/agent-seat-binding-obligation', {
-    agent_id: result.fleetId,
-    local_agent_id: result.localAgentId || null,
-    daemon_key: `${machineId}:${envName}`,
-    machine_id: machineId,
-    env_name: envName,
-    cwd,
-    kind: result.harness,
-    model: result.model,
-    friendly_name: name || result.name || result.fleetId,
-    session_id: result.resumeId || null,
-  })
-  if (!response?.ok || !response?.obligation?.obligation_id) {
-    throw new Error(`durable seat-binding obligation was not accepted for ${result.fleetId}`)
-  }
-  return response.obligation
 }
 
 export function resolveWakeRecipeFields({

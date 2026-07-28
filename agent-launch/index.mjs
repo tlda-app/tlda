@@ -1103,7 +1103,7 @@ async function spawnSession(params) {
 }
 
 async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} }) {
-  const { ownId, agentName, sessionMeta } = scanCodexRolloutIdentity(codexPath)
+  const { ownId, localAgentId, agentName, sessionMeta } = scanCodexRolloutIdentity(codexPath)
   if (params.enroll && ownId) {
     throw new SpawnError('launch-failed', `Codex session ${sessionId} is already enrolled as ${ownId}`, { sessionId, fleetId: ownId })
   }
@@ -1127,7 +1127,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
   const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
-    return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
+    return { ok: true, fleetId, localAgentId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
   }
   if (params.enroll) await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(friendlyName, { api, serverUp: true })
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
@@ -1208,7 +1208,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
   const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
   if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
-    return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }
+    return { ok: true, fleetId, localAgentId: identity.localAgentId || null, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }
   }
   if (params.enroll) await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(friendlyName, { api, serverUp: true })
   stripSyntheticTail(sessionId, { projectsBase: params.claudeProjectsBase })

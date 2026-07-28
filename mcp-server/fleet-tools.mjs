@@ -2221,17 +2221,9 @@ export async function handleFleetTool(name, args) {
       cwd: cwd || undefined,
       ...extra,
     });
-    if (!shellId) {
-      if (!localAgentId) {
-        return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
-      }
-      return { content: [{ type: 'text', text: [
-        localMarker({ fleet_id: undefined }),
-        `Fleet seat is not recorded yet for mint ${localAgentId}.`,
-      ].join('\n') }], isError: true };
-    }
     const loginBody = {
-      agent_id: shellId,
+      ...(shellId ? { agent_id: shellId } : {}),
+      ...(localAgentId ? { local_agent_id: localAgentId } : {}),
       session_id: CLAUDE_SESSION || undefined,
       tmux_session: detectedTmux || undefined,
       cwd: cwd || undefined,
@@ -2240,6 +2232,9 @@ export async function handleFleetTool(name, args) {
       env_name: envName,
       metadata: { kind: currentHarness.kind },
     };
+    if (!shellId && !localAgentId) {
+      return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
+    }
 
     if (!_channelRWS?.connected) {
       startChannelWS({ bootstrap: true });
@@ -2261,7 +2256,14 @@ export async function handleFleetTool(name, args) {
         `Login rejected by server: ${serverResult.error}`,
       ].join('\n') }], isError: true };
     }
-    AGENT_ID = shellId;
+    const loggedInAgentId = serverResult.agent?.id || shellId;
+    if (!loggedInAgentId) {
+      return { content: [{ type: 'text', text: [
+        localMarker({}),
+        'Login rejected by server: no fleet identity returned.',
+      ].join('\n') }], isError: true };
+    }
+    AGENT_ID = loggedInAgentId;
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
     });

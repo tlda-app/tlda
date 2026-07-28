@@ -9,6 +9,7 @@ import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 import { bindAgentSeat } from './seat-binding.mjs'
+import { wsReserveShell } from './register.mjs'
 
 function readFileTail(file, max = 6000) {
   try {
@@ -42,6 +43,7 @@ export function createAgentLauncher({
   liveSessionIdentityPollMs = 500,
   liveSessionIdentityNow = Date.now,
   liveSessionIdentitySleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  reserveShellImpl = wsReserveShell,
 }) {
   const activeSpawns = new Map()
   const reportedStartupFailures = new Set()
@@ -83,6 +85,33 @@ export function createAgentLauncher({
   function reservationTimeoutMs() {
     const raw = Number(process.env.TLDA_SHELL_RESERVATION_TIMEOUT_MS || 30_000)
     return Number.isFinite(raw) && raw > 0 ? raw : 30_000
+  }
+
+  function defaultModelAliasForHarness(config = {}, harness = '') {
+    const target = String(harness || '').trim().toLowerCase()
+    if (!target) return null
+    const values = config?.modelCatalog?.values && typeof config.modelCatalog.values === 'object'
+      ? config.modelCatalog.values
+      : config?.modelSpecs
+    if (!values || typeof values !== 'object') return null
+    const found = Object.values(values).find(spec => String(spec?.harness || spec?.kind || '').trim().toLowerCase() === target)
+    return found?.alias || found?.name || null
+  }
+
+  function resolveSessionLaunchSpec({ model, kind, config }) {
+    const sessionKind = String(kind || '').trim().toLowerCase()
+    if (sessionKind !== 'codex' && sessionKind !== 'claude') {
+      throw new Error('session spawn requires kind <codex|claude>; session ids are not unique across harnesses')
+    }
+    const requestedModel = model || defaultModelAliasForHarness(config, sessionKind)
+    if (!requestedModel) {
+      throw new Error(`no configured model alias for ${sessionKind} session enrollment; pass --model`)
+    }
+    const spec = resolveModelSpec(requestedModel, { config })
+    if (spec.harness !== sessionKind) {
+      throw new Error(`daemon model "${requestedModel}" is configured for harness "${spec.harness}", not "${sessionKind}"`)
+    }
+    return spec
   }
 
   async function terminateExactLaunch(tmuxSession) {
@@ -147,6 +176,29 @@ export function createAgentLauncher({
       localLedger.close()
     }
     return true
+  }
+
+  async function reserveAlreadyLiveShell({ launched, agentName, cwd, grant, sessionId }) {
+    if (!launched?.alreadyAlive) return
+    if (!launched?.fleetId || !launched?.tmuxSession || !launched?.harness || !launched?.model || !sessionId) {
+      throw new Error(`already-live session enrollment for ${agentName} returned without a complete shell identity`)
+    }
+    if (!launched.localAgentId) {
+      throw new Error(`already-live session enrollment for ${agentName} has no local mint id for existing login resolution`)
+    }
+    await reserveShellImpl({
+      fleetId: launched.fleetId,
+      localAgentId: launched.localAgentId,
+      name: agentName,
+      tmuxSession: launched.tmuxSession,
+      cwd,
+      model: launched.model,
+      kind: launched.harness,
+      sessionId,
+      permissionGrant: grant.permissionGrant,
+      machineId,
+      envName: activeEnvName,
+    })
   }
 
   async function persistIdentityRecoveryObligation({ launched, agentName, cwd, launchKind, launchModel }) {
@@ -279,7 +331,9 @@ export function createAgentLauncher({
       const daemonConfig = loadDaemonConfigForCwd(resolvedCwd)
       spawnConfig = withDaemonModelAliases(config, daemonConfig)
       if (model || (!respawn && !refresh)) {
-        launchModelSpec = resolveModelSpec(model, { config: spawnConfig })
+        launchModelSpec = sessionId
+          ? resolveSessionLaunchSpec({ model, kind, config: spawnConfig })
+          : resolveModelSpec(model, { config: spawnConfig })
         launchModel = launchModelSpec.id
         launchKind = launchModelSpec.harness
       }
@@ -320,7 +374,7 @@ export function createAgentLauncher({
           spawnerPermissionSet: compilePermissionGrant(grantConfig, spawnerGrant.permissionGrant, { cwd: resolvedCwd, project: projectForGrant }),
           spawnerPermissionProfile: permissionGrantProfileName(spawnerGrant.permissionGrant),
           model: launchModel,
-          kind: launchKind,
+          kind: sessionId ? kind : launchKind,
           modelCap: launchModelSpec?.cap || null,
           config: grantConfig,
           doc,
@@ -436,6 +490,15 @@ export function createAgentLauncher({
         model: launched.model,
         permissionGrant: grant.permissionGrant || null,
       })
+      if (spawnMode === 'session') {
+        await reserveAlreadyLiveShell({
+          launched,
+          agentName,
+          cwd: resolvedCwd,
+          grant,
+          sessionId,
+        })
+      }
       const promptDeliveryFailed = launched?.promptDelivery?.ok === false
       if (promptDeliveryFailed && spawnMode === 'fresh' && launched.harness === 'codex') {
         const failure = await diagnoseSpawnStartupFailure({

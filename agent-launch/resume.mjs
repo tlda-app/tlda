@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { extractLoginMarkerFromText } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const UUID_SCAN_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
@@ -106,13 +107,14 @@ export function jsonlPathToCwd(jsonlPath) {
 
 function scanClaudeJsonlIdentity(fpath) {
   let fleetId = null
+  let localAgentId = null
   let agentName = null
   let cwd = null
   try {
     for (const line of fs.readFileSync(fpath, 'utf8').split(/\n/)) {
       if (fleetId && cwd) break
       let parsed = null
-      const hasLoginText = line.includes('Registered fleet:') || line.includes('Logged in fleet:')
+      const hasLoginText = line.includes('Registered fleet:') || line.includes('Logged in fleet:') || line.includes('TLDA_LOGIN_MARKER')
       if ((cwd == null && line.includes('"cwd"')) || hasLoginText) {
         try {
           parsed = JSON.parse(line)
@@ -121,17 +123,18 @@ function scanClaudeJsonlIdentity(fpath) {
         }
       }
       if (cwd == null && parsed?.cwd && fs.existsSync(parsed.cwd)) cwd = parsed.cwd
-      if (fleetId != null || !hasLoginText) continue
+      if ((fleetId != null && localAgentId != null) || !hasLoginText) continue
       if (!parsed) continue
       const result = parsed.toolUseResult
       if (!result) continue
       const items = Array.isArray(result) ? result : [result]
       for (const item of items) {
         const text = item && typeof item === 'object' ? (item.text || '') : String(item)
-        const m = LOGIN_RE.exec(text)
-        if (!m) continue
-        fleetId = m[1]
-        agentName = NAME_RE.exec(text)?.[1] || null
+        const login = parseLoginText(text)
+        if (!login) continue
+        if (login.ownId) fleetId = login.ownId
+        if (login.localAgentId) localAgentId = login.localAgentId
+        if (login.agentName) agentName = login.agentName
         break
       }
     }
@@ -141,7 +144,7 @@ function scanClaudeJsonlIdentity(fpath) {
     // swallowed by a bare catch, 7/10–7/17) — never swallow those again.
     if (!(e && (e.code || e instanceof SyntaxError))) throw e
   }
-  return { fleetId, agentName, cwd }
+  return { fleetId, localAgentId, agentName, cwd }
 }
 
 export function scanClaudeSessionIdentity(sessionId, { projectsBase } = {}) {
@@ -235,9 +238,17 @@ function textPartsFromToolResult(value) {
 }
 
 function parseLoginText(text) {
+  const marker = extractLoginMarkerFromText(text)
+  if (marker) {
+    return {
+      ownId: marker.fleet_id || null,
+      localAgentId: marker.mint_id || null,
+      agentName: marker.friendly_name || null,
+    }
+  }
   const m = LOGIN_RE.exec(text || '')
   if (!m) return null
-  return { ownId: m[1], agentName: NAME_RE.exec(text)?.[1] || null }
+  return { ownId: m[1], localAgentId: null, agentName: NAME_RE.exec(text)?.[1] || null }
 }
 
 function parseFleetEnvText(text) {
@@ -280,6 +291,7 @@ function codexRolloutLaunchDistanceMs(agent, sessionMeta) {
 
 export function scanCodexRolloutIdentity(fpath) {
   let ownId = null
+  let localAgentId = null
   let agentName = null
   let meta = null
   const loginCalls = new Set()
@@ -294,7 +306,7 @@ export function scanCodexRolloutIdentity(fpath) {
         }
       }
       let parsed = null
-      if (ownId == null && (line.includes('"function_call"') || line.includes('"function_call_output"') || line.includes('"mcp_tool_call_end"'))) {
+      if ((ownId == null || localAgentId == null) && (line.includes('"function_call"') || line.includes('"function_call_output"') || line.includes('"mcp_tool_call_end"') || line.includes('TLDA_LOGIN_MARKER'))) {
         try {
           parsed = JSON.parse(line)
         } catch {
@@ -313,8 +325,9 @@ export function scanCodexRolloutIdentity(fpath) {
           : (payload.output && typeof payload.output.content === 'string' ? payload.output.content : '')
         const login = parseLoginText(output)
         if (login) {
-          ownId = login.ownId
-          agentName = login.agentName
+          if (login.ownId) ownId = login.ownId
+          if (login.localAgentId) localAgentId = login.localAgentId
+          if (login.agentName) agentName = login.agentName
         }
       }
       if (ownId == null && payload.type === 'function_call_output' && fleetEnvCalls.has(payload.call_id)) {
@@ -330,17 +343,18 @@ export function scanCodexRolloutIdentity(fpath) {
         for (const text of textPartsFromToolResult(payload.result)) {
           const login = parseLoginText(text)
           if (!login) continue
-          ownId = login.ownId
-          agentName = login.agentName
+          if (login.ownId) ownId = login.ownId
+          if (login.localAgentId) localAgentId = login.localAgentId
+          if (login.agentName) agentName = login.agentName
           break
         }
       }
-      if (ownId != null && meta != null) break
+      if ((ownId != null || localAgentId != null) && meta != null) break
     }
   } catch {
     // Corrupt or racing rollout files are skipped; ownership falls back to null.
   }
-  return { ownId, agentName, sessionMeta: meta || {} }
+  return { ownId, localAgentId, agentName, sessionMeta: meta || {} }
 }
 
 export function findCodexRollout(agent, options = {}) {
