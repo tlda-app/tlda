@@ -744,7 +744,7 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
  * Serializes concurrent callers for the same hash7.
  */
 export async function ensureShadowDvi(name, hash7) {
-  const project = readProject(name)
+  const project = await readProject(name)
   const mainFile = project?.mainFile || 'main.tex'
   const texBase = basename(mainFile, '.tex')
 
@@ -808,7 +808,7 @@ export async function ensureShadowDvi(name, hash7) {
  */
 export async function buildShadowPage(name, hash7, pageNum) {
   const { ensure, historicalCtx } = await import('./ensure.mjs')
-  const project = readProject(name)
+  const project = await readProject(name)
   const texBase = basename(project?.mainFile || 'main.tex', '.tex')
   const ctx = historicalCtx(name, hash7, texBase)
   return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
@@ -817,7 +817,7 @@ export async function buildShadowPage(name, hash7, pageNum) {
 export async function buildCurrentPage(name, pageNum, texBase) {
   const { ensure, currentCtx } = await import('./ensure.mjs')
   if (!texBase) {
-    const project = readProject(name)
+    const project = await readProject(name)
     texBase = basename(project?.mainFile || 'main.tex', '.tex')
   }
   const ctx = currentCtx(name, texBase)

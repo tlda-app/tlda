@@ -260,7 +260,7 @@ async function buildCurrentDvi(ctx) {
   const { dispatchBuild } = await import('./build-dispatch.mjs')
   const { emitDocArrived } = await import('./build-runner.mjs')
   await dispatchBuild(ctx.name)
-  const updated = readProject(ctx.name)
+  const updated = await readProject(ctx.name)
   if (updated?.buildStatus === 'success') {
     emitDocArrived?.(ctx.name, updated)
   }
@@ -278,7 +278,7 @@ async function buildHistoricalDvi(ctx) {
   // multi-target builds the target's basename may differ from the project's
   // primary mainFile, in which case it sits at the checkout root as
   // <texBase>.tex (mirrors buildLookup's logic).
-  const project = readProject(ctx.name)
+  const project = await readProject(ctx.name)
   const mainFile = project?.mainFile && basename(project.mainFile, '.tex') === texBase
     ? project.mainFile
     : `${texBase}.tex`
@@ -366,7 +366,7 @@ async function buildSvgPage(ctx, pageNum, target) {
 /** Extract lookup.json from <texBase>.synctex.gz. */
 async function buildLookup(ctx, target) {
   const { texBase } = decodeTarget(target)
-  const project = readProject(ctx.name)
+  const project = await readProject(ctx.name)
   // For multi-target, the target's mainFile may be a sibling of the
   // primary mainFile. We assume <texBase>.tex exists at outDir-relative
   // root (mirrors the source layout for sibling targets).

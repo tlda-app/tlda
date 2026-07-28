@@ -72,7 +72,7 @@ process.on('message', async (msg) => {
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
     } else {
-      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[readProject(msg.name)?.format]
+      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[(await readProject(msg.name))?.format]
       if (builder) {
         await builder(msg.name)
         // A build happened, so it gets a version — same as LaTeX, which reaches

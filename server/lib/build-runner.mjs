@@ -298,11 +298,11 @@ export function getBuildStatus(name) {
  * Reset any projects stuck in "building" state (e.g. after server restart mid-build).
  * Call once at startup.
  */
-export function resetStaleBuildStates() {
-  for (const project of listProjects()) {
+export async function resetStaleBuildStates() {
+  for (const project of await listProjects()) {
     if (project.buildStatus === 'building') {
       console.log(`[build] Resetting stale "building" state for ${project.name}`)
-      _reporter.updateProject(project.name, { buildStatus: 'stale' })
+      await _reporter.updateProject(project.name, { buildStatus: 'stale' })
     }
   }
 }
@@ -703,12 +703,12 @@ async function compileLaTeX(ctx) {
   }
 
   // Signal build errors (or clear previous ones) immediately after pdflatex
-  const { errors: logErrors } = extractBuildErrors(name)
+  const { errors: logErrors } = await extractBuildErrors(name)
   if (logErrors.length > 0) {
     addLog(`Found ${logErrors.length} error(s) in log — signaling immediately`)
-    signalBuildStatus(name, `Build has errors`)
+    await signalBuildStatus(name, `Build has errors`)
   } else {
-    signalBuildStatus(name, null)
+    await signalBuildStatus(name, null)
   }
 
   const dviFile = join(buildDir, `${texBase}.dvi`)
@@ -1045,7 +1045,7 @@ async function generateSourceMap(ctx) {
  *  Groups changes by section/subsection and identifies formal results (theorems, lemmas, etc.)
  *  and their proofs. Returns a markdown-formatted summary or null if no meaningful changes.
  */
-function summarizeDiff(diffText, projectName) {
+async function summarizeDiff(diffText, projectName) {
   const projDir = projectDir(projectName)
   const outDir = outputDir(projectName)
 
@@ -1055,7 +1055,7 @@ function summarizeDiff(diffText, projectName) {
 
   // 2. Build section tree from tex source in shadow repo
   const shadowDir = join(projDir, 'shadow-repo')
-  const project = readProject(projectName)
+  const project = await readProject(projectName)
   const mainFile = project?.mainFile || ''
   const texPath = join(shadowDir, mainFile)
   let texLines = []
@@ -1616,7 +1616,7 @@ function orderTargetsByXrDeps(mainFiles, srcDir) {
 // the working-copy git history to paper-scope. Skip if the shadow already
 // has real commits — bootstrap runs once, then commitSnapshot takes over.
 async function maybeBootstrapShadowFromProjectRepo(name) {
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project?.sourceDir) return
   const sourceDir = project.sourceDir
   if (!existsSync(join(sourceDir, '.git'))) return
@@ -1670,9 +1670,9 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
 
 // ─── Exported helpers ────────────────────────────────────────────────────────
 
-export function emitDocArrived(name) {
+export async function emitDocArrived(name) {
   try {
-    const updated = readProject(name)
+    const updated = await readProject(name)
     if (updated?.buildStatus === 'success') {
       _reporter.emitGlobalEvent('doc-arrived', {
         name, title: updated.title || name,
@@ -1704,13 +1704,13 @@ export async function recordBuildVersion({
   buildWarnSnapshot,
   sourceVersion,
 } = {}) {
-  const project = readProject(name)
+  const project = await readProject(name)
   const pages = expectedPages ?? project?.pages ?? 0
   const readyAt = svgsReadyAt ?? Date.now()
   let errors = buildErrSnapshot
   let warnings = buildWarnSnapshot
   if (errors === undefined || warnings === undefined) {
-    const extracted = extractBuildErrors(name)
+    const extracted = await extractBuildErrors(name)
     errors = errors ?? extracted.errors
     warnings = warnings ?? extracted.warnings
   }
@@ -1761,7 +1761,7 @@ async function finalizeBuildVersion({
   const hash7 = result.hash.slice(0, 7)
   try {
     const mirrorResult = await _reporter.mirrorShadow(name, result.hash)
-    _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
+    await _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
     await _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
     console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} -> ${mirrorResult?.sourceDir || 'source repo'}`)
   } catch (mirrorErr) {
@@ -1774,7 +1774,7 @@ async function finalizeBuildVersion({
     // problem to see. (Skip 7/22)
     console.error(`[mirror] ${name}@${hash7} failed (non-fatal, not surfaced): ${mirrorErr.message}`)
     ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
-    _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
+    await _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
   }
 
   try {
@@ -1784,7 +1784,7 @@ async function finalizeBuildVersion({
       { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
     )
     if (diffOutput.trim()) {
-      const summary = summarizeDiff(diffOutput, name)
+      const summary = await summarizeDiff(diffOutput, name)
       console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
       if (summary) {
         _reporter.broadcastSignal(`doc-${name}`, 'signal:build-summary', {
@@ -1834,10 +1834,10 @@ async function finalizeBuildVersion({
           lintFindings,
           buildFiles,
           lastBuildSuccess,
-          editedBy: resolveEditedBy(name),
+          editedBy: await resolveEditedBy(name),
         })
         if (lintFindings.length > 0) {
-          signalBuildStatus(name, null, lintFindings.map(f => ({
+          await signalBuildStatus(name, null, lintFindings.map(f => ({
             message: f.text, file: null, line: null, category: 'lint',
           })))
         }
@@ -1881,7 +1881,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
     const currentActiveBuild = activeBuilds.get(name)
     const handledByCurrentAttempt = currentActiveBuild !== previousActiveBuild && currentActiveBuild?.phase === 'failed'
     if (!handledByCurrentAttempt) {
-      try { _reporter.updateProject(name, { buildStatus: 'failed' }) }
+      try { await _reporter.updateProject(name, { buildStatus: 'failed' }) }
       catch (e2) { console.error(`[build] failed to recover escaped build status for ${name}: ${e2.message}`) }
     }
     throw e
@@ -1912,7 +1912,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   buildVersion.set(name, myVersion)
 
   // Set buildStatus early — before any validation that might throw.
-  try { _reporter.updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch (e) { console.error(`[build] failed to set building status for ${name}: ${e.message}`) }
+  try { await _reporter.updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch (e) { console.error(`[build] failed to set building status for ${name}: ${e.message}`) }
 
   const srcDir = sourceDir(name)
   const outDir = outputDir(name)
@@ -1925,7 +1925,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   let sourceVersion
   try { sourceVersion = statSync(join(projDir, 'source.stamp')).mtimeMs } catch { sourceVersion = undefined }
 
-  const project = readProject(name)
+  const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
 
   // Targets are derived purely from the source: the primary mainFile plus
@@ -2098,7 +2098,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     // Publish the build once all targets finish.
     const svgsReadyAt = Date.now()
     // Snapshot the current build errors/warnings to persist in the sentinel.
-    const { errors: buildErrSnapshot, warnings: buildWarnSnapshot } = extractBuildErrors(name)
+    const { errors: buildErrSnapshot, warnings: buildWarnSnapshot } = await extractBuildErrors(name)
 
     // Total pages across all targets — what the viewer reports as project.pages.
     const expectedPages = totalPages
@@ -2106,8 +2106,8 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     // Store the target shape before finalization. `targets` always reflects the
     // viewer doesn't have to special-case single-target — it just renders
     // a one-element list.
-    const lastBuildSuccess = readProject(name)?.lastBuildSuccess || null
-    _reporter.updateProject(name, {
+    const lastBuildSuccess = (await readProject(name))?.lastBuildSuccess || null
+    await _reporter.updateProject(name, {
       pages: expectedPages,
       buildStatus: 'finalizing',
       lastBuild: new Date().toISOString(),
@@ -2156,7 +2156,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       })
     } catch (e) {
       ctx.addLog(`build publish/finalize failed: ${e.message}`)
-      _reporter.updateProject(name, { buildStatus: 'finalize-failed' })
+      await _reporter.updateProject(name, { buildStatus: 'finalize-failed' })
       signalBuildProgress(name, 'failed', `publish failed: ${e.message}`)
       emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), pages: expectedPages ?? 0, errors: [e.message] })
       throw e
@@ -2164,7 +2164,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
 
     signalReload(name, null)
 
-    _reporter.updateProject(name, {
+    await _reporter.updateProject(name, {
       buildStatus: 'success',
       lastBuild: new Date().toISOString(),
       lastBuildSuccess: new Date().toISOString(),
@@ -2187,14 +2187,14 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
     status.phase = 'failed'
     status.error = e.message
 
-    try { _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
+    try { await _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
-    recordPersistentBuildStatus(name, e.message, sourceVersion)
-    signalBuildStatus(name, e.message)
+    await recordPersistentBuildStatus(name, e.message, sourceVersion)
+    await signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
     emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
-    emitBuildFailureCard(name, e.message)
+    await emitBuildFailureCard(name, e.message)
     throw e
   } finally {
     buildChildProcesses.delete(buildId)
@@ -2218,8 +2218,8 @@ function signalBuildProgress(name, phase, detail) {
   }
 }
 
-function currentBuildStatusPayload(name, errorMessage, extraWarnings = []) {
-  const { errors, warnings } = extractBuildErrors(name)
+async function currentBuildStatusPayload(name, errorMessage, extraWarnings = []) {
+  const { errors, warnings } = await extractBuildErrors(name)
   const signaledErrors = (errorMessage && errors.length === 0)
     ? [{ message: errorMessage, file: 'build' }]
     : errors
@@ -2227,9 +2227,9 @@ function currentBuildStatusPayload(name, errorMessage, extraWarnings = []) {
   return { errors: signaledErrors, warnings: allWarnings }
 }
 
-function signalBuildStatus(name, errorMessage, extraWarnings = []) {
+async function signalBuildStatus(name, errorMessage, extraWarnings = []) {
   try {
-    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage, extraWarnings)
+    const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings)
     _reporter.broadcastSignal(`doc-${name}`, 'signal:build-status', {
       error: errorMessage,
       errors,
@@ -2242,9 +2242,9 @@ function signalBuildStatus(name, errorMessage, extraWarnings = []) {
   }
 }
 
-function recordPersistentBuildStatus(name, errorMessage, sourceVersion, extraWarnings = []) {
+async function recordPersistentBuildStatus(name, errorMessage, sourceVersion, extraWarnings = []) {
   try {
-    const { errors, warnings } = currentBuildStatusPayload(name, errorMessage, extraWarnings)
+    const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings)
     const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
     Promise.resolve(_reporter.writeSentinel(`doc-${name}`, {
       timestamp: Date.now(),
@@ -2263,11 +2263,11 @@ function recordPersistentBuildStatus(name, errorMessage, sourceVersion, extraWar
   }
 }
 
-function emitBuildFailureCard(name, message) {
+async function emitBuildFailureCard(name, message) {
   let errors = []
   let warnings = []
   try {
-    const parsed = currentBuildStatusPayload(name, message)
+    const parsed = await currentBuildStatusPayload(name, message)
     errors = parsed.errors || []
     warnings = parsed.warnings || []
   } catch (e) {
@@ -2283,8 +2283,8 @@ function emitBuildFailureCard(name, message) {
     errors: errors.slice(0, 5),
     warnings: warnings.slice(0, 5),
     buildFiles,
-    lastBuildSuccess: readProject(name)?.lastBuild || null,
-    editedBy: resolveEditedBy(name),
+    lastBuildSuccess: (await readProject(name))?.lastBuild || null,
+    editedBy: await resolveEditedBy(name),
   })
 }
 
@@ -2292,9 +2292,9 @@ function emitBuildFailureCard(name, message) {
 // stamps lastEditedBy/lastEditedByAt on the project when it pushes a change.
 // Return that agent if the edit is recent enough to plausibly be the trigger.
 const EDIT_ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
-function resolveEditedBy(name) {
+async function resolveEditedBy(name) {
   try {
-    const proj = readProject(name)
+    const proj = await readProject(name)
     if (proj?.lastEditedBy && proj.lastEditedByAt &&
         Date.now() - proj.lastEditedByAt < EDIT_ATTRIBUTION_WINDOW_MS) {
       return proj.lastEditedBy
