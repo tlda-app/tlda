@@ -5637,6 +5637,16 @@ async function handleFleetWsMessage(ws, msg) {
       }
     }
     if (!agentId) { error('missing id'); return }
+    if (isShellReservation && local_agent_id) {
+      const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
+      if (!daemonKey) { error('reserve-shell with local_agent_id requires daemon identity'); return }
+      try {
+        fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
+      } catch (e) {
+        error(e)
+        return
+      }
+    }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
     // is unsafe because fleet clients such as Todd auto-reconnect on close; two
     // same-identity clients then repeatedly kick each other off the server.
@@ -5754,12 +5764,20 @@ async function handleFleetWsMessage(ws, msg) {
   // - humans attach by `name`
   // Neither form creates a new identity.
   if (type === 'login') {
-    const { agent_id, name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
-    if (agent_id) {
-      const existing = fleetStore.getAgent?.(agent_id)
-      if (!existing || existing.dead) { error(`No live shell for agent "${agent_id}". Spawn must create the shell before login.`); return }
-      agentFleetConnections.set(agent_id, ws)
-      ws._tldaAgentId = agent_id
+    const { agent_id, local_agent_id, name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
+    let loginAgentId = agent_id || null
+    if (!loginAgentId && local_agent_id) {
+      const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
+      if (!daemonKey) { error('login with local_agent_id requires daemon identity'); return }
+      const binding = fleetStore.getDaemonAgentBinding?.(daemonKey, local_agent_id)
+      if (!binding?.agent_id) { error(`No live shell for local agent "${local_agent_id}". Spawn must create the shell before login.`); return }
+      loginAgentId = binding.agent_id
+    }
+    if (loginAgentId) {
+      const existing = fleetStore.getAgent?.(loginAgentId)
+      if (!existing || existing.dead) { error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`); return }
+      agentFleetConnections.set(loginAgentId, ws)
+      ws._tldaAgentId = loginAgentId
       const now = new Date().toISOString()
       const agent = {
         ...existing,
@@ -5785,18 +5803,18 @@ async function handleFleetWsMessage(ws, msg) {
       // session_id/session_ids are minted by the durable seat binding path, not
       // by generic login.
       fleetStore.upsertAgent(agent)
-      const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(agent_id) || agent) || fleetStore.getAgent?.(agent_id) || agent
+      const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(loginAgentId) || agent) || fleetStore.getAgent?.(loginAgentId) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
-      void fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
-      markAgentAlive(agent_id, Date.now(), { source: 'agent-login' })
-      touchActivity(agent_id)
+      void fleetStore.share?.({ type: 'login', agent_id: loginAgentId, from: loginAgentId, to: loginAgentId, text: `${agent.friendly_name || loginAgentId} logged in` })
+      markAgentAlive(loginAgentId, Date.now(), { source: 'agent-login' })
+      touchActivity(loginAgentId)
       spawnLibrarian.observeLiveness({
         type: 'agent-liveness',
-        agent_id,
+        agent_id: loginAgentId,
         state: 'alive',
         ts: now,
       })
-      spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
+      spawnLibrarian.observeLogin(fleetStore.getAgent?.(loginAgentId) || agent)
       broadcastState(storedAgent)
       broadcastDaemonAgentsUpdated(storedAgent)
       return
