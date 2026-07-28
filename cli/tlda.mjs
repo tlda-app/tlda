@@ -4453,7 +4453,7 @@ async function waitForAgentSeatAddress(agentId, { machineId, envName, apiImpl = 
       const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`)
       const seat = data?.seat || null
       lastSeat = seat
-      if (seat?.machine_id === machineId && seat?.env_name === envName && seat?.terminal_capability) return seat
+      if (seat?.machine_id === machineId && seat?.env_name === envName) return seat
     } catch (e) {
       lastError = e
     }
