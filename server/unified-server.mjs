@@ -1561,13 +1561,13 @@ const filterPushCounters = {
 }
 const filterPushStartedAt = new Date().toISOString()
 
-function pushFilteredEvent(data) {
+async function pushFilteredEvent(data) {
   if (!data) return
   filterPushCounters.eventsSeen++
   filterPushCounters.lastEventAt = new Date().toISOString()
   let matched
   try {
-    matched = filterSubscriptions.match(data)
+    matched = await filterSubscriptions.match(data)
   } catch (e) {
     // A filter fault must never take down the broadcast everyone still relies on.
     filterPushCounters.matchFaults++
@@ -1620,7 +1620,7 @@ function broadcastEvent(type, data) {
     })
   }
   broadcastFleet({ event: type, data })
-  if (type === 'fleet-event' && isChatHistoryEventType(data?.type)) pushFilteredEvent(data)
+  if (type === 'fleet-event' && isChatHistoryEventType(data?.type)) void pushFilteredEvent(data)
 }
 
 serverTimerScheduler = new ServerTimerScheduler({
@@ -8628,7 +8628,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // empty after a restart so we re-fire start-terminal-watch.
     if (fleetStore) {
       const watchedAgentIds = [...terminalWatchers.keys()]
-      for (const { agent: a, seat } of agentsForTerminalWatchResume({
+      for (const { agent: a, seat } of await agentsForTerminalWatchResume({
         watchedAgentIds,
         getAgentsByIds: ids => fleetStore.getAgentsByIds(ids),
         getCurrentAgentSeat: id => fleetStore.getCurrentAgentSeat(id),

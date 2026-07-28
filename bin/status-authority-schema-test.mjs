@@ -547,7 +547,7 @@ try {
   assert.deepEqual(rosterMachineTotals, humanRosterSummary.totals)
   assert.equal(humanRosterSummary.machines.find(m => m.machine_id === 'unassigned').registry.awake, 1)
 
-  const terminalResume = agentsForTerminalWatchResume({
+  const terminalResume = await agentsForTerminalWatchResume({
     watchedAgentIds: ['fleet:stale-legacy-route', 'fleet:routed-watch'],
     daemonKey: 'mini:prod',
     getAgentsByIds: () => [

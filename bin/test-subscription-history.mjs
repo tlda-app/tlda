@@ -90,11 +90,12 @@ T('a narrower filter drops non-matching rows',
 
 // The load-bearing invariant: history and live agree, because they are the same
 // predicate. Assert it rather than trust it.
-const disagreements = ROWS.filter(r => {
-  const live = subs.verdict(filter, r, {})
+const disagreements = []
+for (const r of ROWS) {
+  const live = await subs.verdict(filter, r, {})
   const inHistory = carolOnly.events.includes(r)
-  return live && inHistory && r.from !== 'fleet:ccc'
-})
+  if (live && inHistory && r.from !== 'fleet:ccc') disagreements.push(r)
+}
 T('history membership is verdict() membership', disagreements.length === 0, `${disagreements.length} disagreed`)
 
 console.log(failed ? '\nSOME CHECKS FAILED' : '\nALL SUBSCRIPTION-HISTORY CHECKS PASSED')
