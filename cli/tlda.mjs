@@ -3361,7 +3361,7 @@ export async function runFleetSpawn(spawnArgs, {
   let wakeLocalAgentId = null
   let wakeAgentId = null
   const model = flagFromRaw(spawnArgs, 'model') || undefined
-  const kind = undefined
+  const kind = spawnMode === 'session' ? (flagFromRaw(spawnArgs, 'kind') || undefined) : undefined
   const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
   let ledger = null
   try {
