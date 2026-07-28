@@ -44,7 +44,7 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
@@ -52,15 +52,14 @@ import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
-import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
+import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, readClientSourceManifest, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
-import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
-import { writeSentinel } from './lib/sentinel.mjs'
+import { killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -88,7 +87,6 @@ import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-respons
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
-import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { reloadHumanFleetClients } from './lib/targeted-client-control.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
@@ -714,149 +712,12 @@ setInterval(() => {
   }
 }, WS_HEARTBEAT_INTERVAL_MS).unref()
 
-// Local-machine daemon supervisor.
-//
-// The fleet daemon is a per-machine subprocess that watches Claude Code
-// session JSONLs and pushes activity-card / terminal events to the server.
-// When the daemon dies for any reason, no one restarts it and the user
-// silently loses activity cards, terminal cards, and source watching.
-//
-// The server is the natural supervisor: it knows when a daemon connects
-// and disconnects via daemonConnections, and it knows its own machine_id
-// (the hostname). On a periodic check, if no daemon is connected for the
-// local machine, spawn one. Skip flagged this as brittleness — the cost
-// of a misfire (an extra short-lived daemon) is much smaller than the
-// cost of silent feature loss.
-const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
-const SERVER_ENV_NAME = getActiveEnvName()
-const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
 // themselves via WS 'login' (returning) or 'register' (new human) messages.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
-const DAEMON_SUPERVISOR_INTERVAL_MS = 10_000
-const DAEMON_LOG_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
-const DAEMON_PID_FILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
-const DAEMON_CONFIG_DIR = join(homedir(), '.config', 'tlda')
-function daemonLockFile() {
-  return daemonSingletonLockPath({
-    configDir: DAEMON_CONFIG_DIR,
-    origin: `${resolveConfig().database.http}#${SERVER_ENV_NAME}`,
-  })
-}
-const DAEMON_SCRIPT = (() => {
-  const d = dirname(fileURLToPath(import.meta.url))
-  return resolveMainDaemonScript(fileURLToPath(import.meta.url)) || join(d, '..', 'bin', 'fleet-daemon.mjs')
-})()
-// Crash-loop guard: if the daemon dies fast >= MAX_RAPID_RESPAWNS times in a
-// row, give up until manual intervention. The supervisor would otherwise
-// hot-loop and burn CPU + log spam if the daemon has a startup crash.
-const DAEMON_FAST_DEATH_MS = 30_000   // < 30s alive == "fast death"
-const DAEMON_MAX_RAPID_RESPAWNS = 3
-const DAEMON_BACKOFF_MS = 5 * 60_000  // back off 5 minutes after giving up
-const DAEMON_LOCK_HELD_BACKOFF_MS = 60_000
-let _daemonSpawnInFlight = false
-let _daemonRespawnCount = 0
-let _daemonRapidFails = 0
-let _daemonLastSpawnAt = 0
-let _daemonBackoffUntil = 0
-let _daemonGivingUpLogged = false
-let _daemonLockHeldLoggedAt = 0
-
-function noteDaemonHealthyConnect() {
-  // Called when a daemon connects successfully — reset the rapid-fail
-  // counter so a single crash much later doesn't count toward the loop
-  // budget. The "fast death" check below is the real arbiter.
-  _daemonRapidFails = 0
-  _daemonGivingUpLogged = false
-}
-
-function ensureLocalDaemon() {
-  if (_daemonSpawnInFlight) return
-  const now = Date.now()
-  if (now < _daemonBackoffUntil) return
-  // Already connected? Done.
-  const ws = daemonConnections.get(LOCAL_DAEMON_ADDRESS)
-  if (ws && ws.readyState === 1) return
-  // The daemon owns an origin-keyed singleton lock. If any live daemon already
-  // holds this server's origin lock, that is the authoritative answer: do not
-  // spawn a competing child from this server, even if this stale/local server
-  // has no daemon WS.
-  try {
-    const lockPath = daemonLockFile()
-    const lock = inspectSingletonLock({ lockPath })
-    if (lock.held) {
-      _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
-      if (now - _daemonLockHeldLoggedAt >= DAEMON_LOCK_HELD_BACKOFF_MS) {
-        const h = lock.holder || {}
-        console.warn(
-          `[daemon-supervisor] singleton lock held by pid=${h.pid ?? '?'} ` +
-          `install=${h.installPath ?? '?'}; not spawning ${DAEMON_SCRIPT}`,
-        )
-        _daemonLockHeldLoggedAt = now
-      }
-      return
-    }
-  } catch (e) {
-    _daemonBackoffUntil = Math.max(_daemonBackoffUntil, now + DAEMON_LOCK_HELD_BACKOFF_MS)
-    console.error(`[daemon-supervisor] cannot inspect singleton lock: ${e.message}; not spawning`)
-    return
-  }
-  // PID file exists and process alive? It's just not connected yet — give it
-  // a moment, don't double-spawn.
-  if (existsSync(DAEMON_PID_FILE)) {
-    try {
-      const pid = parseInt(readFileSync(DAEMON_PID_FILE, 'utf8').trim(), 10)
-      if (pid > 0) {
-        try { process.kill(pid, 0); return } catch {} // not alive → fall through to respawn
-      }
-    } catch (e) {
-      console.warn(`[server] stale daemon PID file: ${e.message}`)
-    }
-  }
-  if (!existsSync(DAEMON_SCRIPT)) return
-
-  // Crash-loop check: if the previous spawn died within DAEMON_FAST_DEATH_MS,
-  // bump the rapid-fail counter; if too many in a row, back off.
-  if (_daemonLastSpawnAt > 0 && now - _daemonLastSpawnAt < DAEMON_FAST_DEATH_MS) {
-    _daemonRapidFails++
-    if (_daemonRapidFails >= DAEMON_MAX_RAPID_RESPAWNS) {
-      _daemonBackoffUntil = now + DAEMON_BACKOFF_MS
-      if (!_daemonGivingUpLogged) {
-        console.error(`[daemon-supervisor] daemon crashed ${_daemonRapidFails}× in <${DAEMON_FAST_DEATH_MS}ms each — backing off ${DAEMON_BACKOFF_MS / 1000}s. Tail ${DAEMON_LOG_FILE} for the cause.`)
-        _daemonGivingUpLogged = true
-      }
-      _daemonRapidFails = 0
-      return
-    }
-  } else if (_daemonLastSpawnAt > 0) {
-    // Long-lived daemon died — single failure, don't count toward the loop.
-    _daemonRapidFails = 0
-  }
-
-  _daemonSpawnInFlight = true
-  try {
-    if (!existsSync(dirname(DAEMON_LOG_FILE))) mkdirSync(dirname(DAEMON_LOG_FILE), { recursive: true })
-    const logFd = openSync(DAEMON_LOG_FILE, 'a')
-    const child = spawn(process.execPath, [DAEMON_SCRIPT], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
-    })
-    child.unref()
-    _daemonRespawnCount++
-    _daemonLastSpawnAt = now
-    console.log(`[daemon-supervisor] respawned local fleet daemon (count=${_daemonRespawnCount}, rapid_fails=${_daemonRapidFails})`)
-  } catch (e) {
-    console.error(`[daemon-supervisor] spawn failed: ${e.message}`)
-  } finally {
-    // Brief lockout so we don't burst-spawn while the new daemon is coming up.
-    setTimeout(() => { _daemonSpawnInFlight = false }, 3000)
-  }
-}
-
 // Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
 // Each entry is the shared ws-request-policy shape plus { machine_id, env_name }.
 const pendingRpcs = new Map()
@@ -3478,7 +3339,8 @@ app.get('/api/reaper/report.md', requireRead, (req, res) => {
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
   const { pid } = req.body
   if (!pid) return res.status(400).json({ error: 'missing pid' })
-  const machineId = _lastReaperStatus?.daemon_key || LOCAL_DAEMON_ADDRESS
+  const machineId = _lastReaperStatus?.daemon_key
+  if (!machineId) return res.status(409).json({ error: 'no reporting daemon' })
   try {
     const result = await sendDaemonDurable(machineId, 'reaper-kill', { pid })
     res.json(result || { ok: true })
@@ -3488,7 +3350,8 @@ app.post('/api/reaper/kill', requireRead, async (req, res) => {
 })
 
 app.post('/api/reaper/sweep', requireRead, async (req, res) => {
-  const machineId = _lastReaperStatus?.daemon_key || LOCAL_DAEMON_ADDRESS
+  const machineId = _lastReaperStatus?.daemon_key
+  if (!machineId) return res.status(409).json({ error: 'no reporting daemon' })
   try {
     const result = await sendDaemonDurable(machineId, 'reaper-sweep', {})
     res.json(result || { ok: true })
@@ -7901,97 +7764,6 @@ const {
   socketCanAcceptMore,
 })
 
-/**
- * If the shadow repo HEAD is not a "Build at" commit (i.e. an agent committed
- * directly to the shadow repo since the last build), copy the changed files to
- * the server source directory and trigger a rebuild so Skip sees the changes.
- */
-async function checkShadowAhead(projectName) {
-  const project = readProject(projectName)
-  if (!project || project.format !== 'svg') return
-
-  const shadowDir = join(getProjectsDir(), projectName, 'shadow-repo')
-  if (!existsSync(shadowDir)) return
-
-  try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileP = promisify(execFile)
-
-    const { stdout: headLog } = await execFileP('git', ['log', '-1', '--format=%H %s'], { cwd: shadowDir })
-    const trimmed = headLog.trim()
-    if (!trimmed) return
-    const spaceIdx = trimmed.indexOf(' ')
-    const headHash = trimmed.slice(0, spaceIdx)
-    const headMsg = trimmed.slice(spaceIdx + 1)
-
-    if (headMsg.startsWith('Build at ')) return  // shadow is in sync with last build
-
-    // Find most recent "Build at" commit
-    const { stdout: buildLog } = await execFileP('git', ['log', '--format=%H %s', '--grep=^Build at '], { cwd: shadowDir })
-    const firstBuildLine = buildLog.trim().split('\n')[0]
-    if (!firstBuildLine) return
-    const lastBuildHash = firstBuildLine.split(' ')[0]
-
-    // Files changed in shadow since last build
-    const { stdout: diffOut } = await execFileP('git', ['diff', '--name-only', lastBuildHash, 'HEAD'], { cwd: shadowDir })
-    const changedFiles = diffOut.trim().split('\n').filter(Boolean)
-    if (changedFiles.length === 0) return
-
-    // Copy changed files from shadow HEAD into server source
-    const srcDir = join(getProjectsDir(), projectName, 'source')
-    for (const rel of changedFiles) {
-      const shadowFile = join(shadowDir, rel)
-      if (!existsSync(shadowFile)) continue
-      const destFile = join(srcDir, rel)
-      mkdirSync(path.dirname(destFile), { recursive: true })
-      fs.copyFileSync(shadowFile, destFile)
-    }
-
-    console.log(`[shadow-ahead] ${projectName}: ${changedFiles.length} file(s) from agent commit(s) since ${lastBuildHash.slice(0, 7)}, triggering build`)
-    dispatchBuild(projectName).catch(e => console.warn(`[shadow-ahead] build failed for ${projectName}: ${e.message}`))
-  } catch (e) {
-    console.warn(`[shadow-ahead] ${projectName}: check failed: ${e.message}`)
-  }
-}
-
-// Sync the doc-version sentinel in the Yjs room with the shadow repo's latest
-// "Build at" commit. Called on daemon-hello so the sentinel is always current
-// even after a forced server restart that didn't persist the Yjs snapshot.
-async function syncSentinelFromShadow(projectName) {
-  const project = readProject(projectName)
-  if (!project || project.format !== 'svg') return
-
-  const shadowDir = join(getProjectsDir(), projectName, 'shadow-repo')
-  if (!existsSync(shadowDir)) return
-
-  try {
-    const { execFile } = await import('child_process')
-    const { promisify } = await import('util')
-    const execFileP = promisify(execFile)
-
-    const { stdout } = await execFileP('git', ['log', '--format=%H %ai %s', '--grep=^Build at ', '-1'], { cwd: shadowDir })
-    const line = stdout.trim()
-    if (!line) return
-    const parts = line.split(' ')
-    const latestBuildHash = parts[0]
-    const latestBuildAt = new Date(parts[1] + ' ' + parts[2]).getTime() || Date.now()
-
-    const docName = `doc-${projectName}`
-    const result = await writeSentinel(docName, {
-      commitHash: latestBuildHash,
-      timestamp: Date.now(),
-      buildReadyAt: latestBuildAt,
-    })
-
-    if (!result.skipped) {
-      console.log(`[sentinel-sync] ${projectName}: synced ${latestBuildHash.slice(0, 7)}`)
-    }
-  } catch (e) {
-    console.warn(`[sentinel-sync] ${projectName}: failed: ${e.message}`)
-  }
-}
-
 // Set (or clear, with syncError=null) the mirror/shadow sync-failure state on a
 // doc's version sentinel. Convergent Yjs state, so the SyncErrorPill shows it on
 // every connected viewer and it survives reconnect until a successful sync clears
@@ -8126,7 +7898,6 @@ async function handleDaemonWsMessage(ws, msg) {
       ts: new Date().toISOString(),
       lastKnownGoodAt: new Date().toISOString(),
     })
-    if (daemonKey === LOCAL_DAEMON_ADDRESS) noteDaemonHealthyConnect()
     console.log(`[fleet-daemon] connected: daemon=${daemonKey} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
 
     // Resume any active terminal watches for agents on this machine.
@@ -8779,31 +8550,8 @@ server.listen(PORT, HOST, () => {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
 
-  // An isolated dev/test server (TLDA_DEV_SERVER=1) never runs the fleet
-  // supervisor or the hibernate loop — it exists only to load schemas + serve
-  // a throwaway doc, and must not touch the live fleet.
-  if (process.env.TLDA_DEV_SERVER === '1') {
-    console.log('[dev-server] isolated mode — daemon supervisor and hibernate loop disabled')
-  } else {
-  // Start the local-daemon supervisor. Run an immediate check (so the daemon
-  // is up shortly after server start) and then poll on an interval. The
-  // daemon's own pidfile + connection-state checks gate actual respawn so
-  // we don't burst-spawn while a daemon is starting.
-  console.log(`[daemon-supervisor] watching for local daemon (machine_id=${LOCAL_MACHINE_ID})`)
-  ensureLocalDaemon()
-
   // Resume Overleaf git-sync pollers for any project linked to a remote.
   resumeOverleafPollers(listProjects).catch(error => {
     console.error(`[overleaf] source transaction recovery failed: ${error.message}`)
   })
-
-  setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
-
-  // The auto-hibernate sweep is DELETED (Skip's order, 7/18, after it
-  // kill-sessioned four live working agents at 00:49 whose idleness the lying
-  // liveness projection had overstated: "nothing in the core app gets to kill
-  // or restart an agent — that machinery gets stripped out of the app and
-  // lives in Todd, where you can turn it off." Idleness-driven hibernation,
-  // if wanted, is a Todd behavior with an off switch — never a core sweep.
-  }
 })
