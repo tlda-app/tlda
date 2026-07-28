@@ -405,7 +405,7 @@ import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 import { reportDocName, postReportDoc } from './report-doc-post.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
-// Fleet/event ops (chat, register, my-task, store-agents, fleet-event, roll-call,
+// Fleet/event ops (chat, register, my-task, store-agents, roll-call,
 // viewing, terminal-card, suggestions, education) target the GLOBAL event store.
 // Doc/source ops (/api/projects/*) stay on TLDA_SERVER (per-resource, local via
 // the daemon on the owning machine). When TLDA_FLEET_SERVER is unset this is
@@ -621,35 +621,12 @@ function spawnModelOptionsFromArgs(opts = {}) {
   return out;
 }
 
-// Append-only message log (backup). Fleet store writes are handled by
-// individual handlers (chat, delegate, task_done, login) to avoid
-// double-writes. logEvent only writes JSONL + fleet store for event
-// types that DON'T have dedicated handlers.
-const _HANDLED_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'login', 'register', 'report']);
-
 function logEvent(event) {
   const entry = { ...event, timestamp: new Date().toISOString() };
-  // JSONL backup (append-only)
   try {
     fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
   } catch (e) {
     process.stderr.write(`[fleet] logEvent JSONL write failed: ${e.message}\n`);
-  }
-  // Broadcast non-handled event types to dashboard via fleet-event endpoint
-  if (!_HANDLED_EVENT_TYPES.has(entry.type)) {
-    const eventData = {
-      type: entry.type || 'lifecycle',
-      event_type: entry.type || 'lifecycle',
-      timestamp: entry.timestamp,
-      from: entry.from || null,
-      to: entry.to || entry.agent || null,
-      text: entry.message || entry.description || entry.text || entry.reason || null,
-      taskId: entry.task_id || null,
-      agentId: entry.agent || null,
-      metadata: entry,
-    };
-    mcpFleetTransport.ephemeral('fleet-event', { event_data: eventData })
-      .catch(e => process.stderr.write(`[fleet-transport] transient fleet-event send failed before ACK: ${e.message}\n`));
   }
 }
 

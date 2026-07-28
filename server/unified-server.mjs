@@ -1330,11 +1330,6 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 
 // Filter subscriptions — a chat is a filter, and the server answers it.
 //
-// ADDITIVE FOR NOW. Matching events are pushed as 'filter-event' ALONGSIDE the
-// unconditional 'fleet-event' broadcast; nothing is withheld from anyone. That
-// lets the client subscribe and compare the two streams on real traffic before
-// anything is deleted. Gating broadcastFleet itself is the deletion, and it
-// waits for that equivalence to be proven.
 const filterSubscriptions = createFilterSubscriptions({
   getAgents: async () => await fleetStore?.getAllAgents?.() || [],
 })
@@ -1592,8 +1587,7 @@ function touchActivity(agentId) {
 // An agent's "turn" ends when it transitions thinking → idle. The transient
 // `agent-thinking` indicator is fire-and-forget (a disconnected subscriber
 // misses the edge), so we ALSO persist a synthetic `turn_ended` row in the
-// events DB. Because every share() is auto-broadcast as a fleet-event (see the
-// fleetStore.onEvent wiring below), bots subscribe to turn boundaries live.
+// events DB for subscribers.
 // The true→false edge is deduped upstream by _thinkingState, so this fires
 // exactly once per turn.
 async function emitTurnEnded(agentId, startedAtMs) {
