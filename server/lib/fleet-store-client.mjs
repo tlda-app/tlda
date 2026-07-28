@@ -89,7 +89,12 @@ export class FleetStoreClient {
     // A dead store is not recoverable by retrying — it means the thread holding
     // the only connection is gone. Fail every caller loudly rather than leaving
     // them awaiting a promise that will never settle.
-    this._worker.on('error', (e) => this._failAll(new Error(`fleet store worker crashed: ${e?.message || e}`)))
+    this._worker.on('error', (e) => {
+      const detail = e?.stack || e?.message || (
+        typeof e === 'object' ? JSON.stringify(e) : String(e)
+      )
+      this._failAll(new Error(`fleet store worker crashed: ${detail}`))
+    })
     this._worker.on('exit', (code) => {
       if (!this._closed) this._failAll(new Error(`fleet store worker exited (${code})`))
     })
