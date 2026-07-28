@@ -116,7 +116,7 @@ function fakePtyModule() {
       daemonKey: 'mini:prod',
     },
   })
-  await rpc.handlers['send-key']({ agent_id: 'fleet:cap-test', terminal_capability: 'termcap:live', key: 'Enter' })
+  await rpc.handlers['send-key']({ agent_id: 'fleet:cap-test', key: 'Enter' })
   await rpc.handlers['send-text']({ agent_id: 'fleet:cap-test', terminal_capability: 'termcap:live', text: 'hello', enter: true })
   await rpc.handlers['interrupt']({ agent_id: 'fleet:cap-test', terminal_capability: 'termcap:live' })
   const soft = await rpc.handlers['soft-interrupt']({ agent_id: 'fleet:cap-test', terminal_capability: 'termcap:live' })
@@ -129,7 +129,6 @@ function fakePtyModule() {
 }
 
 for (const [name, payload] of [
-  ['send-key', { key: 'Enter' }],
   ['send-text', { text: 'hello' }],
   ['interrupt', {}],
   ['soft-interrupt', {}],
