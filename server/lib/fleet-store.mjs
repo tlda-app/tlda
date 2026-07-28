@@ -1902,6 +1902,10 @@ export class FleetStore {
     return inserted;
   }
 
+  insertEventRecord(event, options = {}) {
+    return this._insertEventRecord(event, options);
+  }
+
   getChatTempIdResult(tempId) {
     if (!tempId) return null
     const rows = this.db.prepare(`

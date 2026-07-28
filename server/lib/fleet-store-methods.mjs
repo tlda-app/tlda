@@ -33,6 +33,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'delegate',
   'ensureDefaultSubscription',
   'findAgent',
+  'findAgentStored',
   'flushTaskDocs',
   'getActiveQaReport',
   'getActiveStackEntry',
@@ -90,6 +91,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getStack',
   'getSubscription',
   'getSubscriptionsByOwner',
+  'getSubscriptionsByAdapter',
   'getTask',
   'getTaskByAgent',
   'getTaskDeliveryState',
@@ -103,6 +105,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'hasEverRun',
   'importFromStateJson',
   'insertAgentSeat',
+  'insertEventRecord',
   'insertSessionEntries',
   'isDelegatorForAgent',
   'isUnreadPending',
@@ -111,6 +114,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'listDaemonRegistrations',
   'listPendingTimerEvents',
   'markDaemonDisconnected',
+  'markAlive',
   'markDaemonOutboxProcessed',
   'markDead',
   'markEventRead',
@@ -192,4 +196,3 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'upsertTask',
   'validateCurrentAgentSeat',
 ])
-

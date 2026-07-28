@@ -121,7 +121,7 @@ export async function runWakeRouteLifecycle({
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
-  const nextSeat = getCurrentSeat?.(agentId)
+  const nextSeat = await getCurrentSeat?.(agentId)
   if (!nextSeat?.daemon_key || !nextSeat?.terminal_capability || !nextSeat?.session_id) {
     throw new Error(`respawn for ${agentId} did not establish a current durable binding`)
   }

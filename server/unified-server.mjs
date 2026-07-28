@@ -990,11 +990,11 @@ function withAgentReturnNotice(agent, nudgeText, status = 'hibernating', opts = 
 async function waitForCurrentAgentSeat(agentId, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const seat = fleetStore.getCurrentAgentSeat?.(agentId)
+    const seat = await fleetStore.getCurrentAgentSeat?.(agentId)
     if (seat) return seat
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  return fleetStore.getCurrentAgentSeat?.(agentId) || null
+  return await fleetStore.getCurrentAgentSeat?.(agentId) || null
 }
 
 async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
@@ -1008,7 +1008,7 @@ async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
       lastErr = e
       if (attempt >= 2) break
       await new Promise(resolve => setTimeout(resolve, 500))
-      currentSeat = fleetStore.getCurrentAgentSeat?.(agentId) || currentSeat
+      currentSeat = await fleetStore.getCurrentAgentSeat?.(agentId) || currentSeat
     }
   }
   throw lastErr || new Error('reanimate notice failed')
@@ -1016,7 +1016,7 @@ async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
 
 async function reanimateAgent(agentQuery) {
   if (!agentQuery) throw new Error('reanimate requires agent')
-  const before = fleetStore.findAgentStored?.(agentQuery) || fleetStore.findAgent(agentQuery)
+  const before = await fleetStore.findAgentStored?.(agentQuery) || await fleetStore.findAgent(agentQuery)
   if (!before) {
     const err = new Error('agent not found')
     err.status = 404
@@ -1045,7 +1045,7 @@ async function reanimateAgent(agentQuery) {
     throw err
   }
 
-  const revived = fleetStore.markAlive(before.id)
+  const revived = await fleetStore.markAlive(before.id)
   markAgentNotAlive(before.id, { source: 'reanimate', reason: 'dead bit cleared; waking agent' })
   broadcastState(before.id)
   let spawnResult
@@ -1055,9 +1055,9 @@ async function reanimateAgent(agentQuery) {
       throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
     }
   } catch (e) {
-    const currentSeat = fleetStore.getCurrentAgentSeat?.(before.id)
+    const currentSeat = await fleetStore.getCurrentAgentSeat?.(before.id)
     if (!currentSeat) {
-      fleetStore.markDead(before.id)
+      await fleetStore.markDead(before.id)
       markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake failed: ${e.message}` })
       broadcastState(before.id)
     }
@@ -1077,13 +1077,13 @@ async function reanimateAgent(agentQuery) {
     } catch (killErr) {
       killError = killErr
     }
-    fleetStore.markDead(before.id)
+    await fleetStore.markDead(before.id)
     markAgentNotAlive(before.id, { source: 'reanimate', reason: `notice failed: ${e.message}` })
     broadcastState(before.id)
     const suffix = killError ? `; also failed to kill resumed session: ${killError.message}` : ''
     throw new Error(`reanimate notice failed after wake; agent left dead${suffix}: ${e.message}`)
   }
-  await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore._insertEventRecord({
+  await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore.insertEventRecord({
     type: 'lifecycle',
     timestamp: new Date().toISOString(),
     from: before.id,
@@ -2073,7 +2073,6 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
       type: 'activity', from: existing.id, to: existing.id,
       text: 'spawn', metadata: { tool: 'spawn', synthetic: true }, unread: false,
     })
-    fleetStore._bustAgentsCache?.()
     broadcastState(existing)
   } catch (e) {
     console.error(`[spawn] synthetic activity failed for ${existing.id}: ${e.message}`)
@@ -2419,9 +2418,9 @@ if (fleetStore) {
 // The subscriptions table is the record of who monitors which doc; tlda-feedback
 // reads it rather than keeping a second copy, and arms the room listeners for
 // every persisted row at startup.
-function configureTldaFeedback() {
+async function configureTldaFeedback() {
   tldaFeedback.configure({
-    listDocSubscriptions: () => (fleetStore?.getSubscriptionsByAdapter?.('document_monitor') || [])
+    listDocSubscriptions: async () => (await fleetStore?.getSubscriptionsByAdapter?.('document_monitor') || [])
       .map(row => {
         const match = String(row.query || '').match(/^doc:([^\s]+)$/i)
         return match ? { owner: row.owner, doc: match[1] } : null
@@ -2429,7 +2428,7 @@ function configureTldaFeedback() {
       .filter(Boolean),
     deliverChat: deliverTldaFeedbackChat,
   })
-  tldaFeedback.armPersisted()
+  await tldaFeedback.armPersisted()
 }
 
 function deliverTldaFeedbackChat({ from, to, text, metadata }) {
@@ -2438,7 +2437,7 @@ function deliverTldaFeedbackChat({ from, to, text, metadata }) {
     .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
 
-configureTldaFeedback()
+await configureTldaFeedback()
 
 async function reportFleetIncident({ severity = 'warning', component, operation, actors, impact, evidence, error }) {
   const text = [
@@ -2684,7 +2683,7 @@ onGlobalEvent(async (event) => {
     // plus any monitor subscribers. recentDocAgents was dropped: it required an
     // exact abspath+window match against build files and resolved empty in
     // practice, so build cards were never created at all.
-    const subs = new Set(tldaFeedback.subscribers(docName))
+    const subs = new Set(await tldaFeedback.subscribers(docName))
     if (editedBy) subs.add(editedBy)
 
     for (const agentId of subs) {
@@ -2856,7 +2855,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
   if (!original || original.type !== 'chat') return null
   const ts = new Date().toISOString()
   const meta = { ...(metadata || {}), amends: original.id }
-  const inserted = await measureHotOp('materialization amend event insert', `event=${eventId} to=${original.to}`, () => fleetStore._insertEventRecord({
+  const inserted = await measureHotOp('materialization amend event insert', `event=${eventId} to=${original.to}`, () => fleetStore.insertEventRecord({
     type: 'amend',
     timestamp: ts,
     from: original.from,
@@ -5812,7 +5811,7 @@ async function handleFleetWsMessage(ws, msg) {
       const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
       if (!daemonKey) { error('reserve-shell with local_agent_id requires daemon identity'); return }
       try {
-        fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
+        await fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
       } catch (e) {
         error(e)
         return
@@ -6423,7 +6422,7 @@ async function handleFleetWsMessage(ws, msg) {
           broadcastEvent,
           insertWakeLifecycleEvent: async () => {
             const wakeTs = new Date().toISOString()
-            await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore._insertEventRecord({
+            await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore.insertEventRecord({
               type: 'lifecycle',
               timestamp: wakeTs,
               from: agentId,
@@ -6537,7 +6536,7 @@ async function handleFleetWsMessage(ws, msg) {
       ...(source ? { source } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
     }
-    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${orig.to}`, () => fleetStore._insertEventRecord({
+    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${orig.to}`, () => fleetStore.insertEventRecord({
       type: 'amend',
       timestamp: ts,
       from,
@@ -6693,7 +6692,7 @@ async function handleFleetWsMessage(ws, msg) {
       if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
         combinedMetadata = initializeRecipientRefs(combinedMetadata, to, materializableAttachments, { sourceAgent: from })
       }
-      const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${to} bytes=${text.length}`, () => fleetStore._insertEventRecord({
+      const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${to} bytes=${text.length}`, () => fleetStore.insertEventRecord({
         type: 'chat',
         timestamp: ts,
         from,
@@ -7817,7 +7816,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Release after the row is gone — the remaining-subscriber check reads the table.
     if (subscription.adapter === 'document_monitor') {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
-      if (docMatch) tldaFeedback.releaseIfUnsubscribed(docMatch[1])
+      if (docMatch) await tldaFeedback.releaseIfUnsubscribed(docMatch[1])
     }
     reply({ ok: true, subscription_id: subscription.subscription_id })
     return

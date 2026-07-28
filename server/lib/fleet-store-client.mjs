@@ -47,7 +47,17 @@ export class FleetStoreClient {
     this._worker = new Worker(new URL('./fleet-store.worker.mjs', import.meta.url), {
       workerData: { dbPath, options },
     })
-    this._ready = new Promise((resolve) => { this._resolveReady = resolve })
+    this._readySettled = false
+    this._ready = new Promise((resolve, reject) => {
+      this._resolveReady = () => {
+        this._readySettled = true
+        resolve()
+      }
+      this._rejectReady = (error) => {
+        this._readySettled = true
+        reject(error)
+      }
+    })
 
     this._worker.on('message', (msg) => {
       if (msg.kind === 'ready') return this._resolveReady()
@@ -105,6 +115,7 @@ export class FleetStoreClient {
   }
 
   _failAll(err) {
+    if (!this._readySettled) this._rejectReady(err)
     for (const [, waiter] of this._pending) waiter.reject(err)
     this._pending.clear()
   }

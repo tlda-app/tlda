@@ -65,8 +65,8 @@ function ensureListeners(docName) {
 
   const displayName = toDisplayName(docName)
 
-  const send = (text, extraMetadata = {}) => {
-    for (const agent of subscribers(displayName)) {
+  const send = async (text, extraMetadata = {}) => {
+    for (const agent of await subscribers(displayName)) {
       try {
         store.deliverChat({
           from: TLDA_FEEDBACK_FROM,
@@ -99,22 +99,22 @@ function ensureListeners(docName) {
         const anchorStr = anchor?.file
           ? ` (${anchor.file}${anchor.line ? ':' + anchor.line : ''})`
           : ''
-        send(`[tlda feedback] New note on ${displayName} (${shape.id}): "${preview}"${anchorStr}`, { shape_id: shape.id, shape_type: sType })
+        void send(`[tlda feedback] New note on ${displayName} (${shape.id}): "${preview}"${anchorStr}`, { shape_id: shape.id, shape_type: sType })
       } else if (DRAW_TYPES.has(sType)) {
         const x = Math.round(shape.x || 0)
         const y = Math.round(shape.y || 0)
-        send(`[tlda feedback] New ${sType} on ${displayName} (${shape.id}) at (${x}, ${y})`, { shape_id: shape.id, shape_type: sType })
+        void send(`[tlda feedback] New ${sType} on ${displayName} (${shape.id}) at (${x}, ${y})`, { shape_id: shape.id, shape_type: sType })
       }
     }
   })
 
   const unsubSignal = onSignal(docName, (signal) => {
     if (signal.key === 'signal:ping') {
-      send(`[tlda feedback] Ping on ${displayName}!`, { signal: 'ping' })
+      void send(`[tlda feedback] Ping on ${displayName}!`, { signal: 'ping' })
     } else if (signal.key === 'signal:build-progress') {
       const data = signal.value || {}
       if (data.phase === 'done') {
-        send(
+        void send(
           `[writing checkpoint] Build complete for ${displayName}. Before moving on, check your recent edits:\n` +
           `1. WALKING — re-read as a first-time reader. Can you walk through it, or do you stop and climb?\n` +
           `2. CHUNKS — can you name what each paragraph/block does in one phrase?\n` +
@@ -157,9 +157,9 @@ export function arm(projectName) {
  * @param {string} projectName
  * @returns {{ ok: true }}
  */
-export function releaseIfUnsubscribed(projectName) {
+export async function releaseIfUnsubscribed(projectName) {
   if (!projectName) return { ok: true }
-  if (subscribers(projectName).length === 0) releaseListeners(toRoomName(projectName))
+  if ((await subscribers(projectName)).length === 0) releaseListeners(toRoomName(projectName))
   return { ok: true }
 }
 
@@ -168,9 +168,9 @@ export function releaseIfUnsubscribed(projectName) {
  * server restart brings the listeners back with the rows that outlived it.
  * @returns {number} number of docs armed
  */
-export function armPersisted() {
+export async function armPersisted() {
   if (!store) throw new Error('tlda-feedback used before configure()')
-  const docs = new Set(store.listDocSubscriptions().map(row => row.doc))
+  const docs = new Set((await store.listDocSubscriptions()).map(row => row.doc))
   for (const doc of docs) ensureListeners(toRoomName(doc))
   return docs.size
 }
@@ -180,11 +180,11 @@ export function armPersisted() {
  * @param {string} projectName
  * @returns {string[]}
  */
-export function subscribers(projectName) {
+export async function subscribers(projectName) {
   if (!store) return []
   const display = toDisplayName(toRoomName(projectName))
   return [...new Set(
-    store.listDocSubscriptions()
+    (await store.listDocSubscriptions())
       .filter(row => row.doc === display)
       .map(row => row.owner)
   )]
