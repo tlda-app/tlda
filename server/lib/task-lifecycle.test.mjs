@@ -73,13 +73,19 @@ test('transfers a task by keeping its id and appending the delegation message', 
     description: 'Original subject',
     message: 'Original assignment text.',
     status: 'working',
+    metadata: {
+      keep: 'unchanged',
+      notify_at: '2026-07-25T12:00:00.000Z',
+      notify_every: 300,
+      expires_at: '2026-07-25T13:00:00.000Z',
+    },
   }
   let storedTask = null
   let delegateCall = null
   const fleetStore = {
     upsertTask: t => { storedTask = t },
-    delegate: async (from, to, taskId, description, metadata) => {
-      delegateCall = { from, to, taskId, description, metadata }
+    delegate: async (from, to, taskId, description, metadata, options) => {
+      delegateCall = { from, to, taskId, description, metadata, options }
       return { id: 42 }
     },
   }
@@ -92,6 +98,12 @@ test('transfers a task by keeping its id and appending the delegation message', 
     delegatedAt: '2026-07-25T12:00:00.000Z',
     message: 'Continue with the remaining verification.',
     eventMetadata: { transfer: true },
+    eventOptions: { unread: true },
+    taskMetadataPatch: {
+      notify_at: '2026-07-26T12:00:00.000Z',
+      notify_every: undefined,
+      expires_at: undefined,
+    },
   })
 
   assert.equal(result.eventId, 42)
@@ -100,6 +112,10 @@ test('transfers a task by keeping its id and appending the delegation message', 
   assert.equal(storedTask.status, 'working')
   assert.equal(storedTask.delegated_by, 'owner')
   assert.equal(storedTask.delegated_at, '2026-07-20T12:00:00.000Z')
+  assert.deepEqual(storedTask.metadata, {
+    keep: 'unchanged',
+    notify_at: '2026-07-26T12:00:00.000Z',
+  })
   assert.match(storedTask.message, /Original assignment text\./)
   assert.match(storedTask.message, /Continue with the remaining verification\./)
   assert.deepEqual(delegateCall, {
@@ -108,5 +124,6 @@ test('transfers a task by keeping its id and appending the delegation message', 
     taskId: 'target',
     description: 'Original subject',
     metadata: { transfer: true },
+    options: { unread: true },
   })
 })

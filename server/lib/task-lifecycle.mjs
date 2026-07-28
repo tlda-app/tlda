@@ -57,6 +57,8 @@ export async function transferTaskLifecycle({
   message,
   delegatedAt = new Date().toISOString(),
   eventMetadata,
+  eventOptions,
+  taskMetadataPatch,
 }) {
   if (!fleetStore) throw new Error('missing fleetStore')
   if (!task?.id) throw new Error('missing task')
@@ -69,9 +71,17 @@ export async function transferTaskLifecycle({
     agent: toAgentId,
     message: appendDelegationMessage(task, { fromAgentId, toAgentId, message, delegatedAt }),
   }
+  if (taskMetadataPatch) {
+    const nextMetadata = { ...(task.metadata || {}) }
+    for (const [key, value] of Object.entries(taskMetadataPatch)) {
+      if (value === undefined) delete nextMetadata[key]
+      else nextMetadata[key] = value
+    }
+    transferredTask.metadata = Object.keys(nextMetadata).length > 0 ? nextMetadata : undefined
+  }
 
   await fleetStore.upsertTask(transferredTask)
-  const event = await fleetStore.delegate?.(fromAgentId, toAgentId, task.id, task.description, eventMetadata)
+  const event = await fleetStore.delegate?.(fromAgentId, toAgentId, task.id, task.description, eventMetadata, eventOptions)
   return {
     task: transferredTask,
     event: event || null,

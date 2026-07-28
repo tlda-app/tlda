@@ -6889,9 +6889,10 @@ async function handleFleetWsMessage(ws, msg) {
       error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
-    const now = new Date().toISOString()
-    const notifyAtMs = notify_at ? Date.parse(notify_at) : (notify_every ? Date.now() + Number(notify_every) * 1000 : NaN)
-    const expiresAtMs = expires_at ? Date.parse(expires_at) : NaN
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
+    const notifyAtMs = notify_at ? Date.parse(notify_at) : nowMs
+    const expiresAtMs = expires_at ? Date.parse(expires_at) : Infinity
     if (notify_at && !Number.isFinite(notifyAtMs)) { error('notify_at must be an ISO timestamp'); return }
     if (notify_every != null && (!Number.isFinite(Number(notify_every)) || Number(notify_every) <= 0)) { error('notify_every must be a positive number of seconds'); return }
     if (expires_at && !Number.isFinite(expiresAtMs)) { error('expires_at must be an ISO timestamp'); return }
@@ -6902,8 +6903,8 @@ async function handleFleetWsMessage(ws, msg) {
       ...(requires_approval ? { requires_approval: true } : {}),
       ...(allow_pending_agent && !await fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
       ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
-      ...(Number.isFinite(notifyAtMs) ? { notify_at: new Date(notifyAtMs).toISOString() } : {}),
-      ...(notify_every ? { notify_every: Number(notify_every) } : {}),
+      notify_at: new Date(notifyAtMs).toISOString(),
+      ...(notify_every != null ? { notify_every: Number(notify_every) } : {}),
       ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
     }
     const delegateMetadata = {
@@ -6925,6 +6926,12 @@ async function handleFleetWsMessage(ws, msg) {
         message: taskMsg,
         delegatedAt: now,
         eventMetadata: delegateMetadata,
+        eventOptions: { unread: notifyAtMs <= nowMs },
+        taskMetadataPatch: {
+          notify_at: new Date(notifyAtMs).toISOString(),
+          notify_every: notify_every != null ? Number(notify_every) : undefined,
+          expires_at: expires_at ? new Date(expiresAtMs).toISOString() : undefined,
+        },
       })
       delegateEvent = transfer.event
     } else {
@@ -6943,7 +6950,19 @@ async function handleFleetWsMessage(ws, msg) {
         unread: !Number.isFinite(notifyAtMs) || notifyAtMs <= Date.now(),
       })
     }
-    if (!existingTask && Number.isFinite(notifyAtMs)) {
+    if (existingTask) {
+      const pendingTimers = await fleetStore.listPendingTimerEvents?.() || []
+      for (const timer of pendingTimers) {
+        if (timer.metadata?.task_id === taskId) await serverTimerScheduler?.cancel(Number(timer.id))
+      }
+    }
+    const notifyEverySeconds = notify_every != null ? Number(notify_every) : null
+    const reminderAtMs = notifyAtMs > nowMs
+      ? notifyAtMs
+      : notifyEverySeconds
+        ? nowMs + notifyEverySeconds * 1000
+        : NaN
+    if (Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs) {
       await fleetStore.share({
         type: 'timer',
         from: from || resolved.id,
@@ -6951,17 +6970,17 @@ async function handleFleetWsMessage(ws, msg) {
         text: `⏱ ${description}`,
         metadata: {
           pending: true,
-          fire_at: new Date(notifyAtMs).toISOString(),
+          fire_at: new Date(reminderAtMs).toISOString(),
           message: `Task reminder: ${description}`,
           task_id: taskId,
-          ...(notify_every ? { repeat_seconds: Number(notify_every) } : {}),
+          ...(notifyEverySeconds ? { repeat_seconds: notifyEverySeconds } : {}),
           ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
         },
         unread: false,
       })
       await serverTimerScheduler?.refresh()
     }
-    if (!existingTask && Number.isFinite(expiresAtMs)) {
+    if (Number.isFinite(expiresAtMs)) {
       await fleetStore.share({
         type: 'timer',
         from: from || resolved.id,
