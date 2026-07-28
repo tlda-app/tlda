@@ -479,6 +479,7 @@ export class FleetStore {
       -- Materialized agent state (cache, rebuilt from events)
       CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
+        parent_agent_id TEXT,
         friendly_name TEXT,
         pretty_name TEXT,              -- JSON string/array or plain string, display-only
         labels TEXT,                  -- JSON array
@@ -661,6 +662,7 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents DROP COLUMN tmux_session");
     }
     if (!agentCols.some(c => c.name === 'pretty_name')) this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
+    if (!agentCols.some(c => c.name === 'parent_agent_id')) this.db.exec("ALTER TABLE agents ADD COLUMN parent_agent_id TEXT");
     this.db.exec("DROP TABLE IF EXISTS daemon_registry");
     this.db.exec("DROP TABLE IF EXISTS daemon_agent_bindings");
     this.db.exec("DROP TABLE IF EXISTS agent_cwd_segments");
@@ -712,6 +714,7 @@ export class FleetStore {
         ) AS la WHERE agents.id = la.id
       `);
     }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id, dead, last_active)");
 
     // Lineage tables
     this.db.exec(`
@@ -1301,9 +1304,10 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, pretty_name, labels, registered_at, last_seen, dead, human, is_manager, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, parent_agent_id, friendly_name, pretty_name, labels, registered_at, last_seen, dead, human, is_manager, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
+        parent_agent_id = COALESCE(excluded.parent_agent_id, agents.parent_agent_id),
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
         labels = COALESCE(excluded.labels, agents.labels),
@@ -2107,6 +2111,7 @@ export class FleetStore {
       }
       this._upsertAgent.run(
         agent.id,
+        agent.parent_agent_id || null,
         agent.friendly_name || null,
         serializePrettyName(agent.pretty_name),
         agent.labels ? JSON.stringify(agent.labels) : null,
