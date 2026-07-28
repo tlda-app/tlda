@@ -70,6 +70,10 @@ interface DiffConfig {
   buildStatus?: string
 }
 
+interface FleetConfigResponse {
+  telemetryUrl?: unknown
+}
+
 type ErrorType = 'not-found' | 'auth' | 'generic'
 
 type State =
@@ -510,7 +514,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .then(setDocHealth)
       .catch(e => console.warn('[app] projects/health fetch failed:', e.message))
     fetch(`${ASSET_BASE}/api/fleet-config`)
-      .then(r => r.ok ? r.json() : {})
+      .then(r => r.ok ? r.json() as Promise<FleetConfigResponse> : Promise.resolve<FleetConfigResponse>({}))
       .then(data => setTelemetryUrl(typeof data.telemetryUrl === 'string' ? data.telemetryUrl : null))
       .catch(e => console.warn('[app] fleet-config fetch failed:', e.message))
   }, [])
