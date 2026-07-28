@@ -1345,8 +1345,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!rawFrom) { res.status(400).json({ error: 'missing "from"' }); return }
     const agent = fleetStore?.findAgent(rawFrom)
     if (!agent) { res.status(404).json({ error: `Agent not found: "${rawFrom}"` }); return }
-    const seat = currentSeatOrHttpError(res, agent)
-    if (!seat) return
+    const route = await rpcAgent(res, agent, 'resolve-agent-route', { agent_id: agent.id })
+    if (!route) return
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
     const event = await fleetStore?.share({
