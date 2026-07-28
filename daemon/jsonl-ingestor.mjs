@@ -139,7 +139,6 @@ export function sessionIdentitySeatEvent(input = {}, {
     created_source: input.created_source || 'daemon-session-observed',
   }
   if (input.tmux_session) event.tmux_session = input.tmux_session
-  if (input.terminal_capability) event.terminal_capability = input.terminal_capability
   return event
 }
 
@@ -329,13 +328,7 @@ export function createJsonlIngestor({
     // not independently resumable fleet seats. Watching their activity is
     // valid; replacing the parent's durable resume identity with them is not.
     if (input.harness_kind === 'codex' && !codexRolloutIsTopLevel(input.jsonl_path)) return
-    const currentRoute = permissionLedger.get?.(fleetId)
-    const event = sessionIdentitySeatEvent({
-      ...input,
-      ...(currentRoute?.sessionId === sessionId
-        ? { terminal_capability: currentRoute.terminalCapability }
-        : {}),
-    }, { machineId, envName, daemonKey })
+    const event = sessionIdentitySeatEvent(input, { machineId, envName, daemonKey })
     try {
       permissionLedger.setSessionSync(fleetId, {
         sessionId,
@@ -396,11 +389,7 @@ export function createJsonlIngestor({
     try {
       recordMintMarker?.({
         ...marker,
-        session_id: ledgerSessionId({
-          session_id: marker.session_id || sessionId,
-          harness_kind: marker.harness_kind || harnessKind,
-          jsonl_path: jsonlPath,
-        }),
+        session_id: marker.session_id || sessionId,
         session_path: jsonlPath,
         harness_kind: marker.harness_kind || harnessKind,
       })
