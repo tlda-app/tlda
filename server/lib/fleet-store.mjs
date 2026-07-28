@@ -829,7 +829,13 @@ export class FleetStore {
       DROP TABLE IF EXISTS agent_current_seats;
       DROP TABLE IF EXISTS agent_seats;
     `);
-    this.db.exec('DROP INDEX IF EXISTS idx_agents_machine_env; DROP INDEX IF EXISTS idx_agents_daemon_key; DROP INDEX IF EXISTS idx_agents_machine_env_alive;');
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_agents_machine;
+      DROP INDEX IF EXISTS idx_agents_machine_alive;
+      DROP INDEX IF EXISTS idx_agents_machine_env;
+      DROP INDEX IF EXISTS idx_agents_machine_env_alive;
+      DROP INDEX IF EXISTS idx_agents_daemon_key;
+    `);
     for (const column of ['session_id', 'session_ids', 'resume_id', 'machine_id', 'env_name', 'daemon_key']) {
       if (this.db.prepare('PRAGMA table_info(agents)').all().some(c => c.name === column)) {
         this.db.exec(`ALTER TABLE agents DROP COLUMN ${column}`);
