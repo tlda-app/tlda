@@ -66,7 +66,7 @@ function apiFileUrlToLocalPath(raw, serverBaseUrl = null) {
 // Backtick-quoted spans/blocks are skipped (they are "quotes" per Skip's rule).
 // Returns { resolvedMessage, inlineAttachments } where inlineAttachments entries
 // have { type: 'file', id, path, name } — no url yet (call uploadAttachments next).
-export function detectAttachments(message, agentCwd, serverBaseUrl = null) {
+export function detectAttachments(message, agentCwd, serverBaseUrl = null, options = {}) {
   const inlineAttachments = []
   const masked = []
   const maskToken = (kind, raw) => {
@@ -131,6 +131,13 @@ export function detectAttachments(message, agentCwd, serverBaseUrl = null) {
   // 3b. Bare file paths — any match enters the pipeline; missing files are marked broken.
   working = working.replace(pathRe, (match, filePath) => {
     const resolved = resolveFilePath(filePath, agentCwd)
+    if (
+      fs.existsSync(resolved) &&
+      typeof options.preserveBarePath === 'function' &&
+      options.preserveBarePath({ raw: match, filePath, resolved, agentCwd })
+    ) {
+      return match
+    }
     const id = attIdx++
     if (fs.existsSync(resolved)) {
       inlineAttachments.push({ type: 'file', id, path: resolved, name: path.basename(resolved) })
@@ -172,8 +179,8 @@ export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
 // Full pipeline: detect paths, replace with {{att:N}}, upload files.
 // Returns { resolvedMessage, inlineAttachments, brokenPaths } with att.url populated.
 // brokenPaths lists files that were referenced but don't exist or failed upload.
-export async function processMessageText(message, agentCwd, serverBaseUrl) {
-  const { resolvedMessage, inlineAttachments } = detectAttachments(message, agentCwd, serverBaseUrl)
+export async function processMessageText(message, agentCwd, serverBaseUrl, options = {}) {
+  const { resolvedMessage, inlineAttachments } = detectAttachments(message, agentCwd, serverBaseUrl, options)
   await uploadAttachments(inlineAttachments, serverBaseUrl)
   const brokenPaths = inlineAttachments.filter(a => a.broken).map(a => a.path)
   return { resolvedMessage, inlineAttachments, brokenPaths }

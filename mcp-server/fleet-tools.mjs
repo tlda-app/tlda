@@ -2319,6 +2319,32 @@ export async function handleFleetTool(name, args) {
     return !!agent && (agent.id === id || agent.friendly_name === id || agent.session_id === id);
   }
 
+  function agentMachineId(agent) {
+    const machine = agent?.machine_id || agent?.machineId || agent?.metadata?.machine_id || agent?.metadata?.machineId || '';
+    if (machine) return String(machine);
+    const daemonKey = agent?.daemon_key || agent?.daemonKey || agent?.metadata?.daemon_key || agent?.metadata?.daemonKey || '';
+    return daemonKey ? String(daemonKey).split(':')[0] : '';
+  }
+
+  function samePathCwd(a, b) {
+    if (!a || !b) return false;
+    return path.resolve(String(a)) === path.resolve(String(b));
+  }
+
+  function barePathPreserverForRecipients(agents, recipients, agentCwd) {
+    const sender = agents.find(a => a.id === AGENT_ID) || null;
+    const senderMachine = agentMachineId(sender) || process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
+    if (!senderMachine || !recipients.length) return null;
+    const recipientAgents = recipients.map(id => agents.find(a => agentMatches(a, id)));
+    if (recipientAgents.some(a => !a || a.human || agentMachineId(a) !== senderMachine)) return null;
+    const sameCwd = recipientAgents.every(a => samePathCwd(a.cwd, agentCwd));
+    return ({ raw }) => {
+      const text = String(raw || '');
+      if (/^(?:~?\/)/.test(text)) return true;
+      return sameCwd;
+    };
+  }
+
   async function recentDirectInbound(fromId, toId) {
     try {
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -2677,8 +2703,16 @@ export async function handleFleetTool(name, args) {
       // Upload the shared file itself, not only its images, so its chip opens.
       ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, activeFleetServerUrl()));
     } else {
+      if (!agents.length) {
+        try {
+          agents = (await mcpFleetTransport.ephemeral('store-agents')) || [];
+        } catch (e) {
+          process.stderr.write(`[fleet] store-agents fetch failed for local-path preservation: ${e.message}\n`);
+        }
+      }
+      const preserveBarePath = barePathPreserverForRecipients(agents, recipients, agentCwd);
       ({ resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
-        message, agentCwd, activeFleetServerUrl()
+        message, agentCwd, activeFleetServerUrl(), { preserveBarePath }
       ));
     }
     const inlineMarkdownFileIssues = checkSharedMarkdownAttachments(inlineAttachments, macros);
