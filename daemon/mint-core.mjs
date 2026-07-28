@@ -95,9 +95,11 @@ export function createDaemonMintCore({
       : Promise.resolve()
           .then(() => requestSeat({ mint_id: id, name, metadata, launch }))
           .then(seat => recordSeat(id, seat))
+          .catch(error => ({ error: error?.message || String(error) }))
 
-    await Promise.all([processPromise, seatPromise])
-    return store.get(id)
+    const [, seat] = await Promise.all([processPromise, seatPromise])
+    const facts = store.get(id)
+    return seat?.error ? { ...facts, registrationError: seat.error } : facts
   }
 
   return { mint, recordProcess, recordSession, recordSeat, join }

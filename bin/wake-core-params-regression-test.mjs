@@ -7,11 +7,17 @@ let receivedParams = null
 
 const wake = createDaemonWakeCore({
   store: {
-    getByFleetId: fleetId => ({
+    resolve: fleetId => ({
       mintId: 'mint-1',
       fleetId,
       sessionId: 'session-1',
       launchRecipe: { permissionGrant: 'old-grant' },
+    }),
+    updateProcessState: (mintId, processState) => ({
+      mintId,
+      fleetId: 'fleet:test',
+      sessionId: 'session-1',
+      processState,
     }),
   },
   processAlive: async () => false,

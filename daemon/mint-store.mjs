@@ -114,6 +114,25 @@ export class MintStore {
     return mintRow(row)
   }
 
+  resolve(identifier) {
+    if (!identifier) return null
+    return this.get(identifier)
+      || this.getByFleetId(identifier)
+      || this.getByFriendlyName(identifier)
+  }
+
+  updateProcessState(mintId, processState, now = new Date().toISOString()) {
+    const incoming = encoded(processState)
+    if (!mintId || incoming == null) throw new Error('mint_id and process_state are required')
+    const result = this.db.prepare(`
+      UPDATE daemon_mints
+      SET process_state = ?, updated_at = ?
+      WHERE mint_id = ?
+    `).run(incoming, now, mintId)
+    if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
+    return this.get(mintId)
+  }
+
   setFact(mintId, fact, value, now = new Date().toISOString()) {
     if (!COLUMNS.has(fact)) throw new Error(`unknown mint fact: ${fact}`)
     const incoming = encoded(value)

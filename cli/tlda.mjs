@@ -3137,61 +3137,39 @@ async function assertNotAgentContext() {
 }
 
 export async function attachToAgent(name, {
-  apiImpl = api,
   spawnSyncImpl = null,
   log = console,
   exitImpl = code => process.exit(code),
-  localDaemonKeyImpl = () => `${localMachineId()}:${getActiveEnvName()}`,
-  openLedger = () => {
-    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    return createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
-  },
+  openLedger = () => new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite')),
 } = {}) {
   if (!name) {
     log.error('Usage: tlda agent attach <name>')
     exitImpl(1)
     return { ok: false, error: 'missing-name' }
   }
-  const state = await apiImpl('GET', '/api/state')
-  const agents = Array.isArray(state?.agents) ? state.agents : []
-  const agent = resolveAgentQuery(agents, name)
+  const ledger = openLedger()
+  let agent = null
+  try {
+    agent = ledger.resolve(name)
+  } finally {
+    ledger.close()
+  }
   if (!agent) {
-    log.error(`No agent found for "${name}".`)
+    log.error(`No local agent found for "${name}".`)
     exitImpl(1)
     return { ok: false, error: 'agent-not-found' }
   }
-  const data = await apiImpl('GET', `/api/agent-route?agent=${encodeURIComponent(agent.id)}`)
-  const route = data?.route || null
-  if (!route?.daemon_key) {
-    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: no daemon route is published.`)
+  const tmuxSession = agent.processState?.tmux_session || null
+  if (!tmuxSession) {
+    log.error(`Cannot attach to ${agent.friendlyName || agent.fleetId || agent.mintId}: local mint has no terminal process.`)
     exitImpl(1)
-    return { ok: false, error: 'route-missing', agent, route }
-  }
-  const localDaemonKey = localDaemonKeyImpl()
-  if (route.daemon_key !== localDaemonKey) {
-    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: daemon route belongs to ${route.daemon_key}, not local ${localDaemonKey}.`)
-    exitImpl(1)
-    return { ok: false, error: 'route-not-local', agent, route }
-  }
-  const ledger = openLedger()
-  let localRoute = null
-  try {
-    localRoute = ledger.get(agent.id)
-  } finally {
-    await ledger.close()
-  }
-  if (
-    !localRoute?.tmuxSession
-  ) {
-    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: daemon has no matching local terminal process.`)
-    exitImpl(1)
-    return { ok: false, error: 'route-process-missing', agent, route }
+    return { ok: false, error: 'process-missing', agent }
   }
   const spawnSync = spawnSyncImpl || (await import('child_process')).spawnSync
-  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(localRoute.tmuxSession)], { stdio: 'inherit' })
+  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(tmuxSession)], { stdio: 'inherit' })
   const status = result.status ?? 0
   exitImpl(status)
-  return { ok: status === 0, status, agent, route, tmuxSession: localRoute.tmuxSession }
+  return { ok: status === 0, status, agent, tmuxSession }
 }
 
 async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = 120000, onEvent = null } = {}) {
@@ -3420,9 +3398,11 @@ export async function runFleetSpawn(spawnArgs, {
     }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
     printLocalDaemonOutcome(result)
-    const agentId = result.agent_id || result.fleet_id
-    if (!agentId) throw new Error(`mint completed without a public fleet_id for ${name}`)
+    const agentId = result.agent_id || result.fleet_id || result.mint_id
     console.log(`Created ${result.tmux_session || result.tmuxSession || result.name || name} (${agentId}) in ${cwd}`)
+    if (result.registration_deferred) {
+      console.error(`Server registration deferred for ${name}: ${result.registration_error || 'server unavailable'}`)
+    }
     return
   }
   if (spawnMode === 'respawn') {
@@ -3430,21 +3410,21 @@ export async function runFleetSpawn(spawnArgs, {
     const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'))
     let restored
     try {
-      const stored = mintStore.getByFleetId(name) || mintStore.getByFriendlyName(name)
-      if (!stored?.fleetId) throw new Error(`no fleet_id recorded for ${name}`)
-      restored = { agentId: stored.fleetId, cwd: stored.launchRecipe?.cwd || null }
+      const stored = mintStore.resolve(name)
+      if (!stored) throw new Error(`no local mint recorded for ${name}`)
+      restored = {
+        identifier: stored.mintId,
+        agentId: stored.fleetId || null,
+        cwd: stored.launchRecipe?.cwd || null,
+      }
     } finally {
       mintStore.close()
     }
-    const agent = await findSingleAgent(restored.agentId, { apiImpl })
-    const wakeGrant = await ensureAgentWakeGrant(agent, normalizeAgentMetadata(agent.metadata), {
-      source: 'agent-wake',
-      configDir,
-    })
-    const result = await lifecycleImpl('wake', { fleet_id: restored.agentId, ...wakeGrant })
-    if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${restored.agentId}`)
+    const result = await lifecycleImpl('wake', { mint_id: restored.identifier })
+    if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${name}`)
     printLocalDaemonOutcome(result)
-    console.log(`Woke ${result.tmux_session || result.tmuxSession || restored.agentId} (${result.agent_id || result.fleetId || restored.agentId}) in ${restored.cwd}`)
+    const identity = result.agent_id || result.fleetId || result.mint_id || restored.identifier
+    console.log(`Woke ${result.tmux_session || result.tmuxSession || name} (${identity}) in ${restored.cwd}`)
     return
   }
   const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
@@ -4042,10 +4022,25 @@ async function hibernateAgent(name) {
 
 async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   const { spawnSync } = await import('child_process')
-  const sess = agentSessionName(name)
+  const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'))
+  let stored
+  try {
+    stored = mintStore.resolve(name)
+  } finally {
+    mintStore.close()
+  }
+  if (!stored) {
+    console.error(`No local agent found for "${name}".`)
+    return { status: 1, hibernated: false, session: null }
+  }
+  const sess = stored.processState?.tmux_session || null
+  if (!sess) {
+    console.error(`Cannot hibernate ${stored.friendlyName || stored.fleetId || stored.mintId}: local mint has no terminal process.`)
+    return { status: 1, hibernated: false, session: null }
+  }
   const has = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', exactTmuxTarget(sess)], { stdio: 'ignore' })
   if (has.status !== 0) {
-    const message = `No live session "${sess}" on this machine — already hibernating, or it lives on another box.`
+    const message = `No live session "${sess}" on this machine — already hibernating.`
     if (!allowMissing) {
       console.error(message)
       return { status: 1, hibernated: false, session: sess }

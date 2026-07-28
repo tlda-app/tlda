@@ -715,6 +715,7 @@ function stripCompiledPermissionSet(processFact = {}) {
 }
 
 async function bindMintSeat(facts, processFact = facts?.processState || {}, createdSource = 'daemon-mint-join') {
+  if (!facts?.fleetId) return
   await permissionLedger.set(facts.fleetId, {
     permissionGrant: processFact.permission_grant,
     source: createdSource,
@@ -911,6 +912,8 @@ async function rpcMint(params = {}) {
     tmux_session: facts.processState?.tmux_session || null,
     session_id: facts.sessionId,
     joined: !!facts.joinedAt,
+    registration_deferred: !!facts.registrationError,
+    registration_error: facts.registrationError || null,
   }
 }
 
