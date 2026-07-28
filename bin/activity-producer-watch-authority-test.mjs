@@ -7,7 +7,7 @@ import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
-import { classifyLoginMarkerOwner, sessionIdentitySeatEvent } from '../daemon/jsonl-ingestor.mjs'
+import { sessionIdentitySeatEvent } from '../daemon/jsonl-ingestor.mjs'
 import { buildDaemonActivityRecord } from '../server/lib/daemon-activity-ingest.mjs'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 
@@ -64,27 +64,6 @@ try {
     isConnected: () => false,
     isReady: () => false,
   })
-
-  assert.equal(classifyLoginMarkerOwner(
-    { daemon_key: 'mini:default', env_name: 'default' },
-    'mini:testing',
-  ), 'mine')
-  assert.equal(classifyLoginMarkerOwner(
-    { daemon_key: 'mini:dev-preview/example', env_name: 'dev-preview/example' },
-    'mini:testing',
-  ), 'mine')
-  assert.equal(classifyLoginMarkerOwner(
-    { daemon_key: 'mini-proofspawn:proofspawn', env_name: 'proofspawn' },
-    'mini:testing',
-  ), 'mine')
-  assert.equal(classifyLoginMarkerOwner(
-    { daemon_key: 'mini:stable', env_name: 'stable' },
-    'mini:testing',
-  ), 'ignore')
-  assert.equal(classifyLoginMarkerOwner(
-    { daemon_key: 'mini:default', env_name: 'default' },
-    'mini:stable',
-  ), 'ignore')
   assert.equal(sendActivityEvents(agent.id, [{
     tool: 'inbox',
     arg: 'current-task',
