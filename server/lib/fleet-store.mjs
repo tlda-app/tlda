@@ -302,6 +302,7 @@ export class FleetStore {
     this._upgradeLegacyDefaultSubscriptions();
     this._backfillNameHistory();
     this._backfillLabelHistory();
+    this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
       ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
@@ -1172,6 +1173,52 @@ export class FleetStore {
                 strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL);
       END;
     `);
+
+    // Runtime routing status is also temporal state. Unlike explicit labels,
+    // it is written from the server's liveness authority through
+    // recordRuntimeStatus(); these triggers establish/close the initial state
+    // when an agent row is created, killed, or reanimated.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS runtime_status_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fleet_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        from_ts TEXT NOT NULL,
+        to_ts TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_runtime_status_history_fleet
+        ON runtime_status_history(fleet_id, from_ts);
+      CREATE INDEX IF NOT EXISTS idx_runtime_status_history_status
+        ON runtime_status_history(status, from_ts);
+      CREATE INDEX IF NOT EXISTS idx_runtime_status_history_open
+        ON runtime_status_history(fleet_id) WHERE to_ts IS NULL;
+
+      CREATE TRIGGER IF NOT EXISTS runtime_status_history_ai AFTER INSERT ON agents BEGIN
+        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        VALUES (
+          NEW.id,
+          'awake',
+          COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          CASE WHEN NEW.dead = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END
+        );
+        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        SELECT NEW.id, 'dead', strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL
+        WHERE NEW.dead = 1;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS runtime_status_history_au
+      AFTER UPDATE OF dead ON agents
+      WHEN NEW.dead IS NOT OLD.dead BEGIN
+        UPDATE runtime_status_history
+          SET to_ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE fleet_id = NEW.id AND to_ts IS NULL;
+        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        SELECT NEW.id,
+               CASE WHEN NEW.dead = 1 THEN 'dead' ELSE 'awake' END,
+               strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+               NULL;
+      END;
+    `);
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
@@ -1460,7 +1507,10 @@ export class FleetStore {
       `).all(...chunk);
       for (const row of rows) {
         let labels = [];
-        try { labels = row.labels ? JSON.parse(row.labels) : []; } catch {}
+        try { labels = row.labels ? JSON.parse(row.labels) : []; } catch (e) {
+          // Preserve event delivery; the corrupt participant is addressable by id.
+          console.warn(`[fleet-store] corrupt labels JSON for filter participant ${row.id}: ${e.message}`);
+        }
         out.push({ ...row, labels, human: !!row.human, dead: !!row.dead });
       }
     }
@@ -2209,13 +2259,77 @@ export class FleetStore {
     `).run(now);
   }
 
+  // The pre-migration database has no runtime timeline. Every agent enters
+  // `awake` at mint/registration. For rows that predate this
+  // table, seed that known initial state from registered_at. The current dead
+  // bit has no timestamp, so it is not a historical boundary: without a stored
+  // death transition, awake remains open. Future accepted liveness observations
+  // and dead-bit writes advance the span through recordRuntimeStatus()/trigger.
+  _backfillRuntimeStatusHistory() {
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        SELECT a.id,
+               'awake',
+               COALESCE(a.registered_at, ?),
+               NULL
+        FROM agents a
+        WHERE NOT EXISTS (
+          SELECT 1 FROM runtime_status_history h
+          WHERE h.fleet_id = a.id
+        )
+      `).run(now);
+    })();
+  }
+
+  recordRuntimeStatus(id, status, timestamp = null) {
+    if (!id) throw new Error('runtime status requires agent id');
+    if (!['awake', 'hibernating', 'dead'].includes(status)) {
+      throw new Error(`unsupported durable runtime status: ${status}`);
+    }
+    const agent = this._getAgent.get(id);
+    if (!agent || agent.human) return false;
+    let metadata = {};
+    try { metadata = agent.metadata ? JSON.parse(agent.metadata) : {}; } catch (e) {
+      throw new Error(`corrupt metadata JSON for runtime status ${id}: ${e.message}`);
+    }
+    const durableStatus = agent.dead
+      ? 'dead'
+      : metadata?.shell ? 'hibernating' : status;
+    const at = timestamp || new Date().toISOString();
+    return this.db.transaction(() => {
+      const open = this.db.prepare(`
+        SELECT id, status, from_ts
+        FROM runtime_status_history
+        WHERE fleet_id = ? AND to_ts IS NULL
+        ORDER BY from_ts DESC, id DESC
+        LIMIT 1
+      `).get(id);
+      if (open?.status === durableStatus) return false;
+      // The liveness authority already rejects stale observations. Keep the
+      // durable boundary monotone as a second line of defence.
+      if (open && at < open.from_ts) return false;
+      if (open) {
+        this.db.prepare(
+          'UPDATE runtime_status_history SET to_ts = ? WHERE fleet_id = ? AND to_ts IS NULL'
+        ).run(at, id);
+      }
+      this.db.prepare(`
+        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        VALUES (?, ?, ?, NULL)
+      `).run(id, durableStatus, at);
+      return true;
+    })();
+  }
+
   /**
    * The bounded temporal table for one instantiated filter.
    *
    * Returns only memberships for labels the filter actually references and
    * only intervals overlapping [from, to). Name and explicit-label intervals
-   * are durable. Id is stable, bounded by registration. Runtime pseudo-labels
-   * are intentionally absent: subscriptions interpret those in real time.
+   * are durable. Id is stable, bounded by registration. Runtime
+   * awake/hibernating membership comes from accepted liveness transitions.
    */
   filterMembershipSpans(labels, { from = null, to = null } = {}) {
     const wanted = [...new Set((labels || []).filter(Boolean).map(String))];
@@ -2246,6 +2360,15 @@ export class FleetStore {
       `).all(...chunk, to, to, from, from);
       out.push(...explicit);
 
+      const runtime = this.db.prepare(`
+        SELECT fleet_id, status AS label, from_ts, to_ts
+        FROM runtime_status_history
+        WHERE status IN (${holes})
+          AND (? IS NULL OR from_ts < ?)
+          AND (? IS NULL OR to_ts IS NULL OR to_ts > ?)
+      `).all(...chunk, to, to, from, from);
+      out.push(...runtime);
+
       const identities = this.db.prepare(`
         SELECT id AS fleet_id, id AS label,
                COALESCE(registered_at, '1970-01-01T00:00:00.000Z') AS from_ts,
@@ -2253,6 +2376,20 @@ export class FleetStore {
         FROM agents WHERE id IN (${holes})
       `).all(...chunk);
       out.push(...identities.filter(row => overlap(row.from_ts, row.to_ts)));
+    }
+
+    // `human` is an identity fact, not an awake/away guess. It begins at the
+    // intentional human registration and does not inherit the current TTL
+    // projection. Live evaluation can still see `human-away`; historical human
+    // status is the non-nullable `awake`.
+    if (wanted.includes('human')) {
+      const humans = this.db.prepare(`
+        SELECT id AS fleet_id, 'human' AS label,
+               COALESCE(registered_at, '1970-01-01T00:00:00.000Z') AS from_ts,
+               NULL AS to_ts
+        FROM agents WHERE human = 1
+      `).all();
+      out.push(...humans.filter(row => overlap(row.from_ts, row.to_ts)));
     }
 
     const seen = new Set();

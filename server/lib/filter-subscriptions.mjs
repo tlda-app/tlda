@@ -22,9 +22,7 @@
 // handle.
 
 import { matchesFleetFilter, fleetFilterLabels } from '../../shared/filter-semantics.mjs'
-import { labelsForAgent, PSEUDO_LABELS } from '../../shared/fleet-labels.mjs'
-
-const REALTIME_LABELS = new Set(PSEUDO_LABELS)
+import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 
 /** Canonical key for a DNF filter, so equal filters share one evaluation. */
 export function filterKey(filter) {
@@ -88,7 +86,7 @@ class TemporalMembership {
     for (const id of ids) {
       const labels = new Set([id])
       for (const label of this.labels) {
-        if (live || REALTIME_LABELS.has(label)) {
+        if (live) {
           if (this.current.get(label)?.has(id)) labels.add(label)
           continue
         }

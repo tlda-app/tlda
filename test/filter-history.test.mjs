@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createFilterSubscriptions } from '../server/lib/filter-subscriptions.mjs';
-import { labelsForAgent, PSEUDO_LABELS } from '../shared/fleet-labels.mjs';
+import { labelsForAgent } from '../shared/fleet-labels.mjs';
 
 const CHIEF = { id: 'fleet:b6d7cc18', friendly_name: 'chief2', labels: [], runtime_status: { status: 'awake' } };
 const NOISE = { id: 'fleet:n0ise', friendly_name: 'noisy', labels: [], runtime_status: { status: 'hibernating' } };
@@ -27,7 +27,7 @@ const subs = () => createFilterSubscriptions({
   },
   loadMembershipSpans: async (labels) => roster.flatMap(agent =>
     labelsForAgent(agent)
-      .filter(label => labels.includes(label) && !PSEUDO_LABELS.includes(label))
+      .filter(label => labels.includes(label))
       .map(label => ({
         fleet_id: agent.id,
         label,
@@ -131,8 +131,22 @@ test('history and live agree, because both go through verdict()', async () => {
   }
 });
 
-test('runtime pseudo-labels use current membership, not historical spans', async () => {
-  const s = subs();
+test('runtime pseudo-labels use durable event-time membership spans', async () => {
+  const s = createFilterSubscriptions({
+    getAgentsByIds: async (agentIds) => roster
+      .filter(agent => agentIds.includes(agent.id))
+      .map(agent => agent.id === CHIEF.id
+        ? { ...agent, runtime_status: { status: 'hibernating' } }
+        : agent),
+    loadMembershipSpans: async labels => labels.includes('awake')
+      ? [{
+          fleet_id: CHIEF.id,
+          label: 'awake',
+          from_ts: '1970-01-01T00:00:00.000Z',
+          to_ts: null,
+        }]
+      : [],
+  });
   const awake = [[['from', 'awake']]];
   const { events } = await s.history(awake, {
     ...who,

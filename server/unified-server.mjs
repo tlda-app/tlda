@@ -441,6 +441,8 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
   const wasAlive = _aliveAgents.has(agentId)
   const evidence = runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
   if (evidence?.liveness !== 'alive') return
+  fleetStore.recordRuntimeStatus(agentId, 'awake', evidence.liveness_at)
+    .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
   _aliveAgents.add(agentId)
   if (!wasAlive) {
@@ -458,6 +460,10 @@ function markAgentNotAlive(agentId, detail = {}) {
     ? runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   if (evidence?.liveness === 'alive') return
+  if (!detail.unknown) {
+    fleetStore.recordRuntimeStatus(agentId, 'hibernating', evidence.liveness_at)
+      .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
+  }
   _aliveAgents.delete(agentId)
   _aliveSince.delete(agentId)
   clearEphemeralState(agentId)
