@@ -104,8 +104,6 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
-const CHAT_MESSAGE_WINDOW_SIZE = 240
-const CHAT_MESSAGE_WINDOW_PAGE = 80
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
@@ -2366,29 +2364,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     return sorted
   }, [events, quietDmTraffic])
 
-  const chatMessageKey = useCallback((message: any) => (
-    String(message._dbId ?? message._tempId ?? `${message.timestamp}:${message.from}:${message.type}`)
-  ), [])
-  // null means the window follows the chronological tail. Once the user
-  // scrolls back, keep the exact message identities stable: incoming or delayed
-  // rows may change the backing store, but they cannot reshape this viewport.
-  const [frozenMessageKeys, setFrozenMessageKeys] = useState<string[] | null>(null)
-  const windowedChatMessages = useMemo(() => {
-    if (!frozenMessageKeys) {
-      return chatMessages.slice(-CHAT_MESSAGE_WINDOW_SIZE)
-    }
-    const byKey = new Map(chatMessages.map((message: any) => [chatMessageKey(message), message]))
-    const frozen = frozenMessageKeys
-      .map(key => byKey.get(key))
-      .filter((message): message is any => message != null)
-    const frozenTailKey = frozenMessageKeys[frozenMessageKeys.length - 1]
-    const frozenTailIndex = chatMessages.findIndex(message => chatMessageKey(message) === frozenTailKey)
-    // Keep the frozen prefix identity-stable, but always append everything that
-    // is chronologically newer than it. The viewport cannot be reshaped by a
-    // delayed insert above, and the actual tail can never disappear.
-    return frozenTailIndex < 0 ? frozen : [...frozen, ...chatMessages.slice(frozenTailIndex + 1)]
-  }, [chatMessages, chatMessageKey, frozenMessageKeys])
-
   const displayedUnreadSenderIds = useMemo(() => {
     const humanId = getHumanId()
     const ids = new Set<string>()
@@ -2428,7 +2403,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Fetch macros for any preamble doc referenced by a message we haven't cached.
   useEffect(() => {
     const needed = new Set<string>()
-    windowedChatMessages.forEach((m: any) => {
+    chatMessages.forEach((m: any) => {
       const d = m?.metadata?.preambleRef?.doc
       if (d && !(d in macrosByDoc)) needed.add(d)
     })
@@ -2439,7 +2414,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         .then(data => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: data?.macros || {} })))
         .catch(() => setMacrosByDoc(prev => (d in prev ? prev : { ...prev, [d]: {} })))
     }
-  }, [windowedChatMessages, macrosByDoc])
+  }, [chatMessages, macrosByDoc])
 
   // Amend events (type 'amend', metadata.amends = original id) are folded into
   // their original message as version history — they never render standalone
@@ -2468,12 +2443,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   // authority when status/suggestions change height.
   type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
   const msgLineCacheLimit = useMemo(
-    () => Math.min(20_000, Math.max(1_000, windowedChatMessages.length + 500)),
-    [windowedChatMessages.length],
+    () => Math.min(20_000, Math.max(1_000, chatMessages.length + 500)),
+    [chatMessages.length],
   )
   const activityGroupCacheLimit = useMemo(
-    () => Math.min(5_000, Math.max(250, Math.ceil(windowedChatMessages.length / 4) + 250)),
-    [windowedChatMessages.length],
+    () => Math.min(5_000, Math.max(250, Math.ceil(chatMessages.length / 4) + 250)),
+    [chatMessages.length],
   )
   // Short hash of the version currently shown in the viewer (accounts for
   // scrubbing to a historical version). Build cards compare against this to
@@ -2552,8 +2527,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       return true
     }
 
-    for (let i = 0; i < windowedChatMessages.length; i++) {
-      const m = windowedChatMessages[i]
+    for (let i = 0; i < chatMessages.length; i++) {
+      const m = chatMessages[i]
       if (m._activity) {
         if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
         activityGroup.push(m)
@@ -2741,7 +2716,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (probe.isEnabled('chat')) {
       const dt = performance.now() - rawItemsT0
       const detail = {
-        messageCount: windowedChatMessages.length,
+        messageCount: chatMessages.length,
         itemCount: items.length,
         chatLineCount,
         activityGroupCount,
@@ -2754,7 +2729,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [windowedChatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
+  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -2867,6 +2842,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
   }, [chatMessages])
   const [firstItemIndex, setFirstItemIndex] = useState(1_000_000)
+
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -3725,7 +3701,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         settleTailRunRef.current += 1
         activeSettleTailRunRef.current = 0
         userScrolledUpRef.current = scrolledUp
-        setFrozenMessageKeys(keys => keys ?? windowedChatMessages.map(chatMessageKey))
         setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
       } else if (action === 'follow-on') {
         if (!isTrueBottomGap(gap)) {
@@ -3734,7 +3709,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
         log.debug('chat-scroll', 'user returned to true bottom → resume stick-to-bottom', { top, gap })
         userScrolledUpRef.current = scrolledUp
-        setFrozenMessageKeys(null)
         setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
       }
     }
@@ -3744,7 +3718,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       document.removeEventListener('wheel', handleWheelCapture, true)
       el.removeEventListener('scroll', handle)
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, windowedChatMessages, chatMessageKey])
+  }, [chatLogEl, shape.id, chatEventBufferKey])
 
   // Refilter → bottom. Changing the filter swaps the whole rendered list out
   // from under Virtuoso; the scroll-position reset effect above (keyed on
@@ -3759,7 +3733,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the right default, which is exactly what the user asked for.
   useEffect(() => {
     userScrolledUpRef.current = false
-    setFrozenMessageKeys(null)
     isAtBottomRef.current = true
     setAtBottom(true)
     setFirstItemIndex(1_000_000)
@@ -4856,24 +4829,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     loadingMore.current = false
   }, [chatMessages, loadBeforeAgents, chatEventBufferKey])
 
-  const pageOlderWindow = useCallback(async () => {
-    if (!frozenMessageKeys?.length) return
-    const firstKey = frozenMessageKeys[0]
-    const firstIndex = chatMessages.findIndex(message => chatMessageKey(message) === firstKey)
-    if (firstIndex > 0) {
-      const older = chatMessages.slice(Math.max(0, firstIndex - CHAT_MESSAGE_WINDOW_PAGE), firstIndex)
-      setFirstItemIndex(index => Math.max(0, index - older.length))
-      setFrozenMessageKeys(keys => keys ? [...older.map(chatMessageKey), ...keys] : keys)
-      return
-    }
-    await loadOlderHistory()
-    const current = chatMessagesRef.current
-    const updatedFirstIndex = current.findIndex(message => chatMessageKey(message) === firstKey)
-    if (updatedFirstIndex <= 0) return
-    const older = current.slice(Math.max(0, updatedFirstIndex - CHAT_MESSAGE_WINDOW_PAGE), updatedFirstIndex)
-    setFrozenMessageKeys(keys => keys ? [...older.map(chatMessageKey), ...keys] : keys)
-  }, [frozenMessageKeys, chatMessages, chatMessageKey, loadOlderHistory])
-
   // Attach click/tap handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
   // doesn't close over changing callbacks.
@@ -5631,7 +5586,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               // older history; otherwise a simple append prepends rows and
               // reindexes the visible window.
               if (!userScrolledUpRef.current) return
-              void pageOlderWindow()
+              void loadOlderHistory()
             }}
             atBottomThreshold={24}
             totalListHeightChanged={(h) => {
@@ -5678,7 +5633,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               setAtBottom(atBottom)
               if (shouldResumeFollowFromBottom(atBottom, gap) && userScrolledUpRef.current) {
                 userScrolledUpRef.current = false
-                setFrozenMessageKeys(null)
                 setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
               }
               if (probe.isEnabled('chat')) {
