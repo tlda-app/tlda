@@ -121,7 +121,8 @@ export function createTerminalRpc({
   }
 
   async function rpcSendText(args = {}) {
-    const { tmuxSession } = resolveTerminalEndpoint(args)
+    if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
+    const { tmux_session: tmuxSession } = resolveAgentRoute(args)
     const { text, enter, enter_delay_ms } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
