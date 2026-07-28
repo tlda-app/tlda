@@ -62,7 +62,6 @@ import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-label
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
-import { shouldSkipOriginatedEvent, shouldSuppressRecentContent } from './lib/timer-channel-delivery.mjs';
 import { timerSetEventIdFromAck, timerSetMessage } from './lib/timer-protocol.mjs';
 import WebSocket from 'ws';
 import {
@@ -510,7 +509,6 @@ function sendOneShotWS(envName, type, params = {}, opts = {}) {
         err.serverRejected = true;
         finish(reject, err);
       } else {
-        rememberOriginatedEvents(msg.result);
         finish(resolve, msg.result);
       }
     });
@@ -2305,7 +2303,6 @@ export async function handleFleetTool(name, args) {
         operation_id: operationId,
       };
       const data = await mcpFleetTransport.durable('delegate', delegateBody, { operationId });
-      rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
       if (data.queued && !data.task_id) return { data, spawnedInfo: targetSpawnedInfo, queued: true, operationId };
 
@@ -2955,7 +2952,6 @@ export async function handleFleetTool(name, args) {
           approval_id: args.approval_id || undefined,
           operation_id: operationId,
         }, { operationId });
-        rememberOriginatedEvents(data);
       } catch (e) {
         return { content: [{ type: 'text', text: `report failed: ${e.message}` }], isError: true };
       }
@@ -4359,24 +4355,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   }
 }
 
-// ---- Channel: WebSocket to dashboard for direct message injection ----
-// Each MCP server instance opens its own WS to the dashboard, filtered to this agent.
-// When fleet events arrive (chat, delegate, task_done), emits notifications/claude/channel
-// so Claude Code receives them as first-class events — no tmux send-keys, no signal files.
-
-// Dedup: track event IDs we originated so we don't re-notify on the broadcast echo
-const _originatedEventIds = new Set();
-const ORIGINATED_TTL_MS = 30000;
-function rememberOriginatedEvents(result) {
-  const ids = [];
-  if (result?.event_id != null) ids.push(result.event_id);
-  if (Array.isArray(result?.event_ids)) ids.push(...result.event_ids);
-  for (const id of ids) {
-    _originatedEventIds.add(id);
-    setTimeout(() => _originatedEventIds.delete(id), ORIGINATED_TTL_MS);
-  }
-}
-
 let _channelRWS = null;  // ResilientWS instance
 
 // Request/response over WS — pending callbacks keyed by correlation ID
@@ -4612,196 +4590,16 @@ function startChannelWS({ bootstrap = false } = {}) {
           reject(err);
         }
         else {
-          rememberOriginatedEvents(msg.result);
           resolve(msg.result);
         }
         return;
       }
-      handleChannelMessage(msg);
     },
     onClose: () => {
       rejectWsRequests(_wsPending, ({ type }) => new Error(`WS connection closed (type=${type})`));
     },
   });
   _channelRWS.connect();
-}
-
-// Dedup channel notifications by event DB id — prevents double delivery
-const _deliveredChannelIds = new Set();
-const CHANNEL_DEDUP_TTL_MS = 60000;
-
-function inboxCallText(action = 'see it') {
-  return `Call inbox() to ${action}.`;
-}
-
-function formatStatusSummary({ eventType, fromLabel, docHint = '', preview = '', truncNote = '', reminder = '' }) {
-  const source = fromLabel ? ` from ${fromLabel}${docHint}` : '';
-  const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'message';
-  const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
-  return `📬 ${label} ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read and respond' : 'see it')}${reminder}`;
-}
-
-async function handleChannelMessage(msg) {
-  if (!AGENT_ID) return;
-
-  // Dashboard WS sends { event: 'fleet-event', data: {...} } for new mailbox
-  // items. Fired timers are same-row `event-update`s because the timer event is
-  // first created as pending, then becomes unread again when it fires.
-  const eventType = msg.event === 'fleet-event' || msg.event === 'event-update'
-    ? (msg.data?.type || '')
-    : '';
-  if (!eventType) return;
-  if (!['chat', 'delegate', 'task_done', 'timer'].includes(eventType)) return;
-  if (eventType === 'chat' || eventType === 'delegate') return;
-
-  const data = msg.data || {};
-  const isTimerFire = eventType === 'timer' && data.metadata?.state === 'fired';
-  if (msg.event === 'event-update' && !isTimerFire) return;
-  if (eventType === 'timer' && !isTimerFire) return;
-
-  // Skip broadcast echoes of events we originated
-  if (shouldSkipOriginatedEvent({ eventId: data.id, originatedEventIds: _originatedEventIds, isTimerFire })) return;
-
-  // Dedup: skip if we already delivered a channel notification for this event
-  if (data.id && _deliveredChannelIds.has(data.id)) {
-    return;
-  }
-
-  // Check if this agent is a direct target OR a wiretap CC recipient
-  const targetId = data.to || data.to_id || '';
-  const wiretapCc = data.metadata?.wiretap_cc || [];
-  const isDirectTarget = targetId === AGENT_ID;
-  const isWiretapTarget = wiretapCc.includes(AGENT_ID);
-  if (!isDirectTarget && !isWiretapTarget) return;
-
-  // Skip events FROM this agent
-  const fromId = data.from || data.from_id || '';
-  if (fromId === AGENT_ID && !isTimerFire) return;
-
-  // Skip terminal-sourced messages — agent is already in their terminal and has this context
-  if (data.metadata?.source === 'terminal') return;
-
-  // Hard dedup: suppress if same content was sent recently (CC 2.1.97 replays channel notifications)
-  if (!handleChannelMessage._lastContent) handleChannelMessage._lastContent = '';
-  if (!handleChannelMessage._lastTs) handleChannelMessage._lastTs = 0;
-
-  // Build notification content
-  let content = '📬 You have a new fleet message. Call inbox() to see it.';
-  // Preview length: long enough to fit a typical voice message in full,
-  // with an ellipsis on overflow so Skip doesn't think the system ate
-  // Short preview: just enough to know the topic, not enough to act on.
-  // Agents MUST call inbox() to get the full message.
-  const PREVIEW_MAX = 120;
-  const previewOf = (raw) => {
-    const s = String(raw || '');
-    return s.length > PREVIEW_MAX ? s.slice(0, PREVIEW_MAX) + '…' : s;
-  };
-  const isTruncated = (raw) => String(raw || '').length > PREVIEW_MAX;
-  const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
-  const toLabel = (data.to || data.to_id || '')?.replace(/^fleet:/, '') || '';
-
-  if (isWiretapTarget && !isDirectTarget) {
-    // Wiretap: format identically to thread entries so the agent can
-    // concatenate wiretap output with thread history seamlessly.
-    const ts = data.timestamp ? new Date(data.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
-    const text = eventType === 'delegate'
-      ? `[DELEGATE] ${data.description || ''}\n${data.message || data.text || ''}`
-      : eventType === 'task_done'
-      ? `[DONE] ${data.description || ''}`
-      : eventType === 'activity'
-      ? (data.metadata?.tool || data.text || '')
-      : data.text || data.message || '';
-    content = `[${ts}] ${fromLabel} → ${toLabel}\n${text}`;
-  } else {
-    // Direct target: use the existing notification format
-    if (eventType === 'delegate') {
-      const desc = previewOf(data.text || data.description);
-      const rawDesc = data.text || data.description || '';
-      const truncNote = isTruncated(rawDesc) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawDesc.length} chars. You MUST call inbox() for the full text before responding)` : '';
-      content = formatStatusSummary({ eventType, fromLabel, preview: desc, truncNote })
-        || `📬 New task assigned: ${desc}${truncNote}\nCall inbox() to see it.`;
-    } else if (eventType === 'chat') {
-      const rawText = data.text || data.message || '';
-      const preview = previewOf(rawText);
-      const ctx = data.metadata?.context;
-      const docHint = formatViewingHint(ctx, { terse: true });
-      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call inbox() for the full text before responding)` : '';
-      const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
-      content = formatStatusSummary({ eventType, fromLabel, docHint, preview, truncNote, reminder })
-        || `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall inbox() to read and respond.${reminder}`;
-    } else if (eventType === 'task_done') {
-      content = formatStatusSummary({ eventType, fromLabel, preview: data.description || data.text || 'Task update' })
-        || `📬 Task update. Call inbox() to see details.`;
-    } else if (eventType === 'timer') {
-      const rawText = data.text || data.message || data.metadata?.message || 'Timer fired';
-      const preview = previewOf(rawText);
-      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call inbox() for the full text before responding)` : '';
-      content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} timer: ${preview}${truncNote}\n${inboxCallText('triage')}`;
-    }
-  }
-
-  // Suppress if identical content within 30s
-  const now = Date.now();
-  if (shouldSuppressRecentContent({
-    isTimerFire,
-    content,
-    lastContent: handleChannelMessage._lastContent,
-    lastTs: handleChannelMessage._lastTs,
-    now,
-  })) {
-    process.stderr.write(`[fleet-channel] Suppressed duplicate: ${content.slice(0, 60)}\n`);
-    return;
-  }
-  if (!isTimerFire) {
-    handleChannelMessage._lastContent = content;
-    handleChannelMessage._lastTs = now;
-  }
-
-  let delivered = false;
-  // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
-  // Do this before the Claude notification: Codex/Goose may not support that
-  // notification method, and some clients can leave the notification pending.
-  if (isDirectTarget && harnessFromEnv().channelNudge) {
-    const sess = process.env.FLEET_TMUX_SESSION;
-    if (sess) {
-      delivered = tmuxSendText(sess, content) || delivered;
-    } else {
-      process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for harness nudge\n');
-    }
-  }
-
-  try {
-    await Promise.race([
-      server.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content,
-          meta: {
-            event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
-            from: fromId,
-          },
-        },
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
-    ]);
-    delivered = true;
-    process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
-  } catch (e) {
-    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
-  }
-
-  if (delivered) {
-    // Mark as delivered so dupes are suppressed
-    if (data.id) {
-      _deliveredChannelIds.add(data.id);
-      setTimeout(() => _deliveredChannelIds.delete(data.id), CHANNEL_DEDUP_TTL_MS);
-    }
-    // Clear signal file so PostToolUse hook doesn't re-surface this message
-    try {
-      const signalFile = path.join(os.homedir(), '.fleet', 'signals', AGENT_ID);
-      if (fs.existsSync(signalFile)) fs.unlinkSync(signalFile);
-    } catch {}
-  }
 }
 
 // ---- Agent status reporting ----
