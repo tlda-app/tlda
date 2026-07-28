@@ -4575,6 +4575,7 @@ function startChannelWS({ bootstrap = false } = {}) {
       : `${TLDA_FLEET_WS_SERVER}/ws/fleet`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
+    connectAttemptTimeoutMs: 10000,
     log: (s) => process.stderr.write(s + '\n'),
     onOpen: () => {
       _reconnectBuffer.resolveConnected();

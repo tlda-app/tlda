@@ -317,12 +317,12 @@ export class FleetStore {
 
   _wBatchAwait(ops) {
     const tx = this.db.transaction(() => {
-      let result = null;
+      const results = [];
       for (const op of ops) {
         const stmt = typeof op.stmtOrSql === 'string' ? this.db.prepare(op.stmtOrSql) : op.stmtOrSql;
-        result = stmt.run(...statementArgs(op.params));
+        results.push(stmt.run(...statementArgs(op.params)));
       }
-      return result;
+      return results;
     });
     return tx();
   }
