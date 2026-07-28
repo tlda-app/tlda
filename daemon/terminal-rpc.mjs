@@ -243,7 +243,10 @@ export function createTerminalRpc({
   }
 
   async function rpcSoftInterrupt(args = {}) {
-    const { tmuxSession, agentId } = resolveTerminalEndpoint(args)
+    if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
+    const route = resolveAgentRoute(args)
+    const tmuxSession = route.tmux_session
+    const agentId = route.agent_id
     checkSession(tmuxSession)
     if (agentId) onArmAgent(agentId); else onArmBySession(tmuxSession)
     let pane = ''
