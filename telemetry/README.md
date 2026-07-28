@@ -9,7 +9,28 @@ browser live-performance samples. The remaining panels show the current
 bounded roster projection and the latest 250 persisted activity events through
 the ordered `before` cursor.
 
-Start the dashboard:
+Configure the server that serves the project index with its public dashboard URL:
+
+```yaml
+# ~/.config/tlda/server.yaml
+telemetryUrl: https://davids-mac-mini.cormorant-matrix.ts.net:3031/d/tlda-live-agent-activity/live-agent-activity
+```
+
+Omit `telemetryUrl` on installations without this dashboard; the index then shows
+no telemetry link.
+
+Install the dashboard's dedicated launchd job (it is a new job; it does not
+modify any existing tlda job):
+
+```sh
+cp telemetry/com.tlda.grafana.plist ~/Library/LaunchAgents/com.tlda.grafana.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tlda.grafana.plist
+```
+
+The job generates a local Grafana admin password on first start and exposes the
+dashboard only to tailnet users as an anonymous Viewer. The index link is the
+supported entry point.
+
+For a one-off local start instead:
 
 ```sh
 telemetry/stack.sh start

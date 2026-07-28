@@ -244,6 +244,82 @@
       }],
       "title": "Live activity",
       "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Current per-daemon stage counters. Read only within one daemonKey + boot_id epoch; resets are a new/unknown epoch, never negative delivery. These are stage counts, not correlated per-card end-to-end delivery.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 48 },
+      "id": 20,
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "targets": [{
+        "columns": [
+          { "selector": "env_name", "text": "Environment", "type": "string" },
+          { "selector": "daemonKey", "text": "Daemon key", "type": "string" },
+          { "selector": "boot_id", "text": "Boot epoch", "type": "number" },
+          { "selector": "metrics.byStage.jsonlExtracted.total", "text": "Extracted", "type": "number" },
+          { "selector": "metrics.byStage.daemonQueued.total", "text": "Queued", "type": "number" },
+          { "selector": "metrics.byStage.daemonSent.total", "text": "Sent", "type": "number" },
+          { "selector": "metrics.byStage.daemonAcked.total", "text": "Acked", "type": "number" },
+          { "selector": "metrics.byStage.daemonDropped.total", "text": "Dropped", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "activityDelivery.daemons", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/live-perf",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Activity cards — daemon stages",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Current server stage counters. They reset on server restart; freshness is the last update timestamp. A gap in an adjacent same-epoch counter is an attention signal, not proof of an individual card loss.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 56 },
+      "id": 21,
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "targets": [{
+        "columns": [
+          { "selector": "lastUpdatedAt", "text": "Last updated", "type": "timestamp" },
+          { "selector": "byStage.serverAccepted.total", "text": "Accepted", "type": "number" },
+          { "selector": "byStage.serverBroadcast.total", "text": "Broadcast", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "activityDelivery.server", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/live-perf",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Activity cards — server stages",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Retained browser samples. Counters are scoped to a browser session; a session change is a new/unknown epoch, not negative delivery. Sample age/count bounds what this panel can say.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 56 },
+      "id": 22,
+      "options": { "cellHeight": "sm", "showHeader": true, "sortBy": [{ "desc": true, "displayName": "Sampled" }] },
+      "targets": [{
+        "columns": [
+          { "selector": "ts", "text": "Sampled", "type": "timestamp" },
+          { "selector": "sessionId", "text": "Browser session", "type": "string" },
+          { "selector": "data.activityDelivery.byStage.browserConverted.total", "text": "Converted", "type": "number" },
+          { "selector": "data.activityDelivery.byStage.browserRendered.total", "text": "Rendered", "type": "number" },
+          { "selector": "data.activityDelivery.byStage.browserErrors.total", "text": "Errors", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "samples", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/live-perf",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Activity cards — browser stages",
+      "type": "table"
+    },
+    {
+      "description": "## Duplicate watcher proof\n\nA server snapshot can count connected daemon keys by environment, but it cannot prove the singleton process invariant: snapshots are keyed by `machine_id:env_name`, so a second daemon can replace/collapse the first. **Duplicate watcher count is not measurable from current server telemetry.** Do not read a displayed `1` as proof of one process.\n\nFor an activity-card incident, compare same-epoch stage counts in path order: extracted → queued → sent → acked → server accepted → server broadcast → browser converted → browser rendered. They show stage loss, but are not a correlated per-card trace.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 62 },
+      "id": 23,
+      "options": { "content": "## Duplicate watcher proof\n\nA server snapshot can count connected daemon keys by environment, but it cannot prove the singleton process invariant: snapshots are keyed by `machine_id:env_name`, so a second daemon can replace/collapse the first. **Duplicate watcher count is not measurable from current server telemetry.** Do not read a displayed `1` as proof of one process.\n\nFor an activity-card incident, compare same-epoch stage counts in path order: extracted → queued → sent → acked → server accepted → server broadcast → browser converted → browser rendered. They show stage loss, but are not a correlated per-card trace.", "mode": "markdown" },
+      "title": "Activity-card delivery limits",
+      "type": "text"
     }
   ],
   "refresh": "5s",

@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { randomUUID } from 'crypto'
-import { DEFAULT_PORT, resolveConfig } from '../../shared/config.mjs'
+import { DEFAULT_PORT, loadServerConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
@@ -384,7 +384,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     //   database — fleet/chat/registry (what the SPA connects chat to)
     //   store    — shapes + doc-asset sync (per-room state)
     // `fleetServer` is kept as an alias for `database` so existing clients work.
-    res.json(resolveConfig())
+    res.json({ ...resolveConfig(), telemetryUrl: loadServerConfig().telemetryUrl || null })
   })
 
   // --- GET /api/store/events ---

@@ -357,22 +357,7 @@ start_grafana() {
 
   : > "$LOG_DIR/grafana.log"
   (
-    export GF_PATHS_DATA="$GRAFANA_DATA_DIR"
-    export GF_PATHS_LOGS="$GRAFANA_LOG_DIR"
-    export GF_PATHS_PLUGINS="$GRAFANA_PLUGIN_DIR"
-    export GF_PATHS_PROVISIONING="$RENDER_DIR/grafana/provisioning"
-    export GF_SERVER_HTTP_ADDR="$GRAFANA_HOST"
-    export GF_SERVER_HTTP_PORT="$GRAFANA_PORT"
-    export GF_SERVER_PROTOCOL="$GRAFANA_PROTOCOL"
-    export GF_SERVER_CERT_FILE="$GRAFANA_CERT_FILE"
-    export GF_SERVER_CERT_KEY="$GRAFANA_CERT_KEY"
-    export GF_SECURITY_ADMIN_USER="$GRAFANA_ADMIN_USER"
-    export GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD"
-    export GF_USERS_DEFAULT_THEME=light
-    if [[ -n "${GF_AUTH_ANONYMOUS_ENABLED+x}" ]]; then
-      export GF_AUTH_ANONYMOUS_ENABLED
-      export GF_AUTH_ANONYMOUS_ORG_ROLE="${GF_AUTH_ANONYMOUS_ORG_ROLE:-Viewer}"
-    fi
+    export_grafana_environment
     spawn_detached "$RUN_DIR/grafana.pid" "$LOG_DIR/grafana.log" "$bin" server \
       --homepath "$BIN_DIR/grafana"
   )
@@ -381,6 +366,39 @@ start_grafana() {
   # it's actually listening on.
   wait_http "${GRAFANA_PROTOCOL}://${GRAFANA_HOST}:${GRAFANA_PORT}/api/health" "grafana"
   pid_file_alive "$RUN_DIR/grafana.pid" || die "grafana exited after readiness; see $LOG_DIR/grafana.log"
+}
+
+export_grafana_environment() {
+  export GF_PATHS_DATA="$GRAFANA_DATA_DIR"
+  export GF_PATHS_LOGS="$GRAFANA_LOG_DIR"
+  export GF_PATHS_PLUGINS="$GRAFANA_PLUGIN_DIR"
+  export GF_PATHS_PROVISIONING="$RENDER_DIR/grafana/provisioning"
+  export GF_SERVER_HTTP_ADDR="$GRAFANA_HOST"
+  export GF_SERVER_HTTP_PORT="$GRAFANA_PORT"
+  export GF_SERVER_PROTOCOL="$GRAFANA_PROTOCOL"
+  export GF_SERVER_CERT_FILE="$GRAFANA_CERT_FILE"
+  export GF_SERVER_CERT_KEY="$GRAFANA_CERT_KEY"
+  export GF_SECURITY_ADMIN_USER="$GRAFANA_ADMIN_USER"
+  export GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD"
+  export GF_USERS_DEFAULT_THEME=light
+  if [[ -n "${GF_AUTH_ANONYMOUS_ENABLED+x}" ]]; then
+    export GF_AUTH_ANONYMOUS_ENABLED
+    export GF_AUTH_ANONYMOUS_ORG_ROLE="${GF_AUTH_ANONYMOUS_ORG_ROLE:-Viewer}"
+  fi
+}
+
+run_grafana() {
+  local bin
+  bin="$(grafana_bin)"
+  [[ -x "$bin" ]] || die "grafana binary missing; run $0 download"
+  require_admin_secret
+  GRAFANA_HOST="$(resolve_tailscale_bind_host)"
+  prepare_grafana_protocol
+  if [[ "${GF_AUTH_ANONYMOUS_ENABLED:-false}" == "true" && "${GF_AUTH_ANONYMOUS_ORG_ROLE:-Viewer}" == "Admin" ]]; then
+    die "GF_AUTH_ANONYMOUS_ORG_ROLE=Admin is not allowed with anonymous access enabled — anonymous sessions may only be Viewer. Require login for Admin/Editor access instead."
+  fi
+  export_grafana_environment
+  exec "$bin" server --homepath "$BIN_DIR/grafana"
 }
 
 start_sandbox() {
@@ -438,6 +456,12 @@ start() {
   echo "Stop with:  $0 stop"
   release_start_lock
   trap - EXIT
+}
+
+run() {
+  download
+  render_configs
+  run_grafana
 }
 
 stop_pid_file() {
@@ -506,13 +530,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   case "${1:-status}" in
     download) download ;;
     start) start ;;
+    run) run ;;
     stop) stop ;;
     restart) stop; start ;;
     status) status ;;
     footprint) footprint ;;
     *)
       cat >&2 <<EOF
-Usage: $0 <download|start|stop|restart|status|footprint>
+Usage: $0 <download|start|run|stop|restart|status|footprint>
 
 Environment overrides:
   GRAFANA_VERSION=$GRAFANA_VERSION

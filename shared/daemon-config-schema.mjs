@@ -29,6 +29,7 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // in. DISPLAY ONLY — stored timestamps stay UTC. Read by getDisplayTimeZone()
   // in shared/display-time.mjs. Absent = render in the host machine's own zone.
   'timezone',
+  'telemetryUrl',
 ])
 
 export const PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS = Object.freeze([
@@ -69,7 +70,24 @@ export function validateProjectDaemonOverrideTopLevel(root, label = 'project dae
 export function validateServerConfigTopLevel(root, label = 'server config') {
   const config = validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
   if (config.timezone !== undefined) validateTimeZone(config.timezone, label)
+  if (config.telemetryUrl !== undefined) validateTelemetryUrl(config.telemetryUrl, label)
   return config
+}
+
+export function validateTelemetryUrl(value, label = 'server config') {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}: "telemetryUrl" must be a nonempty http(s) URL`)
+  }
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${label}: "telemetryUrl" must be a valid http(s) URL`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${label}: "telemetryUrl" must use http or https`)
+  }
+  return url.toString()
 }
 
 /**

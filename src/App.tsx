@@ -5,6 +5,7 @@ import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
+import { useFleetIdentity } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
@@ -484,7 +485,9 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   manifest: Record<string, DocConfig>
   onSelect: (key: string, config: DocConfig) => void
 }) {
+  const identity = useFleetIdentity()
   const [meta, setMeta] = useState<ProjectMeta>({})
+  const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
   const [archived, setArchived] = useState<ArchivedProject[]>([])
@@ -506,6 +509,10 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .then(r => r.ok ? r.json() : {})
       .then(setDocHealth)
       .catch(e => console.warn('[app] projects/health fetch failed:', e.message))
+    fetch(`${ASSET_BASE}/api/fleet-config`)
+      .then(r => r.ok ? r.json() : {})
+      .then(data => setTelemetryUrl(typeof data.telemetryUrl === 'string' ? data.telemetryUrl : null))
+      .catch(e => console.warn('[app] fleet-config fetch failed:', e.message))
   }, [])
 
   // Fetch archived list when search is non-empty
@@ -728,6 +735,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           })}
         </div>
       </div>
+      {(identity.name || telemetryUrl) && (
+        <div className="project-index-tools">
+          {identity.name && <span>Signed in as {identity.name}</span>}
+          {telemetryUrl && <a href={telemetryUrl} target="_blank" rel="noreferrer">Open telemetry dashboard ↗</a>}
+        </div>
+      )}
       {archivedFiltered.length > 0 && (
         <>
           <div className="picker-archived-header">Archived</div>
