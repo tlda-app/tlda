@@ -195,22 +195,10 @@ function directModelConfig(kind, model) {
   }
 }
 
-function spawnEnv(params = {}, config = {}, requestedKind = '') {
+function spawnEnv(params = {}) {
   const env = { ...process.env }
   if (params.activeEnvName) env.TLDA_ENV = params.activeEnvName
   if (params.machineId) env.TLDA_MACHINE_ID = params.machineId
-  const agentConfigDir = config.agentConfigDir
-  if (agentConfigDir) {
-    const harnessConfigDir = path.join(agentConfigDir, requestedKind)
-    if (requestedKind === 'codex') {
-      env.TLDA_AGENT_CONFIG_DIR = harnessConfigDir
-      env.CODEX_HOME = harnessConfigDir
-    }
-    if (requestedKind === 'claude') {
-      env.TLDA_AGENT_CONFIG_DIR = harnessConfigDir
-      env.CLAUDE_CONFIG_DIR = harnessConfigDir
-    }
-  }
   return env
 }
 
@@ -354,7 +342,7 @@ export async function launchMintProcess(params) {
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
     config,
-    env: spawnEnv(params, config, requestedKind),
+    env: spawnEnv(params),
     botScript: params.botScript || params.bot_script || params.script || null,
     botName: params.botName || params.bot_name || null,
     botIdFile: params.botIdFile || params.bot_id_file || null,
