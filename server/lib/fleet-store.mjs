@@ -30,7 +30,6 @@ import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
-import { AgentSeatBindingObligations } from './agent-seat-binding-obligations.mjs';
 // The one liveness constant this file needs, and only as a threshold: the count
 // derives human-vs-human-away from last_seen on every call. Importing the same
 // number the projector uses is what stops the two drifting apart.
@@ -156,24 +155,17 @@ function serializePrettyName(value) {
 }
 
 const PROTECTED_AGENT_UPSERT_FIELDS = [
-  'session_id',
-  'session_ids',
   'cwd',
-  'machine_id',
-  'env_name',
-  'daemon_key',
-  'resume_id',
 ];
 
-// Clears the fields that belong to the durable current-seat projection, not to
+// Clears the fields that belong to the durable daemon-route projection, not to
 // the mutable agents row. The flat seat_* fields are what runtime routing reads.
 function withoutProtectedAgentFields(agent) {
   if (!agent) return agent;
   const next = { ...agent };
   for (const field of PROTECTED_AGENT_UPSERT_FIELDS) next[field] = null;
-  next.seat_present = false;
-  next.seat_daemon_key = null;
-  next.seat_terminal_capability = null;
+  next.route_present = false;
+  next.route_daemon_key = null;
   return next;
 }
 
@@ -362,7 +354,6 @@ export class FleetStore {
     // particular wraps its enqueue in a db.transaction(), and a transaction
     // has to run on the thread that owns the connection.
     this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
-    this._agentSeatBindingObligations = new AgentSeatBindingObligations(this.db);
     this._closed = false;
     this._cwdSegmentBackfillImmediate = null;
     this._scheduleCwdSegmentBackfill();
@@ -413,28 +404,15 @@ export class FleetStore {
       ORDER BY id
       LIMIT ?
     `);
-    const selectSeats = this.db.prepare(`
-      SELECT agent_id, cwd FROM agent_seats
-      WHERE cwd IS NOT NULL AND cwd != '' AND agent_id > ?
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_cwd_segments cs
-          WHERE cs.source = 'seat' AND cs.agent_id = agent_seats.agent_id
-        )
-      ORDER BY agent_id
-      LIMIT ?
-    `);
-    let seatCursor = '';
     let agentCursor = '';
     const runBatch = () => {
       this._cwdSegmentBackfillImmediate = null;
       if (this._closed || !this.db.open) return;
       let rows = [];
       try {
-        const seats = selectSeats.all(seatCursor, batchSize).map(r => ({ ...r, source: 'seat' }));
         const agents = selectAgents.all(agentCursor, batchSize).map(r => ({ ...r, source: 'agent' }));
-        if (seats.length) seatCursor = seats[seats.length - 1].agent_id;
         if (agents.length) agentCursor = agents[agents.length - 1].agent_id;
-        rows = seats.concat(agents);
+        rows = agents;
         for (const row of rows) this._replaceCwdSegments(row.source, row.agent_id, row.cwd);
       } catch (e) {
         if (this._closed || !this.db.open) return;
@@ -609,8 +587,6 @@ export class FleetStore {
         id TEXT PRIMARY KEY,
         friendly_name TEXT,
         pretty_name TEXT,              -- JSON string/array or plain string, display-only
-        session_id TEXT,
-        session_ids TEXT,             -- JSON array
         cwd TEXT,
         labels TEXT,                  -- JSON array
         registered_at TEXT,
@@ -618,44 +594,13 @@ export class FleetStore {
         dead INTEGER DEFAULT 0,
         human INTEGER DEFAULT 0,
         is_manager INTEGER DEFAULT 0,
-        metadata TEXT,                -- JSON blob for extra fields
-        machine_id TEXT,              -- which fleet-daemon machine owns this agent (NULL = unknown)
-        env_name TEXT,                -- daemon config lane on that machine
-        daemon_key TEXT,              -- scoped daemon registry key that owns this agent/session
-        resume_id TEXT                -- durable harness resume handle (codex rollout id, claude session id, ...)
+        metadata TEXT                 -- JSON blob for extra fields
       );
 
-      CREATE TABLE IF NOT EXISTS agent_seats (
-        agent_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        resume_id TEXT,
-        kind TEXT NOT NULL,
-        model TEXT NOT NULL,
-        cwd TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        created_source TEXT,
-        created_by_event_id INTEGER,
-        PRIMARY KEY (agent_id),
-        UNIQUE (session_id),
-        UNIQUE (agent_id, session_id)
-      );
-
-      CREATE TABLE IF NOT EXISTS agent_current_seats (
+      CREATE TABLE IF NOT EXISTS agent_daemon_routes (
         agent_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        machine_id TEXT NOT NULL,
-        env_name TEXT NOT NULL,
-        daemon_key TEXT NOT NULL,
-        terminal_capability TEXT,
-        activated_at TEXT NOT NULL,
-        activated_by_event_id INTEGER,
-        transition_reason TEXT,
-        FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
+        daemon_key TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_agent_seats_cwd
-        ON agent_seats(cwd, agent_id);
-      CREATE INDEX IF NOT EXISTS idx_agent_seats_cwd_trimmed
-        ON agent_seats(rtrim(cwd, '/'), agent_id);
 
       CREATE TABLE IF NOT EXISTS daemon_agent_bindings (
         daemon_key TEXT NOT NULL,
@@ -845,62 +790,12 @@ export class FleetStore {
     `);
 
     // ---- Migrations (idempotent) ----
-    // Add machine_id column to agents if missing (existing DBs predate it).
     const agentCols = this.db.prepare("PRAGMA table_info(agents)").all();
     if (agentCols.some(c => c.name === 'tmux_session')) {
       this.db.exec("ALTER TABLE agents DROP COLUMN tmux_session");
     }
-    if (!agentCols.some(c => c.name === 'machine_id')) {
-      this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
-    }
-    if (!agentCols.some(c => c.name === 'env_name')) {
-      this.db.exec("ALTER TABLE agents ADD COLUMN env_name TEXT");
-    }
-    if (!agentCols.some(c => c.name === 'daemon_key')) {
-      this.db.exec("ALTER TABLE agents ADD COLUMN daemon_key TEXT");
-    }
-    if (!agentCols.some(c => c.name === 'resume_id')) {
-      this.db.exec("ALTER TABLE agents ADD COLUMN resume_id TEXT");
-    }
     if (!agentCols.some(c => c.name === 'pretty_name')) this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
-    this.db.exec(`
-      UPDATE agents
-      SET daemon_key = machine_id || ':' || env_name
-      WHERE daemon_key IS NULL
-        AND machine_id IS NOT NULL AND machine_id != ''
-        AND env_name IS NOT NULL AND env_name != ''
-    `);
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine_env ON agents(machine_id, env_name)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_daemon_key ON agents(daemon_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_daemon_registry_status ON daemon_registry(status, machine_id, env_name)");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS agent_seats (
-        agent_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        resume_id TEXT,
-        kind TEXT NOT NULL,
-        model TEXT NOT NULL,
-        cwd TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        created_source TEXT,
-        created_by_event_id INTEGER,
-        PRIMARY KEY (agent_id),
-        UNIQUE (session_id),
-        UNIQUE (agent_id, session_id)
-      );
-      CREATE TABLE IF NOT EXISTS agent_current_seats (
-        agent_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        machine_id TEXT NOT NULL,
-        env_name TEXT NOT NULL,
-        daemon_key TEXT NOT NULL,
-        terminal_capability TEXT,
-        activated_at TEXT NOT NULL,
-        activated_by_event_id INTEGER,
-        transition_reason TEXT,
-        FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
-      );
-    `);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS agent_cwd_segments (
         source TEXT NOT NULL,
@@ -911,7 +806,35 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agent_cwd_segments_segment
         ON agent_cwd_segments(segment, source, agent_id);
     `);
-    this._migrateAgentCurrentSeatsRouteSchema();
+    const hasCurrentSeats = this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_current_seats'"
+    ).get();
+    if (hasCurrentSeats) {
+      this.db.exec(`
+        INSERT OR REPLACE INTO agent_daemon_routes (agent_id, daemon_key)
+        SELECT agent_id, daemon_key FROM agent_current_seats
+        WHERE daemon_key IS NOT NULL AND daemon_key != '';
+      `);
+    }
+    const routeMigrationAgentCols = this.db.prepare('PRAGMA table_info(agents)').all();
+    if (routeMigrationAgentCols.some(c => c.name === 'daemon_key')) {
+      this.db.exec(`
+        INSERT OR IGNORE INTO agent_daemon_routes (agent_id, daemon_key)
+        SELECT id, daemon_key FROM agents
+        WHERE daemon_key IS NOT NULL AND daemon_key != '';
+      `);
+    }
+    this.db.exec(`
+      DROP TABLE IF EXISTS agent_seat_binding_obligations;
+      DROP TABLE IF EXISTS agent_current_seats;
+      DROP TABLE IF EXISTS agent_seats;
+    `);
+    this.db.exec('DROP INDEX IF EXISTS idx_agents_machine_env; DROP INDEX IF EXISTS idx_agents_daemon_key; DROP INDEX IF EXISTS idx_agents_machine_env_alive;');
+    for (const column of ['session_id', 'session_ids', 'resume_id', 'machine_id', 'env_name', 'daemon_key']) {
+      if (this.db.prepare('PRAGMA table_info(agents)').all().some(c => c.name === column)) {
+        this.db.exec(`ALTER TABLE agents DROP COLUMN ${column}`);
+      }
+    }
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
     if (!taskCols.some(c => c.name === 'updated_at')) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN updated_at TEXT");
@@ -1322,13 +1245,11 @@ export class FleetStore {
     // ---- Boot-path index migration ----
     // These cover the queries that show up as full SCANs in slowquery logs:
     //   SELECT * FROM agents ORDER BY last_seen DESC          → idx_agents_last_seen
-    //   SELECT * FROM agents WHERE machine_id=? AND dead=0    → idx_agents_machine_alive
     //   SELECT * FROM agents WHERE dead=0 AND id!=?           → idx_agents_alive
     //   SELECT * FROM agents WHERE friendly_name=?            → (already covered by idx_agents_live_name for dead=0)
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
-      CREATE INDEX IF NOT EXISTS idx_agents_machine_env_alive ON agents(machine_id, env_name, dead);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
       CREATE INDEX IF NOT EXISTS idx_agents_cwd ON agents(cwd, id);
       CREATE INDEX IF NOT EXISTS idx_agents_cwd_trimmed ON agents(rtrim(cwd, '/'), id);
@@ -1374,48 +1295,6 @@ export class FleetStore {
           SELECT NEW.id, NEW.friendly_name, strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL
           WHERE NEW.friendly_name IS NOT NULL;
       END;
-    `);
-  }
-
-  _migrateAgentCurrentSeatsRouteSchema() {
-    const cols = this.db.prepare('PRAGMA table_info(agent_current_seats)').all();
-    const sessionCol = cols.find(c => c.name === 'session_id');
-    const tmuxCol = cols.find(c => c.name === 'tmux_session');
-    const capabilityCol = cols.find(c => c.name === 'terminal_capability');
-    if (sessionCol?.notnull === 1 && !tmuxCol && capabilityCol) return;
-    const capabilitySelect = capabilityCol ? 'terminal_capability' : 'NULL';
-
-    this.db.exec(`
-      DROP INDEX IF EXISTS idx_agent_current_seats_tmux_endpoint;
-      ALTER TABLE agent_current_seats RENAME TO agent_current_seats_old;
-      CREATE TABLE agent_current_seats (
-        agent_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        machine_id TEXT NOT NULL,
-        env_name TEXT NOT NULL,
-        daemon_key TEXT NOT NULL,
-        terminal_capability TEXT,
-        activated_at TEXT NOT NULL,
-        activated_by_event_id INTEGER,
-        transition_reason TEXT,
-        FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
-      );
-      INSERT INTO agent_current_seats (
-        agent_id, session_id, machine_id, env_name, daemon_key, terminal_capability,
-        activated_at, activated_by_event_id, transition_reason
-      )
-      SELECT
-        agent_id, session_id, machine_id, env_name, daemon_key,
-        ${capabilitySelect},
-        activated_at, activated_by_event_id, transition_reason
-      FROM agent_current_seats_old
-      WHERE session_id IS NOT NULL AND session_id != ''
-        AND EXISTS (
-          SELECT 1 FROM agent_seats s
-          WHERE s.agent_id = agent_current_seats_old.agent_id
-            AND s.session_id = agent_current_seats_old.session_id
-        );
-      DROP TABLE agent_current_seats_old;
     `);
   }
 
@@ -1512,8 +1391,8 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, pretty_name, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id, env_name, daemon_key, resume_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, friendly_name, pretty_name, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
@@ -1529,51 +1408,18 @@ export class FleetStore {
           ELSE json_patch(agents.metadata, excluded.metadata)
         END
     `);
-    // PROTECTED_AGENT_UPSERT_FIELDS are deliberately absent from DO UPDATE SET:
-    // an agent's identity is WRITE-ONCE through this path. They stay in the
-    // INSERT so a brand-new row can carry them, but no update here can ever
-    // change them again — not to a value, and (the bug this fixes) not to null.
-    // mirrorAgentSeatIdentity() is the sole authority that may change them,
-    // because the seat is where that identity actually lives.
-    //
-    // Why this is load-bearing: upsertAgent() strips all seven to null before
-    // every write, so while machine_id/env_name/daemon_key/resume_id sat in
-    // this clause as `= excluded.x`, EVERY routine upsert (a label change, a
-    // login, a shell reservation) silently wiped them. That stranded agents
-    // with no daemon address — unmovable, and unable to say what project they
-    // belong to — and threw away resume_id, which is the "lost the session
-    // handle" failure AGENTS.md insists must never happen. Broken by 27ccf6a7
-    // (2026-07-21 00:23:25), which flipped all four off COALESCE; 1ee5dd63
-    // restored cwd 67 seconds later and left the rest. Do not re-add them here.
-
-    // The three seat facts the runtime projection needs — whether a seat
-    // exists, its daemon_key, its terminal_capability — come along with the
-    // row, aliased so they cannot be confused with the agent's own columns.
-    //
-    // They used to be fetched per agent by a getCurrentAgentSeat call from the
-    // main-thread projector: an N+1 that became an N+1 of BOUNDARY CROSSINGS
-    // once the store moved to a worker. agent_current_seats is the sole route
-    // authority and this was already a join, so the facts arrive for free.
-    //
-    // Three flat scalars, deliberately, not one nested object. Structured clone
-    // is priced by shape and count rather than by bytes — nested objects are
-    // what make an agent row eight times the cost of an event row — so a nested
-    // `{ daemon_key, terminal_capability }` per row would be the expensive
-    // shape for no gain.
     const AGENT_SELECT = [
       'agents.*',
       'lineages.friendly_name AS lineage_name',
-      'seat.agent_id IS NOT NULL AS seat_present',
-      'seat.daemon_key AS seat_daemon_key',
-      'seat.terminal_capability AS seat_terminal_capability',
+      'route.agent_id IS NOT NULL AS route_present',
+      'route.daemon_key AS route_daemon_key',
     ].join(', ');
     const AGENT_JOIN = `FROM agents
       LEFT JOIN lineages ON lineages.id = agents.lineage_id
-      LEFT JOIN agent_current_seats seat ON seat.agent_id = agents.id`;
+      LEFT JOIN agent_daemon_routes route ON route.agent_id = agents.id`;
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
-    // A daemon's agents are the ones whose current durable seat lives on that
-    // daemon. agent_current_seats is the sole route authority.
-    this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_current_seats WHERE daemon_key = @daemonKey)`);
+    // A daemon's agents are the ones it most recently reported as its own.
+    this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_daemon_routes WHERE daemon_key = @daemonKey)`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
     this._getLiveHumanByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1');
@@ -1584,45 +1430,17 @@ export class FleetStore {
     // lineage_name while an id lookup does — a real inconsistency, but an
     // existing one, and not this change's to alter.)
     this._getLiveAgentRowByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0');
-    this._getAgentSeat = this.db.prepare('SELECT * FROM agent_seats WHERE agent_id = ?');
-    this._getCurrentAgentSeat = this.db.prepare(`
-      SELECT c.agent_id, c.session_id,
-             s.resume_id, s.kind, s.model, s.cwd, s.created_at, s.created_source, s.created_by_event_id,
-             c.machine_id, c.env_name, c.daemon_key, c.terminal_capability,
-             c.activated_at, c.activated_by_event_id, c.transition_reason
-      FROM agent_current_seats c
-      JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
-      WHERE c.agent_id = ?
+    this._getAgentDaemonRoute = this.db.prepare('SELECT agent_id, daemon_key FROM agent_daemon_routes WHERE agent_id = ?');
+    this._setAgentDaemonRoute = this.db.prepare(`
+      INSERT INTO agent_daemon_routes (agent_id, daemon_key) VALUES (?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET daemon_key = excluded.daemon_key
     `);
+    this._deleteAgentDaemonRoute = this.db.prepare('DELETE FROM agent_daemon_routes WHERE agent_id = ?');
     this._getDaemonAgentBinding = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE daemon_key = ? AND local_agent_id = ?');
     this._getDaemonAgentBindingByAgent = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE agent_id = ?');
     this._insertDaemonAgentBinding = this.db.prepare(`
       INSERT INTO daemon_agent_bindings (daemon_key, local_agent_id, agent_id, created_at)
       VALUES (?, ?, ?, ?)
-    `);
-    this._insertAgentSeat = this.db.prepare(`
-      INSERT INTO agent_seats (
-        agent_id, session_id, resume_id, kind, model, cwd,
-        created_at, created_source, created_by_event_id
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    this._insertCurrentAgentSeat = this.db.prepare(`
-      INSERT INTO agent_current_seats (
-        agent_id, session_id, machine_id, env_name, daemon_key, terminal_capability,
-        activated_at, activated_by_event_id, transition_reason
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    this._updateCurrentAgentSeat = this.db.prepare(`
-      UPDATE agent_current_seats
-      SET machine_id = ?, env_name = ?, daemon_key = ?, terminal_capability = ?, activated_at = ?,
-          activated_by_event_id = ?, transition_reason = ?
-      WHERE agent_id = ?
-    `);
-    this._deleteCurrentAgentSeat = this.db.prepare(`
-      DELETE FROM agent_current_seats
-      WHERE agent_id = ? AND daemon_key = ?
     `);
     this._upsertDaemonRegistration = this.db.prepare(`
       INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
@@ -2263,7 +2081,7 @@ export class FleetStore {
 
   _reloadAgentRegistry() {
     if (!this._agentRegistry || !this._aliveAgentRegistry) return;
-    const rows = this._getAllAgents.all().map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
+    const rows = this._getAllAgents.all().map(r => this.projectAgentDaemonRoute(this._hydrateAgent(r)));
     const ids = new Set(rows.map(a => a.id));
     const aliveIds = new Set(rows.filter(isFleetRosterAgent).map(a => a.id));
     this._agentRegistry.bulk(s => {
@@ -2325,83 +2143,28 @@ export class FleetStore {
 
   // ---- Agent state management ----
 
-  _normalizeSeat(seat) {
-    const normalized = {
-      agent_id: seat?.agent_id || seat?.agentId || null,
-      session_id: seat?.session_id || seat?.sessionId || null,
-      resume_id: seat?.resume_id || seat?.resumeId || null,
-      kind: seat?.kind || null,
-      model: seat?.model || null,
-      cwd: seat?.cwd || null,
-      created_source: seat?.created_source || seat?.createdSource || null,
-      created_by_event_id: seat?.created_by_event_id || seat?.createdByEventId || null,
-    };
-    const missing = ['agent_id', 'session_id', 'kind', 'model', 'cwd']
-      .filter(key => !normalized[key]);
-    if (missing.length) throw new Error(`agent identity missing ${missing.join(', ')}`);
-    for (const key of Object.keys(normalized)) {
-      if (normalized[key] != null && key !== 'created_by_event_id') normalized[key] = String(normalized[key]);
-    }
-    return normalized;
+  getAgentDaemonRoute(agentId) {
+    return this._getAgentDaemonRoute.get(agentId) || null;
   }
 
-  _seatIdentityConflict(existing, incoming) {
-    for (const key of ['session_id', 'resume_id', 'kind', 'model', 'cwd']) {
-      const left = existing[key] == null ? null : String(existing[key]);
-      const right = incoming[key] == null ? null : String(incoming[key]);
-      if (left !== right) return `${key}: existing=${left} incoming=${right}`;
-    }
-    return null;
-  }
-
-  insertAgentSeat(seat, { now = new Date().toISOString() } = {}) {
-    const normalized = this._normalizeSeat(seat);
-    const existing = this._getAgentSeat.get(normalized.agent_id);
-    if (existing) {
-      const conflict = this._seatIdentityConflict(existing, normalized);
-      if (conflict) throw new Error(`seat identity conflict for ${normalized.agent_id}/${normalized.session_id}: ${conflict}`);
-      this._replaceCwdSegments('seat', normalized.agent_id, normalized.cwd);
-      return existing;
-    }
-    this._insertAgentSeat.run(
-      normalized.agent_id,
-      normalized.session_id,
-      normalized.resume_id,
-      normalized.kind,
-      normalized.model,
-      normalized.cwd,
-      now,
-      normalized.created_source,
-      normalized.created_by_event_id,
-    );
-    this._replaceCwdSegments('seat', normalized.agent_id, normalized.cwd);
-    return this._getAgentSeat.get(normalized.agent_id);
-  }
-
-  getCurrentAgentSeat(agentId) {
-    return this._getCurrentAgentSeat.get(agentId) || null;
-  }
-
-  // One query for a whole batch. The daemon liveness batch checks ~190 agents
-  // every 30s and used to run ~190 separate seat lookups on the main thread —
-  // individually far under the slow-query threshold, collectively a stall no
-  // instrumentation could attribute. Returns a Map so callers keep O(1) access.
-  getCurrentAgentSeats(agentIds) {
+  getAgentDaemonRoutes(agentIds) {
     const ids = [...new Set((agentIds || []).filter(Boolean))];
-    const seats = new Map();
-    if (!ids.length) return seats;
+    const routes = new Map();
+    if (!ids.length) return routes;
     const placeholders = ids.map(() => '?').join(',');
-    const rows = this.db.prepare(`
-      SELECT c.agent_id, c.session_id,
-             s.resume_id, s.kind, s.model, s.cwd, s.created_at, s.created_source, s.created_by_event_id,
-             c.machine_id, c.env_name, c.daemon_key, c.terminal_capability,
-             c.activated_at, c.activated_by_event_id, c.transition_reason
-      FROM agent_current_seats c
-      JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
-      WHERE c.agent_id IN (${placeholders})
-    `).all(...ids);
-    for (const row of rows) seats.set(row.agent_id, row);
-    return seats;
+    const rows = this.db.prepare(
+      `SELECT agent_id, daemon_key FROM agent_daemon_routes WHERE agent_id IN (${placeholders})`
+    ).all(...ids);
+    for (const row of rows) routes.set(row.agent_id, row);
+    return routes;
+  }
+
+  setAgentDaemonRoute(agentId, daemonKey) {
+    if (!agentId || !daemonKey) throw new Error('agent daemon route requires agentId and daemonKey');
+    this._setAgentDaemonRoute.run(String(agentId), String(daemonKey));
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
+    return this.getAgentDaemonRoute(agentId);
   }
 
   getDaemonAgentBinding(daemonKey, localAgentId) {
@@ -2426,127 +2189,6 @@ export class FleetStore {
     return this.getDaemonAgentBinding(daemonKey, localAgentId);
   }
 
-  activateAgentSeat({
-    agentId,
-    sessionId,
-    machineId,
-    envName,
-    daemonKey,
-    terminalCapability,
-    reason = null,
-    activatedByEventId = null,
-    now = new Date().toISOString(),
-  } = {}) {
-    if (!agentId || !machineId || !envName || !daemonKey) {
-      throw new Error('activateAgentSeat requires agentId, machineId, envName, and daemonKey');
-    }
-    if (!sessionId) {
-      throw new Error(`activateAgentSeat requires durable sessionId for ${agentId}`);
-    }
-    const seat = this._getAgentSeat.get(agentId);
-    if (!seat) throw new Error(`cannot activate missing agent seat ${agentId}/${sessionId}`);
-    if (seat.session_id !== sessionId) {
-      throw new Error(`seat identity conflict for ${agentId}: session_id: existing=${seat.session_id} incoming=${sessionId}`);
-    }
-    const current = this.getCurrentAgentSeat(agentId);
-    if (current && current.session_id !== sessionId) {
-      throw new Error(`current seat identity conflict for ${agentId}: session_id: existing=${current.session_id} incoming=${sessionId}`);
-    }
-    if (current) {
-      this._updateCurrentAgentSeat.run(
-        machineId,
-        envName,
-        daemonKey,
-        terminalCapability || null,
-        now,
-        activatedByEventId,
-        reason,
-        agentId,
-      );
-    } else {
-      this._insertCurrentAgentSeat.run(
-        agentId,
-        sessionId || null,
-        machineId,
-        envName,
-        daemonKey,
-        terminalCapability || null,
-        now,
-        activatedByEventId,
-        reason,
-      );
-    }
-    this._bustAgentsCache();
-    this._syncAgentRegistry(agentId);
-    return this.getCurrentAgentSeat(agentId);
-  }
-
-  validateCurrentAgentSeat(agentId, fields = {}) {
-    const seat = this.getCurrentAgentSeat(agentId);
-    if (!seat) throw new Error(`agent ${agentId} has no current durable seat`);
-    const incoming = { ...fields };
-    for (const [key, value] of Object.entries(incoming)) {
-      if (value == null) continue;
-      const seatKey = key === 'agentId' ? 'agent_id'
-        : key === 'sessionId' ? 'session_id'
-        : key === 'daemonKey' ? 'daemon_key'
-        : key === 'terminalCapability' ? 'terminal_capability'
-        : key;
-      if (seat[seatKey] == null) throw new Error(`seat identity conflict for ${agentId}: ${seatKey}: existing=null incoming=${value}`);
-      if (String(seat[seatKey]) !== String(value)) {
-        throw new Error(`seat identity conflict for ${agentId}: ${seatKey}: existing=${seat[seatKey]} incoming=${value}`);
-      }
-    }
-    return seat;
-  }
-
-  mirrorAgentSeatIdentity({
-    agentId,
-    session_id,
-    session_ids,
-    resume_id,
-    cwd,
-    machine_id,
-    env_name,
-    daemon_key,
-  } = {}) {
-    if (!agentId) return;
-    this.db.prepare(`
-      UPDATE agents
-      SET session_id = COALESCE(?, session_id),
-          session_ids = COALESCE(?, session_ids),
-          resume_id = COALESCE(?, resume_id),
-          cwd = COALESCE(?, cwd),
-          machine_id = COALESCE(?, machine_id),
-          env_name = COALESCE(?, env_name),
-          daemon_key = COALESCE(?, daemon_key)
-      WHERE id = ?
-    `).run(
-      session_id || null,
-      session_ids ? JSON.stringify(session_ids) : null,
-      resume_id || null,
-      cwd || null,
-      machine_id || null,
-      env_name || null,
-      daemon_key || null,
-      agentId,
-    );
-    if (cwd != null) this._replaceCwdSegments('agent', agentId, cwd);
-    this._bustAgentsCache();
-    this._syncAgentRegistry(agentId);
-  }
-
-  retireCurrentAgentSeat(agentId, fields = {}) {
-    const seat = this.validateCurrentAgentSeat(agentId, fields);
-    const result = this._deleteCurrentAgentSeat.run(
-      seat.agent_id,
-      seat.daemon_key,
-    );
-    if (result.changes !== 1) throw new Error(`current seat changed while retiring ${agentId}`);
-    this._bustAgentsCache();
-    this._syncAgentRegistry(agentId);
-    return seat;
-  }
 
   upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {
@@ -2570,13 +2212,10 @@ export class FleetStore {
           agent = { ...agent, labels: filtered };
         }
       }
-      const daemonKey = agent.daemon_key || (agent.machine_id && agent.env_name ? `${agent.machine_id}:${agent.env_name}` : null);
       this._upsertAgent.run(
         agent.id,
         agent.friendly_name || null,
         serializePrettyName(agent.pretty_name),
-        agent.session_id || null,
-        agent.session_ids ? JSON.stringify(agent.session_ids) : null,
         agent.cwd || null,
         agent.labels ? JSON.stringify(agent.labels) : null,
         agent.registered_at || null,
@@ -2584,11 +2223,7 @@ export class FleetStore {
         agent.dead ? 1 : 0,
         agent.human ? 1 : 0,
         agent.is_manager ? 1 : 0,
-        agent.metadata ? JSON.stringify(agent.metadata) : null,
-        agent.machine_id || null,
-        agent.env_name || null,
-        daemonKey,
-        agent.resume_id || null
+        agent.metadata ? JSON.stringify(agent.metadata) : null
       );
       if (agent.cwd != null) this._replaceCwdSegments('agent', agent.id, agent.cwd);
       this._bustAgentsCache();
@@ -2611,28 +2246,18 @@ export class FleetStore {
   getAgentsByDaemonKey(daemonKey) {
     if (!daemonKey) return [];
     return this._getAgentsByDaemonKey.all({ daemonKey })
-      .map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
+      .map(r => this.projectAgentDaemonRoute(this._hydrateAgent(r)));
   }
 
-  projectAgentCurrentSeat(agent) {
+  projectAgentDaemonRoute(agent) {
     if (!agent?.id) return agent;
-    const seat = this.getCurrentAgentSeat(agent.id);
-    if (!seat) return withoutProtectedAgentFields(agent);
-    const metadata = seat.model
-      ? { ...(agent.metadata || {}), model: seat.model }
-      : agent.metadata;
+    const route = this.getAgentDaemonRoute(agent.id);
+    if (!route) return withoutProtectedAgentFields(agent);
     return {
       ...agent,
-      metadata,
-      session_id: seat.session_id,
-      cwd: seat.cwd,
-      machine_id: seat.machine_id,
-      env_name: seat.env_name,
-      daemon_key: seat.daemon_key,
-      resume_id: seat.resume_id,
-      seat_present: true,
-      seat_daemon_key: seat.daemon_key,
-      seat_terminal_capability: seat.terminal_capability,
+      route_present: true,
+      route_daemon_key: route.daemon_key,
+      daemon_key: route.daemon_key,
     };
   }
 
@@ -2675,7 +2300,7 @@ export class FleetStore {
 
   getAgent(id) {
     const row = this._getAgent.get(id);
-    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
+    return row ? this.projectAgentDaemonRoute(this._hydrateAgent(row)) : null;
   }
 
   // ---- Name provenance ----
@@ -2691,7 +2316,7 @@ export class FleetStore {
   // distinct agents at most, so the work was never proportional to the answer.
   //
   // The `getAgent` half was worse than a query: it hydrated the whole agent —
-  // JSON.parse of metadata, labels and session_ids, plus runtime-status and
+  // JSON.parse of metadata and labels, plus runtime-status and
   // seat projection — to read one column off the row. `_hydrateAgent` is the
   // top frame in six of the stalls in the live lag profiler.
   //
@@ -2795,11 +2420,7 @@ export class FleetStore {
       // (Skip's spec G.22, scratch/registration-rules.md).
       row = this._getLiveAgentRowByFriendlyName.get(query) || this._getAgentByName.get(query);
     }
-    if (!row) {
-      // Search by session_id
-      row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
-    }
-    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
+    return row ? this.projectAgentDaemonRoute(this._hydrateAgent(row)) : null;
   }
 
   findAgentStored(query) {
@@ -2807,9 +2428,6 @@ export class FleetStore {
     let row = this._getAgent.get(query);
     if (!row) {
       row = this._getLiveAgentRowByFriendlyName.get(query) || this._getAgentByName.get(query);
-    }
-    if (!row) {
-      row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
     }
     return row ? this._hydrateAgent(row) : null;
   }
@@ -2833,10 +2451,12 @@ export class FleetStore {
     `).get() || {};
     const byMachine = {};
     for (const row of this.db.prepare(`
-      SELECT COALESCE(machine_id, '(none)') AS machine_id, COUNT(*) AS count
-      FROM agents
-      WHERE dead = 0
-      GROUP BY COALESCE(machine_id, '(none)')
+      SELECT COALESCE(d.machine_id, '(none)') AS machine_id, COUNT(*) AS count
+      FROM agents a
+      LEFT JOIN agent_daemon_routes r ON r.agent_id = a.id
+      LEFT JOIN daemon_registry d ON d.daemon_key = r.daemon_key
+      WHERE a.dead = 0
+      GROUP BY COALESCE(d.machine_id, '(none)')
     `).all()) {
       byMachine[row.machine_id] = row.count;
     }
@@ -3002,18 +2622,18 @@ export class FleetStore {
       FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id
       WHERE agents.id IN (${placeholders})
     `).all(...unique);
-    return rows.map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
+    return rows.map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
   }
 
   getLiveAgentsByFriendlyName(friendlyName) {
     if (!friendlyName) return [];
-    return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
+    return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
   }
 
   // The live human holding this name, or null. Deliberately NOT
   // getLiveAgentsByFriendlyName filtered by `human`: that one applies
-  // projectAgentCurrentSeat, which rewrites route/display fields when an agent
-  // has a current seat, and the login path this serves writes the row straight
+  // projectAgentDaemonRoute, which rewrites route/display fields when an agent
+  // has a daemon route, and the login path this serves writes the row straight
   // back through upsertAgent. Hydrated but unprojected is what that write
   // needs. At most one row can exist — idx_agents_live_name makes a second
   // live holder of a name unrepresentable.
@@ -3048,7 +2668,7 @@ export class FleetStore {
     }
     const rows = this._getAliveAgentsPage.all({ ...boundary, limit: size + 1 });
     const hasMore = rows.length > size;
-    const page = rows.slice(0, size).map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
+    const page = rows.slice(0, size).map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
     const tail = page[page.length - 1];
     const nextCursor = hasMore && tail
       ? Buffer.from(JSON.stringify({ lastSeen: tail.last_seen, id: tail.id })).toString('base64url')
@@ -3179,11 +2799,6 @@ export class FleetStore {
   hasEverRun(id) {
     const row = this._getAgent.get(id);
     if (!row) return false;
-    if (row.session_id || row.resume_id) return true;
-    try {
-      const sessions = row.session_ids ? JSON.parse(row.session_ids) : null;
-      if (Array.isArray(sessions) && sessions.length) return true;
-    } catch { /* malformed session_ids is not evidence either way */ }
     if (row.last_active) return true;
     const ev = this.db.prepare(
       'SELECT 1 FROM events WHERE from_id = ? OR agent_id = ? LIMIT 1'
@@ -3192,15 +2807,8 @@ export class FleetStore {
   }
 
   markDead(id) {
-    const seat = this.getCurrentAgentSeat(id);
     this.db.transaction(() => {
-      if (seat) {
-        const retired = this._deleteCurrentAgentSeat.run(
-          seat.agent_id,
-          seat.daemon_key,
-        );
-        if (retired.changes !== 1) throw new Error(`current seat changed while marking ${id} dead`);
-      }
+      this._deleteAgentDaemonRoute.run(id);
       this._markAgentDead.run(id);
     })();
     this.retireTasksForGoneAgent(id, 'agent marked dead');
@@ -3338,7 +2946,7 @@ export class FleetStore {
        WHERE stack.lineage_id = ? AND stack.active = 1
          AND agents.friendly_name IS NOT NULL AND agents.dead = 0
        ORDER BY stack.stack_index`
-    ).all(lineageId).map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
+    ).all(lineageId).map(r => this.projectAgentDaemonRoute(this._hydrateAgent(r)));
   }
 
   // The lineage this agent currently occupies a stack slot on, or null.
@@ -3511,7 +3119,6 @@ export class FleetStore {
     const metadata = row.metadata ? JSON.parse(row.metadata) : null
     const baseAgent = {
       ...row,
-      session_ids: row.session_ids ? JSON.parse(row.session_ids) : [],
       labels: row.labels ? JSON.parse(row.labels) : [],
       dead: !!row.dead,
       human: !!row.human,
@@ -3527,9 +3134,8 @@ export class FleetStore {
       // actually reachable depends on which daemons currently hold a socket,
       // which is main-thread knowledge. This thread reports what the route
       // authority says; the main thread applies the daemon check.
-      seat_present: !!row.seat_present,
-      seat_daemon_key: row.seat_daemon_key || null,
-      seat_terminal_capability: row.seat_terminal_capability || null,
+      route_present: !!row.route_present,
+      route_daemon_key: row.route_daemon_key || null,
     }
     // No runtime_status here. Liveness is a projection over things this thread
     // cannot see — live WebSocket handles, daemon connections, heartbeat
@@ -4324,24 +3930,6 @@ export class FleetStore {
     return this._serverDaemonOutbox.deleteByDedupeKey(daemonKey, dedupeKey);
   }
 
-  // ---- Agent seat-binding obligations ----
-
-  putAgentSeatBindingObligation(payload) {
-    return this._agentSeatBindingObligations.put(payload);
-  }
-
-  getAgentSeatBindingObligation(id) {
-    return this._agentSeatBindingObligations.get(id);
-  }
-
-  listAgentSeatBindingObligationsForDaemon(daemonKey) {
-    return this._agentSeatBindingObligations.listForDaemon(daemonKey);
-  }
-
-  removeAgentSeatBindingObligation(id) {
-    return this._agentSeatBindingObligations.remove(id);
-  }
-
   daemonOutboxWasProcessed(outboxId) {
     return !!this._daemonOutboxProcessedGet.get(outboxId);
   }
@@ -4656,12 +4244,6 @@ export class FleetStore {
     let dirs;
     try { dirs = fs.readdirSync(projectsDir); } catch { return { indexed: 0, skipped: 0 }; }
 
-    const agentMap = {};
-    for (const row of this.db.prepare('SELECT id, session_id, session_ids FROM agents').all()) {
-      if (row.session_id) agentMap[row.session_id] = row.id;
-      try { for (const sid of JSON.parse(row.session_ids || '[]')) agentMap[sid] = row.id; } catch (e) { console.warn(`[fleet-store] bad session_ids JSON for agent ${row.id}: ${e.message}`) }
-    }
-
     const allFiles = [];
     let skipped = 0;
     for (const dir of dirs) {
@@ -4685,7 +4267,7 @@ export class FleetStore {
     `;
     let totalIndexed = 0;
     for (const { filePath, sessionId } of allFiles) {
-      const agentId = agentMap[sessionId] || 'unknown';
+      const agentId = 'unknown';
       let content;
       try { content = await fs.promises.readFile(filePath, 'utf8'); } catch { continue; }
       const entries = [];
@@ -5043,18 +4625,11 @@ export class FleetStore {
     let candidateRawSql;
     if (isPath) {
       candidateRawSql = `
-        SELECT agent_id, cwd, created_at AS seat_created_at FROM agent_seats WHERE rtrim(cwd, '/') = ?
-        UNION ALL
         SELECT id AS agent_id, cwd, registered_at AS seat_created_at FROM agents WHERE rtrim(cwd, '/') = ?
       `;
       params.push(normalized);
     } else {
       candidateRawSql = `
-        SELECT s.agent_id, s.cwd, s.created_at AS seat_created_at
-        FROM agent_cwd_segments cs
-        JOIN agent_seats s ON s.agent_id = cs.agent_id
-        WHERE cs.segment = ? AND cs.source = 'seat'
-        UNION ALL
         SELECT a.id AS agent_id, a.cwd, a.registered_at AS seat_created_at
         FROM agent_cwd_segments cs
         JOIN agents a ON a.id = cs.agent_id
@@ -5193,18 +4768,11 @@ export class FleetStore {
     let candidateRawSql;
     if (isPath) {
       candidateRawSql = `
-        SELECT agent_id FROM agent_seats WHERE rtrim(cwd, '/') = ?
-        UNION
         SELECT id AS agent_id FROM agents WHERE rtrim(cwd, '/') = ?
       `;
       params.push(normalized);
     } else {
       candidateRawSql = `
-        SELECT s.agent_id
-        FROM agent_cwd_segments cs
-        JOIN agent_seats s ON s.agent_id = cs.agent_id
-        WHERE cs.segment = ? AND cs.source = 'seat'
-        UNION
         SELECT a.id AS agent_id
         FROM agent_cwd_segments cs
         JOIN agents a ON a.id = cs.agent_id

@@ -20,7 +20,7 @@ import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { canReportTask, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
-import { recordAgentBindingEvent } from '../lib/agent-binding-events.mjs'
+import { recordAgentRouteEvent } from '../lib/agent-route-events.mjs'
 import { projectActivityEventsPage, projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 import { markPendingAttachmentPlaceholdersRead } from '../../shared/inbox-reference-materialization.mjs'
 
@@ -244,14 +244,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   }
 
-  async function currentSeatOrHttpError(res, agent) {
-    const seat = agent?.id ? await fleetStore.getCurrentAgentSeat(agent.id) : null
+  async function agentRouteOrHttpError(res, agent) {
+    const seat = agent?.id ? await fleetStore.getAgentDaemonRoute(agent.id) : null
     if (!seat) {
-      res.status(409).json({ error: 'agent has no current durable seat' })
-      return null
-    }
-    if (!seat.terminal_capability) {
-      res.status(409).json({ error: 'current durable seat is missing owning daemon terminal capability' })
+      res.status(409).json({ error: 'agent has no daemon route' })
       return null
     }
     return seat
@@ -285,16 +281,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     })
   })
 
-  router.get('/api/agent-seat', async (req, res) => {
+  router.get('/api/agent-route', async (req, res) => {
     const query = req.query.agent || req.query.id
     const agent = await fleetStore?.findAgent(query)
     if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const seat = await fleetStore?.getCurrentAgentSeat?.(agent.id)
-    if (!seat) { res.status(404).json({ ok: false, error: 'agent has no current durable seat' }); return }
+    const seat = await fleetStore?.getAgentDaemonRoute?.(agent.id)
+    if (!seat) { res.status(404).json({ ok: false, error: 'agent has no daemon route' }); return }
     res.json({ ok: true, seat })
   })
 
-  router.post('/api/agent-seat', async (req, res) => {
+  router.post('/api/agent-route', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
     const body = req.body || {}
     const agentId = body.agent_id || body.agentId
@@ -304,9 +300,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const envName = body.env_name || body.envName || null
     const daemonKey = body.daemon_key || body.daemonKey || (machineId && envName ? `${machineId}:${envName}` : null)
     try {
-      const seat = await recordAgentBindingEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
-        machineId,
-        envName,
+      const seat = await recordAgentRouteEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
         daemonKey,
       })
       broadcastState()
@@ -314,56 +308,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) {
       res.status(409).json({ ok: false, error: e.message })
     }
-  })
-
-  router.post('/api/agent-seat-binding-obligation', async (req, res) => {
-    const body = req.body || {}
-    const required = ['agent_id', 'daemon_key', 'local_agent_id', 'cwd', 'kind', 'model', 'friendly_name']
-    const missing = required.filter(key => !body[key])
-    if (missing.length) {
-      res.status(400).json({ ok: false, error: `invalid runtime binding obligation: missing ${missing.join(', ')}` })
-      return
-    }
-    const agent = await fleetStore?.findAgent(body.agent_id)
-    if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const obligation = await fleetStore.putAgentSeatBindingObligation({ ...body, agent_id: agent.id })
-    await enqueueDaemonMessage(obligation.daemon_key, {
-      type: 'agent-seat-binding-obligation',
-      ...obligation,
-    }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
-    res.status(202).json({ ok: true, pending: true, obligation })
-  })
-
-  router.post('/api/agent-seat-binding-obligation/:id/retire', async (req, res) => {
-    const obligation = await fleetStore.getAgentSeatBindingObligation(req.params.id)
-    const body = req.body || {}
-    if (!obligation) { res.status(404).json({ ok: false, error: 'binding obligation not found' }); return }
-    if (body.agent_id !== obligation.agent_id || body.daemon_key !== obligation.daemon_key) {
-      res.status(409).json({ ok: false, error: 'binding obligation retirement identity mismatch' })
-      return
-    }
-    // Retiring a BINDING must not kill an AGENT that has run.
-    //
-    // Skip's rule and its one carve-out, in his words: "Nothing should kill an
-    // agent, ever, other than a manual operation" — and "if an agent never
-    // exists, and we [made] a binding for them, and then we fail to actually
-    // have a process ever, then we can release the name."
-    //
-    // So: a reservation that never launched is released, because there was never
-    // an agent. Anything that has run keeps its row and its name; only the
-    // obligation and its seat go. This path was killing unconditionally, and it
-    // is wired to seat binding — the machinery currently failing in a loop.
-    const everRan = await fleetStore.hasEverRun?.(obligation.agent_id)
-    if (everRan) {
-      await fleetStore.retireCurrentAgentSeat?.(obligation.agent_id)
-    } else {
-      await fleetStore.markDead(obligation.agent_id)
-    }
-    clearEphemeralState?.(obligation.agent_id)
-    const retired = !await fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
-    if (!retired) { res.status(409).json({ ok: false, retired: false, error: 'agent reservation is not fully retired' }); return }
-    broadcastState()
-    res.json({ ok: true, retired: true })
   })
 
   // --- GET /api/human ---
@@ -989,11 +933,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent: agentQuery, lines } = req.body || {}
     const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const seat = await currentSeatOrHttpError(res, agent)
+    const seat = await agentRouteOrHttpError(res, agent)
     if (!seat) return
     try {
       const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', {
-        agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50,
+        agent_id: agent.id, lines: lines || 50,
       })
       res.json(result)
     } catch (e) {
@@ -1011,7 +955,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent: agentQuery } = req.body || {}
     const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const seat = await currentSeatOrHttpError(res, agent)
+    const seat = await agentRouteOrHttpError(res, agent)
     if (!seat) return
 
     const parseCCMode = (pane) => {
@@ -1023,7 +967,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     try {
       // Capture current mode
-      const cap1 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
+      const cap1 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
 
       // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
@@ -1031,13 +975,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
 
       for (let i = 0; i < btabs; i++) {
-        await sendDaemonEphemeral(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key: 'BTab' })
+        await sendDaemonEphemeral(seat.daemon_key, 'send-key', { agent_id: agent.id, key: 'BTab' })
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
 
       // Confirm final mode
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
+      const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, lines: 5 })
       const finalMode = parseCCMode(cap2?.content || '')
 
       // Store permission mode in agent metadata so UI can show persistent badge
@@ -1212,11 +1156,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/agents/move-daemon ---
-  // Runtime route changes must be recorded by the durable seat binding path.
+  // Runtime route changes must be recorded by the daemon route path.
   // Do not let an operator/API edit the legacy agent row into becoming route
   // authority again.
   router.post('/api/agents/move-daemon', async (req, res) => {
-    res.status(410).json({ error: 'agent daemon route is not editable; use the durable seat binding event path' })
+    res.status(410).json({ error: 'agent daemon route is not editable; use the daemon route event path' })
   })
 
   router.post('/api/agents/:agent/wake', async (req, res) => {
@@ -1225,7 +1169,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(404).json({ ok: false, error: `agent not found: ${req.params.agent}` })
       return
     }
-    const seat = await currentSeatOrHttpError(res, agent)
+    const seat = await agentRouteOrHttpError(res, agent)
     if (!seat) return
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'wake', { fleet_id: agent.id })

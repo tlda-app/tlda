@@ -1,7 +1,7 @@
 export async function agentsForTerminalWatchResume({
   watchedAgentIds = [],
   getAgentsByIds = () => [],
-  getCurrentAgentSeat = () => null,
+  getAgentDaemonRoute = () => null,
   daemonKey,
 } = {}) {
   if (!daemonKey) return []
@@ -11,8 +11,8 @@ export async function agentsForTerminalWatchResume({
   const out = []
   for (const agent of agents) {
     if (!agent?.id || !watched.has(agent.id)) continue
-    const seat = await getCurrentAgentSeat(agent.id)
-    if (!seat || seat.daemon_key !== daemonKey || !seat.terminal_capability) continue
+    const seat = await getAgentDaemonRoute(agent.id)
+    if (!seat || seat.daemon_key !== daemonKey) continue
     out.push({ agent, seat })
   }
   return out

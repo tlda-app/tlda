@@ -30,7 +30,6 @@ export function daemonEventFailureIncident(msg, operation, error) {
       outboxId,
       agentId,
       timestamp: msg?.ts || null,
-      sessionId: msg?.session_id || null,
       tool: msg?.tool || null,
       textBytes: typeof msg?.text === 'string' ? msg.text.length : null,
     },

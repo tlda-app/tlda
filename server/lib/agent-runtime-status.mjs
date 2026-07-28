@@ -12,7 +12,7 @@ export const ROUTE_STATE = Object.freeze({
   ROUTABLE: 'routable',
   UNROUTABLE: 'unroutable',
   DAEMON_DISCONNECTED: 'daemon-disconnected',
-  SEAT_MISSING: 'seat-missing',
+  ROUTE_MISSING: 'route-missing',
 })
 
 export const LIVENESS = Object.freeze({
@@ -252,30 +252,15 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   })
 }
 
-// The seat's three facts come off the agent row (seat_present,
-// seat_daemon_key, seat_terminal_capability), attached by the store from
-// agent_current_seats. They used to arrive as a whole seat object fetched per
-// agent by an injected getSeat closure — an N+1 that would have become an N+1
-// of worker round trips, and a closure cannot cross a thread boundary at all.
-//
-// Only the daemon check is main-thread: which daemons hold a live socket right
-// now is not something the thread with the database can know.
 function routeStateFor({ agent, isDaemonConnected }) {
   if (!agent?.id) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-missing' }
   if (agent.dead) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-dead' }
-  if (!agent.seat_present) return { state: ROUTE_STATE.SEAT_MISSING, reason: 'current-seat-missing' }
-  // No daemon_key guard. agent_current_seats.daemon_key is NOT NULL, so a seat
-  // without one is unrepresentable — deleted on main by the barnacle sweep,
-  // and this branch had independently marked it unreachable. The deletion
-  // wins; the facts come off the row.
-  const daemonKey = agent.seat_daemon_key
-  if (!agent.seat_terminal_capability) {
-    return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-missing-terminal-capability', hasSeat: true, daemonKey }
-  }
+  if (!agent.route_present) return { state: ROUTE_STATE.ROUTE_MISSING, reason: 'daemon-route-missing' }
+  const daemonKey = agent.route_daemon_key
   if (!isDaemonConnected(daemonKey)) {
-    return { state: ROUTE_STATE.DAEMON_DISCONNECTED, reason: 'daemon-disconnected', hasSeat: true, daemonKey }
+    return { state: ROUTE_STATE.DAEMON_DISCONNECTED, reason: 'daemon-disconnected', hasRoute: true, daemonKey }
   }
-  return { state: ROUTE_STATE.ROUTABLE, reason: 'current-seat-routable', hasSeat: true, daemonKey }
+  return { state: ROUTE_STATE.ROUTABLE, reason: 'daemon-route-routable', hasRoute: true, daemonKey }
 }
 
 function runtimeProjection({ status, activity, route, evidence, reason, nowMs }) {
@@ -285,10 +270,10 @@ function runtimeProjection({ status, activity, route, evidence, reason, nowMs })
     route_state: route.state,
     route_reason: route.reason,
     // Null for the three early returns that never reached the seat check —
-    // agent-missing, agent-dead, current-seat-missing — exactly as when this
+    // agent-missing, agent-dead, daemon-route-missing — exactly as when this
     // read `route.seat ? … : null`. The `|| null` on daemon_key is gone with
     // the guard above: the column is NOT NULL.
-    route: route.hasSeat ? {
+    route: route.hasRoute ? {
       daemon_key: route.daemonKey,
     } : null,
     evidence,
