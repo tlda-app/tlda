@@ -149,15 +149,15 @@ async function taskDocFleetSource(localFleetStore, { boundedTasksLimit = null } 
 router.use('/:name/history', historyRoutes)
 
 // List all projects
-router.get('/', requireRead, async (req, res) => {
-  res.json({ projects: await listProjects() })
+router.get('/', requireRead, (req, res) => {
+  res.json({ projects: listProjects() })
 })
 
 // Project timestamps — computed from disk, not stored in manifest
-router.get('/meta', requireRead, async (req, res) => {
+router.get('/meta', requireRead, (req, res) => {
   const meta = {}
   const dir = getProjectsDir()
-  for (const project of await listProjects()) {
+  for (const project of listProjects()) {
     const name = project.name
     let lastAnnotated = null
     const snapPath = join(dir, name, 'sync-snapshot.json')
@@ -232,7 +232,7 @@ router.post('/history/shadow/index', requireRead, async (req, res) => {
 router.get('/health', requireRead, async (req, res) => {
   const health = {}
   const dir = getProjectsDir()
-  for (const project of await listProjects()) {
+  for (const project of listProjects()) {
     const snapPath = join(dir, project.name, 'sync-snapshot.json')
     if (!existsSync(snapPath)) continue
     try {
@@ -248,7 +248,7 @@ router.get('/health', requireRead, async (req, res) => {
 })
 
 // GET /events/stream — Global SSE stream of project-level events (doc-arrived, etc.)
-router.get('/events/stream', requireRead, async (req, res) => {
+router.get('/events/stream', requireRead, (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -269,13 +269,13 @@ router.get('/events/stream', requireRead, async (req, res) => {
 })
 
 // List archived projects
-router.get('/archived', requireRead, async (req, res) => {
-  const projects = await listProjects().filter(p => p.archived)
+router.get('/archived', requireRead, (req, res) => {
+  const projects = listProjects().filter(p => p.archived)
   res.json({ projects })
 })
 
 // Create project
-router.post('/', requireRw, async (req, res) => {
+router.post('/', requireRw, (req, res) => {
   try {
     const { name, title, mainFile, sourceDir, format, members } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
@@ -295,8 +295,8 @@ router.post('/', requireRw, async (req, res) => {
 })
 
 // Get project
-router.get('/:name', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const activeBuild = getBuildStatus(req.params.name)
@@ -323,7 +323,7 @@ router.post('/:name/parts', requireRw, async (req, res) => {
       const status = result.status === 'not materialized' && /no project resolved/i.test(result.error || '') ? 404 : 400
       return res.status(status).json({ ok: false, error: result.error, ...result })
     }
-    const project = await readProject(req.params.name)
+    const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
       await dispatchBuild(req.params.name)
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
@@ -345,8 +345,8 @@ router.post('/:name/parts', requireRw, async (req, res) => {
 // markdown — e.g. the scratch/notes parts on a LaTeX/svg project. Any
 // project format can have parts; each part always renders through the
 // markdown renderer regardless of the parent project's own format.
-router.get('/:name/parts', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/parts', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const columns = listProjectPartColumns(req.params.name)
   res.json(pageInfoFromDocumentColumns(req.params.name, columns))
@@ -356,7 +356,7 @@ router.get('/:name/parts', requireRead, async (req, res) => {
 // generic markdown artifact route, this preserves tlda-kind: task-doc so the
 // markdown renderer installs the task controls.
 router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const fleetStore = req.app?.locals?.fleetStore
   if (!fleetStore) return res.status(503).json({ ok: false, error: 'Fleet store not available' })
@@ -411,10 +411,10 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
 // Remove a project part (its file + manifest entry) and tell open viewers to
 // reload so the removed column disappears from the canvas.
 router.delete('/:name/parts/:id', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const root = projectPartsRoot(req.params.name)
-  const manifest = await readProjectPartsManifest(req.params.name)
+  const manifest = readProjectPartsManifest(req.params.name)
   const part = manifest.parts.find(p => p.id === req.params.id)
   if (!part) return res.status(404).json({ error: 'Part not found' })
   const targetPath = String(part.path || part.storage?.path || '')
@@ -422,7 +422,7 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
     const localPath = join(root, targetPath)
     if (existsSync(localPath)) rmSync(localPath)
   }
-  await writeProjectPartsManifest(req.params.name, {
+  writeProjectPartsManifest(req.params.name, {
     ...manifest,
     parts: manifest.parts.filter(p => p.id !== req.params.id),
   })
@@ -437,12 +437,12 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
 // Read a project-owned markdown artifact part. With ?version=<git hash>, reads
 // the immutable bytes from that project source repo version instead of the
 // current overwritten file.
-router.get('/:name/parts/:partId/markdown', requireRead, async (req, res) => {
+router.get('/:name/parts/:partId/markdown', requireRead, (req, res) => {
   try {
-    const project = await readProject(req.params.name)
+    const project = readProject(req.params.name)
     if (!project) return res.status(404).json({ ok: false, error: 'Project not found' })
     const root = projectPartsRoot(req.params.name)
-    const manifest = await readProjectPartsManifest(req.params.name)
+    const manifest = readProjectPartsManifest(req.params.name)
     const part = manifest.parts.find(p => p.id === req.params.partId)
     if (!part) return res.status(404).json({ ok: false, error: 'Part not found' })
     const targetPath = String(part.path || part.storage?.path || '')
@@ -484,7 +484,7 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
       actor: req.body?.actor,
       provenance: req.body?.provenance,
     })
-    const project = await readProject(req.params.name)
+    const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
       await dispatchBuild(req.params.name)
       emitGlobalEvent('project-changed', { name: req.params.name })
@@ -501,10 +501,10 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
 })
 
 // Archive/unarchive project
-router.patch('/:name/archive', requireRw, async (req, res) => {
+router.patch('/:name/archive', requireRw, (req, res) => {
   try {
     const { archived } = req.body
-    const project = await updateProject(req.params.name, { archived: !!archived })
+    const project = updateProject(req.params.name, { archived: !!archived })
     res.json({ ok: true, archived: project.archived })
   } catch (e) {
     res.status(404).json({ error: e.message })
@@ -512,10 +512,10 @@ router.patch('/:name/archive', requireRw, async (req, res) => {
 })
 
 // Toggle autoSync (git mirror sync)
-router.patch('/:name/auto-sync', requireRw, async (req, res) => {
+router.patch('/:name/auto-sync', requireRw, (req, res) => {
   try {
     const { autoSync } = req.body
-    const project = await updateProject(req.params.name, { autoSync: !!autoSync })
+    const project = updateProject(req.params.name, { autoSync: !!autoSync })
     res.json({ ok: true, autoSync: project.autoSync })
   } catch (e) {
     res.status(404).json({ error: e.message })
@@ -533,7 +533,7 @@ router.post('/:name/overleaf-link', requireRw, async (req, res) => {
     }
     const result = await linkOverleaf(req.params.name, { gitUrl, token, title, mainFile, pollSeconds })
     if (result.linked) {
-      const project = await readProject(req.params.name)
+      const project = readProject(req.params.name)
       if (project?.format === 'svg') {
         await dispatchBuild(req.params.name)
       }
@@ -556,9 +556,9 @@ router.post('/:name/overleaf-sync', requireRw, async (req, res) => {
 })
 
 // Unlink the Overleaf remote (stops polling, removes the clone; keeps the project).
-router.post('/:name/overleaf-unlink', requireRw, async (req, res) => {
+router.post('/:name/overleaf-unlink', requireRw, (req, res) => {
   try {
-    await unlinkOverleaf(req.params.name)
+    unlinkOverleaf(req.params.name)
     res.json({ ok: true })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -577,11 +577,11 @@ router.delete('/:name', requireRw, async (req, res) => {
 })
 
 // Add member to book (create book project if needed)
-router.patch('/:name/members', requireRw, async (req, res) => {
+router.patch('/:name/members', requireRw, (req, res) => {
   const { add } = req.body
   if (!add || typeof add !== 'string') return res.status(400).json({ error: 'add member name required' })
   try {
-    const book = await addBookMember(req.params.name, add)
+    const book = addBookMember(req.params.name, add)
     res.json({ ok: true, members: book.members })
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -590,22 +590,22 @@ router.patch('/:name/members', requireRw, async (req, res) => {
 
 // List source files
 router.get('/:name/files', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   res.json({ files: await listSourceFiles(req.params.name) })
 })
 
-router.get('/:name/source-authority', requireRead, async (req, res) => {
-  try { res.json((await sourceLifecycleStore(req.params.name)).readAuthority()) }
+router.get('/:name/source-authority', requireRead, (req, res) => {
+  try { res.json(sourceLifecycleStore(req.params.name).readAuthority()) }
   catch (e) { res.status(404).json({ error: e.message }) }
 })
 
 // Read a specific source file's content
-router.get('/:name/source/:file', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/source/:file', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   try {
-    const current = (await sourceLifecycleStore(req.params.name)).readCurrentFile(req.params.file)
+    const current = sourceLifecycleStore(req.params.name).readCurrentFile(req.params.file)
     if (current) {
       if (current.content === null) return res.status(404).json({ error: 'File not found' })
       res.set('X-TLDA-Source-Revision', current.sourceRevision)
@@ -621,7 +621,7 @@ router.get('/:name/source/:file', requireRead, async (req, res) => {
 
 // Write a specific source file's content and trigger the normal project push path
 router.put('/:name/source/:file', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const content = typeof req.body?.content === 'string' ? req.body.content : null
   if (content === null) return res.status(400).json({ error: 'Required: content string' })
@@ -648,7 +648,7 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
     let resolvedTarget = target || ''
     if (!resolvedTarget) {
       // Client didn't send target — compute from project metadata
-      const project = await readProject(req.params.name)
+      const project = readProject(req.params.name)
       if (project?.targets?.length > 1) {
         let offset = 0
         for (const t of project.targets) {
@@ -658,7 +658,7 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
       }
     }
     if (resolvedTarget) {
-      const project = await readProject(req.params.name)
+      const project = readProject(req.params.name)
       let offset = 0
       for (const t of (project?.targets || [])) {
         if (t.texBase === resolvedTarget) break
@@ -676,8 +676,8 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
 
 // Preamble macros (KaTeX-compatible, parsed during build from main tex file).
 // Outputs are now per-target — fetch the primary target's macros.
-router.get('/:name/macros', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/macros', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.json({ macros: {} })
   const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
   const outputPath = join(getOutputDir(req.params.name), `${texBase}-macros.json`)
@@ -697,7 +697,7 @@ router.get('/:name/macros', requireRead, async (req, res) => {
 // GET /:name/outline?startLine&startCol&endLine&endCol[&file=path.tex]
 //   -> { markdown, span, file }
 router.get('/:name/outline', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const startLine = parseInt(req.query.startLine, 10)
   const startCol = parseInt(req.query.startCol, 10)
@@ -756,7 +756,7 @@ router.get('/:name/outline', requireRead, async (req, res) => {
 
 // Source file hashes (for incremental push)
 router.get('/:name/hashes', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   res.json({ hashes: await hashSourceFiles(req.params.name) })
 })
@@ -802,7 +802,7 @@ export async function processProjectPush(name, body, transactionTest = {}) {
     () => processProjectPushSerialized(name, body, transactionTest),
   )
   if (result.ok && (((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
-    result.sourceRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
+    result.sourceRevision = sourceLifecycleStore(name).readAuthority().currentRevision
   }
   emitSourceEditEvent({
     emit: emitGlobalEvent,
@@ -816,7 +816,7 @@ export async function processProjectPush(name, body, transactionTest = {}) {
 
 export async function processProjectPushSerialized(name, body, transactionTest = {}) {
   if (transactionTest.afterLock) await transactionTest.afterLock()
-  let project = await readProject(name)
+  let project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
   const { files, deletedFiles, sourceManifest, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
@@ -826,13 +826,13 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   if (unresolved) {
     return { status: 409, ok: false, recoveryRequired: true, recovery: unresolved }
   }
-  project = await readProject(name)
+  project = readProject(name)
 
   const validation = await validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
   if (!validation.ok) return validation
 
   const sourceMutation = (files?.length || 0) > 0 || (deletedFiles?.length || 0) > 0
-  const lifecycle = await sourceLifecycleStore(name)
+  const lifecycle = sourceLifecycleStore(name)
   const authorityBefore = lifecycle.readAuthority()
   if (sourceMutation && expectedRevision === undefined) {
     return { status: 428, ok: false, error: 'expectedRevision is required for source mutations', authority: authorityBefore }
@@ -878,7 +878,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
   let anyChanged = await sourcePushWouldChange(name, { files, deletedFiles })
   if (members && Array.isArray(members) && project.format === 'book') {
-    await updateProject(name, { members })
+    updateProject(name, { members })
     return { status: 200, ok: true, members }
   }
   const originalLocalHead = await readOverleafLocalHead(name)
@@ -941,7 +941,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         overleafSyncStatus: 'ok', overleafSyncError: null, overleafConflictFiles: [],
       } : {}),
     }
-    await updateProject(name, metadata)
+    updateProject(name, metadata)
     if (nextManifest) await updateClientSourceManifest(name, nextManifest)
     if (lifecycleCandidate) {
       const { observedServerFiles, observedSourceManifest, ...candidate } = lifecycleCandidate
@@ -1044,22 +1044,18 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
   if (decision.eager) {
     // Non-SVG formats: kick off build async, return immediately.
-    dispatchBuild(name).then(async () => {
+    dispatchBuild(name).then(() => {
       if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
-      const updated = await readProject(name)
+      const updated = readProject(name)
       if (updated?.buildStatus === 'success') {
         emitGlobalEvent('doc-arrived', {
           name, title: updated.title || name,
           format: updated.format, pages: updated.pages || 0,
         })
       }
-    }).catch(async e => {
+    }).catch(e => {
       console.error(`[${project.format}] Build failed for ${name}: ${e.message}`)
-      try {
-        await updateProject(name, { buildStatus: 'error' })
-      } catch (updateError) {
-        console.error(`[${project.format}] Failed to record build error for ${name}: ${updateError.message}`)
-      }
+      updateProject(name, { buildStatus: 'error' })
     })
     return withAcceptedChangedFiles(
       { status: 200, ok: true, filesWritten: files?.length || 0, building: true },
@@ -1079,7 +1075,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
 async function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {
   if (!changedPushFiles.length) return []
-  const manifest = await readProjectPartsManifest(name)
+  const manifest = readProjectPartsManifest(name)
   const sourceRoot = project.sourceDir || getSourceDir(name)
   const changedPartFiles = new Set()
 
@@ -1230,7 +1226,7 @@ router.post('/:name/push', requireRw, async (req, res) => {
 
 // Trigger rebuild (no file changes)
 router.post('/:name/build', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const { priorityPages } = req.body || {}
@@ -1278,13 +1274,13 @@ router.post('/:name/build', requireRw, async (req, res) => {
 })
 
 // Build status + log
-router.get('/:name/build/status', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/build/status', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const activeBuild = getBuildStatus(req.params.name)
   const buildLog = readBuildLog(req.params.name)
-  const { errors, warnings } = await extractBuildErrors(req.params.name)
+  const { errors, warnings } = extractBuildErrors(req.params.name)
   const pipelineWarnings = extractPipelineWarnings(req.params.name)
 
   res.json({
@@ -1299,14 +1295,14 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
 })
 
 // LaTeX errors from the build log
-router.get('/:name/build/errors', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/build/errors', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const activeBuild = getBuildStatus(req.params.name)
   const building = activeBuild?.building || false
 
-  const { errors, warnings } = await extractBuildErrors(req.params.name)
+  const { errors, warnings } = extractBuildErrors(req.params.name)
   const pipelineWarnings = extractPipelineWarnings(req.params.name)
 
   res.json({
@@ -1329,7 +1325,7 @@ function syncRoomName(projectName) {
 
 // GET /:name/shapes — list shapes, optionally filter by type
 router.get('/:name/shapes', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const records = await getRoomRecords(syncRoomName(req.params.name), req.query.type || null)
   res.json(records)
@@ -1337,7 +1333,7 @@ router.get('/:name/shapes', requireRead, async (req, res) => {
 
 // GET /:name/shapes/at/:timestamp — reconstruct shapes at a point in time
 router.get('/:name/shapes/at/:timestamp', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const ts = parseInt(req.params.timestamp, 10)
   if (isNaN(ts) || ts <= 0) return res.status(400).json({ error: 'Invalid timestamp (unix ms)' })
@@ -1347,7 +1343,7 @@ router.get('/:name/shapes/at/:timestamp', requireRead, async (req, res) => {
 
 // POST /:name/shapes — create a shape
 router.post('/:name/shapes', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shape = req.body
   if (!shape?.id || !shape?.type) return res.status(400).json({ error: 'Shape must have id and type' })
@@ -1367,7 +1363,7 @@ router.post('/:name/shapes', requireRw, async (req, res) => {
 
 // PUT /:name/shapes/:id — atomic update (send partial props to merge)
 router.put('/:name/shapes/:id', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
   const updates = req.body
@@ -1396,7 +1392,7 @@ router.put('/:name/shapes/:id', requireRw, async (req, res) => {
 
 // DELETE /:name/shapes/:id — delete a shape
 router.delete('/:name/shapes/:id', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
   try {
@@ -1408,8 +1404,8 @@ router.delete('/:name/shapes/:id', requireRw, async (req, res) => {
 })
 
 // POST /:name/snapshot — replace the sync room's snapshot (for publish/deploy)
-router.post('/:name/snapshot', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.post('/:name/snapshot', requireRw, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const snapshot = req.body
   if (!snapshot?.documents) return res.status(400).json({ error: 'Invalid snapshot (missing documents)' })
@@ -1422,8 +1418,8 @@ router.post('/:name/snapshot', requireRw, async (req, res) => {
 })
 
 // POST /:name/sync/clear — delete the sync snapshot so the room resets on next connect
-router.post('/:name/sync/clear', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.post('/:name/sync/clear', requireRw, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   try {
     // Replace with an empty snapshot (no shapes)
@@ -1437,7 +1433,7 @@ router.post('/:name/sync/clear', requireRw, async (req, res) => {
 
 // GET /:name/sync/health — check if a doc's sync room can load without errors
 router.get('/:name/sync/health', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   try {
     const room = await getOrCreateRoom(syncRoomName(req.params.name))
@@ -1464,8 +1460,8 @@ router.post('/:name/signal', requireRw, async (req, res) => {
 })
 
 // GET /:name/signal/stream — SSE stream of signal broadcasts (must be before :key route)
-router.get('/:name/signal/stream', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/signal/stream', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   res.writeHead(200, {
@@ -1486,7 +1482,7 @@ router.get('/:name/signal/stream', requireRead, async (req, res) => {
 })
 
 // GET /:name/signal/:key — read last cached value of a signal
-router.get('/:name/signal/:key', requireRead, async (req, res) => {
+router.get('/:name/signal/:key', requireRead, (req, res) => {
   const signal = getLastSignal(syncRoomName(req.params.name), req.params.key)
   if (!signal) return res.status(404).json({ error: 'No cached signal' })
   res.json(signal)
@@ -1494,7 +1490,7 @@ router.get('/:name/signal/:key', requireRead, async (req, res) => {
 
 // GET /:name/highlight-feedback — structured feedback from highlight shapes
 router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   const records = await getRoomRecords(syncRoomName(req.params.name), 'highlight')
@@ -1508,7 +1504,7 @@ router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
 
 // POST /:name/extract — extract source lines to a markdown scratch note
 router.post('/:name/extract', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   const { startLine, endLine, file, x, y } = req.body
@@ -1577,7 +1573,7 @@ router.post('/:name/extract', requireRw, async (req, res) => {
 
 // POST /:name/inject — convert markdown note content to LaTeX and inject as scratch section
 router.post('/:name/inject', requireRw, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   const { markdown, anchorLine, anchorFile } = req.body
@@ -1607,8 +1603,8 @@ router.post('/:name/inject', requireRw, async (req, res) => {
 })
 
 // GET /:name/shapes/stream — SSE stream of shape changes (must be before :id route)
-router.get('/:name/shapes/stream', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+router.get('/:name/shapes/stream', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   res.writeHead(200, {
@@ -1642,7 +1638,7 @@ router.get('/:name/shapes/stream', requireRead, async (req, res) => {
 
 // GET /:name/shapes/:id — get a single shape
 router.get('/:name/shapes/:id', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
   const shapeId = req.params.id.startsWith('shape:') ? req.params.id : `shape:${req.params.id}`
   const record = await getRecord(syncRoomName(req.params.name), shapeId)
@@ -1755,7 +1751,7 @@ function wordSpanAtColumn(lineText, column) {
 // POST /:name/source-cursor — word-level source cursor location using highlight span resolver
 router.post('/:name/source-cursor', requireRead, async (req, res) => {
   const name = req.params.name
-  const project = await readProject(name)
+  const project = readProject(name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   const file = req.body.file || project.mainFile || project.main
@@ -1798,7 +1794,7 @@ router.post('/:name/source-cursor', requireRead, async (req, res) => {
 // POST /:name/highlight — text-based highlight using synctex data
 router.post('/:name/highlight', requireRead, async (req, res) => {
   const name = req.params.name
-  const project = await readProject(name)
+  const project = readProject(name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   const { text, startLine, color = 'orange', file } = req.body
@@ -1933,7 +1929,7 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
   if (!label) return res.status(400).json({ error: 'label is required' })
   if (!after && !before && !replace) return res.status(400).json({ error: 'one of after, before, or replace is required' })
 
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile (book format not supported)' })
 
@@ -2180,11 +2176,11 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
 
 // POST /:name/inline-scratch — promote a polished scratch section into the document
 // Strips the scratch wrapper and replaces \inputscratch{} with the bare content in main.tex.
-router.post('/:name/inline-scratch', requireRw, async (req, res) => {
+router.post('/:name/inline-scratch', requireRw, (req, res) => {
   const { label } = req.body
   if (!label) return res.status(400).json({ error: 'label is required' })
 
-  const project = await readProject(req.params.name)
+  const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile' })
 

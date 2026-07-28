@@ -43,8 +43,8 @@ async function writeSourceScope(name, srcDir) {
   )
 }
 
-async function regenerateBookTocs(name) {
-  for (const p of await listProjects()) {
+function regenerateBookTocs(name) {
+  for (const p of listProjects()) {
     if (p.format === 'book' && Array.isArray(p.members) && p.members.includes(name)) {
       aggregateBookToc(p.name, p.members)
     }
@@ -53,7 +53,7 @@ async function regenerateBookTocs(name) {
 
 export async function buildMarkdown(name) {
   await buildMarkdownDocument(name, (msg) => console.log(msg))
-  await regenerateBookTocs(name)
+  regenerateBookTocs(name)
 }
 
 export async function buildHtml(name) {
@@ -94,7 +94,7 @@ export async function buildHtml(name) {
   }
 
   await writeSourceScope(name, srcDir)
-  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
+  reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
 }
@@ -118,7 +118,7 @@ export async function buildSlides(name) {
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
   await writeSourceScope(name, srcDir)
-  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
+  reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)
 }

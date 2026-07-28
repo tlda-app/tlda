@@ -203,7 +203,7 @@ async function fetchAndDiff(dir) {
  * after remote success.
  */
 export async function prepareSourcePushToOverleaf(name, { files = [], deletedFiles = [], editedBy } = {}) {
-  const project = await readProject(name)
+  const project = readProject(name)
   if (!project?.overleafRemote || project.autoSync === false) return { skipped: true, reason: 'not-linked' }
 
   const dir = cloneDir(name)
@@ -349,7 +349,7 @@ export async function syncOverleaf(name, options = {}) {
 
 async function syncOverleafSerialized(name, { initial = false, testHooks = null } = {}) {
   if (testHooks?.afterLock) await testHooks.afterLock()
-  const project = await readProject(name)
+  const project = readProject(name)
   if (!project) throw new Error(`Project ${name} not found`)
   const dir = cloneDir(name)
   if (!existsSync(join(dir, '.git'))) {
@@ -371,7 +371,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   } else {
     const diff = await fetchAndDiff(dir)
     if (diff.unchanged) {
-      await updateProject(name, {
+      updateProject(name, {
         overleafLastPullAt: Date.now(),
         overleafSyncStatus: 'ok',
         overleafSyncError: null,
@@ -387,20 +387,20 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const sourceManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
-  const expectedRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
+  const expectedRevision = sourceLifecycleStore(name).readAuthority().currentRevision
   const result = await processPush(name, { expectedRevision, files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
 
   if (!result?.ok) {
     await execAsync(`git reset --hard ${shellQuote(retryHead)}`, { cwd: dir, timeout: 30000 })
     const message = result?.error || `Source transaction failed with status ${result?.status || 'unknown'}`
-    await updateProject(name, {
+    updateProject(name, {
       overleafSyncStatus: 'error',
       overleafSyncError: scrubCreds(message),
     })
     throw new Error(scrubCreds(message))
   }
 
-  await updateProject(name, {
+  updateProject(name, {
     overleafHead: head,
     overleafLastPullAt: Date.now(),
     overleafSyncStatus: 'ok',
@@ -421,7 +421,7 @@ export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollS
   // building the wrong entry point is worse than failing loud.
   if (!mainFile) throw new Error('mainFile is required (the entry .tex inside the repo)')
 
-  let project = await readProject(name)
+  let project = readProject(name)
   if (!project) {
     project = createProject({ name, title: title || name, mainFile, format: 'svg' })
   }
@@ -430,7 +430,7 @@ export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollS
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
   await cloneRemote(name, gitUrl, token)
 
-  await updateProject(name, {
+  updateProject(name, {
     overleafRemote: sanitizeUrl(gitUrl),
     overleafPollSeconds: pollSeconds,
     autoSync: true,
@@ -443,13 +443,13 @@ export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollS
 }
 
 /** Stop polling and remove the clone + metadata (does not delete the project). */
-export async function unlinkOverleaf(name) {
+export function unlinkOverleaf(name) {
   stopPolling(name)
   const dir = cloneDir(name)
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  const project = await readProject(name)
+  const project = readProject(name)
   if (project) {
-    await updateProject(name, {
+    updateProject(name, {
       overleafRemote: null, overleafHead: null, overleafPollSeconds: null,
       overleafLastPullAt: null, autoSync: false,
     })
@@ -490,7 +490,7 @@ export async function resumeOverleafPollers(listProjectsFn, {
   start = startPolling,
 } = {}) {
   let resumed = 0
-  for (const project of await listProjectsFn()) {
+  for (const project of listProjectsFn()) {
     try {
       const recoveries = await recover(project.name)
       for (const recovery of recoveries.filter(item => item.state === 'recovery-required')) {
@@ -504,7 +504,7 @@ export async function resumeOverleafPollers(listProjectsFn, {
       // Startup must isolate this project so one broken recovery cannot prevent
       // every later project's poller from resuming.
       log.warn('poller-resume-failed', { name: project.name, error: scrubCreds(error.message) })
-      await updateProject(project.name, {
+      updateProject(project.name, {
         overleafSyncStatus: 'error',
         overleafSyncError: scrubCreds(error.message),
       })

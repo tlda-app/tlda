@@ -60,31 +60,6 @@ function migrateLegacyClientSourceManifests() {
   }
 }
 
-function readProject(project) {
-  const projectPath = join(projectsDir, project, 'project.json')
-  if (!existsSync(projectPath)) return null
-  try {
-    return JSON.parse(readFileSync(projectPath, 'utf8'))
-  } catch {
-    return null
-  }
-}
-
-function listProjects() {
-  if (!existsSync(projectsDir)) return []
-  return readdirSync(projectsDir)
-    .map(readProject)
-    .filter(Boolean)
-}
-
-function updateProject(projectName, updates) {
-  const project = readProject(projectName)
-  if (!project) throw new Error(`Project "${projectName}" not found`)
-  Object.assign(project, updates)
-  writeFileSync(join(projectsDir, projectName, 'project.json'), JSON.stringify(project, null, 2))
-  return project
-}
-
 migrateLegacyClientSourceManifests()
 parentPort.postMessage({ kind: 'ready' })
 
@@ -95,17 +70,11 @@ parentPort.on('message', (message) => {
     return
   }
   try {
-    const result = message.method === 'list-projects'
-      ? listProjects()
-      : message.method === 'read-project'
-        ? readProject(message.project)
-        : message.method === 'update-project'
-          ? updateProject(message.project, message.updates)
-          : message.method === 'read'
-            ? read.all(message.project).map(row => row.path)
-            : message.method === 'replace'
-              ? (replace(message.project, message.paths), true)
-              : (() => { throw new Error(`unknown project-files method: ${message.method}`) })()
+    const result = message.method === 'read'
+      ? read.all(message.project).map(row => row.path)
+      : message.method === 'replace'
+        ? (replace(message.project, message.paths), true)
+        : (() => { throw new Error(`unknown project-files method: ${message.method}`) })()
     parentPort.postMessage({ id: message.id, result })
   } catch (error) {
     parentPort.postMessage({

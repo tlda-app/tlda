@@ -42,14 +42,22 @@ export async function closeProjectStore() {
   await projectFilesDb.close()
   projectFilesDb = null
 }
-export async function listProjects() {
-  if (!projectFilesDb) throw new Error('project store is not initialized')
-  return projectFilesDb.listProjects()
+export function listProjects() {
+  if (!existsSync(projectsDir)) return []
+  return readdirSync(projectsDir)
+    .filter(name => existsSync(join(projectsDir, name, 'project.json')))
+    .map(name => readProject(name))
+    .filter(Boolean)
 }
 
-export async function readProject(name) {
-  if (!projectFilesDb) throw new Error('project store is not initialized')
-  return projectFilesDb.readProject(name)
+export function readProject(name) {
+  const path = join(projectsDir, name, 'project.json')
+  if (!existsSync(path)) return null
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
 }
 
 // Reject sourceDirs that would cause runaway file watching: the tlda repo
@@ -85,12 +93,19 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
   return project
 }
 
-export async function updateProject(name, updates) {
+export function updateProject(name, updates) {
+  const project = readProject(name)
+  if (!project) throw new Error(`Project "${name}" not found`)
   if (Object.prototype.hasOwnProperty.call(updates, 'clientSourceManifest')) {
     throw new Error('clientSourceManifest is stored in project_files; use updateClientSourceManifest()')
   }
-  if (!projectFilesDb) throw new Error('project store is not initialized')
-  return projectFilesDb.updateProject(name, updates)
+
+  Object.assign(project, updates)
+  writeFileSync(
+    join(projectsDir, name, 'project.json'),
+    JSON.stringify(project, null, 2),
+  )
+  return project
 }
 
 /**
@@ -267,13 +282,13 @@ export function removeProjectSourceRecovery(name, id) {
  * Add a member to a book project, creating the book if it doesn't exist.
  * Deduplicates members. Returns the updated project.
  */
-export async function addBookMember(bookName, memberName) {
-  let book = await readProject(bookName)
+export function addBookMember(bookName, memberName) {
+  let book = readProject(bookName)
   if (!book) {
     book = createProject({ name: bookName, title: bookName, format: 'book', members: [memberName] })
   } else {
     const members = Array.from(new Set([...(book.members || []), memberName]))
-    book = await updateProject(bookName, { members })
+    book = updateProject(bookName, { members })
   }
   aggregateBookToc(bookName, book.members || [memberName])
   return book
@@ -340,11 +355,11 @@ export function outputDir(name) {
 
 // Dormant authority store for the lifecycle rollout. Current ingress paths do
 // not call this until the revision contract is wired atomically in Phase B.
-export async function sourceLifecycleStore(name, options = {}) {
-  if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
+export function sourceLifecycleStore(name, options = {}) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
   return createSourceLifecycleStore({
     root: join(projectDir(name), '.source-lifecycle'),
-    context: sourceManifestContext(await readProject(name)),
+    context: sourceManifestContext(readProject(name)),
     ...options,
   })
 }
@@ -357,25 +372,25 @@ export function projectPartsManifestPath(name) {
   return partsManifestPathForRoot(projectPartsRoot(name))
 }
 
-export async function readProjectPartsManifest(name) {
-  if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
+export function readProjectPartsManifest(name) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
   return readPartsManifestForRoot(projectPartsRoot(name))
 }
 
-export async function writeProjectPartsManifest(name, manifest) {
-  if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
+export function writeProjectPartsManifest(name, manifest) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
   return writePartsManifestForRoot(projectPartsRoot(name), manifest)
 }
 
-export async function recoverProjectPartsManifest(name, options = {}) {
-  if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
+export function recoverProjectPartsManifest(name, options = {}) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
   return recoverPartsManifestForRoot(projectPartsRoot(name), options)
 }
 
 export async function listSourceFiles(name) {
   const dir = sourceDir(name)
   if (!existsSync(dir)) return []
-  const project = await readProject(name)
+  const project = readProject(name)
   const context = sourceManifestContext(project || {})
   const owned = await clientOwnedSourceSet(project)
   return walkDir(dir)
@@ -403,7 +418,7 @@ function walkDir(dir) {
 export async function hashSourceFiles(name) {
   const dir = sourceDir(name)
   if (!existsSync(dir)) return {}
-  const project = await readProject(name)
+  const project = readProject(name)
   const context = sourceManifestContext(project || {})
   const owned = await clientOwnedSourceSet(project)
   const hashes = {}
@@ -429,18 +444,18 @@ function isClientSourcePath(rel, context, owned) {
 }
 
 export async function isClientOwnedSourcePath(name, filePath) {
-  const project = await readProject(name)
+  const project = readProject(name)
   const owned = await clientOwnedSourceSet(project)
   return !!owned && owned.has(filePath)
 }
 
 export async function readClientSourceManifest(name) {
-  if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
   return projectFilesDb.read(name)
 }
 
 export async function updateClientSourceManifest(name, sourceManifest) {
-  const project = await readProject(name)
+  const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
   const context = sourceManifestContext(project)
   await replaceClientSourceManifestRows(name, normalizeSourceManifest(sourceManifest, context))
@@ -543,8 +558,8 @@ export function extractPipelineWarnings(name) {
  * Extract structured errors and warnings from a LaTeX log file.
  * Returns { errors: [{ message, line?, file? }], warnings: string[] }
  */
-export async function extractBuildErrors(name) {
-  const project = await readProject(name)
+export function extractBuildErrors(name) {
+  const project = readProject(name)
   if (!project) return { errors: [], warnings: [] }
 
   // latex.log is preserved by build-runner after latexmk runs

@@ -11,10 +11,7 @@ import {
   createProject,
   deleteProject,
   initProjectStore,
-  listProjects,
-  readProject,
   readClientSourceManifest,
-  updateProject,
   updateClientSourceManifest,
 } from './project-store.mjs'
 
@@ -64,22 +61,6 @@ test('deleteProject clears its manifest through replace(project, [])', async () 
     await deleteProject('paper')
     createProject({ name: 'paper', title: 'Paper' })
     assert.deepEqual(await readClientSourceManifest('paper'), [])
-  } finally {
-    await closeProjectStore()
-    rmSync(tempRoot, { recursive: true, force: true })
-  }
-})
-
-test('project metadata reads and updates run through the project files worker', async () => {
-  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-metadata-worker-'))
-  const root = join(tempRoot, 'projects')
-  try {
-    await initProjectStore(root)
-    createProject({ name: 'paper', title: 'Paper' })
-    assert.equal((await readProject('paper')).title, 'Paper')
-    assert.deepEqual((await listProjects()).map(project => project.name), ['paper'])
-    assert.equal((await updateProject('paper', { title: 'Revised' })).title, 'Revised')
-    assert.equal((await readProject('paper')).title, 'Revised')
   } finally {
     await closeProjectStore()
     rmSync(tempRoot, { recursive: true, force: true })

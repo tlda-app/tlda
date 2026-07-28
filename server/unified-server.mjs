@@ -239,7 +239,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 // Initialize stores
 await initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
-await resetStaleBuildStates()
+resetStaleBuildStates()
 
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
@@ -2752,11 +2752,11 @@ app.use((req, res, next) => {
 })
 
 // Health
-app.get('/health', async (req, res) => {
+app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
 })
 
-app.get('/api/build-info', async (_req, res) => {
+app.get('/api/build-info', (_req, res) => {
   res.set('Cache-Control', 'no-store')
   const result = readBuildInfo(join(__dirname, 'build-info.json'))
   if (!result.ok) {
@@ -3068,7 +3068,7 @@ app.get('/health/services', async (req, res) => {
 app.get('/auth/login', loginRoute)
 
 // Auth level — tells the client what its token allows
-app.get('/api/auth/me', async (req, res) => {
+app.get('/api/auth/me', (req, res) => {
   if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
   const token = extractToken(req)
   const level = validateToken(token)
@@ -3125,7 +3125,7 @@ function appendClientLogEntry(entry) {
   })
 }
 
-app.post('/api/log', async (req, res) => {
+app.post('/api/log', (req, res) => {
   const body = req.body
   const entries = Array.isArray(body) ? body : [body]
   const lines = []
@@ -3166,7 +3166,7 @@ app.get('/api/diagnostics/filter-subscriptions', requireRead, async (req, res) =
   })
 })
 
-app.get('/api/diagnostics/live-perf', requireRead, async (req, res) => {
+app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
   const doc = typeof req.query.doc === 'string' && req.query.doc ? req.query.doc : null
   const limitRaw = Number(req.query.limit || 50)
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
@@ -3205,7 +3205,7 @@ app.get('/api/diagnostics/live-perf', requireRead, async (req, res) => {
   })
 })
 
-app.get('/api/diagnostics/agent-liveness-trace', requireRead, async (req, res) => {
+app.get('/api/diagnostics/agent-liveness-trace', requireRead, (req, res) => {
   const agent = typeof req.query.agent === 'string' && req.query.agent ? req.query.agent : null
   if (!agent) return res.status(400).json({ error: 'agent query parameter is required' })
   const limitRaw = Number(req.query.limit || 200)
@@ -3224,33 +3224,33 @@ function telemetryStatusSnapshotFromLiveBuffers() {
   })
 }
 
-app.get('/api/diagnostics/telemetry-status', requireRead, async (req, res) => {
+app.get('/api/diagnostics/telemetry-status', requireRead, (req, res) => {
   res.json(telemetryStatusSnapshotFromLiveBuffers())
 })
 
-app.get('/api/diagnostics/telemetry-status.md', requireRead, async (req, res) => {
+app.get('/api/diagnostics/telemetry-status.md', requireRead, (req, res) => {
   res.type('text/markdown').send(renderTelemetryStatusMarkdown(telemetryStatusSnapshotFromLiveBuffers()))
 })
 
-app.get('/api/diagnostics/voice-pipeline', requireRead, async (req, res) => {
+app.get('/api/diagnostics/voice-pipeline', requireRead, (req, res) => {
   res.json(buildVoicePipelineSnapshot({ livePerfSamples }))
 })
 
-app.get('/api/diagnostics/control-plane-traces', requireRead, async (req, res) => {
+app.get('/api/diagnostics/control-plane-traces', requireRead, (req, res) => {
   const traceId = typeof req.query.trace_id === 'string' && req.query.trace_id ? req.query.trace_id : null
   const limitRaw = Number(req.query.limit || 50)
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
   res.json(controlPlaneTraces.snapshot({ traceId, limit }))
 })
 
-app.get('/api/diagnostics/control-plane-traces.md', requireRead, async (req, res) => {
+app.get('/api/diagnostics/control-plane-traces.md', requireRead, (req, res) => {
   const traceId = typeof req.query.trace_id === 'string' && req.query.trace_id ? req.query.trace_id : null
   const limitRaw = Number(req.query.limit || 50)
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
   res.type('text/markdown').send(renderControlPlaneTraceMarkdown(controlPlaneTraces.snapshot({ traceId, limit })))
 })
 
-app.post('/api/client-profile', async (req, res) => {
+app.post('/api/client-profile', (req, res) => {
   const body = req.body
   const entries = Array.isArray(body) ? body : [body]
   const lines = []
@@ -3279,11 +3279,11 @@ app.post('/api/client-profile', async (req, res) => {
 
 // --- Reaper API ---
 
-app.get('/api/reaper/status', requireRead, async (req, res) => {
+app.get('/api/reaper/status', requireRead, (req, res) => {
   res.json(_lastReaperStatus || { error: 'no data yet' })
 })
 
-app.get('/api/reaper/report.md', requireRead, async (req, res) => {
+app.get('/api/reaper/report.md', requireRead, (req, res) => {
   const report = _lastReaperStatus?.markdownReport || '## Dev Reaper\n\nNo reaper status is available yet.'
   res.type('text/markdown').send(report)
 })
@@ -3315,7 +3315,7 @@ app.post('/api/reaper/sweep', requireRead, async (req, res) => {
   }
 })
 
-app.get('/api/playback/stream', requireRead, async (req, res) => {
+app.get('/api/playback/stream', requireRead, (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -3348,18 +3348,18 @@ function queryString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-async function resolveSpawnModelContext({ doc, cwd } = {}) {
+function resolveSpawnModelContext({ doc, cwd } = {}) {
   const directCwd = queryString(cwd)
   if (directCwd) return { doc: queryString(doc), cwd: directCwd, error: null }
   const docName = queryString(doc)
   if (!docName) return { doc: null, cwd: null, error: null }
-  const project = await readProject(docName)
+  const project = readProject(docName)
   if (!project) return { doc: docName, cwd: null, error: `no project '${docName}'` }
   return { doc: docName, cwd: project.sourceDir || null, error: null }
 }
 
-app.get('/api/fleet/models', requireRead, async (req, res) => {
-  const context = await resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
+app.get('/api/fleet/models', requireRead, (req, res) => {
+  const context = resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
   if (context.error) {
     res.status(404).json({ error: context.error })
     return
@@ -3369,7 +3369,7 @@ app.get('/api/fleet/models', requireRead, async (req, res) => {
 })
 
 app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
-  const context = await resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
+  const context = resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
   if (context.error) {
     res.status(404).json({ schema: 1, ok: false, error: context.error, aliases: [], defaultAlias: '' })
     return
@@ -3492,7 +3492,7 @@ app.get('/api/education/check/:agentId', async (req, res) => {
 // Manual dismiss — the one deliberate way past a sticky skill block. The agent
 // must give a reason; the dismissal is recorded (so the block lifts) and a card
 // is posted so Skip sees the skip and its justification.
-app.post('/api/education/dismiss/:agentId', async (req, res) => {
+app.post('/api/education/dismiss/:agentId', (req, res) => {
   const agentId = req.params.agentId
   const reason = (req.body?.reason || '').trim()
   if (!reason) return res.status(400).json({ error: 'A reason is required to dismiss a skill.' })
@@ -3697,7 +3697,7 @@ function flattenSuggestions() {
   return out
 }
 
-app.post('/api/suggestions', async (req, res) => {
+app.post('/api/suggestions', (req, res) => {
   const { agentId, suggestions } = req.body || {}
   if (!agentId) return res.status(400).json({ error: 'Missing agentId' })
   if (!Array.isArray(suggestions)) return res.status(400).json({ error: 'Missing suggestions array' })
@@ -3708,16 +3708,16 @@ app.post('/api/suggestions', async (req, res) => {
   res.json({ ok: true })
 })
 
-app.get('/api/suggestions', async (_req, res) => {
+app.get('/api/suggestions', (_req, res) => {
   res.json({ suggestions: flattenSuggestions() })
 })
 
-app.get('/api/items', async (req, res) => {
+app.get('/api/items', (req, res) => {
   const userId = req.query.userId || SERVER_OWNER_ID
   res.json({ userId, items: unexpiredItemsFor(userId) })
 })
 
-app.post('/api/items', async (req, res) => {
+app.post('/api/items', (req, res) => {
   const { userId = SERVER_OWNER_ID, action = 'raise', item, id, ...rest } = req.body || {}
   try {
     if (action === 'dismiss') {
@@ -3735,7 +3735,7 @@ app.post('/api/items', async (req, res) => {
 
 // ---------- Local image serving ----------
 // Serves local filesystem images for math notes (paths starting with / or ~)
-app.get('/api/local-image', requireRead, async (req, res) => {
+app.get('/api/local-image', requireRead, (req, res) => {
   const { path: filePath } = req.query
   if (!filePath || typeof filePath !== 'string') return res.status(400).json({ error: 'Missing path' })
   const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
@@ -3775,10 +3775,10 @@ function projectFromDocName(docName) {
   return roomName.replace(/^doc-/, '')
 }
 
-async function resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill }) {
+function resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill }) {
   const roomName = normalizeDocName(docName)
   const project = projectFromDocName(docName)
-  const p = await readProject(project)
+  const p = readProject(project)
   let name = backingName || null
   let legacyProjectLocalBackfill = false
   if (!name && filePath) {
@@ -3879,7 +3879,7 @@ async function rebuildBackingFileRegistry() {
       const shapes = await getRoomRecords(docName, 'math-note')
       for (const shape of shapes) {
         if (shape.props?.backingName || shape.props?.backingFile) {
-          const record = await resolveBackingRecord({
+          const record = resolveBackingRecord({
             docName,
             backingName: shape.props.backingName,
             filePath: shape.props.backingFile,
@@ -3899,7 +3899,7 @@ async function rebuildBackingFileRegistry() {
 app.post('/api/backing-file-register', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
   if ((!backingName && !filePath) || !docName) return res.status(400).json({ error: 'Missing backingName/filePath or docName' })
-  const record = await resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
+  const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
   if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
   await backingFileRegister(record)
   res.json({ ok: true, status: 'pending', project: record.project, backingName: record.backingName, ownerMachineId: record.ownerMachineId })
@@ -3911,7 +3911,7 @@ app.post('/api/backing-file-unregister', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
   if (!backingName && !filePath) return res.status(400).json({ error: 'Missing backingName/filePath' })
   if (!docName) return res.status(400).json({ error: 'Missing docName' })
-  const record = await resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
+  const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
   if (!record.error) await backingFileUnregister(record)
   res.json({ ok: true })
 })
@@ -3920,7 +3920,7 @@ app.post('/api/backing-file-unregister', requireRead, async (req, res) => {
 app.post('/api/backing-file-write', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill, content, restore } = req.body || {}
   if ((!backingName && !filePath) || !docName) return res.status(400).json({ error: 'Missing backingName/filePath or docName' })
-  const record = await resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
+  const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
   if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
   backingFileRegister(record)
   try {
@@ -4073,7 +4073,7 @@ app.post('/api/prompt-respond', requireRead, async (req, res) => {
 // ---------- Doc asset serving ----------
 // Serves from server/projects/{name}/output/ at /docs/{name}/*
 
-app.get('/docs/manifest.json', requireRead, async (req, res) => {
+app.get('/docs/manifest.json', requireRead, (req, res) => {
   const manifest = generateManifest()
   res.json(manifest)
 })
@@ -4209,7 +4209,7 @@ app.use('/docs', (req, res, next) => {
   if (livePageMatch) {
     const texBase = livePageMatch[1]
     const pageNum = parseInt(livePageMatch[2], 10)
-    const project = await readProject(name)
+    const project = readProject(name)
     const targets = Array.isArray(project?.targets) && project.targets.length > 0
       ? project.targets
       : [{ texBase: basename(project?.mainFile || 'main.tex', '.tex'), pages: project?.pages || 0 }]
@@ -4242,7 +4242,7 @@ app.use('/docs', (req, res, next) => {
 
   if (filePath.endsWith('.html')) {
     try {
-      const project = await readProject(name)
+      const project = readProject(name)
       if (project) {
         const { listDocumentColumns, listProjectPartColumns } = await import('./lib/document-columns.mjs')
         const { renderMarkdownColumnHtml } = await import('./lib/build-markdown.mjs')
@@ -4251,7 +4251,7 @@ app.use('/docs', (req, res, next) => {
         // markdown renderer — the parent project's own format only owns its
         // own main document, not its parts.
         const columns = project.format === 'markdown'
-          ? await listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
+          ? listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
           : listProjectPartColumns(name, { srcDir: join(PROJECTS_DIR, name, 'source') })
         const column = columns.find(c => c.file === filePath)
         if (column) {
@@ -4279,7 +4279,7 @@ app.use('/docs', (req, res, next) => {
 
           const chapterTitle = column.title || memberTitle(name)
           let prev = null, next = null
-          for (const p of await listProjects()) {
+          for (const p of listProjects()) {
             if (p.format !== 'book') continue
             const members = p.members || []
             const idx = members.indexOf(name)
@@ -4335,7 +4335,7 @@ app.use('/docs', (req, res, next) => {
 
             // Find which book contains this member and compute prev/next
             let prev = null, next = null
-            for (const p of await listProjects()) {
+            for (const p of listProjects()) {
               if (p.format !== 'book') continue
               const members = p.members || []
               const idx = members.indexOf(name)
@@ -4438,7 +4438,7 @@ const fleetRouter = createFleetRouter({
 })
 app.use(fleetRouter)
 
-app.post('/api/fleet/reload-client', requireRw, async (req, res) => {
+app.post('/api/fleet/reload-client', requireRw, (req, res) => {
   const humanId = req.body?.humanId
   try {
     const result = reloadHumanFleetClients(fleetWss.clients, humanId, {
@@ -4505,7 +4505,7 @@ if (existsSync(distDir)) {
 }
 
 // SPA catch-all: serve index.html for client-side routing
-app.get('/{*path}', async (req, res) => {
+app.get('/{*path}', (req, res) => {
   // Don't catch API or doc routes
   if (req.path.startsWith('/api/') || req.path.startsWith('/docs/')) {
     return res.status(404).json({ error: 'Not found' })
@@ -7498,19 +7498,24 @@ async function qualLoadReadsFromDb() {
   } catch {}
 }
 
-async function getLatexProjectDirs() {
+let _latexProjectDirs = null
+let _latexProjectDirsAt = 0
+
+function getLatexProjectDirs() {
+  const now = Date.now()
+  if (_latexProjectDirs && now - _latexProjectDirsAt < 30000) return _latexProjectDirs
   try {
-    const projects = await listProjects()
-    return projects
+    const projects = listProjects()
+    _latexProjectDirs = projects
       .filter(p => p.format === 'svg' && p.sourceDir)
       .map(p => p.sourceDir.endsWith('/') ? p.sourceDir : p.sourceDir + '/')
-  } catch {
-    return []
-  }
+    _latexProjectDirsAt = now
+  } catch { _latexProjectDirs = [] }
+  return _latexProjectDirs
 }
 
-async function isInLatexProject(filePath) {
-  const dirs = await getLatexProjectDirs()
+function isInLatexProject(filePath) {
+  const dirs = getLatexProjectDirs()
   return dirs.some(d => filePath.startsWith(d))
 }
 
@@ -7585,7 +7590,7 @@ async function checkQualifications(agentId, tool, arg, input) {
     const fp = input?.file_path || input?.path || arg || ''
     if (!fp) return
     const basename = fp.split('/').pop()
-    const inLatex = await isInLatexProject(fp)
+    const inLatex = isInLatexProject(fp)
     for (const rule of _qualRules) {
       if (rule.type !== 'edit') continue
       if (rule.condition === 'latex-project' && !inLatex) continue
@@ -8249,8 +8254,8 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     if (cached.replay) { ws.send(JSON.stringify(cached.replay)); return }
     if (!project) return
-    if (await readProject(project)) {
-      await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
+    if (readProject(project)) {
+      updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     let replied = false

@@ -815,7 +815,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const outDir = getOutputDir(name)
 
   // Find the main markdown file
-  const project = await readProject(name)
+  const project = readProject(name)
   const mainFile = project.mainFile || 'index.md'
   const srcFile = join(srcDir, mainFile)
 
@@ -826,12 +826,12 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     source = readFileSync(srcFile, 'utf8')
   } catch (e) {
     addLog(`[markdown] Error reading source: ${e.message}`)
-    await reporter.updateProject(name, { buildStatus: 'error' })
+    reporter.updateProject(name, { buildStatus: 'error' })
     return
   }
 
   mkdirSync(outDir, { recursive: true })
-  const columns = await listDocumentColumns(name, { project, srcDir })
+  const columns = listDocumentColumns(name, { project, srcDir })
   const toc = []
   for (let i = 0; i < columns.length; i++) {
     const columnSource = readFileSync(join(srcDir, columns[i].sourceFile), 'utf8')
@@ -912,12 +912,12 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   const buildReadyAt = Date.now()
-  await reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
+  reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
   // The sentinel is written by recordBuildVersion, with the real commit hash.
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
-  for (const proj of await listProjects()) {
+  for (const proj of listProjects()) {
     if (proj.format === 'book' && (proj.members || []).includes(name)) {
       aggregateBookToc(proj.name, proj.members)
     }

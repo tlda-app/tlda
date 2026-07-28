@@ -50,9 +50,6 @@ export class ProjectFilesStoreClient {
   }
 
   ready() { return this._ready }
-  listProjects() { return this._call('list-projects', {}) }
-  readProject(project) { return this._call('read-project', { project }) }
-  updateProject(project, updates) { return this._call('update-project', { project, updates }) }
   read(project) { return this._call('read', { project }) }
   replace(project, paths) { return this._call('replace', { project, paths }) }
 

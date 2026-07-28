@@ -21,8 +21,7 @@ export function markdownColumnFileForSource(path, { defaultColumn = false } = {}
 // is the one place that reads the parts manifest into renderable columns;
 // listMarkdownDocumentColumns (main file + parts) and listProjectPartColumns
 // (parts only, for a non-markdown project's main doc) both build on it.
-export async function listDocumentColumns(name, { project = null, srcDir = getSourceDir(name) } = {}) {
-  project ||= await readProject(name)
+export function listDocumentColumns(name, { project = readProject(name), srcDir = getSourceDir(name) } = {}) {
   if (!project) return []
   if (project.format === 'markdown') return listMarkdownDocumentColumns(name, { project, srcDir })
   return []
