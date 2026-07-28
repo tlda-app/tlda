@@ -8218,17 +8218,6 @@ async function handleDaemonWsMessage(ws, msg) {
     sendWatchBackingFiles()
     void flushServerDaemonOutbox(daemonKey)
 
-    // Check each project's shadow repo for agent commits that haven't been built yet.
-    // This catches the case where an agent committed directly to the shadow repo
-    // (bypassing the push API) and no build was triggered.
-    // Also sync the Yjs sentinel from the shadow repo's latest build — this corrects
-    // stale sentinels left by forced server restarts that didn't flush Yjs to disk.
-    for (const p of listProjects()) {
-      if (p.format === 'svg' && p.sourceDir) {
-        checkShadowAhead(p.name)
-        syncSentinelFromShadow(p.name).catch(e => console.warn(`[sentinel-sync] ${p.name}: ${e.message}`))
-      }
-    }
     return
   }
 
