@@ -1316,7 +1316,7 @@ function connect() {
       })
     },
     onMessage: handleServerMessage,
-    onClose: (reason, attemptId) => {
+    onClose: (reason, attemptId, { established = true } = {}) => {
       const now = Date.now()
       const uptimeMs = daemonWsConnectedAtMs == null ? null : now - daemonWsConnectedAtMs
       daemonWsConnectedAtMs = null
@@ -1332,6 +1332,20 @@ function connect() {
         connection_attempt_id: attemptId ? `${BOOT_ID}:${attemptId}` : null,
         reason,
       })
+      // Teardown belongs to losing an ESTABLISHED connection. A connect attempt
+      // that never reached OPEN holds none of this state, so there is nothing to
+      // tear down and doing it anyway is pure damage.
+      //
+      // Measured in fleet-daemon.testing.log on 2026-07-28: 237
+      // `connection attempt timed out after 5000ms`, against 30 heartbeat
+      // drops -- the 5s connect timeout retrying while Fly cold-starts for
+      // 90-120s, reaching attempt 34 inside a single boot. (The teardown itself
+      // is not logged, so that count is the attempts; the teardown per attempt
+      // follows from onClose having been unconditional.)
+      //
+      // Raising the timeout is not the fix: at any value the teardown-per-attempt
+      // is wrong, a longer timeout only makes it rarer.
+      if (!established) return
       _serverReady = false
       agentLiveness.stop()
       agentLiveness.clearTransientMissingState()

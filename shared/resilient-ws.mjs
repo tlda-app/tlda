@@ -23,11 +23,15 @@ export class ResilientWS {
    *   with the immutable attempt id captured at mint time for THIS socket generation
    * @param {(msg, attemptId: string) => void} options.onMessage — called with parsed JSON
    *   message and the immutable attempt id of the socket generation it arrived on
-   * @param {(reason: string, attemptId: string|null) => void} [options.onClose] — called on
-   *   connection loss (before retry); reason is one of
+   * @param {(reason: string, attemptId: string|null, meta: { established: boolean }) => void} [options.onClose] —
+   *   called on connection loss (before retry); reason is one of
    *   'close' | 'error' | 'heartbeat-timeout' | 'connect-timeout' | 'manual-reconnect'; attemptId is the id minted
    *   for the socket that just ended (null if it ended before any socket was ever created,
-   *   e.g. a URL-resolution failure)
+   *   e.g. a URL-resolution failure).
+   *   `meta.established` is true only if this socket reached OPEN. Anything you
+   *   tear down because a connection was LOST must be gated on it — a failed
+   *   connect attempt holds no connection state. Do not infer this from `reason`:
+   *   'error' and 'close' both fire for a socket that died mid-handshake.
    * @param {(reason: string) => void} [options.onActivity] — called on open/message/ping liveness
    * @param {(s: string) => void} [options.log]  — log function (default: console.log)
    * @param {(attemptId: string|null, delayMs: number) => void} [options.onRetryScheduled] — the
@@ -132,6 +136,12 @@ export class ResilientWS {
 
       ws.on('open', () => {
         this._clearConnectAttemptTimer()
+        // Marks THIS socket as having reached OPEN. Lives on the socket rather
+        // than on `this` so it is inherently per-generation: a late event from a
+        // superseded attempt carries its own answer and cannot report the
+        // current attempt's state. `_cleanup` reads it back to tell consumers
+        // whether a connection was ever established.
+        ws._tldaEstablished = true
         this._log(`[${this._label}] connected (attempt ${attemptId})`)
         this._onAttemptOpen?.(attemptId)
         if (this._stableTimer) clearTimeout(this._stableTimer)
@@ -223,11 +233,18 @@ export class ResilientWS {
    */
   _cleanup(ws = this._ws, reason = null, attemptId = this._lastAttemptId) {
     if (ws && this._ws !== ws) return false
+    // Did this attempt ever reach OPEN? Consumers hold state that belongs to an
+    // established connection (the daemon's _serverReady, agent liveness, source
+    // watchers). An attempt that never opened owns none of it and must not tear
+    // it down. `reason` cannot answer this: 'error' and 'close' both fire for a
+    // socket that died during the handshake -- which is exactly what a booting
+    // server produces -- so only the socket itself knows.
+    const established = !!ws?._tldaEstablished
     this._ws = null
     this._clearConnectAttemptTimer()
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
-    this._onClose?.(reason, attemptId)
+    this._onClose?.(reason, attemptId, { established })
     return true
   }
 
