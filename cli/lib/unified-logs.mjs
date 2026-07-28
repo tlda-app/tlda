@@ -2,7 +2,7 @@
  * tlda logs — unified chronological log across all sources.
  *
  * Sources:
- *   1. Fleet DB events table (primary)
+ *   1. Fleet event API (primary)
  *   2. Daemon log file (daemon-specific: heartbeats, WS, terminal exits)
  *   3. Dead-letter JSONL (events that failed to reach DB)
  *
@@ -18,14 +18,12 @@
  *   tlda logs -f                      # follow (tail -f style)
  */
 
-import { readFileSync, existsSync, createReadStream } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { createInterface } from 'readline'
-import Database from 'better-sqlite3'
-import { CONFIG_DIR } from '../../shared/config.mjs'
+import { CONFIG_DIR, getFleetServerUrl, getReadToken } from '../../shared/config.mjs'
+import { tldaFetch } from '../../shared/http-client.mjs'
 import { formatDisplayTimestamp } from '../../shared/display-time.mjs'
 
-const DB_PATH = join(CONFIG_DIR, 'fleet.db')
 const DAEMON_LOG = join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER = join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 
@@ -76,24 +74,22 @@ function parseSince(val) {
   return d.toISOString()
 }
 
-function resolveAgent(db, query) {
+function fleetApi(path) {
+  return tldaFetch(path, {
+    server: getFleetServerUrl(),
+    token: getReadToken(),
+  })
+}
+
+async function resolveAgent(query) {
   if (!query) return null
-  // Try exact ID match
-  const exact = db.prepare('SELECT id, friendly_name FROM agents WHERE id = ?').get(query)
-  if (exact) return exact
-  // Try fleet:prefix match
-  const prefixed = db.prepare('SELECT id, friendly_name FROM agents WHERE id = ?').get(`fleet:${query}`)
-  if (prefixed) return prefixed
-  // Fuzzy name match
-  const fuzzy = db.prepare('SELECT id, friendly_name FROM agents WHERE friendly_name LIKE ?').all(`%${query}%`)
-  if (fuzzy.length === 1) return fuzzy[0]
-  if (fuzzy.length > 1) {
-    console.error(`Ambiguous agent "${query}". Matches:`)
-    for (const a of fuzzy) console.error(`  ${a.friendly_name} (${a.id})`)
-    process.exit(1)
+  for (const id of [query, `fleet:${query}`]) {
+    const { agents } = await fleetApi(`/api/agents/lookup?ids=${encodeURIComponent(id)}`)
+    if (agents?.length === 1) return agents[0]
   }
-  console.error(`No agent matching "${query}"`)
-  process.exit(1)
+  const { agents } = await fleetApi(`/api/agents/lookup?name=${encodeURIComponent(query)}`)
+  if (agents?.length === 1) return agents[0]
+  throw new Error(`No unique live agent matching "${query}"`)
 }
 
 function formatEvent(ev) {
@@ -127,44 +123,21 @@ function formatDaemonLine(line) {
   return `${COLORS.gray}${formatDisplayTimestamp(ts)}${COLORS.reset} ${c}${'daemon'.padEnd(12)}${COLORS.reset} ${COLORS.dim}${rest}${COLORS.reset}`
 }
 
-function queryDb(db, { since, agentId, types, limit, includeActivity }) {
-  const conditions = []
-  const params = []
-
-  if (since) {
-    conditions.push('e.timestamp >= ?')
-    params.push(since)
-  }
-
-  if (agentId) {
-    conditions.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)')
-    params.push(agentId, agentId, agentId)
-  }
-
-  if (types) {
-    const placeholders = types.map(() => '?').join(',')
-    conditions.push(`e.type IN (${placeholders})`)
-    params.push(...types)
-  } else if (!includeActivity) {
-    conditions.push("e.type NOT IN ('activity', 'client_error')")
-  }
-
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-
-  const sql = `
-    SELECT e.*,
-      fa.friendly_name as from_name,
-      ta.friendly_name as to_name
-    FROM events e
-    LEFT JOIN agents fa ON e.from_id = fa.id
-    LEFT JOIN agents ta ON e.to_id = ta.id
-    ${where}
-    ORDER BY e.timestamp DESC
-    LIMIT ?
-  `
-  params.push(limit)
-
-  return db.prepare(sql).all(...params).reverse()
+async function queryEvents({ since, agentId, types, limit, includeActivity }) {
+  const params = new URLSearchParams({
+    before: String(Number.MAX_SAFE_INTEGER),
+    limit: String(Math.min(5000, Math.max(limit, 50))),
+  })
+  if (since) params.set('since', since)
+  if (agentId) params.set('agent', agentId)
+  const { events = [] } = await fleetApi(`/api/store/events?${params}`)
+  const allowedTypes = types?.length ? new Set(types) : null
+  const sinceMs = since ? Date.parse(since) : null
+  return events.filter(event => {
+    if (Number.isFinite(sinceMs) && Date.parse(event.timestamp) < sinceMs) return false
+    if (allowedTypes) return allowedTypes.has(event.type)
+    return includeActivity || !['activity', 'client_error'].includes(event.type)
+  }).slice(-limit)
 }
 
 function parseDaemonLines(since, agentFilter, limit) {
@@ -210,45 +183,27 @@ function parseDeadLetters(since, agentFilter) {
   return events
 }
 
-async function followLogs(db, { agentId, types, includeActivity }) {
-  let lastTs = new Date().toISOString()
+async function followLogs({ agentId, types, includeActivity }) {
+  let lastId = Number((await fleetApi('/api/store/events?limit=1')).lastId || 0)
 
-  const poll = () => {
-    const conditions = ["e.timestamp > ?"]
-    const params = [lastTs]
-
-    if (agentId) {
-      conditions.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)')
-      params.push(agentId, agentId, agentId)
-    }
-    if (types) {
-      const placeholders = types.map(() => '?').join(',')
-      conditions.push(`e.type IN (${placeholders})`)
-      params.push(...types)
-    } else if (!includeActivity) {
-      conditions.push("e.type NOT IN ('activity', 'client_error')")
-    }
-
-    const sql = `
-      SELECT e.*,
-        fa.friendly_name as from_name,
-        ta.friendly_name as to_name
-      FROM events e
-      LEFT JOIN agents fa ON e.from_id = fa.id
-      LEFT JOIN agents ta ON e.to_id = ta.id
-      WHERE ${conditions.join(' AND ')}
-      ORDER BY e.timestamp ASC
-    `
-    const rows = db.prepare(sql).all(...params)
+  const poll = async () => {
+    const params = new URLSearchParams({ after: String(lastId), limit: '5000' })
+    if (agentId) params.set('agent', agentId)
+    const page = await fleetApi(`/api/store/events?${params}`)
+    const allowedTypes = types?.length ? new Set(types) : null
+    const rows = (page.events || []).filter(event => {
+      if (allowedTypes) return allowedTypes.has(event.type)
+      return includeActivity || !['activity', 'client_error'].includes(event.type)
+    })
     for (const row of rows) {
       console.log(formatEvent(row))
-      lastTs = row.timestamp
     }
+    lastId = Number(page.lastId || lastId)
   }
 
   console.log(`${COLORS.dim}Following logs... (Ctrl+C to stop)${COLORS.reset}`)
-  poll()
-  setInterval(poll, 1000)
+  await poll()
+  setInterval(() => void poll(), 1000)
 }
 
 export async function cmdLogs(args) {
@@ -287,13 +242,7 @@ export async function cmdLogs(args) {
     break
   }
 
-  if (!existsSync(DB_PATH)) {
-    console.error('Fleet DB not found at', DB_PATH)
-    process.exit(1)
-  }
-
-  const db = new Database(DB_PATH, { readonly: true })
-  const agent = agentQuery ? resolveAgent(db, agentQuery) : null
+  const agent = agentQuery ? await resolveAgent(agentQuery) : null
   const agentId = agent?.id
 
   if (agent) {
@@ -301,12 +250,12 @@ export async function cmdLogs(args) {
   }
 
   if (follow) {
-    await followLogs(db, { agentId, types, includeActivity })
+    await followLogs({ agentId, types, includeActivity })
     return
   }
 
   // Merge sources
-  const dbEvents = queryDb(db, { since, agentId, types, limit, includeActivity })
+  const dbEvents = await queryEvents({ since, agentId, types, limit, includeActivity })
   const deadLetters = parseDeadLetters(since, agentId)
 
   let merged = [...dbEvents, ...deadLetters]
@@ -343,5 +292,4 @@ export async function cmdLogs(args) {
     console.log(`${COLORS.dim}--- ${merged.length} events ---${COLORS.reset}`)
   }
 
-  db.close()
 }
