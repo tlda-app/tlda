@@ -69,7 +69,6 @@ import {
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
-import { bindAgentRoute } from '../agent-launch/route-binding.mjs'
 import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
@@ -2792,7 +2791,7 @@ function cmdCompletions() {
   const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const agentSubs = [
     'list', 'mint', 'wake', 'reanimate', 'move', 'set-mint-machine',
-    'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions', 'models',
+    'attach', 'hibernate', 'dismiss', 'permission', 'permissions', 'models',
   ].map(s => `'${s}'`).join(' ')
   const configSubs = ['init', 'apply', 'set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
 
@@ -3544,8 +3543,6 @@ export async function runFleetSpawn(spawnArgs, {
         ledger,
         cwd,
         name,
-        api: apiImpl,
-        requireReadback: false,
       } })
     } catch (e) {
       throw e
@@ -3642,17 +3639,14 @@ export function permissionTransparencyLine(grant = {}) {
 }
 
 export async function bindLifecycleCodexResumeIdentity(result, {
-  ledger,
   cwd,
   name,
-  api = null,
   resolveIdentity = null,
-  requireReadback = false,
   timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
   intervalMs = 250,
 } = {}) {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
-    return await postLifecycleSeatBinding(result, { api, ledger, cwd, name, sessionId: result.resumeId, existing: true, requireReadback })
+    return { bound: true, existing: true }
   }
   if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
     return { bound: false, skipped: true }
@@ -3671,20 +3665,8 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   if (!identity?.sessionId || !identity?.model) {
     return { bound: false, pending: true, reason: 'exact-identity-pending', identity, diagnostics: resolution?.diagnostics || null }
   }
-  const binding = await postLifecycleSeatBinding(result, {
-    api,
-    ledger,
-    cwd,
-    name,
-    sessionId: identity.sessionId,
-    sessionPath: identity.jsonlPath,
-    model: identity.model,
-    kind: result.harness,
-    requireReadback,
-  })
-  if (!binding.bound) return { ...binding, identity }
   result.resumeId = identity.sessionId
-  return { ...binding, identity }
+  return { bound: true, identity }
 }
 
 export async function pollLifecycleResumeIdentity(result, {
@@ -3719,33 +3701,6 @@ export async function pollLifecycleResumeIdentity(result, {
       ? null
       : { failureStage: identity?.failureStage || (!identity?.sessionId ? 'session-id' : 'model') },
   }
-}
-
-async function postLifecycleSeatBinding(result, {
-  api = null,
-  ledger = null,
-  cwd,
-  name,
-  sessionId,
-  sessionPath = null,
-  model = result?.model,
-  kind = result?.harness,
-  machineId = localMachineId(),
-  envName = getActiveEnvName(),
-  daemonKey = `${machineId}:${envName}`,
-  existing = false,
-  requireReadback = false,
-  transitionReason = 'agent-lifecycle-cli',
-} = {}) {
-  if (!api) return { bound: false, pending: true }
-  const agentId = result?.fleetId || result?.agent_id || result?.agentId
-  const tmuxSession = result?.tmuxSession || result?.tmux_session
-  const binding = await bindAgentRoute({
-    agentId,
-    daemonKey,
-    submit: payload => api('POST', '/api/agent-route', payload),
-  })
-  return { ...binding, existing }
 }
 
 export async function cleanupFailedFreshBinding(result, {
@@ -4089,29 +4044,9 @@ export async function dismissAgent(name, {
     log.log(`${label} is already dismissed.`)
     return { ok: true, already: true, agent }
   }
-  let route = null
-  try {
-    const data = await apiImpl('GET', `/api/agent-route?agent=${encodeURIComponent(agent.id)}`)
-    route = data?.route || null
-  } catch (e) {
-    if (e?.status && e.status !== 404) {
-      log.error(`Failed to inspect daemon route for ${label}; not marking it dismissed: ${e?.message || e}`)
-      exitImpl(1)
-      return { ok: false, error: 'route-check-failed' }
-    }
-  }
-  if (route?.daemon_key) {
-    try {
-      await apiImpl('POST', '/api/kill-session', { agent: agent.id })
-    } catch (e) {
-      log.error(`Failed to hibernate ${label}; not marking it dismissed: ${e?.message || e}`)
-      exitImpl(1)
-      return { ok: false, error: 'kill-failed' }
-    }
-  }
   await apiImpl('POST', `/api/agents/${encodeURIComponent(agent.id)}/mark-dead`)
   log.log(`Dismissed ${label} (${agent.id}) — marked dead and removed from the live roster.`)
-  return { ok: true, agent, route, killed: !!route?.daemon_key }
+  return { ok: true, agent }
 }
 
 // The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it
@@ -4162,7 +4097,6 @@ Usage:
   tlda agent reanimate <agent>
   tlda agent move <agent> [name@][box:]env
   tlda agent set-mint-machine <agent-or-user> <machine>
-  tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
   tlda agent dismiss <agent>
@@ -4179,7 +4113,6 @@ Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time emergency over
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-mint-machine stores the caller's default mint machine in fleet prefs.
 The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
-check-ready verifies registry + local tmux/runtime + recent login/inbox evidence.
 list reads the local daemon ledger and tmux panes, with awake agents first.`)
 }
 
@@ -4212,131 +4145,6 @@ function localDaemonEnvName() {
   }
 }
 
-function processTreeHasRuntime(spawnSync, panePids, expectedKind = null) {
-  const ps = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8' })
-  if (ps.status !== 0) return { ok: false, kind: null, pid: null }
-  const children = new Map()
-  const argsByPid = new Map()
-  for (const line of ps.stdout.split('\n')) {
-    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
-    if (!m) continue
-    const [, pid, ppid, procArgs] = m
-    argsByPid.set(pid, procArgs)
-    if (!children.has(ppid)) children.set(ppid, [])
-    children.get(ppid).push(pid)
-  }
-  const runtimeRes = [
-    ['codex', /(?:^|\s|\/)codex(?:\s|$)/],
-    ['goose', /(?:^|\s|\/)goose(?:\s|$).*?\brun\b|\bgoose run\b/],
-    ['claude', /(?:^|\s|\/)claude(?:\s|$)/],
-  ]
-  const ordered = expectedKind
-    ? [...runtimeRes.filter(([k]) => k === expectedKind), ...runtimeRes.filter(([k]) => k !== expectedKind)]
-    : runtimeRes
-  const stack = [...panePids]
-  const seen = new Set()
-  while (stack.length) {
-    const pid = stack.pop()
-    if (seen.has(pid)) continue
-    seen.add(pid)
-    const procArgs = argsByPid.get(pid) || ''
-    for (const [kind, re] of ordered) {
-      if (re.test(procArgs)) return { ok: true, kind, pid }
-    }
-    for (const child of children.get(pid) || []) stack.push(child)
-  }
-  return { ok: false, kind: null, pid: null }
-}
-
-async function cmdAgentCheckReady() {
-  const query = getPositional(1)
-  if (!query) {
-    console.error('Usage: tlda agent check-ready <agent> [--timeout seconds]')
-    process.exit(1)
-  }
-  const { spawnSync } = await import('child_process')
-  const timeoutSec = Math.max(0, Number(getFlag('timeout', '0') || 0))
-  const deadline = Date.now() + timeoutSec * 1000
-  let final = null
-  do {
-    final = await collectAgentReadiness(query, spawnSync)
-    if (final.ok) break
-    if (Date.now() >= deadline) break
-    await new Promise(resolve => setTimeout(resolve, 2000))
-  } while (true)
-
-  printAgentReadiness(final)
-  process.exit(final.ok ? 0 : 1)
-}
-
-export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
-  const state = await apiGet('GET', '/api/state')
-  const agents = Array.isArray(state?.agents) ? state.agents : []
-  let agent = null
-  try {
-    agent = resolveAgentQuery(agents, query)
-  } catch (e) {
-    return { ok: false, query, error: e.message }
-  }
-  if (!agent) return { ok: false, query, error: 'agent not found' }
-  const meta = normalizeAgentMetadata(agent.metadata)
-  const expectedKind = meta.kind || null
-  let route = null
-  try {
-    const data = await apiGet('GET', `/api/agent-route?agent=${encodeURIComponent(agent.id)}`)
-    route = data?.route || null
-  } catch (e) {
-    return { ok: false, query, agent, error: `daemon route missing: ${e.message}` }
-  }
-  if (!route?.daemon_key) return { ok: false, query, agent, route, error: 'agent has no daemon route' }
-  if (route.agent_id && route.agent_id !== agent.id) return { ok: false, query, agent, route, error: `daemon route owner mismatch: ${route.agent_id} != ${agent.id}` }
-  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
-  let localRoute = null
-  try {
-    localRoute = ledger.get(agent.id)
-  } finally {
-    await ledger.close()
-  }
-  const localDaemonKey = `${localMachineId()}:${getActiveEnvName()}`
-  if (route.daemon_key !== localDaemonKey) {
-    return { ok: false, query, agent, route, error: `daemon route belongs to ${route.daemon_key}, not local ${localDaemonKey}` }
-  }
-  if (!localRoute?.tmuxSession) {
-    return { ok: false, query, agent, route, error: 'daemon has no matching local terminal process' }
-  }
-  const sess = localRoute.tmuxSession
-  const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', exactTmuxTarget(sess)], { stdio: 'ignore' }).status === 0
-  let panes = []
-  if (hasSession) {
-    const r = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-t', exactTmuxWindowTarget(sess), '-F', '#{pane_pid}'], { encoding: 'utf8' })
-    if (r.status === 0) panes = r.stdout.trim().split(/\s+/).filter(Boolean)
-  }
-  const runtime = hasSession ? processTreeHasRuntime(spawnSync, panes, expectedKind) : { ok: false, kind: null, pid: null }
-  const table = await apiGet('GET', `/api/fleet-table?filter=${encodeURIComponent(agent.id)}&limit=5`)
-  const row = (table.agents || []).find(a => a.id === agent.id) || null
-  const ok = !agent.dead && hasSession && runtime.ok
-  return {
-    ok, query, agent, route, tableRow: row, session: sess, hasSession, panes, runtime,
-  }
-}
-
-function printAgentReadiness(r) {
-  if (r.error) {
-    console.error(`spawn readiness: FAIL — ${r.error}`)
-    return
-  }
-  const agent = r.agent
-  const row = r.tableRow
-  console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
-  if (r.warning) console.log(`  warning: ${r.warning}`)
-  console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || runtimeStatusName(agent) || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
-  console.log(`  daemon route: ${r.route?.daemon_key || 'missing'}`)
-  console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
-  console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
-  console.log(`  result: ${r.ok ? 'READY' : 'NOT READY'}`)
-}
-
 async function findAgentForPermission(agentQuery) {
   const state = await api('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
@@ -4347,104 +4155,11 @@ async function findAgentForPermission(agentQuery) {
   if (runtimeStatusName(agent) === 'dead') {
     throw new Error(`Agent ${agent.id} is marked dead; refusing to create an impostor identity.`)
   }
-  const localMachine = getMachineId()
-  if (agent.machine_id && localMachine && agent.machine_id !== localMachine) {
-    throw new Error(`Agent ${agent.id} belongs to machine ${agent.machine_id}; run this command on that machine.`)
-  }
   return agent
 }
 
 function spawnNameForAgent(agent, fallback) {
   return agent.friendly_name || agent.id || fallback
-}
-
-function hibernateNameForAgent(agent, fallback) {
-  return agent.tmux_session ? agent.tmux_session.replace(/^fleet-/, '') : spawnNameForAgent(agent, fallback)
-}
-
-function walkFiles(dir, predicate, out = []) {
-  let entries
-  try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return out }
-  for (const entry of entries) {
-    const p = join(dir, entry.name)
-    if (entry.isDirectory()) walkFiles(p, predicate, out)
-    else if (predicate(p)) out.push(p)
-  }
-  return out
-}
-
-function relToHome(absPath) {
-  const home = homedir()
-  if (!absPath.startsWith(`${home}/`)) {
-    throw new Error(`move artifact is outside home and cannot be imported by relative path: ${absPath}`)
-  }
-  return absPath.slice(home.length + 1)
-}
-
-function findClaudeSessionFiles(agent) {
-  const ids = [agent.session_id, ...((agent.session_ids || []).slice().reverse())].filter(Boolean)
-  const uniqueIds = [...new Set(ids)]
-  const root = join(homedir(), '.claude', 'projects')
-  const found = []
-  for (const sid of uniqueIds) {
-    for (const file of walkFiles(root, p => p.endsWith(`/${sid}.jsonl`))) {
-      if (!found.includes(file)) found.push(file)
-    }
-  }
-  return found
-}
-
-function findCodexRolloutFiles(agent) {
-  const ids = [agent.session_id, ...((agent.session_ids || []).slice().reverse())].filter(Boolean)
-  const uniqueIds = [...new Set(ids)]
-  const root = join(homedir(), '.codex', 'sessions')
-  const found = []
-  for (const sid of uniqueIds) {
-    for (const file of walkFiles(root, p => basename(p).startsWith('rollout-') && p.endsWith(`-${sid}.jsonl`))) {
-      if (!found.includes(file)) found.push(file)
-    }
-  }
-  if (found.length) return found
-  const needle = `Registered ${agent.id}`
-  for (const file of walkFiles(root, p => basename(p).startsWith('rollout-') && p.endsWith('.jsonl'))) {
-    try {
-      const text = readFileSync(file, 'utf8')
-      if (text.includes(needle)) found.push(file)
-    } catch (e) {
-      if (!['ENOENT', 'EACCES', 'EPERM'].includes(e?.code)) throw e
-    }
-  }
-  return found
-}
-
-function moveArtifactsForAgent(agent) {
-  const meta = normalizeAgentMetadata(agent.metadata)
-  const kind = meta.kind
-  if (!kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer move artifacts`)
-  if (kind === 'goose') {
-    throw new Error('goose agent move is not implemented yet; goose session state is SQLite/data-dir based and needs a harness-specific exporter')
-  }
-  const files = kind === 'codex' ? findCodexRolloutFiles(agent) : findClaudeSessionFiles(agent)
-  if (!files.length) {
-    throw new Error(`no ${kind} wake artifact found for ${agent.friendly_name || agent.id}`)
-  }
-  return files.map(path => ({ path, rel: relToHome(path) }))
-}
-
-async function copyMoveArtifacts(targetMachine, artifacts) {
-  const { spawnSync } = await import('child_process')
-  for (const artifact of artifacts) {
-    const remoteDir = `~/${artifact.rel.split('/').slice(0, -1).join('/')}`
-    const mkdir = spawnSync('ssh', [targetMachine, 'mkdir', '-p', remoteDir], { stdio: 'inherit' })
-    if (mkdir.status !== 0) {
-      throw new Error(`failed to create destination directory on ${targetMachine}: ${remoteDir}`)
-    }
-    const source = `${homedir()}/./${artifact.rel}`
-    const rsync = spawnSync('rsync', ['-a', '--relative', source, `${targetMachine}:~/`], { stdio: 'inherit' })
-    if (rsync.status !== 0) {
-      throw new Error(`failed to copy ${artifact.rel} to ${targetMachine}`)
-    }
-  }
 }
 
 async function findSingleAgent(agentQuery, { apiImpl = api } = {}) {
@@ -4463,28 +4178,6 @@ async function resolveFleetPrefUserId(query) {
   if (agent) return agent.id
   if (query.startsWith('fleet:')) return query
   throw new Error(`No agent/user matched "${query}". Use an existing name or an explicit fleet:<id>.`)
-}
-
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-
-async function waitForAgentRoute(agentId, { machineId, envName, apiImpl = api, timeoutMs = 120000 } = {}) {
-  const deadline = Date.now() + timeoutMs
-  let lastRoute = null
-  let lastError = null
-  const daemonKey = `${machineId}:${envName}`
-  do {
-    try {
-      const data = await apiImpl('GET', `/api/agent-route?agent=${encodeURIComponent(agentId)}`)
-      const route = data?.route || null
-      lastRoute = route
-      if (route?.daemon_key === daemonKey) return route
-    } catch (e) {
-      lastError = e
-    }
-    await sleep(1000)
-  } while (Date.now() < deadline)
-  const observed = lastRoute?.daemon_key || lastError?.message || 'no readable route'
-  throw new Error(`agent ${agentId} did not land on ${describeAgentAddress(machineId, envName)}; observed ${observed}`)
 }
 
 async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', configDir = CONFIG_DIR } = {}) {
@@ -4510,12 +4203,12 @@ async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', config
   }
 }
 
-async function clearAgentRouteBinding(agentId, { configDir = CONFIG_DIR } = {}) {
+async function clearLocalSessionBinding(agentId, { configDir = CONFIG_DIR } = {}) {
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
   const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
   try {
     if (!ledger.get(agentId)) {
-      throw new Error(`Agent ${agentId} has no daemon permission ledger entry; refusing to clear route binding`)
+      throw new Error(`Agent ${agentId} has no daemon permission ledger entry; refusing to clear its local session binding`)
     }
     ledger.clearSessionSync(agentId)
   } finally {
@@ -4561,7 +4254,6 @@ async function moveAgentToEnvironment({
   sourceEnv = null,
   dryRun = hasFlag('dry-run'),
   allowAlready = true,
-  apiImpl = null,
   log = console,
   logPrefix = '',
 } = {}) {
@@ -4604,14 +4296,9 @@ async function moveAgentToEnvironment({
 
   const meta = normalizeAgentMetadata(agent.metadata)
   if (!meta.kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer a wake command`)
-  const hibernateName = hibernateNameForAgent(agent, agentQuery || name)
+  const hibernateName = agentQuery || name
   const targetSocket = fleetDaemonSocketForConfig(targetEnv)
-  // Everything the move writes or reads after this point belongs to the TARGET
-  // environment's server. The default `api` resolves through the active config,
-  // which is the source — polling it for the target seat never terminates.
   const targetServer = getFleetServerUrl(targetEnv)
-  const targetApi = apiImpl || ((method, path, body = null, opts = {}) =>
-    apiAt(targetServer, method, path, body, { token: getToken(), ...opts }))
   if (dryRun) {
     log.log(`${logPrefix}[dry-run] would move ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
     log.log(`${logPrefix}  mode: same-box durable wake`)
@@ -4624,7 +4311,7 @@ async function moveAgentToEnvironment({
   log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
   const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
   if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
-  await clearAgentRouteBinding(agent.id)
+  await clearLocalSessionBinding(agent.id)
   // Environments are sealed databases: the agent's identity row lives on the
   // SOURCE server and does not exist on the target. Without a shell there,
   // login() is rejected ("No live shell for agent …") and the agent comes up
@@ -4642,43 +4329,8 @@ async function moveAgentToEnvironment({
   const wakeGrant = await ensureAgentWakeGrant(agent, meta)
   const wake = await callLocalDaemonLifecycle('wake', { fleet_id: agent.id, ...wakeGrant }, { socketPath: targetSocket, timeoutMs: 120000 })
   if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
-  await clearAgentRouteBinding(agent.id)
-  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR)), CONFIG_DIR))
-  try {
-    const sessionId = wake.resumeId || wake.resume_id || wake.sessionId || wake.session_id || meta.sessionId
-    const tmuxSession = wake.tmuxSession || wake.tmux_session
-    if (!sessionId || !tmuxSession) {
-      throw new Error(`wake for ${agent.id} did not return session and tmux identity; cannot bind moved seat`)
-    }
-    await postLifecycleSeatBinding({
-      ...wake,
-      fleetId: agent.id,
-      agent_id: agent.id,
-      tmuxSession,
-      tmux_session: tmuxSession,
-      model: wake.model || meta.model,
-      harness: wake.harness || meta.kind,
-    }, {
-      api: targetApi,
-      ledger,
-      cwd: wake.cwd || meta.cwd || agent.cwd || process.cwd(),
-      name,
-      sessionId,
-      sessionPath: wake.sessionPath || wake.session_path || meta.sessionPath || null,
-      model: wake.model || meta.model,
-      kind: wake.harness || meta.kind,
-      machineId: targetMachine,
-      envName: targetEnv,
-      daemonKey: `${targetMachine}:${targetEnv}`,
-      requireReadback: true,
-      transitionReason: 'agent-move',
-    })
-  } finally {
-    await ledger.close()
-  }
-  const route = await waitForAgentRoute(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl: targetApi })
   log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(targetMachine, targetEnv)}.`)
-  return { ok: true, agent, name, route, wake }
+  return { ok: true, agent, name, wake }
 }
 
 async function cmdAgentSetSpawnMachine() {
@@ -4832,14 +4484,13 @@ async function cmdAgent() {
     case 'reanimate': await reanimateAgentCommand(getPositional(1)); break
     case 'move':      await cmdAgentMove(); break
     case 'set-mint-machine': await cmdAgentSetSpawnMachine(); break
-    case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'dismiss':   await dismissAgent(getPositional(1)); break
     case 'permissions': await cmdAgentPermissions(); break
     case 'models': await cmdAgentModels(); break
     default:
-      console.error('Usage: tlda agent <list|mint|enlist|wake|reanimate|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions|models> [name]')
+      console.error('Usage: tlda agent <list|mint|enlist|wake|reanimate|move|set-mint-machine|attach|hibernate|dismiss|permissions|models> [name]')
       process.exit(1)
   }
 }
