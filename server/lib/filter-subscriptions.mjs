@@ -152,8 +152,9 @@ export function createFilterSubscriptions({ getAgents } = {}) {
    * Exposed so the live and history paths can be asserted to agree on real
    * traffic rather than merely being capable of agreeing.
    */
-  async function verdict(filter, event, { humanId = null, humanName = null } = {}) {
-    return matchesFleetFilter(filter, event, evalContext(await getAgents() || [], humanId, humanName))
+  async function verdict(filter, event, { humanId = null, humanName = null } = {}, agents = null) {
+    const roster = agents || await getAgents() || []
+    return matchesFleetFilter(filter, event, evalContext(roster, humanId, humanName))
   }
 
   /**
@@ -166,8 +167,10 @@ export function createFilterSubscriptions({ getAgents } = {}) {
   async function match(event) {
     const out = []
     let evaluations = 0
+    let agents = null
     for (const entry of byFilter.values()) {
       if (entry.subs.size === 0) continue
+      if (agents === null) agents = await getAgents() || []
       evaluations++
       // Identity scopes `dm:`, and both halves matter: humanId for the id path
       // and humanName for the name path. Key on the pair.
@@ -175,7 +178,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
       for (const sub of entry.subs.values()) humanKeys.add(humanKeyOf(sub))
       if (humanKeys.size === 1) {
         const first = entry.subs.values().next().value
-        if (await verdict(entry.filter, event, first)) {
+        if (await verdict(entry.filter, event, first, agents)) {
           entry.deliveries += entry.subs.size
           entry.lastDeliveryAt = new Date().toISOString()
           for (const sub of entry.subs.values()) out.push({ conn: sub.conn, subId: sub.subId })
@@ -187,7 +190,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
         const hk = humanKeyOf(sub)
         if (!verdicts.has(hk)) {
           if (verdicts.size > 0) evaluations++
-          verdicts.set(hk, await verdict(entry.filter, event, sub))
+          verdicts.set(hk, await verdict(entry.filter, event, sub, agents))
         }
         if (verdicts.get(hk)) {
           entry.deliveries += 1
@@ -238,7 +241,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
       if (rows.length < want) exhausted = true
       for (const row of rows) {
         cursor = row.timestamp ?? cursor
-        if (await verdict(filter, row, { humanId, humanName })) kept.push(row)
+        if (await verdict(filter, row, { humanId, humanName }, agents)) kept.push(row)
         if (kept.length >= limit) break
       }
     }
