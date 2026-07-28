@@ -8589,6 +8589,23 @@ async function handleDaemonWsMessage(ws, msg) {
       ws_session_id: ws._wsSessionId,
       readback_ok: daemonConnections.get(daemonKey) === ws,
     })
+    // Complete the transport handshake before any roster-wide bookkeeping.
+    // Worker-backed fleet queries can take seconds under load and none of them
+    // is authority for whether this daemon connection is usable.
+    try {
+      ws.send(JSON.stringify({
+        type: 'daemon-welcome',
+        server_boot_id: SERVER_BOOT_ID,
+        projects: await projectsForDaemon(),
+        connection_attempt_id: ws._connectionAttemptId || null,
+        server_ws_session_id: ws._wsSessionId || null,
+      }))
+      traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: true })
+    } catch (e) {
+      console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
+      traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: false, error: e.message })
+      return
+    }
     await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
@@ -8642,21 +8659,6 @@ async function handleDaemonWsMessage(ws, msg) {
       }
     }
 
-    // Establish the daemon transport and send only machine work. Agent lists
-    // belong to paginated server queries, never to this connection message.
-    try {
-      ws.send(JSON.stringify({
-        type: 'daemon-welcome',
-        server_boot_id: SERVER_BOOT_ID,
-        projects: await projectsForDaemon(),
-        connection_attempt_id: ws._connectionAttemptId || null,
-        server_ws_session_id: ws._wsSessionId || null,
-      }))
-      traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: true })
-    } catch (e) {
-      console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
-      traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: false, error: e.message })
-    }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
     for (const obligation of await fleetStore.listAgentSeatBindingObligationsForDaemon(daemonKey)) {
