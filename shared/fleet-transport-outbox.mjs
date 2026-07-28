@@ -29,9 +29,32 @@ function parseRow(row) {
   }
 }
 
+// Retry unless the SERVER rejected the request.
+//
+// This matched error text against a regex, which was wrong in both directions
+// and cost 123 of 192 permanently-failed operations on one machine.
+// `deadline exceeded` matched and retried -- even though the server may already
+// have executed it -- while `was not accepted before deadline` did not match, so
+// a request that never reached the wire was discarded forever. The regex and the
+// string it fails to match were added in the same commit (fb65f8e70) and never
+// checked against each other. Matching prose is how that happens: a thrown
+// string is not a contract, and every future error would have to remember to
+// contain one of these words.
+//
+// The real distinction is one the code already knows. A rejection carried in a
+// server response (`msg.error`) is a verdict on the request -- "no active task",
+// "not authorized". The server understood it and refused, so re-sending changes
+// nothing. Everything else -- socket closed, never connected, send returned
+// false, our own SQLite busy -- never got a verdict, and is what retry is for.
+//
+// Re-sending is safe even when the request DID arrive: every durable operation
+// carries an `operation_id` the server dedupes on (getReportCloseOperationResult,
+// getDelegateOperationResult, getTransportOperationResult), replaying the first
+// result instead of acting twice. So ambiguity resolves toward retry.
+//
+// Runaway retries stay bounded by maxAttempts/backoff below -- no new mechanism.
 export function isRetryableTransportError(error) {
-  const msg = String(error?.message || error || '')
-  return /WS connection closed|idle timeout|deadline exceeded|request timeout|timed out|not connected|ECONNRESET|ECONNREFUSED|EPIPE/i.test(msg)
+  return !error?.serverRejected
 }
 
 export class FleetTransportOutbox {

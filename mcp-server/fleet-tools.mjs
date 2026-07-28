@@ -507,6 +507,9 @@ function sendOneShotWS(envName, type, params = {}, opts = {}) {
         const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
         const err = new Error(detail.message || String(msg.error));
         Object.assign(err, detail);
+        // Server verdict, same as the channel path above -- see fleet-tools
+        // onMessage and isRetryableTransportError.
+        err.serverRejected = true;
         finish(reject, err);
       } else {
         rememberOriginatedEvents(msg.result);
@@ -4931,6 +4934,10 @@ function startChannelWS({ bootstrap = false } = {}) {
           const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
           const err = new Error(detail.message || String(msg.error));
           Object.assign(err, detail);
+          // The server saw this request and refused it. Set after the assign so a
+          // server-supplied field can't clear it. This is the only signal that
+          // makes an operation terminal (isRetryableTransportError).
+          err.serverRejected = true;
           reject(err);
         }
         else {
