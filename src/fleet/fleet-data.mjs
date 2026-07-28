@@ -30,7 +30,6 @@ import {
   upsertFleetEventsForBuffer,
   upsertLocalEventIntoBuffer,
   applyFilterEvents,
-  inLiveDelivery,
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
@@ -41,7 +40,6 @@ import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureA
 import { resetWsRequestIdleTimers, startWsRequest, WsReconnectBuffer } from '../../shared/fleet-browser-transport.mjs'
 import { createFleetOperationTransport } from '../../shared/fleet-operation-transport.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { maybeShowRadioSubtitleForIncomingChat } from '../voice.mjs'
 import { checkAppShellFreshness } from '../appShellFreshness'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
@@ -77,13 +75,6 @@ let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
 let _identityRetryTimer = null
-// Buffer for event-updates that arrive before their target event is in the
-// store (e.g. an async file-upload's `event-update` racing ahead of the chat
-// event it patches). Without this, the update is dropped and its change — most
-// visibly a late `inline_attachments` → file chip — is lost until reload. Keyed
-// by db event id; drained when the matching fleet-event arrives.
-const _pendingEventUpdates = new Map()
-const _MAX_PENDING_UPDATES = 200
 const _liveTailViewers = new Map()
 
 function isLiveTailPinned() {
@@ -136,47 +127,6 @@ export function clearFleetEventsLiveTailPinned(viewerId, bufferKey = null) {
   const wasPinned = isLiveTailPinned()
   _liveTailViewers.delete(key)
   if (!wasPinned && isLiveTailPinned()) trimIfLiveTailPinned()
-}
-
-// Apply an `event-update` payload's fields onto an already-stored event. Shared
-// by the live handler and the buffered-apply path so a buffered update behaves
-// identically to one that arrived after its event.
-function applyEventUpdateFields(ev, data) {
-  if (data.text !== undefined) ev.text = data.text
-  if (data.inline_attachments) ev._inlineAttachments = data.inline_attachments
-  // Amend can set or clear file-section provenance. A file-form amend
-  // sends source = { file, section }; a string-form amend sends
-  // source = null to clear it. Updating ev.metadata.source makes the
-  // provenance chip appear/disappear in place on the amended message.
-  if (data.source !== undefined) {
-    if (!ev.metadata) ev.metadata = {}
-    ev.metadata.source = data.source
-  }
-  if (data.metadata_patch) {
-    if (!ev.metadata) ev.metadata = {}
-    Object.assign(ev.metadata, data.metadata_patch)
-    if (data.metadata_patch.approvedAt) {
-      ev._planResponse = data.metadata_patch.mode === 'supervised' ? 'supervised' : 'approved'
-      ev._promptResponse = 'approved'
-    }
-    if (data.metadata_patch.rejectedAt) {
-      ev._planResponse = 'rejected'
-      ev._promptResponse = 'rejected'
-    }
-    // Timer countdown reaching a terminal state: flip the derived flags
-    // so the line re-renders as cancelled (struck) or fired (persists,
-    // showing it ran). Neither state hides the line.
-    if (ev.type === 'timer' || ev._timerCountdown || ev._timerCancelled) {
-      if (ev.metadata.state === 'cancelled') {
-        ev._timerCancelled = true; ev._timerCountdown = false
-      } else if (ev.metadata.state === 'fired') {
-        ev._timerFired = true; ev._timerCountdown = false
-        if (!ev._timerMessage) ev._timerMessage = ev.metadata.message || (ev.text || '').replace(/^[⏱⏰]\s*/, '')
-      } else if (ev.metadata.pending === false) {
-        ev._timer = true; ev._timerCountdown = false
-      }
-    }
-  }
 }
 
 function projectStoreResult(result) {
@@ -741,8 +691,6 @@ let _lastWsOpenAt = 0
 let _lastWsCloseAt = 0
 let _lastWsActivityAt = 0
 let _lastWsMessageAt = 0
-let _lastFleetEventAt = 0
-let _lastFleetEventId = 0
 let _lastAgentsDeltaAt = 0
 const browserActivityDeliveryCounters = createActivityDeliveryCounters({ origin: 'browser' })
 const _browserRenderedActivityIds = new Set()
@@ -829,15 +777,12 @@ export function getFleetRuntimeSummary(now = Date.now()) {
     lastWsCloseAgoMs: _lastWsCloseAt ? now - _lastWsCloseAt : null,
     lastWsActivityAgoMs: _lastWsActivityAt ? now - _lastWsActivityAt : null,
     lastWsMessageAgoMs: _lastWsMessageAt ? now - _lastWsMessageAt : null,
-    lastFleetEventAgoMs: _lastFleetEventAt ? now - _lastFleetEventAt : null,
-    lastFleetEventId: _lastFleetEventId || null,
     lastEventId: _lastEventId || null,
     lastAgentsDeltaAgoMs: _lastAgentsDeltaAt ? now - _lastAgentsDeltaAt : null,
     agentCount: _agents.length,
     taskCount: _tasks.length,
     itemCount: _items.length,
     eventCount: _store.all().length,
-    pendingEventUpdateCount: _pendingEventUpdates.size,
     loadingAgentPage: !!_agentsPageLoading,
     hasNextAgentsPage: !!_nextAgentsCursor,
     liveTailPinned: isLiveTailPinned(),
@@ -1216,58 +1161,7 @@ export function connect() {
         return
       }
 
-      if (eventType === 'fleet-event') {
-        _lastFleetEventAt = Date.now()
-        if (!data || !data.type) return
-        if (data.id) _lastFleetEventId = data.id
-        if (data.type === 'open-doc' && data.url) {
-          notify('open-doc', data)
-          return
-        }
-        // upsert dedups by db id and binds our optimistic send: if the echo
-        // carries the _tempId we sent (or the WS reply already set the _dbId),
-        // it rebinds the pending entry instead of appending a duplicate. All by
-        // id — no content matching.
-        const converted = convertChatEvent(data)
-        if (data.type === 'activity') {
-          browserActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.BROWSER_CONVERTED, data, 1, {
-            type: 'activity',
-            agent: data.from_id || data.from || data.agent || null,
-            tool: data.metadata?.tool || data.text || null,
-          })
-        }
-        if (converted?._activityLatency) {
-          const browserReceivedAtMs = Date.now()
-          converted._activityLatency = {
-            ...converted._activityLatency,
-            browserReceivedAt: new Date(browserReceivedAtMs).toISOString(),
-            browserReceivedAtMs,
-          }
-        }
-        const result = liveUpsert(converted)
-        const { event, isNew } = result
-        // Drain any event-updates that arrived before this event (e.g. a late
-        // file-upload's inline_attachments). Applying them now, before notify,
-        // means the first render already shows the patched line.
-        if (data.id != null && _pendingEventUpdates.has(data.id)) {
-          for (const u of _pendingEventUpdates.get(data.id)) applyEventUpdateFields(event, u)
-          _pendingEventUpdates.delete(data.id)
-        }
-        // The one genuinely live path. Marked so the equivalence comparator can
-        // tell a live delivery from a replay.
-        inLiveDelivery(() => projectStoreResult(result))
-        if (data.id && data.id > _lastEventId) _lastEventId = data.id
-        if (data.type === 'chat') {
-          console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
-        }
-        if (data.type === 'interrupt' || data.type === 'kill-session') {
-          log.warn('interrupt-recv', 'event received', { type: data.type, id: data.id, from: data.from_id||data.from, to: data.to_id||data.to, isNew })
-        }
-        if (isNew && data.type === 'chat') {
-          maybeShowRadioSubtitleForIncomingChat(event, _agents, _humanId)
-        }
-        notify('messages', isNew ? event : null)
-      } else if (eventType === 'filter-event') {
+      if (eventType === 'filter-event') {
         // The server's membership verdict for a subscribed filter, and now the
         // panel's only live source: dispatchFilterEvent hands it to the
         // subscription's onEvents, which puts it in that panel's buffer.
@@ -1278,33 +1172,6 @@ export function connect() {
         // own history, decided by the same predicate as the live push above.
         dispatchFilterEvents(data)
         return
-      } else if (eventType === 'event-update') {
-        const ev = _store.get('db:' + data.id)
-        if (ev) {
-          applyEventUpdateFields(ev, data)
-          upsertFleetEvent(ev)
-          notify('messages', null)
-        } else if (data.id != null) {
-          // The event isn't in the store yet (the update raced ahead of its
-          // event). Buffer it; the fleet-event ingest drains this on arrival so
-          // the change isn't lost until reload. Bound the buffer so orphaned
-          // updates (for events that never come) can't leak.
-          const list = _pendingEventUpdates.get(data.id) || []
-          list.push(data)
-          _pendingEventUpdates.set(data.id, list)
-          while (_pendingEventUpdates.size > _MAX_PENDING_UPDATES) {
-            _pendingEventUpdates.delete(_pendingEventUpdates.keys().next().value)
-          }
-        }
-      } else if (eventType === 'read-receipt') {
-        const ids = new Set(data.event_ids || [])
-        for (const ev of _store.all()) {
-          if (ids.has(ev._dbId)) {
-            ev.read = true
-            upsertFleetEvent(ev)
-          }
-        }
-        if (ids.size) notify('messages', null)
       } else if (eventType === 'suggestions') {
         notify('suggestions', data)
       } else if (eventType === 'items') {

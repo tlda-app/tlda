@@ -10,11 +10,6 @@
 // while the history path used a resolved id set, so a panel could be empty and
 // stuck at the same time.
 //
-// ADDITIVE, DELIBERATELY. Nothing here deletes the existing spool/buffer path.
-// The order has to be: server wiring → subscribe alongside → verify equivalence
-// on real traffic → then delete. Deleting first would break chat with no way to
-// prove the replacement works, and deploys are stopped.
-//
 // The one piece of client-side routing that legitimately remains is an
 // optimistic send: a row the server has never seen goes into the buffer of the
 // chat that sent it, keyed by that chat's own id. That is not a filter
