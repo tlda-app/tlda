@@ -109,6 +109,7 @@ export function buildCmd({
   parts.push('--no-profile')
   parts.push(`--recipe ${sq(recipe)}`)
   parts.push('--with-builtin developer,summon')
+  parts.push(`--with-extension ${sq(`/opt/homebrew/bin/node ${path.join(repoRoot(), 'mcp-server', 'index.mjs')}`)}`)
   parts.push(`--params provider=${sq(provider)}`)
   parts.push(`--params model=${sq(providerModel)}`)
   parts.push(`--name ${sq(`fleet-${String(fleetId).split(':').pop()}`)}`)
