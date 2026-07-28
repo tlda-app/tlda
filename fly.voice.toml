@@ -1,0 +1,47 @@
+# fly.voice.toml — the tlda VOICE/COMMS box.
+#
+# Hosts the Deepgram bridge only, on its own machine, so that deploying the app
+# does not restart Skip's voice. Deploy with:  fly deploy -c fly.voice.toml
+#
+# ONE box serves both sites (stable and unstable). The bridge has no
+# per-environment state — audio in, transcripts out — so there is nothing to
+# separate, and two boxes would just be two lifecycles to keep in sync.
+#
+# Two ways in, both deliberate, neither a fallback for the other — the client
+# uses whichever one config names:
+#   - Skip's browser, directly, over the tailnet (tailscale serve, valid cert).
+#     Tailnet membership is the entire auth posture: anyone who can reach this
+#     box is already someone he admitted. No tokens, no per-connection checks.
+#   - The app server, over Fly's private 6PN at ws://tlda-voice.internal:8180.
+#     This is the pre-existing proxy route, kept so a revert is a config flip.
+#
+# No [http_service]: this box is NOT on the public internet. No public service
+# also means no autostop — the machine stays up on its CMD.
+#
+# LiveKit is not here and does not need to be: LIVEKIT_URL is
+# wss://tlda-pgom0to7.livekit.cloud — LiveKit Cloud. Media goes browser to cloud
+# and never touches any Fly box of ours. The only local LiveKit code is a
+# stateless JWT minter in the app server (server/routes/livekit.mjs).
+app = "tlda-voice"
+
+# MUST match the app's primary_region (fly.live.toml is sjc). Every audio frame
+# crosses this hop, so a region mismatch would add latency to Skip's dictation.
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.voice"
+
+# Measured, not guessed: the bridge on the live box runs at ~95 MB RSS with the
+# machine at load ~0.5-0.9 while serving Skip. It is I/O-bound relayed audio,
+# not compute. 512 MB gives roughly 5x the observed footprint.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512"
+
+# Small volume for ONE thing: tailscaled's state, so this machine keeps a stable
+# tailnet node identity across restarts. Without it every restart registers a new
+# node and Tailscale suffixes the hostname (tlda-voice-1, -2, ...), silently
+# moving the URL out from under the browser. The bridge itself is stateless.
+[mounts]
+  source = "voice_data"
+  destination = "/app/persist"

@@ -82,7 +82,29 @@ const _onServerHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostna
 // SDK implementation, it is better"). The bridge is bin/deepgram-sdk-bridge.mjs
 // on port 8180; a device that can't reach 127.0.0.1 (the iPad) relays through the
 // same-origin /voice/deepgram-sdk WS proxy on the tlda server.
+// The voice box's own address, handed to us by the server (TLDA_VOICE_DIRECT_URL)
+// in the /api/voice/deepgram-sdk/start reply, which every connect path awaits
+// before opening this socket. Empty means no voice box is configured.
+let _directBridgeUrl = ''
+
+// Record the voice-box address the server advertises. Logged on change, because
+// which machine his audio goes to is exactly the thing that must never quietly
+// differ from what we think it is.
+function setDirectBridgeUrl(url) {
+  const next = typeof url === 'string' ? url : ''
+  if (next === _directBridgeUrl) return
+  _directBridgeUrl = next
+  console.log(next
+    ? `voice: deepgram bridge is the voice box at ${next}`
+    : 'voice: no voice box configured - using the same-origin proxy')
+}
+
 function deepgramBridgeUrl() {
+  // Prefer the voice box. Connecting to it directly is the entire point: the
+  // socket then lives on a machine that app deploys do not restart, so deploying
+  // the app cannot cut Skip off mid-sentence. Reachability is by tailnet
+  // membership, which is the whole auth posture - no token is appended.
+  if (_directBridgeUrl) return _directBridgeUrl
   if (_onServerHost) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://127.0.0.1:8180`
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return appendToken(`${proto}://${location.host}/voice/deepgram-sdk`)
@@ -3464,7 +3486,8 @@ export async function initVoice() {
   } else if (prefBackend === 'deepgram' || prefBackend === 'deepgram-sdk') {
     _backend = 'deepgram'
     try {
-      await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' })
+      const res = await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' })
+      setDirectBridgeUrl((await res.json())?.directUrl)
     } catch (err) {
       console.warn('voice: deepgram lazy-start request failed', err)
     }
@@ -3683,7 +3706,15 @@ export async function setBackend(be) {
   // commits to; a live switch or late-loaded saved pref must start its selected
   // backend here instead of silently no-oping on a stale availability flag.
   if (be === 'deepgram') {
-    try { await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' }) } catch {}
+    try {
+      const res = await fetch('/api/voice/deepgram-sdk/start', { method: 'POST' })
+      setDirectBridgeUrl((await res.json())?.directUrl)
+    } catch (err) {
+      // Not swallowed: failing here means we did not learn which machine to send
+      // his audio to, and the connect below will use the same-origin proxy. That
+      // is a route change worth being able to see in a log.
+      console.warn('voice: deepgram lazy-start request failed', err)
+    }
     _deepgramAvailable = true
   }
   if (be === 'whisper-stream') {

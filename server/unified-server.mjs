@@ -3172,7 +3172,18 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 // on demand, which is correct where one machine runs the whole stack. The bridge
 // listens on TLS (wss) only when the mkcert localhost certs exist — the SAME
 // condition the bridge uses to choose its server — so the scheme is matched here.
+// Two knobs, because two different processes reach the bridge by two routes:
+//   TLDA_VOICE_BRIDGE_URL  — how THIS SERVER reaches it (Fly 6PN,
+//                            ws://tlda-voice.internal:8180), used by the proxy.
+//   TLDA_VOICE_DIRECT_URL  — how THE BROWSER reaches it (the tailnet name,
+//                            wss://tlda-voice.<tailnet>.ts.net), handed to the
+//                            client so its audio socket does not terminate on
+//                            this machine and therefore does not die when this
+//                            machine is deployed.
+// Unset TLDA_VOICE_DIRECT_URL and the browser keeps using the same-origin proxy
+// exactly as it does today, which is what makes a revert a config flip.
 const REMOTE_VOICE_BRIDGE_URL = process.env.TLDA_VOICE_BRIDGE_URL || ''
+const BROWSER_VOICE_BRIDGE_URL = process.env.TLDA_VOICE_DIRECT_URL || ''
 const _dgCert = path.join(homedir(), '.config/tlda/localhost+2.pem')
 const _dgKey = path.join(homedir(), '.config/tlda/localhost+2-key.pem')
 const _dgWsScheme = existsSync(_dgCert) && existsSync(_dgKey) ? 'wss' : 'ws'
@@ -3204,7 +3215,16 @@ app.get('/api/voice/backends', async (req, res) => {
       { value: '', label: 'Off', available: true },
       { value: 'chrome', label: 'Browser', available: true },
     ]
-    if (hasDeepgramKey()) backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
+    // Offer Deepgram when the BRIDGE is actually reachable, the same way Whisper
+    // is decided one line below. It used to be decided by DEEPGRAM_API_KEY on
+    // this server — a key this server stops using once the bridge lives on its
+    // own machine, so that check would have kept passing only by accident of a
+    // stale secret, and tidying that secret away would have silently removed
+    // Deepgram from Skip's picker with no other symptom.
+    const deepgramReachable = REMOTE_VOICE_BRIDGE_URL
+      ? await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)
+      : hasDeepgramKey()
+    if (deepgramReachable) backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
     if (await isBridgeUp(WHISPER_BRIDGE_URL)) backends.push({ value: 'whisper', label: 'Whisper', available: true })
     res.json({ backends })
   } catch (err) {
@@ -3252,16 +3272,20 @@ app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
         ok: up,
         started: false,
         remote: REMOTE_VOICE_BRIDGE_URL,
+        directUrl: BROWSER_VOICE_BRIDGE_URL,
         ...(up ? {} : { error: 'deepgram bridge unreachable' }),
       })
     }
-    res.json(await spawnVoiceBridge({
-      bridgeUrl: DEEPGRAM_SDK_BRIDGE_URL,
-      scriptName: 'deepgram-runtime/deepgram-sdk-bridge.mjs',
-      logName: 'deepgram-sdk-bridge.log',
-      label: 'deepgram sdk',
-      nice: -10,
-    }))
+    res.json({
+      ...(await spawnVoiceBridge({
+        bridgeUrl: DEEPGRAM_SDK_BRIDGE_URL,
+        scriptName: 'deepgram-runtime/deepgram-sdk-bridge.mjs',
+        logName: 'deepgram-sdk-bridge.log',
+        label: 'deepgram sdk',
+        nice: -10,
+      })),
+      directUrl: BROWSER_VOICE_BRIDGE_URL,
+    })
   } catch (err) {
     console.error('[voice] deepgram-sdk/start failed:', err.message)
     res.status(500).json({ ok: false, error: err.message })
