@@ -759,7 +759,9 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
       tmuxSession: processFact.tmux_session,
     },
     createdSource,
-    submit: payload => sendMsg({ type: 'agent-seat', ...payload }),
+    submit: payload => daemonApi('POST', '/api/agent-seat', payload),
+    readback: agentId => daemonApi('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
+    requireReadback: true,
   })
 }
 

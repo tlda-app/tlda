@@ -3138,14 +3138,64 @@ async function assertNotAgentContext() {
   }
 }
 
-async function attachToAgent(name) {
+export async function attachToAgent(name, {
+  apiImpl = api,
+  spawnSyncImpl = null,
+  log = console,
+  exitImpl = code => process.exit(code),
+  localDaemonKeyImpl = () => `${localMachineId()}:${getActiveEnvName()}`,
+  openLedger = () => {
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    return createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  },
+} = {}) {
   if (!name) {
-    console.error('Usage: tlda agent attach <name>')
-    process.exit(1)
+    log.error('Usage: tlda agent attach <name>')
+    exitImpl(1)
+    return { ok: false, error: 'missing-name' }
   }
-  const { spawnSync } = await import('child_process')
-  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(agentSessionName(name))], { stdio: 'inherit' })
-  process.exit(result.status ?? 0)
+  const state = await apiImpl('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const agent = resolveAgentQuery(agents, name)
+  if (!agent) {
+    log.error(`No agent found for "${name}".`)
+    exitImpl(1)
+    return { ok: false, error: 'agent-not-found' }
+  }
+  const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agent.id)}`)
+  const seat = data?.seat || null
+  if (!seat?.terminal_capability) {
+    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: current durable seat has no terminal capability.`)
+    exitImpl(1)
+    return { ok: false, error: 'seat-missing-terminal-capability', agent, seat }
+  }
+  const localDaemonKey = localDaemonKeyImpl()
+  if (seat.daemon_key !== localDaemonKey) {
+    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: current durable seat belongs to ${seat.daemon_key}, not local ${localDaemonKey}.`)
+    exitImpl(1)
+    return { ok: false, error: 'seat-not-local', agent, seat }
+  }
+  const ledger = openLedger()
+  let localRoute = null
+  try {
+    localRoute = ledger.get(agent.id)
+  } finally {
+    await ledger.close()
+  }
+  if (
+    !localRoute?.tmuxSession ||
+    localRoute.sessionId !== seat.session_id ||
+    localRoute.terminalCapability !== seat.terminal_capability
+  ) {
+    log.error(`Cannot attach to ${agent.friendly_name || agent.id}: current durable seat has no matching local terminal route.`)
+    exitImpl(1)
+    return { ok: false, error: 'seat-route-mismatch', agent, seat }
+  }
+  const spawnSync = spawnSyncImpl || (await import('child_process')).spawnSync
+  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(localRoute.tmuxSession)], { stdio: 'inherit' })
+  const status = result.status ?? 0
+  exitImpl(status)
+  return { ok: status === 0, status, agent, seat, tmuxSession: localRoute.tmuxSession }
 }
 
 async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = 120000, onEvent = null } = {}) {

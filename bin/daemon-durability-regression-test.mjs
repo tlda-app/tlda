@@ -258,6 +258,14 @@ test('agent-seat daemon outbox errors surface as visible warnings', () => {
   assert.match(daemonSource, /error,\n\s+permanent: msg\.permanent === true/)
 })
 
+test('CLI mint joins only after an exact server seat write and readback', () => {
+  const bindMintSeatSource = daemonSource.match(/async function bindMintSeat\([\s\S]*?\n\}/)?.[0] || ''
+  assert.match(bindMintSeatSource, /submit: payload => daemonApi\('POST', '\/api\/agent-seat', payload\)/)
+  assert.match(bindMintSeatSource, /readback: agentId => daemonApi\('GET', `\/api\/agent-seat\?agent=\$\{encodeURIComponent\(agentId\)\}`\)/)
+  assert.match(bindMintSeatSource, /requireReadback: true/)
+  assert.doesNotMatch(bindMintSeatSource, /submit: payload => sendMsg/)
+})
+
 test('daemon welcome carries no roster and restores local-binding liveness plus JSONL lifecycle', () => {
   const welcomeHandler = daemonSource.match(/if \(msg\.type === 'daemon-welcome'\) \{([\s\S]*?)\n  \}\n  if \(msg\.type === 'agent-status-events'\)/)?.[1] || ''
   const welcomePayload = serverSource.match(/type: 'daemon-welcome',([\s\S]*?)projects: projectsForDaemon\(\)/)?.[1] || ''
