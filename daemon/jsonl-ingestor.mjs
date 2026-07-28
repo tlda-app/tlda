@@ -479,7 +479,8 @@ export function createJsonlIngestor({
   }
 
   function applyLoginMarkerOwnership(pw, marker) {
-    if (!marker) return jsonlOwnershipState(cursors[pw.sessionId], daemonKey)
+    const existing = jsonlOwnershipState(cursors[pw.sessionId], daemonKey)
+    if (existing !== 'unknown' || !marker) return existing
     const state = classifyLoginMarkerOwner(marker, daemonKey)
     if (state !== 'unknown') setJsonlOwnership(pw, state, marker)
     return state

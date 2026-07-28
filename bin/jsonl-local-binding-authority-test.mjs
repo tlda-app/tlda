@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000 } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -57,6 +57,15 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
   writeFileSync(jsonlPath, kind === 'claude'
     ? '{"message":{"content":[{"type":"text","text":"Logged in fleet:jsonlown.\\nYour name: \\"jsonl-owner\\""}]}}\n'
     : '', { flag: 'w' })
+  if (initialCursors) {
+    mkdirSync(configDir, { recursive: true })
+    const inode = statSync(jsonlPath).ino
+    const cursors = Object.fromEntries(Object.entries(initialCursors).map(([id, cursor]) => [
+      id,
+      { inode, ...cursor },
+    ]))
+    writeFileSync(join(configDir, 'cursors.json'), JSON.stringify(cursors))
+  }
 
   const sentToChild = []
   const sentToServer = []
@@ -601,6 +610,53 @@ function assertTailCount(harness, expected) {
     assert.equal(harness.sentToChild.some(message => message.type === 'ack' && message.watchId === watch.watchId), true)
     assertWatcher(harness, true, 'claude')
     assert.equal(harness.sentToServer.some(message => message.type === 'activity-health' && message.state === 'ok'), true)
+    harness.ingestor.saveCursors()
+    const saved = JSON.parse(readFileSync(join(harness.dir, 'config', 'cursors.json'), 'utf8'))
+    assert.equal(saved['rollout-jsonl-owner'].owner.state, 'mine')
+    assert.equal(saved['rollout-jsonl-owner'].owner.daemon_key, 'mini:default')
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const harness = createHarness({
+    kind: 'claude',
+    initialCursors: {
+      'rollout-jsonl-owner': {
+        offset: 0,
+        owner: {
+          state: 'mine',
+          daemon_key: 'mini:default',
+          fleet_id: 'fleet:jsonl-owner',
+        },
+      },
+    },
+  })
+  try {
+    harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({
+      sessionKind: 'claude',
+      sessionId: 'rollout-jsonl-owner',
+      sessionPath: harness.jsonlPath,
+    }) }])
+    await harness.sync('existing-owner')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:stable',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'historical-marker',
+          },
+        },
+      }],
+    })
+    assert.equal(harness.sentToChild.some(message => message.type === 'stop' && message.watchId === watch.watchId), false)
     harness.ingestor.saveCursors()
     const saved = JSON.parse(readFileSync(join(harness.dir, 'config', 'cursors.json'), 'utf8'))
     assert.equal(saved['rollout-jsonl-owner'].owner.state, 'mine')
