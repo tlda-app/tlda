@@ -44,6 +44,7 @@ export function createTerminalRpc({
   onPlanModeSeen,
   onPlanModeGone,
   hasPlanMode,
+  resolveAgentRoute,
   validateTmuxOwner,
   resolveTerminalCapability,
   execFileImpl = execFileP,
@@ -165,7 +166,11 @@ export function createTerminalRpc({
   }
 
   async function rpcCapturePane(args = {}) {
-    const { tmuxSession, sessionId, agentId } = resolveTerminalEndpoint(args)
+    if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
+    const route = resolveAgentRoute(args)
+    const tmuxSession = route.tmux_session
+    const sessionId = route.session_id
+    const agentId = route.agent_id
     const { lines, visible } = args
     checkSession(tmuxSession)
     const captureArgs = visible

@@ -7425,10 +7425,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, lines } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
-    if (!seat) { error(seatError); return }
+    const route = resolveRpc('capture-pane', agent)
+    if (route.via === 'none') { error(route.error); return }
     try {
-      const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50 })
+      const result = await sendDaemonEphemeral(route.machine_id, 'capture-pane', { agent_id: agent.id, lines: lines || 50 })
       reply(result)
     } catch (e) { error(e.message) }
     return
