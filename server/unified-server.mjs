@@ -7411,10 +7411,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, text, enter } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
-    if (!seat) { error(seatError); return }
+    const route = resolveRpc('send-text', agent)
+    if (route.via === 'none') { error(route.error); return }
     try {
-      const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
+      const result = await sendDaemonDurable(route.machine_id, 'send-text', { agent_id: agent.id, text, enter: enter !== false })
       reply(result)
     } catch (e) { error(e.message) }
     return
