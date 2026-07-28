@@ -217,7 +217,7 @@ const COMMAND_HELP = {
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
-  config:  'tlda config [init | apply | mcp-setup | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
+  config:  'tlda config [init | apply | mcp-setup | setup | auth | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  setup      Run one-time local setup tasks, such as editor URL handlers.\n  auth       Manage access tokens.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
@@ -2748,6 +2748,13 @@ async function cmdConfig() {
 async function cmdAuth() {
   const sub = getPositional(0)
 
+  if (hasFlag('help')) {
+    console.log('Usage: tlda config auth [init|show]')
+    console.log('  init   Generate and save new tokens')
+    console.log('  show   Show current tokens')
+    return
+  }
+
   if (sub === 'init') {
     const tokenRw = randomBytes(24).toString('base64url')
     const tokenRead = randomBytes(24).toString('base64url')
@@ -2770,7 +2777,7 @@ async function cmdAuth() {
     return
   }
 
-  console.log('Usage: tlda auth [init|show]')
+  console.log('Usage: tlda config auth [init|show]')
   console.log('  init   Generate and save new tokens')
   console.log('  show   Show current tokens')
 }
@@ -3069,7 +3076,7 @@ async function cmdDeploy() {
 async function cmdSetup() {
   const sub = process.argv[3]
   if (!sub || sub === '--help') {
-    console.log(`tlda setup — one-time setup tasks
+    console.log(`tlda config setup — one-time setup tasks
 
 Subcommands:
   editor [--editor CMD]   Install the texsync:// URL handler so Cmd-click
@@ -3077,8 +3084,8 @@ Subcommands:
                           Supported: zed, code, cursor, codium, nvim, vim, sublime
 
 Example:
-  tlda setup editor                # set up for Zed
-  tlda setup editor --editor code  # set up for VS Code
+  tlda config setup editor                # set up for Zed
+  tlda config setup editor --editor code  # set up for VS Code
 `)
     return
   }
