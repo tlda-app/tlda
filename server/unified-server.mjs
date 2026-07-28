@@ -244,7 +244,10 @@ resetStaleBuildStates()
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
-const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, { taskDoc: true })
+const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, {
+  taskDoc: true,
+  taskDocOptions: { projectsDir: PROJECTS_DIR },
+})
 await fleetStore.ready()
 const fleetOperationContext = new AsyncLocalStorage()
 const serverDaemonOutboxInflight = new Map()

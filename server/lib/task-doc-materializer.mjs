@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -30,12 +30,16 @@ export function createTaskDocMaterializer({
   fleetStore,
   debounceMs = DEFAULT_TASK_DOC_DEBOUNCE_MS,
   globalDir = resolveTaskDocGlobalDir(),
-  projectsProvider = listProjects,
+  projectsDir = null,
+  projectsProvider = null,
   writebackOptions = {},
   logger = console,
   git = runGit,
 } = {}) {
   if (!fleetStore) throw new Error('task doc materializer requires fleetStore')
+  const readProjects = projectsProvider || (
+    projectsDir ? () => readProjectMetadataDirectory(projectsDir) : listProjects
+  )
   let timer = null
   let flushing = false
   let pending = []
@@ -46,7 +50,7 @@ export function createTaskDocMaterializer({
     const changes = pending
     pending = []
     try {
-      const result = await materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider, writebackOptions, logger, git })
+      const result = await materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider: readProjects, writebackOptions, logger, git })
       if (!result.ok) {
         logger.warn?.(`[task-doc] ${result.failures.length} writeback(s) did not land`)
       }
@@ -112,7 +116,7 @@ export async function materializeTaskDocs({
   // store — and it answered a bounded lookup with the entire roster.
   const agents = await fleetStore.getAgentsByIds([...agentIds])
   const agentById = new Map(agents.map(agent => [agent.id, agent]))
-  const projects = projectsProvider().map(project => ({
+  const projects = (await projectsProvider()).map(project => ({
     ...project,
     taskDocRoot:
       explicitTaskDocRoot(project) ||
@@ -200,6 +204,19 @@ export async function materializeTaskDocs({
   }
 
   return { ok: failures.length === 0, tasks, taskTotal: totalTasks, touchedDirs: [...touchedDirs], globalDir, writebacks, failures }
+}
+
+function readProjectMetadataDirectory(projectsDir) {
+  if (!existsSync(projectsDir)) return []
+  return readdirSync(projectsDir)
+    .map(name => {
+      try {
+        return JSON.parse(readFileSync(join(projectsDir, name, 'project.json'), 'utf8'))
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
 }
 
 export function resolveTaskDocGlobalDir(config = readDaemonConfig()) {
