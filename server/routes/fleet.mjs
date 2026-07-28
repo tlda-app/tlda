@@ -20,7 +20,6 @@ import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { canReportTask, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
-import { recordAgentRouteEvent } from '../lib/agent-route-events.mjs'
 import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 
 // Server owner — the human running this server process. Browser users
@@ -262,31 +261,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         tasks: tasksPage.nextCursor || null,
       },
     })
-  })
-
-  router.get('/api/agent-route', async (req, res) => {
-    const query = req.query.agent
-    const agent = await fleetStore?.findAgent(query)
-    if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const route = await fleetStore?.getAgentDaemonRoute?.(agent.id)
-    if (!route) { res.status(404).json({ ok: false, error: 'agent has no daemon route' }); return }
-    res.json({ ok: true, route })
-  })
-
-  router.post('/api/agent-route', async (req, res) => {
-    if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
-    const body = req.body || {}
-    const agentId = body.agent_id
-    const agent = await fleetStore.findAgent(agentId)
-    if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const daemonKey = body.daemon_key
-    try {
-      const route = await recordAgentRouteEvent(fleetStore, { agent_id: agent.id, daemon_key: daemonKey })
-      broadcastState()
-      res.json({ ok: true, route })
-    } catch (e) {
-      res.status(409).json({ ok: false, error: e.message })
-    }
   })
 
   // --- GET /api/human ---
@@ -1020,14 +994,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
 
     res.json({ ok: true, resolvedMessage, inlineAttachments: inlineAttachments || [] })
-  })
-
-  // --- POST /api/agents/move-daemon ---
-  // Runtime route changes must be recorded by the daemon route path.
-  // Do not let an operator/API edit the legacy agent row into becoming route
-  // authority again.
-  router.post('/api/agents/move-daemon', async (req, res) => {
-    res.status(410).json({ error: 'agent daemon route is not editable; use the daemon route event path' })
   })
 
   router.post('/api/agents/:agent/wake', async (req, res) => {

@@ -88,7 +88,7 @@ interface Agent {
   id: string
   friendly_name: string
   tmux_session?: string
-  runtime_status?: { status?: string; route_state?: string | null }
+  runtime_status?: { status?: string }
   dead?: boolean
 }
 
@@ -108,7 +108,7 @@ function useAgents(): { agents: Agent[]; error: string } {
           cursor = page?.nextCursor || null
         } while (cursor && !cancelled)
         if (!cancelled) {
-          setAgents(list.filter(a => !a.dead && a.runtime_status?.status === 'awake' && (!a.runtime_status?.route_state || a.runtime_status.route_state === 'routable')))
+          setAgents(list.filter(a => !a.dead && a.runtime_status?.status === 'awake'))
           setError('')
         }
       } catch (e) {

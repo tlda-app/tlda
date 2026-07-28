@@ -157,9 +157,7 @@ export function activityHealthIncidentDecision(incidents = {}, agent, health) {
   }
 }
 
-export function activityHealthForProjection(metadata = {}, runtimeStatus = null, {
-  allowRoutableNoTmuxSuppression = false,
-} = {}) {
+export function activityHealthForProjection(metadata = {}) {
   const health = metadata?.activityHealth || null
   const incidents = metadata?.activityHealthIncidents && typeof metadata.activityHealthIncidents === 'object'
     ? Object.values(metadata.activityHealthIncidents)
@@ -180,12 +178,5 @@ export function activityHealthForProjection(metadata = {}, runtimeStatus = null,
     boundary: incident.boundary || health?.boundary || null,
     ts: incident.raisedAt || health?.ts || null,
   } : health
-  if (
-    allowRoutableNoTmuxSuppression &&
-    projected?.boundary === ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX &&
-    runtimeStatus?.route_state === 'routable'
-  ) {
-    return null
-  }
   return projected
 }

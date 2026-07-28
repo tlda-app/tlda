@@ -117,9 +117,7 @@ export function formatFleetAgentActivityHealth(meta: any): string {
 
 export function formatFleetAgentActivityHealthForAgent(agent: any): string {
   if (agent?.human) return ''
-  return formatFleetAgentUserActivityHealth(activityHealthForProjection(agent?.metadata || {}, agent?.runtime_status || null, {
-    allowRoutableNoTmuxSuppression: true,
-  }))
+  return formatFleetAgentUserActivityHealth(activityHealthForProjection(agent?.metadata || {}))
 }
 
 export function fleetAgentDisplayLabel(agent: any): string {

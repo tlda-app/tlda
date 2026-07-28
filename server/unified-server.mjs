@@ -80,7 +80,6 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
-import { recordAgentRouteEvent } from './lib/agent-route-events.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -390,7 +389,6 @@ const _aliveAgents = new Set()              // Set<agent_id>
 const _aliveSince = new Map()               // agent_id -> first ms in current alive run
 
 const runtimeStatusStore = createAgentRuntimeStatusStore({
-  isDaemonConnected: daemonKey => !!daemonKey && daemonConnections.get(daemonKey)?.readyState === 1,
   onChange: agentId => {
     // Not awaited, and these three are the only refreshes treated this way.
     // refreshAgentLiveness returns nothing — it re-syncs the agent registry so
@@ -1569,16 +1567,6 @@ const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, ba
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 const MY_TASK_TASK_LIMIT = 20
 
-// daemon address → ts when the CURRENT uninterrupted daemon connection began. Reset on
-// every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
-// daemon WS, so if that WS flapped, an agent's activity wasn't delivered LIVE and its
-// _lastActivityAt was briefly stale — making an active agent *look* idle. The daemon
-// backfills the gap on reconnect (its cursor only advances on delivered bytes), so the
-// staleness clears within seconds; getTrustedIdleSeconds waits out the reconnect grace.
-const _daemonConnectedSince = new Map()
-
-const LIVENESS_RECONNECT_GRACE_MS = 120_000
-
 function touchActivity(agentId) {
   _lastActivityAt.set(agentId, Date.now())
 }
@@ -1654,20 +1642,6 @@ async function getTrustedIdleSeconds() {
     // permanently un-hibernatable (no lastActive → skipped forever).
     const lastActive = _lastActivityAt.get(agentId) || aliveSince
     const idleMs = Math.min(now - lastActive, now - aliveSince)
-    // Gap-aware idle: don't hibernate on a reading the activity feed couldn't
-    // back up. But the daemon BACKFILLS on reconnect — its cursor is a
-    // high-water mark of *delivered* bytes, so activity during a WS outage isn't
-    // lost; on reconnect it drains everything written during the gap (see
-    // readNewSessionLines in fleet-daemon.mjs). So _lastActivityAt self-corrects
-    // within seconds of a reconnect. We therefore don't need a full idle window
-    // of connection — just enough settle time for that drain to land. Require
-    // the daemon to have been connected for the reconnect grace (~2min, well
-    // over the actual drain) before trusting a "no recent activity" reading.
-    const daemonKey = runtime.route?.daemon_key || null
-    if (daemonKey) {
-      const connectedSince = _daemonConnectedSince.get(daemonKey)
-      if (!connectedSince || (now - connectedSince) < LIVENESS_RECONNECT_GRACE_MS) continue
-    }
     result[agentId] = Math.floor(idleMs / 1000)
   }
   return result
@@ -7830,10 +7804,6 @@ async function handleDaemonWsMessage(ws, msg) {
     if (daemonConnections.get(daemonKey) !== ws) {
       console.error(`[fleet-daemon] routability invariant failed after welcome setup: daemon=${daemonKey}`)
     }
-    // Reset the activity-feed uptime clock: this (re)connect starts a fresh
-    // continuous window. getTrustedIdleSeconds withholds the idle fact until
-    // the feed has settled, so a flap cannot create a stale-idle action.
-    _daemonConnectedSince.set(daemonKey, Date.now())
     await updateDaemonActivityTransportHealth(daemonKey, {
       state: ACTIVITY_HEALTH_OK,
       boundary: ACTIVITY_HEALTH_BOUNDARIES.TRANSPORT_CONNECTED,
@@ -8091,22 +8061,6 @@ async function handleDaemonWsMessage(ws, msg) {
       fanOutTerminalDead(msg.agent_id)
       markAgentNotAlive(msg.agent_id, { source: 'terminal-dead', reason: 'terminal watch ended dead' })
       broadcastState()
-    }
-    return
-  }
-
-  if (type === 'agent-route') {
-    if (!fleetStore) return
-    const agentId = msg.agent_id
-    if (!agentId) return
-    try {
-      await recordAgentRouteEvent(fleetStore, msg, {
-        daemonKey: ws._daemonKey,
-      })
-      broadcastState()
-    } catch (e) {
-      await reportDaemonEventFailure(msg, 'agent-route-write', e)
-      throw e
     }
     return
   }

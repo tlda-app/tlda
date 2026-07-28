@@ -213,8 +213,7 @@
           { "selector": "status", "text": "State", "type": "string" },
           { "selector": "activity", "text": "Activity", "type": "string" },
           { "selector": "activity_tool", "text": "Using", "type": "string" },
-          { "selector": "updated_at", "text": "Updated", "type": "timestamp" },
-          { "selector": "route_state", "text": "Reachable", "type": "string" }
+          { "selector": "updated_at", "text": "Updated", "type": "timestamp" }
         ],
         "format": "table", "parser": "backend", "refId": "A", "root_selector": "agents", "source": "url", "type": "json",
         "url": "__TLDA_FLEET_URL__/api/agents?limit=200&view=activity-dashboard",

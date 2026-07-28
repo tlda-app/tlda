@@ -51,7 +51,7 @@ import {
 } from '../../shared/filter-semantics.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { isTerminalRoutable, runtimeStatusForAgent, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
@@ -112,8 +112,6 @@ type TerminalAgent = {
   name?: string
   tmux_session?: string | null
   runtime_status?: unknown
-  route_state?: string | null
-  route_reason?: string | null
   status_reason?: string | null
   activity?: string | null
 } & Record<string, unknown>
@@ -191,26 +189,7 @@ function terminalUnavailableReason(agent: TerminalAgent | null): string | null {
   if (!agent) return 'No terminal target selected'
   if (!agent.id) return 'Terminal unavailable: target is unresolved'
   if (agent.dead) return 'Terminal unavailable: agent is dead'
-  const runtime = runtimeStatusForAgent(agent)
-  if (isTerminalRoutable(agent)) return null
-  switch (runtime.route_reason) {
-    case 'current-seat-missing':
-      return 'Terminal unavailable: no seat bound'
-    case 'current-seat-incomplete':
-      return 'Terminal unavailable: seat has no owning daemon'
-    case 'current-seat-missing-terminal-capability':
-      return 'Terminal unavailable: seat has no terminal capability'
-    case 'daemon-disconnected':
-      return 'Terminal unavailable: daemon disconnected'
-    case 'agent-dead':
-      return 'Terminal unavailable: agent is dead'
-    case 'agent-missing':
-      return 'Terminal unavailable: target is unresolved'
-    default:
-      return runtime.route_reason
-        ? `Terminal unavailable: ${runtime.route_reason.replaceAll('-', ' ')}`
-        : 'Terminal unavailable'
-  }
+  return null
 }
 
 function isFleetPillRecord(record: any): boolean {
@@ -4595,8 +4574,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           dead: agent?.dead ?? null,
           hibernating: runtimeStatusName(agent) === 'hibernating',
           terminalReady: isTerminalAvailableForAgent(agent),
-          routeState: runtimeStatusForAgent(agent).route_state,
-          routeReason: runtimeStatusForAgent(agent).route_reason,
         })),
       })
       for (const agent of matches) {

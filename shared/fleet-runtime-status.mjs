@@ -6,8 +6,6 @@ export function runtimeStatusForAgent(agent) {
     : agent?.dead ? 'dead' : agent?.human ? 'human' : 'unknown'
   return {
     status,
-    route_state: agent?.route_state || null,
-    route_reason: agent?.route_reason || null,
     activity: agent?.activity || 'unknown',
     reason: agent?.status_reason || null,
   }
@@ -36,9 +34,4 @@ export function fleetRosterCategory(agent) {
 export function isRuntimeHibernating(agent) {
   const status = runtimeStatusName(agent)
   return status === 'hibernating' || status === 'human-away'
-}
-
-export function isTerminalRoutable(agent) {
-  const runtime = runtimeStatusForAgent(agent)
-  return runtime.route_state == null || runtime.route_state === 'routable'
 }

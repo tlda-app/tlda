@@ -6,7 +6,6 @@ export function projectAgentActivityPage(page) {
       activity: agent.runtime_status?.activity,
       activity_tool: agent.runtime_status?.evidence?.activity_tool,
       updated_at: agent.runtime_status?.updated_at,
-      route_state: agent.runtime_status?.route_state,
     })),
     totals: [{
       awake: page?.totals?.awake || 0,

@@ -8,13 +8,6 @@ export const RUNTIME_STATUS = Object.freeze({
   HUMAN_AWAY: 'human-away',
 })
 
-export const ROUTE_STATE = Object.freeze({
-  ROUTABLE: 'routable',
-  UNROUTABLE: 'unroutable',
-  DAEMON_DISCONNECTED: 'daemon-disconnected',
-  ROUTE_MISSING: 'route-missing',
-})
-
 export const LIVENESS = Object.freeze({
   ALIVE: 'alive',
   DEAD: 'dead',
@@ -24,7 +17,6 @@ export const LIVENESS = Object.freeze({
 
 export function createAgentRuntimeStatusStore({
   now = () => Date.now(),
-  isDaemonConnected = () => false,
   onChange = () => {},
 } = {}) {
   const evidenceByAgent = new Map()
@@ -137,7 +129,6 @@ export function createAgentRuntimeStatusStore({
   function project(agent) {
     return projectAgentRuntimeStatus(agent, evidenceFor(agent?.id), {
       nowMs: now(),
-      isDaemonConnected,
     })
   }
 
@@ -155,10 +146,8 @@ export function createAgentRuntimeStatusStore({
 
 export function projectAgentRuntimeStatus(agent, evidence = null, {
   nowMs = Date.now(),
-  isDaemonConnected = () => false,
 } = {}) {
   const metadata = agent?.metadata || {}
-  const route = routeStateFor({ agent, isDaemonConnected })
   const baseEvidence = {
     liveness: evidence?.liveness || LIVENESS.UNKNOWN,
     liveness_source: evidence?.liveness_source || null,
@@ -178,7 +167,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     return runtimeProjection({
       status: RUNTIME_STATUS.HIBERNATING,
       activity: 'unknown',
-      route,
       evidence: baseEvidence,
       reason: 'agent-missing',
       nowMs,
@@ -189,7 +177,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     return runtimeProjection({
       status: RUNTIME_STATUS.DEAD,
       activity: baseEvidence.activity,
-      route,
       evidence: baseEvidence,
       reason: 'agent-marked-dead',
       nowMs,
@@ -202,7 +189,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     return runtimeProjection({
       status: recent ? RUNTIME_STATUS.HUMAN : RUNTIME_STATUS.HUMAN_AWAY,
       activity: baseEvidence.activity,
-      route,
       evidence: baseEvidence,
       reason: recent ? 'human-recent-heartbeat' : 'human-heartbeat-stale',
       nowMs,
@@ -213,7 +199,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     return runtimeProjection({
       status: RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
-      route,
       evidence: baseEvidence,
       reason: 'reserved-shell-unclaimed',
       nowMs,
@@ -224,7 +209,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     return runtimeProjection({
       status: RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
-      route,
       evidence: baseEvidence,
       reason: evidence.liveness_reason || `runtime-${evidence.liveness}`,
       nowMs,
@@ -235,7 +219,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     return runtimeProjection({
       status: RUNTIME_STATUS.AWAKE,
       activity: baseEvidence.activity,
-      route,
       evidence: baseEvidence,
       reason: evidence.liveness_source || 'positive-runtime-evidence',
       nowMs,
@@ -245,37 +228,16 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   return runtimeProjection({
     status: RUNTIME_STATUS.HIBERNATING,
     activity: baseEvidence.activity,
-    route,
     evidence: baseEvidence,
     reason: baseEvidence.liveness_reason || 'no-current-positive-runtime-evidence',
     nowMs,
   })
 }
 
-function routeStateFor({ agent, isDaemonConnected }) {
-  if (!agent?.id) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-missing' }
-  if (agent.dead) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-dead' }
-  if (!agent.route_present) return { state: ROUTE_STATE.ROUTE_MISSING, reason: 'daemon-route-missing' }
-  const daemonKey = agent.route_daemon_key
-  if (!isDaemonConnected(daemonKey)) {
-    return { state: ROUTE_STATE.DAEMON_DISCONNECTED, reason: 'daemon-disconnected', hasRoute: true, daemonKey }
-  }
-  return { state: ROUTE_STATE.ROUTABLE, reason: 'daemon-route-routable', hasRoute: true, daemonKey }
-}
-
-function runtimeProjection({ status, activity, route, evidence, reason, nowMs }) {
+function runtimeProjection({ status, activity, evidence, reason, nowMs }) {
   return {
     status,
     activity: activity || 'unknown',
-    route_state: route.state,
-    route_reason: route.reason,
-    // Null for the three early returns that never reached the seat check —
-    // agent-missing, agent-dead, daemon-route-missing — exactly as when this
-    // read `route.seat ? … : null`. The `|| null` on daemon_key is gone with
-    // the guard above: the column is NOT NULL.
-    route: route.hasRoute ? {
-      daemon_key: route.daemonKey,
-    } : null,
     evidence,
     reason,
     updated_at: new Date(nowMs).toISOString(),

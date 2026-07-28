@@ -6,7 +6,7 @@ const PUBLIC_TRACE_FIELDS = Object.freeze([
   'reported_at', 'report_reason', 'ws_daemon_key', 'ws_boot_id',
   'seat_identity_match', 'seat_rejection_reason', 'terminal_decision',
   'mark_alive_applied', 'liveness_state', 'liveness_source', 'liveness_at',
-  'liveness_age_ms', 'reason', 'route_reason', 'projected_status',
+  'liveness_age_ms', 'reason', 'projected_status',
   'changed_row_built', 'changed_row_generation',
 ])
 
@@ -98,7 +98,6 @@ export function recordLivenessProjection(traceStore, { agentId, generation, runt
     liveness_age_ms: runtime?.evidence?.positive_age_ms
       ?? (Number.isFinite(livenessAtMs) ? Math.max(0, Date.now() - livenessAtMs) : null),
     reason: runtime?.reason || null,
-    route_reason: runtime?.route_reason || null,
     projected_status: runtime?.status || null,
   })
   traceStore.record({

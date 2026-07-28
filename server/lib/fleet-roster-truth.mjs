@@ -5,15 +5,9 @@ function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
 }
 
-function agentDaemonKey(agent) {
-  if (agent.runtime_status?.route?.daemon_key) return agent.runtime_status.route.daemon_key
-  return 'unassigned'
-}
-
 function rowForAgent(agent, now = Date.now()) {
   const lastSeenMs = agent.last_seen ? now - new Date(agent.last_seen).getTime() : null
   const act = agent.metadata?.status || null
-  const runtimeRoute = agent.runtime_status?.route || null
   return {
     id: agent.id,
     name: agentName(agent),
@@ -23,15 +17,10 @@ function rowForAgent(agent, now = Date.now()) {
     inbox_status: agent.metadata?.inboxStatus || null,
     inbox_status_tag: agent.metadata?.inboxStatusTag || null,
     delivery_channel: agent.metadata?.deliveryChannel || null,
-    machine_id: runtimeRoute?.machine_id || null,
-    env_name: runtimeRoute?.env_name || null,
-    daemon_key: runtimeRoute?.daemon_key || agentDaemonKey(agent),
     activity: act?.state || null,
     tool: act?.tool || null,
     runtime_status: agent.runtime_status || null,
-    activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}, agent.runtime_status || null, {
-      allowRoutableNoTmuxSuppression: true,
-    }),
+    activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}),
   }
 }
 
@@ -93,7 +82,7 @@ export function summarizeFleetRosterTruth({
   }
 
   for (const agent of agentRoster) {
-    const e = entry(agentDaemonKey(agent))
+    const e = entry('unassigned')
     e.registry.total++
     const category = fleetRosterCategory(agent)
     if (category === 'dead') e.registry.dead++
