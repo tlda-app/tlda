@@ -213,7 +213,8 @@ export function createTerminalRpc({
   }
 
   async function rpcInterrupt(args = {}) {
-    const { tmuxSession } = resolveTerminalEndpoint(args)
+    if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
+    const { tmux_session: tmuxSession } = resolveAgentRoute(args)
     checkSession(tmuxSession)
     try { await tmux('send-keys', '-t', tmuxSession, 'Escape') } catch {
       // Interrupt is best-effort; the capture loop below reports whether it stopped.
