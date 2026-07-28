@@ -293,7 +293,7 @@ export async function recoverProjectSourceTransactions(name) {
       if (existsSync(join(dir, '.git')) && recovery.originalLocalHead) {
         await execAsync(`git reset --hard ${shellQuote(recovery.originalLocalHead)}`, { cwd: dir, timeout: 30000 })
       }
-      rollbackProjectSourceRecovery(name, recovery.id)
+      await rollbackProjectSourceRecovery(name, recovery.id)
       removeProjectSourceRecovery(name, recovery.id)
       results.push({ id: recovery.id, state: 'snapshot-rolled-back-cleaned' })
       continue
@@ -319,7 +319,7 @@ export async function recoverProjectSourceTransactions(name) {
     }
     if (remoteHead === recovery.previousRemoteHead) {
       await execAsync(`git reset --hard ${shellQuote(recovery.originalLocalHead)}`, { cwd: dir, timeout: 30000 })
-      rollbackProjectSourceRecovery(name, recovery.id)
+      await rollbackProjectSourceRecovery(name, recovery.id)
       removeProjectSourceRecovery(name, recovery.id)
       results.push({ id: recovery.id, state: 'rolled-back-cleaned' })
       continue

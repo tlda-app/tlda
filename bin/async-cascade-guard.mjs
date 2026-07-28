@@ -112,6 +112,21 @@ export const ASYNC_CASCADE = Object.freeze([
   'qualTrackRead',
   'qualTrackPartialSkillReads',
   'checkQualifications',
+  // Project-files SQLite now lives on its own worker. These are the exported
+  // project-store surfaces and server helpers whose callers must consume that
+  // boundary before continuing with filesystem/build work.
+  'initProjectStore',
+  'beginProjectSourceTransaction',
+  'rollbackProjectSourceRecovery',
+  'deleteProject',
+  'listSourceFiles',
+  'hashSourceFiles',
+  'isClientOwnedSourcePath',
+  'readClientSourceManifest',
+  'updateClientSourceManifest',
+  'validateSourceLifecycleCandidate',
+  'writeSourceScope',
+  'projectsForDaemon',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']

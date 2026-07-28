@@ -251,7 +251,7 @@ const HOST = process.env.HOST || '0.0.0.0'
 const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 
 // Initialize stores
-initProjectStore(PROJECTS_DIR)
+await initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 resetStaleBuildStates()
 
@@ -8342,14 +8342,14 @@ async function knownDaemonKeys() {
   return [...keys].sort()
 }
 
-function projectsForDaemon() {
+async function projectsForDaemon() {
   // Returns the project list a daemon needs to watch source dirs for,
   // including each project's relevant-files set (from the last build's
   // .fls). The daemon uses this to watch ONLY the files the build
   // actually reads — not the entire sourceDir.
-  return listProjects()
+  return Promise.all(listProjects()
     .filter(p => !p.archived)
-    .map(p => {
+    .map(async p => {
       let watchFiles = null
       try {
         const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
@@ -8378,9 +8378,9 @@ function projectsForDaemon() {
         mainFile: p.mainFile || null,
         extraInputCommands: p.extraInputCommands || null,
         sourceRevision: sourceLifecycleStore(p.name).readAuthority().currentRevision,
-        sourceManifest: readClientSourceManifest(p.name),
+        sourceManifest: await readClientSourceManifest(p.name),
       }
-    })
+    }))
 }
 
 // Project-part source paths are recorded absolute (they may point outside this
@@ -8413,7 +8413,7 @@ function broadcastDaemonAgentsUpdated(agentUpdates = null) {
 async function broadcastDaemonProjectsUpdated() {
   const daemonKeys = await knownDaemonKeys()
   if (daemonKeys.length === 0) return
-  const projects = projectsForDaemon()
+  const projects = await projectsForDaemon()
   for (const daemonKey of daemonKeys) {
     await enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
   }
@@ -8668,7 +8668,7 @@ async function handleDaemonWsMessage(ws, msg) {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
-        projects: projectsForDaemon(),
+        projects: await projectsForDaemon(),
         connection_attempt_id: ws._connectionAttemptId || null,
         server_ws_session_id: ws._wsSessionId || null,
       }))

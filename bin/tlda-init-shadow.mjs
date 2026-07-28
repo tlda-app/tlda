@@ -77,7 +77,7 @@ if (existsSync(shadowDir)) {
 
 // Initialize project store (so server-lib functions can resolve paths).
 const ps = await import('/Users/skip/work/tlda/server/lib/project-store.mjs')
-ps.initProjectStore(SERVER_PROJECTS_DIR)
+await ps.initProjectStore(SERVER_PROJECTS_DIR)
 
 const sr = await import('/Users/skip/work/tlda/server/lib/shadow-repo.mjs')
 try {

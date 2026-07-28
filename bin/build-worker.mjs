@@ -68,7 +68,7 @@ process.on('message', async (msg) => {
     // This process has its own project-store module instance — point it at the
     // same projects dir the server uses, or path resolution (sourceDir/outputDir)
     // would be null.
-    if (msg.projectsDir) initProjectStore(msg.projectsDir)
+    if (msg.projectsDir) await initProjectStore(msg.projectsDir)
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
     } else {

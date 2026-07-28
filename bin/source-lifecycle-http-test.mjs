@@ -3,16 +3,16 @@ import assert from 'assert/strict'
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, writeSourceFile } from '../server/lib/project-store.mjs'
+import { closeProjectStore, createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, writeSourceFile } from '../server/lib/project-store.mjs'
 import { processProjectPush } from '../server/routes/projects.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-source-http-'))
-initProjectStore(root)
+await initProjectStore(root)
 createProject({ name: 'authority-http', title: 'Authority HTTP' })
 
 createProject({ name: 'authority-bootstrap', title: 'Authority Bootstrap' })
 writeSourceFile('authority-bootstrap', 'legacy-preserved.tex', 'surviving server bytes\n')
-updateClientSourceManifest('authority-bootstrap', ['legacy-preserved.tex'])
+await updateClientSourceManifest('authority-bootstrap', ['legacy-preserved.tex'])
 const watchedFiles = Array.from({ length: 10 }, (_, index) => ({
   path: `watched-${index + 1}.tex`,
   content: `filesystem bytes ${index + 1}\n`,
@@ -29,7 +29,7 @@ for (const file of watchedFiles) assert.equal(readSourceFile('authority-bootstra
 createProject({ name: 'authority-bootstrap-collision', title: 'Authority Bootstrap Collision' })
 writeSourceFile('authority-bootstrap-collision', 'legacy-preserved.tex', 'surviving server bytes\n')
 writeSourceFile('authority-bootstrap-collision', 'unowned-collision.tex', 'unowned server bytes\n')
-updateClientSourceManifest('authority-bootstrap-collision', ['legacy-preserved.tex'])
+await updateClientSourceManifest('authority-bootstrap-collision', ['legacy-preserved.tex'])
 const collision = await processProjectPush('authority-bootstrap-collision', {
   expectedRevision: null,
   sourceManifest: ['legacy-preserved.tex', 'unowned-collision.tex'],
@@ -121,3 +121,4 @@ assert.ok(readdirSync(revisionsRoot).length >= 4, 'immutable incoming revision m
 const authority = JSON.parse(readFileSync(join(root, 'authority-http', '.source-lifecycle', 'authority.json'), 'utf8'))
 assert.equal(authority.currentRevision, deleted.sourceRevision)
 console.log('source lifecycle HTTP/rollback tests passed')
+await closeProjectStore()

@@ -33,8 +33,8 @@ function signalReload(name, pages) {
  * content-addresses blobs, so it costs one copy across all versions rather than
  * one per version. What actually churns is the small part.
  */
-function writeSourceScope(name, srcDir) {
-  const files = readClientSourceManifest(name)
+async function writeSourceScope(name, srcDir) {
+  const files = (await readClientSourceManifest(name))
     .filter((rel) => existsSync(join(srcDir, rel)))
     .sort()
   writeFileSync(
@@ -93,7 +93,7 @@ export async function buildHtml(name) {
     writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
   }
 
-  writeSourceScope(name, srcDir)
+  await writeSourceScope(name, srcDir)
   reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
@@ -117,7 +117,7 @@ export async function buildSlides(name) {
   const pageInfo = generateSlidesPageInfo(htmlContent, htmlFiles[0])
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
-  writeSourceScope(name, srcDir)
+  await writeSourceScope(name, srcDir)
   reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
   signalReload(name, pageInfo.length)
   console.log(`[slides] ${name}: ${pageInfo.length} slides from ${htmlFiles[0]}`)

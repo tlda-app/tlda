@@ -546,10 +546,10 @@ router.post('/:name/overleaf-unlink', requireRw, (req, res) => {
 })
 
 // Delete project
-router.delete('/:name', requireRw, (req, res) => {
+router.delete('/:name', requireRw, async (req, res) => {
   try {
     stopPolling(req.params.name)
-    deleteProject(req.params.name)
+    await deleteProject(req.params.name)
     res.json({ ok: true })
   } catch (e) {
     res.status(404).json({ error: e.message })
@@ -569,10 +569,10 @@ router.patch('/:name/members', requireRw, (req, res) => {
 })
 
 // List source files
-router.get('/:name/files', requireRead, (req, res) => {
+router.get('/:name/files', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
-  res.json({ files: listSourceFiles(req.params.name) })
+  res.json({ files: await listSourceFiles(req.params.name) })
 })
 
 router.get('/:name/source-authority', requireRead, (req, res) => {
@@ -735,10 +735,10 @@ router.get('/:name/outline', requireRead, async (req, res) => {
 })
 
 // Source file hashes (for incremental push)
-router.get('/:name/hashes', requireRead, (req, res) => {
+router.get('/:name/hashes', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
-  res.json({ hashes: hashSourceFiles(req.params.name) })
+  res.json({ hashes: await hashSourceFiles(req.params.name) })
 })
 
 /**
@@ -808,7 +808,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   }
   project = readProject(name)
 
-  const validation = validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
+  const validation = await validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
   if (!validation.ok) return validation
 
   const sourceMutation = (files?.length || 0) > 0 || (deletedFiles?.length || 0) > 0
@@ -822,7 +822,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
     const candidate = new Map((current?.files || []).map(file => [file.path, { ...file, encoding: 'base64' }]))
     const inheritedManifest = authorityBefore.state === 'uninitialized'
-      ? new Set(readClientSourceManifest(name))
+      ? new Set(await readClientSourceManifest(name))
       : new Set()
     if (authorityBefore.state === 'uninitialized') {
       for (const filePath of normalizeSourceManifest(sourceManifest, sourceManifestContext(project))) {
@@ -856,7 +856,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     }
   }
 
-  let anyChanged = sourcePushWouldChange(name, { files, deletedFiles })
+  let anyChanged = await sourcePushWouldChange(name, { files, deletedFiles })
   if (members && Array.isArray(members) && project.format === 'book') {
     updateProject(name, { members })
     return { status: 200, ok: true, members }
@@ -864,7 +864,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   const originalLocalHead = await readOverleafLocalHead(name)
   let transaction
   try {
-    transaction = beginProjectSourceTransaction(name, {
+    transaction = await beginProjectSourceTransaction(name, {
       originalLocalHead,
       failJournalWrite: transactionTest.failAt === 'journal-write',
       durabilityProbe: transactionTest.durabilityProbe,
@@ -901,7 +901,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     }
     if (deletedFiles?.length > 0) {
       for (const [index, filePath] of deletedFiles.entries()) {
-        if (!isClientOwnedSourcePath(name, filePath)) continue
+        if (!await isClientOwnedSourcePath(name, filePath)) continue
         deleteSourceFile(name, filePath)
         if (transactionTest.failAt === `delete:${index + 1}`) throw new Error(`Injected failure at delete:${index + 1}`)
       }
@@ -922,7 +922,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       } : {}),
     }
     updateProject(name, metadata)
-    if (nextManifest) updateClientSourceManifest(name, nextManifest)
+    if (nextManifest) await updateClientSourceManifest(name, nextManifest)
     if (lifecycleCandidate) {
       const { observedServerFiles, observedSourceManifest, ...candidate } = lifecycleCandidate
       const lifecycleResult = authorityBefore.state === 'uninitialized'
@@ -977,7 +977,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       }
     }
     try {
-      transaction.rollback()
+      await transaction.rollback()
     } catch (rollbackError) {
       rollbackFailures.push(`local rollback failed: ${rollbackError.message}`)
     }
@@ -1094,7 +1094,7 @@ function broadcastProjectPartsChanged(name, files) {
   broadcastSignal(`doc-${name}`, 'signal:project-parts-changed', { files, timestamp: Date.now() })
 }
 
-function validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest }) {
+async function validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest }) {
   const pushFiles = files || []
   const deletes = deletedFiles || []
   if ((pushFiles.length > 0 || deletes.length > 0) && !Array.isArray(sourceManifest)) {
@@ -1157,7 +1157,7 @@ function validateSourcePushRequest(name, project, { files, deletedFiles, sourceM
 
   const sourceRoot = getSourceDir(name)
   const proposed = new Set()
-  for (const filePath of readClientSourceManifest(name)) {
+  for (const filePath of await readClientSourceManifest(name)) {
     const error = validateAuthoredPath(filePath, 'stored sourceManifest entry')
     if (error) return { status: 400, ok: false, error }
     if (existsSync(join(sourceRoot, filePath))) proposed.add(filePath)
@@ -1178,11 +1178,11 @@ function validateSourcePushRequest(name, project, { files, deletedFiles, sourceM
 
 // Exported for the dormant lifecycle contract tests. This does not change any
 // route or caller behavior before the Phase B ingress cutover.
-export function validateSourceLifecycleCandidate(name, project, candidate) {
+export async function validateSourceLifecycleCandidate(name, project, candidate) {
   return validateSourcePushRequest(name, project, candidate)
 }
 
-function sourcePushWouldChange(name, { files, deletedFiles }) {
+async function sourcePushWouldChange(name, { files, deletedFiles }) {
   for (const file of files || []) {
     const next = file.encoding === 'base64'
       ? Buffer.from(file.content, 'base64')
@@ -1192,7 +1192,7 @@ function sourcePushWouldChange(name, { files, deletedFiles }) {
     if (!readFileSync(full).equals(next)) return true
   }
   for (const filePath of deletedFiles || []) {
-    if (isClientOwnedSourcePath(name, filePath) && existsSync(join(getSourceDir(name), filePath))) return true
+    if (await isClientOwnedSourcePath(name, filePath) && existsSync(join(getSourceDir(name), filePath))) return true
   }
   return false
 }
@@ -1903,7 +1903,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
 })
 
 // POST /:name/input-scratch — inject a scratch .tex file into the document
-router.post('/:name/input-scratch', requireRw, (req, res) => {
+router.post('/:name/input-scratch', requireRw, async (req, res) => {
   const { content, label, after, before, replace, agentId, agentName, format, contentPath } = req.body
   if (!content) return res.status(400).json({ error: 'content is required' })
   if (!label) return res.status(400).json({ error: 'label is required' })
@@ -1915,6 +1915,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
 
   const mainContent = readSourceFile(req.params.name, project.mainFile)
   if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
+  const projectSourceFiles = await listSourceFiles(req.params.name)
 
   const isMd = format === 'md'
   const baseFilename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase()
@@ -1983,7 +1984,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
 
   // Check if this scratch label already exists — agents should edit in place, not create new files
   const allSourceFiles = [mainContent]
-  for (const f of listSourceFiles(req.params.name)) {
+  for (const f of projectSourceFiles) {
     if (f !== project.mainFile) {
       const fc = readSourceFile(req.params.name, f)
       if (fc) allSourceFiles.push(fc)
@@ -2051,7 +2052,7 @@ router.post('/:name/input-scratch', requireRw, (req, res) => {
 
     // 2. Search included files; resolve within that file (not the main file's \input line)
     // Prefer files in the same directory tree as mainFile
-    const allFiles = listSourceFiles(req.params.name).filter(f => f !== project.mainFile)
+    const allFiles = projectSourceFiles.filter(f => f !== project.mainFile)
     allFiles.sort((a, b) => {
       const aInMain = (mainDir === '.' || a.startsWith(mainDir + '/')) ? 0 : 1
       const bInMain = (mainDir === '.' || b.startsWith(mainDir + '/')) ? 0 : 1
