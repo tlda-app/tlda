@@ -76,7 +76,6 @@ import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, link
 import { decideFollowTransition, isTrueBottomGap, shouldConvergeToBottom, shouldGlueTailChange, shouldResumeFollowFromBottom } from './chatScrollIntent.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
-import { TerminalCard } from './TerminalCard'
 import { Terminal } from 'xterm'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import {
@@ -417,8 +416,9 @@ type TerminalOutputFrame = {
 
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
-function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
+function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
+  agentName: string
   pinned: boolean
   anchorRef: React.RefObject<HTMLElement | null>
   onDismiss: () => void
@@ -919,7 +919,11 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
             onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
-            placeholder={status === 'connected' ? 'type or speak a command…' : status === 'error' ? 'terminal unavailable — reconnecting…' : 'connecting…'}
+            // The pane can now be pinned by a terminal-card notification for an
+            // agent this panel is not addressing, so it has to say whose
+            // terminal this is. Carried in the existing placeholder — which
+            // already reported connection state — rather than a new header.
+            placeholder={status === 'connected' ? `${agentName} — type or speak a command…` : status === 'error' ? `${agentName} — terminal unavailable, reconnecting…` : `${agentName} — connecting…`}
             // Suppress the iOS soft keyboard on touch (same as the main composer
             // ChatComposer.tsx + math notes): the field is voice/dictation-first,
             // and raising the on-screen keyboard shifts visualViewport, which
@@ -2024,16 +2028,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [agents])
 
   // Terminal card — hover to show, click to pin. Replaces the old auto-open set.
-  const [termCardHoverId, setTermCardHoverId] = useState<string | null>(null)
-  const [termCardPinnedId, setTermCardPinnedId] = useState<string | null>(null)
   const termCardHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Hover-intent: cursor must rest on a terminal card before the peek opens, so a
   // cursor merely passing through never triggers it.
   const termCardShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const termCardPendingIdRef = useRef<string | null>(null)
 
-  const dismissTermCard = useCallback((agentId: string) => {
-    // Mark terminal events from this agent as read when dismissed.
+  const dismissTerminalNotification = useCallback((agentId: string) => {
+    // Mark terminal events from this agent as read when dismissed, so they do
+    // not re-pop on reload. Other unread chats for the recipient are untouched.
     const unreadEventIds = liveEvents
       .filter((e: any) =>
         (e._evType === 'terminal_card' || e._evType === 'terminal_attention') &&
@@ -2045,8 +2048,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       fleetDurable('mark-event-read', { event_id: eid, agent: getHumanId() })
         .catch((e: Error) => console.warn('[fleet-chat] mark-read failed:', e.message))
     }
-    setTermCardPinnedId(null)
-    setTermCardHoverId(null)
+    setTermHoverPinned(false)
+    setTermHoverVisible(false)
+    setTermHoverAgentId(null)
   }, [liveEvents])
 
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
@@ -3539,6 +3543,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
+  // Which agent the hover is currently PINNED to, readable from the delegated
+  // transcript click listener. That listener is attached once per chatLogEl, so
+  // it cannot read termHoverPinned/termHoverAgentId from its closure without
+  // going stale — the card code it replaces used a functional setState for the
+  // same reason.
+  const termHoverPinnedIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
+  }, [termHoverPinned, termHoverAgentId])
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
   const captureViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
@@ -3838,7 +3851,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         termCardShowTimerRef.current = null
         // Only open if the cursor is still resting on this same card.
         const overId = (document.querySelector('.lc-terminal-card:hover') as HTMLElement | null)?.dataset.agentId
-        if (overId === agentId) setTermCardHoverId(agentId)
+        if (overId === agentId) { setTermHoverAgentId(agentId); setTermHoverVisible(true) }
       }, 600)
     }
     const onOut = (e: MouseEvent) => {
@@ -3848,7 +3861,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         // Cancel a pending open so a passthrough never resolves into a popup.
         if (termCardShowTimerRef.current) { clearTimeout(termCardShowTimerRef.current); termCardShowTimerRef.current = null }
         termCardPendingIdRef.current = null
-        termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200)
+        termCardHideTimerRef.current = setTimeout(() => {
+          // A pinned pane stays; only the passthrough peek closes on mouse-out.
+          if (!termHoverPinnedIdRef.current) setTermHoverVisible(false)
+        }, 200)
       }
     }
     el.addEventListener('mouseover', onOver)
@@ -4049,7 +4065,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (termCard) {
         const agentId = termCard.dataset.agentId
         if (agentId) {
-          setTermCardPinnedId(prev => prev === agentId ? null : agentId)
+          if (termHoverPinnedIdRef.current === agentId) {
+            setTermHoverPinned(false)
+            setTermHoverVisible(false)
+            setTermHoverAgentId(null)
+          } else {
+            setTermHoverAgentId(agentId)
+            setTermHoverPinned(true)
+          }
           return
         }
       }
@@ -4608,7 +4631,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     if (targetId) {
       expireClearedComposerDraft()
-      setTermCardPinnedId(targetId)
+      setTermHoverAgentId(targetId)
+      setTermHoverPinned(true)
       ta.value = ''
       ta.style.height = ''
     }
@@ -4839,23 +4863,27 @@ function FleetChatInner({ shape }: { shape: any }) {
     return null
   }, [sendTargets, agents, resolveTargetAgent, agentRouteName, agentDisplayName])
 
-  const terminalHoverAgents = useMemo(
-    () => terminalComposerControls.map(control => control.agent).filter((agent): agent is TerminalAgent => !!agent && !terminalUnavailableReason(agent)),
-    [terminalComposerControls],
-  )
-  const terminalHoverAgentKey = useMemo(() => terminalHoverAgents.map((agent: any) => agent.id).join(','), [terminalHoverAgents])
-  const selectedTerminalHoverAgent = useMemo(
-    () => terminalHoverAgents.find((agent: any) => agent.id === termHoverAgentId) || null,
-    [terminalHoverAgents, termHoverAgentId],
-  )
+  // Resolve against the whole roster rather than the composer's send targets.
+  // A terminal-card notification pins the hover for whichever agent raised it,
+  // and that agent is usually not the one this panel is addressing; scoping the
+  // lookup to send targets would close the pane the instant it opened.
+  const selectedTerminalHoverAgent = useMemo(() => {
+    if (!termHoverAgentId) return null
+    const agent = agents.find((candidate: any) => candidate.id === termHoverAgentId)
+    return agent && !terminalUnavailableReason(agent) ? (agent as TerminalAgent) : null
+  }, [agents, termHoverAgentId])
 
+  // Narrowed once here so the pane and its dismiss handler share one id.
+  const activeTerminalHoverId = selectedTerminalHoverAgent?.id
+
+  // Close the pane when its agent stops offering a terminal at all — the reason
+  // the old scoped check existed, kept without the send-target coupling.
   useEffect(() => {
-    if (!termHoverAgentId) return
-    if (terminalHoverAgents.some((agent: any) => agent.id === termHoverAgentId)) return
+    if (!termHoverAgentId || selectedTerminalHoverAgent) return
     setTermHoverAgentId(null)
     setTermHoverPinned(false)
     setTermHoverVisible(false)
-  }, [termHoverAgentId, terminalHoverAgentKey, terminalHoverAgents])
+  }, [termHoverAgentId, selectedTerminalHoverAgent])
 
   // Reset auto-pin tracking when the selected terminal agent changes
   useEffect(() => {
@@ -5779,22 +5807,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           )}
         </div>
 
-        {/* Terminal card overlay — shown on hover or when pinned; outside scroll container */}
-        {(termCardPinnedId || termCardHoverId) && (() => {
-          const activeId = termCardPinnedId ?? termCardHoverId!
-          return (
-            <TerminalCard
-              key={`terminal-${activeId}`}
-              agentId={activeId}
-              agentName={agentNames[activeId] || activeId.replace('fleet:', '')}
-              pinned={!!termCardPinnedId}
-              onMouseEnter={() => { if (termCardHideTimerRef.current) { clearTimeout(termCardHideTimerRef.current); termCardHideTimerRef.current = null } }}
-              onMouseLeave={() => { if (!termCardPinnedId) { termCardHideTimerRef.current = setTimeout(() => setTermCardHoverId(null), 200) } }}
-              onDismiss={() => dismissTermCard(activeId)}
-            />
-          )
-        })()}
-
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         {!filterOpen && (
         <div
@@ -5809,12 +5821,13 @@ function FleetChatInner({ shape }: { shape: any }) {
           }}
         >
           {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
-          {(termHoverVisible || termHoverPinned) && selectedTerminalHoverAgent?.id && (
+          {(termHoverVisible || termHoverPinned) && activeTerminalHoverId && (
             <TerminalHoverPane
-              agentId={selectedTerminalHoverAgent.id}
+              agentId={activeTerminalHoverId}
+              agentName={agentNames[activeTerminalHoverId] || activeTerminalHoverId.replace('fleet:', '')}
               pinned={termHoverPinned}
               anchorRef={inputAreaRef}
-              onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false); setTermHoverAgentId(null) }}
+              onDismiss={() => dismissTerminalNotification(activeTerminalHoverId)}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
                   clearTimeout(termHideTimerRef.current)
