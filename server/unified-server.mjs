@@ -4270,10 +4270,10 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   const agent = fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
-  if (!seat) return
+  const route = resolveRpc('interrupt', agent)
+  if (route.via === 'none') return res.status(route.code).json({ error: route.error })
   try {
-    const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
+    const result = await sendDaemonDurable(route.machine_id, 'interrupt', { agent_id: agent.id })
     // Only emit the interrupt card when the agent actually halted. A soft promote
     // also produces a "[Request interrupted by user]" marker but the agent resumes;
     // `stopped` is what tells a real hard interrupt (card) from a soft one (no card).
