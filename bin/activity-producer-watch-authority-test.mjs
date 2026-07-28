@@ -50,10 +50,12 @@ try {
     harness_kind: 'codex',
     model: 'gpt-test',
     cwd: dir,
+    terminal_capability: 'termcap-activity-producer',
   }, daemonIdentity)
   assert.equal(seatEvent.agent_id, agent.id)
   assert.equal(seatEvent.session_id, agent.session_id)
   assert.equal(seatEvent.daemon_key, daemonIdentity.daemonKey)
+  assert.equal(seatEvent.terminal_capability, 'termcap-activity-producer')
   assert(!Object.hasOwn(seatEvent, 'tmux_session'))
 
   outbox = new DaemonOutbox(outboxPath)

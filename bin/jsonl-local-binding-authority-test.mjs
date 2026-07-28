@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -117,6 +117,7 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
     },
     jsonlTranscriptRoots: [projectsDir],
     permissionLedger,
+    recordMintMarker,
     resolveMintFacts,
     bufferActivity(agentId, activity) { bufferedActivity.push({ agentId, activity }) },
     extractActivityEvents() { return [] },
@@ -290,9 +291,17 @@ function assertTailCount(harness, expected) {
 
 {
   const sessionUuid = '019fa554-0000-7000-8000-000000000001'
+  const recordedMarkers = []
   const harness = createHarness({
     jsonlFileName: `rollout-2026-07-27T17-00-00-${sessionUuid}.jsonl`,
-    permissionLedger: { setSessionSync() {} },
+    permissionLedger: {
+      get: () => ({
+        sessionId: sessionUuid,
+        terminalCapability: 'termcap-jsonl-owner',
+      }),
+      setSessionSync() {},
+    },
+    recordMintMarker: marker => recordedMarkers.push(marker),
     resolveMintFacts: marker => marker.mint_id === 'mint-jsonl-owner'
       ? {
           fleetId: 'fleet:jsonl-owner',
@@ -337,8 +346,10 @@ function assertTailCount(harness, expected) {
       message.type === 'agent-seat' &&
       message.agent_id === 'fleet:jsonl-owner' &&
       message.session_id === sessionUuid &&
-      message.model === 'gpt-from-mint'
+      message.model === 'gpt-from-mint' &&
+      message.terminal_capability === 'termcap-jsonl-owner'
     ), true)
+    assert.equal(recordedMarkers[0].session_id, sessionUuid)
   } finally {
     harness.cleanup()
   }
