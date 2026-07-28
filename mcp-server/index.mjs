@@ -1964,15 +1964,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: FLEET_ONLY_MCP ? getFleetTools() : [
     {
       name: 'screenshot',
-      description: 'Capture an image of part of the viewer. Specify a target — viewport (current scroll position), screen (the user\'s entire visible area), an annotation region (via screenshotRef from a read_annotations result), or explicit canvas bounds. Always passes through the viewer\'s capture mechanism. There is no default — pick a target intentionally.',
+      description: 'Capture an image of part of the document viewer: the current document viewport, an annotation region (via screenshotRef from a read_annotations result), requested shapes, or explicit canvas bounds. This does not capture the user\'s screen or browser UI.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Project name (e.g. "bregman")' },
           target: {
             type: 'string',
-            enum: ['viewport', 'screen'],
-            description: '"viewport" = the document area currently scrolled into view. "screen" = the user\'s entire visible viewport including UI chrome.',
+            enum: ['viewport'],
+            description: '"viewport" = the document area currently scrolled into view.',
           },
           ref: {
             type: 'string',
@@ -2465,6 +2465,10 @@ const TOOLS_NEEDING_BUILD = new Set([
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  if (name === 'screenshot' && args?.target && args.target !== 'viewport') {
+    return { content: [{ type: 'text', text: `Invalid screenshot target: ${args.target}` }], isError: true };
+  }
+
   // Pre-check: tools that depend on built pages should fail fast with a diagnostic
   if (TOOLS_NEEDING_BUILD.has(name)) {
     const projectName = args?.project;
@@ -2595,7 +2599,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Resolve target → signal payload.
     let bounds = null;
-    let mode = args?.target || null; // 'viewport' | 'screen' | null
+    let mode = args?.target || null; // 'viewport' | null
     let labelTag = '';
 
     if (args?.ref) {
@@ -2611,8 +2615,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (args?.x != null && args?.y != null && args?.w != null && args?.h != null) {
       bounds = { x: args.x, y: args.y, w: args.w, h: args.h };
       labelTag = ' (bounds)';
-    } else if (mode === 'screen') {
-      labelTag = ' (screen)';
     } else {
       // Default to viewport when no other target is given.
       mode = mode || 'viewport';
