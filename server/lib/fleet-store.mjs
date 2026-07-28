@@ -602,14 +602,6 @@ export class FleetStore {
         daemon_key TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS daemon_agent_bindings (
-        daemon_key TEXT NOT NULL,
-        local_agent_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (daemon_key, local_agent_id)
-      );
-
       -- Materialized task state (cache, rebuilt from events)
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -777,6 +769,7 @@ export class FleetStore {
     }
     if (!agentCols.some(c => c.name === 'pretty_name')) this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     this.db.exec("DROP TABLE IF EXISTS daemon_registry");
+    this.db.exec("DROP TABLE IF EXISTS daemon_agent_bindings");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS agent_cwd_segments (
         source TEXT NOT NULL,
@@ -1423,12 +1416,6 @@ export class FleetStore {
       ON CONFLICT(agent_id) DO UPDATE SET daemon_key = excluded.daemon_key
     `);
     this._deleteAgentDaemonRoute = this.db.prepare('DELETE FROM agent_daemon_routes WHERE agent_id = ?');
-    this._getDaemonAgentBinding = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE daemon_key = ? AND local_agent_id = ?');
-    this._getDaemonAgentBindingByAgent = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE agent_id = ?');
-    this._insertDaemonAgentBinding = this.db.prepare(`
-      INSERT INTO daemon_agent_bindings (daemon_key, local_agent_id, agent_id, created_at)
-      VALUES (?, ?, ?, ?)
-    `);
     this._nameHistoryStmt = this.db.prepare(`
       SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
       ORDER BY from_ts ASC
@@ -2127,28 +2114,6 @@ export class FleetStore {
     this._bustAgentsCache();
     this._syncAgentRegistry(agentId);
     return this.getAgentDaemonRoute(agentId);
-  }
-
-  getDaemonAgentBinding(daemonKey, localAgentId) {
-    if (!daemonKey || !localAgentId) return null;
-    return this._getDaemonAgentBinding.get(String(daemonKey), String(localAgentId)) || null;
-  }
-
-  bindDaemonAgent({ daemonKey, localAgentId, agentId, now = new Date().toISOString() } = {}) {
-    if (!daemonKey || !localAgentId || !agentId) {
-      throw new Error('daemon agent binding requires daemonKey, localAgentId, and agentId');
-    }
-    const existingLocal = this.getDaemonAgentBinding(daemonKey, localAgentId);
-    if (existingLocal) {
-      if (existingLocal.agent_id === agentId) return existingLocal;
-      throw new Error(`daemon agent ${daemonKey}/${localAgentId} is already bound to ${existingLocal.agent_id}`);
-    }
-    const existingAgent = this._getDaemonAgentBindingByAgent.get(String(agentId));
-    if (existingAgent) {
-      throw new Error(`server agent ${agentId} is already bound to ${existingAgent.daemon_key}/${existingAgent.local_agent_id}`);
-    }
-    this._insertDaemonAgentBinding.run(String(daemonKey), String(localAgentId), String(agentId), now);
-    return this.getDaemonAgentBinding(daemonKey, localAgentId);
   }
 
 

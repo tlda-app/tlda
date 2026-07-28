@@ -5674,33 +5674,11 @@ async function handleFleetWsMessage(ws, msg) {
       error('reserve-shell is only for agent spawn shells')
       return
     }
-    let agentId = agent_id || (type === 'mint-shell' ? null : msgId)
+    let agentId = agent_id || msgId
     if (type === 'mint-shell') {
-      if (!local_agent_id) { error('mint-shell requires local_agent_id'); return }
-      const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
-      if (!daemonKey) { error('mint-shell requires daemon identity'); return }
-      const existingBinding = await fleetStore.getDaemonAgentBinding?.(daemonKey, local_agent_id)
-      agentId = existingBinding?.agent_id || mintFleetId()
-      if (!existingBinding) {
-        try {
-          await fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
-        } catch (e) {
-          error(e)
-          return
-        }
-      }
+      agentId = agent_id || mintFleetId()
     }
     if (!agentId) { error('missing id'); return }
-    if (isShellReservation && local_agent_id) {
-      const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
-      if (!daemonKey) { error('reserve-shell with local_agent_id requires daemon identity'); return }
-      try {
-        await fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
-      } catch (e) {
-        error(e)
-        return
-      }
-    }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
     // is unsafe because fleet clients such as Todd auto-reconnect on close; two
     // same-identity clients then repeatedly kick each other off the server.
@@ -5810,15 +5788,8 @@ async function handleFleetWsMessage(ws, msg) {
   // - humans attach by `name`
   // Neither form creates a new identity.
   if (type === 'login') {
-    const { agent_id, local_agent_id, name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
+    const { agent_id, name, cwd, labels, manager, metadata, kind } = msg
     let loginAgentId = agent_id || null
-    if (!loginAgentId && local_agent_id) {
-      const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
-      if (!daemonKey) { error('login with local_agent_id requires daemon identity'); return }
-      const binding = await fleetStore.getDaemonAgentBinding?.(daemonKey, local_agent_id)
-      if (!binding?.agent_id) { error(`No live shell for local agent "${local_agent_id}". Spawn must create the shell before login.`); return }
-      loginAgentId = binding.agent_id
-    }
     if (loginAgentId) {
       const existing = await fleetStore.getAgent?.(loginAgentId)
       if (!existing || existing.dead) { error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`); return }
