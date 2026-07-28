@@ -89,18 +89,6 @@ test('equal-start ownership uses instance id as deterministic tie-break', async 
   })
 })
 
-test('notification ownership resolves an omitted client session from the current seat', async () => {
-  await withStore(async store => {
-    const owners = new NotificationOwnerRegistry(store)
-    const socket = notificationSocket({ sessionId: null, startedAt: 100, instanceId: 'current' })
-
-    assert.equal(await owners.bind(socket, 'fleet:agent', null), true)
-    assert.equal(socket._notificationSessionId, 'session-1')
-    assert.equal(owners.socketFor('fleet:agent'), socket)
-    assert.equal(owners.isOwner(socket, 'fleet:agent', 'session-1', 100, 'current'), true)
-  })
-})
-
 test('superseding the owner while unread is in flight empties the old flush', async () => {
   await withStore(async store => {
     const owners = new NotificationOwnerRegistry(store)

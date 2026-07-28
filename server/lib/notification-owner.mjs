@@ -51,13 +51,10 @@ export class NotificationOwnerRegistry {
     if (!ws?._notificationSubscriber) return false
     const startedAt = Number(ws._notificationStartedAt)
     const instanceId = ws._notificationInstanceId
-    if (!instanceId || !Number.isSafeInteger(startedAt) || startedAt < 0) return false
+    if (!sessionId || !instanceId || !Number.isSafeInteger(startedAt) || startedAt < 0) return false
+    if (ws._notificationSessionId !== sessionId) return false
     const seat = await this.store.getCurrentAgentSeat?.(agentId)
-    if (!seat?.session_id) return false
-    if (sessionId && sessionId !== seat.session_id) return false
-    if (ws._notificationSessionId && ws._notificationSessionId !== seat.session_id) return false
-    sessionId = seat.session_id
-    ws._notificationSessionId = sessionId
+    if (!seat || seat.session_id !== sessionId) return false
     const claim = await this.store.claimNotificationOwner({ agentId, sessionId, startedAt, instanceId })
     if (!notificationClaimMatches(claim, startedAt, instanceId)) return false
     ws._notificationAgentId = agentId
