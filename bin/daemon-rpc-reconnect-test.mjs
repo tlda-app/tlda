@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import Database from 'better-sqlite3'
 
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { daemonDeliveryPolicy, DELIVERY_DURABLE_FIFO, DELIVERY_LATEST_WINS } from '../daemon/delivery-policy.mjs'
@@ -235,4 +236,69 @@ test('timeout rejects honestly; late durable reply and same-id retry never repea
   assert.equal(pending.size, 0)
   await rpc.handleRpc(request)
   assert.equal(executions, 1)
+})
+
+test('restart recovery replays only exact C-End and shares duplicate execution', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-rpc-recovery-'))
+  const dbPath = join(dir, 'executions.sqlite')
+  const seed = new Database(dbPath)
+  seed.exec(`
+    CREATE TABLE daemon_rpc_executions (
+      request_id TEXT PRIMARY KEY,
+      operation TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running', 'terminal')),
+      reply TEXT,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  const requests = [
+    { type: 'rpc', id: 'safe', op: 'send-key', agent_id: 'fleet:x', key: 'C-End' },
+    { type: 'rpc', id: 'unsafe', op: 'send-key', agent_id: 'fleet:x', key: 'Enter' },
+    { type: 'rpc', id: 'mismatch', op: 'send-key', agent_id: 'fleet:x', key: 'C-End' },
+  ]
+  const insert = seed.prepare(`
+    INSERT INTO daemon_rpc_executions
+      (request_id, operation, fingerprint, status, reply, updated_at)
+    VALUES (?, ?, ?, 'running', NULL, ?)
+  `)
+  for (const request of requests) {
+    insert.run(request.id, request.op, rpcRequestFingerprint(request), request.id === 'unsafe' ? 0 : Date.now())
+  }
+  seed.close()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+
+  const sent = []
+  const gate = deferred()
+  let safeExecutions = 0
+  let unsafeExecutions = 0
+  const rpc = createMachineRpc({ sendMsg: message => sent.push(message), executionDbPath: dbPath })
+  rpc.register({
+    'send-key': async msg => {
+      if (msg.key === 'C-End') {
+        safeExecutions++
+        await gate.promise
+      } else {
+        unsafeExecutions++
+      }
+      return { ok: true }
+    },
+  })
+
+  const safeFirst = rpc.handleRpc(requests[0])
+  const safeDuplicate = rpc.handleRpc(requests[0])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(safeExecutions, 1)
+  gate.resolve()
+  await Promise.all([safeFirst, safeDuplicate])
+  assert.equal(sent.filter(reply => reply.id === 'safe').length, 2)
+  assert.deepEqual(sent.filter(reply => reply.id === 'safe').map(reply => reply.result), [{ ok: true }, { ok: true }])
+
+  await rpc.handleRpc(requests[1])
+  assert.equal(unsafeExecutions, 0)
+  assert.equal(sent.at(-1).reason, 'indeterminate-after-restart')
+
+  await rpc.handleRpc({ ...requests[2], agent_id: 'fleet:other' })
+  assert.equal(safeExecutions, 1)
+  assert.match(sent.at(-1).error, /different operation or payload/)
 })

@@ -19,6 +19,10 @@ export function rpcRequestFingerprint(msg) {
   return createHash('sha256').update(canonicalJson(payload)).digest('hex')
 }
 
+export function canReplayIndeterminateRpc(msg) {
+  return msg?.op === 'send-key' && msg?.key === 'C-End'
+}
+
 export function createMachineRpc({
   sendMsg,
   getPid = () => process.pid,
@@ -58,8 +62,13 @@ export function createMachineRpc({
     SET status = 'terminal', reply = ?, updated_at = ?
     WHERE request_id = ?
   `)
+  const restartPersistedExecution = executionDb?.prepare(`
+    UPDATE daemon_rpc_executions
+    SET updated_at = ?
+    WHERE request_id = ? AND status = 'running'
+  `)
   const prunePersistedExecutions = executionDb?.prepare(
-    'DELETE FROM daemon_rpc_executions WHERE updated_at < ?',
+    "DELETE FROM daemon_rpc_executions WHERE status = 'terminal' AND updated_at < ?",
   )
 
   function pruneExecutions() {
@@ -102,6 +111,7 @@ export function createMachineRpc({
     const identity = { id, op, fingerprint: rpcRequestFingerprint(msg) }
     pruneExecutions()
     const persisted = readPersistedExecution?.get(id)
+    let recoveringPersisted = false
     if (persisted) {
       if (persisted.operation !== op || persisted.fingerprint !== identity.fingerprint) {
         sendMsg(replyFor(identity, { error: 'rpc request id reused with different operation or payload' }))
@@ -111,11 +121,14 @@ export function createMachineRpc({
         sendMsg(JSON.parse(persisted.reply))
         return
       }
-      sendMsg(replyFor(identity, {
-        error: 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
-        reason: 'indeterminate-after-restart',
-      }))
-      return
+      if (!canReplayIndeterminateRpc(msg)) {
+        sendMsg(replyFor(identity, {
+          error: 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
+          reason: 'indeterminate-after-restart',
+        }))
+        return
+      }
+      recoveringPersisted = true
     }
     const existing = executions.get(id)
     if (existing) {
@@ -138,7 +151,8 @@ export function createMachineRpc({
       return
     }
     const entry = { ...identity, promise: null, reply: null, settledAt: null }
-    beginPersistedExecution?.run(id, op, identity.fingerprint, now())
+    if (recoveringPersisted) restartPersistedExecution?.run(now(), id)
+    else beginPersistedExecution?.run(id, op, identity.fingerprint, now())
     entry.promise = Promise.resolve()
       .then(() => handler(msg))
       .then(
