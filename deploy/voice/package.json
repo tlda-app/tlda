@@ -1,0 +1,10 @@
+{
+  "name": "tlda-voice-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Dependency manifest for the tlda voice box. Deliberately separate from the app's package.json so an app dependency change does not rebuild or restart Skip's voice bridge.",
+  "dependencies": {
+    "@deepgram/sdk": "5.4.0",
+    "ws": "8.21.0"
+  }
+}
