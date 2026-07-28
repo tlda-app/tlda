@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
+import { useState, useEffect, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -8,7 +8,6 @@ import { IdentityPicker } from './IdentityPicker'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
-import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import './App.css'
 import './themes.css'
@@ -76,8 +75,6 @@ interface FleetConfigResponse {
 
 type ErrorType = 'not-found' | 'auth' | 'generic'
 
-const HISTORY_INDEX_BATCH_SIZE = 500
-const HISTORY_CHANGELOG_BATCH_SIZE = 50
 
 type State =
   | { phase: 'loading'; message: string; roomId: string }
@@ -462,16 +459,6 @@ function App() {
 }
 
 type ProjectMeta = Record<string, { lastBuild?: string; lastAnnotated?: string }>
-type ProjectChangelog = {
-  commits: ChangelogCommit[]
-  totalPages: number
-  error?: string
-}
-type ProjectHistoryIndex = {
-  projects: Record<string, { commitCount: number; oldest: { hash: string; timestamp: number } }>
-  oldest: number | null
-}
-
 function relativeTime(iso: string | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()
@@ -500,11 +487,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
   const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
-  const [changelogs, setChangelogs] = useState<Record<string, ProjectChangelog>>({})
-  const [historyIndex, setHistoryIndex] = useState<ProjectHistoryIndex | null>(null)
-  const [historyError, setHistoryError] = useState<string | null>(null)
-  const [timeAxisNow] = useState(() => Date.now())
-  const requestedHistoriesRef = useRef(new Set<string>())
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -539,55 +521,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   }
 
   const q = search.toLowerCase()
-  const indexProjectNames = Object.keys(manifest)
-    .filter(key => !bookMembers.has(key))
-    .sort()
-  const indexProjectKey = indexProjectNames.join('\n')
-
-  useEffect(() => {
-    if (!indexProjectKey) return
-    const projectNames = indexProjectKey.split('\n')
-    const controller = new AbortController()
-    async function fetchHistoryIndex() {
-      const batches: string[][] = []
-      for (let i = 0; i < projectNames.length; i += HISTORY_INDEX_BATCH_SIZE) {
-        batches.push(projectNames.slice(i, i + HISTORY_INDEX_BATCH_SIZE))
-      }
-      const parts = await Promise.all(batches.map(async batch => {
-        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/index`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projects: batch }),
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return response.json()
-      }))
-      return parts.reduce((acc, data) => {
-        const oldest = Number.isFinite(data.oldest) ? data.oldest : null
-        return {
-          projects: { ...acc.projects, ...(data.projects || {}) },
-          oldest: oldest == null ? acc.oldest : (acc.oldest == null ? oldest : Math.min(acc.oldest, oldest)),
-        }
-      }, { projects: {}, oldest: null } as ProjectHistoryIndex)
-    }
-    fetchHistoryIndex()
-      .then(data => {
-        setHistoryError(null)
-        setHistoryIndex(data)
-      })
-      .catch(error => {
-        if (error.name !== 'AbortError') {
-          setHistoryError('Project history unavailable')
-          console.warn('[app] project history index fetch failed:', error.message)
-        }
-    })
-    return () => controller.abort()
-  }, [indexProjectKey])
-
   const entries = Object.entries(manifest)
     .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
-    .filter(([key]) => Boolean(historyIndex?.projects[key]))
     .filter(([key, config]) => !q || (config.name || key).toLowerCase().includes(q) || key.includes(q))
     .sort(([keyA, configA], [keyB, configB]) =>
       String(meta[keyB]?.lastBuild || configB.lastBuild || '')
@@ -595,62 +530,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     )
 
   const visibleEntries = entries
-  const visibleProjectNames = visibleEntries.map(([key]) => key)
-  const visibleProjectKey = visibleProjectNames.join('\n')
-
-  useEffect(() => {
-    const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
-      .filter(name => !requestedHistoriesRef.current.has(name))
-    if (projectNames.length === 0) return
-    for (const name of projectNames) requestedHistoriesRef.current.add(name)
-    async function fetchChangelogs() {
-      const batches: string[][] = []
-      for (let i = 0; i < projectNames.length; i += HISTORY_CHANGELOG_BATCH_SIZE) {
-        batches.push(projectNames.slice(i, i + HISTORY_CHANGELOG_BATCH_SIZE))
-      }
-      const parts = await Promise.all(batches.map(async batch => {
-        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/changelog/batch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projects: batch }),
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return response.json()
-      }))
-      return parts.reduce((projects, data) => ({ ...projects, ...(data.projects || {}) }), {} as Record<string, ProjectChangelog>)
-    }
-    fetchChangelogs()
-      .then(data => {
-        setHistoryError(null)
-        setChangelogs(current => ({ ...current, ...data }))
-      })
-      .catch(error => {
-        for (const name of projectNames) requestedHistoriesRef.current.delete(name)
-        setHistoryError('History unavailable')
-        console.warn('[app] project history batch fetch failed:', error.message)
-      })
-  }, [visibleProjectKey])
-
-  const timeRange = historyIndex?.oldest
-    ? { oldest: historyIndex.oldest, newest: timeAxisNow }
-    : null
-
-  const dateTicks = timeRange
-    ? Array.from({ length: 5 }, (_, index) => {
-        const xProgress = index / 4
-        const ageFraction = Math.expm1((1 - xProgress) * Math.log1p(LOG_AGE_CURVE)) / LOG_AGE_CURVE
-        const timestamp = timeRange.newest - ageFraction * (timeRange.newest - timeRange.oldest)
-        return {
-          timestamp,
-          left: `${(index / 4) * 100}%`,
-          label: new Date(timestamp).toLocaleDateString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-          }),
-        }
-      })
-    : []
 
   const archivedFiltered = archived
     .filter(p => !restoredKeys.has(p.name))
@@ -679,15 +558,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     })
   }
 
-  const openHistoryPoint = (project: string, commit: ChangelogCommit, page: number) => {
-    const url = new URL(window.location.href)
-    url.searchParams.set('project', project)
-    url.searchParams.set('history', commit.hash)
-    url.searchParams.set('historyTime', String(commit.timestamp))
-    url.searchParams.set('page', String(page))
-    window.location.assign(url.toString())
-  }
-
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
       <input
@@ -701,25 +571,13 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       <div className="project-index">
         <div className="project-index-axis" aria-hidden="true">
           <span className="project-index-axis-label">Project</span>
-          <div className="project-index-axis-ticks">
-            {dateTicks.map(tick => (
-              <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
-            ))}
-          </div>
+          <div className="project-index-axis-ticks" />
           <span className="project-index-axis-spacer" />
         </div>
         <div className="project-index-rows">
-          {!historyIndex && !historyError && (
-            <div className="project-index-loading">Loading projects…</div>
-          )}
-          {historyError && (
-            <div className="project-index-loading project-index-loading-error">{historyError}</div>
-          )}
           {visibleEntries.map(([key, config]) => {
             const health = docHealth[key]
             const isBroken = health && !health.ok
-            const changelog = changelogs[key]
-            const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
             return (
               <div
                 key={key}
@@ -732,29 +590,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
                   <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
                   {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
                 </div>
-                <div className="project-index-history">
-                  {!changelog && !historyError && (
-                    <span className="project-index-history-loading">Loading history…</span>
-                  )}
-                  {changelog && !hasPageEdits && (
-                    <span className="project-index-history-loading">No page edits</span>
-                  )}
-                  {changelog && hasPageEdits && timeRange && (
-                    <SpaceTimeDots
-                      changelog={changelog}
-                      timeRange={timeRange}
-                      timeScale="log-age"
-                      showPageLabels={false}
-                      className="project-index-spacetime"
-                      onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
-                    />
-                  )}
-                  {(historyError || changelog?.error) && (
-                    <span className="project-index-history-status">
-                      {changelog?.error || historyError}
-                    </span>
-                  )}
-                </div>
+                <div className="project-index-history" />
                 <div className="picker-archive">
                   <button
                     className="archive-btn"
