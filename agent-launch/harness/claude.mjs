@@ -69,8 +69,6 @@ export function buildCmd({
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=claude',
   ]
-  if (env.TLDA_AGENT_CONFIG_DIR) parts.unshift(`TLDA_AGENT_CONFIG_DIR=${sq(env.TLDA_AGENT_CONFIG_DIR)}`)
-  if (env.CLAUDE_CONFIG_DIR) parts.unshift(`CLAUDE_CONFIG_DIR=${sq(env.CLAUDE_CONFIG_DIR)}`)
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
   parts.push(...gitAuthorEnv(fleetId || localAgentId, name).map(v => sqEnv(v)))
