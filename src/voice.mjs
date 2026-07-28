@@ -2345,12 +2345,15 @@ function replaceTextareaValue(text) {
 }
 
 function submitTextareaViaMagicWord(cleanText, submittedText) {
-  const targets = activeSendTargets()
-  if (!_activeTextarea || targets.length === 0 || !_activeTargetHandle?.sendVoice) return false
-  _activeTargetHandle.sendVoice(targets, cleanText)
+  if (!_activeTextarea || activeSendTargets().length === 0) return false
+  if (_activeTargetHandle?.submitCurrent) {
+    replaceTextareaValue(cleanText)
+    return _activeTargetHandle.submitCurrent()
+  }
+  if (!_activeTargetHandle?.sendVoice) return false
+  _activeTargetHandle.sendVoice(activeSendTargets(), cleanText)
   replaceTextareaValue('')
-  afterSend()
-  if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
+  afterSend(submittedText)
   return true
 }
 
@@ -3428,21 +3431,23 @@ function sendCurrentText() {
     return
   }
 
-  if (_activeTargetHandle?.sendVoice) {
+  if (_activeTargetHandle?.submitCurrent) {
+    if (!_activeTargetHandle.submitCurrent()) return
+  } else if (_activeTargetHandle?.sendVoice) {
     _activeTargetHandle.sendVoice(targets, text)
+    afterSend(text)
+    _filling = true
+    ta.value = ''
+    ta.style.height = 'auto'
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    _filling = false
+  } else {
+    return
   }
-  afterSend()
 
   const who = targetLabel()
   showHud(`sent → ${who}`, '#7ab8a0')
   fadeHud(2500)
-
-  _state = 'edit'
-  _left = _interim = _right = ''
-  _filling = true
-  ta.value = ''
-  ta.style.height = 'auto'
-  ta.dispatchEvent(new Event('input', { bubbles: true }))
   _filling = false
 }
 

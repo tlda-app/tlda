@@ -4492,11 +4492,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // The shared ChatComposer owns the textarea + voice registration + send-on-
   // enter; everything chat-specific (viewer context, ref attachments, plan-mode,
   // /terminal, file-drop, escalation reset) lives here and is passed back in.
-  // Defined as plain closures (recreated each render, like the old inline
-  // handlers) so there's no memoization-induced staleness. Keyboard and voice
-  // send remain DISTINCT — the original had two genuinely-different inline paths
-  // (keyboard: inject→…→plan→send; voice: context→inject→send, no plan).
-  const composerKeyboardSend = (text: string, targets: string[]) => {
+  // Defined as a plain closure (recreated each render, like the old inline
+  // handler) so there's no memoization-induced staleness. Every submit trigger
+  // uses this one path.
+  const composerSend = (text: string, targets: string[]) => {
     expireClearedComposerDraft()
     const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
     injectOptimisticEvent({
@@ -4575,45 +4574,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
       sendWithRetry(1)
     })()
-  }
-
-  const composerVoiceSend = async (targets: string[], text: string) => {
-    expireClearedComposerDraft()
-    const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
-    if (context) await enrichContextWithSourceLines(context)
-    const bullets = consumeBulletContexts()
-    if (bullets.length > 0 && context) {
-      ;(context as any).bullets = bullets
-    }
-    const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    injectOptimisticEvent({
-      _tempId: tempId,
-      type: 'chat',
-      event_type: 'chat',
-      from: getHumanId(),
-      to: targets[0],
-      text,
-      timestamp: new Date().toISOString(),
-      read: false,
-    }, chatEventBufferKey)
-    const refAttachments = buildRefAttachments(text, editor)
-    const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
-    if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-    if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
-    const sendWithRetry = (attempt: number) => {
-      Promise.all(
-        targets.map(t => sendMessage(t, text, sendOpts))
-      ).then((results) => {
-        if (!results.every(r => r.ok)) throw new Error('send failed')
-      }).catch(() => {
-        if (attempt < 3) {
-          setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-        } else {
-          updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey)
-        }
-      })
-    }
-    sendWithRetry(1)
   }
 
   const composerCommand = (text: string, targets: string[], ta: HTMLTextAreaElement): boolean => {
@@ -6071,8 +6031,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             <ChatComposer
               sendTargets={sendTargets}
               agentNames={agentNames}
-              onKeyboardSend={composerKeyboardSend}
-              onVoiceSend={composerVoiceSend}
+              onSend={composerSend}
               onCommand={composerCommand}
               onKeyActivity={composerKeyActivity}
               onDrop={composerDrop}

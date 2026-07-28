@@ -1379,8 +1379,7 @@ function ConversationView({
         <ChatComposer
           sendTargets={sendTargets}
           agentNames={agentNames}
-          onKeyboardSend={send}
-          onVoiceSend={(targets, text) => send(text, targets)}
+          onSend={send}
           isTouchDevice={_isTouchDevice}
           className="fleet-inbox-composer-textarea"
           style={COMPOSER_STYLE}

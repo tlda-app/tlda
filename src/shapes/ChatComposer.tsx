@@ -9,10 +9,8 @@
  * so the shape can stay byte-identical while the inline chat opts out of the
  * heavy extras.
  *
- * Keyboard and voice send are DISTINCT paths in the original chat (keyboard:
- * inject → clear → restart-mic → history → context → plan → send; voice:
- * context → inject → send, no plan), so they're separate host callbacks here —
- * faithfully preserving each.
+ * Voice owns text entry. Enter and the voice "send" command submit through the
+ * same composer operation.
  */
 import { stopEventPropagation } from 'tldraw'
 import { useEffect, useRef, useState } from 'react'
@@ -20,15 +18,13 @@ import { useEffect, useRef, useState } from 'react'
 import { setVoiceTarget, clearVoiceTarget, completeMessageSend } from '../voice.mjs'
 import { getPref, subscribePref } from '../preferences'
 
-export type KeyboardSend = (text: string, targets: string[]) => void
-export type VoiceSend = (targets: string[], text: string) => void | Promise<void>
+export type ComposerSend = (text: string, targets: string[]) => void
 type VoiceTargetHandle = {
   sendTargets: string[]
   agentNames: Record<string, string>
-  onVoiceSend: VoiceSend
   getSendTargets: () => string[]
   getAgentNames: () => Record<string, string>
-  sendVoice: (targets: string[], text: string) => void | Promise<void>
+  submitCurrent: () => boolean
 }
 /** Pre-send command hook (e.g. /terminal). Gets the textarea so it can clear (or
  *  not) exactly as the original did. Return true if it consumed the input — the
@@ -42,8 +38,7 @@ function shouldSuppressNativeKeyboard(backend: string) {
 export function ChatComposer({
   sendTargets,
   agentNames,
-  onKeyboardSend,
-  onVoiceSend,
+  onSend,
   onCommand,
   onKeyActivity,
   onDrop,
@@ -56,8 +51,7 @@ export function ChatComposer({
 }: {
   sendTargets: string[]
   agentNames: Record<string, string>
-  onKeyboardSend: KeyboardSend
-  onVoiceSend: VoiceSend
+  onSend: ComposerSend
   onCommand?: ChatCommand
   onKeyActivity?: () => void
   onDrop?: (e: React.DragEvent<HTMLTextAreaElement>) => void
@@ -83,17 +77,32 @@ export function ChatComposer({
   // other consumer of these refs.
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
+  const submitCurrentRef = useRef<() => boolean>(() => false)
   const voiceTargetRef = useRef<VoiceTargetHandle>({
     sendTargets: [],
     agentNames: {},
-    onVoiceSend: () => {},
     getSendTargets() { return this.sendTargets },
     getAgentNames() { return this.agentNames },
-    sendVoice(targets, text) { return this.onVoiceSend(targets, text) },
+    submitCurrent() { return submitCurrentRef.current() },
   })
   voiceTargetRef.current.sendTargets = sendTargets
   voiceTargetRef.current.agentNames = agentNames
-  voiceTargetRef.current.onVoiceSend = onVoiceSend
+
+  const submitCurrent = () => {
+    const ta = inputRef.current
+    const text = ta?.value.trim() || ''
+    if (!ta || !text || sendTargets.length === 0) return false
+    if (onCommand?.(text, sendTargets, ta)) return true
+    onSend(text, sendTargets)
+    ta.value = ''
+    ta.style.height = ''
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    completeMessageSend(text)
+    sentHistoryRef.current = [...sentHistoryRef.current, text]
+    historyIndexRef.current = -1
+    return true
+  }
+  submitCurrentRef.current = submitCurrent
 
   return (
     <textarea
@@ -165,30 +174,14 @@ export function ChatComposer({
           const lastNewline = before.lastIndexOf('\n')
           const lineText = before.substring(lastNewline + 1)
 
-          const doSend = () => {
-            const text = val.trim()
-            if (!text || sendTargets.length === 0) return
-            // Call the host send FIRST: its synchronous prefix (optimistic echo)
-            // runs before it yields at its first await, then we clear the field
-            // synchronously — preserving the original "echo + clear before any
-            // awaited work" ordering that prevents Enter-mash duplicate sends.
-            onKeyboardSend(text, sendTargets)
-            ta.value = ''
-            ta.style.height = ''
-            ta.dispatchEvent(new Event('input', { bubbles: true }))
-            completeMessageSend(text)
-            sentHistoryRef.current = [...sentHistoryRef.current, text]
-            historyIndexRef.current = -1
-          }
-
           if (lineText.trim() === '') {
             e.preventDefault()
-            doSend()
+            submitCurrent()
           } else if (lineText.endsWith(' ')) {
             return
           } else {
             e.preventDefault()
-            doSend()
+            submitCurrent()
           }
         }
       }}
@@ -196,7 +189,7 @@ export function ChatComposer({
       onPointerDown={(e) => {
         stopEventPropagation(e)
         // Register this field as the voice target — dictated text appends here and
-        // saying "send" fires onVoiceSend (same registration the main chat uses).
+        // Voice supplies text; saying "send" invokes the same composer submit as Enter.
         setVoiceTarget(e.currentTarget, voiceTargetRef.current)
       }}
       onFocus={(e) => {
