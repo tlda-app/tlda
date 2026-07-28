@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import { parseCodexLine, parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import { harnessKindForAgent } from '../agent-runtime/daemon-guards.mjs'
 import { extractActivityEvents, parseSessionLine, parseSessionRecord } from './activity-events.mjs'
@@ -19,7 +20,7 @@ export function createHarnessRuntime({
     let paneOut = ''
     try {
       ;({ stdout: paneOut } = await execFileP('tmux',
-        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
+        [...TMUX_ARGS, 'list-panes', '-t', exactTmuxWindowTarget(agent.tmux_session), '-F', '#{pane_pid}'],
         { timeout: 3000, encoding: 'utf8' }))
     } catch {
       return null

@@ -73,6 +73,7 @@ import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
 import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
+import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 // --- Argument parsing ---
 
@@ -2297,7 +2298,10 @@ async function cmdBot() {
     for (const bot of bots) {
       const paths = botServicePaths(bot.name)
       await bootoutBot(bot)
-      try { (await import('child_process')).execFileSync('tmux', ['kill-session', '-t', paths.tmuxSession], { stdio: 'ignore' }) } catch {}
+      const childProcess = await import('child_process')
+      const target = exactTmuxTarget(paths.tmuxSession)
+      const tmuxSessionExists = childProcess.spawnSync('tmux', ['has-session', '-t', target], { stdio: 'ignore' }).status === 0
+      if (tmuxSessionExists) childProcess.execFileSync('tmux', ['kill-session', '-t', target], { stdio: 'ignore' })
       console.log(green(`Stopped ${paths.label}.`))
     }
     return
@@ -3133,7 +3137,7 @@ async function attachToAgent(name) {
     process.exit(1)
   }
   const { spawnSync } = await import('child_process')
-  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', agentSessionName(name)], { stdio: 'inherit' })
+  const result = spawnSync('tmux', [...tmuxBase(), 'attach-session', '-t', exactTmuxTarget(agentSessionName(name))], { stdio: 'inherit' })
   process.exit(result.status ?? 0)
 }
 
@@ -3987,7 +3991,7 @@ async function hibernateAgent(name) {
 async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   const { spawnSync } = await import('child_process')
   const sess = agentSessionName(name)
-  const has = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' })
+  const has = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', exactTmuxTarget(sess)], { stdio: 'ignore' })
   if (has.status !== 0) {
     const message = `No live session "${sess}" on this machine — already hibernating, or it lives on another box.`
     if (!allowMissing) {
@@ -3997,7 +4001,7 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
     console.log(`${message} Continuing with metadata update and wake.`)
     return { status: 0, hibernated: false, session: sess }
   }
-  const res = spawnSync('tmux', [...tmuxBase(), 'kill-session', '-t', sess], { stdio: 'inherit' })
+  const res = spawnSync('tmux', [...tmuxBase(), 'kill-session', '-t', exactTmuxTarget(sess)], { stdio: 'inherit' })
   const short = name.replace(/^fleet-/, '')
   if (res.status === 0) {
     console.log(`Hibernated ${short} — its thread is intact; \`tlda agent wake ${short}\` brings it back locally.`)
@@ -4261,10 +4265,10 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
     return { ok: false, query, agent, seat, error: 'current durable seat capability has no matching local terminal route' }
   }
   const sess = localRoute.tmuxSession
-  const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' }).status === 0
+  const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', exactTmuxTarget(sess)], { stdio: 'ignore' }).status === 0
   let panes = []
   if (hasSession) {
-    const r = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-t', sess, '-F', '#{pane_pid}'], { encoding: 'utf8' })
+    const r = spawnSync('tmux', [...tmuxBase(), 'list-panes', '-t', exactTmuxWindowTarget(sess), '-F', '#{pane_pid}'], { encoding: 'utf8' })
     if (r.status === 0) panes = r.stdout.trim().split(/\s+/).filter(Boolean)
   }
   const runtime = hasSession ? processTreeHasRuntime(spawnSync, panes, expectedKind) : { ok: false, kind: null, pid: null }
@@ -5376,7 +5380,7 @@ async function cmdDoctorYolo() {
   if (process.stdout.isTTY && !hasFlag('no-attach')) {
     const { spawnSync } = await import('node:child_process')
     console.log(dim(`Attaching to ${tmuxSession} (detach with Ctrl-b d)…`))
-    spawnSync('tmux', tmuxArgs(tmuxSocket, 'attach', '-t', tmuxSession), { stdio: 'inherit' })
+    spawnSync('tmux', tmuxArgs(tmuxSocket, 'attach', '-t', exactTmuxTarget(tmuxSession)), { stdio: 'inherit' })
     return
   }
 

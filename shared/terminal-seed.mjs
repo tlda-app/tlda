@@ -1,3 +1,5 @@
+import { exactTmuxWindowTarget } from './tmux-target.mjs'
+
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g
 
 function normalizeLineCount(lines, defaultLines = 50, maxLines = 5000) {
@@ -5,14 +7,14 @@ function normalizeLineCount(lines, defaultLines = 50, maxLines = 5000) {
 }
 
 export function terminalVisibleCaptureArgs(tmuxSession, { ansi = false } = {}) {
-  const args = ['capture-pane', '-t', tmuxSession, '-p']
+  const args = ['capture-pane', '-t', exactTmuxWindowTarget(tmuxSession), '-p']
   if (ansi) args.push('-e')
   return args
 }
 
 export function terminalBackscrollCaptureArgs(tmuxSession, lines, { ansi = false, defaultLines = 50, maxLines = 5000 } = {}) {
   const start = `-${normalizeLineCount(lines, defaultLines, maxLines)}`
-  const args = ['capture-pane', '-t', tmuxSession, '-p']
+  const args = ['capture-pane', '-t', exactTmuxWindowTarget(tmuxSession), '-p']
   if (ansi) args.push('-e')
   args.push('-S', start)
   return args

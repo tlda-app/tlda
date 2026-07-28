@@ -9,6 +9,7 @@ import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 import { claudeJsonlPath } from '../resume.mjs'
+import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 
 const LOGIN_PROMPT = 'Call login() with the tlda MCP server. Then call inbox() to check for a pending task.'
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
@@ -134,7 +135,7 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   const prefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
   let paneOut
   try {
-    ;({ stdout: paneOut } = await run('tmux', [...prefix, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
+    ;({ stdout: paneOut } = await run('tmux', [...prefix, 'list-panes', '-t', exactTmuxWindowTarget(tmuxSession), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
   } catch { return null }
   const panePids = paneOut.trim().split('\n').filter(Boolean)
   if (!panePids.length) return null

@@ -103,7 +103,7 @@ function fakePtyModule() {
 
   assert.equal(result.pane, 'live terminal\n')
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0].args.slice(0, 3), ['capture-pane', '-t', 'daemon-local-tmux-live'])
+  assert.deepEqual(calls[0].args.slice(0, 3), ['capture-pane', '-t', '=daemon-local-tmux-live:'])
 }
 
 {
@@ -125,7 +125,7 @@ function fakePtyModule() {
   assert.equal(soft.ok, true)
   assert.equal(alive.alive, true)
   assert(calls.some(call => call.args.includes('send-keys') && call.args.includes('Enter')))
-  assert(calls.every(call => call.args.includes('daemon-local-tmux-live') || call.args.includes('list-sessions')))
+  assert(calls.every(call => call.args.includes('=daemon-local-tmux-live:') || call.args.includes('list-sessions')))
 }
 
 for (const [name, payload] of [
@@ -238,7 +238,7 @@ for (const [name, payload] of [
   assert.equal(killed.already_unavailable, true)
   assert.equal(killed.reason, 'tmux session already absent')
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0].args, ['kill-session', '-t', 'daemon-local-tmux-gone'])
+  assert.deepEqual(calls[0].args, ['kill-session', '-t', '=daemon-local-tmux-gone'])
 }
 
 {
@@ -300,7 +300,7 @@ for (const [name, payload] of [
   assert.equal(dataMessages.length, 2, 'second subscriber must receive a current terminal snapshot')
   assert.equal(Buffer.from(dataMessages[0].data, 'base64').toString(), 'first visible screen\r\n')
   assert.equal(Buffer.from(dataMessages[1].data, 'base64').toString(), 'second viewer current screen\r\n')
-  const seedCaptures = calls.filter(call => call.args.includes('capture-pane') && call.args.includes('daemon-local-tmux-live'))
+  const seedCaptures = calls.filter(call => call.args.includes('capture-pane') && call.args.includes('=daemon-local-tmux-live:'))
   assert.equal(seedCaptures.length, 2, 'each subscriber attach should capture the current pane once')
 }
 

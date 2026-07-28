@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 import {
   classifyPane,
   decideThinkingEdge,
@@ -55,7 +56,7 @@ export function createAgentStatus({
   idleConfirmScans = 2,
   setIntervalFn = setInterval,
   capturePane = (tmuxSession) => execFileP('tmux',
-    [...(tmuxArgs || []), 'capture-pane', '-t', tmuxSession, '-p', '-S', `-${THINKING_SCAN_LINES}`],
+    [...(tmuxArgs || []), 'capture-pane', '-t', exactTmuxWindowTarget(tmuxSession), '-p', '-S', `-${THINKING_SCAN_LINES}`],
     { timeout: 3000, encoding: 'utf8' }),
 }) {
   if (!Number.isFinite(statusScanMs) || statusScanMs <= 0) {

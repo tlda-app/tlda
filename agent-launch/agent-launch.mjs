@@ -10,6 +10,7 @@ import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 import { bindAgentSeat } from './seat-binding.mjs'
 import { wsReserveShell } from './register.mjs'
+import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 function readFileTail(file, max = 6000) {
   try {
@@ -117,11 +118,11 @@ export function createAgentLauncher({
   async function terminateExactLaunch(tmuxSession) {
     if (!tmuxSession) return true
     try {
-      await tmux('kill-session', '-t', tmuxSession)
+      await tmux('kill-session', '-t', exactTmuxTarget(tmuxSession))
       return true
     } catch {
       try {
-        await tmux('has-session', '-t', tmuxSession)
+        await tmux('has-session', '-t', exactTmuxTarget(tmuxSession))
         return false
       } catch {
         return true
@@ -226,7 +227,7 @@ export function createAgentLauncher({
     if (reportedStartupFailures.has(dedupKey)) return null
     try {
       await new Promise(resolve => setTimeout(resolve, startupFailureProbeMs))
-      const { stdout } = await tmux('capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-120')
+      const { stdout } = await tmux('capture-pane', '-t', exactTmuxWindowTarget(tmux_session), '-p', '-e', '-S', '-120')
       const failure = detectSpawnStartupFailureTranscript(stdout, { harness })
       if (!failure) return null
       reportedStartupFailures.add(dedupKey)
@@ -523,7 +524,7 @@ export function createAgentLauncher({
         }
       }
       try {
-        await tmux('has-session', '-t', launched.tmuxSession)
+        await tmux('has-session', '-t', exactTmuxTarget(launched.tmuxSession))
       } catch (e) {
         const terminated = spawnMode === 'respawn'
           ? false

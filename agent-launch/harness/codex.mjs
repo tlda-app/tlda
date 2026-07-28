@@ -14,6 +14,7 @@ import { activeEnvName, gitAuthorEnv } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { loginPrompt } from './claude.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
+import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
 
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
 const execFileP = promisify(execFile)
@@ -24,7 +25,7 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   const tmuxPrefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
   let paneOut
   try {
-    ;({ stdout: paneOut } = await execFileP('tmux', [...tmuxPrefix, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
+    ;({ stdout: paneOut } = await execFileP('tmux', [...tmuxPrefix, 'list-panes', '-t', exactTmuxWindowTarget(tmuxSession), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
   } catch {
     return unresolved('pane')
   }

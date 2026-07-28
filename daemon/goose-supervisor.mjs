@@ -4,6 +4,7 @@ import { THINKING_SCAN_LINES } from '../agent-runtime/status-classifier.mjs'
 import { gooseActivityTick } from '../agent-runtime/goose-activity.mjs'
 import { maybeKickGoose, resolveGooseStatus } from '../agent-runtime/goose-kick.mjs'
 import { isObservableDaemonProcessBinding } from '../agent-runtime/daemon-process-binding.mjs'
+import { exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -41,7 +42,7 @@ export function createGooseSupervisor({
       if (harnessForAgent(agent).kind !== 'goose') continue
       try {
         const { stdout: pane } = await execFileP('tmux',
-          [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
+          [...TMUX_ARGS, 'capture-pane', '-t', exactTmuxWindowTarget(agent.tmux_session), '-p', '-S', `-${THINKING_SCAN_LINES}`],
           { timeout: 3000, encoding: 'utf8' })
         const paneBottom = pane.split('\n').slice(-THINKING_SCAN_LINES).join('\n')
         const { status, live } = resolveGooseStatus(paneBottom, prevGooseLive.get(agent.id), Date.now())

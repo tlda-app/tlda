@@ -2,6 +2,7 @@ import { execFile } from 'child_process'
 import fs from 'fs'
 import { promisify } from 'util'
 import { shouldPromptSweepAgent } from '../agent-runtime/status-classifier.mjs'
+import { exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -113,7 +114,7 @@ export function createPromptPlan({
     let pane
     try {
       const { stdout } = await run('tmux',
-        [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
+        [...TMUX_ARGS, 'capture-pane', '-t', exactTmuxWindowTarget(agent.tmux_session), '-p', '-e', '-S', '-150'],
         { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
       pane = stripAnsi(stdout)
     } catch (e) {
@@ -198,7 +199,7 @@ export function createPromptPlan({
           if (hasActiveTerminalWatch(agent.tmux_session)) continue
           try {
             const { stdout } = await run('tmux',
-              [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-80'],
+              [...TMUX_ARGS, 'capture-pane', '-t', exactTmuxWindowTarget(agent.tmux_session), '-p', '-S', '-80'],
               { timeout: 2000, encoding: 'utf8', maxBuffer: 512 * 1024 })
             const stripped = stripAnsi(stdout)
             const result = detectPrompt(stdout)

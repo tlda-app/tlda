@@ -5,6 +5,7 @@ import {
   terminalVisibleCaptureArgs,
   trimTerminalSeedBlankRows,
 } from '../shared/terminal-seed.mjs'
+import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 const execFileP = promisify(execFile)
 const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
@@ -81,7 +82,7 @@ export function createTerminalRpc({
   }
 
   async function tmux(...args) {
-    return execFileImpl('tmux', [...TMUX_ARGS, ...args], {
+    return execFileImpl('tmux', [...TMUX_ARGS, ...exactTmuxTargets(args)], {
       timeout: 5000,
       encoding: 'utf8',
       env: { ...process.env, TMUX: '', TMUX_PANE: '' },
@@ -409,14 +410,14 @@ export function createTerminalRpc({
       }
     }
 
-    try { await execFileImpl('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'status', 'off'], { timeout: 3000 }) } catch {
+    try { await execFileImpl('tmux', [...TMUX_ARGS, 'set-option', '-t', exactTmuxWindowTarget(tmuxSession), 'status', 'off'], { timeout: 3000 }) } catch {
       // Hiding tmux status is cosmetic; terminal streaming still works.
     }
 
     const PINNED_COLS = 120, PINNED_ROWS = 40
     try {
-      await execFileImpl('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'window-size', 'manual'], { timeout: 3000 })
-      await execFileImpl('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmuxSession, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
+      await execFileImpl('tmux', [...TMUX_ARGS, 'set-option', '-t', exactTmuxWindowTarget(tmuxSession), 'window-size', 'manual'], { timeout: 3000 })
+      await execFileImpl('tmux', [...TMUX_ARGS, 'resize-window', '-t', exactTmuxWindowTarget(tmuxSession), '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
     } catch (e) {
       // Pinning improves stable rendering; existing tmux size remains usable.
       log.warn(`terminal-watch: failed to pin window for ${tmuxSession}: ${e?.message || e}`)
@@ -424,7 +425,7 @@ export function createTerminalRpc({
 
     const size = await queryWindowSize(tmuxSession) || { cols: PINNED_COLS, rows: PINNED_ROWS }
     const nodePty = await getPty()
-    const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmuxSession], {
+    const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', exactTmuxTarget(tmuxSession)], {
       name: 'xterm-256color',
       cols: size.cols,
       rows: size.rows,
