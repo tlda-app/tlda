@@ -154,6 +154,9 @@ function validateDaemonConfig(parsed, { validateDefault = true } = {}) {
 function validateProjectDaemonOverride(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : parsed
   validateProjectDaemonOverrideTopLevel(root, 'project daemon override')
+  if (root.agentConfigDir !== undefined && (typeof root.agentConfigDir !== 'string' || !root.agentConfigDir.trim())) {
+    throw new Error('project daemon override: "agentConfigDir" must be a nonempty path')
+  }
   return root
 }
 
@@ -902,6 +905,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
     ...(Object.keys(harnessOptions).length ? { harnessOptions } : {}),
     permissionProfiles: { ...daemonProfiles },
     defaultPermissionProfile: daemonConfig.default || null,
+    ...(daemonConfig.agentConfigDir ? { agentConfigDir: daemonConfig.agentConfigDir } : {}),
   }
 }
 
