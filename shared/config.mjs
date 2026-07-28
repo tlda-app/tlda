@@ -162,6 +162,7 @@ const STARTER_SERVER_YAML = `# tlda server settings. Every key is optional; the 
 #                        stored timestamps stay UTC. Absent = this machine's zone.
 #   buildMaxConcurrency  how many document builds run at once
 #   buildPriority        build ordering across projects
+#   telemetryUrl         optional http(s) telemetry page shown on the project index
 `
 
 /**

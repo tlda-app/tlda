@@ -280,6 +280,23 @@ body.tlda-pan-mode * {
   color: #b91c1c;
 }
 
+.project-index-tools {
+  display: flex;
+  gap: 14px;
+  margin: 16px 10px 0;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.project-index-tools a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.project-index-tools a:hover {
+  text-decoration: underline;
+}
+
 .project-index-name {
   align-self: center;
   min-width: 0;
@@ -399,8 +416,13 @@ body.tlda-pan-mode * {
 }
 
 .tl-theme__dark .project-index-row:hover .project-index-name a,
-.tl-theme__dark .picker-table tbody tr:hover a {
+.tl-theme__dark .picker-table tbody tr:hover a,
+.tl-theme__dark .project-index-tools a {
   color: var(--tl-color-primary);
+}
+
+.tl-theme__dark .project-index-tools {
+  color: var(--tl-color-text-3);
 }
 
 .tl-theme__dark .project-index-spacetime .spacetime-field,
