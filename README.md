@@ -219,7 +219,7 @@ A standing panel that shows whatever you click — not a static snapshot but a l
 
 ### Search
 
-You can scroll a chat panel up indefinitely, or search, to see anything that's happened in the chat history. The search box covers the entire history and renders results as real chat lines — colored names, tool cards, rendered math; combine free text with filters like `from:skip`, `agent:writer`, `before:1d`, and each result opens that conversation inline. Agents reach the same history — their own chat and other agents' — with `search_logs` and `get_thread`.
+You can scroll a chat panel up indefinitely, or search, to see anything that's happened in the chat history. The search box covers the entire history and renders results as real chat lines — colored names, tool cards, rendered math; combine free text with filters like `from:skip`, `agent:writer`, `before:1d`, and each result opens that conversation inline. Agents reach the same history — their own chat and other agents' — with `search` and `thread`.
 
 ### Getting around
 
@@ -293,10 +293,10 @@ bregman — 3 annotation(s)
 
 **Build status and errors.** Agents see when a build starts, succeeds, or fails; on failure, the LaTeX error with a few lines of source context.
 
-**The full chat history.** `search_logs()` and `get_thread()` span every session, context window, and agent lifetime — their own chat and other agents' — so an agent created today can read decisions made last week. Results come back as real chat/activity lines with the match highlighted:
+**The full chat history.** `search()` and `thread()` span every session, context window, and agent lifetime — their own chat and other agents' — so an agent created today can read decisions made last week. Results come back as real chat/activity lines with the match highlighted:
 
 ```
-search_logs("convergence rate")
+search("convergence rate")
 
 3 results
 
