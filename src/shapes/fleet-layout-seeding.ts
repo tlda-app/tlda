@@ -1,8 +1,3 @@
-// @ts-ignore — vanilla JS module
-import { getEvents, getHumanName } from '../fleet/fleet-data.mjs'
-// @ts-ignore — vanilla JS module
-import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
-
 export type FleetChatFilter = [string, string][][]
 
 // Creating the default layout is a complete teardown and a complete recreation.
@@ -33,19 +28,12 @@ export function defaultFleetLayoutChatFilters({
     seenNames.add(name)
     return true
   })
-  const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
-  const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
-  const topAgents = [
-    ...recentChatAgents,
-    ...deduped.filter((a: any) => !recentIds.has(a.id || a.friendly_name)),
-  ]
-
   const usedFilters = new Set<string>()
   let nextAgent = 0
 
   return Array.from({ length: panelCount }, () => {
-    while (nextAgent < topAgents.length) {
-      const name = topAgents[nextAgent++]?.friendly_name as string | undefined
+    while (nextAgent < deduped.length) {
+      const name = deduped[nextAgent++]?.friendly_name as string | undefined
       if (!name) continue
       const filter: FleetChatFilter = [[['from', name]], [['to', name]]]
       const key = JSON.stringify(filter)

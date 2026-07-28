@@ -76,12 +76,6 @@ try {
     metadata: { kind: 'codex', model: 'gpt-test' },
   })
   await store.share(buildDaemonActivityRecord(pending[0].payload))
-  const history = await store.buildChatHistoryResponse({ agents: [agent.id], limit: 10 })
-  assert.equal(history.events.length, 1)
-  assert.equal(history.events[0].event_type, 'activity')
-  assert.equal(history.events[0].from, agent.id)
-  assert.equal(history.events[0].text, 'inbox')
-
   delivery.dispose()
   console.log('activity-producer-watch-authority-test: ok')
 } finally {

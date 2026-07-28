@@ -111,12 +111,16 @@ async function waitForAgent(agentId, timeoutMs = 3000) {
 async function waitForChat(ws, pattern, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const events = await request(ws, 'store-events', {
+    const events = await request(ws, 'fleet-search', {
+      query: '',
       agent: 'fleet:spawn-outcome-requester',
-      event_types: ['chat'],
+      eventTypes: ['chat'],
+      agentOnly: true,
+      historyOnly: true,
+      eventOnly: true,
       limit: 50,
     })
-    const found = (events.events || []).find(e => pattern.test(e.text || ''))
+    const found = (events.results || []).find(e => pattern.test(e.text || ''))
     if (found) return found
     await sleep(100)
   }

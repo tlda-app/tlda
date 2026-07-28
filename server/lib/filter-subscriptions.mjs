@@ -214,7 +214,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
    *
    * OVER-FETCHES. The exact predicate runs after the query's LIMIT, so a naive
    * single pass returns a short page with a cursor that looks correct — the
-   * defect that shipped in buildChatHistoryResponse. This asks for more until
+   * defect that shipped in the old direct-history path. This asks for more until
    * the page fills or the source is exhausted, and reports the cursor from the
    * oldest row EXAMINED rather than the oldest row kept, so the next page
    * cannot skip the rows this one rejected.

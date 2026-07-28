@@ -1,6 +1,6 @@
 // history() must return full pages and a cursor that skips nothing.
 //
-// The shipped defect this exists to prevent (buildChatHistoryResponse): the
+// The shipped defect this exists to prevent: the
 // content filter ran AFTER the page maths, so hasMore and the shift() were
 // computed on unfiltered rows and a page of `cap` containing rejected rows came
 // back short with a nextCursor that looked correct.

@@ -21,7 +21,7 @@ import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { canReportTask, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { recordAgentRouteEvent } from '../lib/agent-route-events.mjs'
-import { projectActivityEventsPage, projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
+import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 import { markPendingAttachmentPlaceholdersRead } from '../../shared/inbox-reference-materialization.mjs'
 
 // Server owner — the human running this server process. Browser users
@@ -328,43 +328,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ...resolveConfig(), telemetryUrl: loadServerConfig().telemetryUrl || null })
   })
 
-  // --- GET /api/store/events ---
-  router.get('/api/store/events', async (req, res) => {
-    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
-    const afterId = parseInt(req.query.after || '0')
-    const beforeId = req.query.before ? parseInt(req.query.before) : null
-    const limit = Math.min(parseInt(req.query.limit || '200'), 5000)
-    const since = req.query.since || null   // ISO timestamp lower bound
-    const until = req.query.until || null   // ISO timestamp upper bound
-    const type = req.query.type || null
-    const agent = req.query.agent || null
-    try {
-      let events
-      let total = null
-      if (agent) {
-        // UNION of two indexed scans — see FleetStore.queryAgentEvents.
-        events = await fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
-      } else if (type && beforeId) {
-        // A bounded newest-first window for read-only consumers such as Grafana.
-        // `before` remains the ordered pagination cursor; queryEventsPage
-        // reverses so the endpoint's chronological response contract holds
-        // without scanning history.
-        events = await fleetStore.queryEventsPage({ types: [type], beforeId, limit })
-      } else if (type) {
-        events = await fleetStore.queryEventsPage({ types: [type], afterId, limit })
-      } else if (beforeId) {
-        events = await fleetStore.queryEventsPage({ beforeId, limit })
-      } else {
-        events = await fleetStore.getEventsSince(afterId, limit)
-      }
-      const lastId = await fleetStore.getLastEventId()
-      const page = { events, lastId, total }
-      res.json(req.query.view === 'activity-dashboard' ? projectActivityEventsPage(page) : page)
-    } catch (e) {
-      res.status(500).json({ error: e.message })
-    }
-  })
-
   // --- POST /api/agents/:id/mark-dead ---
   // Called by the daemon when it detects an agent's process is gone.
   router.post('/api/agents/:id/mark-dead', async (req, res) => {
@@ -491,30 +454,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         messages_truncated: unreadCount > unread.length,
       },
     })
-  })
-
-  // --- GET /api/chat/history ---
-  router.get('/api/chat/history', async (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit || '50'), 1000)
-    const before = req.query.before || null
-    // ?agents=a&agents=b (array) or ?agents=a (string) → normalize to array
-    const rawAgents = req.query.agents
-    const agents = Array.isArray(rawAgents) ? rawAgents : (rawAgents ? [rawAgents] : [])
-    try {
-      if (!fleetStore) {
-        res.json({ events: [], hasMore: false, nextCursor: null })
-        return
-      }
-      res.json(await fleetStore.buildChatHistoryResponse({
-        before,
-        agents,
-        limit,
-        serverOwnerId: SERVER_OWNER_ID,
-        serverOwnerName: SERVER_OWNER_NAME,
-      }))
-    } catch (e) {
-      res.status(500).json({ error: e.message })
-    }
   })
 
   // --- GET /api/fleet-table ---

@@ -265,22 +265,6 @@ export class SearchIndex {
     this._insertSessionEventMany = this.db.transaction((rows) => {
       for (const r of rows) this._insertSessionEvent.run(...r);
     });
-    this._queryEvents = this.db.prepare(`
-      SELECT blocks, type, timestamp, usage_input, usage_output
-      FROM session_events
-      WHERE agent_id = ?
-      ORDER BY timestamp DESC LIMIT ?
-    `);
-    this._queryEventsAfter = this.db.prepare(`
-      SELECT blocks, type, timestamp, usage_input, usage_output
-      FROM session_events
-      WHERE agent_id = ? AND timestamp > ?
-      ORDER BY timestamp DESC LIMIT ?
-    `);
-    this._countEvents = this.db.prepare(`
-      SELECT COUNT(*) as c FROM session_events WHERE agent_id = ?
-    `);
-
     // Chat history statements
     this._insertChatEvent = this.db.prepare(`
       INSERT OR IGNORE INTO chat_events (timestamp, event_type, from_id, to_id, agent_id, text, metadata, source_line)
@@ -289,29 +273,6 @@ export class SearchIndex {
     this._insertChatEventMany = this.db.transaction((rows) => {
       for (const r of rows) this._insertChatEvent.run(...r);
     });
-    this._queryChatBefore = this.db.prepare(`
-      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata, source
-      FROM chat_events
-      WHERE timestamp < ?
-      ORDER BY timestamp DESC LIMIT ?
-    `);
-    this._queryChatBeforeAgent = this.db.prepare(`
-      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata, source
-      FROM chat_events
-      WHERE timestamp < ? AND (from_id = ? OR to_id = ?)
-      ORDER BY timestamp DESC LIMIT ?
-    `);
-    this._queryChatLatest = this.db.prepare(`
-      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata, source
-      FROM chat_events
-      ORDER BY timestamp DESC LIMIT ?
-    `);
-    this._queryChatLatestAgent = this.db.prepare(`
-      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata, source
-      FROM chat_events
-      WHERE from_id = ? OR to_id = ?
-      ORDER BY timestamp DESC LIMIT ?
-    `);
     this._chatEventCount = this.db.prepare(`SELECT COUNT(*) as c FROM chat_events`);
 
     // UI events statements
@@ -670,29 +631,6 @@ export class SearchIndex {
     return texts.length > 0 ? texts.join(' ') : null;
   }
 
-  // --- Session Events ---
-
-  queryEvents(agentId, { after, limit = 200 } = {}) {
-    const rows = after
-      ? this._queryEventsAfter.all(agentId, after, limit)
-      : this._queryEvents.all(agentId, limit);
-    rows.reverse(); // chronological
-    return rows.map(r => ({
-      type: r.type,
-      timestamp: r.timestamp,
-      blocks: JSON.parse(r.blocks),
-      usage: r.usage_input != null ? { input: r.usage_input, output: r.usage_output } : undefined,
-    }));
-  }
-
-  countEvents(agentId) {
-    return this._countEvents.get(agentId).c;
-  }
-
-  insertEvents(rows) {
-    if (rows.length > 0) this._insertSessionEventMany(rows);
-  }
-
   insertUIEvents(events) {
     if (events.length > 0) this._insertUIEventMany(events);
   }
@@ -815,32 +753,6 @@ export class SearchIndex {
     try {
       this._insertChatEvent.run(ts, evType, fromId, toId, agentId, String(text), metadata, null);
     } catch { /* dedup constraint */ }
-  }
-
-  queryChatHistory({ before, agent, limit = 50 } = {}) {
-    let rows;
-    if (before && agent) {
-      rows = this._queryChatBeforeAgent.all(before, agent, agent, limit);
-    } else if (before) {
-      rows = this._queryChatBefore.all(before, limit);
-    } else if (agent) {
-      rows = this._queryChatLatestAgent.all(agent, agent, limit);
-    } else {
-      rows = this._queryChatLatest.all(limit);
-    }
-    // Reverse to chronological order
-    rows.reverse();
-    return rows.map(r => ({
-      id: r.id,
-      timestamp: r.timestamp,
-      event_type: r.event_type,
-      from: r.from_id,
-      to: r.to_id,
-      agent: r.agent_id,
-      text: r.text,
-      metadata: r.metadata ? JSON.parse(r.metadata) : null,
-      source: r.source || 'fleet',
-    }));
   }
 
   /**

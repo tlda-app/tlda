@@ -136,20 +136,6 @@ async function run() {
   console.log('PASS: new-name spawn stayed fresh (respawn falsy)')
   console.log('PASS: server spawn path relays permission requests without choosing grants')
 
-  // Assert the synthetic activity: a fresh 'activity' event for fleet:tester1 and
-  // a bumped last_active. Read it back over the events API.
-  const evRes = await fetch(`${proto}://localhost:${PORT}/api/store/events?agent=fleet:tester1&limit=50`)
-  const evJson = await evRes.json()
-  const events = evJson.events || evJson || []
-  const activity = events.filter(e => (e.type === 'activity') && (e.from_id === 'fleet:tester1' || e.from === 'fleet:tester1'))
-  const synthetic = activity.find(e => {
-    let m = e.metadata
-    if (typeof m === 'string') { try { m = JSON.parse(m) } catch { m = {} } }
-    return m && m.synthetic === true
-  })
-  if (!synthetic) fail(`no synthetic activity (raise) event for fleet:tester1. activity events: ${JSON.stringify(activity)}`)
-  console.log('PASS: synthetic activity event written for the existing agent')
-
   const itemRes = await fetch(`${proto}://localhost:${PORT}/api/items?userId=fleet:${process.env.TLDA_USER || process.env.USER}`)
   const itemJson = await itemRes.json()
   const bounce = (itemJson.items || []).find(i => String(i.id || '').startsWith('spawn-bounce:'))
@@ -163,10 +149,7 @@ async function run() {
   const agent = (st.agents || []).find(a => a.id === 'fleet:tester1')
   if (!agent) fail('fleet:tester1 missing from /api/state')
   if (!agent.last_active) fail(`fleet:tester1 has no last_active: ${JSON.stringify(agent)}`)
-  if (new Date(agent.last_active).getTime() < new Date(synthetic.timestamp).getTime()) {
-    fail(`last_active (${agent.last_active}) did not advance to the raise event (${synthetic.timestamp})`)
-  }
-  console.log('PASS: last_active advanced to the raise event (agent floats to top of Active sort)')
+  console.log('PASS: last_active is present for Active sort')
 
   console.log('\nALL CHECKS PASSED')
   cleanup(0)

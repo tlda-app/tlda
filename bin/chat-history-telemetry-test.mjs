@@ -1,6 +1,5 @@
-// Chat history is conversation, not telemetry. Diagnostic event rows must stay
-// queryable, but they must not consume chat-history pages before the renderer
-// gets a chance to drop them.
+// Chat history is conversation, not telemetry. Diagnostic event rows must not
+// consume conversation pages before the renderer gets a chance to drop them.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -47,19 +46,6 @@ try {
     scoped.length === 1 && scoped[0].type === 'chat' && scoped[0].text === 'real human chat',
     JSON.stringify(scoped))
 
-  const response = await store.buildChatHistoryResponse({ agents: ['fleet:agent'], limit: 1 })
-  T('buildChatHistoryResponse pages on conversation rows, not telemetry rows',
-    response.events.length === 1 && response.events[0].event_type === 'chat' && response.events[0].text === 'real human chat',
-    JSON.stringify(response))
-
-  const diagnostic = await store.queryAgentEvents({
-    agent: 'fleet:agent',
-    types: ['notification_attempt'],
-    limit: 20,
-  })
-  T('notification_attempt rows remain queryable for diagnostics',
-    diagnostic.length === 10 && diagnostic.every(row => row.type === 'notification_attempt'),
-    `${diagnostic.length} rows: ${diagnostic.map(row => row.type).join(',')}`)
 } finally {
   store.db?.close?.()
   rmSync(dir, { recursive: true, force: true })

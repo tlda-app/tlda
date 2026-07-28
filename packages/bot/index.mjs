@@ -267,11 +267,11 @@ export function runBot(opts) { return createBot(opts).start(); }
 export {
   CONFIG_DIR,                // todd, grammar, lint, dev, disposition
   getServerUrl,              // todd, dev, disposition
-  getFleetServerUrl,         // grammar, lint, dev, todd/lib/disclosure/dataset
+  getFleetServerUrl,         // grammar, lint, dev
   getManagedBots,            // grammar, lint, dev
   getManagedBotEnvironments, // dev
   getActiveEnvName,       // dev
-  getReadToken,              // todd/lib/disclosure/dataset
+  getReadToken,
 } from '../../shared/config.mjs';
 export { labelsForAgent } from '../../shared/fleet-labels.mjs';        // todd, dev
 export { startWsRequest } from '../../shared/ws-request-policy.mjs';   // all bots

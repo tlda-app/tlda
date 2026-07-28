@@ -257,12 +257,16 @@ async function run() {
     })
     assert.equal(chatResult.ok, true)
 
-    const events = await request(requesterWs, 'store-events', {
+    const events = await request(requesterWs, 'fleet-search', {
+      query: '',
       agent: 'fleet:delegate-e2e-requester',
-      event_types: ['chat'],
+      eventTypes: ['chat'],
+      agentOnly: true,
+      historyOnly: true,
+      eventOnly: true,
       limit: 20,
     })
-    assert.ok((events.events || []).some(e => e.from === spawnResult.agent_id && e.text === 'E2E direct response from spawned shell.'))
+    assert.ok((events.results || []).some(e => e.from === spawnResult.agent_id && e.text === 'E2E direct response from spawned shell.'))
     console.log('PASS: spawned shell direct chat response is stored under its fleet id')
 
     const stateRes = await fetch(`${proto}://localhost:${PORT}/api/state`)

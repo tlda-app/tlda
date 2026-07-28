@@ -13,7 +13,7 @@ function planDetails(store, stmt, args) {
     .map(row => row.detail);
 }
 
-test('global chat-history reads force the timestamp index', () => {
+test('global subscription-history reads force the timestamp index', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-store-plan-'));
   const dbPath = join(dir, 'fleet.db');
   const store = new FleetStore(dbPath, { taskDoc: false });

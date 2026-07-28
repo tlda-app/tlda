@@ -225,28 +225,6 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
-      "description": "Latest 250 persisted activity events, fetched through the existing ordered `before` cursor. The window is bounded and refreshes every five seconds.",
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 13, "w": 24, "x": 0, "y": 35 },
-      "id": 6,
-      "options": { "cellHeight": "sm", "showHeader": true, "sortBy": [{ "desc": true, "displayName": "When" }] },
-      "targets": [{
-        "columns": [
-          { "selector": "timestamp", "text": "When", "type": "timestamp" },
-          { "selector": "from", "text": "Agent", "type": "string" },
-          { "selector": "tool", "text": "Activity", "type": "string" },
-          { "selector": "text", "text": "Detail", "type": "string" },
-          { "selector": "id", "text": "Event", "type": "number" }
-        ],
-        "format": "table", "parser": "backend", "refId": "A", "root_selector": "events", "source": "url", "type": "json",
-        "url": "__TLDA_FLEET_URL__/api/store/events?type=activity&before=9007199254740991&limit=250&view=activity-dashboard",
-        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
-      }],
-      "title": "Live activity",
-      "type": "table"
-    },
-    {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
       "description": "Current per-daemon stage counters. Read only within one daemonKey + boot_id epoch; resets are a new/unknown epoch, never negative delivery. These are stage counts, not correlated per-card end-to-end delivery.",
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 48 },

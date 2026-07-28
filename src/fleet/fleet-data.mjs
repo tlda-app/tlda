@@ -70,7 +70,6 @@ let _nextTasksCursor = null
 // window, so there's no live/older split to gap against.
 const _store = makeEventStore()
 // History fetched from the server is limited to this many rows per request.
-const HISTORY_PAGE = 150
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
@@ -227,7 +226,6 @@ export function getAgents() { return _agents }
 export function getAgentTotals() { return _agentTotals }
 export function getTasks() { return _tasks }
 export function getItems() { return _items }
-export function getEvents() { return _store.all() }
 // The transport's high-water mark, for diagnostics that must report a panel's
 // own position and the stream's position in the SAME record (see
 // src/fleet/chat-freeze-probe.mjs). Reading it from getFleetRuntimeSummary()
@@ -1149,42 +1147,9 @@ export function connect() {
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
     }
     // Roster/task lists are loaded independently; the socket stays clear for
-    // request replies and incremental deltas.
-    // Catch up on missed chat events
-    // subscribe/unsubscribe ride the same request transport as everything else.
+    // request replies and incremental deltas. Chat panels resubscribe above;
+    // each subscription returns its own matching history window.
     setChatSubscriptionTransport((name, payload) => browserFleetTransport.ephemeral(name, payload))
-    if (_lastEventId > 0) {
-      const reconnectTimer = probe.start('reconnect', 'reconnect-backfill')
-      browserFleetTransport.ephemeral('store-events', { after: _lastEventId, limit: 500 })
-        .then(data => {
-          // One path: ingest EVERYTHING the live stream would (it upserts any
-          // typed fleet-event — the render whitelist is the sole display gate).
-          // A separate type-allowlist here drifts from that whitelist; that drift
-          // is the bug where a reconnect silently dropped `activity` (and amend/
-          // interrupt/timer/kill-session) while chats survived. Don't add one back.
-          const missed = (data.events || []).filter(e => (e.type || e.event_type))
-          const newEvents = []
-          let boundAny = false
-          for (const raw of missed) {
-            const eid = raw.id || raw._dbId
-            if (eid && eid > _lastEventId) _lastEventId = eid
-            // upsert dedups by id and binds the optimistic tempId→dbId handoff
-            // (the replayed row carries _tempId, persisted server-side). No
-            // content matching — binding is always by id, per the dedup rule.
-            const { event: ev, isNew, evicted } = liveUpsert(convertChatEvent(raw))
-            if (evicted.length) replaceFleetEvents(_store.all())
-            else upsertFleetEvent(ev)
-            if (isNew) newEvents.push(ev); else boundAny = true
-          }
-          for (const ev of newEvents) notify('messages', ev)
-          if (boundAny && !newEvents.length) notify('messages', null)
-          probe.stop(reconnectTimer, { missedCount: missed.length, newCount: newEvents.length, boundAny })
-        })
-        .catch(e => {
-          console.warn('[fleet-data] history backfill failed:', e.message)
-          probe.stop(reconnectTimer, { error: e.message })
-        })
-    }
   }
 
   _ws.onclose = (ev) => {
@@ -1390,10 +1355,9 @@ export async function init() {
   // Establish the one fleet wire before loading state. HTTP is not a fallback
   // feature transport.
   connect()
-  const [agentsRes, tasksRes, historyRes] = await Promise.all([
+  const [agentsRes, tasksRes] = await Promise.all([
     browserFleetTransport.ephemeral('agents-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] agents transport failed:', e.message); return {} }),
     browserFleetTransport.ephemeral('tasks-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] tasks transport failed:', e.message); return {} }),
-    browserFleetTransport.ephemeral('load-history', { limit: HISTORY_PAGE }).catch(e => { console.warn('[fleet-data] history transport failed:', e.message); return { events: [] } }),
   ])
 
   // Populate agents + tasks
@@ -1402,20 +1366,6 @@ export async function init() {
   updateAgents(agentsRes.agents || [])
   _nextTasksCursor = tasksRes.nextCursor || null
   updateTasks(tasksRes.tasks || [])
-
-  // Populate chat events and notify subscribers
-  // One path: ingest everything (matching the live stream); the render whitelist
-  // is the single gate for what displays. Mirrors the reconnect catch-up in connect().
-  const chatEvents = (historyRes.events || [])
-    .filter(e => (e.event_type || e.type))
-    .map(convertChatEvent)
-  _store.upsertMany(chatEvents)
-  replaceFleetEvents(_store.all())
-  // Track highest event ID for reconnect catch-up
-  for (const e of historyRes.events || []) {
-    if (e.id && e.id > _lastEventId) _lastEventId = e.id
-  }
-  for (const ev of chatEvents) notify('messages', ev)
 
   const fetchItemsForHuman = () => {
     if (!_humanId) return
@@ -1506,24 +1456,7 @@ function applyTaskDelta(delta) {
   notify('tasks', { type: 'tasks', tasks: _tasks })
 }
 
-// --- Chat history helpers ---
-// All events (chat + activity) come from the events table via /api/chat/history.
-// No separate activity fetch needed.
-
-export async function fetchHistory(agentIds = [], limit = 200) {
-  const res = await browserFleetTransport.ephemeral('load-history', { agents: agentIds || [], limit })
-
-  const events = toRenderableChatEvents(res.events)
-
-  return events.sort((a, b) =>
-    (a.timestamp || '') < (b.timestamp || '') ? -1 : 1
-  )
-}
-
-// The renderable set, shared by every intake path. Split out of loadBefore so
-// the subscription and the scrollback fetch can't disagree about what a chat
-// panel is willing to show — two lists that were meant to be the same one is
-// how live and history came to render different sets in the first place.
+// The renderable set shared by subscription history and live delivery.
 const RENDERABLE_CHAT_TYPES = new Set([
   'chat', 'delegate', 'task_done', 'terminal_user', 'terminal_assistant', 'timer',
   'compacting', 'activity', 'terminal_attention', 'terminal_card', 'plan_approval',
@@ -1559,43 +1492,6 @@ export function receiveFilterEvents(bufferKey, rows, { browserReceivedAtMs = nul
     }
   }
   const added = applyFilterEvents(bufferKey, events)
-  if (added) notify('messages', null)
-  return added
-}
-
-export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}) {
-  const res = await browserFleetTransport.ephemeral('load-history', {
-    agents: agentIds || [],
-    before: beforeTs,
-    limit: count,
-  })
-
-  const events = toRenderableChatEvents(res.events)
-
-  // Fold scrollback into either the shared global store (unfiltered/global chat)
-  // or a named chat buffer (filtered chats). Return the count of genuinely-new
-  // rows so the caller knows whether to re-pin scroll after a prepend.
-  let added = 0
-  const changed = []
-  let results = []
-  if (opts.bufferKey) {
-    changed.push(...events)
-    added = upsertFleetEventsForBuffer(opts.bufferKey, changed, {
-      beforeNotify: typeof opts.onBeforeNotify === 'function' ? opts.onBeforeNotify : undefined,
-    })
-  } else {
-    results = _store.upsertMany(events, { skipTrim: true })
-    for (const result of results) {
-      if (result.isNew) added++
-      changed.push(result.event)
-    }
-    if (added && typeof opts.onBeforeNotify === 'function') opts.onBeforeNotify(added)
-  }
-  const evicted = results.some(result => result.evicted?.length)
-  if (!opts.bufferKey) {
-    if (added || evicted) replaceFleetEvents(_store.all())
-    else upsertFleetEvents(changed)
-  }
   if (added) notify('messages', null)
   return added
 }

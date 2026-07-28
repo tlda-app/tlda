@@ -53,7 +53,7 @@ import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { isTerminalRoutable, runtimeStatusForAgent, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, loadBefore, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -1986,13 +1986,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const agents = useFleetChatAgents(frameId)
   const agentById = useMemo(() => new Map(agents.map((agent: any) => [agent.id, agent])), [agents])
   const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
-  const resolvedFilterIdKey = useMemo(() => {
-    if (!dnfFilter || dnfFilter.length === 0) return ''
-    return [...(statusTargetIds || [])].sort().join(',')
-  }, [filterKey, statusTargetIds])
-  // The chat owns its streamed event buffer. Roster/status projections may
-  // choose history targets, but they never create, replace, or remove the live
-  // chat view.
+  // The chat owns its subscription-fed event buffer.
   const chatEventBufferKey = dnfFilter ? `chat:${shape.id}` : null
   const liveEvents = useFleetEvents(dnfFilter, frameId, chatEventBufferKey)
   const tasks = useFleetTasks(frameId)
@@ -2144,51 +2138,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
   }, [suggestionsAll, dnfFilter, agents])
 
-  // Fetch per-agent history on mount / filter change. A filtered chat gets its
-  // own named history buffer so one panel's backfill cannot evict or reshape
-  // another panel's visible history.
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
-
-  const historyLoadedRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!dnfFilter || dnfFilter.length === 0) return
-    if (!resolvedFilterIdKey) {
-      // Filter set but resolved to nothing. Once agents are loaded this is a
-      // genuine no-match; surface it (no silent fallback). Before agents load the
-      // memo re-runs and this effect re-fires when the id-set appears.
-      if (agents.length > 0) {
-        log.warn('chat', 'filter resolved to no fleet ids; no history will load', { filter: dnfFilter })
-      }
-      return
-    }
-    const ids = resolvedFilterIdKey.split(',')
-    const loadKey = `${filterKey}:${resolvedFilterIdKey}:${chatEventBufferKey || ''}`
-    if (historyLoadedRef.current === loadKey) return
-    historyLoadedRef.current = loadKey
-    // loadBefore folds scrollback into this chat's named buffer (deduping by id)
-    // and returns the count of genuinely-new rows. No local olderEvents list —
-    // the history just appears in `events` via the store view.
-    loadBefore(ids, new Date().toISOString(), 200, {
-      bufferKey: chatEventBufferKey,
-      onBeforeNotify: (added: number) => {
-        setFirstItemIndex(index => Math.max(0, index - added))
-      },
-    }).then((added: number) => {
-      if (added <= 0) return
-      isAtBottomRef.current = true
-      setAtBottom(true)
-      // The history lands as an async PREPEND into the store; Virtuoso's
-      // followOutput only follows bottom appends, and initialTopMostItemIndex
-      // applied at first mount (while data was empty). So without this the list
-      // stays parked at the top and a freshly-filtered view renders blank until a
-      // live event arrives. Scroll to the end once the prepend has committed.
-      requestAnimationFrame(() => {
-        try { virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' }) }
-        catch (e) { log.debug('chat', 'post-backfill scrollToIndex skipped (virtuoso not mounted)', { e: String(e) }) }
-      })
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedFilterIdKey, filterKey, chatEventBufferKey])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -3093,67 +3043,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (ev.timestamp === tsPart) return true
         return false
       })
-      // If not found locally, fetch from server by DB ID and expand outward for activity grouping
-      let fetchedGroup: any[] | null = null
-      if (!matchEvent && /^\d+$/.test(refBody)) {
-        try {
-          const id = parseInt(refBody)
-          const { convertChatEvent } = await import('../fleet/fleet-data.mjs')
-
-          // Fetch the target event first
-          const d0 = await fleetEphemeral('store-events', { after: id - 1, limit: 1 })
-          const targetRaw = (d0.events || [])[0]
-          if (!targetRaw) throw new Error()
-          const target = convertChatEvent(targetRaw) as any
-          matchEvent = target
-
-          // For activity events, expand outward to find the group boundaries
-          if (target._activity) {
-            const agentId = target.from
-            const group = [target]
-
-            // Expand backwards
-            let backId = id
-            let backDone = false
-            while (!backDone) {
-              const d = await fleetEphemeral('store-events', { before: backId, limit: 10 })
-              const evts = (d.events || []).map(convertChatEvent)
-              if (evts.length === 0) break
-              for (let i = evts.length - 1; i >= 0; i--) {
-                if (evts[i]._activity && evts[i].from === agentId) {
-                  group.unshift(evts[i])
-                  backId = evts[i]._dbId
-                } else {
-                  backDone = true
-                  break
-                }
-              }
-              if (evts.length < 10) break
-            }
-
-            // Expand forwards
-            let fwdId = id
-            let fwdDone = false
-            while (!fwdDone) {
-              const d = await fleetEphemeral('store-events', { after: fwdId, limit: 10 })
-              const evts = (d.events || []).map(convertChatEvent)
-              if (evts.length === 0) break
-              for (const ev of evts) {
-                if (ev._activity && ev.from === agentId) {
-                  group.push(ev)
-                  fwdId = ev._dbId
-                } else {
-                  fwdDone = true
-                  break
-                }
-              }
-              if (evts.length < 10) break
-            }
-
-            fetchedGroup = group
-          }
-        } catch {}
-      }
       if (!matchEvent) return
 
       // Remove any existing popover
@@ -3164,19 +3053,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       popover.className = 'chip-hover-popover fleet-chat-shape'
       let rendered: string
       if (matchEvent._activity && ctxRef.current) {
-        // Use pre-fetched group or find from local events
-        let group: any[]
-        if (fetchedGroup && fetchedGroup.length > 0) {
-          group = fetchedGroup
-        } else {
-          const matchIdx = liveEvents.indexOf(matchEvent)
-          const agentId = matchEvent.from
-          let start = matchIdx
-          while (start > 0 && liveEvents[start - 1]._activity && liveEvents[start - 1].from === agentId) start--
-          let end = matchIdx
-          while (end < liveEvents.length - 1 && liveEvents[end + 1]._activity && liveEvents[end + 1].from === agentId) end++
-          group = liveEvents.slice(start, end + 1)
-        }
+        const matchIdx = liveEvents.indexOf(matchEvent)
+        const agentId = matchEvent.from
+        let start = matchIdx
+        while (start > 0 && liveEvents[start - 1]._activity && liveEvents[start - 1].from === agentId) start--
+        let end = matchIdx
+        while (end < liveEvents.length - 1 && liveEvents[end + 1]._activity && liveEvents[end + 1].from === agentId) end++
+        const group = liveEvents.slice(start, end + 1)
         const { renderActivityGroup } = await import('../fleet/activity-render.mjs')
         rendered = `<div class="chat-activity-inline-wrap">${renderActivityGroup(group.length > 0 ? group : [matchEvent], ctxRef.current)}</div>`
       } else {
@@ -4857,46 +4740,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterHasMatchingAgent = useFleetFilterHasMatchingAgent(dnfFilter, frameId)
   const isImpossibleFilter = filter.length > 0 && !filterHasMatchingAgent
 
-  // Resolve the filter to the fleet-id set for history paging — same resolver
-  // as the initial load and the live display. null = no filter (unfiltered
-  // view loads global history); [] = filtered but nothing resolved yet (don't
-  // fall back to global history inside a filtered view).
-  const loadBeforeAgents = useMemo<string[] | null>(
-    () => (dnfFilter ? [...(statusTargetIds || [])] : null),
-    [filterKey, statusTargetIds]
-  )
-
-  // Infinite scroll — load older messages
-  const loadingMore = useRef(false)
-  const chatMessagesRef = useRef(chatMessages)
-  useEffect(() => { chatMessagesRef.current = chatMessages }, [chatMessages])
-  const hasChatMessages = chatMessages.length > 0
-  const loadBeforeAgentsKey = useMemo(
-    () => loadBeforeAgents === null ? 'global' : loadBeforeAgents.join(','),
-    [loadBeforeAgents],
-  )
-  const loadOlderHistory = useCallback(async () => {
-    if (loadingMore.current || chatMessages.length === 0) return
-    // Filtered view that hasn't resolved to any id yet — don't page in global history.
-    if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
-    loadingMore.current = true
-    const oldestTs = chatMessages[0]?.timestamp
-    if (oldestTs) {
-      try {
-        await loadBefore(loadBeforeAgents || [], oldestTs, 50, {
-          bufferKey: chatEventBufferKey,
-          onBeforeNotify: (added: number) => {
-            setFirstItemIndex(index => Math.max(0, index - added))
-          },
-        })
-      } finally {
-        loadingMore.current = false
-      }
-      return
-    }
-    loadingMore.current = false
-  }, [chatMessages, loadBeforeAgents, chatEventBufferKey])
-
   // Attach click/tap handlers to the Virtuoso-owned scroll container.
   // Listener-based (not JSX prop) because the Scroller is memoized and
   // doesn't close over changing callbacks.
@@ -4938,41 +4781,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       el.removeEventListener('click', onClick)
     }
   }, [chatLogEl, handleDocLinkClick])
-
-  // Auto-load more history when content doesn't fill the scroll container.
-  // Without this, if initial messages are too few to create a scrollbar,
-  // Virtuoso never reaches the top sentinel and the user can't get more messages.
-  useEffect(() => {
-    const el = chatLogEl
-    // Auto-load only for a resolved filtered view (a specific id set) — not for
-    // the unfiltered view (null) and not while a filter is still unresolved ([]).
-    if (!el || loadingMore.current || !hasChatMessages || !loadBeforeAgents || loadBeforeAgents.length === 0) return
-    let cancelled = false
-    const fillUnderfullInitialView = async () => {
-      while (!cancelled && el.scrollHeight <= el.clientHeight) {
-        if (loadingMore.current) return
-        const currentMessages = chatMessagesRef.current
-        if (currentMessages.length === 0) return
-        const oldestTs = currentMessages[0]?.timestamp
-        if (!oldestTs) return
-        loadingMore.current = true
-        try {
-          const added = await loadBefore(loadBeforeAgents, oldestTs, 50, {
-            bufferKey: chatEventBufferKey,
-            onBeforeNotify: (added: number) => {
-              setFirstItemIndex(index => Math.max(0, index - added))
-            },
-          })
-          if (added <= 0) return
-          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-        } finally {
-          loadingMore.current = false
-        }
-      }
-    }
-    void fillUnderfullInitialView()
-    return () => { cancelled = true }
-  }, [chatLogEl, filterKey, loadBeforeAgentsKey, hasChatMessages, chatEventBufferKey])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
@@ -5648,14 +5456,6 @@ function FleetChatInner({ shape }: { shape: any }) {
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             alignToBottom
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
-            startReached={() => {
-              // Virtuoso can report "start reached" during bottom-follow layout
-              // settlement on short lists. Only user scrollback should page
-              // older history; otherwise a simple append prepends rows and
-              // reindexes the visible window.
-              if (!userScrolledUpRef.current) return
-              void loadOlderHistory()
-            }}
             atBottomThreshold={24}
             totalListHeightChanged={(h) => {
               const prev = prevTotalHeightRef.current
@@ -6092,12 +5892,8 @@ function FleetChatInner({ shape }: { shape: any }) {
  * that comparison runs quiet on real traffic, this becomes the render source and
  * the client-side decision goes.
  *
- * The window is the panel's FIRST page, not a cap on what it can hold. The list
- * is already virtualized and already pages — Virtuoso's startReached calls
- * loadBefore for scrollback, exactly as the agents panel calls
- * loadNextAgentsPage from endReached. So this asks for one page and the
- * existing pagination does the rest; there is no "how many messages does chat
- * keep" constant to get wrong.
+ * The window is the panel's subscription history page, not a cap on live
+ * delivery. There is no second history access path.
  */
 const CHAT_FIRST_PAGE = 100
 

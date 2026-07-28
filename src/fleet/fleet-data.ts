@@ -348,16 +348,15 @@ export function upsertFleetEvent(event: Record<string, unknown> | null | undefin
 
 // Bulk ingest is history, not delivery. It reaches fanoutEventToBuffers through
 // upsertFleetEvent exactly like a live event does, so without this depth guard a
-// mid-session history load (loadFleetHistoryForAgents, the scrollback path)
-// inflates every buffer's matched-event count by hundreds of OLD messages — and
+// subscription history page inflates every buffer's matched-event count by
+// hundreds of OLD messages — and
 // the stall check then reports a panel as behind when nothing new ever arrived.
 // That is what produced matchGap frozen at 218 across three reports on
 // 2026-07-25; those records are inflated and are not evidence of anything.
 let _bulkIngestDepth = 0
 
-// Only the WS fleet-event handler is a LIVE delivery. Reconnect backfill and
-// scrollback reach fanoutEventToBuffers through the same functions, with
-// _bulkIngestDepth at 0 — so depth alone cannot tell them apart, and a
+// Only the WS fleet-event handler is a LIVE delivery. Subscription history
+// reaches fanoutEventToBuffers through the same functions, so a
 // backfilled event recorded as a client verdict is a server-missed disagreement
 // the server was never going to answer. chief3 caught exactly that: six records
 // for event ids ~15,000 behind the head, all in one second.

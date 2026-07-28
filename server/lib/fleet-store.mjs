@@ -1408,11 +1408,6 @@ export class FleetStore {
     this._queryEventsByType = this.db.prepare(`
       SELECT ${E} FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT ?
     `);
-    this._queryEventsAfterRowid = this.db.prepare(`
-      SELECT ${E} FROM events WHERE id > ? ORDER BY id ASC LIMIT ?
-    `);
-    this._lastRowid = this.db.prepare('SELECT MAX(id) as max_id FROM events');
-
     // QA system queries
     this._setQaConfig = this.db.prepare('INSERT OR REPLACE INTO qa_config (key, value) VALUES (?, ?)');
     this._getQaConfig = this.db.prepare('SELECT value FROM qa_config WHERE key = ?');
@@ -2223,8 +2218,8 @@ export class FleetStore {
     };
   }
 
-  // Plain { id: friendly_name } map for labeling chat history. The hot
-  // chat-history callers only need display names, so this avoids pulling and
+  // Plain { id: friendly_name } map for labeling subscription history. The hot
+  // subscription path only needs display names, so this avoids pulling and
   // hydrating the full ~1300-row roster (the remaining `agents ORDER BY
   // last_seen` slow query). Cached 1s, busted by the same structural hook.
   // Returns the cached object directly — callers must not mutate it (spread
@@ -3802,12 +3797,7 @@ export class FleetStore {
   // Give raw `events` rows the display fields a chat line needs: the aliases the
   // renderer reads, the read flag, and the from/to labels.
   //
-  // Extracted so the filter-subscription path and buildChatHistoryResponse cannot
-  // resolve rows differently. Two paths that shape the same row differently is
-  // how live and history came to disagree in the first place; a chat panel fed
-  // by a subscription must get rows indistinguishable from the ones the history
-  // fetch gives it, or the same message renders two ways depending on how it
-  // arrived.
+  // Subscription history rows use the same display shape as live delivery.
   resolveChatRows(events, { serverOwnerId = null, serverOwnerName = null } = {}) {
     const rows = events.map(e => ({ ...e, event_type: e.event_type ?? e.type, from: e.from, to: e.to, agent: e.agent ?? e.agent_id }));
 
@@ -3836,62 +3826,6 @@ export class FleetStore {
     }));
   }
 
-  buildChatHistoryResponse({ before = null, agents = [], limit = 50, serverOwnerId = null, serverOwnerName = null } = {}) {
-    const cap = Math.min(parseInt(limit) || 50, 1000);
-    let events = this.queryChatHistory({
-      before,
-      agents: Array.isArray(agents) ? agents : [],
-      limit: cap + 1,
-    });
-
-    const hasMore = events.length > cap;
-    if (hasMore) events.shift();
-    // No text-prefix filtering here. queryChatHistory already selects only
-    // conversation event types before LIMIT, so diagnostic telemetry cannot
-    // consume the page and then vanish in the renderer.
-
-    const resolved = this.resolveChatRows(events, { serverOwnerId, serverOwnerName });
-    const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null;
-    return { events: resolved, hasMore, nextCursor };
-  }
-
-  // Get events after a known rowid (for SSE catch-up)
-  getEventsSince(afterId, limit = 100) {
-    return this._query(this._queryEventsAfterRowid, afterId, limit);
-  }
-
-  // One page of the global event stream, optionally narrowed to a set of types.
-  // `beforeId` pages backwards (newest-first selection, returned oldest-first);
-  // otherwise it pages forwards from `afterId`.
-  //
-  // Rows come back UNHYDRATED — `metadata` is the stored JSON string, not a
-  // parsed object. That is deliberate and it is not what getEventsSince does.
-  // The four raw queries this replaces (the store-events socket verb and
-  // GET /api/events) all returned the string, while the no-filter branch of
-  // those same two endpoints falls through to getEventsSince and returns an
-  // object. So one endpoint already answers with two different shapes for
-  // `metadata` depending on its query parameters. Hydrating here would change
-  // the wire payload for the ?type= and ?before= consumers — one of which is
-  // Grafana — so the inconsistency is preserved rather than quietly fixed.
-  queryEventsPage({ types = null, afterId = 0, beforeId = null, limit = 200 } = {}) {
-    const typeList = Array.isArray(types) && types.length ? types : null;
-    const typeClause = typeList ? `type IN (${typeList.map(() => '?').join(',')}) AND ` : '';
-    if (beforeId) {
-      const rows = this.db.prepare(
-        `SELECT ${this._EVT} FROM events WHERE ${typeClause}id < ? ORDER BY id DESC LIMIT ?`
-      ).all(...(typeList || []), beforeId, limit);
-      rows.reverse();
-      return rows;
-    }
-    return this.db.prepare(
-      `SELECT ${this._EVT} FROM events WHERE ${typeClause}id > ? ORDER BY id ASC LIMIT ?`
-    ).all(...(typeList || []), afterId, limit);
-  }
-
-  getLastEventId() {
-    return this._lastRowid.get()?.max_id || 0;
-  }
-
   // Fetch one agent's thread (events where it is sender OR recipient) as a
   // UNION of two indexed scans instead of `(from_id=? OR to_id=?)`. The OR
   // forces SQLite into a MULTI-INDEX-OR + temp-btree sort that measured ~10×
@@ -3900,7 +3834,7 @@ export class FleetStore {
   // from==to==agent row by full-row identity (id is unique). Handles the four
   // shapes the callers need: timestamp range, afterId, beforeId, plain.
   // Returns rows in the same order/orientation the old inline query did.
-  queryAgentEvents({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
+  _queryAgentEventsForSearch({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
     const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id';
     const tail = [];
     const tailParams = [];
@@ -4170,7 +4104,7 @@ export class FleetStore {
     let eventRows = [];
     if (includeEvents) {
       if (historyMode && hasAgent && eventOnly) {
-        const rows = agentIds.flatMap(agentId => this.queryAgentEvents({
+        const rows = agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
           agent: agentId,
           types: eventTypes,
           excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,

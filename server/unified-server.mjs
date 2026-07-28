@@ -1735,11 +1735,9 @@ function touchActivity(agentId) {
 // `agent-thinking` indicator is fire-and-forget (a disconnected subscriber
 // misses the edge), so we ALSO persist a synthetic `turn_ended` row in the
 // events DB. Because every share() is auto-broadcast as a fleet-event (see the
-// fleetStore.onEvent wiring below), bots can SUBSCRIBE to turn boundaries live
-// AND catch up after a disconnect by polling /api/store/events?type=turn_ended.
-// This is the signal the disposition self-check bot (~/work/tlda-bots/disposition)
-// rides on. The true→false edge is deduped upstream by _thinkingState, so this
-// fires exactly once per turn.
+// fleetStore.onEvent wiring below), bots subscribe to turn boundaries live.
+// The true→false edge is deduped upstream by _thinkingState, so this fires
+// exactly once per turn.
 async function emitTurnEnded(agentId, startedAtMs) {
   if (!fleetStore || !agentId) return
   // Only real agents have turns — skip humans/bots (Skip, todd, tlda, …).
@@ -6649,29 +6647,6 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'load-history') {
-    const limit = Math.min(parseInt(msg.limit || '50'), 1000)
-    const before = msg.before || null
-    const agents = Array.isArray(msg.agents) ? msg.agents : []
-    try {
-      const { events: resolved, hasMore } = await fleetStore.buildChatHistoryResponse({
-        before,
-        agents,
-        limit,
-        serverOwnerId: SERVER_OWNER_ID,
-        serverOwnerName: SERVER_OWNER_NAME,
-      })
-      // Period-correct names: render each historical message with the name its
-      // sender/recipient held AT send time, plus `*NameNow` when since rotated.
-      // The client nick prefers these over the current-name fallback.
-      await stampNames(resolved)
-      reply({ events: resolved, hasMore })
-    } catch (e) {
-      error(e.message)
-    }
-    return
-  }
-
   if (type === 'delegate') {
     const {
       agent: agentQuery,
@@ -7765,59 +7740,6 @@ async function handleFleetWsMessage(ws, msg) {
       if (!msg.subId) return error('unsubscribe-filter requires subId')
       filterSubscriptions.unsubscribe(ws, msg.subId)
       reply({ ok: true, ...filterSubscriptions.stats() })
-    } catch (e) { error(e.message) }
-    return
-  }
-
-  // ---- chat-history ----
-  if (type === 'chat-history') {
-    const { limit: rawLimit = 50, before, agents } = msg
-    const limit = Math.min(parseInt(rawLimit) || 50, 1000)
-    try {
-      const { events: resolved, hasMore, nextCursor } = await fleetStore.buildChatHistoryResponse({
-        before,
-        agents: Array.isArray(agents) ? agents : [],
-        limit,
-        serverOwnerId: SERVER_OWNER_ID,
-        serverOwnerName: SERVER_OWNER_NAME,
-      })
-      reply({ events: resolved, hasMore, nextCursor })
-    } catch (e) { error(e.message) }
-    return
-  }
-
-  // ---- store-events ----
-  if (type === 'store-events') {
-    const afterId = parseInt(msg.after || '0')
-    const beforeId = msg.before ? parseInt(msg.before) : null
-    // Timestamp-based pagination (ISO strings). Used by thread/MCP.
-    const sinceTs = msg.since || null
-    const untilTs = msg.until || null
-    const limit = Math.min(parseInt(msg.limit || '200'), 5000)
-    const evtAgent = msg.agent || null
-    const evtType = msg.event_type || null
-    // event_types (array) takes precedence over event_type (single)
-    const evtTypes = Array.isArray(msg.event_types) && msg.event_types.length ? msg.event_types : evtType ? [evtType] : null
-    try {
-      let events
-      let total = null
-      if (evtAgent) {
-        // UNION of two indexed scans (see FleetStore.queryAgentEvents) — far
-        // faster than `(from_id=? OR to_id=?)`. No COUNT: callers detect
-        // overflow by fetching limit+1 and paginating forward.
-        events = await fleetStore.queryAgentEvents({ agent: evtAgent, types: evtTypes, sinceTs, untilTs, afterId, beforeId, limit })
-      } else if (evtTypes) {
-        // beforeId is deliberately not passed: this branch has always paged
-        // forward from afterId even when the caller also sent `before`, and
-        // the store method would honour it. Preserved, not fixed.
-        events = await fleetStore.queryEventsPage({ types: evtTypes, afterId, limit })
-      } else if (beforeId) {
-        events = await fleetStore.queryEventsPage({ beforeId, limit })
-      } else {
-        events = await fleetStore.getEventsSince(afterId, limit)
-      }
-      const lastId = await fleetStore.getLastEventId()
-      reply({ events: await stampNames(events), lastId, total })
     } catch (e) { error(e.message) }
     return
   }

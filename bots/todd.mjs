@@ -77,7 +77,6 @@ const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
 let lastFleetEventId = 0
 const seenFleetEventIds = new Set()
-let fleetCursorInitialized = false
 // lastRealActivityMs[agentId] = timestamp of last meaningful tool call.
 // Meaningful = any tool call that is NOT a chat aimed at a bot.
 const lastRealActivityMs = new Map()
@@ -1773,14 +1772,12 @@ async function getTasks() {
   return normalizeTaskList(await getJson('/api/tasks?limit=200'))
 }
 
-async function fetchFleetActivityReportSources(now = Date.now()) {
-  const since = new Date(now - 15 * 60_000).toISOString()
+async function fetchFleetActivityReportSources() {
   const results = await Promise.allSettled([
     getJson('/api/agents/summary'),
     getJson('/api/agents?limit=200'),
     getJson('/api/fleet-roster-truth?limit=200'),
     getJson('/api/tasks?limit=200'),
-    getJson(`/api/store/events?since=${encodeURIComponent(since)}&limit=5000`),
     getJson('/api/diagnostics/telemetry-status'),
   ])
   const value = (index, fallback) => results[index].status === 'fulfilled' ? results[index].value : fallback
@@ -1792,8 +1789,7 @@ async function fetchFleetActivityReportSources(now = Date.now()) {
     agents: normalizeAgentList(value(1, { agents: [] })),
     rosterTruth: value(2, null),
     tasks: normalizeTaskList(value(3, { tasks: [] })),
-    events: value(4, { events: [] })?.events || [],
-    telemetryStatus: value(5, null),
+    telemetryStatus: value(4, null),
     omitted,
   }
 }
@@ -1803,7 +1799,6 @@ const ACTIVITY_REPORT_SOURCE_NAMES = [
   '/api/agents?limit=200',
   '/api/fleet-roster-truth?limit=200',
   '/api/tasks?limit=200',
-  '/api/store/events',
   '/api/diagnostics/telemetry-status',
 ]
 
@@ -1812,12 +1807,11 @@ async function handleFleetActivityReportCommand(text, { direct = false } = {}) {
   if (!command) return false
   try {
     const now = Date.now()
-    const sources = await fetchFleetActivityReportSources(now)
+    const sources = await fetchFleetActivityReportSources()
     const report = buildFleetActivityReport({
       now,
       agents: sources.agents,
       tasks: sources.tasks,
-      events: sources.events,
       telemetryStatus: sources.telemetryStatus,
       rosterTruth: sources.rosterTruth,
       mode: command.mode,
@@ -1878,35 +1872,15 @@ function resolveAgentSpawnSpec(agentId) {
   })
 }
 
-function activeTimerAgentSet(events = [], agents = [], now = Date.now()) {
-  const agentIds = new Set((agents || []).map(a => a?.id).filter(Boolean))
-  const active = new Set()
-  for (const e of events || []) {
-    const meta = typeof e?.metadata === 'string'
-      ? (() => { try { return JSON.parse(e.metadata) } catch { return {} } })()
-      : (e?.metadata || {})
-    if (meta.pending !== true) continue
-    const fireAt = Date.parse(meta.fire_at || '')
-    if (!Number.isFinite(fireAt) || fireAt <= now) continue
-    const from = e.from_id || e.from || e.agent || null
-    const to = e.to_id || e.to || null
-    if (agentIds.has(from)) active.add(from)
-    if (agentIds.has(to)) active.add(to)
-  }
-  return active
-}
-
 async function taskKickSweep() {
   if (!isCanonicalBot()) return
   writeHeartbeat('task-kick-sweep')
-  const [tasksRaw, agentsRaw, timersRaw] = await Promise.all([
+  const [tasksRaw, agentsRaw] = await Promise.all([
     getTasks(),
     getAgents(),
-    getJson('/api/store/events?type=timer&limit=500'),
   ])
   const tasks = normalizeTaskList(tasksRaw)
   const agents = normalizeAgentList(agentsRaw)
-  const activeTimerAgents = activeTimerAgentSet(timersRaw?.events || [], agents, Date.now())
   selfCheckWiring.updateRoster(agents)
   // Keep the bot roster fresh so the activity handler can exclude bot-chats.
   knownBotIds.clear()
@@ -1924,7 +1898,6 @@ async function taskKickSweep() {
     kickIntervalMs: TASK_KICK_INTERVAL_MS,
     skipLive: skipLiveAgentSet(),
     lastRealActivityMs,
-    activeTimerAgents,
   })
   for (const { task, agent, key, taskAgeMs, action, reason } of kicks) {
     // This timestamp is the bounded repeat authority. Unfinished owned work
@@ -2045,26 +2018,6 @@ Skip already told the agent what he wanted — repeatedly. He's exhausted from r
       sendChat(OWNER_ID, `⚠️ Failed to spawn manager for ${agentName}: ${e.message}`)
       logDecision(agentId, 'manager-escalation-spawn-error', modeLabel, { error: e.message }, triggerText)
     }
-  }
-}
-
-// ---- Education tracking ----
-// Query the activity store to see if an agent has invoked a skill since a given timestamp.
-// Uses the /api/store/events endpoint which stores Skill tool_uses as activity events.
-async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
-  try {
-    const since = new Date(sinceTs).toISOString()
-    const url = `/api/store/events?agent=${encodeURIComponent(agentId)}&type=activity&since=${encodeURIComponent(since)}&limit=200`
-    const data = await getJson(url)
-    return (data.events || []).some(e => {
-      try {
-        const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {})
-        return meta.tool === 'Skill' && meta.input?.skill === skillName
-      } catch { return false }
-    })
-  } catch (e) {
-    console.error(`[todd] education check failed: ${e.message}`)
-    return null // unknown
   }
 }
 
@@ -2628,14 +2581,12 @@ function connect() {
     try {
       console.log(`[todd] connected to ${WS_URL}`)
       reconnectDelay = 500 // back fast next time too
-      await initializeFleetCursor()
       await loginFleet()
       writeHeartbeat('ws-open')
       refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
       refreshHibernationPolicies().catch(e => console.error('[todd] hibernation prefs refresh failed:', e.message))
       refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
       if (isCanonicalBot()) {
-        catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
         broadcastPendingStatus()
       }
     } catch (e) {
@@ -2764,27 +2715,6 @@ function noteFleetEvent(data = {}) {
     seenFleetEventIds.delete(drop)
   }
   lastFleetEventId = Math.max(lastFleetEventId, eventId)
-  return true
-}
-
-async function catchUpFleetEvents() {
-  const after = lastFleetEventId
-  const data = await getJson(`/api/store/events?after=${after}&limit=1000`)
-  const events = Array.isArray(data?.events) ? data.events : []
-  if (!events.length) return
-  console.log(`[todd] replaying ${events.length} fleet events after reconnect (after=${after})`)
-  for (const event of events) {
-    await handleMessage({ event: 'fleet-event', data: event })
-  }
-  writeHeartbeat('catch-up')
-}
-
-async function initializeFleetCursor() {
-  if (fleetCursorInitialized) return false
-  const data = await getJson('/api/store/events?after=0&limit=1')
-  if (Number.isFinite(Number(data?.lastId))) lastFleetEventId = Number(data.lastId)
-  fleetCursorInitialized = true
-  writeHeartbeat('cursor-init')
   return true
 }
 
@@ -3054,16 +2984,6 @@ async function checkTriggers(targetId, text) {
         continue
       }
       let message = trigger.message
-      // On re-fire: check if agent invoked the skill since last nudge
-      if (lastFired && trigger.skill) {
-        const invoked = await hasInvokedSkillSince(targetId, trigger.skill, lastFired)
-        if (invoked === true) {
-          message = `🔁 ${message}\n\n*(You invoked \`${trigger.skill}\` after the last nudge — but the pattern is recurring. Re-read it more carefully and apply it to how you're engaging right now.)*`
-        } else if (invoked === false) {
-          const minAgo = Math.round((Date.now() - lastFired) / 60_000)
-          message = `🔁 ${message}\n\n*(You were nudged about \`${trigger.skill}\` ~${minAgo}min ago and still haven't invoked it. Skip is still noticing the same pattern.)*`
-        }
-      }
       const label = trigger.skill || `trigger-${i}`
       console.log(`[todd] trigger ${i} fired → ${targetId}: ${trigger.pattern}`)
       queueNudge(targetId, label, message)

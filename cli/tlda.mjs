@@ -26,7 +26,6 @@ import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-s
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
-import { cmdLogs } from './lib/unified-logs.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import {
@@ -209,7 +208,6 @@ const COMMAND_HELP = {
   errors:  'tlda project errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
-  logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   bot:     'tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
@@ -4219,12 +4217,6 @@ function localDaemonEnvName() {
   }
 }
 
-function parseJsonMaybe(value) {
-  if (!value) return null
-  if (typeof value === 'object') return value
-  try { return JSON.parse(value) } catch { return null }
-}
-
 function processTreeHasRuntime(spawnSync, panePids, expectedKind = null) {
   const ps = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8' })
   if (ps.status !== 0) return { ok: false, kind: null, pid: null }
@@ -4328,23 +4320,9 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   const runtime = hasSession ? processTreeHasRuntime(spawnSync, panes, expectedKind) : { ok: false, kind: null, pid: null }
   const table = await apiGet('GET', `/api/fleet-table?filter=${encodeURIComponent(agent.id)}&limit=5`)
   const row = (table.agents || []).find(a => a.id === agent.id) || null
-  const eventsData = await apiGet('GET', `/api/store/events?agent=${encodeURIComponent(agent.id)}&limit=200`)
-  const events = Array.isArray(eventsData?.events) ? eventsData.events : []
-  const recentLogin = [...events].reverse().find(e => e.type === 'login' || e.type === 'register')
-  const recentInbox = [...events].reverse().find(e => {
-    if (e.type !== 'activity') return false
-    const m = parseJsonMaybe(e.metadata) || {}
-    const tool = String(m.tool || e.text || '')
-    return tool.includes('inbox') || tool.includes('my_task')
-  })
-  const incoming = [...events].reverse().find(e => e.to === agent.id && e.from !== agent.id && ['chat', 'delegate'].includes(e.type))
-  const replyAfterIncoming = incoming
-    ? events.find(e => e.from === agent.id && e.to !== agent.id && Date.parse(e.timestamp) > Date.parse(incoming.timestamp))
-    : null
-  const ok = !agent.dead && hasSession && runtime.ok && !!recentLogin
+  const ok = !agent.dead && hasSession && runtime.ok
   return {
     ok, query, agent, route, tableRow: row, session: sess, hasSession, panes, runtime,
-    recentLogin, recentInbox, incoming, replyAfterIncoming,
   }
 }
 
@@ -4361,14 +4339,6 @@ function printAgentReadiness(r) {
   console.log(`  daemon route: ${r.route?.daemon_key || 'missing'}`)
   console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
   console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
-  console.log(`  login event: ${r.recentLogin ? `${r.recentLogin.timestamp} #${r.recentLogin.id}` : 'missing'}`)
-  console.log(`  recent inbox activity: ${r.recentInbox ? `${r.recentInbox.timestamp} #${r.recentInbox.id}` : 'not observed (inbox is often filtered as infrastructure)'}`)
-  if (r.incoming) {
-    const reply = r.replyAfterIncoming ? `${r.replyAfterIncoming.timestamp} #${r.replyAfterIncoming.id}` : 'no later outbound reply observed'
-    console.log(`  chat/task roundtrip: incoming #${r.incoming.id}; reply=${reply}`)
-  } else {
-    console.log('  chat/task roundtrip: no recent inbound chat/delegate to evaluate')
-  }
   console.log(`  result: ${r.ok ? 'READY' : 'NOT READY'}`)
 }
 
@@ -5918,8 +5888,6 @@ async function main() {
       case 'delete':  await cmdDelete(); break
       case 'rm':      await cmdDelete(); break
       case 'move':    await cmdMoveProject(); break
-      case 'logs':    await cmdLogs(args.slice(1)); break
-      case 'log':     await cmdLogs(args.slice(1)); break
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break

@@ -22,8 +22,6 @@ import {
   login as _login,
   registerHuman as _registerHuman,
   sendMessage as _sendMessage,
-  fetchHistory,
-  loadBefore,
   receiveFilterEvents,
   matchesFilter,
   resolveFilter,
@@ -49,7 +47,6 @@ import {
   getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
   subscribeFleetAgents,
-  upsertFleetEvents,
   viewFleetEvents,
   type FleetEvent,
 } from './fleet/fleet-data.ts'
@@ -442,13 +439,6 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
   }, [frameId, filter, filterKey])
 
   return isPlaybackMode ? playbackEvents : [...liveEvents]
-}
-
-export async function loadFleetHistoryForAgents(agentIds: string[], limit = 300): Promise<number> {
-  await ensureInit()
-  const events = await fetchHistory(agentIds, limit)
-  upsertFleetEvents(events)
-  return events.length
 }
 
 type FleetStatusTargets = {
@@ -1100,4 +1090,4 @@ export const updateOptimisticEvent = _updateOptimisticEvent
 export const removeOptimisticEvent = _removeOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetEphemeral = _fleetEphemeral
-export { loadBefore, receiveFilterEvents, fetchHistory, resolveFilter }
+export { receiveFilterEvents, resolveFilter }

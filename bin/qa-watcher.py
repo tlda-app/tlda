@@ -181,21 +181,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "read_thread",
-            "description": "Read the conversation thread for a specific agent. Returns messages between the agent and Skip.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "agent": {"type": "string", "description": "Agent name or fleet ID"},
-                    "limit": {"type": "integer", "description": "Max messages to return (default 80)"},
-                },
-                "required": ["agent"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "chat",
             "description": "Send a message to an agent or to Skip via fleet chat.",
             "parameters": {
@@ -284,20 +269,6 @@ def tool_read_file(path, start_line=None, end_line=None):
     except Exception as ex:
         return f"Error reading {path}: {ex}"
 
-def tool_read_thread(agent, limit=80):
-    aid, aname = find_agent_id(agent)
-    if not aid:
-        return f"Agent '{agent}' not found."
-    events = fleet_get(f"/api/store/events?agent={aid}&limit={limit}").get("events", [])
-    lines = []
-    for e in events:
-        f = e.get("from_id", "?")
-        ts = e.get("timestamp", "")[:19]
-        text = (e.get("text") or "")[:800]
-        role = "[SKIP]" if "skip" in f.lower() else f"[{f}]"
-        lines.append(f"{ts} {role}: {text}")
-    return '\n'.join(lines) if lines else "No messages found."
-
 def tool_chat(to, message):
     target = SKIP_ID if to.lower() == 'skip' else to
     if not target.startswith('fleet:'):
@@ -371,7 +342,6 @@ import urllib.parse
 
 TOOL_DISPATCH = {
     "read_file": lambda args: tool_read_file(args["path"], args.get("start_line"), args.get("end_line")),
-    "read_thread": lambda args: tool_read_thread(args["agent"], args.get("limit", 80)),
     "chat": lambda args: tool_chat(args["to"], args["message"]),
     "write_file": lambda args: tool_write_file(args["path"], args["content"]),
     "list_files": lambda args: tool_list_files(args["path"], args.get("pattern")),
@@ -477,7 +447,7 @@ The deliverable message (sent to Skip):
 ---
 
 Steps:
-1. Use read_thread to get the conversation between {target_name} and Skip.
+1. Use search with the agent's name to find the relevant conversation.
 2. Extract what Skip asked for (from [SKIP] messages only).
 3. If the deliverable references files, use read_file to check what's actually in them.
 4. Compare deliverable to Skip's request.
@@ -498,7 +468,7 @@ def run_scoped_review(targets, instruction):
 Skip's instruction: {instruction or 'Review the recent conversation — did the agent do what Skip asked?'}
 
 Steps:
-1. For each target agent, use read_thread to get their recent conversation with Skip.
+1. For each target agent, use search with the agent's name to find their recent conversation with Skip.
 2. Focus on what Skip asked for vs what the agent delivered. Pay special attention to Skip's instruction above — it scopes what to look at.
 3. Check files if the agent claims to have produced or changed something.
 4. Send your feedback DIRECTLY to each agent via chat(). Be specific. Quote Skip's words where relevant.
@@ -519,7 +489,7 @@ def handle_message(from_id, text, agents_map):
 
 Currently watching: {', '.join(watching_names)}
 
-Respond helpfully. If they want you to review a specific agent, use read_thread and read_file to do a proper review. Use chat() to send your response."""
+Respond helpfully. If they want you to review a specific agent, use search and read_file to do a proper review. Use chat() to send your response."""
 
     try:
         run_tool_loop(SYSTEM_PROMPT, user_prompt)

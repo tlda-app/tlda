@@ -221,57 +221,6 @@ async function checkDocumentLoads() {
   return { doc: project.name, assetPath, bytes: text.length }
 }
 
-async function checkMessageRoundTrip() {
-  const senderId = `fleet:dev-probe-${randomUUID().slice(0, 8)}`
-  const senderName = `dev-probe-${randomUUID().slice(0, 6)}`
-  const token = `dev-probe:${randomUUID()}`
-  let senderRegistered = false
-  try {
-    const payload = {
-      agent_id: senderId,
-      name: senderName,
-      cwd: REPO_ROOT,
-      labels: ['dev-probe'],
-      metadata: { bot_probe: BOT_KEY, disposable: true },
-    }
-    await sendRequest({ ...payload, type: 'reserve-shell' })
-    await sendRequest({ ...payload, type: 'login' })
-    senderRegistered = true
-    let sent
-    try {
-      sent = await sendRequest({ type: 'chat', from: senderId, to: AGENT_ID, message: token, _tempId: token }, REQUEST_TIMEOUT_MS)
-    } catch (e) {
-      if (/No recipients matched/i.test(e?.message || '')) {
-        throw new ProbeSetupError(`round-trip bot recipient was not reachable (${AGENT_ID})`)
-      }
-      throw e
-    }
-    const ackEventIds = Array.isArray(sent?.event_ids) ? sent.event_ids : []
-    if (!ackEventIds.length) throw new Error('chat send did not return an accepted event id')
-    const deadline = Date.now() + REQUEST_TIMEOUT_MS
-    while (Date.now() < deadline) {
-      const history = await sendRequest({ type: 'chat-history', agents: [AGENT_ID], limit: 30 }, 5000)
-      const events = Array.isArray(history?.events) ? history.events : []
-      const found = events.find(event =>
-        (event.text || event.message) === token ||
-        ackEventIds.includes(Number(event.id || event.event_id)),
-      )
-      if (found) return { senderId, recipientId: AGENT_ID, eventId: found.id || found.event_id || null }
-      await new Promise(r => setTimeout(r, 500))
-    }
-    throw new Error('accepted chat did not arrive in dev bot chat history')
-  } finally {
-    if (senderRegistered) {
-      try {
-        await sendRequest({ type: 'mark-dead', agent: senderId }, 5000)
-      } catch (e) {
-        // Best-effort cleanup; failure is visible in logs for manual sweep.
-        console.error(`[dev-bot] disposable sender cleanup failed for ${senderId}: ${e.message}`)
-      }
-    }
-  }
-}
-
 function compactFailure(results) {
   return results
     .filter(r => !r.ok)
@@ -283,7 +232,6 @@ async function runChecks() {
   const results = []
   for (const [name, check] of [
     ['doc-load', checkDocumentLoads],
-    ['chat-roundtrip', checkMessageRoundTrip],
   ]) {
     try {
       results.push({ name, ok: true, detail: await check() })
@@ -358,7 +306,7 @@ async function sendFailureNudge(report) {
     `Fleet: \`${FLEET_SERVER}\``,
     `Store: \`${STORE_SERVER}\``,
     '',
-    'v1 coverage: server health through real doc SVG asset load; disposable identity chat round trip. Create/spawn/wake/mint/seat is not covered in v1.',
+    'v1 coverage: server health through real doc SVG asset load. Create/spawn/wake/mint/seat is not covered in v1.',
   ].join('\n')
   for (const target of targets) {
     await sendChat(target, message)

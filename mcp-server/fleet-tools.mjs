@@ -20,7 +20,7 @@ import { formatDisplayTimestamp, displayZoneOptions } from '../shared/display-ti
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
-import { compactPrettyResult, indentPrettyResult, normalizePrettyResult } from '../shared/activity-pretty-result.mjs';
+import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
@@ -2188,8 +2188,16 @@ export async function handleFleetTool(name, args) {
   async function recentDirectInbound(fromId, toId) {
     try {
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const data = await mcpFleetTransport.ephemeral('store-events', { agent: fromId, since, limit: 100 });
-      return (data.events || []).some(e =>
+      const data = await mcpFleetTransport.ephemeral('fleet-search', {
+        query: '',
+        filterExpression: `from:${toId} & to:${fromId}`,
+        since,
+        eventType: 'chat',
+        historyOnly: true,
+        eventOnly: true,
+        limit: 1,
+      });
+      return (data.results || []).some(e =>
         e.type === 'chat' &&
         e.from === toId &&
         e.to === fromId
@@ -3311,134 +3319,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         // No API fallback — ref data must be in attachments (embedded by sender)
       }
 
-      if (type === 'msg') {
-        // Token format: «msg:displayLabel#msg:from:isoTimestamp»
-        // The # suffix contains the structured value: msg:agentId:timestamp
-        const hashIdx = inner.lastIndexOf('#')
-        const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
-
-        // Parse structured data — either "msg:eventId" or "msg:fleet:agentName:2026-04-18T..."
-        const valueParts = structuredData.startsWith('msg:') ? structuredData.slice(4) : structuredData
-        const evIdMatch = valueParts.match(/^(\d+)/)
-
-        if (evIdMatch) {
-          // Event ID path
-          try {
-            const data = await mcpFleetTransport.ephemeral('store-events', { after: evIdMatch[1] - 1, limit: 1 })
-            const events = (data.events || []).filter(e => e.type === 'chat')
-            const ev = events[0]
-            if (ev) {
-              let agents = []
-              try {
-                agents = await mcpFleetTransport.ephemeral('store-agents-by-ids', {
-                  ids: [ev.from, ev.to].filter(Boolean),
-                }) || []
-              } catch {}
-              resolved = resolved.replace(match[0], '\n' + formatMessage(ev, agents) + '\n')
-            }
-          } catch {}
-        }
-      }
-
-      if (type === 'activity') {
-        // Token format: «activity:displayLabel#activity:eventId» or «activity:displayLabel#activity:agentId:isoTimestamp»
-        const hashIdx = inner.lastIndexOf('#')
-        const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
-        const valueParts = structuredData.startsWith('activity:') ? structuredData.slice(9) : structuredData
-
-        // Try event ID first (pure numeric), then fall back to agentId:timestamp
-        const evIdMatch = valueParts.match(/^(\d+)/)
-        let activities = []
-
-        if (evIdMatch) {
-          // Event ID — look up this event and surrounding activity events (±60s)
-          try {
-            const data = await mcpFleetTransport.ephemeral('store-events', { after: evIdMatch[1] - 1, limit: 1 })
-            const anchor = (data.events || [])[0]
-            if (anchor) {
-              const since = new Date(new Date(anchor.timestamp).getTime() - 60000).toISOString()
-              const until = new Date(new Date(anchor.timestamp).getTime() + 60000).toISOString()
-              const agentId = anchor.from
-              const data2 = await mcpFleetTransport.ephemeral('store-events', { agent: agentId, since, until, limit: 50 })
-              activities = (data2.events || []).filter(e => e.type === 'activity')
-            }
-          } catch {}
-        } else {
-          const dateMatch = valueParts.match(/:(\d{4}-\d{2}-\d{2}T.+)$/)
-          let agentId = '', isoTs = ''
-          if (dateMatch) {
-            agentId = valueParts.slice(0, valueParts.length - dateMatch[0].length)
-            isoTs = dateMatch[1]
-          }
-          if (agentId && isoTs) {
-            try {
-              const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
-              const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
-              const data = await mcpFleetTransport.ephemeral('store-events', { agent: agentId, since, until, limit: 50 })
-              activities = (data.events || []).filter(e => e.type === 'activity')
-            } catch (e) { process.stderr.write(`[fleet] activity fetch failed: ${e.message}\n`); }
-          }
-        }
-
-        // Parse metadata strings (events API returns raw DB rows)
-        for (const ev of activities) {
-          if (typeof ev.metadata === 'string') {
-            try { ev.metadata = JSON.parse(ev.metadata) } catch (e) { process.stderr.write(`[fleet] metadata parse failed for event ${ev.id}: ${e.message}\n`); }
-          }
-        }
-
-        if (activities.length > 0) {
-          const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
-          let agents = []
-          try {
-            agents = await mcpFleetTransport.ephemeral('store-agents-by-ids', {
-              ids: [resolvedAgentId].filter(Boolean),
-            }) || []
-          } catch (e) { process.stderr.write(`[fleet] bounded agent fetch failed: ${e.message}\n`); }
-          resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
-        }
-      }
-
-      if (type === 'tool') {
-        // Token format: «tool:ToolName#activity:eventId»
-        const hashIdx = inner.lastIndexOf('#')
-        const structuredData = hashIdx >= 0 ? inner.slice(hashIdx + 1) : ''
-        const displayLabel = inner.slice(colonIdx + 1, hashIdx >= 0 ? hashIdx : undefined)
-
-        // Parse: "activity:22663" or "activity:22683:line3" → event ID
-        const evIdMatch = structuredData.match(/activity:(\d+)/)
-        if (evIdMatch) {
-          const eventId = evIdMatch[1]
-          try {
-            const data = await mcpFleetTransport.ephemeral('store-events', { after: eventId - 1, limit: 1 })
-            const ev = (data.events || [])[0]
-            if (ev) {
-              let meta = ev.metadata
-              if (typeof meta === 'string') { try { meta = JSON.parse(meta) } catch (e) { process.stderr.write(`[fleet] event metadata parse failed: ${e.message}\n`); } }
-              meta = meta || {}
-              const tool = meta.tool || ev.text || displayLabel
-              const arg = meta.arg || ''
-              const prettyResult = meta.prettyResult ? normalizePrettyResult(meta.prettyResult) : ''
-
-              // Resolve agent name
-              let agentName = (ev.from || '').replace('fleet:', '')
-              try {
-                const agents = await mcpFleetTransport.ephemeral('store-agents-by-ids', {
-                  ids: [ev.from].filter(Boolean),
-                })
-                const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
-                if (a) agentName = a.friendly_name || a.name || agentName
-              } catch {}
-
-              const ts = new Date(ev.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...displayZoneOptions() })
-              let replacement = `\n[${agentName} → ${tool}, ${ts}]:`
-              if (arg) replacement += `\n  ${arg}`
-              if (prettyResult) replacement += `\n  ${prettyResult.slice(0, 500).split('\n').join('\n  ')}`
-              resolved = resolved.replace(match[0], replacement + '\n')
-            }
-          } catch {}
-        }
-      }
     }
     return { text: resolved, images: chipImages }
   }
@@ -3891,13 +3771,21 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
     const fetchEventsForAgent = async (agentId) => {
       // Fetch one extra row so we can detect "there's more" without a COUNT.
-      const params = { agent: agentId, limit: pageSize + 1 };
+      const params = {
+        query: '',
+        agent: agentId,
+        agentOnly: true,
+        historyOnly: true,
+        eventOnly: true,
+        limit: pageSize + 1,
+      };
       if (resolvedSince) params.since = resolvedSince;
-      if (resolvedUntil) params.until = resolvedUntil;
-      if (args.types?.length) params.event_types = args.types;
-      const data = await mcpFleetTransport.ephemeral('store-events', params);
+      if (resolvedUntil) params.before = resolvedUntil;
+      if (args.types?.length === 1) params.eventType = args.types[0];
+      else if (args.types?.length > 1) params.eventTypes = args.types;
+      const data = await mcpFleetTransport.ephemeral('fleet-search', params);
       if (!data) return;
-      for (const e of (data.events || [])) {
+      for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
         const metadata = parseEventMetadata(e.metadata);
         const text = e.type === 'activity'
           ? formatActivityForThread(e, metadata)

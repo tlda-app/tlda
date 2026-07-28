@@ -27,7 +27,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent, loadFleetHistoryForAgents } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
@@ -416,20 +416,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
   )
   const events = useFleetEvents(filter)
   const unreadCounts = useFleetUnreadCounts()
-  const loadedInboxHistoryRef = useRef(new Set<string>())
-
-  useEffect(() => {
-    const ids = [myId, myName].filter((id): id is string => !!id)
-    if (ids.length === 0) return
-    const key = ids.join('\n')
-    if (loadedInboxHistoryRef.current.has(key)) return
-    loadedInboxHistoryRef.current.add(key)
-    void loadFleetHistoryForAgents(ids, 500).catch((e) => {
-      loadedInboxHistoryRef.current.delete(key)
-      console.warn('[fleet-inbox] scoped history fetch failed:', e?.message || e)
-    })
-  }, [myId, myName])
-
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
