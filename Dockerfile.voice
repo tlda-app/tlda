@@ -1,0 +1,46 @@
+# Dockerfile.voice — the tlda voice/comms box (fly app: tlda-voice).
+#
+# Runs ONLY the Deepgram bridge. Nothing else lives here: no app server, no
+# builds, no fleet database, no agents. That is the entire point — Skip has RSI
+# and voice is his only input, so the bridge's lifecycle must not be coupled to
+# anything that gets deployed, grepped, or restarted for an unrelated reason.
+#
+# Note what this image does NOT copy: the app source. It copies two runtime
+# files and a dependency manifest of its own (deploy/voice/package.json), so an
+# app dependency bump produces no new voice image and no restart here.
+#
+# Deploy with:  fly deploy -c fly.voice.toml
+FROM node:24-slim
+
+WORKDIR /app
+
+# --- Tailscale (official Debian repo) ---
+# The box joins Skip's tailnet so his browser can reach the bridge directly, and
+# `tailscale serve` terminates TLS with a valid cert on the .ts.net name. Tailnet
+# membership is the whole auth posture — see scripts/fly-entrypoint-voice.sh.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update && apt-get install -y --no-install-recommends tailscale \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dependencies next so app-source churn can never invalidate this layer.
+COPY deploy/voice/package.json ./package.json
+RUN npm install --omit=dev && npm cache clean --force
+
+# The bridge itself: deepgram-sdk-bridge.mjs + its epoch-state module.
+COPY bin/deepgram-runtime/ ./deepgram-runtime/
+
+COPY scripts/fly-entrypoint-voice.sh ./
+RUN chmod +x fly-entrypoint-voice.sh
+
+# The bridge listens on 8180 (its built-in default; it takes --port to override).
+# It serves plain ws: it selects TLS only when the mkcert localhost certs exist,
+# and they do not exist in this image. That is correct here — TLS is terminated
+# by `tailscale serve` on the .ts.net name, and the other route in is Fly's
+# private 6PN network, which is already encrypted.
+EXPOSE 8180
+
+# No health endpoint is wired as proof-of-life on purpose: a listening socket
+# does not mean transcription works. Liveness is proven by a real round-trip.
+CMD ["/app/fly-entrypoint-voice.sh"]
