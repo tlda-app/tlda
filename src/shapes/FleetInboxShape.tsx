@@ -27,7 +27,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
 import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
@@ -415,7 +415,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
     [myId, myName],
   )
   const events = useFleetEvents(filter)
-  const unreadCounts = useFleetUnreadCounts()
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
   const [filterOpen, setFilterOpen] = useState(false)
@@ -467,7 +466,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
         messages: msgs,
         last,
         lastTs: last?.timestamp || '',
-        unread: unreadCounts[partnerId] || 0,
+        unread: 0,
         preview: previewText(last?.text || ''),
         markdownTag: markdownTagForThread(msgs),
       })
@@ -475,7 +474,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     // Newest thread on top (inbox order).
     out.sort((a, b) => (a.lastTs < b.lastTs ? 1 : -1))
     return out
-  }, [events, myId, myName, agents, ctx, unreadCounts])
+  }, [events, myId, myName, agents, ctx])
 
   const visibleThreads = threads
   const totalUnread = useMemo(() => visibleThreads.reduce((n, t) => n + t.unread, 0), [visibleThreads])

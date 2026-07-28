@@ -53,11 +53,11 @@ import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { isTerminalRoutable, runtimeStatusForAgent, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
@@ -93,12 +93,10 @@ import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
 import {
   FleetAgentDirectoryList,
-  FleetAgentDirectoryNameColumn,
   getFleetAgentDirectoryRows,
   fleetAgentLabelColor,
   sortFleetAgentDirectoryRowsByRecency,
 } from './FleetAgentDirectoryRow'
-import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -1939,18 +1937,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
-  const { startDrag: startUnreadRailDrag } = usePillDrag()
-  const showUnreadAgentRail = useValue('show-unread-agent-rail', () => {
-    if (filterOpen) return false
-    const userId = getHumanId()
-    const deviceId = getDeviceId()
-    if (!userId || !deviceId) return false
-    const ownedFleetShapes = editor.getCurrentPageShapes().filter((candidate: any) =>
-      isFleetShapeForOwnerKey(candidate, userId, deviceId),
-    )
-    return isOnlyOwnedChat(ownedFleetShapes, shape.id)
-  }, [editor, filterOpen, shape.id])
-
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
   filterRef.current = filter
@@ -2338,18 +2324,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
     return sorted
   }, [events, quietDmTraffic])
-
-  const displayedUnreadSenderIds = useMemo(() => {
-    const humanId = getHumanId()
-    const ids = new Set<string>()
-    if (!humanId) return ids
-    for (const message of chatMessages) {
-      if (message.type === 'chat' && message.read !== true && message.to === humanId && message.from) {
-        ids.add(message.from)
-      }
-    }
-    return ids
-  }, [chatMessages])
 
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
@@ -5445,7 +5419,6 @@ function FleetChatInner({ shape }: { shape: any }) {
 
           {!filterOpen && (
             <>
-              {showUnreadAgentRail && <FleetUnreadAgentRail displayedUnreadSenderIds={displayedUnreadSenderIds} startDrag={startUnreadRailDrag} />}
               {/* Messages — Virtuoso owns the scroll container and all virtualized
                   item measurement, including the status/suggestions trailing row. */}
               <Virtuoso
@@ -6006,40 +5979,6 @@ function SendHint({
     <span className="fleet-chat-send-hint" style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
       {enterPrefix}→&nbsp;{targets}
     </span>
-  )
-}
-
-function FleetUnreadAgentRail({
-  displayedUnreadSenderIds,
-  startDrag,
-}: {
-  displayedUnreadSenderIds: ReadonlySet<string>
-  startDrag: (
-    e: React.PointerEvent,
-    pillType: 'agent' | 'label',
-    value: string,
-    displayName: string,
-    color: string,
-  ) => void
-}) {
-  const agents = useFleetAgents()
-  const unreadCounts = useFleetUnreadCounts()
-  const unreadRows = useMemo(
-    () => getUnreadAgentRailRows(agents, unreadCounts, displayedUnreadSenderIds),
-    [agents, unreadCounts, displayedUnreadSenderIds],
-  )
-
-  if (unreadRows.length === 0) return null
-  return (
-    <div className="fleet-unread-agent-rail" aria-label="Unread conversations">
-      {unreadRows.map((row) => (
-        <FleetAgentDirectoryNameColumn
-          key={row.id || row.exactName}
-          row={row}
-          onAgentPointerDown={(event, agentRow) => startDrag(event, 'agent', agentRow.exactName, agentRow.displayName, agentRow.color)}
-        />
-      ))}
-    </div>
   )
 }
 

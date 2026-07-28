@@ -18,7 +18,7 @@ import {
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
@@ -686,7 +686,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)
 
-  const unreadCounts = useFleetUnreadCounts()
   const contextPercent = useFleetContext(null, frameId)
   const rowItems = useMemo<AgentListItem[]>(
     () => [
@@ -799,7 +798,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       row={toFleetAgentDirectoryRow(item.agent, { spawnModels: spawnModelInfo.models })}
                       taskDesc={taskText}
                       taskTitle={taskText}
-                      unreadCount={unreadCounts[item.agent.id] || 0}
                       contextPct={contextPercent.get(item.agent.id)}
                       expanded={expandedId === item.agent.id}
                       lastMessage={lastMessages[agentExactName(item.agent)] || ''}

@@ -37,24 +37,6 @@
   border: 1px solid rgba(128, 128, 128, 0.1);
 }
 
-.fleet-chat-shape .fleet-unread-agent-rail {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 12;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  max-height: 100%;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.fleet-chat-shape .fleet-unread-agent-rail .fleet-agents-col-name {
-  pointer-events: all;
-}
-
-
 /* Lift fleet shapes above doc/canvas content (notes, pages, drawings) — but
    ONLY in the main canvas. TLDraw writes an inline `z-index` on each shape's
    container from its sort order, so this needs `!important` to win there.
@@ -1846,8 +1828,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
 
 /* --- Column widths --- */
 
-.fleet-agents-shape .fleet-agents-col-name,
-.fleet-chat-shape .fleet-unread-agent-rail .fleet-agents-col-name {
+.fleet-agents-shape .fleet-agents-col-name {
   width: 80px;
   flex-shrink: 0;
   font-size: 9px;
@@ -1901,8 +1882,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
 
 /* --- Draggable pills in table --- */
 
-.fleet-agents-shape .fleet-agents-pill,
-.fleet-chat-shape .fleet-unread-agent-rail .fleet-agents-pill {
+.fleet-agents-shape .fleet-agents-pill {
   touch-action: none;
 }
 

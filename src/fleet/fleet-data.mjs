@@ -499,17 +499,6 @@ function retryStoredIdentity(storedName) {
   }, 5000)
 }
 
-// Returns { agentId: count } for unread messages from agents to the human
-export function getUnreadCountsForHuman() {
-  const counts = {}
-  for (const ev of _store.all()) {
-    if (ev.type === 'chat' && !ev.read && ev.to === _humanId && ev.from) {
-      counts[ev.from] = (counts[ev.from] || 0) + 1
-    }
-  }
-  return counts
-}
-
 export function getAgent(id) {
   if (!id) return undefined
   // The friendly name is an opaque atom — look up by exact id or friendly_name.

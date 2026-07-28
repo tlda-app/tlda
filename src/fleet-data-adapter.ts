@@ -13,7 +13,6 @@ import {
   getAgentTotals,
   getTasks,
   getItems,
-  getUnreadCountsForHuman,
   getHumanId,
   getHumanName,
   loadNextAgentsPage,
@@ -963,30 +962,6 @@ export async function fetchSharedDocs(): Promise<Array<{ doc: string; title: str
  * Returns a map of agentId → unread count for messages from that agent to the human.
  * Updates live when messages arrive or read receipts come in.
  */
-export function useFleetUnreadCounts(): Record<string, number> {
-  const [counts, setCounts] = useState<Record<string, number>>({})
-
-  useEffect(() => {
-    let unsub: (() => void) | null = null
-    let cancelled = false
-
-    ensureInit().then(() => {
-      if (cancelled) return
-      setCounts(getUnreadCountsForHuman() as Record<string, number>)
-      unsub = subscribe('messages', null, () => {
-        setCounts(getUnreadCountsForHuman() as Record<string, number>)
-      })
-    })
-
-    return () => {
-      cancelled = true
-      unsub?.()
-    }
-  }, [])
-
-  return counts
-}
-
 // --- Projects hook ---
 
 /**
