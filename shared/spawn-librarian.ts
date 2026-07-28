@@ -286,32 +286,6 @@ export class SpawnLibrarian {
   }
 }
 
-export function specMismatch(
-  requested: SpawnSpec,
-  agent: AgentRecord,
-  opts: { projectForCwd?: (cwd?: string | null) => string | null } = {}
-): boolean {
-  const meta = (agent.metadata || {}) as Record<string, unknown>
-  const requestedModel = requested.model ? String(requested.model).trim() : null
-  const existingModel = meta.model ? String(meta.model).trim() : null
-  if (requestedModel && existingModel && requestedModel !== existingModel) return true
-
-  const requestedProject = requested.project || null
-  const existingProject = opts.projectForCwd?.(agent.cwd) || null
-  if (requestedProject && existingProject && requestedProject !== existingProject) return true
-  return false
-}
-
-export function describeAgentSpec(
-  agent: AgentRecord,
-  opts: { projectForCwd?: (cwd?: string | null) => string | null } = {}
-): string {
-  const meta = (agent.metadata || {}) as Record<string, unknown>
-  const model = typeof meta.model === 'string' ? meta.model : '?'
-  const project = opts.projectForCwd?.(agent.cwd) || agent.cwd || '?'
-  return `${model}/${project}`
-}
-
 export function describeRequestedSpec(requested: SpawnSpec): string {
   return `${requested.model || '?'}/${requested.project || '?'}`
 }
@@ -322,7 +296,6 @@ export function resolveSpawnCollision(input: {
   fresh?: boolean
   requested?: SpawnSpec
   liveMatches: readonly AgentRecord[]
-  projectForCwd?: (cwd?: string | null) => string | null
 }): { name: string; respawn: boolean; existing?: AgentRecord } {
   const { name, respawn, fresh = false, liveMatches } = input
   if (respawn || !name) return { name, respawn }

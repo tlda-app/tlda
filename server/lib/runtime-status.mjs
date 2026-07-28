@@ -41,7 +41,6 @@ export function summarizeAgents(agents = []) {
       id: a.id,
       name: a.friendly_name || null,
       machine_id: a.machine_id || null,
-      cwd: a.cwd || null,
       last_seen: a.last_seen || null,
       last_active: a.last_active || null,
     })),

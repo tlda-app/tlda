@@ -109,7 +109,6 @@ import {
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
 import {
-  MATERIALIZATION_MAX_BYTES,
   buildInboxRefPath,
   hasPendingAttachmentPlaceholders,
   markPendingAttachmentPlaceholdersRead,
@@ -118,7 +117,6 @@ import {
   pendingAttachmentPlaceholder,
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
-import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
 import { formatMaterializationFailureNotification } from './lib/materialization-notifications.mjs'
 import { createBackendLogger } from './lib/observability/logger.mjs'
 import {
@@ -1923,16 +1921,6 @@ function mintFleetId() {
   return `fleet:${randomUUID().slice(0, 8)}`
 }
 
-function projectForCwd(cwd) {
-  if (!cwd) return null
-  for (const p of listProjects()) {
-    if (p.sourceDir && cwd.startsWith(p.sourceDir)) return p.name
-    const serverProjectDir = join(getProjectsDir(), p.name)
-    if (cwd.startsWith(serverProjectDir)) return p.name
-  }
-  return null
-}
-
 function surfaceSpawnBounce(error) {
   const payload = {
     ...(error.payload || {}),
@@ -1973,13 +1961,7 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
       respawn,
       fresh,
       requested,
-      // The store method runs the same query and additionally applies
-      // projectAgentDaemonRoute. That is behaviour-neutral here: the projection
-      // rewrites route/display fields, including metadata.model for display,
-      // while this path reads `dead` and `id` in resolveSpawnCollision and then
-      // in the share() and broadcastState() below. It touches neither.
       liveMatches: await fleetStore.getLiveAgentsByFriendlyName(name),
-      projectForCwd,
     })
   } catch (e) {
     if (e instanceof SpawnBounceError) return surfaceSpawnBounce(e)
@@ -2821,100 +2803,28 @@ function notifyRecipientMaterializationFailures({ eventId, recipientId, failures
   })
 }
 
-function projectArtifactRecordFields(projectArtifact) {
-  if (!projectArtifact) return {}
-  return {
-    projectPath: projectArtifact.projectPath || null,
-    projectArtifactId: projectArtifact.projectArtifactId || null,
-    projectArtifactVersion: projectArtifact.git?.hash || projectArtifact.git?.version || null,
-    projectArtifactHash: projectArtifact.hash || null,
-    projectArtifactStatus: projectArtifact.status || projectArtifact.state || null,
-    ...(projectArtifact.project ? { project: projectArtifact.project } : {}),
-    ...(projectArtifact.render ? { render: projectArtifact.render } : {}),
-    ...(projectArtifact.error ? { projectArtifactError: projectArtifact.error } : {}),
-  }
-}
-
-function isMarkdownAttachment(attachment = {}, result = {}) {
-  const mime = String(attachment.mimeType || attachment.contentType || result.contentType || '').toLowerCase()
-  if (mime === 'text/markdown' || mime === 'text/x-markdown') return true
-  const name = String(attachment.name || result.name || result.localPath || result.path || '').toLowerCase()
-  return name.endsWith('.md') || name.endsWith('.markdown')
-}
-
-async function fetchAttachmentTextForProjectArtifact(attachment) {
-  if (!attachment?.url) throw new Error('attachment url required')
-  const target = new URL(attachment.url, getFleetServerUrl()).toString()
-  const res = await fetch(target, { signal: AbortSignal.timeout(10000) })
-  if (!res.ok) throw new Error(`attachment fetch failed: HTTP ${res.status}`)
-  const len = Number(res.headers.get('content-length') || 0)
-  if (len > MATERIALIZATION_MAX_BYTES) {
-    throw new Error(`attachment exceeds max size (${len} > ${MATERIALIZATION_MAX_BYTES})`)
-  }
-  const ab = await res.arrayBuffer()
-  if (ab.byteLength > MATERIALIZATION_MAX_BYTES) {
-    throw new Error(`attachment exceeds max size (${ab.byteLength} > ${MATERIALIZATION_MAX_BYTES})`)
-  }
-  return Buffer.from(ab).toString('utf8')
-}
-
-async function materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment }) {
-  if (!isMarkdownAttachment(attachment)) return null
-  const markdown = await fetchAttachmentTextForProjectArtifact(attachment)
-  const sourceAgentRow = sourceAgent ? await fleetStore.getAgent?.(sourceAgent) : null
-  return await realizeProjectMarkdownArtifact({
-    cwd: recipient.cwd,
-    markdown,
-    title: attachment.name || null,
-    actor: sourceAgentRow ? {
-      friendlyName: sourceAgentRow.friendly_name || sourceAgent,
-      fleetId: sourceAgent,
-    } : sourceAgent,
-    provenance: {
-      sourceAgent: sourceAgent || 'unknown',
-      recipient: recipient.id,
-      eventId,
-      attachmentId: String(attachment.id),
-      url: attachment.url || null,
-    },
-  })
-}
-
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = await fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
-  let projectArtifact = null
-  try {
-    projectArtifact = await materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment })
-  } catch (e) {
-    projectArtifact = {
-      state: 'failed',
-      status: 'failed',
-      projectArtifactId: null,
-      error: e.message || String(e),
-    }
-  }
   const fail = (error) => {
     const record = {
       kind: 'attachment',
-      state: projectArtifact?.state === 'available' ? 'available' : 'failed',
-      status: projectArtifact?.state === 'available' ? 'ready' : 'failed',
+      state: 'failed',
+      status: 'failed',
       title: attachment.name || null,
       contentType: attachment.mimeType || null,
-      hash: projectArtifact?.hash || attachment.sha256 || null,
+      hash: attachment.sha256 || null,
       sourceAgent: sourceAgent || 'unknown',
       provenance: {
         eventId,
         attachmentId: String(attachment.id),
         url: attachment.url || null,
       },
-      ...projectArtifactRecordFields(projectArtifact),
-      error: projectArtifact?.state === 'available' ? null : error,
+      error,
       daemonMaterializationError: error,
       updated_at: new Date().toISOString(),
     }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    if (record.state === 'available') return null
     return { attachment, record }
   }
   const current = await agentRouteOrError(recipient, { requireTerminal: false })
@@ -2939,9 +2849,8 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       status: 'ready',
       title: attachment.name || null,
       localPath: result.localPath || result.path,
-      ...projectArtifactRecordFields(projectArtifact),
       contentType: attachment.mimeType || null,
-      hash: projectArtifact?.hash || result.hash || result.sha256,
+      hash: result.hash || result.sha256,
       sourceAgent: sourceAgent || 'unknown',
       provenance: {
         eventId,
@@ -5659,7 +5568,7 @@ async function handleFleetWsMessage(ws, msg) {
     // onto every message, so the real fleet id arrives as agent_id. Falling
     // back to id keeps direct WS callers that send id=fleet_id working. Reading
     // the bare `id` first here was the root cause of phantom UUID-keyed rows.
-    const { agent_id, id: msgId, local_agent_id, name, pretty_name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
+    const { agent_id, id: msgId, local_agent_id, name, pretty_name, labels, manager, metadata, machine_id, env_name, kind } = msg
     const isShellReservation = type === 'reserve-shell' || type === 'mint-shell'
     if (type === 'register' && !msg.human) {
       error('register is only for human browser sessions; agents must use reserve-shell before startup and login after startup')
@@ -5719,7 +5628,6 @@ async function handleFleetWsMessage(ws, msg) {
       id: agentId,
       friendly_name: assignedName || null,
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
-      cwd: existing?.cwd || null,
       labels: labels || existing?.labels || [],
       registered_at: existing?.registered_at || now,
       last_seen: now,
@@ -5780,7 +5688,7 @@ async function handleFleetWsMessage(ws, msg) {
   // - humans attach by `name`
   // Neither form creates a new identity.
   if (type === 'login') {
-    const { agent_id, name, cwd, labels, manager, metadata, kind } = msg
+    const { agent_id, name, labels, manager, metadata, kind } = msg
     let loginAgentId = agent_id || null
     if (loginAgentId) {
       const existing = await fleetStore.getAgent?.(loginAgentId)
@@ -5790,7 +5698,6 @@ async function handleFleetWsMessage(ws, msg) {
       const now = new Date().toISOString()
       const agent = {
         ...existing,
-        cwd: existing.cwd || null,
         labels: labels || existing.labels || [],
         last_seen: now,
         dead: false,
@@ -8860,31 +8767,7 @@ async function handleDaemonWsMessage(ws, msg) {
     const now = Date.now()
     const metadata = { type: 'daemon_warning', docName: project, severity: severity || 'warning' }
 
-    // Recipients: the server owner ALWAYS, plus any non-human agent currently
-    // editing this project (cwd under its sourceDir). A sync/mirror failure has
-    // to reach the affected agent too, not just Skip — otherwise it's silent
-    // for the one who's about to lose work.
     const recipients = new Set([SERVER_OWNER_ID])
-    if (project && fleetStore) {
-      try {
-        const sd = readProject(project)?.sourceDir
-        if (sd) {
-          // getAliveAgents() is ordered last_seen DESC, so the first cwd match is
-          // the most-recently-active agent in that working copy = the one most
-          // likely editing it. Alert that one, not every alive agent sharing the
-          // cwd (a busy project can have a dozen, and flooding them all is its
-          // own kind of silent — the signal drowns).
-          for (const a of await fleetStore.getAliveAgents()) {
-            if (a.human || !a.cwd) continue
-            if (a.cwd === sd || a.cwd.startsWith(sd + '/')) { recipients.add(a.id); break }
-          }
-        }
-      } catch (e) {
-        console.warn(`[daemon-warning] editing-agent lookup failed for ${project}: ${e.message}`)
-        // Fall through to owner delivery — best-effort enrichment must never
-        // silence the alert it's trying to enrich.
-      }
-    }
 
     // Critical, project-scoped warnings (mirror/shadow sync failure, divergence)
     // also raise the per-doc visual indicator via the version sentinel — the

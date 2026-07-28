@@ -540,6 +540,7 @@ const backingFiles = createBackingFiles({
 const localArtifacts = createLocalArtifacts({
   getServerUrl: () => getDaemonStoreUrl(),
   getFleetServerUrl: () => getDaemonFleetServerUrl(),
+  resolveAgentCwd: agentId => permissionLedger.get(agentId)?.cwd || null,
 })
 
 const shadowMirror = createShadowMirror({

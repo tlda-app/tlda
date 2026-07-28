@@ -289,8 +289,6 @@ function searchQueryReadout(query: string) {
     if (filters.agent) structured.push(`agent:${filters.agent}`)
   }
   if (filters.type && !structured.includes(`type:${filters.type}`)) structured.push(`type:${filters.type}`)
-  if (filters.cwd) structured.push(`cwd:${filters.cwd}`)
-  if (filters.project) structured.push(`project:${filters.project}`)
   if (filters.role) structured.push(`role:${filters.role}`)
   if (filters.since) structured.push(`since:${filters.since}`)
   if (filters.after) structured.push(`after:${filters.after}`)
@@ -436,7 +434,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setQueryError(null)
 
     // Need at least a query or a filter
-    if (!ftsQuery && !filters.from && !filters.to && !filters.agent && !filters.filterExpression && !filters.cwd && !filters.project) {
+    if (!ftsQuery && !filters.from && !filters.to && !filters.agent && !filters.filterExpression) {
       setResults([])
       setDocResults([])
       setSearched(false)
@@ -612,14 +610,12 @@ function FleetSearchInner({ shape }: { shape: any }) {
             </div>
           )}
           {/* Active filter indicators */}
-          {(activeFilters.from || activeFilters.to || activeFilters.agent || activeFilters.before || activeFilters.after || activeFilters.since || activeFilters.type || activeFilters.cwd || activeFilters.project) && (
+          {(activeFilters.from || activeFilters.to || activeFilters.agent || activeFilters.before || activeFilters.after || activeFilters.since || activeFilters.type) && (
             <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
               {activeFilters.from && <span className="fleet-search-filter-tag">from:{activeFilters.from}</span>}
               {activeFilters.to && <span className="fleet-search-filter-tag">to:{activeFilters.to}</span>}
               {activeFilters.agent && <span className="fleet-search-filter-tag">agent:{activeFilters.agent}</span>}
               {activeFilters.type && <span className="fleet-search-filter-tag">type:{activeFilters.type}</span>}
-              {activeFilters.cwd && <span className="fleet-search-filter-tag">cwd:{activeFilters.cwd}</span>}
-              {activeFilters.project && <span className="fleet-search-filter-tag">project:{activeFilters.project}</span>}
               {activeFilters.before && <span className="fleet-search-filter-tag">before:{activeFilters.before}</span>}
               {activeFilters.after && <span className="fleet-search-filter-tag">after:{activeFilters.after}</span>}
               {activeFilters.since && <span className="fleet-search-filter-tag">since:{activeFilters.since}</span>}

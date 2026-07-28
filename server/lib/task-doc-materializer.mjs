@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 const execFileP = promisify(execFile)
@@ -118,7 +118,6 @@ export async function materializeTaskDocs({
       explicitTaskDocRoot(project) ||
       (useProjectPartsRoot ? safeProjectPartsRoot(project.name) : null) ||
       (project.sourceDir ? resolve(project.sourceDir) : null),
-    resolvedRoot: safeRealpath(project.sourceDir || ''),
   })).filter(project =>
     (project.sourceDir || project.taskDocRoot) &&
     (!projectNameSet || projectNameSet.has(project.name))
@@ -208,47 +207,13 @@ export function resolveTaskDocGlobalDir(config = readDaemonConfig()) {
   return resolve(expandHome(raw || DEFAULT_GLOBAL_DIR))
 }
 
-export function resolveTaskProject(cwd, projects = []) {
-  if (!cwd) return null
-  const root = resolveProjectCwd(cwd)
-  if (!root) return null
-  const rootReal = safeRealpath(root)
-  let best = null
-  for (const project of projects) {
-    const candidates = [project.taskDocRoot, project.resolvedRoot].filter(Boolean)
-    for (const candidate of candidates) {
-      if (isSameOrInside(root, candidate) || (rootReal && isSameOrInside(rootReal, candidate))) {
-        if (!best || candidate.length > (best.matchLength || 0)) {
-          best = { ...project, matchLength: candidate.length }
-        }
-      }
-    }
-  }
-  return best ? { name: best.name, root: best.taskDocRoot } : null
-}
-
-export function resolveProjectCwd(cwd) {
-  const abs = resolve(expandHome(cwd))
-  const parts = abs.split(sep)
-  const worktreeIdx = parts.lastIndexOf('.worktrees')
-  if (worktreeIdx > 0) return parts.slice(0, worktreeIdx).join(sep) || sep
-  const claudeIdx = parts.lastIndexOf('.claude')
-  if (claudeIdx > 0 && parts[claudeIdx + 1] === 'worktrees') {
-    return parts.slice(0, claudeIdx).join(sep) || sep
-  }
-  return gitTopLevel(abs) || abs
-}
-
 function enrichTask(task, agentById, projects) {
   const ownerAgent = agentById.get(task.agent)
   const delegator = task.delegated_by ? agentById.get(task.delegated_by) : null
-  const project = task.metadata?.project
-    ? projectByName(task.metadata.project, projects) || resolveTaskProject(ownerAgent?.cwd, projects)
-    : resolveTaskProject(ownerAgent?.cwd, projects)
+  const project = task.metadata?.project ? projectByName(task.metadata.project, projects) : null
   return {
     ...task,
     ownerName: ownerAgent?.friendly_name || task.agent,
-    ownerCwd: ownerAgent?.cwd || '',
     delegatedByName: delegator?.friendly_name || task.delegated_by || '',
     projectName: task.metadata?.project || project?.name || null,
     projectRoot: project?.root || null,
@@ -542,13 +507,6 @@ async function runGit(args, cwd) {
 }
 
 // Walk up for `.git` instead of spawning `git rev-parse --show-toplevel`.
-//
-// This is the hot one: resolveProjectCwd() is reached from enrichTask() for
-// EVERY task on every materialisation, so a subprocess here meant one git spawn
-// per task before any commit work started -- the dominant half of the stall the
-// profiler attributed to `spawn @ :0`. A stat walk answers the same question
-// with no process at all.
-//
 // `.git` is a directory in a normal clone and a FILE in a linked worktree, so
 // existsSync (not isDirectory) is the correct test for both.
 function gitTopLevel(cwd) {
@@ -565,22 +523,6 @@ function gitTopLevel(cwd) {
 // Called once per touched directory per flush.
 function isGitRepo(dir) {
   return gitTopLevel(dir) !== null
-}
-
-function safeRealpath(path) {
-  try {
-    if (!path) return null
-    return realpathSync(path)
-  } catch {
-    return null
-  }
-}
-
-function isSameOrInside(child, parent) {
-  if (!child || !parent) return false
-  const a = resolve(child)
-  const b = resolve(parent)
-  return a === b || a.startsWith(`${b}${sep}`)
 }
 
 function expandHome(path) {

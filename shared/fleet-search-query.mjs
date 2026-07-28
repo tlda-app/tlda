@@ -1,6 +1,6 @@
 import { parseAgentSelector as parseUnifiedAgentSelector, parseUnifiedFilter } from './unified-filter-grammar.mjs'
 
-const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'cwd', 'project', 'since', 'after', 'before', 'type', 'role'])
+const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role'])
 
 export function parseSearchQuery(raw) {
   const parts = splitSearchTokens(raw)
@@ -19,11 +19,9 @@ export function parseSearchQuery(raw) {
     else if (key === 'after') filters.after = token.slice(6)
     else if (key === 'since') filters.since = token.slice(6)
     else if (key === 'type') filters.type = token.slice(5)
-    else if (key === 'cwd') filters.cwd = token.slice(4)
-    else if (key === 'project') filters.project = token.slice(8)
 
     if (key && key !== 'role') {
-      if (key === 'since' || key === 'after' || key === 'before' || key === 'cwd' || key === 'project') continue
+      if (key === 'since' || key === 'after' || key === 'before') continue
       const collected = collectFilterValue(parts, i)
       i = collected.nextIndex
       const normalized = normalizeSearchFilterToken(key, collected.valueTokens)
@@ -99,8 +97,6 @@ export function buildFleetSearchFilters(filters) {
     before: filters.before ? (resolveTimeFilter(filters.before) || undefined) : undefined,
     filterExpression: filters.filterExpression,
     eventType: filters.type,
-    cwd: filters.cwd,
-    project: filters.project,
   }
   for (const key of Object.keys(payload)) {
     if (payload[key] == null || payload[key] === false || payload[key] === '') delete payload[key]

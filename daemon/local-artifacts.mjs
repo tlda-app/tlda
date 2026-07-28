@@ -9,7 +9,7 @@ import { processMessageText } from '../shared/message-processing.mjs'
 
 const execFileP = promisify(execFile)
 
-export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
+export function createLocalArtifacts({ getServerUrl, getFleetServerUrl, resolveAgentCwd }) {
   async function resolveFile({ path: filePath, cwd, server_url }) {
     const abs = resolveFilePath(filePath, cwd)
     if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
@@ -17,7 +17,9 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
     return await uploadFileToServer(abs, serverBase)
   }
 
-  async function rechat({ text, cwd, server_url }) {
+  async function rechat({ text, agent_id, server_url }) {
+    const cwd = resolveAgentCwd?.(agent_id)
+    if (!cwd) throw new Error(`agent cwd unavailable for ${agent_id || 'unknown agent'}`)
     const serverBase = server_url || getServerUrl()
     const result = await processMessageText(text, cwd, serverBase)
     const markdownRenderIssues = []

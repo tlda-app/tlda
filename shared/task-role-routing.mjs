@@ -12,7 +12,6 @@ export function inferAgentLane(agent = {}) {
   const text = [
     agent.friendly_name,
     labels,
-    agent.cwd,
     agent.project,
   ].filter(Boolean).join(' ');
 

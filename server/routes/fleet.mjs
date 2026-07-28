@@ -152,7 +152,6 @@ function mintFleetId() {
 
 function fleetTableLabelsForAgent(agent) {
   const labels = labelsForAgent(agent)
-  if (agent?.cwd) labels.push(`cwd:${agent.cwd}`)
   if (agent?.metadata?.model) labels.push(`model:${agent.metadata.model}`)
   return labels
 }
@@ -981,8 +980,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     let result
     try {
       result = await sendDaemonDurable(route.machine_id, 'rechat', {
+        agent_id: agent.id,
         text: rawText,
-        cwd: agent.cwd,
       })
     } catch (e) {
       return res.status(502).json({ ok: false, error: e.message })
