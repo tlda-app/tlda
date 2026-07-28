@@ -29,6 +29,16 @@ function createRpc({ ledgerRow = null, killSessionError = null, sendMsg = () => 
     onPlanModeSeen() {},
     onPlanModeGone() {},
     hasPlanMode: () => false,
+    resolveAgentRoute: ({ agent_id: agentId }) => {
+      if (ledgerRow?.id !== agentId || !ledgerRow?.sessionId || !ledgerRow?.tmuxSession) {
+        throw new Error(`agent route unavailable for ${agentId}`)
+      }
+      return {
+        agent_id: agentId,
+        session_id: ledgerRow.sessionId,
+        tmux_session: ledgerRow.tmuxSession,
+      }
+    },
     validateTmuxOwner: () => {
       throw new Error('server endpoint validation should not run for terminal capabilities')
     },
@@ -88,7 +98,6 @@ function fakePtyModule() {
   })
   const result = await rpc.handlers['capture-pane']({
     agent_id: 'fleet:cap-test',
-    terminal_capability: 'termcap:live',
     lines: 5,
   })
 
@@ -122,7 +131,6 @@ function fakePtyModule() {
 for (const [name, payload] of [
   ['send-key', { key: 'Enter' }],
   ['send-text', { text: 'hello' }],
-  ['capture-pane', { lines: 5 }],
   ['interrupt', {}],
   ['soft-interrupt', {}],
   ['check-alive', {}],
@@ -165,15 +173,13 @@ for (const [name, payload] of [
     },
   })
 
-  await assert.rejects(
-    () => rpc.handlers['capture-pane']({
-      agent_id: 'fleet:cap-test',
-      terminal_capability: 'termcap:old-incarnation',
-      lines: 5,
-    }),
-    /terminal capability unavailable/,
-  )
-  assert.equal(calls.length, 0)
+  const result = await rpc.handlers['capture-pane']({
+    agent_id: 'fleet:cap-test',
+    terminal_capability: 'termcap:old-incarnation',
+    lines: 5,
+  })
+  assert.equal(result.pane, 'live terminal\n')
+  assert.equal(calls.length, 1)
 }
 
 {
@@ -184,7 +190,7 @@ for (const [name, payload] of [
       terminal_capability: 'termcap:wrong-daemon',
       lines: 5,
     }),
-    /terminal capability unavailable/,
+    /agent route unavailable/,
   )
   assert.equal(calls.length, 0)
 }
@@ -205,7 +211,7 @@ for (const [name, payload] of [
       terminal_capability: 'termcap:no-local-terminal',
       lines: 5,
     }),
-    /terminal capability unavailable/,
+    /agent route unavailable/,
   )
   const killed = await rpc.handlers['kill-session']({
     agent_id: 'fleet:cap-test',

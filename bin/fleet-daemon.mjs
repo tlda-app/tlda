@@ -191,6 +191,10 @@ const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
   onProcessBindingChange: event => _onPermissionLedgerProcessBindingChange?.(event),
 })
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
+const resolveAgentRoute = createAgentRouteResolver({
+  permissionLedger,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+})
 
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
 const LOCAL_RPC_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, ACTIVE_ENV)
@@ -653,6 +657,7 @@ terminalRpc = createTerminalRpc({
   thinkingScanLines: THINKING_SCAN_LINES,
   terminalSizePollMs: TERMINAL_SIZE_POLL_MS,
   decideTerminalWatchExit,
+  resolveAgentRoute,
   onArmAgent: agentStatus.armAgent,
   onArmBySession: agentStatus.armBySession,
   onEmitAgentStatus: agentStatus.emitAgentStatus,
@@ -1047,11 +1052,6 @@ const machineRpc = createMachineRpc({
   getPid: () => process.pid,
   executionDbPath: path.join(CONFIG_DIR, 'daemon-rpc-executions.sqlite'),
 })
-const resolveAgentRoute = createAgentRouteResolver({
-  permissionLedger,
-  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
-})
-
 machineRpc.register({
   'resolve-agent-route': resolveAgentRoute,
   ...terminalRpc.handlers,
