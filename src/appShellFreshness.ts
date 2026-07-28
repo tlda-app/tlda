@@ -175,6 +175,7 @@ export async function checkAppShellFreshness(reason = 'manual', options: Install
           state = { ...state, status: 'reload-suppressed' }
           return state
         }
+        if (document.visibilityState !== 'visible') return state
         rememberReloadAttempt(key)
         state = {
           ...state,
