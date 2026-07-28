@@ -8596,7 +8596,7 @@ async function handleDaemonWsMessage(ws, msg) {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
-        projects: await projectsForDaemon(),
+        projects: [],
         connection_attempt_id: ws._connectionAttemptId || null,
         server_ws_session_id: ws._wsSessionId || null,
       }))
@@ -8606,6 +8606,14 @@ async function handleDaemonWsMessage(ws, msg) {
       traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: false, error: e.message })
       return
     }
+    void projectsForDaemon()
+      .then(projects => enqueueDaemonMessage(
+        daemonKey,
+        { type: 'projects-updated', projects },
+        { dedupeKey: 'projects-updated' },
+      ))
+      .then(() => flushServerDaemonOutbox(daemonKey))
+      .catch(e => console.warn(`[fleet-daemon] initial project update failed: ${e.message}`))
     await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
