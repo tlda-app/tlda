@@ -19,6 +19,7 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // daemon down for 25 minutes on 2026-07-25 — it died on its next restart, with
   // a zero-byte log, so nothing pointed at the cause.
   'statusScanSeconds',
+  'jsonlTailIdleSeconds',
 ])
 
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([

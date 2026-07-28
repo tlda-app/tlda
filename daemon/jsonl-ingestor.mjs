@@ -1,11 +1,9 @@
-import chokidar from 'chokidar'
 import { fork } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
-import { codexKnownRolloutIds } from '../agent-runtime/daemon-guards.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -144,24 +142,6 @@ export function sessionIdentitySeatEvent(input = {}, {
   return event
 }
 
-export function jsonlWatchEligibility(agent, {
-  machineId = null,
-  envName = null,
-  daemonKey = null,
-} = {}) {
-  if (!agent?.id) return { ok: false, reason: 'missing agent identity' }
-  if (agent.dead) return { ok: false, reason: 'agent is dead' }
-  if (agent.human) return { ok: false, reason: 'human rows do not have activity JSONL' }
-  if (!daemonKey || !machineId || !envName) return { ok: false, reason: 'daemon identity incomplete' }
-  if (agent.daemon_key !== daemonKey || agent.machine_id !== machineId || agent.env_name !== envName) {
-    return { ok: false, reason: 'agent current seat belongs to another daemon environment' }
-  }
-  if (codexKnownRolloutIds(agent).length === 0) {
-    return { ok: false, reason: 'agent has no durable session identity' }
-  }
-  return { ok: true }
-}
-
 export function jsonlOwnershipState(entry = {}, daemonKey = null) {
   const owner = entry?.owner || {}
   if (owner.state === 'ignore') return 'ignore'
@@ -188,6 +168,7 @@ export function createJsonlIngesterMessageHandler({
   sendJsonlIngesterMessage,
   maybeCompleteDisplayCatchup,
   updateJsonlCursorFromTail,
+  scheduleJsonlTailIdle,
 }) {
   return function handleJsonlIngesterMessage(msg) {
     if (msg?.type === 'ready') {
@@ -265,6 +246,7 @@ export function createJsonlIngesterMessageHandler({
         const offset = pw.pendingFlushOffset
         pw.pendingFlushOffset = null
         updateJsonlCursorFromTail(pw, offset)
+        scheduleJsonlTailIdle(pw)
       }
       return
     }
@@ -279,6 +261,7 @@ export function createJsonlIngesterMessageHandler({
       }
       maybeCompleteDisplayCatchup(pw, msg.offset)
       updateJsonlCursorFromTail(pw, msg.offset)
+      scheduleJsonlTailIdle(pw)
     }
   }
 }
@@ -308,7 +291,8 @@ export function createJsonlIngestor({
   envName = null,
   daemonKey = null,
   forkProcess = fork,
-  watchDir = (...args) => chokidar.watch(...args),
+  watchTree = (root, onChange) => fs.watch(root, { recursive: true, persistent: true }, onChange),
+  jsonlTailIdleMs = 10 * 60 * 1000,
   nowMs = () => Date.now(),
   random = Math.random,
 }) {
@@ -537,8 +521,8 @@ export function createJsonlIngestor({
   let _shuttingDown = false
   const pathWatchers = new Map()    // jsonlPath -> child-backed watcher state
   const agentPaths = new Map()      // agentId -> jsonlPath
-  const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
   const jsonlRootWatchers = new Map() // transcript root -> watcher
+  const jsonlPathGenerations = new Map() // jsonlPath -> root notification generation
   const childWatchers = new Map() // watchId -> path watcher state
   const searchBackfillJobs = new Map() // jobId -> { sessionId, jsonlPath }
   const searchBackfillPendingBySession = new Set()
@@ -604,7 +588,6 @@ export function createJsonlIngestor({
       pw.stopped = true
       if (pathWatchers.get(pw.jsonlPath) === pw) {
         pathWatchers.delete(pw.jsonlPath)
-        releaseJsonlDirWatcher(pw.jsonlPath)
       }
     }
     childWatchers.clear()
@@ -724,7 +707,7 @@ export function createJsonlIngestor({
     ].filter(Boolean).map(p => path.resolve(p)))]
   }
 
-  function listJsonlFilesUnder(root) {
+  function findCursorJsonlPathsUnder(root, cursorIds = null) {
     const out = []
     const stack = [root]
     while (stack.length) {
@@ -739,16 +722,13 @@ export function createJsonlIngestor({
         const full = path.join(current, entry.name)
         if (entry.isDirectory()) {
           stack.push(full)
-        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl') &&
+                   (!cursorIds || cursorIds.has(path.basename(entry.name, '.jsonl')))) {
           out.push(full)
         }
       }
     }
     return out
-  }
-
-  function discoverLocalJsonlFiles() {
-    return [...new Set(transcriptRoots().flatMap(listJsonlFilesUnder))].sort()
   }
 
   function inferHarnessKindForJsonlPath(jsonlPath, agent = null) {
@@ -785,15 +765,31 @@ export function createJsonlIngestor({
     return byPath
   }
 
-  async function syncSessionWatchersOnce(agentList) {
-    const activePaths = new Set()
+  let _initialJsonlDiscovery = true
+  let _forceJsonlDiscovery = false
+  function knownJsonlPaths() {
+    const paths = new Set()
+    const cursorIds = new Set(Object.keys(cursors))
+    for (const root of transcriptRoots()) {
+      for (const jsonlPath of findCursorJsonlPathsUnder(root, (_initialJsonlDiscovery || _forceJsonlDiscovery) ? null : cursorIds)) {
+        const resolvedPath = path.resolve(jsonlPath)
+        paths.add(resolvedPath)
+      }
+    }
+    _initialJsonlDiscovery = false
+    _forceJsonlDiscovery = false
+    return paths
+  }
+
+  async function syncSessionWatchersOnce(input) {
+    const agentList = Array.isArray(input) ? input : (input?.agentList || [])
+    const requestedPaths = Array.isArray(input?.paths) ? input.paths : null
     const agentsByPath = agentBySessionPath(agentList)
 
     retainJsonlRootWatchers()
 
-    for (const jsonlPath of discoverLocalJsonlFiles()) {
+    jsonlLoop: for (const jsonlPath of requestedPaths || knownJsonlPaths()) {
       const resolvedPath = path.resolve(jsonlPath)
-      activePaths.add(resolvedPath)
       const agent = agentsByPath.get(resolvedPath) || null
       let harness
       try {
@@ -807,9 +803,28 @@ export function createJsonlIngestor({
         const pw = pathWatchers.get(resolvedPath)
         if (pw.stopped) {
           pathWatchers.delete(resolvedPath)
-          releaseJsonlDirWatcher(resolvedPath)
         } else {
           const fileSessionId = path.basename(resolvedPath, '.jsonl')
+          let currentStat
+          try { currentStat = fs.statSync(resolvedPath) } catch (e) {
+            if (e?.code === 'ENOENT') {
+              retireJsonlTail(pw, `JSONL removed: ${path.basename(resolvedPath)}`)
+              continue jsonlLoop
+            }
+            throw e
+          }
+          const currentCursor = cursors[fileSessionId]
+          if ((currentCursor?.inode && currentCursor.inode !== currentStat.ino) ||
+              (Number.isFinite(currentCursor?.offset) && currentCursor.offset > currentStat.size)) {
+            retireJsonlTail(pw, `JSONL rotated: ${path.basename(resolvedPath)}`)
+            cursors[fileSessionId] = {
+              ...(currentCursor || {}),
+              inode: currentStat.ino,
+              offset: currentStat.size,
+            }
+            scheduleCursorSave()
+            continue jsonlLoop
+          }
           pw.harnessKind = harness.kind
           pw.terminalChat = !!harness.terminalChat
           pw.backfillSearch = !!harness.backfillSearch
@@ -867,8 +882,7 @@ export function createJsonlIngestor({
       const inode = stat.ino
       const stored = cursors[sessionId]
       let offset
-      const storedOwnership = jsonlOwnershipState(stored, daemonKey)
-      if (storedOwnership === 'unknown') {
+      if (!stored || !Number.isFinite(stored.offset)) {
         offset = 0
       } else if (stored && stored.inode === inode) {
         offset = Math.min(stored.offset, stat.size)
@@ -881,6 +895,13 @@ export function createJsonlIngestor({
         // turn the same live session back into an unclassified JSONL.
         cursors[sessionId] = { ...(stored || {}), inode, offset }
         scheduleCursorSave()
+      }
+      const cursorEntry = cursors[sessionId] || (cursors[sessionId] = {})
+      if (offset >= stat.size) {
+        if (harness.backfillSearch && jsonlOwnershipState(cursorEntry, daemonKey) === 'mine' && cursorEntry.owner?.fleet_id) {
+          backfillSearchEntries(cursorEntry.owner.fleet_id, resolvedPath, sessionId, harness.kind)
+        }
+        continue
       }
 
       try {
@@ -896,7 +917,7 @@ export function createJsonlIngestor({
         })
         if (initialOwnership === 'mine') startOwnedJsonlBackfill(pwState)
         pathWatchers.set(resolvedPath, pwState)
-        retainJsonlDirWatcher(resolvedPath)
+        scheduleJsonlTailIdle(pwState)
         if (pwState.ownershipState === 'mine' && pwState.primaryAgentId) {
           sendActivityHealth(pwState.primaryAgentId, {
             state: ACTIVITY_HEALTH_OK,
@@ -922,19 +943,6 @@ export function createJsonlIngestor({
       }
     }
 
-    // Close watchers for paths no longer needed.
-    for (const [p, pw] of pathWatchers) {
-      if (!activePaths.has(p)) {
-        stopJsonlTail(pw, `no longer active: ${path.basename(p)}`)
-        pathWatchers.delete(p)
-        releaseJsonlDirWatcher(p)
-        for (const [aid, watchedPath] of agentPaths) {
-          if (watchedPath === p) {
-            agentPaths.delete(aid)
-          }
-        }
-      }
-    }
     for (const aid of [...agentPaths.keys()]) {
       if (!pathWatchers.has(agentPaths.get(aid))) agentPaths.delete(aid)
     }
@@ -961,6 +969,20 @@ export function createJsonlIngestor({
 
 
   let _jsonlDirSyncTimer = null
+  const _pendingJsonlPathSync = new Set()
+  let _jsonlPathSyncTimer = null
+  function scheduleJsonlPathSync(jsonlPath) {
+    _pendingJsonlPathSync.add(path.resolve(jsonlPath))
+    if (_jsonlPathSyncTimer) return
+    _jsonlPathSyncTimer = setTimeout(() => {
+      _jsonlPathSyncTimer = null
+      const paths = [..._pendingJsonlPathSync]
+      _pendingJsonlPathSync.clear()
+      void sessionWatcherSyncRunner.sync({ agentList: getAgents(), paths })
+        .catch(e => log.error(`JSONL path sync failed: ${e.stack || e.message}`))
+    }, 50)
+  }
+
   function scheduleJsonlDirSync(reason) {
     if (_jsonlDirSyncTimer) return
     _jsonlDirSyncTimer = setTimeout(() => {
@@ -974,60 +996,31 @@ export function createJsonlIngestor({
     const roots = new Set(transcriptRoots())
     for (const root of roots) {
       if (jsonlRootWatchers.has(root)) continue
-      const watcher = watchDir(root, {
-        ignoreInitial: true,
-        persistent: true,
-        awaitWriteFinish: false,
-      })
-      watcher.on?.('add', p => {
-        if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`add ${path.basename(p)}`)
-      })
-      watcher.on?.('unlink', p => {
-        if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`unlink ${path.basename(p)}`)
-      })
-      watcher.on?.('addDir', p => scheduleJsonlDirSync(`addDir ${path.basename(p)}`))
-      watcher.on?.('error', e => log.warn(`chokidar JSONL root watcher failed for ${root}: ${e?.message || e}`))
+      let watcher
+      try {
+        watcher = watchTree(root, (_eventType, filename) => {
+          if (!filename) {
+            _forceJsonlDiscovery = true
+            scheduleJsonlDirSync(`ambiguous change under ${path.basename(root)}`)
+            return
+          }
+          const changedPath = path.resolve(root, String(filename))
+          if (!changedPath.endsWith('.jsonl')) return
+          jsonlPathGenerations.set(changedPath, (jsonlPathGenerations.get(changedPath) || 0) + 1)
+          scheduleJsonlPathSync(changedPath)
+        })
+      } catch (e) {
+        log.error(`recursive JSONL root watcher failed for ${root}: ${e?.message || e}`)
+        continue
+      }
+      watcher.on?.('error', e => log.error(`recursive JSONL root watcher failed for ${root}: ${e?.message || e}`))
       jsonlRootWatchers.set(root, watcher)
     }
     for (const [root, watcher] of jsonlRootWatchers) {
       if (roots.has(root)) continue
       jsonlRootWatchers.delete(root)
-      Promise.resolve(watcher.close()).catch(e => log.warn(`chokidar close failed for ${root}: ${e?.message || e}`))
+      Promise.resolve(watcher.close()).catch(e => log.warn(`recursive watcher close failed for ${root}: ${e?.message || e}`))
     }
-  }
-
-  function retainJsonlDirWatcher(jsonlPath) {
-    const dir = path.dirname(jsonlPath)
-    const existing = jsonlDirWatchers.get(dir)
-    if (existing) {
-      existing.refs += 1
-      return
-    }
-    const watcher = watchDir(dir, {
-      depth: 0,
-      ignoreInitial: true,
-      persistent: true,
-      awaitWriteFinish: false,
-    })
-    watcher
-      .on('add', p => {
-        if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`add ${path.basename(p)}`)
-      })
-      .on('unlink', p => {
-        if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`unlink ${path.basename(p)}`)
-      })
-      .on('error', e => log.warn(`chokidar JSONL dir watcher failed for ${dir}: ${e?.message || e}`))
-    jsonlDirWatchers.set(dir, { watcher, refs: 1 })
-  }
-
-  function releaseJsonlDirWatcher(jsonlPath) {
-    const dir = path.dirname(jsonlPath)
-    const entry = jsonlDirWatchers.get(dir)
-    if (!entry) return
-    entry.refs -= 1
-    if (entry.refs > 0) return
-    jsonlDirWatchers.delete(dir)
-    Promise.resolve(entry.watcher.close()).catch(e => log.warn(`chokidar close failed for ${dir}: ${e?.message || e}`))
   }
 
   function startJsonlTail({
@@ -1053,6 +1046,8 @@ export function createJsonlIngestor({
       stopped: false,
       lastDeliveryOk: true,
       lastSavedOffset: startOffset,
+      lastProgressAtMs: nowMs(),
+      idleTimer: null,
       pendingDeliveries: 0,
       pendingFlushOffset: null,
       ownershipState,
@@ -1099,6 +1094,7 @@ export function createJsonlIngestor({
     sendJsonlIngesterMessage,
     maybeCompleteDisplayCatchup,
     updateJsonlCursorFromTail,
+    scheduleJsonlTailIdle,
   })
 
   function countCatchupSuppressed(pw, output) {
@@ -1245,7 +1241,6 @@ export function createJsonlIngestor({
     }
     if (pathWatchers.get(pw.jsonlPath) === pw) {
       pathWatchers.delete(pw.jsonlPath)
-      releaseJsonlDirWatcher(pw.jsonlPath)
       for (const [aid, watchedPath] of agentPaths) {
         if (watchedPath === pw.jsonlPath) agentPaths.delete(aid)
       }
@@ -1256,6 +1251,8 @@ export function createJsonlIngestor({
   function stopJsonlTail(pw, reason = 'stop') {
     if (!pw || pw.stopped) return
     pw.stopped = true
+    if (pw.idleTimer) clearTimeout(pw.idleTimer)
+    pw.idleTimer = null
     childWatchers.delete(pw.watchId)
     try { sendJsonlIngesterMessage({ type: 'stop', watchId: pw.watchId, reason }) } catch (e) {
       log.warn(`JSONL ingester stop failed (${reason}): ${e?.message || e}`)
@@ -1275,8 +1272,45 @@ export function createJsonlIngestor({
     }
     entry.offset = offset
     pw.lastSavedOffset = offset
+    pw.lastProgressAtMs = nowMs()
     scheduleCursorSave()
     refreshIngestionCaughtUp()
+  }
+
+  function scheduleJsonlTailIdle(pw) {
+    if (!pw || pw.stopped) return
+    if (pw.idleTimer) clearTimeout(pw.idleTimer)
+    const quietForMs = Math.max(0, nowMs() - (pw.lastProgressAtMs || nowMs()))
+    pw.idleTimer = setTimeout(() => maybeStopIdleJsonlTail(pw), Math.max(1, jsonlTailIdleMs - quietForMs))
+    pw.idleTimer.unref?.()
+  }
+
+  function maybeStopIdleJsonlTail(pw) {
+    pw.idleTimer = null
+    if (!pw || pw.stopped || pathWatchers.get(pw.jsonlPath) !== pw) return
+    const quietForMs = nowMs() - (pw.lastProgressAtMs || nowMs())
+    if (quietForMs < jsonlTailIdleMs) {
+      scheduleJsonlTailIdle(pw)
+      return
+    }
+    let before
+    try { before = fs.statSync(pw.jsonlPath) } catch {
+      retireJsonlTail(pw, `idle JSONL vanished: ${path.basename(pw.jsonlPath)}`)
+      return
+    }
+    const cursor = cursors[pw.sessionId]
+    if (!cursor || cursor.inode !== before.ino || cursor.offset < before.size) {
+      scheduleJsonlTailIdle(pw)
+      return
+    }
+    const generation = jsonlPathGenerations.get(pw.jsonlPath) || 0
+    retireJsonlTail(pw, `quiet for ${jsonlTailIdleMs}ms at EOF`)
+    let after
+    try { after = fs.statSync(pw.jsonlPath) } catch { return }
+    if (after.ino !== cursor.inode || after.size > cursor.offset ||
+        (jsonlPathGenerations.get(pw.jsonlPath) || 0) !== generation) {
+      scheduleJsonlPathSync(pw.jsonlPath)
+    }
   }
 
   function processParsedJsonlRecord(pw, record) {
@@ -1429,27 +1463,15 @@ export function createJsonlIngestor({
     pathWatchers.clear()
     childWatchers.clear()
     agentPaths.clear()
-    for (const [, entry] of jsonlDirWatchers) {
-      try {
-        const closed = entry.watcher.close()
-        Promise.resolve(closed).catch(e => {
-          log.warn(`chokidar teardown close failed: ${e?.message || e}`)
-        })
-      } catch (e) {
-        // Watcher shutdown is cleanup-only; log and continue closing peers.
-        log.warn(`chokidar teardown close threw: ${e?.message || e}`)
-      }
-    }
-    jsonlDirWatchers.clear()
     for (const [, watcher] of jsonlRootWatchers) {
       try {
         const closed = watcher.close()
         Promise.resolve(closed).catch(e => {
-          log.warn(`chokidar root teardown close failed: ${e?.message || e}`)
+          log.warn(`recursive root teardown close failed: ${e?.message || e}`)
         })
       } catch (e) {
         // Root watcher shutdown is cleanup-only; keep closing remaining watchers.
-        log.warn(`chokidar root teardown close threw: ${e?.message || e}`)
+        log.warn(`recursive root teardown close threw: ${e?.message || e}`)
       }
     }
     jsonlRootWatchers.clear()

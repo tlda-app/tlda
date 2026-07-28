@@ -143,6 +143,10 @@ environments:
 # How often the daemon asks each box which agents are running and what they are
 # doing, in seconds.
 statusScanSeconds: 3
+
+# Keep an active transcript tail open across short pauses between writes.
+# Dormant transcripts at EOF hold no tail.
+jsonlTailIdleSeconds: 600
 `
 
 /**
@@ -307,6 +311,14 @@ export function getStatusScanMs() {
   const seconds = loadDaemonYaml().statusScanSeconds
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
     throw new Error(`daemon.yaml: statusScanSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
+  }
+  return Math.round(seconds * 1000)
+}
+
+export function getJsonlTailIdleMs() {
+  const seconds = loadDaemonYaml().jsonlTailIdleSeconds ?? 600
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`daemon.yaml: jsonlTailIdleSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
   }
   return Math.round(seconds * 1000)
 }

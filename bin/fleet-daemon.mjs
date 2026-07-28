@@ -66,7 +66,7 @@ import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-s
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getMachineId, saveMachineId, getStatusScanMs,
+  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
@@ -468,6 +468,7 @@ jsonlIngestor = createJsonlIngestor({
   bufferActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
   activityDeliveryCounters: daemonActivityDeliveryCounters,
+  jsonlTailIdleMs: getJsonlTailIdleMs(),
   recordMintMarker: marker => {
     if (!daemonMintCore) throw new Error('daemon mint core is not initialized')
     Promise.resolve()

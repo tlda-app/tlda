@@ -7,7 +7,7 @@ import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
-import { jsonlWatchEligibility, sessionIdentitySeatEvent } from '../daemon/jsonl-ingestor.mjs'
+import { sessionIdentitySeatEvent } from '../daemon/jsonl-ingestor.mjs'
 import { buildDaemonActivityRecord } from '../server/lib/daemon-activity-ingest.mjs'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 
@@ -32,13 +32,6 @@ try {
     cwd: dir,
     metadata: { kind: 'codex', model: 'gpt-test' },
   }
-
-  assert.equal(jsonlWatchEligibility({ ...agent, tmux_session: null }, daemonIdentity).ok, true)
-  assert.equal(jsonlWatchEligibility({ ...agent, machine_id: 'air' }, daemonIdentity).ok, false)
-  assert.equal(jsonlWatchEligibility({ ...agent, env_name: 'other' }, daemonIdentity).ok, false)
-  assert.equal(jsonlWatchEligibility({ ...agent, daemon_key: 'mini:other' }, daemonIdentity).ok, false)
-  assert.equal(jsonlWatchEligibility({ ...agent, session_id: null, session_ids: [] }, daemonIdentity).ok, false)
-  assert.equal(jsonlWatchEligibility({ ...agent, human: true }, daemonIdentity).ok, false)
 
   let livePaneCalls = 0
   const harnessRuntime = createHarnessRuntime({

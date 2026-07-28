@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl' } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -115,13 +115,14 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
     envName: 'default',
     daemonKey: 'mini:default',
     forkProcess,
-    watchDir: () => {
+    watchTree: (_root, onChange) => {
       const watcher = new EventEmitter()
       watcher.close = () => {}
+      watcher.onChange = onChange
       dirWatchers.push(watcher)
       return watcher
     },
-    nowMs: () => 123,
+    jsonlTailIdleMs,
     random: () => 0,
   })
 
@@ -146,6 +147,10 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
     ingestor,
     setRows,
     sync,
+    async notifyChange(changedPath = jsonlPath) {
+      dirWatchers[0].onChange('change', changedPath.slice(projectsDir.length + 1))
+      await wait(75)
+    },
     setReady(value) { ready = value },
     cleanup() {
       ingestor.shutdown()
@@ -245,6 +250,36 @@ function assertTailCount(harness, expected) {
 }
 
 {
+  const harness = createHarness({ jsonlTailIdleMs: 20 })
+  try {
+    writeFileSync(harness.jsonlPath, '{}\n')
+    harness.setRows([])
+    await harness.sync('initial-unowned-jsonl')
+    const firstWatch = harness.sentToChild.find(message => message.type === 'watch')
+    assert.ok(firstWatch)
+    const firstSize = statSync(harness.jsonlPath).size
+    harness.children[0].child.emit('message', {
+      type: 'flush',
+      watchId: firstWatch.watchId,
+      offset: firstSize,
+    })
+    await wait(40)
+    assert.equal(
+      harness.sentToChild.some(message => message.type === 'stop' && message.watchId === firstWatch.watchId),
+      true,
+    )
+
+    appendFileSync(harness.jsonlPath, '{}\n')
+    await harness.notifyChange()
+    const watches = harness.sentToChild.filter(message => message.type === 'watch')
+    assert.equal(watches.length, 2)
+    assert.equal(watches[1].startOffset, firstSize)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
   const sessionUuid = '019fa554-0000-7000-8000-000000000001'
   const harness = createHarness({
     jsonlFileName: `rollout-2026-07-27T17-00-00-${sessionUuid}.jsonl`,
@@ -267,8 +302,9 @@ function assertTailCount(harness, expected) {
   try {
     harness.setRows([])
     await harness.sync('initial-empty-root')
-    const watch = harness.sentToChild.find(message => message.type === 'watch')
     writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    await harness.notifyChange()
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
     harness.children[0].child.emit('message', {
       type: 'batch',
       watchId: watch.watchId,
@@ -312,8 +348,9 @@ function assertTailCount(harness, expected) {
   try {
     harness.setRows([])
     await harness.sync('initial-empty-root')
-    const watch = harness.sentToChild.find(message => message.type === 'watch')
     writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    await harness.notifyChange()
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
     harness.children[0].child.emit('message', {
       type: 'batch',
       watchId: watch.watchId,
@@ -355,8 +392,9 @@ function assertTailCount(harness, expected) {
   try {
     harness.setRows([])
     await harness.sync('initial-empty-root')
-    const watch = harness.sentToChild.find(message => message.type === 'watch')
     writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    await harness.notifyChange()
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
     harness.children[0].child.emit('message', {
       type: 'batch',
       watchId: watch.watchId,
@@ -396,8 +434,9 @@ function assertTailCount(harness, expected) {
   try {
     harness.setRows([])
     await harness.sync('initial-empty-root')
-    const watch = harness.sentToChild.find(message => message.type === 'watch')
     writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    await harness.notifyChange()
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
     harness.children[0].child.emit('message', {
       type: 'batch',
       watchId: watch.watchId,
@@ -469,8 +508,7 @@ function assertTailCount(harness, expected) {
     harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
     await harness.sync('daemon-welcome')
     assertWatcher(harness, false)
-    assertTailCount(harness, 1)
-    assert.equal(harness.sentToChild.find(m => m.type === 'watch')?.agentId, null)
+    assertTailCount(harness, 0)
   } finally {
     harness.cleanup()
   }
@@ -481,11 +519,11 @@ function assertTailCount(harness, expected) {
   try {
     harness.setRows([])
     await harness.sync('initial-empty-root')
-    assertTailCount(harness, 1)
+    assertTailCount(harness, 0)
     const latePath = join(dirname(harness.jsonlPath), 'rollout-late-unknown.jsonl')
-    writeFileSync(latePath, '')
-    harness.dirWatchers[0].emit('add', latePath)
-    await wait(600)
+    writeFileSync(latePath, '{}\n')
+    harness.dirWatchers[0].onChange('change', latePath.slice(join(harness.dir, 'projects').length + 1))
+    await wait(75)
     const lateWatch = harness.sentToChild.find(message => message.type === 'watch' && message.jsonlPath === latePath)
     assert.ok(lateWatch, JSON.stringify(harness.sentToChild, null, 2))
     assert.equal(lateWatch.agentId, null)
@@ -619,10 +657,10 @@ function assertTailCount(harness, expected) {
     ledger.setSessionSync('fleet:jsonl-owner', fullBinding({ sessionPath: harness.jsonlPath }))
     await new Promise(resolve => setImmediate(resolve))
     assertWatcher(harness, false)
-    assertTailCount(harness, 1)
+    assertTailCount(harness, 0)
     ledger.setSessionSync('fleet:jsonl-owner', { terminalCapability: 'changed-only' })
     await new Promise(resolve => setImmediate(resolve))
-    assertTailCount(harness, 1)
+    assertTailCount(harness, 0)
   } finally {
     cleanup()
     harness.cleanup()
@@ -638,6 +676,7 @@ function assertTailCount(harness, expected) {
     ledger.onProcessBindingChange = () => {
       deleteReconcilePromise = reconcile('permission-ledger-delete')
     }
+    writeFileSync(harness.jsonlPath, '{}\n')
     ledger.setSessionSync('fleet:jsonl-owner', fullBinding({ sessionPath: harness.jsonlPath }))
     await reconcile('attach')
     assertTailCount(harness, 1)
@@ -656,6 +695,7 @@ function assertTailCount(harness, expected) {
 {
   const harness = createHarness()
   try {
+    writeFileSync(harness.jsonlPath, '{}\n')
     harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
     await harness.sync('attach')
     harness.setReady(false)

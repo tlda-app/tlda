@@ -145,7 +145,7 @@ test('JSONL ingestor respawns after parent-side EPIPE on stale child handle', as
     const projectsDir = join(dir, 'projects')
     const jsonlPath = join(projectsDir, 'rollout-stale-ipc.jsonl')
     mkdirSync(projectsDir, { recursive: true })
-    writeFileSync(jsonlPath, '')
+    writeFileSync(jsonlPath, '{}\n')
     const children = []
     const logs = []
     const counters = []
@@ -212,7 +212,7 @@ test('JSONL ingestor respawns after parent-side EPIPE on stale child handle', as
         children.push(child)
         return child
       },
-      watchDir: () => ({ on: () => ({ on: () => ({ on: () => {} }) }), close: () => {} }),
+      watchTree: () => ({ on: () => {}, close: () => {} }),
       nowMs: () => 1000 + children.length,
       random: () => 0.25,
     })
