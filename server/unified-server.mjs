@@ -95,6 +95,7 @@ import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
+import { NotificationOwnerRegistry, notificationRecipients, readNotificationFlushIfOwner } from './lib/notification-owner.mjs'
 import { isRetirableStaleAgentSeatBindingObligation, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
@@ -381,6 +382,7 @@ async function stampNames(rows) {
 // Fleet state: in-memory
 const wsFleetClients = new Set()            // active /ws/fleet connections
 const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet connection
+const notificationOwners = new NotificationOwnerRegistry(fleetStore)
 
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
 // for that daemon config lane. Used for RPC routing and for pushing
@@ -1619,7 +1621,12 @@ function broadcastFleet(msg) {
   const data = JSON.stringify(operation && !msg.fleet_operation
     ? { ...msg, fleet_operation: operation }
     : msg)
+  const ownerRecipients = notificationRecipients(msg)
+  const ownerSockets = ownerRecipients
+    ? new Set([...ownerRecipients].map(agentId => notificationOwners.socketFor(agentId)).filter(Boolean))
+    : null
   for (const ws of wsFleetClients) {
+    if (ownerSockets && ws._notificationSubscriber && !ownerSockets.has(ws)) continue
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
@@ -5379,6 +5386,16 @@ server.on('upgrade', async (req, socket, head) => {
       ws._remoteAddr = remoteAddr
       const agentFilter = url.searchParams.get('agent') || null
       ws._agentFilter = agentFilter
+      const notificationSubscriber = url.searchParams.get('notification_subscriber') === '1'
+      const notificationInstanceId = url.searchParams.get('notification_instance_id') || null
+      const notificationStartedAt = Number(url.searchParams.get('notification_started_at'))
+      const notificationSessionId = url.searchParams.get('notification_session_id') || null
+      ws._notificationSubscriber = notificationSubscriber
+      ws._notificationInstanceId = notificationInstanceId
+      ws._notificationStartedAt = Number.isSafeInteger(notificationStartedAt) && notificationStartedAt >= 0
+        ? notificationStartedAt
+        : null
+      ws._notificationSessionId = notificationSessionId
       wsFleetClients.add(ws)
       trackWs(ws, {
         kind: 'fleet',
@@ -5406,6 +5423,7 @@ server.on('upgrade', async (req, socket, head) => {
         if (ws._tldaAgentId && agentFleetConnections.get(ws._tldaAgentId) === ws) {
           agentFleetConnections.delete(ws._tldaAgentId)
         }
+        notificationOwners.clear(ws)
       })
       ws.on('error', () => {
         wsFleetClients.delete(ws)
@@ -5413,6 +5431,7 @@ server.on('upgrade', async (req, socket, head) => {
         if (ws._tldaAgentId && agentFleetConnections.get(ws._tldaAgentId) === ws) {
           agentFleetConnections.delete(ws._tldaAgentId)
         }
+        notificationOwners.clear(ws)
       })
     })
     return
@@ -5975,7 +5994,15 @@ async function handleFleetWsMessage(ws, msg) {
       await fleetStore.upsertAgent(agent)
       const stored = await fleetStore.getAgent?.(loginAgentId) || agent
       const storedAgent = await fleetStore.projectAgentCurrentSeat?.(stored) || stored
-      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
+      const notificationOwner = ws._notificationSubscriber
+        ? await notificationOwners.bind(ws, loginAgentId, msg.session_id || null)
+        : false
+      reply({
+        ok: true,
+        agent: storedAgent,
+        assigned_name: storedAgent.friendly_name || null,
+        ...(ws._notificationSubscriber ? { notification_owner: notificationOwner } : {}),
+      })
       void fleetStore.share?.({ type: 'login', agent_id: loginAgentId, from: loginAgentId, to: loginAgentId, text: `${agent.friendly_name || loginAgentId} logged in` })
       markAgentAlive(loginAgentId, Date.now(), { source: 'agent-login' })
       touchActivity(loginAgentId)
@@ -7213,50 +7240,79 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'my-task') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
-    const tasks = await fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
-    const taskCount = await fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
-    const task = tasks[0] || await fleetStore.getTaskByAgent?.(agentId) || null
-    const allUnread = await fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    // Materialization is a prefetch, not a gate. Skip, 2026-07-26: "Nothing is
-    // even supposed to wait… materialization was supposed to be fucking
-    // prefetch." A message is in the inbox the moment it exists; the bytes race
-    // to catch up, and a reference that has not landed is the open path's
-    // problem, not a reason to withhold the message.
-    const unread = allUnread
-    const unreadCount = await fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
-    // peek=true: caller just wants to see unread (e.g., the channel-WS
-    // flush-on-reconnect path that displays a count). Don't mark read in
-    // that case — the actual inbox() call from the agent will do the
-    // marking. Without this, peek silently consumes the unread queue and
-    // the subsequent inbox() returns nothing.
-    if (unread.length && !msg.peek) {
-      recordPlaceholderReadForMessages(agentId, unread)
-      const readIds = await fleetStore.acknowledgeInboxRead(agentId, unread.map(m => m.id))
-      // A successful inbox read is the durable acknowledgement for a wake.
-      // Preserve the originating event/task/trace so operators can distinguish
-      // "nudge sent" from "agent actually received the work" after a restart.
-      for (const message of unread) {
-        const traceId = traceIdFromFleetEvent(message)
-        if (!traceId) continue
-      }
-      if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
-    } else {
-      await fleetStore.acknowledgeInboxRead(agentId)
-    }
-    broadcastState()
-    reply({
-      task,
-      tasks: tasks.length ? tasks : (task ? [task] : []),
-      messages: unread,
+    const emptyNotificationFlush = {
+      task: null,
+      tasks: [],
+      messages: [],
       counts: {
-        tasks: taskCount,
-        messages: unreadCount,
+        tasks: 0,
+        messages: 0,
         task_limit: MY_TASK_TASK_LIMIT,
         message_limit: MY_TASK_UNREAD_LIMIT,
-        tasks_truncated: taskCount > tasks.length,
-        messages_truncated: unreadCount > unread.length,
+        tasks_truncated: false,
+        messages_truncated: false,
       },
-    })
+      notification_owner: false,
+    }
+    const readMyTask = async () => {
+      const tasks = await fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
+      const taskCount = await fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
+      const task = tasks[0] || await fleetStore.getTaskByAgent?.(agentId) || null
+      const allUnread = await fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
+      // Materialization is a prefetch, not a gate. Skip, 2026-07-26: "Nothing is
+      // even supposed to wait… materialization was supposed to be fucking
+      // prefetch." A message is in the inbox the moment it exists; the bytes race
+      // to catch up, and a reference that has not landed is the open path's
+      // problem, not a reason to withhold the message.
+      const unread = allUnread
+      const unreadCount = await fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
+      // peek=true: caller just wants to see unread (e.g., the channel-WS
+      // flush-on-reconnect path that displays a count). Don't mark read in
+      // that case — the actual inbox() call from the agent will do the
+      // marking. Without this, peek silently consumes the unread queue and
+      // the subsequent inbox() returns nothing.
+      if (unread.length && !msg.peek) {
+        recordPlaceholderReadForMessages(agentId, unread)
+        const readIds = await fleetStore.acknowledgeInboxRead(agentId, unread.map(m => m.id))
+        // A successful inbox read is the durable acknowledgement for a wake.
+        // Preserve the originating event/task/trace so operators can distinguish
+        // "nudge sent" from "agent actually received the work" after a restart.
+        for (const message of unread) {
+          const traceId = traceIdFromFleetEvent(message)
+          if (!traceId) continue
+        }
+        if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
+      } else {
+        await fleetStore.acknowledgeInboxRead(agentId)
+      }
+      broadcastState()
+      return {
+        task,
+        tasks: tasks.length ? tasks : (task ? [task] : []),
+        messages: unread,
+        counts: {
+          tasks: taskCount,
+          messages: unreadCount,
+          task_limit: MY_TASK_TASK_LIMIT,
+          message_limit: MY_TASK_UNREAD_LIMIT,
+          tasks_truncated: taskCount > tasks.length,
+          messages_truncated: unreadCount > unread.length,
+        },
+      }
+    }
+    const response = msg.notification_flush
+      ? await readNotificationFlushIfOwner({
+          registry: notificationOwners,
+          ws,
+          agentId,
+          sessionId: msg.notification_session_id,
+          startedAt: msg.notification_started_at,
+          instanceId: msg.notification_instance_id,
+          read: readMyTask,
+          empty: emptyNotificationFlush,
+        })
+      : await readMyTask()
+    reply(response)
     return
   }
 

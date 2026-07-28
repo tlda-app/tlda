@@ -665,6 +665,15 @@ export class FleetStore {
         PRIMARY KEY (daemon_key, local_agent_id)
       );
 
+      CREATE TABLE IF NOT EXISTS notification_owner_claims (
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        instance_id TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        PRIMARY KEY (agent_id, session_id)
+      );
+
       -- Daemon registry: durable record of scoped daemon identities. This is
       -- the authority for "which daemon is allowed to do which job"; websocket
       -- connections are just the current live transport for a registry row.
@@ -1596,6 +1605,22 @@ export class FleetStore {
     `);
     this._getDaemonAgentBinding = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE daemon_key = ? AND local_agent_id = ?');
     this._getDaemonAgentBindingByAgent = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE agent_id = ?');
+    this._getNotificationOwnerClaim = this.db.prepare(
+      'SELECT * FROM notification_owner_claims WHERE agent_id = ? AND session_id = ?'
+    );
+    this._claimNotificationOwner = this.db.prepare(`
+      INSERT INTO notification_owner_claims (agent_id, session_id, started_at, instance_id, claimed_at)
+      VALUES (@agentId, @sessionId, @startedAt, @instanceId, @claimedAt)
+      ON CONFLICT(agent_id, session_id) DO UPDATE SET
+        started_at = excluded.started_at,
+        instance_id = excluded.instance_id,
+        claimed_at = excluded.claimed_at
+      WHERE excluded.started_at > notification_owner_claims.started_at
+         OR (
+           excluded.started_at = notification_owner_claims.started_at
+           AND excluded.instance_id > notification_owner_claims.instance_id
+         )
+    `);
     this._insertDaemonAgentBinding = this.db.prepare(`
       INSERT INTO daemon_agent_bindings (daemon_key, local_agent_id, agent_id, created_at)
       VALUES (?, ?, ?, ?)
@@ -2380,6 +2405,28 @@ export class FleetStore {
 
   getCurrentAgentSeat(agentId) {
     return this._getCurrentAgentSeat.get(agentId) || null;
+  }
+
+  getNotificationOwnerClaim(agentId, sessionId) {
+    if (!agentId || !sessionId) return null;
+    return this._getNotificationOwnerClaim.get(String(agentId), String(sessionId)) || null;
+  }
+
+  claimNotificationOwner({ agentId, sessionId, startedAt, instanceId, now = new Date().toISOString() } = {}) {
+    const normalizedStartedAt = Number(startedAt);
+    if (!agentId || !sessionId || !instanceId || !Number.isSafeInteger(normalizedStartedAt) || normalizedStartedAt < 0) {
+      throw new Error('notification owner claim requires agentId, sessionId, nonnegative integer startedAt, and instanceId');
+    }
+    return this.db.transaction(() => {
+      this._claimNotificationOwner.run({
+        agentId: String(agentId),
+        sessionId: String(sessionId),
+        startedAt: normalizedStartedAt,
+        instanceId: String(instanceId),
+        claimedAt: now,
+      });
+      return this.getNotificationOwnerClaim(agentId, sessionId);
+    })();
   }
 
   // One query for a whole batch. The daemon liveness batch checks ~190 agents

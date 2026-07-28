@@ -822,6 +822,28 @@ let CLAUDE_SESSION = (function detectSessionAtStartup() {
     return null;
   }
 })();
+const NOTIFICATION_INSTANCE_STARTED_AT = Date.now();
+const NOTIFICATION_INSTANCE_ID = crypto.randomUUID();
+
+function notificationChannelUrl() {
+  const url = new URL(`${TLDA_FLEET_WS_SERVER}/ws/fleet`);
+  if (AGENT_ID) url.searchParams.set('agent', AGENT_ID);
+  url.searchParams.set('notification_subscriber', '1');
+  url.searchParams.set('notification_instance_id', NOTIFICATION_INSTANCE_ID);
+  url.searchParams.set('notification_started_at', String(NOTIFICATION_INSTANCE_STARTED_AT));
+  if (currentTransportSessionId()) {
+    url.searchParams.set('notification_session_id', currentTransportSessionId());
+  }
+  return url.toString();
+}
+
+function notificationOwnerIdentity() {
+  return {
+    notification_session_id: currentTransportSessionId() || undefined,
+    notification_instance_id: NOTIFICATION_INSTANCE_ID,
+    notification_started_at: NOTIFICATION_INSTANCE_STARTED_AT,
+  };
+}
 
 // Agent pruning throttle
 let _lastAgentPrune = 0;
@@ -2119,6 +2141,7 @@ export async function handleFleetTool(name, args) {
       ...(shellId ? { agent_id: shellId } : {}),
       ...(localAgentId ? { local_agent_id: localAgentId } : {}),
       session_id: CLAUDE_SESSION || undefined,
+      ...notificationOwnerIdentity(),
       tmux_session: detectedTmux || undefined,
       cwd: cwd || undefined,
       labels,
@@ -4844,7 +4867,12 @@ async function flushFleetTransportOpportunistically(toolName) {
 async function _flushUnread() {
   if (!AGENT_ID || !_channelRWS?.connected) return;
   try {
-    const data = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: true }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
+    const data = await mcpFleetTransport.ephemeral('my-task', {
+      agent: AGENT_ID,
+      peek: true,
+      notification_flush: true,
+      ...notificationOwnerIdentity(),
+    }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
     if (!data) return;
     const msgs = (data.messages || []).filter(m => !m.read);
     // Unread is the whole trigger. This runs on every socket reconnect, and an
@@ -4877,9 +4905,7 @@ function startChannelWS({ bootstrap = false } = {}) {
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: () => AGENT_ID
-      ? `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`
-      : `${TLDA_FLEET_WS_SERVER}/ws/fleet`,
+    url: notificationChannelUrl,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
@@ -4891,6 +4917,7 @@ function startChannelWS({ bootstrap = false } = {}) {
       const loginBody = {
         agent_id: AGENT_ID,
         session_id: currentTransportSessionId() || undefined,
+        ...notificationOwnerIdentity(),
         tmux_session: _tmuxSession || undefined,
         cwd: getAgentCwd() || process.cwd(),
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
