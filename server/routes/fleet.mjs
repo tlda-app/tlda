@@ -213,7 +213,7 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, hasOpenFleetSocketForAgent = () => false, reanimateAgent, requireOperationRead }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, enqueueDaemonMessage, hasOpenFleetSocketForAgent = () => false, reanimateAgent, requireOperationRead }) {
   const router = Router()
 
   router.get('/api/fleet/operations/:operationId', requireOperationRead, async (req, res) => {

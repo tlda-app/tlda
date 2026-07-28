@@ -4717,7 +4717,6 @@ const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
   suppressEchoFor: () => {},
   sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget,
-  broadcastDaemonAgentsUpdated,
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
   hasOpenFleetSocketForAgent,
   reanimateAgent,
@@ -5768,9 +5767,6 @@ async function handleFleetWsMessage(ws, msg) {
     void fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
     const storedAgent = await fleetStore.getAgent?.(agentId) || agent
     broadcastState(storedAgent)
-    // Push through the daemon-route projection; seatless reservations have no
-    // daemon route and therefore produce no update.
-    broadcastDaemonAgentsUpdated(storedAgent)
     reply({
       ok: true,
       agent: storedAgent,
@@ -5826,7 +5822,6 @@ async function handleFleetWsMessage(ws, msg) {
       })
       spawnLibrarian.observeLogin(await fleetStore.getAgent?.(loginAgentId) || agent)
       broadcastState(storedAgent)
-      broadcastDaemonAgentsUpdated(storedAgent)
       return
     }
 
@@ -8223,12 +8218,6 @@ function daemonProjectPartSourceWatchFiles(project) {
   } catch {
     return []
   }
-}
-
-function broadcastDaemonAgentsUpdated(agentUpdates = null) {
-  // Daemons do not own or mirror the agent list. Agent surfaces query the
-  // server directly; sending roster snapshots or replaying them as mutations
-  // makes daemon startup proportional to fleet history and can take chat down.
 }
 
 async function broadcastDaemonProjectsUpdated() {
