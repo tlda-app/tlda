@@ -3,3 +3,4 @@
 # this project. Agents in the tlda project default to app-dev (machine-wide access,
 # secrets denied) rather than a cwd cage.
 default: app-dev
+agentConfigDir: /Users/skip/.tlda/configs/app

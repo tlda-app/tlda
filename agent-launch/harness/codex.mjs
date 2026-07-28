@@ -136,7 +136,7 @@ function appendLaunchFlags(parts, harnessOptions = {}) {
 }
 
 function passthroughConfigEnv(env = {}) {
-  return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR', 'CODEX_SESSIONS_DIR']
+  return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR', 'TLDA_AGENT_CONFIG_DIR', 'CODEX_HOME', 'CODEX_SESSIONS_DIR']
     .filter(key => env[key])
     .map(key => [key, String(env[key])])
 }

@@ -36,6 +36,7 @@ export const PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS = Object.freeze([
   'grants',
   'models',
   'default',
+  'agentConfigDir',
 ])
 
 export const STRICT_SERVER_FIELDS = Object.freeze([

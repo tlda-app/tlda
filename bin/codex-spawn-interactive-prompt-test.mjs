@@ -109,6 +109,8 @@ function testCodexLaunchForcesCiEnv() {
       TLDA_ENV: 'prod',
       TLDA_CONFIG_DIR: '/tmp/tlda-config',
       TLDA_DAEMON_CONFIG_DIR: '/tmp/tlda-daemon-config',
+      TLDA_AGENT_CONFIG_DIR: '/tmp/project-config/codex',
+      CODEX_HOME: '/tmp/project-config/codex',
       CODEX_SESSIONS_DIR: '/tmp/codex-sessions',
     },
   })
@@ -117,6 +119,8 @@ function testCodexLaunchForcesCiEnv() {
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_ENV=.*"prod"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG_DIR=.*"\/tmp\/tlda-config"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_DAEMON_CONFIG_DIR=.*"\/tmp\/tlda-daemon-config"/)
+  assert.match(cmd, /(?:^|\s)CODEX_HOME='\/tmp\/project-config\/codex'/)
+  assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_AGENT_CONFIG_DIR=.*"\/tmp\/project-config\/codex"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_SESSIONS_DIR=.*"\/tmp\/codex-sessions"/)
   assert.doesNotMatch(cmd, /TLDA_SERVER|TLDA_SYNC_SERVER/)
 }
