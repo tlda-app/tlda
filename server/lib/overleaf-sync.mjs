@@ -35,6 +35,7 @@ import {
   listProjectSourceRecoveries, rollbackProjectSourceRecovery, removeProjectSourceRecovery,
   sourceLifecycleStore,
 } from './project-store.mjs'
+import { isSourceFilePath, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import { processProjectPushSerialized, runSerializedProjectSourceOperation } from '../routes/projects.mjs'
 import { createLogger } from '../../shared/logger.mjs'
 
@@ -360,9 +361,11 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   if (unresolved) return { name, recoveryRequired: true, recovery: unresolved }
 
   const retryHead = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
+  const sourceContext = sourceManifestContext(project)
+  const isAuthoredSource = path => !shouldSkip(path) && isSourceFilePath(path, sourceContext)
   let changedPaths, deletedPaths, head
   if (initial) {
-    changedPaths = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
+    changedPaths = (await trackedFiles(dir)).filter(isAuthoredSource)
     deletedPaths = []
     head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
   } else {
@@ -376,13 +379,13 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
       })
       return { name, changed: 0, deleted: 0, head: diff.head, unchanged: true }
     }
-    changedPaths = diff.changed
-    deletedPaths = diff.deleted
+    changedPaths = diff.changed.filter(isAuthoredSource)
+    deletedPaths = diff.deleted.filter(isAuthoredSource)
     head = diff.head
   }
 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  const sourceManifest = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
+  const sourceManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
   const expectedRevision = sourceLifecycleStore(name).readAuthority().currentRevision
   const result = await processPush(name, { expectedRevision, files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
