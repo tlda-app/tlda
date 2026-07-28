@@ -7094,8 +7094,14 @@ async function handleFleetWsMessage(ws, msg) {
       return
     }
     if (channel === 'tmux') {
-      const { seat, error: seatError } = currentSeatOrError(row)
-      if (!seat) { error(seatError); return }
+      const route = resolveRpc('resolve-agent-route', row)
+      if (route.via === 'none') { error(route.error); return }
+      try {
+        await sendDaemonEphemeral(route.machine_id, 'resolve-agent-route', { agent_id: row.id })
+      } catch (e) {
+        error(e.message)
+        return
+      }
     }
     fleetStore.updateAgentMeta?.(row.id, { deliveryChannel: channel })
     broadcastState()
