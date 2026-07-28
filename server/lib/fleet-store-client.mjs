@@ -63,8 +63,11 @@ export class FleetStoreClient {
     this._worker.on('message', (msg) => {
       if (msg.kind === 'ready') return this._resolveReady()
       if (msg.kind === 'event') {
+        const event = Array.isArray(msg.event?._filter_agents)
+          ? { ...msg.event, _filter_agents: this._stampAgents(msg.event._filter_agents, 'many') }
+          : msg.event
         for (const fn of this._listeners) {
-          try { fn(msg.event) } catch (e) {
+          try { fn(event) } catch (e) {
             // Reported, not rethrown: listeners are independent subscribers and
             // one failing must not stop the event reaching the others.
             console.error('[fleet-store-client] event listener threw:', e?.message || e)

@@ -1332,7 +1332,12 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 // Filter subscriptions — a chat is a filter, and the server answers it.
 //
 const filterSubscriptions = createFilterSubscriptions({
-  getAgents: async () => await fleetStore?.getAllAgents?.() || [],
+  getAgentsByIds: async (agentIds) => {
+    const ids = [...new Set((agentIds || []).filter(Boolean))]
+    return ids.length ? await fleetStore?.getAgentsByIds?.(ids) || [] : []
+  },
+  loadMembershipSpans: async (labels, bounds) =>
+    await fleetStore?.filterMembershipSpans?.(labels, bounds) || [],
 })
 
 // Liveness counters for the filter push.
@@ -1380,9 +1385,11 @@ async function pushFilteredEvent(data) {
     filterPushCounters.deliveries += matched.length
     filterPushCounters.lastDeliveryAt = filterPushCounters.lastEventAt
   }
+  const publicData = { ...data }
+  delete publicData._filter_agents
   for (const { conn, subId } of matched) {
     try {
-      if (conn.readyState === 1) conn.send(JSON.stringify({ event: 'filter-event', data: { subId, event: data } }))
+      if (conn.readyState === 1) conn.send(JSON.stringify({ event: 'filter-event', data: { subId, event: publicData } }))
     } catch { /* the socket's own close path cleans up */ }
   }
 }

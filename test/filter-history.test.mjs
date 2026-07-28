@@ -12,13 +12,30 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createFilterSubscriptions } from '../server/lib/filter-subscriptions.mjs';
+import { labelsForAgent, PSEUDO_LABELS } from '../shared/fleet-labels.mjs';
 
-const CHIEF = { id: 'fleet:b6d7cc18', friendly_name: 'chief2', labels: [] };
-const NOISE = { id: 'fleet:n0ise', friendly_name: 'noisy', labels: [] };
+const CHIEF = { id: 'fleet:b6d7cc18', friendly_name: 'chief2', labels: [], runtime_status: { status: 'awake' } };
+const NOISE = { id: 'fleet:n0ise', friendly_name: 'noisy', labels: [], runtime_status: { status: 'hibernating' } };
 const SKIP = 'fleet:skip';
 const who = { humanId: SKIP, humanName: 'skip' };
 
-const subs = () => createFilterSubscriptions({ getAgents: () => [CHIEF, NOISE] });
+const roster = [CHIEF, NOISE];
+const subs = () => createFilterSubscriptions({
+  getAgentsByIds: async (agentIds) => {
+    const ids = new Set(agentIds);
+    return roster.filter(agent => ids.has(agent.id));
+  },
+  loadMembershipSpans: async (labels) => roster.flatMap(agent =>
+    labelsForAgent(agent)
+      .filter(label => labels.includes(label) && !PSEUDO_LABELS.includes(label))
+      .map(label => ({
+        fleet_id: agent.id,
+        label,
+        from_ts: '1970-01-01T00:00:00.000Z',
+        to_ts: null,
+      }))
+  ),
+});
 const FILTER = [[['from', 'chief2']]];
 
 // A synthetic corpus, newest first, where only 1 row in 5 matches the filter.
@@ -59,7 +76,7 @@ test('a full page is returned even when most candidates are rejected', async () 
 test('it over-fetches rather than trusting one pass', async () => {
   const calls = [];
   const s = subs();
-  await s.history(FILTER, { ...who, limit: 20, queryPage: pagerOver(corpus(500), calls) });
+  await s.history(FILTER, { ...who, limit: 50, queryPage: pagerOver(corpus(500), calls) });
   assert.ok(calls.length > 1, 'one pass cannot fill a page at a 1-in-5 match rate');
 });
 
@@ -103,13 +120,25 @@ test('history and live agree, because both go through verdict()', async () => {
   s.subscribe({}, 'panel', FILTER, who);
   for (const row of corpus(40)) {
     assert.equal(
-      s.match(row).length > 0,
-      s.verdict(FILTER, row, who),
+      (await s.match(row)).length > 0,
+      await s.verdict(FILTER, row, who),
       'live delivery disagrees with the predicate'
     );
   }
   const { events } = await s.history(FILTER, { ...who, limit: 8, queryPage: pagerOver(corpus(40)) });
   for (const e of events) {
-    assert.equal(s.verdict(FILTER, e, who), true, 'history returned a row the predicate rejects');
+    assert.equal(await s.verdict(FILTER, e, who), true, 'history returned a row the predicate rejects');
   }
+});
+
+test('runtime pseudo-labels use current membership, not historical spans', async () => {
+  const s = subs();
+  const awake = [[['from', 'awake']]];
+  const { events } = await s.history(awake, {
+    ...who,
+    limit: 8,
+    queryPage: pagerOver(corpus(100)),
+  });
+  assert.equal(events.length, 8);
+  assert.ok(events.every(event => event.from === CHIEF.id));
 });

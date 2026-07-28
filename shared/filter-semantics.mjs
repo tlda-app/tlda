@@ -6,8 +6,14 @@ import { runtimeStatusName } from './fleet-runtime-status.mjs'
 // shared/fleet-labels.mjs, the same function the server uses — so client and
 // server agree on "does agent X carry label L". A bare id with no roster entry
 // still answers to its own id (preserving the old `agentId === label` case).
-function labelSetForParticipant(agentId, { agents = [], humanId = null, humanName = null } = {}) {
+function labelSetForParticipant(agentId, {
+  agents = [], participantLabels = null, humanId = null, humanName = null,
+} = {}) {
   if (!agentId) return new Set()
+  const atEvent = participantLabels instanceof Map
+    ? participantLabels.get(agentId)
+    : participantLabels?.[agentId]
+  if (atEvent) return new Set(atEvent)
   let agent = agents.find(a => a.id === agentId)
   if (!agent && humanId && agentId === humanId) {
     agent = { id: humanId, friendly_name: humanName || 'user', runtime_status: { status: 'human' }, labels: [] }
@@ -95,6 +101,18 @@ function termLabel(term) {
   return Array.isArray(term) ? term[1] : term
 }
 
+export function fleetFilterLabels(filter) {
+  const labels = new Set()
+  for (const clause of filter || []) {
+    if (!Array.isArray(clause)) continue
+    for (const term of clause) {
+      const label = termLabel(term)
+      if (label) labels.add(label)
+    }
+  }
+  return labels
+}
+
 // Resolve a DNF filter to the broad set of agent IDs needed to fetch history for
 // events that might match the live display filter. The history endpoint only
 // prefilters by "involves one of these agents", so include every referenced
@@ -106,15 +124,9 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
   if (humanId && !allAgents.some(a => a.id === humanId)) {
     allAgents.push({ id: humanId, friendly_name: humanName || 'user', runtime_status: { status: 'human' }, labels: [] })
   }
-  const labels = new Set()
-  for (const clause of filter) {
-    if (!Array.isArray(clause)) continue
-    for (const term of clause) {
-      const label = termLabel(term)
-      if (!label) continue
-      labels.add(label)
-      if (label.startsWith('fleet:')) ids.add(label)
-    }
+  const labels = fleetFilterLabels(filter)
+  for (const label of labels) {
+    if (label.startsWith('fleet:')) ids.add(label)
   }
   // Resolve a shared name to the LIVE holder. Skip's model: "dying makes the name
   // usable, it does not wipe it" — a dead agent keeps its name, so dead+live name

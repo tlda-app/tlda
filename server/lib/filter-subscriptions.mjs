@@ -6,10 +6,10 @@
 // four distinct filters cost four evaluations, not nineteen.
 //
 // Evaluation uses shared/filter-semantics.mjs, the same module the browser
-// runs, against the server's authoritative roster. That is the whole point:
-// the browser's roster is a live-biased page of a much larger fleet, so a
-// filter naming an agent that had fallen out of it silently matched nothing.
-// The server has every agent, so the partial-roster case is unreachable here.
+// runs, against this filter instance's temporal participant table. Live events
+// extend it forward with their participant state; history pages extend it only
+// across the time interval they query. A present-day roster is never projected
+// backward onto an old message.
 //
 // This module owns no sockets and no clock. It is given a connection handle to
 // key by and hands back the handles that matched, so it can be tested without
@@ -21,7 +21,10 @@
 // does not try — but it is the one obligation that comes with handing it a
 // handle.
 
-import { matchesFleetFilter, resolveFleetFilter } from '../../shared/filter-semantics.mjs'
+import { matchesFleetFilter, fleetFilterLabels } from '../../shared/filter-semantics.mjs'
+import { labelsForAgent, PSEUDO_LABELS } from '../../shared/fleet-labels.mjs'
+
+const REALTIME_LABELS = new Set(PSEUDO_LABELS)
 
 /** Canonical key for a DNF filter, so equal filters share one evaluation. */
 export function filterKey(filter) {
@@ -45,9 +48,71 @@ function termKey(term) {
   return String(term)
 }
 
-export function createFilterSubscriptions({ getAgents } = {}) {
-  if (typeof getAgents !== 'function') {
-    throw new Error('createFilterSubscriptions requires getAgents()')
+class TemporalMembership {
+  constructor(filter) {
+    this.labels = fleetFilterLabels(filter)
+    this.current = new Map([...this.labels].map(label => [label, new Set()]))
+    this.intervals = new Map([...this.labels].map(label => [label, []]))
+    this.spanKeys = new Set()
+    this.covered = []
+  }
+
+  observe(agents) {
+    for (const agent of agents || []) {
+      if (!agent?.id) continue
+      for (const ids of this.current.values()) ids.delete(agent.id)
+      const expanded = new Set(labelsForAgent(agent))
+      for (const label of this.labels) {
+        if (expanded.has(label)) this.current.get(label).add(agent.id)
+      }
+    }
+  }
+
+  extend(spans, from, to) {
+    for (const span of spans || []) {
+      if (!this.labels.has(span?.label) || !span?.fleet_id || !span?.from_ts) continue
+      const key = `${span.label}\0${span.fleet_id}\0${span.from_ts}\0${span.to_ts || ''}`
+      if (this.spanKeys.has(key)) continue
+      this.spanKeys.add(key)
+      this.intervals.get(span.label).push(span)
+    }
+    this.covered.push({ from, to })
+  }
+
+  participantLabels(event, { live = false } = {}) {
+    const ids = [...new Set([
+      event?.from, event?.from_id, event?.to, event?.to_id,
+      event?.agent, event?.agent_id,
+    ].filter(Boolean))]
+    const out = Object.create(null)
+    for (const id of ids) {
+      const labels = new Set([id])
+      for (const label of this.labels) {
+        if (live || REALTIME_LABELS.has(label)) {
+          if (this.current.get(label)?.has(id)) labels.add(label)
+          continue
+        }
+        const timestamp = event?.timestamp
+        if (!timestamp) continue
+        const spans = this.intervals.get(label) || []
+        if (spans.some(span =>
+          span.fleet_id === id &&
+          span.from_ts <= timestamp &&
+          (!span.to_ts || timestamp < span.to_ts)
+        )) labels.add(label)
+      }
+      out[id] = [...labels]
+    }
+    return out
+  }
+}
+
+export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans } = {}) {
+  if (typeof getAgentsByIds !== 'function') {
+    throw new Error('createFilterSubscriptions requires getAgentsByIds()')
+  }
+  if (typeof loadMembershipSpans !== 'function') {
+    throw new Error('createFilterSubscriptions requires loadMembershipSpans()')
   }
 
   // key -> { filter, subs: Map<subKey, {conn, subId, humanId, humanName}> }
@@ -68,7 +133,16 @@ export function createFilterSubscriptions({ getAgents } = {}) {
     if (!conn || !subId) return null
     const key = filterKey(filter)
     let entry = byFilter.get(key)
-    if (!entry) { entry = { filter, subs: new Map(), deliveries: 0, lastDeliveryAt: null }; byFilter.set(key, entry) }
+    if (!entry) {
+      entry = {
+        filter,
+        subs: new Map(),
+        temporal: new TemporalMembership(filter),
+        deliveries: 0,
+        lastDeliveryAt: null,
+      }
+      byFilter.set(key, entry)
+    }
     const sk = subKeyOf(conn, subId)
     // Re-subscribing an existing subId REPLACES it. Without this, a panel that
     // refilters keeps its old entry under the old filterKey — so it matches
@@ -137,14 +211,10 @@ export function createFilterSubscriptions({ getAgents } = {}) {
     return dropped
   }
 
-  // The one place an evaluation context is built. It must carry the same keys
-  // the browser passes (fleet-data.mjs: { agents, humanId, humanName }) — a
-  // missing humanName makes the human answer to the label `user` instead of
-  // their name, and breaks isHumanParticipant's name path. Two call sites with
-  // different context shapes is the same one-file-two-behaviours divergence the
-  // move to shared/ exists to end.
-  function evalContext(agents, humanId, humanName) {
-    return { agents, humanId, humanName }
+  // The one place an evaluation context is built. participantLabels is the
+  // event-time join result owned by this filter instance.
+  function evalContext(participantLabels, humanId, humanName) {
+    return { participantLabels, humanId, humanName }
   }
 
   /**
@@ -152,9 +222,29 @@ export function createFilterSubscriptions({ getAgents } = {}) {
    * Exposed so the live and history paths can be asserted to agree on real
    * traffic rather than merely being capable of agreeing.
    */
-  async function verdict(filter, event, { humanId = null, humanName = null } = {}, agents = null) {
-    const roster = agents || await getAgents() || []
-    return matchesFleetFilter(filter, event, evalContext(roster, humanId, humanName))
+  async function verdict(filter, event, {
+    humanId = null, humanName = null, participantLabels = null,
+  } = {}) {
+    let labels = participantLabels
+    if (!labels) {
+      const temporal = new TemporalMembership(filter)
+      const agents = Array.isArray(event?._filter_agents)
+        ? event._filter_agents
+        : await getAgentsByIds([
+          event?.from, event?.from_id, event?.to, event?.to_id,
+          event?.agent, event?.agent_id,
+        ].filter(Boolean)) || []
+      temporal.observe(agents)
+      labels = temporal.participantLabels(event, { live: true })
+    }
+    if (humanId) {
+      const humanLabels = new Set(labels?.[humanId] || [humanId])
+      humanLabels.add(humanId)
+      humanLabels.add('human')
+      if (humanName) humanLabels.add(humanName)
+      labels = { ...labels, [humanId]: [...humanLabels] }
+    }
+    return matchesFleetFilter(filter, event, evalContext(labels, humanId, humanName))
   }
 
   /**
@@ -167,10 +257,19 @@ export function createFilterSubscriptions({ getAgents } = {}) {
   async function match(event) {
     const out = []
     let evaluations = 0
-    let agents = null
+    let eventAgents = null
     for (const entry of byFilter.values()) {
       if (entry.subs.size === 0) continue
-      if (agents === null) agents = await getAgents() || []
+      if (eventAgents === null) {
+        eventAgents = Array.isArray(event?._filter_agents)
+          ? event._filter_agents
+          : await getAgentsByIds([
+            event?.from, event?.from_id, event?.to, event?.to_id,
+            event?.agent, event?.agent_id,
+          ].filter(Boolean)) || []
+      }
+      entry.temporal.observe(eventAgents)
+      const participantLabels = entry.temporal.participantLabels(event, { live: true })
       evaluations++
       // Identity scopes `dm:`, and both halves matter: humanId for the id path
       // and humanName for the name path. Key on the pair.
@@ -178,7 +277,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
       for (const sub of entry.subs.values()) humanKeys.add(humanKeyOf(sub))
       if (humanKeys.size === 1) {
         const first = entry.subs.values().next().value
-        if (await verdict(entry.filter, event, first, agents)) {
+        if (await verdict(entry.filter, event, { ...first, participantLabels })) {
           entry.deliveries += entry.subs.size
           entry.lastDeliveryAt = new Date().toISOString()
           for (const sub of entry.subs.values()) out.push({ conn: sub.conn, subId: sub.subId })
@@ -190,7 +289,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
         const hk = humanKeyOf(sub)
         if (!verdicts.has(hk)) {
           if (verdicts.size > 0) evaluations++
-          verdicts.set(hk, await verdict(entry.filter, event, sub, agents))
+          verdicts.set(hk, await verdict(entry.filter, event, { ...sub, participantLabels }))
         }
         if (verdicts.get(hk)) {
           entry.deliveries += 1
@@ -224,26 +323,52 @@ export function createFilterSubscriptions({ getAgents } = {}) {
    */
   async function history(filter, {
     humanId = null, humanName = null, before = null, limit = 50,
-    queryPage, maxPasses = 10,
+    queryPage, maxPasses = 25,
   } = {}) {
     if (typeof queryPage !== 'function') throw new Error('history requires queryPage()')
-    const agents = await getAgents() || []
-    const agentIds = [...resolveFleetFilter(filter, evalContext(agents, humanId, humanName))]
+    const entry = byFilter.get(filterKey(filter))
+    const temporal = entry?.temporal || new TemporalMembership(filter)
     const kept = []
     let cursor = before
     let exhausted = false
     let passes = 0
     while (kept.length < limit && !exhausted && passes < maxPasses) {
       passes++
-      const want = (limit - kept.length) * 2
-      const rows = (await queryPage({ before: cursor, agentIds, limit: want })) || []
+      // Count is post-filter, so the time range cannot be known in advance.
+      // Walk indexed time chunks, extend this filter instance's temporal join
+      // table to the chunk, then keep only joined matches.
+      const want = Math.min(1000, Math.max(
+        200,
+        (limit - kept.length) * 4,
+        200 * (2 ** Math.min(passes - 1, 3)),
+      ))
+      const rows = (await queryPage({ before: cursor, agentIds: [], limit: want })) || []
       if (rows.length === 0) { exhausted = true; break }
-      if (rows.length < want) exhausted = true
+      const sourceExhausted = rows.length < want
+      const participantIds = [...new Set(rows.flatMap(row => [
+        row?.from, row?.from_id, row?.to, row?.to_id, row?.agent, row?.agent_id,
+      ]).filter(Boolean))]
+      temporal.observe(await getAgentsByIds(participantIds) || [])
+      const oldest = rows[rows.length - 1]?.timestamp || cursor
+      const upper = cursor || new Date().toISOString()
+      const spans = await loadMembershipSpans([...temporal.labels], {
+        from: oldest,
+        to: upper,
+      })
+      temporal.extend(spans, oldest, upper)
+      let examined = 0
       for (const row of rows) {
+        examined++
         cursor = row.timestamp ?? cursor
-        if (await verdict(filter, row, { humanId, humanName }, agents)) kept.push(row)
+        const participantLabels = temporal.participantLabels(row)
+        if (await verdict(filter, row, { humanId, humanName, participantLabels })) {
+          // Internal temporal state never crosses the subscription boundary.
+          const { _filter_agents, ...publicRow } = row
+          kept.push(publicRow)
+        }
         if (kept.length >= limit) break
       }
+      if (sourceExhausted && examined === rows.length) exhausted = true
     }
     // Ran out of passes with the page unfilled: say so rather than implying the
     // source is exhausted. A caller that ignores this is asking for the short

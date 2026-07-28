@@ -30,6 +30,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'ensureDefaultSubscription',
   'findAgent',
   'findAgentStored',
+  'filterMembershipSpans',
   'flushTaskDocs',
   'getActiveQaReport',
   'getActiveStackEntry',

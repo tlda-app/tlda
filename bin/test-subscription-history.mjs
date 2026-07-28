@@ -9,6 +9,7 @@
 // silently shows ancient history and pages the wrong way, which looks like
 // "chat is stuck" and not like a sort bug.
 import { createFilterSubscriptions } from '../server/lib/filter-subscriptions.mjs'
+import { labelsForAgent } from '../shared/fleet-labels.mjs'
 
 const AGENTS = [
   { id: 'fleet:aaa', friendly_name: 'alice' },
@@ -42,7 +43,22 @@ function queryChatHistory({ before, agents, limit }) {
   return rows
 }
 
-const subs = createFilterSubscriptions({ getAgents: () => AGENTS })
+const subs = createFilterSubscriptions({
+  getAgentsByIds: async (agentIds) => {
+    const ids = new Set(agentIds)
+    return AGENTS.filter(agent => ids.has(agent.id))
+  },
+  loadMembershipSpans: async (labels) => AGENTS.flatMap(agent =>
+    labelsForAgent(agent)
+      .filter(label => labels.includes(label))
+      .map(label => ({
+        fleet_id: agent.id,
+        label,
+        from_ts: '1970-01-01T00:00:00.000Z',
+        to_ts: null,
+      }))
+  ),
+})
 const filter = [[['from', 'alice']], [['to', 'alice']]]
 
 // The adapter under test — the same two reversals unified-server.mjs performs.

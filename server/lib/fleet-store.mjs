@@ -301,6 +301,7 @@ export class FleetStore {
     this._lastTransportOperationPruneAt = 0;
     this._upgradeLegacyDefaultSubscriptions();
     this._backfillNameHistory();
+    this._backfillLabelHistory();
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
       ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
@@ -1139,6 +1140,38 @@ export class FleetStore {
           WHERE NEW.friendly_name IS NOT NULL;
       END;
     `);
+
+    // Explicit labels are temporal routing state in exactly the same sense as
+    // friendly_name. Keep intervals at the write boundary so a history filter
+    // can join a message to the labels its participants held then. Existing
+    // agents are seeded at first observation in _backfillLabelHistory(); their
+    // present labels are deliberately not projected into earlier history.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS label_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fleet_id TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        from_ts TEXT NOT NULL,
+        to_ts TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_label_history_fleet ON label_history(fleet_id, from_ts);
+      CREATE INDEX IF NOT EXISTS idx_label_history_open ON label_history(fleet_id) WHERE to_ts IS NULL;
+
+      CREATE TRIGGER IF NOT EXISTS label_history_ai AFTER INSERT ON agents BEGIN
+        INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
+        VALUES (NEW.id, COALESCE(NEW.labels, '[]'),
+                COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), NULL);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS label_history_au AFTER UPDATE OF labels ON agents
+      WHEN COALESCE(NEW.labels, '[]') IS NOT COALESCE(OLD.labels, '[]') BEGIN
+        UPDATE label_history SET to_ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE fleet_id = NEW.id AND to_ts IS NULL;
+        INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
+        VALUES (NEW.id, COALESCE(NEW.labels, '[]'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL);
+      END;
+    `);
   }
 
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
@@ -1414,6 +1447,26 @@ export class FleetStore {
     }))
   }
 
+  _filterAgentsCurrent(ids) {
+    const unique = [...new Set((ids || []).filter(Boolean))];
+    if (!unique.length) return [];
+    const out = [];
+    for (let i = 0; i < unique.length; i += 400) {
+      const chunk = unique.slice(i, i + 400);
+      const holes = chunk.map(() => '?').join(',');
+      const rows = this.db.prepare(`
+        SELECT id, friendly_name, labels, human, dead
+        FROM agents WHERE id IN (${holes})
+      `).all(...chunk);
+      for (const row of rows) {
+        let labels = [];
+        try { labels = row.labels ? JSON.parse(row.labels) : []; } catch {}
+        out.push({ ...row, labels, human: !!row.human, dead: !!row.dead });
+      }
+    }
+    return out;
+  }
+
   // ---- share() — the single write primitive ----
 
   /**
@@ -1497,8 +1550,20 @@ export class FleetStore {
 
     // Notify listeners (SSE broadcast)
     if (notify) {
+      // The broadcast carries the participant state that existed at insertion.
+      // Filter instances consume this to extend their live temporal table
+      // without loading or projecting the full roster for every message. Keep
+      // it off the returned/persisted event: this is server-internal context.
+      const broadcastEvent = {
+        ...inserted,
+        _filter_agents: this._filterAgentsCurrent([
+          event.from,
+          event.to,
+          event.agentId,
+        ]),
+      };
       for (const fn of this._listeners) {
-        try { fn(inserted); } catch {}
+        try { fn(broadcastEvent); } catch {}
       }
     }
 
@@ -2126,6 +2191,77 @@ export class FleetStore {
       }
     })();
     if (spans > 0) console.log(`[fleet-store] name_history backfill: ${spans} spans across ${seeded.size} agents`);
+  }
+
+  // label_history did not exist before temporal filter subscriptions. The only
+  // fact available for an existing row is what its labels are now, so open the
+  // first interval now. Backdating it to registered_at would invent history.
+  _backfillLabelHistory() {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
+      SELECT a.id, COALESCE(a.labels, '[]'), ?, NULL
+      FROM agents a
+      WHERE NOT EXISTS (
+        SELECT 1 FROM label_history h
+        WHERE h.fleet_id = a.id AND h.to_ts IS NULL
+      )
+    `).run(now);
+  }
+
+  /**
+   * The bounded temporal table for one instantiated filter.
+   *
+   * Returns only memberships for labels the filter actually references and
+   * only intervals overlapping [from, to). Name and explicit-label intervals
+   * are durable. Id is stable, bounded by registration. Runtime pseudo-labels
+   * are intentionally absent: subscriptions interpret those in real time.
+   */
+  filterMembershipSpans(labels, { from = null, to = null } = {}) {
+    const wanted = [...new Set((labels || []).filter(Boolean).map(String))];
+    if (!wanted.length) return [];
+    const out = [];
+    const overlap = (fromTs, toTs) =>
+      (!to || fromTs < to) && (!from || !toTs || toTs > from);
+
+    for (let i = 0; i < wanted.length; i += 400) {
+      const chunk = wanted.slice(i, i + 400);
+      const holes = chunk.map(() => '?').join(',');
+
+      const names = this.db.prepare(`
+        SELECT fleet_id, friendly_name AS label, from_ts, to_ts
+        FROM name_history
+        WHERE friendly_name IN (${holes})
+          AND (? IS NULL OR from_ts < ?)
+          AND (? IS NULL OR to_ts IS NULL OR to_ts > ?)
+      `).all(...chunk, to, to, from, from);
+      out.push(...names);
+
+      const explicit = this.db.prepare(`
+        SELECT h.fleet_id, j.value AS label, h.from_ts, h.to_ts
+        FROM label_history h, json_each(h.labels) j
+        WHERE j.value IN (${holes})
+          AND (? IS NULL OR h.from_ts < ?)
+          AND (? IS NULL OR h.to_ts IS NULL OR h.to_ts > ?)
+      `).all(...chunk, to, to, from, from);
+      out.push(...explicit);
+
+      const identities = this.db.prepare(`
+        SELECT id AS fleet_id, id AS label,
+               COALESCE(registered_at, '1970-01-01T00:00:00.000Z') AS from_ts,
+               NULL AS to_ts
+        FROM agents WHERE id IN (${holes})
+      `).all(...chunk);
+      out.push(...identities.filter(row => overlap(row.from_ts, row.to_ts)));
+    }
+
+    const seen = new Set();
+    return out.filter(row => {
+      const key = `${row.label}\0${row.fleet_id}\0${row.from_ts}\0${row.to_ts || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   findAgent(query) {
