@@ -7376,10 +7376,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
-    if (!seat) { error(seatError); return }
+    const route = resolveRpc('soft-interrupt', agent)
+    if (route.via === 'none') { error(route.error); return }
     try {
-      const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
+      const result = await sendDaemonDurable(route.machine_id, 'soft-interrupt', { agent_id: agent.id })
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return

@@ -119,7 +119,7 @@ function fakePtyModule() {
   await rpc.handlers['send-key']({ agent_id: 'fleet:cap-test', key: 'Enter' })
   await rpc.handlers['send-text']({ agent_id: 'fleet:cap-test', text: 'hello', enter: true })
   await rpc.handlers['interrupt']({ agent_id: 'fleet:cap-test' })
-  const soft = await rpc.handlers['soft-interrupt']({ agent_id: 'fleet:cap-test', terminal_capability: 'termcap:live' })
+  const soft = await rpc.handlers['soft-interrupt']({ agent_id: 'fleet:cap-test' })
   const alive = await rpc.handlers['check-alive']({ agent_id: 'fleet:cap-test', terminal_capability: 'termcap:live' })
 
   assert.equal(soft.ok, true)
@@ -129,7 +129,6 @@ function fakePtyModule() {
 }
 
 for (const [name, payload] of [
-  ['soft-interrupt', {}],
   ['check-alive', {}],
   ['kill-session', {}],
   ['start-terminal-watch', {}],
