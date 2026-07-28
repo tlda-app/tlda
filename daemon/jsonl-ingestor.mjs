@@ -149,9 +149,22 @@ export function jsonlOwnershipState(entry = {}, daemonKey = null) {
   return 'unknown'
 }
 
+function daemonEnvironment(daemonKey) {
+  const value = String(daemonKey || '').trim()
+  const separator = value.lastIndexOf(':')
+  return separator >= 0 ? value.slice(separator + 1) : null
+}
+
+function transcriptEnvironment(envName) {
+  return envName === 'stable' ? 'stable' : 'testing'
+}
+
 export function classifyLoginMarkerOwner(marker = {}, daemonKey = null) {
   if (!marker?.daemon_key) return 'unknown'
-  return marker.daemon_key === daemonKey ? 'mine' : 'ignore'
+  const markerEnv = marker.env_name || daemonEnvironment(marker.daemon_key)
+  const daemonEnv = daemonEnvironment(daemonKey)
+  if (!markerEnv || !daemonEnv) return 'unknown'
+  return transcriptEnvironment(markerEnv) === transcriptEnvironment(daemonEnv) ? 'mine' : 'ignore'
 }
 
 export function createJsonlIngesterMessageHandler({
@@ -481,7 +494,12 @@ export function createJsonlIngestor({
   function applyLoginMarkerOwnership(pw, marker) {
     if (!marker) return jsonlOwnershipState(cursors[pw.sessionId], daemonKey)
     const state = classifyLoginMarkerOwner(marker, daemonKey)
-    if (state !== 'unknown') setJsonlOwnership(pw, state, marker)
+    if (state !== 'unknown') {
+      const ownedMarker = state === 'mine'
+        ? { ...marker, machine_id: machineId, env_name: envName, daemon_key: daemonKey }
+        : marker
+      setJsonlOwnership(pw, state, ownedMarker)
+    }
     return state
   }
 
