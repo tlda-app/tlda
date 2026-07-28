@@ -1364,12 +1364,6 @@ function handleServerMessage(msg, wsAttemptId) {
     ackServerDaemonOutboxMessage(msg)
     return
   }
-  if (msg.type === 'projects-updated') {
-    serverProjects = msg.projects || []
-    applyProjectWorldOwnership('projects-updated')
-    ackServerDaemonOutboxMessage(msg)
-    return
-  }
   if (msg.type === 'daemon-evict') {
     if (msg.replaced_by_boot_id) {
       // Another live daemon took our slot — exit rather than loop-reconnecting.

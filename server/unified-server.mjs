@@ -96,7 +96,6 @@ import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
-import { DaemonProjectInventoryClient } from './lib/daemon-project-inventory-client.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
@@ -244,8 +243,6 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 
 // Initialize stores
 await initProjectStore(PROJECTS_DIR)
-const daemonProjectInventory = new DaemonProjectInventoryClient(PROJECTS_DIR)
-await daemonProjectInventory.ready()
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 resetStaleBuildStates()
 
@@ -377,8 +374,7 @@ const wsFleetClients = new Set()            // active /ws/fleet connections
 const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet connection
 
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
-// for that daemon config lane. Used for RPC routing and for pushing
-// agents-updated / projects-updated messages.
+// for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
@@ -2506,17 +2502,9 @@ async function reportDaemonEventFailure(msg, operation, error) {
   }
 }
 
-// When a project is created or its sourceDir changes, push the new
-// project list to all connected fleet-daemons so they can start
-// watching its source files, and tell browsers to refresh their project
-// list (the spawn form / agents panel) so it stays live without a reload.
-// async because broadcastDaemonProjectsUpdated now enqueues through the store,
-// which lives on a worker thread. emitGlobalEvent already handles a listener that
-// returns a promise — it attaches a rejection handler rather than letting one
-// listener's failure stop the broadcast reaching the others.
+// Tell browsers to refresh their project list when project state changes.
 onGlobalEvent(async (event) => {
   if (event?.type === 'project-changed') {
-    await broadcastDaemonProjectsUpdated()
     broadcastEvent('projects-updated', { name: event.name })
   }
   if (event?.type === 'source-edit') {
@@ -7930,7 +7918,6 @@ fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
 //   - daemon-welcome     agents + projects to watch
 //   - daemon-evict       another daemon claimed your machine_id
 //   - agents-updated     agent list changed
-//   - projects-updated   project list changed
 //
 // Phase 2 will add `rpc` (server → daemon) and `rpc-reply` (daemon →
 // server) for tmux operations.
@@ -7946,19 +7933,6 @@ const {
   fleetStore,
   socketCanAcceptMore,
 })
-
-async function projectsForDaemon() {
-  return daemonProjectInventory.read()
-}
-
-async function broadcastDaemonProjectsUpdated() {
-  const daemonKeys = [...daemonConnections.keys()].sort()
-  if (daemonKeys.length === 0) return
-  const projects = await projectsForDaemon()
-  for (const daemonKey of daemonKeys) {
-    await enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
-  }
-}
 
 /**
  * If the shadow repo HEAD is not a "Build at" commit (i.e. an agent committed
@@ -8167,14 +8141,6 @@ async function handleDaemonWsMessage(ws, msg) {
       traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: false, error: e.message })
       return
     }
-    void projectsForDaemon()
-      .then(projects => enqueueDaemonMessage(
-        daemonKey,
-        { type: 'projects-updated', projects },
-        { dedupeKey: 'projects-updated' },
-      ))
-      .then(() => flushServerDaemonOutbox(daemonKey))
-      .catch(e => console.warn(`[fleet-daemon] initial project update failed: ${e.message}`))
     await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
