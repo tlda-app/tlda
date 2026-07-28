@@ -5733,7 +5733,7 @@ async function handleFleetWsMessage(ws, msg) {
     // being handed off). A chat panel only renders events whose from/to matches
     // its target agent, so a countdown hardcoded to the server owner never
     // appears in the panel the requester triggered it from.
-    const { from, to } = resolveTimerParticipants({
+    const { from, to } = await resolveTimerParticipants({
       agent,
       toAgent,
       findAgent: fleetStore.findAgent?.bind(fleetStore),

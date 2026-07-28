@@ -18,7 +18,7 @@ const agents = new Map([
 const findAgent = key => agents.get(key) || null
 
 {
-  const resolved = resolveTimerParticipants({
+  const resolved = await resolveTimerParticipants({
     agent: 'fresh-todd-continuity',
     findAgent,
     fallbackOwner: 'fleet:skip',
@@ -30,7 +30,7 @@ const findAgent = key => agents.get(key) || null
 }
 
 {
-  const resolved = resolveTimerParticipants({
+  const resolved = await resolveTimerParticipants({
     agent: 'fresh-todd-continuity',
     toAgent: 'appchief-fml',
     findAgent,

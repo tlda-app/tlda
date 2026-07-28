@@ -1,6 +1,6 @@
-export function resolveTimerParticipants({ agent, toAgent, findAgent, fallbackOwner }) {
-  const from = (agent && findAgent?.(agent)?.id) || agent || fallbackOwner
-  const to = (toAgent && findAgent?.(toAgent)?.id) || toAgent || from
+export async function resolveTimerParticipants({ agent, toAgent, findAgent, fallbackOwner }) {
+  const from = (agent && (await findAgent?.(agent))?.id) || agent || fallbackOwner
+  const to = (toAgent && (await findAgent?.(toAgent))?.id) || toAgent || from
   return { from, to }
 }
 

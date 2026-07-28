@@ -24,6 +24,7 @@ import { FLEET_STORE_METHODS } from './fleet-store-methods.mjs'
 // missing runtime_status reads as hibernating, which is the reap-a-live-agent
 // failure this whole change is trying not to cause.
 const AGENT_RESULT_SHAPE = {
+  getAllAgents: 'many',
   getAgent: 'one',
   findAgent: 'one',
   getAgentsByIds: 'many',

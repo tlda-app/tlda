@@ -73,6 +73,32 @@ async function fetchHealth(port) {
   })
 }
 
+test('getAllAgents applies the same runtime projection as getAgent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-store-runtime-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  await store.upsertAgent({
+    id: 'fleet:test',
+    friendly_name: 'runtime-projection-test',
+    dead: false,
+    human: false,
+  })
+  store.close()
+
+  const client = new FleetStoreClient(dbPath, { taskDoc: false })
+  try {
+    await client.ready()
+    client.setRuntimeProjector(() => 'awake')
+    const one = await client.getAgent('fleet:test')
+    const all = await client.getAllAgents()
+    assert.equal(one.runtime_status, 'awake')
+    assert.equal(all.find(agent => agent.id === 'fleet:test')?.runtime_status, 'awake')
+  } finally {
+    await client.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a deliberately slow FTS query does not block the server event loop', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-store-worker-'))
   const dbPath = join(dir, 'fleet.db')
