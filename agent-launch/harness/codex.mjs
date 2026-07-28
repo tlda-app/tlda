@@ -193,6 +193,7 @@ export function buildCmd({
   harnessOptions = {},
 } = {}) {
   const processEnv = [
+    ...Object.entries(harnessOptions.env || {}).map(([key, value]) => `${key}=${sq(value)}`),
     'CODEX_CI=1',
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),

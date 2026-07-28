@@ -307,7 +307,7 @@ function normalizeDaemonModelRows(models = {}) {
     if (!id) throw new Error(`daemon model "${key}" must specify an id/provider_model`)
     const cap = row.cap || row.permission || row.permissionGrant || row.model_cap || null
     const ownHarnessOptions = normalizeHarnessOptions(row)
-    const inheritedHarnessOptions = defaults.harnessOptions || { required: [], preferences: [], controls: false, options: {} }
+    const inheritedHarnessOptions = defaults.harnessOptions || { required: [], preferences: [], env: {}, controls: false, options: {} }
     const group = String(row.group || defaults.group || explicitProvider || harness).trim()
     const level = row.level == null ? null : Number(row.level)
     if (row.level != null && !Number.isFinite(level)) throw new Error(`daemon model "${key}" level must be numeric`)
@@ -324,7 +324,7 @@ function normalizeDaemonModelRows(models = {}) {
       ...(typeof row.available === 'boolean' ? { available: row.available } : {}),
       ...(typeof row.verified === 'boolean' ? { verified: row.verified } : {}),
       ...(cap ? { cap } : {}),
-      harnessOptions: (ownHarnessOptions.required.length || ownHarnessOptions.preferences.length || ownHarnessOptions.controls || Object.keys(ownHarnessOptions.options).length)
+      harnessOptions: (ownHarnessOptions.required.length || ownHarnessOptions.preferences.length || Object.keys(ownHarnessOptions.env).length || ownHarnessOptions.controls || Object.keys(ownHarnessOptions.options).length)
         ? ownHarnessOptions
         : inheritedHarnessOptions,
     }
@@ -369,10 +369,11 @@ function stringList(value, label) {
 function normalizeHarnessOptions(row = {}) {
   const source = row.harness || row.launch || row
   if (!source || typeof source !== 'object' || Array.isArray(source)) {
-    return { required: [], preferences: [], controls: false, options: {} }
+    return { required: [], preferences: [], env: {}, controls: false, options: {} }
   }
   const required = stringList(source.required || source.required_flags || source.requiredFlags, 'harness required flags')
   const preferences = stringList(source.preferences || source.preference_flags || source.preferenceFlags, 'harness preference flags')
+  const env = source.env && typeof source.env === 'object' && !Array.isArray(source.env) ? source.env : {}
   const controls = source.controls === false
     ? false
     : (source.controls === true || required.length > 0)
@@ -385,6 +386,7 @@ function normalizeHarnessOptions(row = {}) {
   return {
     required,
     preferences,
+    env,
     controls,
     options,
   }

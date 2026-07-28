@@ -105,6 +105,7 @@ function testCodexLaunchForcesCiEnv() {
     cwd: '/tmp',
     api: 'https://example.invalid',
     config: {},
+    harnessOptions: { required: ['--dangerously-bypass-approvals-and-sandbox'], env: { CODEX_HOME: '/tmp/project-codex' } },
     env: {
       TLDA_ENV: 'prod',
       TLDA_CONFIG_DIR: '/tmp/tlda-config',
@@ -113,6 +114,8 @@ function testCodexLaunchForcesCiEnv() {
     },
   })
   assert.match(cmd, /(?:^|\s)CODEX_CI=1(?:\s|$)/)
+  assert.match(cmd, /^CODEX_HOME='\/tmp\/project-codex'/)
+  assert.match(cmd, /codex .*--dangerously-bypass-approvals-and-sandbox/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_CI=.*"1"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_ENV=.*"prod"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG_DIR=.*"\/tmp\/tlda-config"/)
@@ -131,8 +134,9 @@ function testFreshClaudeLaunchPinsItsOwnSessionId() {
     api: 'https://example.test',
     freshSessionId: '11111111-2222-4333-8444-555555555555',
     config: {},
-    harnessOptions: { required: [], preferences: [] },
+    harnessOptions: { required: [], preferences: [], env: { CLAUDE_CONFIG_DIR: '/tmp/project-claude' } },
   })
+  assert.match(cmd, /^CLAUDE_CONFIG_DIR='\/tmp\/project-claude'/)
   assert.match(cmd, /--session-id '11111111-2222-4333-8444-555555555555'/)
   assert.doesNotMatch(cmd, /--resume/)
 }

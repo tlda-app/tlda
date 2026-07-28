@@ -118,12 +118,13 @@ function normalizeHarnessOptionRow(row) {
   return {
     required,
     preferences,
+    env: row.env && typeof row.env === 'object' && !Array.isArray(row.env) ? row.env : {},
     controls: row.controls !== false && (row.controls === true || required.length > 0),
   }
 }
 
 export function resolveHarnessLaunchOptions({ harness, harnessOptions = null } = {}) {
-  const row = normalizeHarnessOptionRow(harnessOptions) || { required: [], preferences: [], controls: false }
+  const row = normalizeHarnessOptionRow(harnessOptions) || { required: [], preferences: [], env: {}, controls: false }
   const flags = [...row.required, ...row.preferences]
   const kind = String(harness || '').trim().toLowerCase()
   const hasYolo = flags.some(isYoloFlag)

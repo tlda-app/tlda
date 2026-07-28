@@ -63,6 +63,7 @@ export function buildCmd({
     ? harnessOptions
     : resolveHarnessLaunchOptions({ config, harness: 'claude', model })
   const parts = [
+    ...Object.entries(effectiveHarnessOptions.env || {}).map(([key, value]) => `${key}=${sq(value)}`),
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),

@@ -69,6 +69,7 @@ export function buildCmd({
   fs.mkdirSync(stateHome, { recursive: true })
   const { provider, model: providerModel } = providerForModel(model, modelProvider)
   const parts = [
+    ...Object.entries(harnessOptions.env || {}).map(([key, value]) => `${key}=${sq(value)}`),
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),
