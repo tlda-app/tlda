@@ -822,28 +822,6 @@ let CLAUDE_SESSION = (function detectSessionAtStartup() {
     return null;
   }
 })();
-const NOTIFICATION_INSTANCE_STARTED_AT = Date.now();
-const NOTIFICATION_INSTANCE_ID = crypto.randomUUID();
-
-function notificationChannelUrl() {
-  const url = new URL(`${TLDA_FLEET_WS_SERVER}/ws/fleet`);
-  if (AGENT_ID) url.searchParams.set('agent', AGENT_ID);
-  url.searchParams.set('notification_subscriber', '1');
-  url.searchParams.set('notification_instance_id', NOTIFICATION_INSTANCE_ID);
-  url.searchParams.set('notification_started_at', String(NOTIFICATION_INSTANCE_STARTED_AT));
-  if (currentTransportSessionId()) {
-    url.searchParams.set('notification_session_id', currentTransportSessionId());
-  }
-  return url.toString();
-}
-
-function notificationOwnerIdentity() {
-  return {
-    notification_session_id: currentTransportSessionId() || undefined,
-    notification_instance_id: NOTIFICATION_INSTANCE_ID,
-    notification_started_at: NOTIFICATION_INSTANCE_STARTED_AT,
-  };
-}
 
 // Agent pruning throttle
 let _lastAgentPrune = 0;
@@ -2141,7 +2119,6 @@ export async function handleFleetTool(name, args) {
       ...(shellId ? { agent_id: shellId } : {}),
       ...(localAgentId ? { local_agent_id: localAgentId } : {}),
       session_id: CLAUDE_SESSION || undefined,
-      ...notificationOwnerIdentity(),
       tmux_session: detectedTmux || undefined,
       cwd: cwd || undefined,
       labels,
@@ -4864,40 +4841,6 @@ async function flushFleetTransportOpportunistically(toolName) {
   }
 }
 
-async function _flushUnread() {
-  if (!AGENT_ID || !_channelRWS?.connected) return;
-  try {
-    const data = await mcpFleetTransport.ephemeral('my-task', {
-      agent: AGENT_ID,
-      peek: true,
-      notification_flush: true,
-      ...notificationOwnerIdentity(),
-    }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
-    if (!data) return;
-    const msgs = (data.messages || []).filter(m => !m.read);
-    // Unread is the whole trigger. This runs on every socket reconnect, and an
-    // agent's task stays open for its whole working life — announcing it again
-    // is not news, it is a 📬 on every WS flap. A task assigned while the
-    // socket was down arrives as an unread message, so real news still fires.
-    if (msgs.length === 0) return;
-    const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
-    const content = `📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`;
-    if (harnessFromEnv().channelNudge) {
-      const sess = process.env.FLEET_TMUX_SESSION;
-      if (sess) tmuxSendText(sess, content);
-    }
-    await Promise.race([
-      server.notification({
-        method: 'notifications/claude/channel',
-        params: { content, meta: { event_type: 'flush' } },
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
-    ]);
-  } catch (e) {
-    process.stderr.write(`[fleet-channel] unread flush notification failed: ${e.message}\n`);
-  }
-}
-
 let _channelHasOpened = false;
 
 function startChannelWS({ bootstrap = false } = {}) {
@@ -4905,7 +4848,9 @@ function startChannelWS({ bootstrap = false } = {}) {
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: notificationChannelUrl,
+    url: () => AGENT_ID
+      ? `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`
+      : `${TLDA_FLEET_WS_SERVER}/ws/fleet`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
@@ -4917,7 +4862,6 @@ function startChannelWS({ bootstrap = false } = {}) {
       const loginBody = {
         agent_id: AGENT_ID,
         session_id: currentTransportSessionId() || undefined,
-        ...notificationOwnerIdentity(),
         tmux_session: _tmuxSession || undefined,
         cwd: getAgentCwd() || process.cwd(),
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
@@ -4927,7 +4871,6 @@ function startChannelWS({ bootstrap = false } = {}) {
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
       process.stderr.write(`[fleet-channel] re-logged-in ${AGENT_ID}\n`);
-      setTimeout(_flushUnread, 500);
     },
     onActivity: () => {
       resetWsRequestIdleTimers(_wsPending);
@@ -4986,6 +4929,7 @@ async function handleChannelMessage(msg) {
     : '';
   if (!eventType) return;
   if (!['chat', 'delegate', 'task_done', 'timer'].includes(eventType)) return;
+  if (eventType === 'chat' || eventType === 'delegate') return;
 
   const data = msg.data || {};
   const isTimerFire = eventType === 'timer' && data.metadata?.state === 'fired';

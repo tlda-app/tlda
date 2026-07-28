@@ -1,17 +1,5 @@
-import { normalizeDeliveryChannel } from '../../shared/inbox-attention.mjs'
-
-export function terminalNudgeKind(agent) {
-  const kind = agent?.metadata?.kind || agent?.kind
-  return kind === 'codex' || kind === 'goose'
-}
-
-export function deliveryChannelFor(agent) {
-  return normalizeDeliveryChannel(agent?.metadata?.deliveryChannel)
-}
-
 export function shouldSendWakeNudge(agent, nudgeText) {
-  if (!nudgeText) return false
-  return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
+  return Boolean(nudgeText)
 }
 
 export function livenessFromCheckAliveResult(agentId, result) {
@@ -95,6 +83,13 @@ export async function runWakeRouteLifecycle({
   }
 
   if (decision.action === 'deliver') {
+    await sendWakeNudge(
+      daemonKey,
+      agent,
+      nudgeText,
+      'already-awake',
+      'wake-route',
+    )
     if (traceId) {
       appendControlTrace({
         trace_id: traceId,
@@ -128,7 +123,6 @@ export async function runWakeRouteLifecycle({
   await sendWakeNudge(
     nextSeat.daemon_key,
     agent,
-    nextSeat,
     nudgeText,
     'post-respawn',
     'wake-route',

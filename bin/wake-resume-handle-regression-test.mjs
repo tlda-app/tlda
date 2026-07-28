@@ -37,26 +37,35 @@ function memoryLedger() {
 
 async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
   let spawnCalls = 0
+  let notificationCalls = 0
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const result = await runWakeRouteLifecycle({
       agentId: 'fleet:live',
-      agent: { id: 'fleet:live', friendly_name: 'live-agent', metadata: { kind: 'codex', deliveryChannel: 'tmux' } },
+      agent: { id: 'fleet:live', friendly_name: 'live-agent', metadata: { kind: 'claude', deliveryChannel: 'channel' } },
       seat: {
         agent_id: 'fleet:live', session_id: 'rollout-live', daemon_key: 'mini:prod',
         terminal_capability: 'termcap:live',
       },
       daemonKey: 'mini:prod', ownerDaemon: { readyState: 1 }, traceId: `trace-live-${attempt}`,
       isAgentAwake: () => false,
-      sendRpcResilient: async (daemonKey, type, params) => {
+      sendDaemonDurable: async (daemonKey, type, params) => {
         assert.equal(daemonKey, 'mini:prod')
         assert.equal(type, 'check-alive')
         assert.deepEqual(params, { agent_id: 'fleet:live', terminal_capability: 'termcap:live' })
         return { alive: true }
       },
-      sendRpc: async () => {
+      sendDaemonEphemeral: async () => {
         spawnCalls += 1
         throw new Error('spawn must not be called for a live routed tmux endpoint')
       },
+      sendWakeNudge: async (daemonKey, agent, text, phase) => {
+        assert.equal(daemonKey, 'mini:prod')
+        assert.equal(agent.id, 'fleet:live')
+        assert.equal(text, 'stored chat notification')
+        assert.equal(phase, 'already-awake')
+        notificationCalls += 1
+      },
+      nudgeText: 'stored chat notification',
       spawnLibrarian: {
         observeLiveness() {},
         decideWake(agent, checked, opts) {
@@ -70,6 +79,7 @@ async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
     assert.equal(result.action, 'already-awake')
   }
   assert.equal(spawnCalls, 0)
+  assert.equal(notificationCalls, 2)
 }
 
 async function testFreshStartRetainsRuntimeWhenDurableRecoveryCannotBePersisted() {
@@ -343,12 +353,13 @@ async function testRestartReplayReusesExactBoundSeatAndCapability() {
         ownerDaemon: { readyState: 1 },
         traceId: `trace-restart-${attempt}`,
         isAgentAwake: () => false,
-        sendRpcResilient: async (_daemonKey, type, params) => {
+        sendDaemonDurable: async (_daemonKey, type, params) => {
           assert.equal(type, 'check-alive')
           assert.equal(params.terminal_capability, capability)
           return { alive: true }
         },
-        sendRpc: async () => { respawns += 1; throw new Error('must not respawn') },
+        sendDaemonEphemeral: async () => { respawns += 1; throw new Error('must not respawn') },
+        sendWakeNudge: async () => {},
         spawnLibrarian: {
           observeLiveness() {},
           decideWake: () => ({ action: 'deliver' }),

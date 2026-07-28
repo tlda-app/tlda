@@ -160,6 +160,18 @@ export function createTerminalRpc({
     return { ok: true, via: 'tmux' }
   }
 
+  async function rpcNotifyAgent(args = {}) {
+    const { agent_id: agentId, text, enter_delay_ms: enterDelayMs } = args
+    if (!agentId) throw new Error('agent_id required')
+    if (!text) throw new Error('notification text required')
+    return rpcSendText({
+      agent_id: agentId,
+      text,
+      enter: true,
+      enter_delay_ms: enterDelayMs,
+    })
+  }
+
   async function gooseKickSend({ tmux_session, text }) {
     checkSession(tmux_session)
     if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
@@ -544,6 +556,7 @@ export function createTerminalRpc({
     gooseKickSend,
     hasActiveWatch,
     handlers: {
+      'notify-agent': rpcNotifyAgent,
       'send-key': rpcSendKey,
       'send-text': rpcSendText,
       'capture-pane': rpcCapturePane,
