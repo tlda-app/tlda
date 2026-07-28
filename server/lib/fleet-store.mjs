@@ -1225,13 +1225,6 @@ export class FleetStore {
       SELECT COUNT(*) as c FROM unread WHERE to_id = ? AND read = 0
     `);
 
-    // Recent messages TO an agent (regardless of read status — for hook display)
-    this._getRecentMessagesTo = this.db.prepare(`
-      SELECT ${this._EVTE} FROM events e
-      WHERE e.to_id = ? AND e.type = 'chat'
-      ORDER BY e.timestamp DESC LIMIT ?
-    `);
-
     // Agent queries
     this._upsertAgent = this.db.prepare(`
       INSERT INTO agents (id, friendly_name, pretty_name, labels, registered_at, last_seen, dead, human, is_manager, metadata)
@@ -3519,12 +3512,6 @@ export class FleetStore {
     return this._getUnreadCount.get(agentId).c;
   }
 
-  getRecentMessagesTo(agentId, limit = 5) {
-    const rows = this._query(this._getRecentMessagesTo, agentId, limit);
-    rows.reverse(); // chronological
-    return rows;
-  }
-
   // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in
   // `buildFiles` (array of absolute paths) since `since` (ISO timestamp).
   // Used to notify agents who might be responsible for a mirror failure — only agents
@@ -3864,51 +3851,6 @@ export class FleetStore {
     const rows = this.db.prepare(sql).all(...params);
     if (beforeId) rows.reverse();
     return rows;
-  }
-
-  // ---- Search ----
-
-  search(query, { limit = 50, type, agent } = {}) {
-    const ftsQuery = anyTermFtsQuery(query);
-    const searchTable = type === 'activity' ? 'activity_events_fts' : 'events_fts';
-    const clauses = [];
-    const params = [];
-    const candidateLimit = Math.min(Math.max(Number(limit || 50) * 100, 1000), 10000);
-
-    if (type) { clauses.push('e.type = ?'); params.push(type); }
-    else { clauses.push('e.type != ?'); params.push('notification_attempt'); }
-    if (agent) {
-      clauses.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)');
-      params.push(agent, agent, agent);
-    }
-    params.push(limit);
-
-    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const sql = `
-      SELECT ${this._EVTE}, snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet, f.fts_rank
-      FROM (
-        SELECT rowid, rank AS fts_rank
-        FROM ${searchTable}
-        WHERE ${searchTable} MATCH ?
-        ORDER BY rank
-        LIMIT ?
-      ) f
-      JOIN ${searchTable} ON ${searchTable}.rowid = f.rowid
-      JOIN events e ON e.id = f.rowid
-      ${where}
-      LIMIT ?
-    `;
-
-    return rankUnifiedSearchRows(
-      this.db.prepare(sql).all(ftsQuery, candidateLimit, ...params).map(r => ({
-          ...r,
-          source: 'fleet',
-          metadata: r.metadata ? JSON.parse(r.metadata) : null,
-          snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
-          ftsRank: r.fts_rank ?? 0,
-        })),
-      { terms: ftsQueryTerms(query), query, explicitActivitySearch: type === 'activity' },
-    ).slice(0, limit);
   }
 
   // ---- Session entry indexing (JSONL text for unified search) ----
@@ -4318,69 +4260,6 @@ export class FleetStore {
       ORDER BY timestamp ASC LIMIT ?
     `).all(timestamp, cap);
     return { before: beforeRows, after: afterRows };
-  }
-
-  // ---- State reconstruction (for state.json cache) ----
-
-  /**
-   * Reconstruct the full state object from SQLite tables.
-   * This produces the same shape as loadState() from the JSON file.
-   */
-  reconstructState() {
-    const agents = this.getAllAgents();
-    const tasks = this.getAllTasks();
-
-    // Build messages array from recent events (last 500 chat + lifecycle events)
-    const recentEvents = this.db.prepare(`
-      SELECT ${this._EVT} FROM events
-      WHERE type IN ('chat', 'delegate', 'task_done', 'lifecycle', 'amend')
-      ORDER BY timestamp DESC LIMIT 500
-    `).all();
-
-    const messages = recentEvents.reverse().map(e => {
-      const msg = {
-        to: e.to_id,
-        from: e.from_id,
-        text: e.text,
-        timestamp: e.timestamp,
-        read: true, // reconstructed messages are considered read
-      };
-      const meta = e.metadata ? JSON.parse(e.metadata) : null;
-      if (e.type === 'delegate') {
-        msg._evType = 'delegate';
-        msg._description = e.text;
-        msg._taskId = e.task_id;
-        if (meta) {
-          msg._fromLabel = meta.fromLabel;
-          msg._toLabel = meta.toLabel;
-          msg._criteria = meta.criteria || [];
-          if (meta.message) msg._message = meta.message;
-        }
-      } else if (e.type === 'task_done') {
-        msg._evType = 'task_done';
-        msg._description = e.text;
-        msg._taskId = e.task_id;
-        msg._agent = e.agent_id;
-      } else if (e.type === 'amend') {
-        // Reference-event amend: carry metadata so the client can fold it into
-        // its original (metadata.amends) and show the right version/source.
-        msg.type = 'amend';
-        if (meta) msg.metadata = meta;
-      }
-      return msg;
-    });
-
-    // Restore unread status
-    const unreadRows = this.db.prepare('SELECT event_id FROM unread WHERE read = 0').all();
-    const unreadIds = new Set(unreadRows.map(r => r.event_id));
-    for (const e of recentEvents) {
-      if (unreadIds.has(e.id)) {
-        const msg = messages.find(m => m.timestamp === e.timestamp && m.from === e.from_id);
-        if (msg) msg.read = false;
-      }
-    }
-
-    return { agents, tasks, messages };
   }
 
   // ---- Listener management (for SSE) ----
