@@ -39,6 +39,7 @@ export function formatReaperMarkdownReport(status = {}) {
   const usedMem = Number.isFinite(status.totalMem) && Number.isFinite(status.freeMem)
     ? Math.max(0, status.totalMem - status.freeMem)
     : null
+  const disk = status.disk || {}
   const lines = [
     '## Dev Reaper',
     '',
@@ -50,6 +51,7 @@ export function formatReaperMarkdownReport(status = {}) {
     '| --- | ---: | --- |',
     '| Memory | ' + formatPercent(status.pressure) + ' | ' + formatBytes(usedMem) + ' used / ' + formatBytes(status.totalMem) + ' total |',
     '| CPU | ' + formatPercent(status.cpuPressure) + ' | 1m load ' + (Number.isFinite(status.loadAverage) ? status.loadAverage.toFixed(2) : 'unknown') + ' / ' + (status.cpuCount ?? 'unknown') + ' cores |',
+    '| Disk | ' + formatPercent(disk.usedFraction) + ' | ' + formatBytes(disk.usedBytes) + ' used / ' + formatBytes(disk.totalBytes) + ' total; ' + formatBytes(disk.availableBytes) + ' free on ' + (disk.mount || 'unknown') + ' |',
     '',
     '### Reaper Surface',
     '',
@@ -77,7 +79,7 @@ export function formatReaperMarkdownReport(status = {}) {
 // resources — vite servers, playwright browsers, preview dirs, expired leases —
 // and it decides on each resource's own idleness. It cannot reach an agent, by
 // construction: killing agents is Todd's job.
-export function createDevReaper({ sendMsg = () => {} } = {}) {
+export function createDevReaper({ sendMsg = () => {}, machineId = null, envName = null } = {}) {
   // ─── Memory pressure ────────────────────────────────────────────────
 
   function getMemoryPressure() {
@@ -93,6 +95,83 @@ export function createDevReaper({ sendMsg = () => {} } = {}) {
     if (p < 0.5) return baseMs
     const scale = Math.max(0.1, 1 - (p - 0.5) / 0.4)  // linear 1→0.1 over 50%→90%
     return Math.round(baseMs * scale)
+  }
+
+  // ─── Disk pressure ─────────────────────────────────────────────────
+  const DISK_ALERT_USED_FRACTION = parseFloat(process.env.REAPER_DISK_ALERT_USED || '') || 0.95
+  const DISK_ALERT_FREE_BYTES = (parseFloat(process.env.REAPER_DISK_ALERT_FREE_GIB || '') || 15) * 1024 ** 3
+  const DISK_ALERT_COOLDOWN_MS = parseInt(process.env.REAPER_DISK_ALERT_COOLDOWN_MS || '', 10) || 30 * 60 * 1000
+  const DISK_ALERT_TO = (process.env.REAPER_DISK_ALERT_TO || 'awake & on-call').trim()
+  let _lastDiskAlertAt = 0
+  let _lastDiskAlertKey = null
+
+  async function diskPressureSnapshot() {
+    const { stdout } = await execFileP('df', ['-Pk', os.homedir()], { timeout: 5000, encoding: 'utf8' })
+    const lines = stdout.trim().split('\n')
+    const line = lines[lines.length - 1] || ''
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 6) throw new Error(`df output had ${parts.length} columns`)
+    const totalBytes = Number(parts[1]) * 1024
+    const usedBytes = Number(parts[2]) * 1024
+    const availableBytes = Number(parts[3]) * 1024
+    return {
+      filesystem: parts[0],
+      totalBytes,
+      usedBytes,
+      availableBytes,
+      usedFraction: Number.isFinite(totalBytes) && totalBytes > 0 ? usedBytes / totalBytes : null,
+      capacity: parts[4],
+      mount: parts.slice(5).join(' '),
+    }
+  }
+
+  function diskAlertReason(disk) {
+    if (!disk) return null
+    if (Number.isFinite(disk.usedFraction) && disk.usedFraction >= DISK_ALERT_USED_FRACTION) {
+      return `used ${formatPercent(disk.usedFraction)} >= ${formatPercent(DISK_ALERT_USED_FRACTION)}`
+    }
+    if (Number.isFinite(disk.availableBytes) && disk.availableBytes <= DISK_ALERT_FREE_BYTES) {
+      return `${formatBytes(disk.availableBytes)} free <= ${formatBytes(DISK_ALERT_FREE_BYTES)}`
+    }
+    return null
+  }
+
+  async function maybeSendDiskAlert(status) {
+    const reason = diskAlertReason(status.disk)
+    if (!reason || !DISK_ALERT_TO) return
+    const now = Date.now()
+    const key = `${status.disk?.mount || 'disk'}:${reason}`
+    if (key === _lastDiskAlertKey && now - _lastDiskAlertAt < DISK_ALERT_COOLDOWN_MS) return
+    const label = [machineId, envName].filter(Boolean).join(':') || 'this machine'
+    try {
+      await sendMsg({
+        type: 'chat',
+        from: 'fleet:tlda',
+        to: DISK_ALERT_TO,
+        message: [
+          '**Mini disk pressure**',
+          '',
+          `${label} is at ${formatPercent(status.disk?.usedFraction)} disk use with ${formatBytes(status.disk?.availableBytes)} free on ${status.disk?.mount || 'unknown'}.`,
+          `Reason: ${reason}.`,
+          '',
+          'The dev reaper is running and will continue reaping idle previews/Playwright resources; this alert is for disk growth that needs an owner before it becomes an outage.',
+        ].join('\n'),
+        _tempId: `dev-reaper-disk:${label}:${Math.floor(now / DISK_ALERT_COOLDOWN_MS)}`,
+        metadata: {
+          type: 'dev_reaper_disk_pressure',
+          machine_id: machineId,
+          env_name: envName,
+          reason,
+          disk: status.disk,
+        },
+      })
+      status.diskAlert = { ok: true, to: DISK_ALERT_TO, reason, sentAt: new Date(now).toISOString() }
+      _lastDiskAlertKey = key
+      _lastDiskAlertAt = now
+    } catch (e) {
+      status.diskAlert = { ok: false, to: DISK_ALERT_TO, reason, error: e?.message || String(e), failedAt: new Date().toISOString() }
+      console.error(`[disk-reaper] alert failed: ${e.message}`)
+    }
   }
 
   // ─── Resource → owner label ────────────────────────────────────────
@@ -388,6 +467,7 @@ export function createDevReaper({ sendMsg = () => {} } = {}) {
     const now = Date.now()
     const pressure = getMemoryPressure()
     const cpu = cpuPressureSnapshot()
+    const disk = await diskPressureSnapshot().catch(e => ({ error: e.message }))
 
     // Label each resource from its lease owner. A vite server with no lease
     // still gets its worktree name, which is a property of the process's own
@@ -420,6 +500,7 @@ export function createDevReaper({ sendMsg = () => {} } = {}) {
     const status = {
         pressure,
         ...cpu,
+        disk,
         totalMem: os.totalmem(),
         freeMem: os.freemem(),
         vites: viteSnap,
@@ -438,6 +519,7 @@ export function createDevReaper({ sendMsg = () => {} } = {}) {
         lastSweep: now,
       }
     status.markdownReport = formatReaperMarkdownReport(status)
+    await maybeSendDiskAlert(status)
     sendMsg({ type: 'reaper-status', data: status })
   }
 

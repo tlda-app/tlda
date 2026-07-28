@@ -181,6 +181,23 @@ if (!ACTIVE_ENV) {
   console.error('[fleet-daemon] REFUSING to start without a named active environment; daemon env is required')
   process.exit(1)
 }
+// Stable per-machine identifier. Uses the short hostname (hostname -s) —
+// human-readable in the DB, stable across reboots, and the fleet MCP runs
+// the same derivation so agent ↔ daemon mapping is consistent without
+// coordination. Skip has one Mac; collision avoidance is future work.
+function deriveMachineId() {
+  // os.hostname() may return an FQDN like "skip-air.local" or
+  // "skip-air.tail-scale.ts.net" — strip everything after the first dot
+  // so the id is the same on a Tailscale-renamed box.
+  return os.hostname().split('.')[0]
+}
+
+let MACHINE_ID = getMachineId()
+if (!MACHINE_ID) {
+  MACHINE_ID = deriveMachineId()
+  saveMachineId(MACHINE_ID)
+  log.info(`derived machine_id=${MACHINE_ID} (saved to daemon.yaml)`)
+}
 const DAEMON_STATE_SUFFIX = daemonStateSuffix(ACTIVE_ENV)
 const CURSORS_FILE = path.join(CONFIG_DIR, `daemon-cursors${DAEMON_STATE_SUFFIX}.json`)
 const PID_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.pid`)
@@ -252,17 +269,6 @@ function loadDaemonLaunchConfig() {
   return withDaemonModelAliases({}, freshDaemon)
 }
 
-// Stable per-machine identifier. Uses the short hostname (hostname -s) —
-// human-readable in the DB, stable across reboots, and the fleet MCP runs
-// the same derivation so agent ↔ daemon mapping is consistent without
-// coordination. Skip has one Mac; collision avoidance is future work.
-function deriveMachineId() {
-  // os.hostname() may return an FQDN like "skip-air.local" or
-  // "skip-air.tail-scale.ts.net" — strip everything after the first dot
-  // so the id is the same on a Tailscale-renamed box.
-  return os.hostname().split('.')[0]
-}
-
 const config = loadDaemonLaunchConfig()
 // The daemon is the local relay for the active named environment. The
 // environment name selects the complete database/store authority; TLDA_SERVER is
@@ -272,12 +278,6 @@ const SERVER = getDaemonFleetServerUrl()
 // single selector we propagate to spawned agents so their MCP resolves the same
 // complete environment (database + store) the daemon did. A stray default cannot
 // then misroute a spawn, because the spawn carries the real active name.
-let MACHINE_ID = getMachineId()
-if (!MACHINE_ID) {
-  MACHINE_ID = deriveMachineId()
-  saveMachineId(MACHINE_ID)
-  log.info(`derived machine_id=${MACHINE_ID} (saved to daemon.yaml)`)
-}
 {
   const { refuseReason } = resolveDaemonIsolation({
     env: process.env,
@@ -695,7 +695,7 @@ gooseSupervisor = createGooseSupervisor({
 })
 
 // ─── Dev reaper bot module wiring ──────────────────────────────────
-const devReaper = createDevReaper({ sendMsg })
+const devReaper = createDevReaper({ sendMsg, machineId: MACHINE_ID, envName: ACTIVE_ENV })
 
 const agentLauncher = createAgentLauncher({
   activeEnvName: ACTIVE_ENV,
@@ -1660,7 +1660,7 @@ log.info(`  env_name    = ${ACTIVE_ENV}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-if (process.env.TLDA_DAEMON_DEV_REAPER === '1') {
+if (process.env.TLDA_DAEMON_DEV_REAPER === '1' || (process.env.TLDA_DAEMON_DEV_REAPER !== '0' && ACTIVE_ENV === 'testing')) {
   devReaper.start()
 } else {
   log.info('dev reaper auto-start disabled; use reaper-sweep RPC or TLDA_DAEMON_DEV_REAPER=1')
