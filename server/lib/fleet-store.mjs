@@ -4275,11 +4275,12 @@ export class FleetStore {
   // from==to==agent row by full-row identity (id is unique). Handles the four
   // shapes the callers need: timestamp range, afterId, beforeId, plain.
   // Returns rows in the same order/orientation the old inline query did.
-  queryAgentEvents({ agent, types = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
+  queryAgentEvents({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
     const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id';
     const tail = [];
     const tailParams = [];
     if (types && types.length) { tail.push(`type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
+    if (excludeTypes && excludeTypes.length) { tail.push(`type NOT IN (${excludeTypes.map(() => '?').join(',')})`); tailParams.push(...excludeTypes); }
     let order;
     // `id` is the deterministic tiebreaker on equal timestamps — without it the
     // page boundary at LIMIT is nondeterministic (the old OR query had this
@@ -4314,6 +4315,7 @@ export class FleetStore {
     const candidateLimit = Math.min(Math.max(Number(limit || 50) * 100, 1000), 10000);
 
     if (type) { clauses.push('e.type = ?'); params.push(type); }
+    else { clauses.push('e.type != ?'); params.push('notification_attempt'); }
     if (agent) {
       clauses.push('(e.from_id = ? OR e.to_id = ? OR e.agent_id = ?)');
       params.push(agent, agent, agent);
@@ -4506,6 +4508,7 @@ export class FleetStore {
     if (role && !sessionRole) eventTypes = eventTypes || [role];
     const defaultEventTypes = ['chat', 'delegate', 'report', 'task_update', 'task_done'];
     const searchedEventTypes = eventTypes || (historyMode ? null : defaultEventTypes);
+    const excludeNotificationAttempts = !eventTypes;
     const explicitActivitySearch = eventTypes?.includes('activity') || false;
     const includeEvents = !sessionRole;
     const includeSessions = !eventTypes || !!sessionRole;
@@ -4526,6 +4529,7 @@ export class FleetStore {
       };
     }
     function eventRowMatches(row) {
+      if (excludeNotificationAttempts && row.type === 'notification_attempt') return false;
       if (searchedEventTypes && !searchedEventTypes.includes(row.type)) return false;
       if (since && row.timestamp < since) return false;
       if (before && row.timestamp >= before) return false;
@@ -4550,6 +4554,7 @@ export class FleetStore {
         const rows = agentIds.flatMap(agentId => this.queryAgentEvents({
           agent: agentId,
           types: eventTypes,
+          excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
           sinceTs: since,
           untilTs: before,
           limit,
@@ -4577,6 +4582,9 @@ export class FleetStore {
         if (searchedEventTypes) {
           eClauses.push(`e.type IN (${searchedEventTypes.map(() => '?').join(',')})`);
           eParams.push(...searchedEventTypes);
+        } else if (excludeNotificationAttempts) {
+          eClauses.push('e.type != ?');
+          eParams.push('notification_attempt');
         }
         if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
         if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
