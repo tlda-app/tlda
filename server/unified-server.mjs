@@ -8975,14 +8975,12 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agent_id, plan_text } = msg
     if (!agent_id || !plan_text) return
     try {
-      const agent = fleetStore.findAgent(agent_id)
-      const seat = agent ? fleetStore.getCurrentAgentSeat?.(agent.id) : null
       const event = await fleetStore.share({
         type: 'plan_approval',
         from: agent_id,
         to: SERVER_OWNER_ID,
         text: plan_text,
-        metadata: { daemon_key: seat ? seat.daemon_key : null },
+        metadata: { daemon_key: ws._daemonKey || null },
         unread: true,
         timestamp: new Date().toISOString(),
       })
