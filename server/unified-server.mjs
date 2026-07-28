@@ -8742,7 +8742,7 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'agent-route') {
     if (!fleetStore) return
-    const agentId = msg.agent_id || msg.agentId
+    const agentId = msg.agent_id
     if (!agentId) return
     try {
       await recordAgentRouteEvent(fleetStore, msg, {
