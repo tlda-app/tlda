@@ -22,7 +22,6 @@ import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-tar
 import { canReportTask, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { recordAgentRouteEvent } from '../lib/agent-route-events.mjs'
 import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
-import { markPendingAttachmentPlaceholdersRead } from '../../shared/inbox-reference-materialization.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -44,21 +43,6 @@ const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
 // container path that Fly wipes on every deploy.
 export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
-const MY_TASK_UNREAD_LIMIT = 50
-
-async function recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, messages = []) {
-  if (!agentId) return
-  const now = new Date().toISOString()
-  for (const message of messages || []) {
-    if (!message?.metadata?.recipient_refs?.[agentId]) continue
-    const next = markPendingAttachmentPlaceholdersRead(message.metadata, agentId, { now })
-    if (next === message.metadata) continue
-    // Replace, not patch: markPendingAttachmentPlaceholdersRead returns the
-    // complete metadata object it wants stored.
-    await fleetStore.replaceEventMetadata(message.id, next)
-    broadcastEvent('event-update', { id: message.id, metadata_patch: next })
-  }
-}
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first
@@ -431,26 +415,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const tasks = await fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = await fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || await fleetStore?.getTaskByAgent(agentId) || null
-    const unread = await fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    const unreadCount = await fleetStore?.getUnreadCount?.(agentId) ?? unread.length
-    const peek = req.query.peek === 'true'
-    if (fleetStore && unread.length && !peek) {
-      await recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, unread)
-      const readIds = await fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
-      if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
-    }
-    if (!peek) broadcastState()
     res.json({
       task,
       tasks: tasks.length ? tasks : (task ? [task] : []),
-      messages: unread,
       counts: {
         tasks: taskCount,
-        messages: unreadCount,
         task_limit: MY_TASK_TASK_LIMIT,
-        message_limit: MY_TASK_UNREAD_LIMIT,
         tasks_truncated: taskCount > tasks.length,
-        messages_truncated: unreadCount > unread.length,
       },
     })
   })

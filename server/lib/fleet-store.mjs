@@ -1210,21 +1210,6 @@ export class FleetStore {
       INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)
     `);
 
-    // No unbounded variant of this query exists on purpose. Fetching an agent's
-    // entire unread backlog to slice it in JS grows all day and blocks the event
-    // loop synchronously; the caller that did that is gone. Use the limited form.
-    this._getUnreadLimited = this.db.prepare(`
-      SELECT ${this._EVTE} FROM events e
-      JOIN unread u ON u.event_id = e.id
-      WHERE u.to_id = ? AND u.read = 0
-      ORDER BY e.timestamp ASC
-      LIMIT ?
-    `);
-
-    this._getUnreadCount = this.db.prepare(`
-      SELECT COUNT(*) as c FROM unread WHERE to_id = ? AND read = 0
-    `);
-
     // Agent queries
     this._upsertAgent = this.db.prepare(`
       INSERT INTO agents (id, friendly_name, pretty_name, labels, registered_at, last_seen, dead, human, is_manager, metadata)
@@ -3503,15 +3488,6 @@ export class FleetStore {
   // ---- Message/event queries ----
 
 
-  getUnreadLimited(agentId, limit = 50) {
-    const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
-    return this._query(this._getUnreadLimited, agentId, n);
-  }
-
-  getUnreadCount(agentId) {
-    return this._getUnreadCount.get(agentId).c;
-  }
-
   // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in
   // `buildFiles` (array of absolute paths) since `since` (ISO timestamp).
   // Used to notify agents who might be responsible for a mirror failure — only agents
@@ -3555,19 +3531,6 @@ export class FleetStore {
       return marked;
     });
     return markOne(ids);
-  }
-
-  // Inbox acknowledgement is on the request path. Keep its heartbeat and
-  // read-receipt updates in one transaction on the store connection.
-  async acknowledgeInboxRead(agentId, eventIds = []) {
-    const ids = [...new Set((eventIds || []).map(id => Number(id)).filter(Number.isFinite))];
-    const ops = [{ stmtOrSql: this._updateAgentLastSeen, params: [new Date().toISOString(), agentId] }];
-    for (const eventId of ids) {
-      ops.push({ stmtOrSql: this._markEventRead, params: [eventId, agentId] });
-    }
-    const results = await this._wBatchAwait(ops);
-    this._syncAgentRegistry(agentId);
-    return ids.filter((_, index) => results[index + 1]?.changes > 0);
   }
 
   // Mark a single event as read for one recipient. Used by terminal-card

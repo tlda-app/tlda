@@ -108,8 +108,6 @@ import {
 } from '../shared/inbox-attention.mjs'
 import {
   buildInboxRefPath,
-  hasPendingAttachmentPlaceholders,
-  markPendingAttachmentPlaceholdersRead,
   initializeRecipientRefs,
   isMaterializableAttachment,
   pendingAttachmentPlaceholder,
@@ -1575,7 +1573,6 @@ let _lastReaperStatus = null       // latest reaper snapshot from daemon
 const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 const MY_TASK_TASK_LIMIT = 20
-const MY_TASK_UNREAD_LIMIT = 50
 
 // daemon address → ts when the CURRENT uninterrupted daemon connection began. Reset on
 // every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
@@ -2547,16 +2544,6 @@ function finalizeRecipientPlaceholderPaths(metadata = {}, { recipientId, eventId
     })
   }
   return next
-}
-
-async function recordPlaceholderReadForMessages(agentId, messages = []) {
-  const now = new Date().toISOString()
-  for (const message of messages || []) {
-    if (!hasPendingAttachmentPlaceholders(message?.metadata, agentId)) continue
-    await patchEventMetadata(message.id, metadata => (
-      markPendingAttachmentPlaceholdersRead(metadata, agentId, { now })
-    ))
-  }
 }
 
 function placeholderSeenByRecipient(metadata = {}, recipientId, attachmentId) {
@@ -6768,45 +6755,13 @@ async function handleFleetWsMessage(ws, msg) {
     const tasks = await fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = await fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || await fleetStore.getTaskByAgent?.(agentId) || null
-    const allUnread = await fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    // Materialization is a prefetch, not a gate. Skip, 2026-07-26: "Nothing is
-    // even supposed to wait… materialization was supposed to be fucking
-    // prefetch." A message is in the inbox the moment it exists; the bytes race
-    // to catch up, and a reference that has not landed is the open path's
-    // problem, not a reason to withhold the message.
-    const unread = allUnread
-    const unreadCount = await fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
-    // peek=true: caller just wants to see unread (e.g., the channel-WS
-    // flush-on-reconnect path that displays a count). Don't mark read in
-    // that case — the actual inbox() call from the agent will do the
-    // marking. Without this, peek silently consumes the unread queue and
-    // the subsequent inbox() returns nothing.
-    if (unread.length && !msg.peek) {
-      recordPlaceholderReadForMessages(agentId, unread)
-      const readIds = await fleetStore.acknowledgeInboxRead(agentId, unread.map(m => m.id))
-      // A successful inbox read is the durable acknowledgement for a wake.
-      // Preserve the originating event/task/trace so operators can distinguish
-      // "nudge sent" from "agent actually received the work" after a restart.
-      for (const message of unread) {
-        const traceId = traceIdFromFleetEvent(message)
-        if (!traceId) continue
-      }
-      if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
-    } else {
-      await fleetStore.acknowledgeInboxRead(agentId)
-    }
-    broadcastState()
     reply({
       task,
       tasks: tasks.length ? tasks : (task ? [task] : []),
-      messages: unread,
       counts: {
         tasks: taskCount,
-        messages: unreadCount,
         task_limit: MY_TASK_TASK_LIMIT,
-        message_limit: MY_TASK_UNREAD_LIMIT,
         tasks_truncated: taskCount > tasks.length,
-        messages_truncated: unreadCount > unread.length,
       },
     })
     return

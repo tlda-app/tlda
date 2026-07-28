@@ -11,7 +11,6 @@
 //   onEvent: returns an unsubscribe function; the client implements it locally and forwards worker events
 //   close: lifecycle, not a query: the client must close the store INSIDE the worker and only then terminate the thread, or the thread dies mid-write
 export const FLEET_STORE_METHODS = Object.freeze([
-  'acknowledgeInboxRead',
   'addDrillCard',
   'addSkillRead',
   'addSubscription',
@@ -90,8 +89,6 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getTasksByAgents',
   'getTransportOperationResult',
   'getTransportOperationStatus',
-  'getUnreadCount',
-  'getUnreadLimited',
   'getWiretaps',
   'getWiretapsByAgent',
   'hasEverRun',

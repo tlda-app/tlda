@@ -1226,14 +1226,6 @@ export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) 
   });
 }
 
-async function getUnread(_state, agent) {
-  try {
-    const data = await mcpFleetTransport.ephemeral('my-task', { agent, peek: true });
-    return data?.messages || [];
-  } catch (e) { process.stderr.write(`[fleet] getUnread failed: ${e.message}\n`); }
-  return [];
-}
-
 // ---- tmux helpers ----
 
 // Wake a non-Claude fleet agent by typing a nudge into its tmux pane. Those
@@ -2881,8 +2873,6 @@ export async function handleFleetTool(name, args) {
     const blocked = sortedActive.filter(t => t.status === 'blocked');
     const { actionableUnhealthy, staleBacklogUnhealthy } = taskHealthSummary;
 
-    const unread = AGENT_ID ? await getUnread(null, AGENT_ID) : [];
-
     let nudge = '';
     if (hasMore) {
       nudge += `\n\n${total - active.length} more open task(s) not shown. Next page: tasks({ cursor: "${page.nextCursor}"${pageLimit === 50 ? '' : `, limit: ${pageLimit}`} }).`;
@@ -2890,7 +2880,6 @@ export async function handleFleetTool(name, args) {
     // These counts describe THIS PAGE, not the fleet — say so whenever the page
     // is not the whole list, so a partial count is never read as a total.
     const scope = hasMore ? ' on this page' : '';
-    if (unread.length > 0) nudge += `\n\n📬 ${unread.length} unread message(s). Check them.`;
     if (idle.length > 0) nudge += `\n\n${idle.length} idle${scope} — review and delegate or mark done.`;
     if (working.length > 0) nudge += `\n\n${working.length} working${scope}.`;
     if (pending.length > 0) nudge += ` ${pending.length} pending${scope} (awaiting agent pickup).`;
@@ -3363,12 +3352,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return { content: [{ type: 'text', text: `Fleet transport failed before ACK. This read was not completed: ${e.message}` }], isError: true };
     }
 
-    const messages = await Promise.all((data.messages || []).map(m => resolveInboxMessage(m, {
-      resolveChipTokens: resolveInboxChipTokens,
-      resolveTheoremRefs,
-      resolveImages: resolveInboxImages,
-    })));
-    const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages, counts: data.counts || null });
+    const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages: [], counts: data.counts || null });
     return { content: [{ type: 'text', text }] };
   }
 
