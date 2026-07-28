@@ -672,6 +672,8 @@ export class FleetStore {
       DROP INDEX IF EXISTS idx_agents_machine_env;
       DROP INDEX IF EXISTS idx_agents_machine_env_alive;
       DROP INDEX IF EXISTS idx_agents_daemon_key;
+      DROP INDEX IF EXISTS idx_agents_cwd;
+      DROP INDEX IF EXISTS idx_agents_cwd_trimmed;
     `);
     for (const column of ['cwd', 'session_id', 'session_ids', 'resume_id', 'machine_id', 'env_name', 'daemon_key']) {
       if (this.db.prepare('PRAGMA table_info(agents)').all().some(c => c.name === column)) {
