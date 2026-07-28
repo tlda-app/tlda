@@ -7535,8 +7535,14 @@ async function handleFleetWsMessage(ws, msg) {
     if (!rawFrom) { error('missing from'); return }
     const agent = fleetStore.findAgent(rawFrom)
     if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
-    if (!seat) { error(seatError); return }
+    const route = resolveRpc('resolve-agent-route', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      await sendDaemonEphemeral(route.machine_id, 'resolve-agent-route', { agent_id: agent.id })
+    } catch (e) {
+      error(e.message)
+      return
+    }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
     const event = await fleetStore.share?.({
