@@ -539,18 +539,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
-  // --- GET /api/read-file ---
-  router.get('/api/read-file', (req, res) => {
-    let filePath = req.query.path
-    if (!filePath) { res.status(400).send('Missing path parameter'); return }
-    try {
-      const content = fs.readFileSync(filePath, 'utf8')
-      res.type('text/plain').send(content)
-    } catch (e) {
-      res.status(404).send(`Could not read file: ${filePath}\n${e.message}`)
-    }
-  })
-
   // --- GET /api/file ---
   router.get('/api/file', (req, res) => {
     const filePath = req.query.path
@@ -559,7 +547,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const resolved = path.resolve(filePath)
       const inUploadDir = resolved === RESOLVED_UPLOAD_DIR ||
         resolved.startsWith(`${RESOLVED_UPLOAD_DIR}${path.sep}`)
-      res.sendFile(resolved, inUploadDir ? { dotfiles: 'allow' } : undefined)
+      if (!inUploadDir) {
+        res.status(404).send('Artifact not found')
+        return
+      }
+      res.sendFile(resolved, { dotfiles: 'allow' })
     }
     catch (e) { res.status(404).send(e.message) }
   })
