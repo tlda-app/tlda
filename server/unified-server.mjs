@@ -96,6 +96,7 @@ import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
+import { DaemonProjectInventoryClient } from './lib/daemon-project-inventory-client.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
@@ -243,6 +244,8 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 
 // Initialize stores
 await initProjectStore(PROJECTS_DIR)
+const daemonProjectInventory = new DaemonProjectInventoryClient(PROJECTS_DIR)
+await daemonProjectInventory.ready()
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 resetStaleBuildStates()
 
@@ -7945,65 +7948,7 @@ const {
 })
 
 async function projectsForDaemon() {
-  // Returns the project list a daemon needs to watch source dirs for,
-  // including each project's relevant-files set (from the last build's
-  // .fls). The daemon uses this to watch ONLY the files the build
-  // actually reads — not the entire sourceDir.
-  return Promise.all(listProjects()
-    .filter(p => !p.archived)
-    .map(async p => {
-      let watchFiles = null
-      try {
-        const rfPath = join(PROJECTS_DIR, p.name, 'output', 'relevant-files.json')
-        if (p.sourceDir && existsSync(rfPath)) {
-          const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
-          // Scope is project-relative, and the daemon watches relative to
-          // sourceDir — so it is already in the daemon's own space.
-          watchFiles = (rf.files || []).filter(f => typeof f === 'string' && f.length > 0)
-        }
-      } catch (e) {
-        // Keep daemon welcome/project updates flowing; null watchFiles makes the
-        // daemon watch the main file until the next build regenerates paper scope.
-        console.warn(`[daemon] relevant-files.json unavailable for ${p.name}; using main-file watch only: ${e.message}`)
-      }
-      if (p.sourceDir) {
-        const partSourceWatchFiles = daemonProjectPartSourceWatchFiles(p)
-        if (partSourceWatchFiles.length > 0) {
-          watchFiles = [...new Set([...(watchFiles || []), ...partSourceWatchFiles])]
-        }
-      }
-      return {
-        name: p.name,
-        sourceDir: p.sourceDir,
-        format: p.format || 'svg',
-        watchFiles,  // null = no .fls yet, watch main file only
-        mainFile: p.mainFile || null,
-        extraInputCommands: p.extraInputCommands || null,
-        sourceRevision: sourceLifecycleStore(p.name).readAuthority().currentRevision,
-        sourceManifest: await readClientSourceManifest(p.name),
-      }
-    }))
-}
-
-// Project-part source paths are recorded absolute (they may point outside this
-// project), so they still need reducing to the daemon's sourceDir-relative space.
-// Paper scope does NOT come through here — it is already relative.
-function daemonWatchFilesFromAbsolutePaths(project, files) {
-  return (files || [])
-    .filter(f => typeof f === 'string' && f.startsWith(project.sourceDir))
-    .map(f => f.slice(project.sourceDir.length + 1))
-}
-
-function daemonProjectPartSourceWatchFiles(project) {
-  try {
-    const manifest = readProjectPartsManifest(project.name)
-    return daemonWatchFilesFromAbsolutePaths(
-      project,
-      (manifest.parts || []).map(part => part?.metadata?.sourcePath),
-    )
-  } catch {
-    return []
-  }
+  return daemonProjectInventory.read()
 }
 
 async function broadcastDaemonProjectsUpdated() {
