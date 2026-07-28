@@ -7501,39 +7501,6 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- wiretap-add (internal adapter) ----
-  if (type === 'wiretap-add') {
-    const { agent, filter, types } = msg
-    if (!agent || !filter) { error('missing agent or filter'); return }
-    // Filter is a string expression (same grammar as chat/roster) with
-    // directional to:/from: leaf prefixes. addWiretap validates via parseFilter.
-    let tap
-    try { tap = await fleetStore.addWiretap(agent, filter, types) }
-    catch (e) { error(`bad filter: ${e.message}`); return }
-    reply(tap)
-    return
-  }
-
-  // ---- wiretap-remove ----
-    // Field is `tap_id`, NOT `id`: the transport adapter stamps a correlation `id` onto every
-  // RPC message, which would clobber a payload `id` (same reason task_id /
-  // agent_id are used elsewhere).
-  if (type === 'wiretap-remove') {
-    const { tap_id: tapId } = msg
-    if (!tapId || isNaN(parseInt(tapId))) { error('invalid id'); return }
-    await fleetStore.removeWiretap(parseInt(tapId))
-    reply({ ok: true })
-    return
-  }
-
-  // ---- wiretap-list ----
-  if (type === 'wiretap-list') {
-    const { agent } = msg
-    const taps = agent ? await fleetStore.getWiretapsByAgent?.(agent) : await fleetStore.getWiretaps?.()
-    reply(taps || [])
-    return
-  }
-
   // ---- retract ----
   if (type === 'retract') {
     const { agent: rawAgent, task_id } = msg

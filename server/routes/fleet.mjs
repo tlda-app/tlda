@@ -539,14 +539,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
-  // --- GET /api/wiretaps ---
-  router.get('/api/wiretaps', async (req, res) => {
-    if (!fleetStore) { res.status(503).send('no store'); return }
-    const agent = req.query.agent
-    const taps = agent ? await fleetStore.getWiretapsByAgent(agent) : await fleetStore.getWiretaps()
-    res.json(taps)
-  })
-
   // --- GET /api/read-file ---
   router.get('/api/read-file', (req, res) => {
     let filePath = req.query.path
@@ -1229,29 +1221,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
     })
     res.json({ ok: true, event_id: event?.id })
-  })
-
-  // --- POST /api/wiretap ---
-  router.post('/api/wiretap', async (req, res) => {
-    if (!fleetStore) { res.status(503).send('no store'); return }
-    const { agent, filter, types } = req.body || {}
-    if (!agent) { res.status(400).send('missing agent'); return }
-    if (!filter) { res.status(400).send('missing filter'); return }
-    // Filter is a string expression with directional to:/from: prefixes;
-    // addWiretap validates it via parseFilter and throws on bad syntax.
-    let tap
-    try { tap = await fleetStore.addWiretap(agent, filter, types) }
-    catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
-    res.json(tap)
-  })
-
-  // --- DELETE /api/wiretap/:id ---
-  router.delete('/api/wiretap/:id', async (req, res) => {
-    if (!fleetStore) { res.status(503).send('no store'); return }
-    const id = parseInt(req.params.id)
-    if (isNaN(id)) { res.status(400).send('invalid id'); return }
-    await fleetStore.removeWiretap(id)
-    res.json({ ok: true })
   })
 
   // --- GET /api/shared-docs ---
