@@ -21,6 +21,7 @@ import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
 import * as bot from './harness/bot.mjs'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 
 export class SpawnError extends Error {
   constructor(reason, message, detail = {}) {
@@ -201,7 +202,7 @@ function spawnEnv(params = {}, config = {}, requestedKind = '') {
   if (params.machineId) env.TLDA_MACHINE_ID = params.machineId
   const agentConfigDir = config.agentConfigDir
   if (agentConfigDir) {
-    const harnessConfigDir = path.join(agentConfigDir, requestedKind)
+    const harnessConfigDir = join(agentConfigDir, requestedKind)
     if (requestedKind === 'codex') {
       env.TLDA_AGENT_CONFIG_DIR = harnessConfigDir
       env.CODEX_HOME = harnessConfigDir
