@@ -30,6 +30,7 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // in shared/display-time.mjs. Absent = render in the host machine's own zone.
   'timezone',
   'telemetryUrl',
+  'projectIndexDefaultSearch',
 ])
 
 export const PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS = Object.freeze([
@@ -71,6 +72,7 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
   const config = validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
   if (config.timezone !== undefined) validateTimeZone(config.timezone, label)
   if (config.telemetryUrl !== undefined) validateTelemetryUrl(config.telemetryUrl, label)
+  if (config.projectIndexDefaultSearch !== undefined) validateProjectIndexDefaultSearch(config.projectIndexDefaultSearch, label)
   return config
 }
 
@@ -88,6 +90,13 @@ export function validateTelemetryUrl(value, label = 'server config') {
     throw new Error(`${label}: "telemetryUrl" must use http or https`)
   }
   return url.toString()
+}
+
+export function validateProjectIndexDefaultSearch(value, label = 'server config') {
+  if (typeof value !== 'string') {
+    throw new Error(`${label}: "projectIndexDefaultSearch" must be a string`)
+  }
+  return value
 }
 
 /**

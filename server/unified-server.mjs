@@ -8646,6 +8646,7 @@ function generateManifest() {
             ...(project.members && { members: project.members }),
             ...(project.buildStatus && project.buildStatus !== 'success' && { buildStatus: project.buildStatus }),
             ...(project.session && { session: project.session, sessionAt: project.sessionAt }),
+            ...(project.createdAt && { createdAt: project.createdAt }),
             ...(project.lastBuild && { lastBuild: project.lastBuild }),
             ...(project.starred && { starred: true }),
             autoSync: project.autoSync !== false,

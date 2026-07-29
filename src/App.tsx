@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -61,6 +61,7 @@ interface DocConfig {
   autoSync?: boolean
   starred?: boolean
   lastBuild?: string
+  createdAt?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
 }
 
@@ -73,6 +74,7 @@ interface DiffConfig {
 
 interface FleetConfigResponse {
   telemetryUrl?: unknown
+  projectIndexDefaultSearch?: unknown
 }
 
 type ErrorType = 'not-found' | 'auth' | 'generic'
@@ -471,7 +473,9 @@ type ProjectHistoryIndex = {
 type ProjectChangelog = { commits: ChangelogCommit[]; totalPages: number; error?: string }
 
 type CommitCountFilter = { min?: number; max?: number }
-type ProjectSearchQuery = { text: string; commitFilters: CommitCountFilter[] }
+type CreatedAgeFilter = { minAgeMs?: number; maxAgeMs?: number }
+type ProjectSearchClause = { text: string; commitFilters: CommitCountFilter[]; createdAgeFilters: CreatedAgeFilter[] }
+type ProjectSearchQuery = { clauses: ProjectSearchClause[] }
 
 function commitRange(min?: number, max?: number): CommitCountFilter {
   return {
@@ -480,9 +484,40 @@ function commitRange(min?: number, max?: number): CommitCountFilter {
   }
 }
 
+function createdAgeRange(minAgeMs?: number, maxAgeMs?: number): CreatedAgeFilter {
+  return {
+    ...(minAgeMs !== undefined && { minAgeMs }),
+    ...(maxAgeMs !== undefined && { maxAgeMs }),
+  }
+}
+
+function parseDurationMs(raw: string | undefined) {
+  if (!raw) return undefined
+  const match = raw.match(/^(\d+)(ms|s|m|h|d|w)?$/i)
+  if (!match) return undefined
+  const value = Number(match[1])
+  if (!Number.isFinite(value)) return undefined
+  const unit = (match[2] || 'ms').toLowerCase()
+  const multiplier = unit === 'w' ? 7 * 24 * 60 * 60 * 1000
+    : unit === 'd' ? 24 * 60 * 60 * 1000
+      : unit === 'h' ? 60 * 60 * 1000
+        : unit === 'm' ? 60 * 1000
+          : unit === 's' ? 1000
+            : 1
+  return value * multiplier
+}
+
 function parseProjectSearchQuery(raw: string): ProjectSearchQuery {
+  const clauses = raw.split(/\s+or\s+/i).map(part => parseProjectSearchClause(part)).filter(clause =>
+    clause.text || clause.commitFilters.length > 0 || clause.createdAgeFilters.length > 0
+  )
+  return { clauses }
+}
+
+function parseProjectSearchClause(raw: string): ProjectSearchClause {
   const commitFilters: CommitCountFilter[] = []
-  const text = raw.replace(/\bcommits:(?:(\d*)\.\.(\d*)|(>=|<=|>|<)?(\d+))(?=\s|$)/gi, (match, rangeMin, rangeMax, op, value) => {
+  const createdAgeFilters: CreatedAgeFilter[] = []
+  let text = raw.replace(/\bcommits:(?:(\d*)\.\.(\d*)|(>=|<=|>|<)?(\d+))(?=\s|$)/gi, (match, rangeMin, rangeMax, op, value) => {
     if (rangeMin !== undefined || rangeMax !== undefined) {
       const min = rangeMin ? Number(rangeMin) : undefined
       const max = rangeMax ? Number(rangeMax) : undefined
@@ -508,7 +543,20 @@ function parseProjectSearchQuery(raw: string): ProjectSearchQuery {
     }
     return ' '
   })
-  return { text: text.toLowerCase().trim().replace(/\s+/g, ' '), commitFilters }
+  text = text.replace(/\bcreated:(?:(\d+(?:ms|s|m|h|d|w)?)?\.\.(\d+(?:ms|s|m|h|d|w)?)?|(?:<=|<)?(\d+(?:ms|s|m|h|d|w)?))(?=\s|$)/gi, (match, rangeMin, rangeMax, value) => {
+    if (rangeMin !== undefined || rangeMax !== undefined) {
+      const minAgeMs = parseDurationMs(rangeMin)
+      const maxAgeMs = parseDurationMs(rangeMax)
+      if ((minAgeMs === undefined && maxAgeMs === undefined) || Number.isNaN(minAgeMs) || Number.isNaN(maxAgeMs)) return match
+      createdAgeFilters.push(createdAgeRange(minAgeMs, maxAgeMs))
+      return ' '
+    }
+    const maxAgeMs = parseDurationMs(value)
+    if (maxAgeMs === undefined || Number.isNaN(maxAgeMs)) return match
+    createdAgeFilters.push({ maxAgeMs })
+    return ' '
+  })
+  return { text: text.toLowerCase().trim().replace(/\s+/g, ' '), commitFilters, createdAgeFilters }
 }
 
 function matchesCommitFilters(info: ProjectHistoryIndex['projects'][string] | undefined, filters: CommitCountFilter[]) {
@@ -521,10 +569,36 @@ function matchesCommitFilters(info: ProjectHistoryIndex['projects'][string] | un
   })
 }
 
+function matchesCreatedAgeFilters(createdAt: string | undefined, filters: CreatedAgeFilter[]) {
+  if (filters.length === 0) return true
+  if (!createdAt) return false
+  const createdMs = new Date(createdAt).getTime()
+  if (!Number.isFinite(createdMs)) return false
+  const ageMs = Date.now() - createdMs
+  return filters.every(filter =>
+    (filter.minAgeMs === undefined || ageMs >= filter.minAgeMs)
+    && (filter.maxAgeMs === undefined || ageMs <= filter.maxAgeMs)
+  )
+}
+
 function matchesProjectSearchText(key: string, name: string | undefined, text: string) {
   if (!text) return true
   const haystack = `${name || ''} ${key}`.toLowerCase()
   return text.split(/\s+/).every(term => haystack.includes(term))
+}
+
+function matchesProjectSearchQuery(
+  key: string,
+  config: DocConfig,
+  info: ProjectHistoryIndex['projects'][string] | undefined,
+  query: ProjectSearchQuery,
+) {
+  if (query.clauses.length === 0) return true
+  return query.clauses.some(clause =>
+    matchesCommitFilters(info, clause.commitFilters)
+    && matchesCreatedAgeFilters(config.createdAt, clause.createdAgeFilters)
+    && matchesProjectSearchText(key, config.name, clause.text)
+  )
 }
 
 function relativeTime(iso: string | undefined): string {
@@ -553,12 +627,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const identity = useFleetIdentity()
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
+  const [defaultSearch, setDefaultSearch] = useState('')
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set(
     Object.entries(manifest).filter(([, config]) => config.starred).map(([key]) => key)
   ))
   const [search, setSearch] = useState('')
-  const [hideJunk, setHideJunk] = useState(true)
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
   const [restoredProjects, setRestoredProjects] = useState<Record<string, DocConfig>>({})
@@ -571,7 +645,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const pointerSwiped = useRef(false)
   const requestedHistoriesRef = useRef(new Set<string>())
   const [dragPreview, setDragPreview] = useState<{ key: string; action: ProjectAction; dx: number } | null>(null)
-  const parsedSearch = parseProjectSearchQuery(search)
+  const parsedSearch = useMemo(() => parseProjectSearchQuery(search), [search])
+  const parsedDefaultSearch = useMemo(() => parseProjectSearchQuery(defaultSearch), [defaultSearch])
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -585,18 +660,22 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .catch(e => console.warn('[app] projects/health fetch failed:', e.message))
     fetch(`${ASSET_BASE}/api/fleet-config`)
       .then(r => r.ok ? r.json() as Promise<FleetConfigResponse> : Promise.resolve<FleetConfigResponse>({}))
-      .then(data => setTelemetryUrl(typeof data.telemetryUrl === 'string' ? data.telemetryUrl : null))
+      .then(data => {
+        setTelemetryUrl(typeof data.telemetryUrl === 'string' ? data.telemetryUrl : null)
+        setDefaultSearch(typeof data.projectIndexDefaultSearch === 'string' ? data.projectIndexDefaultSearch.trim() : '')
+      })
       .catch(e => console.warn('[app] fleet-config fetch failed:', e.message))
   }, [])
 
   // Fetch archived list when search is non-empty
   useEffect(() => {
-    if (!parsedSearch.text) { setArchived([]); return }
+    const needsArchived = parsedSearch.clauses.some(clause => clause.text)
+    if (!needsArchived) { setArchived([]); return }
     fetch(`${ASSET_BASE}/api/projects/archived`)
       .then(r => r.ok ? r.json() : { projects: [] })
       .then(data => setArchived(data.projects || []))
       .catch(e => console.warn('[app] archived fetch failed:', e.message))
-  }, [parsedSearch.text])
+  }, [parsedSearch])
 
   const bookMembers = new Set<string>()
   for (const config of Object.values(manifest)) {
@@ -654,14 +733,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   const entries = Object.entries({ ...manifest, ...restoredProjects })
     .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
-    .filter(([key, config]) =>
-      historyIndex === null
-      || !hideJunk
-      || config.format !== 'markdown'
-      || Boolean(historyIndex.projects[key])
-    )
-    .filter(([key]) => matchesCommitFilters(historyIndex?.projects[key], parsedSearch.commitFilters))
-    .filter(([key, config]) => matchesProjectSearchText(key, config.name, parsedSearch.text))
+    .filter(([key, config]) => matchesProjectSearchQuery(key, config, historyIndex?.projects[key], parsedDefaultSearch))
+    .filter(([key, config]) => matchesProjectSearchQuery(key, config, historyIndex?.projects[key], parsedSearch))
     .sort(([keyA, configA], [keyB, configB]) => {
       const starA = starredKeys.has(keyA) || !!configA.starred
       const starB = starredKeys.has(keyB) || !!configB.starred
@@ -730,7 +803,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   const archivedFiltered = archived
     .filter(p => !restoredKeys.has(p.name))
-    .filter(p => matchesProjectSearchText(p.name, p.title || p.name, parsedSearch.text))
+    .filter(p => parsedSearch.clauses.some(clause => matchesProjectSearchText(p.name, p.title || p.name, clause.text)))
 
   const archiveProject = (key: string, e?: React.MouseEvent | React.PointerEvent) => {
     e?.stopPropagation()
@@ -913,19 +986,11 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         <input
           className="picker-search"
           type="text"
-          placeholder="Search projects..."
+          placeholder={defaultSearch || 'Search projects...'}
           value={search}
           onChange={e => setSearch(e.target.value)}
           autoFocus
         />
-        <label className="picker-filter">
-          <input
-            type="checkbox"
-            checked={hideJunk}
-            onChange={e => setHideJunk(e.target.checked)}
-          />
-          <span>Hide junk</span>
-        </label>
       </div>
       <div className="project-index">
         <div className="project-index-axis" aria-hidden="true">

@@ -163,6 +163,9 @@ const STARTER_SERVER_YAML = `# tlda server settings. Every key is optional; the 
 #   buildMaxConcurrency  how many document builds run at once
 #   buildPriority        build ordering across projects
 #   telemetryUrl         optional http(s) telemetry page shown on the project index
+#   projectIndexDefaultSearch
+#                        default project-index search query, e.g.
+#                        "commits:4.. or created:..15m"
 `
 
 /**

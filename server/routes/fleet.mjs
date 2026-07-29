@@ -360,7 +360,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     //   database — fleet/chat/registry (what the SPA connects chat to)
     //   store    — shapes + doc-asset sync (per-room state)
     // `fleetServer` is kept as an alias for `database` so existing clients work.
-    res.json({ ...resolveConfig(), telemetryUrl: loadServerConfig().telemetryUrl || null })
+    const serverConfig = loadServerConfig()
+    res.json({
+      ...resolveConfig(),
+      telemetryUrl: serverConfig.telemetryUrl || null,
+      projectIndexDefaultSearch: serverConfig.projectIndexDefaultSearch || '',
+    })
   })
 
   // --- POST /api/agents/:id/mark-dead ---
