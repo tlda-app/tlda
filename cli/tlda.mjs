@@ -1268,6 +1268,7 @@ function botLaunchdLabel(name, { configName = null } = {}) {
 
 function botServicePaths(name, { configName = null } = {}) {
   const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
+  const tmuxSuffix = suffix.replaceAll('.', '_')
   const label = botLaunchdLabel(name, { configName })
   return {
     label,
@@ -1276,8 +1277,8 @@ function botServicePaths(name, { configName = null } = {}) {
     pidFile: join(CONFIG_DIR, `${suffix}.pid`),
     heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
     idFile: join(CONFIG_DIR, `${suffix}.fleet-id`),
-    tmuxSession: `fleet-bot-${suffix}`,
-    waitChannel: `fleet-bot-${suffix}-exit`,
+    tmuxSession: `fleet-bot-${tmuxSuffix}`,
+    waitChannel: `fleet-bot-${tmuxSuffix}-exit`,
   }
 }
 
@@ -1742,7 +1743,7 @@ async function enlistBot(bot) {
     mintStore.setFact(mintId, 'fleet_id', fleetId)
     mintStore.setFact(mintId, 'friendly_name', bot.name)
     mintStore.setFact(mintId, 'metadata', { bot: bot.name, source: 'bot-enlist' })
-    mintStore.setFact(mintId, 'launch_recipe', {
+    mintStore.updateLaunchRecipe(mintId, {
       name: bot.name,
       kind: 'bot',
       model: 'bot',
@@ -1754,11 +1755,12 @@ async function enlistBot(bot) {
       botPidFile: paths.pidFile,
       botHeartbeatFile: paths.heartbeatFile,
       botWaitChannel: paths.waitChannel,
+      tmuxSession: paths.tmuxSession,
       permissionGrant: grant.permissionGrant,
       permissionSet: grant.permissionSet,
       acknowledgeNoSecurity: true,
     })
-    mintStore.setFact(mintId, 'process_state', {
+    mintStore.updateProcessState(mintId, {
       fleet_id: fleetId,
       name: bot.name,
       tmux_session: paths.tmuxSession,

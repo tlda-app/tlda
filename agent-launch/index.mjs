@@ -300,7 +300,7 @@ export async function launchMintProcess(params) {
   const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
   const model = modelResolved.model
   const tmuxSession = await (params._deps?.uniqueSessionName || uniqueSessionName)(
-    `fleet-${sanitizeSessionName(name)}`,
+    params.tmuxSession || params.tmux_session || `fleet-${sanitizeSessionName(name)}`,
     { tmuxSocket: params.tmuxSocket },
   )
   const dnsAlias = await (params._deps?.resolveDnsAlias || resolveDnsAlias)(api)

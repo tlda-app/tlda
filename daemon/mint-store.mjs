@@ -133,6 +133,18 @@ export class MintStore {
     return this.get(mintId)
   }
 
+  updateLaunchRecipe(mintId, launchRecipe, now = new Date().toISOString()) {
+    const incoming = encoded(launchRecipe)
+    if (!mintId || incoming == null) throw new Error('mint_id and launch_recipe are required')
+    const result = this.db.prepare(`
+      UPDATE daemon_mints
+      SET launch_recipe = ?, updated_at = ?
+      WHERE mint_id = ?
+    `).run(incoming, now, mintId)
+    if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
+    return this.get(mintId)
+  }
+
   setFact(mintId, fact, value, now = new Date().toISOString()) {
     if (!COLUMNS.has(fact)) throw new Error(`unknown mint fact: ${fact}`)
     const incoming = encoded(value)

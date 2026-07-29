@@ -5,6 +5,7 @@ import { launchMintProcess } from '../agent-launch/index.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 
 let captured = null
+let requestedSessionBase = null
 
 const result = await launchMintProcess({
   mintId: 'mint-bot-test',
@@ -18,6 +19,7 @@ const result = await launchMintProcess({
   botPidFile: '/tmp/tlda-bot-test/todd.pid',
   botHeartbeatFile: '/tmp/tlda-bot-test/todd.heartbeat',
   botWaitChannel: 'fleet-bot-todd-test-exit',
+  tmuxSession: 'fleet-bot-todd_testing',
   permissionGrant: { profile: 'test' },
   permissionSet: {
     name: 'test',
@@ -33,7 +35,10 @@ const result = await launchMintProcess({
   machineId: 'mini',
   _deps: {
     resolveApi: () => ({ base: 'https://example.invalid' }),
-    uniqueSessionName: async () => 'fleet-sodd',
+    uniqueSessionName: async base => {
+      requestedSessionBase = base
+      return base
+    },
     resolveDnsAlias: async () => null,
     spawnTmux: async (tmuxSession, cwd, cmd, options) => {
       captured = { tmuxSession, cwd, cmd, options }
@@ -44,9 +49,10 @@ const result = await launchMintProcess({
 
 assert.equal(result.harness, 'bot')
 assert.equal(result.model, 'bot')
-assert.equal(result.tmux_session, 'fleet-sodd')
+assert.equal(result.tmux_session, 'fleet-bot-todd_testing')
 assert.equal(result.daemon_key, 'mini:testing')
-assert.equal(captured.tmuxSession, 'fleet-sodd')
+assert.equal(requestedSessionBase, 'fleet-bot-todd_testing')
+assert.equal(captured.tmuxSession, 'fleet-bot-todd_testing')
 assert.match(captured.cmd, /FLEET_ID=.*fleet:bot-test/)
 assert.match(captured.cmd, /FLEET_NAME=.*sodd/)
 assert.match(captured.cmd, /TLDA_BOT_NAME=.*todd/)
@@ -78,7 +84,7 @@ const runtime = createHarnessRuntime({
 assert.equal(await runtime.findRuntimePidForAgent({
   id: 'fleet:bot-test',
   friendly_name: 'todd',
-  tmux_session: 'fleet-sodd',
+  tmux_session: 'fleet-bot-todd_testing',
   metadata: { kind: 'bot' },
 }, 'bot'), '100')
 
