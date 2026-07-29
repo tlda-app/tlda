@@ -25,7 +25,7 @@ test('native child routes stay daemon-local and are scoped to the requesting par
     nativeSubagentRoutesFromWatchers(watchers, 'fleet:parent-a', ['fleet:child-a', 'fleet:child-b']),
     [{
       child_agent_id: 'fleet:child-a',
-      native_agent_id: 'worker-a',
+      native_agent_id: 'native-a',
       harness: 'codex',
     }],
   )

@@ -103,9 +103,7 @@ export function nativeSubagentRoutesFromWatchers(watchers, parentAgentId, childA
     if (wanted.size && !wanted.has(native.agentId)) continue
     routes.push({
       child_agent_id: native.agentId,
-      native_agent_id: native.harnessKind === 'codex'
-        ? native.childName || native.harnessChildId
-        : native.harnessChildId,
+      native_agent_id: native.harnessChildId,
       harness: native.harnessKind,
     })
   }
