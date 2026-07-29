@@ -23,7 +23,7 @@ import { processMessageText } from '../shared/message-processing.mjs';
 import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
-import { extractMarkdownSection } from '../shared/markdown-section.mjs';
+import { listMarkdownSectionIds, selectMarkdown } from '../shared/markdown-selector.mjs';
 import { checkChatRender as checkSharedChatRender } from '../shared/chat-render-check.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
@@ -101,34 +101,44 @@ function getAgentCwd() {
   return _agentCwdCache;
 }
 
-// Resolve a chat/amend message body from the tool args. Two forms:
-//   - { message } : an inline string → body = message, no source provenance.
-//   - { file, section } : read the markdown file (agent-side — the file is on
-//     the agent's machine, not the server's), extract the named pandoc section,
-//     and bake its markdown as the body. Stamps source = { file: <abs>, section }
-//     so amend can re-extract the same reference after the section is edited.
+// Resolve a chat-like message body from the tool args. Two forms:
+//   - { [bodyField] } : an inline string → body = value, no source provenance.
+//   - { file, selector } : read the markdown file (agent-side — the file is on
+//     the agent's machine, not the server's), select markdown structurally using
+//     the CSS selector engine, and bake its markdown as the body. Bare words are
+//     treated as the common heading-id shorthand.
 // Returns { body, source } on success or { error } with a human-readable message.
-function resolveChatBody(args, agentCwd) {
+function resolveChatBody(args, agentCwd, { bodyField = 'message', bodyLabel = 'message' } = {}) {
   const hasFile = typeof args.file === 'string' && args.file.trim();
-  const hasMessage = typeof args.message === 'string' && args.message.length > 0;
+  const inlineBody = args[bodyField];
+  const hasMessage = typeof inlineBody === 'string' && inlineBody.length > 0;
   if (hasFile) {
-    if (hasMessage) return { error: 'Provide either `message` or `file`+`section`, not both.' };
-    const section = typeof args.section === 'string' ? args.section.trim() : '';
-    if (!section) return { error: 'The `file` form needs a `section` (a pandoc heading id, e.g. "the-plan").' };
+    if (hasMessage) return { error: `Provide either \`${bodyField}\` or \`file\`+\`selector\`, not both.` };
+    const selectorArg = typeof args.selector === 'string' ? args.selector.trim() : '';
+    if (!selectorArg) return { error: 'The `file` form needs a `selector`, e.g. "#the-plan", ".app", or "h2".' };
     const abs = resolveFilePath(args.file, agentCwd);
     if (!fs.existsSync(abs)) return { error: `File not found: ${abs}` };
     let content;
     try { content = fs.readFileSync(abs, 'utf8'); }
     catch (e) { return { error: `Could not read ${abs}: ${e.message}` }; }
-    const result = extractMarkdownSection(content, section);
-    if (!result.found) {
-      const avail = result.ids?.length ? `\nSections in this file: ${result.ids.join(', ')}` : '\n(no headings found in this file)';
-      return { error: `No section "${section}" in ${path.basename(abs)}.${avail}` };
+    const selector = markdownSelectionSelector(selectorArg);
+    const result = selectMarkdown(content, selector);
+    if (result.error) {
+      const ids = listMarkdownSectionIds(content);
+      const avail = ids.length ? `\nSections in this file: ${ids.join(', ')}` : '\n(no headings found in this file)';
+      return { error: `${result.error}${avail}` };
     }
-    return { body: result.body, source: { file: abs, section } };
+    return { body: result.body, source: { file: abs, selector: selectorArg } };
   }
-  if (hasMessage) return { body: args.message, source: null };
-  return { error: 'Missing message: provide `message`, or `file`+`section`.' };
+  if (hasMessage) return { body: inlineBody, source: null };
+  return { error: `Missing ${bodyLabel}: provide \`${bodyField}\`, or \`file\`+\`selector\`.` };
+}
+
+function markdownSelectionSelector(selector) {
+  const value = String(selector ?? '').trim();
+  if (!value) return value;
+  if (/^[A-Za-z][\w:-]*$/.test(value)) return `#${value}`;
+  return value;
 }
 
 function isInInlineCode(line, index) {
@@ -1288,7 +1298,9 @@ export function getFleetTools() {
             },
 	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
-          message: { type: 'string', description: 'Full task message for the agent' },
+          message: { type: 'string', description: 'Full task message for the agent. Provide this OR file+selector.' },
+          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `selector`, the selected markdown becomes the task message.' },
+          selector: { type: 'string', description: 'CSS selector within `file` selecting markdown structure. Bare heading ids are accepted as shorthand, e.g. `the-plan` means `#the-plan`.' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
           notify_at: { type: 'string', description: 'ISO time when this task should first notify/surface. Defaults to now.' },
           notify_every: { type: 'number', description: 'Optional recurring notification interval in seconds from notify_at while the task remains open. Omit to clear recurrence when updating task_id.' },
@@ -1299,20 +1311,19 @@ export function getFleetTools() {
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
           operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same delegate operation.' },
         },
-        required: ['message'],
       },
     },
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message — or, with `amend_id`, edit one you already sent. `to` is an agent-set expression matching agent name/id/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit `to` to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has `.suggest`, e.g. `## Pick one {.suggest}` followed by list items `- label | optional hover text | optional command`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. `to` is an agent-set expression matching agent name/id/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit `to` to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `selector` — select markdown from a file using CSS structural selection. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the selected markdown. Bare heading ids are accepted as shorthand, e.g. `selector: "the-plan"` means `#the-plan`. The referenced selection is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has `.suggest`, e.g. `## Pick one {.suggest}` followed by pure Markdown list items like `- **label** — optional hover text *optional command*`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit one of your messages in place instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the file, then chat the same `file`+`selector` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
           to: { type: 'string', description: 'Agent-set expression over agent names/ids/labels — e.g. "fleet:skip", "skip | guidance", "awake & reviewers". Required for a new message; ignored when amend_id is set.' },
-          message: { type: 'string', description: 'Inline message text. Provide this OR (file + section), not both.' },
-          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, the named section is rendered as the message body.' },
-          section: { type: 'string', description: 'Pandoc-style section id within `file` (a heading slug, e.g. "the-plan" for "## The plan", or an explicit {#id}). The section runs to the next heading of the same or higher level.' },
+          message: { type: 'string', description: 'Inline message text. Provide this OR (file + selector), not both.' },
+          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `selector`, the selected markdown is rendered as the message body.' },
+          selector: { type: 'string', description: 'CSS selector within `file` selecting markdown structure. Bare heading ids are accepted as shorthand, e.g. `the-plan` means `#the-plan`.' },
           amend_id: { type: 'number', description: 'The id of one of your earlier messages (returned by chat()). When set, this edits that message in place instead of sending a new one — no filter needed.' },
           max_recipients: { type: 'number', description: 'If the resolved recipient list exceeds this count, abort and return an error listing the matched agents. Default: 5. Pass a higher value to explicitly confirm a large broadcast.' },
         },
@@ -1624,7 +1635,9 @@ export function getFleetTools() {
         properties: {
           task_id: { type: 'string', description: 'Optional exact task ID to report or close. Defaults to your current active task.' },
           pass: { type: 'boolean', description: 'Legacy self-review mode: set true if self-review passed. Only used when QA is not configured.' },
-          summary: { type: 'string', description: 'Structured report summary. Required when close=true.' },
+          summary: { type: 'string', description: 'Structured report summary. Provide this OR file+selector. Required when close=true.' },
+          file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `selector`, the selected markdown becomes the report summary.' },
+          selector: { type: 'string', description: 'CSS selector within `file` selecting markdown structure. Bare heading ids are accepted as shorthand, e.g. `the-plan` means `#the-plan`.' },
           close: { type: 'boolean', description: 'Close the selected task after posting the report. Replaces task_done().' },
           reason: { type: 'string', description: 'Optional durable task-close reason, e.g. done, canceled, superseded, rejected, or never_should_have_existed.' },
           verified: { type: 'boolean', description: 'Optional assertion that you verified the claims in this report.' },
@@ -2230,8 +2243,10 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: 'Do not pass friendly_name with mint — the mint name is the agent\'s only name. Put the name in mint.name.' }], isError: true };
     }
 
-    const { message } = args;
-    if (!message) return { content: [{ type: 'text', text: 'Missing message.' }], isError: true };
+    const agentCwd = getAgentCwd();
+    const resolvedBody = resolveChatBody(args, agentCwd, { bodyField: 'message', bodyLabel: 'task message' });
+    if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
+    const message = resolvedBody.body;
 
     // Auto-derive description from message if not provided
     let description = args.description;
@@ -2390,12 +2405,12 @@ export async function handleFleetTool(name, args) {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not logged in. Call login() first.' }], isError: true };
 
     // Resolve the message body — either an inline `message` string or a
-    // `file`+`section` markdown reference (extracted agent-side).
+    // `file`+`selector` markdown reference (extracted agent-side).
     const agentCwd = getAgentCwd();
     const resolvedBody = resolveChatBody(args, agentCwd);
     if (resolvedBody.error) return { content: [{ type: 'text', text: resolvedBody.error }], isError: true };
     if (containsLegacySuggestionsBlock(resolvedBody.body)) {
-      return { content: [{ type: 'text', text: 'Message NOT sent — `<suggestions>` blocks have been removed. Use a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
+      return { content: [{ type: 'text', text: 'Message NOT sent — `<suggestions>` blocks have been removed. Use a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by pure Markdown list items like `- **label** — hover text *command*`.' }], isError: true };
     }
     // Inline `.suggest` section(s): harvested to chips AND left in the (cleaned)
     // body so they render as a normal heading + list.
@@ -2889,25 +2904,31 @@ export async function handleFleetTool(name, args) {
       }
       task = taskData.task;
       if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
-    } else if (!args.summary) {
+    } else if (!args.summary && !(args.file && args.selector)) {
       return { content: [{ type: 'text', text: 'Pass summary when reporting on a task_id.' }], isError: true };
     }
 
     const cwd = getAgentCwd() || process.env.PWD || null;
+    let summary = '';
+    if (args.summary || (args.file && args.selector)) {
+      const resolvedSummary = resolveChatBody(args, cwd, { bodyField: 'summary', bodyLabel: 'summary' });
+      if (resolvedSummary.error) return { content: [{ type: 'text', text: resolvedSummary.error }], isError: true };
+      summary = resolvedSummary.body;
+    }
 
     // ---- Durable report / close path ----
-    if (args.summary) {
+    if (summary) {
       const closeRequested = args.close === true || args.pass === true;
       if (closeRequested && !targetTaskId && task.metadata?.requires_approval && !args.approval_id) {
         return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call report({ summary: "...", close: true, approval_id: <id> }) with the message ID shown in brackets (e.g. id:332656).` }] };
       }
 
       const _lintOverrides = Array.isArray(args.overrides) ? args.overrides : [];
-      const violations = lintReport(args.summary, null, _lintOverrides);
+      const violations = lintReport(summary, null, _lintOverrides);
       const lintAdvisory = violations.length > 0
         ? `\n\n⚠️ Report-text notes (advisory — did not block ${closeRequested ? 'close' : 'report'}):\n${formatLintViolations(violations)}`
         : '';
-      const summaryHash = crypto.createHash('sha256').update(String(args.summary)).digest('hex').slice(0, 16);
+      const summaryHash = crypto.createHash('sha256').update(String(summary)).digest('hex').slice(0, 16);
       const reportTaskId = targetTaskId || task.id;
       const operationId = args.operation_id || `${AGENT_ID}:mcp-report:${reportTaskId}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
       const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
@@ -2920,7 +2941,7 @@ export async function handleFleetTool(name, args) {
         data = await mcpFleetTransport.durable('report-close', {
           agent: AGENT_ID,
           task_id: reportTaskId,
-          summary: args.summary,
+          summary,
           close: closeRequested,
           reason: args.reason || undefined,
           approval_id: args.approval_id || undefined,
@@ -2933,7 +2954,7 @@ export async function handleFleetTool(name, args) {
       const taskDescription = data?.task_description || task?.description || reportTaskId;
       const closeCompleted = closeRequested && Boolean(data?.close_event_id);
       const reportStatus = closeCompleted ? 'closed' : 'reported';
-      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${formatDisplayTimestamp(Date.now())}\n\n---\n\n${args.summary}`;
+      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${formatDisplayTimestamp(Date.now())}\n\n---\n\n${summary}`;
 
       try {
         await postReportDoc({
@@ -2952,7 +2973,7 @@ export async function handleFleetTool(name, args) {
       }
 
       if (closeCompleted) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: reportTaskId, description: taskDescription });
-      logEvent({ type: 'report', agent: AGENT_ID, task_id: reportTaskId, summary: args.summary });
+      logEvent({ type: 'report', agent: AGENT_ID, task_id: reportTaskId, summary });
 
       let msg = data?.queued
         ? `Report queued durably for ${taskDescription}. Operation: ${data.operation_id || operationId}.`
