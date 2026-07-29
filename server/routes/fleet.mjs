@@ -248,6 +248,42 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
+  router.get('/api/fleet/native-subagent-binding/:parentAgentId/:nativeAgentId', async (req, res) => {
+    const parentAgentId = req.params.parentAgentId
+    const parent = await fleetStore.getAgent(parentAgentId)
+    if (!parent || parent.dead) {
+      res.status(404).json({ ok: false, error: 'parent agent not found' })
+      return
+    }
+    if (req.params.nativeAgentId === parent.session_id || req.params.nativeAgentId === parent.resume_id) {
+      res.json({ ok: true, parent_agent_id: parentAgentId, native_agent_id: req.params.nativeAgentId })
+      return
+    }
+    const seat = await agentRouteOrHttpError(res, parent)
+    if (!seat) return
+    try {
+      const routes = await sendDaemonEphemeral(seat.daemon_key, 'native-subagent-routes', {
+        parent_agent_id: parentAgentId,
+        child_agent_ids: [],
+      })
+      const route = (routes || []).find(item => item.native_agent_id === req.params.nativeAgentId)
+      if (!route) {
+        res.status(404).json({ ok: false, error: 'native child binding not found' })
+        return
+      }
+      const child = await fleetStore.getAgent(route.child_agent_id)
+      res.json({
+        ok: true,
+        child_agent_id: route.child_agent_id,
+        child_name: child?.friendly_name || route.child_agent_id,
+        native_agent_id: route.native_agent_id,
+        harness: route.harness,
+      })
+    } catch (e) {
+      res.status(e.code === 'NO_DAEMON' ? 503 : 502).json({ ok: false, error: e.message })
+    }
+  })
+
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).

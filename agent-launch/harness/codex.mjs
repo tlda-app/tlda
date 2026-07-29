@@ -218,9 +218,11 @@ export function buildCmd({
   }
   const parts = [...processEnv, 'codex', '--no-alt-screen']
   const notificationHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-notification-hook.mjs')
+  const subagentStartHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-start-hook.mjs')
   parts.push('--dangerously-bypass-hook-trust')
   parts.push(`-c ${sq(`features.hooks=true`)}`)
   parts.push(`-c ${sq(`hooks.UserPromptSubmit=[{hooks=[{type="command",command=${tomlBasicString(`${process.execPath} ${notificationHook}`)},timeout=5}]}]`)}`)
+  parts.push(`-c ${sq(`hooks.SubagentStart=[{hooks=[{type="command",command=${tomlBasicString(`${process.execPath} ${subagentStartHook}`)},timeout=5}]}]`)}`)
   const trustOverride = cprojectTrust(cwd)
   if (trustOverride) parts.push(trustOverride)
   if (resumeId) parts.push(`resume ${sq(resumeId)}`)

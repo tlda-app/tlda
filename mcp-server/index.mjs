@@ -2486,6 +2486,9 @@ const TOOLS_NEEDING_BUILD = new Set([
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const threadId = typeof request.params?._meta?.threadId === 'string'
+    ? request.params._meta.threadId
+    : null;
 
   if (name === 'screenshot' && args?.target && args.target !== 'viewport') {
     return { content: [{ type: 'text', text: `Invalid screenshot target: ${args.target}` }], isError: true };
@@ -3809,7 +3812,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // Dispatch to fleet tools
-  const fleetResult = await handleFleetTool(name, args);
+  const fleetResult = await handleFleetTool(name, args, { threadId });
   if (fleetResult !== null) return fleetResult;
 
   return {
