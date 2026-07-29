@@ -469,6 +469,64 @@ type ProjectHistoryIndex = {
   oldest: number | null
 }
 type ProjectChangelog = { commits: ChangelogCommit[]; totalPages: number; error?: string }
+
+type CommitCountFilter = { min?: number; max?: number }
+type ProjectSearchQuery = { text: string; commitFilters: CommitCountFilter[] }
+
+function commitRange(min?: number, max?: number): CommitCountFilter {
+  return {
+    ...(min !== undefined && { min }),
+    ...(max !== undefined && { max }),
+  }
+}
+
+function parseProjectSearchQuery(raw: string): ProjectSearchQuery {
+  const commitFilters: CommitCountFilter[] = []
+  const text = raw.replace(/\bcommits:(?:(\d*)\.\.(\d*)|(>=|<=|>|<)?(\d+))(?=\s|$)/gi, (match, rangeMin, rangeMax, op, value) => {
+    if (rangeMin !== undefined || rangeMax !== undefined) {
+      const min = rangeMin ? Number(rangeMin) : undefined
+      const max = rangeMax ? Number(rangeMax) : undefined
+      if ((min === undefined && max === undefined) || Number.isNaN(min) || Number.isNaN(max)) return match
+      commitFilters.push(commitRange(min, max))
+      return ' '
+    }
+
+    const lhs = value === undefined ? undefined : Number(value)
+    if (lhs === undefined || Number.isNaN(lhs)) return match
+    if (op === '>=') {
+      commitFilters.push({ min: lhs })
+    } else if (op === '>') {
+      commitFilters.push({ min: lhs + 1 })
+    } else if (op === '<=') {
+      commitFilters.push({ max: lhs })
+    } else if (op === '<') {
+      commitFilters.push({ max: lhs - 1 })
+    } else if (lhs !== undefined) {
+      commitFilters.push({ min: lhs, max: lhs })
+    } else {
+      return match
+    }
+    return ' '
+  })
+  return { text: text.toLowerCase().trim().replace(/\s+/g, ' '), commitFilters }
+}
+
+function matchesCommitFilters(info: ProjectHistoryIndex['projects'][string] | undefined, filters: CommitCountFilter[]) {
+  if (filters.length === 0) return true
+  if (!info) return false
+  return filters.every(filter => {
+    const count = info.commitCount
+    return (filter.min === undefined || count >= filter.min)
+      && (filter.max === undefined || count <= filter.max)
+  })
+}
+
+function matchesProjectSearchText(key: string, name: string | undefined, text: string) {
+  if (!text) return true
+  const haystack = `${name || ''} ${key}`.toLowerCase()
+  return text.split(/\s+/).every(term => haystack.includes(term))
+}
+
 function relativeTime(iso: string | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()
@@ -485,7 +543,7 @@ function relativeTime(iso: string | undefined): string {
 interface ArchivedProject { name: string; title?: string; starred?: boolean }
 
 type ProjectAction = 'star' | 'archive'
-type PointerStart = { key: string; x: number; y: number; archived: boolean }
+type PointerStart = { key: string; x: number; y: number; archived: boolean; dx: number; action: ProjectAction | null }
 
 function DocumentPicker({ isDark, manifest, onSelect }: {
   isDark: boolean
@@ -513,6 +571,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const pointerSwiped = useRef(false)
   const requestedHistoriesRef = useRef(new Set<string>())
   const [dragPreview, setDragPreview] = useState<{ key: string; action: ProjectAction; dx: number } | null>(null)
+  const parsedSearch = parseProjectSearchQuery(search)
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -532,12 +591,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   // Fetch archived list when search is non-empty
   useEffect(() => {
-    if (!search) { setArchived([]); return }
+    if (!parsedSearch.text) { setArchived([]); return }
     fetch(`${ASSET_BASE}/api/projects/archived`)
       .then(r => r.ok ? r.json() : { projects: [] })
       .then(data => setArchived(data.projects || []))
       .catch(e => console.warn('[app] archived fetch failed:', e.message))
-  }, [search])
+  }, [parsedSearch.text])
 
   const bookMembers = new Set<string>()
   for (const config of Object.values(manifest)) {
@@ -546,7 +605,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     }
   }
 
-  const q = search.toLowerCase()
   const indexProjectKey = Object.keys(manifest)
     .filter(key => !bookMembers.has(key))
     .sort()
@@ -602,7 +660,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       || config.format !== 'markdown'
       || Boolean(historyIndex.projects[key])
     )
-    .filter(([key, config]) => !q || (config.name || key).toLowerCase().includes(q) || key.includes(q))
+    .filter(([key]) => matchesCommitFilters(historyIndex?.projects[key], parsedSearch.commitFilters))
+    .filter(([key, config]) => matchesProjectSearchText(key, config.name, parsedSearch.text))
     .sort(([keyA, configA], [keyB, configB]) => {
       const starA = starredKeys.has(keyA) || !!configA.starred
       const starB = starredKeys.has(keyB) || !!configB.starred
@@ -671,7 +730,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   const archivedFiltered = archived
     .filter(p => !restoredKeys.has(p.name))
-    .filter(p => (p.title || p.name).toLowerCase().includes(q) || p.name.includes(q))
+    .filter(p => matchesProjectSearchText(p.name, p.title || p.name, parsedSearch.text))
 
   const archiveProject = (key: string, e?: React.MouseEvent | React.PointerEvent) => {
     e?.stopPropagation()
@@ -798,7 +857,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const onRowPointerDown = (key: string, archivedRow: boolean, e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return
     pointerSwiped.current = false
-    pointerStart.current = { key, x: e.clientX, y: e.clientY, archived: archivedRow }
+    pointerStart.current = { key, x: e.clientX, y: e.clientY, archived: archivedRow, dx: 0, action: null }
   }
 
   const onRowPointerMove = (key: string, e: React.PointerEvent) => {
@@ -807,20 +866,22 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     const dx = e.clientX - start.x
     const dy = e.clientY - start.y
     if (Math.abs(dx) < 18 || Math.abs(dx) < Math.abs(dy) * 1.4) {
+      pointerStart.current = { ...start, dx, action: null }
       if (dragPreview?.key === key) setDragPreview(null)
       return
     }
-    setDragPreview({ key, action: dx > 0 ? 'star' : 'archive', dx: Math.max(-96, Math.min(96, dx)) })
+    const action = dx > 0 ? 'star' : 'archive'
+    pointerStart.current = { ...start, dx, action }
+    setDragPreview({ key, action, dx: Math.max(-96, Math.min(96, dx)) })
   }
 
   const onRowPointerEnd = (key: string, e: React.PointerEvent) => {
     const start = pointerStart.current
     pointerStart.current = null
-    const preview = dragPreview
     setDragPreview(null)
-    if (!start || start.key !== key || preview?.key !== key || Math.abs(preview.dx) < 72) return
+    if (!start || start.key !== key || !start.action || Math.abs(start.dx) < 72) return
     pointerSwiped.current = true
-    if (preview.action === 'star') {
+    if (start.action === 'star') {
       starProject(key, start.archived, e)
     } else if (start.archived) {
       restoreProject(key, e)
