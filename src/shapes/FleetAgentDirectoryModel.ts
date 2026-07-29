@@ -161,16 +161,13 @@ export type FleetAgentDirectoryRowModel = {
   spawnOptions: string[]
   permission: string
   activityHealth: string
-  notResumable: boolean
-  resumableStatus: string
   hoverTitle: string
 }
 
 export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel {
   const id = agent?.id || ''
   const exactName = fleetAgentExactName(agent)
-  const bindingPending = !agent?.human && !agent?.dead && !agent?.session_id
-  const displayName = `${fleetAgentDisplayLabel(agent)}${bindingPending ? '*' : ''}`
+  const displayName = fleetAgentDisplayLabel(agent)
   const ts = agentTimestamp(agent)
   const meta = agent?.metadata || {}
   const ago = formatFleetAgentRelativeTime(ts)
@@ -179,11 +176,9 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
   const spawnOptions = formatFleetAgentSpawnOptions(meta)
   const permission = formatFleetAgentPermission(meta)
   const activityHealth = formatFleetAgentActivityHealthForAgent(agent)
-  const notResumable = !agent?.human && !agent?.dead && (!agent?.session_id || !agent?.resume_id)
-  const resumableStatus = notResumable ? 'starting · not resumable yet' : ''
   const secsAgo = ts ? (Date.now() - ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
-  const hoverTitle = [displayName, resumableStatus, machine && `machine: ${machine}`, model && `model: ${model}`, spawnOptions.length && spawnOptions.join(' · '), activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
+  const hoverTitle = [displayName, machine && `machine: ${machine}`, model && `model: ${model}`, spawnOptions.length && spawnOptions.join(' · '), activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
     .filter(Boolean)
     .join('  ·  ')
   return {
@@ -203,8 +198,6 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
     spawnOptions,
     permission,
     activityHealth,
-    notResumable,
-    resumableStatus,
     hoverTitle,
   }
 }

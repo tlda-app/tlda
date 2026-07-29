@@ -116,9 +116,8 @@ export function FleetAgentDirectoryRow({
           {contextPct != null ? `${contextPct}%` : ''}
         </span>
         <span className="fleet-agents-col-task" title={taskTitle}>
-          {row.notResumable && <span className="fleet-agents-not-resumable">{row.resumableStatus}</span>}
           {row.activityHealth && <span className="fleet-agents-health">{row.activityHealth}</span>}
-          <span>{row.notResumable ? '' : taskDesc ? taskDesc.substring(0, 50) : ''}</span>
+          <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
         <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
           {row.labels.map((label: string) => (
@@ -145,7 +144,6 @@ export function FleetAgentDirectoryRow({
               <span key={option} className="fleet-agents-detail-effort">{option}</span>
             ))}
             {row.permission && <span className="fleet-agents-detail-cap" title="permission / fence">{row.permission}</span>}
-            {row.notResumable && <span className="fleet-agents-detail-not-resumable" title="durable resume handle not written yet">{row.resumableStatus}</span>}
             {row.activityHealth && <span className="fleet-agents-detail-health" title="activity health">{row.activityHealth}</span>}
             {row.ago && <span className="fleet-agents-detail-seen">seen {row.ago}</span>}
           </div>
