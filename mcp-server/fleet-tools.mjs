@@ -646,6 +646,7 @@ function logEvent(event) {
 // No JSONL scanning, no state file reading, no guessing.
 const ALIVE_THRESHOLD_MS = 10 * 60 * 1000;
 let AGENT_ID = process.env.FLEET_ID || null;
+const PARENT_AGENT_ID = process.env.FLEET_ID || null;
 // Ref tokens created by tlda_highlight — keyed by «annotation:label» token
 const _refTokens = new Map();
 
@@ -771,7 +772,8 @@ async function fetchCurrentDocVersion(doc) {
     const version = typeof hash === 'string' ? hash.slice(0, 7) : null;
     _docVersionCache = { doc, version, ts: now };
     return version;
-  } catch {
+  } catch (error) {
+    process.stderr.write(`[fleet] native child identity lookup failed: ${error.message}\n`);
     return null;
   }
 }
@@ -1978,7 +1980,17 @@ export function inboxViewForArgs(args = {}) {
   return normalizeInboxView(args?.view || 'default');
 }
 
-export async function handleFleetTool(name, args) {
+async function nativeChildBinding(threadId) {
+  if (!threadId || !PARENT_AGENT_ID) return null;
+  const res = await fleetFetch(
+    `${TLDA_FLEET_SERVER}/api/fleet/native-subagent-binding/${encodeURIComponent(PARENT_AGENT_ID)}/${encodeURIComponent(threadId)}`,
+    { signal: AbortSignal.timeout(2000) },
+  );
+  if (!res.ok) throw new Error(`native child identity lookup returned HTTP ${res.status}`);
+  return await res.json();
+}
+
+export async function handleFleetTool(name, args, context = {}) {
   const requestedEnv = normalizeEnvArg(args);
   if (requestedEnv && ENV_SCOPED_TOOL_NAMES.has(name) && !_activeToolEnv) {
     const scopedArgs = { ...args };
@@ -2007,12 +2019,18 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: 'login() takes no arguments; this process must get its fleet identity from FLEET_ID.' }], isError: true };
     }
     const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
-    const shellId = process.env.FLEET_ID || null;
-    const boundFleetId = process.env.FLEET_ID || null;
+    let nativeBinding = null;
+    try {
+      nativeBinding = await nativeChildBinding(context.threadId);
+    } catch (error) {
+      return { content: [{ type: 'text', text: `Login could not resolve this Codex thread's fleet identity: ${error.message}` }], isError: true };
+    }
+    const shellId = nativeBinding?.child_agent_id || process.env.FLEET_ID || null;
+    const boundFleetId = shellId;
     if (boundFleetId && shellId !== boundFleetId) {
       return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };
     }
-    if (AGENT_ID && shellId !== AGENT_ID) {
+    if (AGENT_ID && shellId !== AGENT_ID && !nativeBinding) {
       return { content: [{ type: 'text', text: `Login rejected: session already bound to ${AGENT_ID}, cannot relogin as ${shellId}.` }], isError: true };
     }
     let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
@@ -2092,6 +2110,7 @@ export async function handleFleetTool(name, args) {
       ].join('\n') }], isError: true };
     }
     AGENT_ID = loggedInAgentId;
+    if (nativeBinding && _channelRWS) _channelRWS.reconnect();
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
     });
