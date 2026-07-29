@@ -20,7 +20,6 @@ import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBound
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
-import { readShadowChangelog } from '../lib/shadow-changelog.mjs'
 import { readEditEvents } from '../lib/edit-events.mjs'
 
 // ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
@@ -589,27 +588,6 @@ router.get('/shadow/adjacent', requireRead, async (req, res) => {
   try {
     const version = await adjacentVersion(name, hash, dir)
     res.json({ version })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-/**
- * GET /shadow/changelog — Space-time changelog: which pages changed at each build.
- * Returns { commits: [{ hash, timestamp, changedPages }], totalPages }.
- *
- * Parses `git log -U0` hunk headers to find changed source lines, then maps
- * them to page numbers via the current lookup.json.
- */
-router.get('/shadow/changelog', requireRead, async (req, res) => {
-  const { name } = req.params
-  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500)
-
-  const project = await readProject(name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-
-  try {
-    res.json(await readShadowChangelog(name, { limit }))
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

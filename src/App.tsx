@@ -9,6 +9,7 @@ import { useFleetIdentity } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
+import { fetchEditEventChangelog } from './historyStore'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import './App.css'
 import './themes.css'
@@ -80,7 +81,6 @@ interface FleetConfigResponse {
 type ErrorType = 'not-found' | 'auth' | 'generic'
 
 const HISTORY_INDEX_BATCH_SIZE = 500
-const HISTORY_CHANGELOG_BATCH_SIZE = 50
 
 
 type State =
@@ -753,20 +753,11 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     if (projectNames.length === 0) return
     for (const name of projectNames) requestedHistoriesRef.current.add(name)
     async function fetchChangelogs() {
-      const batches: string[][] = []
-      for (let i = 0; i < projectNames.length; i += HISTORY_CHANGELOG_BATCH_SIZE) {
-        batches.push(projectNames.slice(i, i + HISTORY_CHANGELOG_BATCH_SIZE))
-      }
-      const parts = await Promise.all(batches.map(async batch => {
-        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/changelog/batch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projects: batch }),
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return response.json()
+      const entries = await Promise.all(projectNames.map(async name => {
+        const data = await fetchEditEventChangelog(name, 0, 1000, ASSET_BASE)
+        return [name, data ?? { commits: [], totalPages: 0, error: 'History unavailable' }] as const
       }))
-      return parts.reduce((projects, data) => ({ ...projects, ...(data.projects || {}) }), {} as Record<string, ProjectChangelog>)
+      return Object.fromEntries(entries) as Record<string, ProjectChangelog>
     }
     fetchChangelogs()
       .then(data => {
@@ -776,7 +767,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .catch(error => {
         for (const name of projectNames) requestedHistoriesRef.current.delete(name)
         setHistoryError('History unavailable')
-        console.warn('[app] project history batch fetch failed:', error.message)
+        console.warn('[app] project edit-events fetch failed:', error.message)
       })
   }, [visibleProjectKey])
 

@@ -1,9 +1,9 @@
 /**
- * useTimelineOverlay — fetches timeline data from shadow history + annotation history,
+ * useTimelineOverlay — fetches timeline data from edit-events + annotation history,
  * creates/removes the TimelineOverlayShape on toggle.
  *
  * Data sources:
- *   1. GET /api/projects/{name}/history/shadow/changelog — build changelog entries
+ *   1. GET /api/projects/{name}/history/edit-events — canonical source edit events
  *   2. GET /api/projects/{name}/shapes — current annotation shapes with createdAt meta
  *
  * Positions the timeline shape to the right of the document pages.
@@ -32,21 +32,22 @@ export function useTimelineOverlay(
 
     // Fetch data from both endpoints concurrently
     const [historyRes, shapesRes] = await Promise.all([
-      fetch(`/api/projects/${projectName}/history/shadow/changelog`).then(r => r.ok ? r.json() : { commits: [] }).catch(() => ({ commits: [] })),
+      fetch(`/api/projects/${projectName}/history/edit-events`).then(r => r.ok ? r.json() : { events: [] }).catch(() => ({ events: [] })),
       fetch(`/api/projects/${projectName}/shapes`).then(r => r.ok ? r.json() : []).catch(() => []),
     ])
 
     const totalPages = document.pages.length
     const events: TimelineEvent[] = []
 
-    // Process shadow build history entries
-    const historyEntries = historyRes.commits || []
+    // Process canonical edit-event history entries
+    const historyEntries = historyRes.events || []
     for (const entry of historyEntries) {
       if (!entry.timestamp) continue
 
-      const changedPages = entry.changedPages || entry.pages || []
+      const changedPages = entry.changed_pages || []
       const primaryPage = changedPages.length > 0 ? Math.min(...changedPages) : 1
       const significance = Math.min(1, (changedPages.length || 1) / Math.max(totalPages, 1))
+      const actor = entry.actor_display_name || entry.actor_id || entry.origin || 'Edit'
 
       events.push({
         ts: entry.timestamp,
@@ -54,8 +55,8 @@ export function useTimelineOverlay(
         page: primaryPage,
         pages: changedPages.length > 0 ? changedPages : [primaryPage],
         significance,
-        label: `Build: ${changedPages.length || '?'} page(s) changed`,
-        buildHash: entry.hash,
+        label: `${actor}: ${changedPages.length || '?'} page(s) changed`,
+        buildHash: entry.after_shadow_revision || entry.event_id,
       })
     }
 

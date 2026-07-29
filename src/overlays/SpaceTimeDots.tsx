@@ -4,6 +4,12 @@ export interface ChangelogCommit {
   hash: string
   timestamp: number
   changedPages: number[]
+  eventId?: string
+  origin?: string
+  actorKind?: string
+  actorDisplayName?: string | null
+  attributionStatus?: string
+  attributionBasis?: string
 }
 
 interface SpaceTimeDotsProps {
@@ -108,7 +114,7 @@ export function SpaceTimeDots({
         <div className="spacetime-field">
           {dots.map((dot, index) => (
             <button
-              key={`${dot.commit.hash}-${dot.page}-${index}`}
+              key={`${dot.commit.eventId || dot.commit.hash}-${dot.page}-${index}`}
               type="button"
               className={`spacetime-dot${dot.isMulti ? ' multi' : ''}`}
               style={{ left: `${dot.xPct}%`, top: `${dot.yPct}%` }}
@@ -137,6 +143,9 @@ export function SpaceTimeDots({
           style={{ left: hoveredDot.x, top: hoveredDot.y - 8 }}
         >
           <span className="spacetime-tooltip-page">p.{hoveredDot.page}</span>
+          {hoveredDot.commit.actorDisplayName && (
+            <span className="spacetime-tooltip-time">{hoveredDot.commit.actorDisplayName}</span>
+          )}
           <span className="spacetime-tooltip-time">{formatTime(hoveredDot.commit.timestamp)}</span>
           {hoveredDot.commit.changedPages.length > 1 && (
             <span className="spacetime-tooltip-multi">

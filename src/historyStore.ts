@@ -98,18 +98,63 @@ export function shadowSnapshotPageUrl(projectName: string, hash: string, page: n
   return `${serverBase}/docs/${projectName}/history/shadow-${hash.slice(0, 7)}/${filename}`
 }
 
+export interface EditEventRecord {
+  event_id: string
+  timestamp: number
+  origin?: string
+  actor_kind?: string
+  actor_id?: string | null
+  actor_display_name?: string | null
+  attribution_status?: string
+  attribution_basis?: string
+  after_shadow_revision?: string | null
+  changed_pages?: number[]
+}
+
+export interface EditEventsResponse {
+  events?: EditEventRecord[]
+}
+
+export interface TimelineChangelogCommit {
+  hash: string
+  timestamp: number
+  changedPages: number[]
+  eventId: string
+  origin?: string
+  actorKind?: string
+  actorDisplayName?: string | null
+  attributionStatus?: string
+  attributionBasis?: string
+}
+
 /**
- * Fetch the space-time changelog: per-commit page-level changes.
- * Returns { commits, totalPages } for the SpaceTimeDots overlay.
+ * Fetch canonical edit-events and normalize them for the SpaceTimeDots overlay.
  */
-export async function fetchShadowChangelog(
+export async function fetchEditEventChangelog(
   projectName: string,
+  totalPages = 0,
   limit = 200,
-): Promise<{ commits: Array<{ hash: string; timestamp: number; changedPages: number[] }>; totalPages: number } | null> {
+  base = serverBase,
+): Promise<{ commits: TimelineChangelogCommit[]; totalPages: number } | null> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/shadow/changelog?limit=${limit}`)
+    const res = await fetch(`${base}/api/projects/${projectName}/history/edit-events?limit=${limit}`)
     if (!res.ok) return null
-    return await res.json()
+    const data = await res.json() as EditEventsResponse
+    const commits = (data.events || [])
+      .filter(event => Number.isFinite(event.timestamp))
+      .map(event => ({
+        hash: event.after_shadow_revision || event.event_id,
+        timestamp: event.timestamp,
+        changedPages: Array.isArray(event.changed_pages) ? event.changed_pages : [],
+        eventId: event.event_id,
+        origin: event.origin,
+        actorKind: event.actor_kind,
+        actorDisplayName: event.actor_display_name,
+        attributionStatus: event.attribution_status,
+        attributionBasis: event.attribution_basis,
+      }))
+    const inferredPages = Math.max(0, ...commits.flatMap(commit => commit.changedPages))
+    return { commits, totalPages: totalPages || inferredPages }
   } catch {
     return null
   }
