@@ -20,7 +20,7 @@ import { noteServerDelivery } from './filter-equivalence.mjs'
 
 const NS = 'chat-subscription'
 
-/** @type {Map<string, {filter: unknown, window: number, onEvents: (events: readonly object[], meta: {subId: string, reason: string, browserReceivedAtMs?: number, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void}>} */
+/** @type {Map<string, {filter: unknown, window: number, onEvents: (events: readonly object[], meta: {subId: string, reason: string, browserReceivedAtMs?: number, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void, humanId: string|null, humanName: string|null, correlationKey: string|null, filterKey: string, nextCursor: string|null, hasMore: boolean, historyPending: boolean}>} */
 const _subs = new Map()
 let _nextSubId = 1
 
@@ -49,7 +49,13 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
   // filterKey is stored because dispatchFilterEvent read sub.filterKey and it
   // was never set — every disagreement record came out with filterKey: null,
   // which is the field you need to know WHICH panel disagreed.
-  _subs.set(subId, { filter, window, onEvents, humanId, humanName, correlationKey, filterKey: JSON.stringify(filter ?? null) })
+  _subs.set(subId, {
+    filter, window, onEvents, humanId, humanName, correlationKey,
+    filterKey: JSON.stringify(filter ?? null),
+    nextCursor: null,
+    hasMore: true,
+    historyPending: true,
+  })
   if (_send) {
     try {
       _send('subscribe-filter', { subId, filter, humanId, humanName, window })
@@ -120,6 +126,13 @@ export function dispatchFilterEvents(data) {
     log.metric(NS, 'history query failed for a subscription', { subId: data.subId, error: data.error, filterKey: sub.filterKey })
   }
   const events = Array.isArray(data.events) ? data.events : []
+  sub.historyPending = false
+  // A reconnect or identity refresh replays the newest page. Preserve the
+  // deepest cursor already reached; only an explicitly older page advances it.
+  if (!data.error && (data.requestBefore != null || sub.nextCursor == null)) {
+    sub.nextCursor = data.nextCursor ?? null
+    sub.hasMore = !!data.hasMore
+  }
   for (const event of events) noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
   sub.onEvents(events, {
     subId: data.subId,
@@ -130,6 +143,36 @@ export function dispatchFilterEvents(data) {
     error: data.error || null,
   })
   return true
+}
+
+/**
+ * Ask the existing subscription for its next older page.
+ *
+ * Pagination stays on the subscription wire: same filter, same subId, same
+ * server predicate, same event intake. There is no direct history query.
+ */
+export function requestEarlierChatHistory(correlationKey) {
+  if (!correlationKey || !_send) return false
+  const found = [..._subs.entries()].find(([, sub]) => sub.correlationKey === correlationKey)
+  if (!found) return false
+  const [subId, sub] = found
+  if (sub.historyPending || !sub.hasMore || !sub.nextCursor) return false
+  sub.historyPending = true
+  try {
+    _send('subscribe-filter', {
+      subId,
+      filter: sub.filter,
+      humanId: sub.humanId,
+      humanName: sub.humanName,
+      window: sub.window,
+      before: sub.nextCursor,
+    })
+    return true
+  } catch (e) {
+    sub.historyPending = false
+    log.metric(NS, 'older history request failed', { subId, error: String(e) })
+    return false
+  }
 }
 
 /**
@@ -153,9 +196,11 @@ export function refreshChatSubscriptionIdentity(humanId, humanName) {
     sub.humanName = humanName
     if (!_send) continue
     try {
+      sub.historyPending = true
       _send('subscribe-filter', { subId, filter: sub.filter, humanId, humanName, window: sub.window })
       n++
     } catch (e) {
+      sub.historyPending = false
       log.metric(NS, 'identity re-subscribe failed', { subId, error: String(e) })
     }
   }
@@ -168,8 +213,15 @@ export function resubscribeAll() {
   if (!_send) return 0
   let n = 0
   for (const [subId, sub] of _subs) {
-    try { _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName, window: sub.window }); n++ }
-    catch (e) { log.metric(NS, 'resubscribe failed', { subId, error: String(e) }) }
+    try {
+      sub.historyPending = true
+      _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName, window: sub.window })
+      n++
+    }
+    catch (e) {
+      sub.historyPending = false
+      log.metric(NS, 'resubscribe failed', { subId, error: String(e) })
+    }
   }
   return n
 }

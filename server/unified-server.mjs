@@ -7614,6 +7614,7 @@ async function handleFleetWsMessage(ws, msg) {
           })
           ws.send(JSON.stringify({ event: 'filter-events', data: {
             subId, events, reason: 'history',
+            requestBefore: msg.before || null,
             hasMore: page.hasMore, nextCursor: page.nextCursor, truncated: page.truncated,
           } }))
         }).catch(e => {
@@ -7622,7 +7623,7 @@ async function handleFleetWsMessage(ws, msg) {
           console.warn('[filter-subs] history failed:', e.message)
           try {
             if (ws.readyState === 1) ws.send(JSON.stringify({ event: 'filter-events', data: {
-              subId, events: [], reason: 'history', error: e.message,
+              subId, events: [], reason: 'history', requestBefore: msg.before || null, error: e.message,
             } }))
           } catch { /* socket already gone */ }
         })

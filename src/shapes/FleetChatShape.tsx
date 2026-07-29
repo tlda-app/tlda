@@ -39,7 +39,7 @@ import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, 
 // of this file tears down every subscription, and a remount whose tail goes
 // BACKWARDS is exactly what that would look like.
 import { notePanelTail } from '../fleet/chat-freeze-probe.mjs'
-import { subscribeChat } from '../fleet/chat-subscription.mjs'
+import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscription.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -5596,6 +5596,9 @@ function FleetChatInner({ shape }: { shape: any }) {
               <Virtuoso
             ref={virtuosoRef}
             data={allItems}
+            startReached={() => {
+              if (chatEventBufferKey) requestEarlierChatHistory(chatEventBufferKey)
+            }}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             alignToBottom
