@@ -75,6 +75,8 @@ interface FleetConfigResponse {
 
 type ErrorType = 'not-found' | 'auth' | 'generic'
 
+const HISTORY_INDEX_BATCH_SIZE = 500
+
 
 type State =
   | { phase: 'loading'; message: string; roomId: string }
@@ -459,6 +461,10 @@ function App() {
 }
 
 type ProjectMeta = Record<string, { lastBuild?: string; lastAnnotated?: string }>
+type ProjectHistoryIndex = {
+  projects: Record<string, { commitCount: number; oldest: { hash: string; timestamp: number } }>
+  oldest: number | null
+}
 function relativeTime(iso: string | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()
@@ -484,9 +490,11 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const [hideJunk, setHideJunk] = useState(true)
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
   const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
+  const [historyIndex, setHistoryIndex] = useState<ProjectHistoryIndex | null>(null)
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -521,8 +529,54 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   }
 
   const q = search.toLowerCase()
+  const indexProjectKey = Object.keys(manifest)
+    .filter(key => !bookMembers.has(key))
+    .sort()
+    .join('\n')
+
+  useEffect(() => {
+    if (!indexProjectKey) return
+    const controller = new AbortController()
+    const projectNames = indexProjectKey.split('\n')
+    async function fetchHistoryIndex() {
+      const batches: string[][] = []
+      for (let i = 0; i < projectNames.length; i += HISTORY_INDEX_BATCH_SIZE) {
+        batches.push(projectNames.slice(i, i + HISTORY_INDEX_BATCH_SIZE))
+      }
+      const parts = await Promise.all(batches.map(async batch => {
+        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/index`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projects: batch }),
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.json()
+      }))
+      return parts.reduce((acc, data) => ({
+        projects: { ...acc.projects, ...(data.projects || {}) },
+        oldest: acc.oldest,
+      }), { projects: {}, oldest: null } as ProjectHistoryIndex)
+    }
+    fetchHistoryIndex()
+      .then(setHistoryIndex)
+      .catch(error => {
+        // Best effort: keep the index usable if history indexing is unavailable.
+        if (error.name !== 'AbortError') {
+          console.warn('[app] project history index fetch failed:', error.message)
+        }
+      })
+    return () => controller.abort()
+  }, [indexProjectKey])
+
   const entries = Object.entries(manifest)
     .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
+    .filter(([key, config]) =>
+      historyIndex === null
+      || !hideJunk
+      || config.format !== 'markdown'
+      || Boolean(historyIndex.projects[key])
+    )
     .filter(([key, config]) => !q || (config.name || key).toLowerCase().includes(q) || key.includes(q))
     .sort(([keyA, configA], [keyB, configB]) =>
       String(meta[keyB]?.lastBuild || configB.lastBuild || '')
@@ -560,14 +614,24 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
-      <input
-        className="picker-search"
-        type="text"
-        placeholder="Search projects..."
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        autoFocus
-      />
+      <div className="picker-controls">
+        <input
+          className="picker-search"
+          type="text"
+          placeholder="Search projects..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          autoFocus
+        />
+        <label className="picker-filter">
+          <input
+            type="checkbox"
+            checked={hideJunk}
+            onChange={e => setHideJunk(e.target.checked)}
+          />
+          <span>Hide junk</span>
+        </label>
+      </div>
       <div className="project-index">
         <div className="project-index-axis" aria-hidden="true">
           <span className="project-index-axis-label">Project</span>
