@@ -313,10 +313,19 @@ export class TLSocketRoom<R extends UnknownRecord = UnknownRecord, SessionMeta =
 		} & (SessionMeta extends void ? object : { meta: SessionMeta })
 	) {
 		const { sessionId, socket, isReadonly = false } = opts
-		const handleSocketMessage = (event: MessageEvent) =>
+		this.sessions.get(sessionId)?.unlisten()
+		const handleSocketMessage = (event: MessageEvent) => {
+			if (this.sessions.get(sessionId)?.socket !== socket) return
 			this.handleSocketMessage(sessionId, event.data)
-		const handleSocketError = this.handleSocketError.bind(this, sessionId)
-		const handleSocketClose = this.handleSocketClose.bind(this, sessionId)
+		}
+		const handleSocketError = () => {
+			if (this.sessions.get(sessionId)?.socket !== socket) return
+			this.handleSocketError(sessionId)
+		}
+		const handleSocketClose = () => {
+			if (this.sessions.get(sessionId)?.socket !== socket) return
+			this.handleSocketClose(sessionId)
+		}
 
 		this.sessions.set(sessionId, {
 			assembler: new JsonChunkAssembler(),
