@@ -20,9 +20,11 @@ const main = join(root, 'main.tex')
 writeFileSync(main, 'mine\n')
 
 const sent = []
+let activeWatcher = null
 const silentWatch = () => {
   const watcher = new EventEmitter()
   watcher.close = () => Promise.resolve()
+  activeWatcher = watcher
   return watcher
 }
 const sourceSync = createSourceSync({
@@ -38,8 +40,15 @@ const sourceSync = createSourceSync({
 const CONFLICTED = '<<<<<<< current\ntheirs\n=======\nmine\n>>>>>>> incoming\n'
 
 try {
+  sourceSync.bindSource('paper', root)
   sourceSync.sync([{ name: 'paper', sourceDir: root, mainFile: 'main.tex', format: 'svg' }])
-  assert.equal(sent.length, 1, 'connect push goes out')
+  writeFileSync(main, 'mine after sync\n')
+  activeWatcher.emit('change', main)
+  const firstPushDeadline = Date.now() + 5000
+  while (sent.length < 1 && Date.now() < firstPushDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.equal(sent.length, 1, 'local change push goes out')
   const requestId = sent[0].requestId
 
   sourceSync.handleSourceChangeResult({
