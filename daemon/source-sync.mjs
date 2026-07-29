@@ -233,7 +233,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       const current = currentExists ? fs.readFileSync(full) : null
       try {
         fs.mkdirSync(path.dirname(full), { recursive: true })
-        if (currentExists && currentFingerprint !== previousFingerprint && !current.equals(incoming)) {
+        if (currentExists && (state.pending.has(rel) || currentFingerprint !== previousFingerprint) && !current.equals(incoming)) {
           if (!isTextSourcePath(rel)) {
             failed.push({ path: rel, error: 'binary conflict requires manual reconciliation' })
             continue
@@ -263,7 +263,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       const previousFingerprint = state.pathFingerprints.get(full)
       const currentFingerprint = sourcePathFingerprint(full)
       try {
-        if (fs.existsSync(full) && currentFingerprint !== previousFingerprint) {
+        if (fs.existsSync(full) && (state.pending.has(rel) || currentFingerprint !== previousFingerprint)) {
           if (!isTextSourcePath(rel)) {
             failed.push({ path: rel, error: 'binary delete conflict requires manual reconciliation' })
             continue

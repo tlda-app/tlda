@@ -7,9 +7,12 @@ import { join } from 'node:path'
 
 import { createSourceSync } from '../daemon/source-sync.mjs'
 
+let activeWatcher = null
+
 function silentWatch() {
   const watcher = new EventEmitter()
   watcher.close = () => Promise.resolve()
+  activeWatcher = watcher
   return watcher
 }
 
@@ -48,6 +51,7 @@ try {
   assert.equal(readFileSync(main, 'utf8'), 'from browser\n', 'accepted browser edit writes into linked local checkout')
 
   writeFileSync(main, 'local concurrent edit\n')
+  activeWatcher.emit('change', main)
   const conflicted = sourceSync.applyAcceptedSourceUpdate({
     project: 'paper',
     previousRevision: 'rev-browser',
