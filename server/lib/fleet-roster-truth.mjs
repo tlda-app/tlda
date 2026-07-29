@@ -14,8 +14,8 @@ function rowForAgent(agent, now = Date.now()) {
     status: agent.dead ? 'dead' : runtimeStatusName(agent),
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
     model: agent.metadata?.model || null,
-    focus: agent.metadata?.focus || agent.metadata?.inboxStatus || null,
-    focus_tag: agent.metadata?.focusTag || agent.metadata?.inboxStatusTag || null,
+    inbox_status: agent.metadata?.inboxStatus || null,
+    inbox_status_tag: agent.metadata?.inboxStatusTag || null,
     delivery_channel: agent.metadata?.deliveryChannel || null,
     activity: act?.state || null,
     tool: act?.tool || null,
@@ -60,7 +60,7 @@ export function summarizeFleetRosterTruth({
   const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now))
   const summary = {
     models: countValues(matchedRoster, a => a.metadata?.model || null),
-    focus: countValues(matchedRoster, a => a.metadata?.focus || a.metadata?.inboxStatus || null),
+    inbox_statuses: countValues(matchedRoster, a => a.metadata?.inboxStatus || null),
     delivery_channels: countValues(matchedRoster, a => a.metadata?.deliveryChannel || null),
   }
 

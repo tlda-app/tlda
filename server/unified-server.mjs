@@ -97,10 +97,10 @@ import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
-  FOCUS_STATES,
+  INBOX_STATUSES,
   decideInboxDelivery,
   normalizeDeliveryChannel,
-  normalizeFocus,
+  normalizeInboxStatus,
   normalizeMessagePriority,
   parsePriorityPhrase,
   shouldWakeBatchedMessage,
@@ -1011,9 +1011,9 @@ async function drainTaskWakeQueue() {
   _taskWakeDraining = false
 }
 
-async function taskFocusFor(agentId) {
-  const metadata = (await fleetStore?.getAgent?.(agentId))?.metadata || {}
-  return normalizeFocus(metadata.focus || metadata.inboxStatus)
+async function taskInboxStatusFor(agentId) {
+  const status = (await fleetStore?.getAgent?.(agentId))?.metadata?.inboxStatus
+  return normalizeInboxStatus(status)
 }
 
 function taskWakePreview(raw, max = 120) {
@@ -1022,8 +1022,8 @@ function taskWakePreview(raw, max = 120) {
 }
 
 async function taskDelegateWakeText(description, agentId) {
-  const focus = await taskFocusFor(agentId)
-  const prefix = focus[0].toUpperCase() + focus.slice(1)
+  const status = await taskInboxStatusFor(agentId)
+  const prefix = status[0].toUpperCase() + status.slice(1)
   return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
 }
 
@@ -6089,19 +6089,19 @@ async function handleFleetWsMessage(ws, msg) {
   // Reads the agent, so async — and the read is immediately property-accessed,
   // which is the `(await …)?.x` shape that must not be written as
   // `await …?.x`: that reads .metadata off a Promise and normalises undefined.
-  const focusFor = async (agentId) => {
-    const metadata = (await fleetStore.getAgent(agentId))?.metadata || {}
-    return normalizeFocus(metadata.focus || metadata.inboxStatus)
+  const inboxStatusFor = async (agentId) => {
+    const status = (await fleetStore.getAgent(agentId))?.metadata?.inboxStatus
+    return normalizeInboxStatus(status)
   }
   const unreadPendingFor = (eventId, agentId) => fleetStore.isUnreadPending(eventId, agentId)
   const inboxCall = (action) => `Call inbox() to ${action}.`
-  const wakeText = ({ focus, event, preview, action }) => {
-    const label = normalizeFocus(focus)
+  const wakeText = ({ status, event, preview, action }) => {
+    const label = normalizeInboxStatus(status)
     const prefix = label[0].toUpperCase() + label.slice(1)
     return `📬 ${prefix} ${event}: ${preview}\n${inboxCall(action)}`
   }
-  const chatWakeText = async (text, agentId) => wakeText({ focus: await focusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
-  const delegateWakeText = async (description, agentId) => wakeText({ focus: await focusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
+  const chatWakeText = async (text, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
+  const delegateWakeText = async (description, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -6270,20 +6270,19 @@ async function handleFleetWsMessage(ws, msg) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
       const wiretapRecipients = await fleetStore.resolveWiretaps(from, to, 'chat')
       const recipientAgent = await fleetStore.getAgent?.(to)
-      const recipientMetadata = recipientAgent?.metadata || {}
-      const focus = normalizeFocus(recipientMetadata.focus || recipientMetadata.inboxStatus)
-      const focusTag = recipientMetadata.focusTag || recipientMetadata.inboxStatusTag || null
+      const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
+      const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
       const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
-      const deliveryDecision = decideInboxDelivery({ focus, priority: basePriority, now: Date.parse(ts) || Date.now() })
+      const deliveryDecision = decideInboxDelivery({ status: inboxStatus, priority: basePriority, now: Date.parse(ts) || Date.now() })
       const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
       let combinedMetadata = {
         ...(metadata || {}),
         priority: basePriority,
         trace_id: traceId,
         inbox_delivery: deliveryDecision.delivery,
-        focus,
+        inbox_status: inboxStatus,
         delivery_channel: deliveryChannel,
-        ...(focusTag ? { focus_tag: focusTag } : {}),
+        ...(inboxStatusTag ? { inbox_status_tag: inboxStatusTag } : {}),
         ...(deliveryDecision.notifyBy ? { notify_by: deliveryDecision.notifyBy } : {}),
         ...(ccResolved ? { cc: ccResolved } : {}),
         ...(processedAttachments ? { attachments: processedAttachments } : {}),
@@ -6328,8 +6327,8 @@ async function handleFleetWsMessage(ws, msg) {
       eventIds.push(eventId)
       receipts.push({
         recipient: to,
-        focus,
-        tag: focusTag,
+        status: inboxStatus,
+        tag: inboxStatusTag,
         priority: basePriority,
         delivery: deliveryDecision.delivery,
         deliveryChannel,
@@ -6344,19 +6343,19 @@ async function handleFleetWsMessage(ws, msg) {
         wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
-        // async callback: the batched-wake decision now reads the agent's focus
-        // and its unread row through the store. setTimeout discards the
+        // async callback: the batched-wake decision now reads the agent's inbox
+        // status and its unread row through the store. setTimeout discards the
         // returned promise, so the body is wrapped — an async timer callback
         // that throws is an unhandled rejection, and a batched wake that
         // silently stopped deciding is exactly the quiet failure this branch
         // exists to avoid.
         setTimeout(() => { (async () => {
-          const latestFocus = await focusFor(to)
+          const latestStatus = await inboxStatusFor(to)
           const unreadPending = await unreadPendingFor(eventId, to)
-          if (shouldWakeBatchedMessage({ focus: latestFocus, unreadPending })) {
+          if (shouldWakeBatchedMessage({ status: latestStatus, unreadPending })) {
             // Not awaited, for the same reason as the retry timer above.
             void requestWake(to, wakeText({
-              focus: latestFocus,
+              status: latestStatus,
               event: 'batched message ready',
               preview: previewForWake(text),
               action: 'read and respond',
@@ -6830,13 +6829,13 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'agent-focus') {
-    const { agent, focus, tag } = msg
+  if (type === 'inbox-status') {
+    const { agent, status, tag } = msg
     if (!agent) { error('missing agent'); return }
-    if (!FOCUS_STATES.includes(focus)) { error(`bad focus: ${focus}`); return }
-    await fleetStore.updateAgentMeta?.(agent, { focus, focusTag: tag || null })
+    if (!INBOX_STATUSES.includes(status)) { error(`bad inbox status: ${status}`); return }
+    await fleetStore.updateAgentMeta?.(agent, { inboxStatus: status, inboxStatusTag: tag || null })
     broadcastState()
-    reply({ ok: true, agent, focus, tag: tag || null })
+    reply({ ok: true, agent, status, tag: tag || null })
     return
   }
 

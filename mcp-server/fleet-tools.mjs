@@ -29,14 +29,14 @@ import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { formatActivityHealthStatus } from '../shared/activity-health.mjs';
 import {
-  FOCUS_STATES,
+  INBOX_STATUSES,
   INBOX_VIEWS,
   DELIVERY_CHANNELS,
   formatAttentionReceipt,
-  normalizeFocus,
+  normalizeInboxStatus,
   normalizeInboxView,
   parsePriorityPhrase,
-  validateFocus,
+  validateInboxStatus,
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs';
 import {
@@ -643,7 +643,7 @@ const _refTokens = new Map();
 // used by chat() to stamp outgoing messages with { doc, version } so the
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;
-let _focus = 'available';
+let _inboxStatus = 'available';
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
@@ -1354,7 +1354,7 @@ export function getFleetTools() {
     },
     {
       name: 'inbox',
-      description: 'Show this agent\'s current obligation inbox. View is read-time presentation only; focus is controlled by configuration().',
+      description: 'Show this agent\'s current obligation inbox. View is read-time presentation only; notification status is controlled by configuration().',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1372,13 +1372,13 @@ export function getFleetTools() {
     },
     {
       name: 'configuration',
-      description: 'Update focus, delivery, or document-rendering configuration. Agent focus fields apply to yourself unless `agent` names a managed agent. Document preamble requires `project` and is available on the full document MCP surface.',
+      description: 'Update notification or document-rendering configuration. Agent notification fields apply to yourself unless `agent` names a managed agent. Document preamble requires `project` and is available on the full document MCP surface.',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Optional managed agent target. Omit for yourself.' },
-          focus: { type: 'string', enum: FOCUS_STATES, description: 'Focus state: what notification priority may interrupt this agent now.' },
-          tag: { type: 'string', description: 'Optional short focus context.' },
+          status: { type: 'string', enum: INBOX_STATUSES, description: 'Visible notification status.' },
+          tag: { type: 'string', description: 'Optional short notification-status context.' },
           channel: { type: 'string', enum: DELIVERY_CHANNELS, description: 'Wake delivery channel.' },
           project: { type: 'string', description: 'Document project whose macros should become this agent\'s chat preamble.' },
           version: { type: 'string', description: 'Optional document shadow version.' },
@@ -1668,11 +1668,11 @@ export function formatRecipientStatusSummary(recipients = [], agents = [], recei
   return recipients.map(id => {
     const agent = agentMap.get(id);
     const label = agent?.friendly_name || id;
-    const focus = agent?.metadata?.focus || agent?.metadata?.inboxStatus || null;
-    const tag = agent?.metadata?.focusTag || agent?.metadata?.inboxStatusTag || null;
+    const status = agent?.metadata?.inboxStatus || null;
+    const tag = agent?.metadata?.inboxStatusTag || null;
     const receipt = receiptMap.get(id);
     if (receipt) return formatAttentionReceipt({ recipientLabel: label, ...receipt });
-    return focus ? `${label} [focus:${focus}${tag ? ` (${tag})` : ''}]` : label;
+    return status ? `${label} [status:${status}${tag ? ` (${tag})` : ''}]` : label;
   }).join(', ');
 }
 
@@ -1744,8 +1744,8 @@ export async function resolveInboxMessage(message, resolvers) {
     kind: inboxMessageKind(message),
     priority: message.metadata?.priority || 'normal',
     inboxDelivery: message.metadata?.inbox_delivery || 'notified',
-    focus: message.metadata?.focus || message.metadata?.inbox_status || null,
-    focusTag: message.metadata?.focus_tag || message.metadata?.inbox_status_tag || null,
+    inboxStatus: message.metadata?.inbox_status || null,
+    inboxStatusTag: message.metadata?.inbox_status_tag || null,
     notifyBy: message.metadata?.notify_by || null,
     images,
     // Markdown-formatted so the inbox renders cleanly in Skip's chat (which
@@ -1788,14 +1788,14 @@ function inboxPriorityHint(message) {
   return message.priority && message.priority !== 'normal' ? ` [${message.priority}]` : '';
 }
 
-function focusHint(message) {
-  if (!message.focus) return '';
-  const tag = message.focusTag ? ` (${message.focusTag})` : '';
-  return ` [recipient focus:${message.focus}${tag}]`;
+function inboxStatusHint(message) {
+  if (!message.inboxStatus) return '';
+  const tag = message.inboxStatusTag ? ` (${message.inboxStatusTag})` : '';
+  return ` [recipient was ${message.inboxStatus}${tag}]`;
 }
 
 function inboxDefaultLine(message, now = Date.now()) {
-  return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${focusHint(message)}`;
+  return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${inboxStatusHint(message)}`;
 }
 
 function groupedInboxLines(messages) {
@@ -2780,10 +2780,8 @@ export async function handleFleetTool(name, args) {
         if (a.friendly_name) label += ` [${a.id}]`;
         if (a.dead) label += ' [dead]';
         if (a.human) label += ' [human]';
-        const focus = a.metadata?.focus || a.metadata?.inboxStatus || null;
-        const focusTag = a.metadata?.focusTag || a.metadata?.inboxStatusTag || null;
-        if (focus) {
-          label += ` [focus:${focus}${focusTag ? ` (${focusTag})` : ''}]`;
+        if (a.metadata?.inboxStatus) {
+          label += ` [status:${a.metadata.inboxStatus}${a.metadata.inboxStatusTag ? ` (${a.metadata.inboxStatusTag})` : ''}]`;
         }
         if (a.metadata?.deliveryChannel && a.metadata.deliveryChannel !== 'channel') {
           label += ` [delivery:${a.metadata.deliveryChannel}]`;
@@ -3345,14 +3343,14 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     const agent = typeof args?.agent === 'string' && args.agent.trim() ? args.agent.trim() : AGENT_ID;
     const changes = [];
     try {
-      if (args.focus != null || args.tag != null) {
-        if (agent !== AGENT_ID) return { content: [{ type: 'text', text: 'Focus can only be set for the calling agent.' }], isError: true };
-        const focus = validateFocus(args.focus);
-        if (!focus) return { content: [{ type: 'text', text: `Bad focus: ${args.focus || '(missing)'}. Use one of: ${FOCUS_STATES.join(', ')}.` }], isError: true };
+      if (args.status != null || args.tag != null) {
+        if (agent !== AGENT_ID) return { content: [{ type: 'text', text: 'Notification status can only be set for the calling agent.' }], isError: true };
+        const status = validateInboxStatus(args.status);
+        if (!status) return { content: [{ type: 'text', text: `Bad inbox status: ${args.status || '(missing)'}. Use one of: ${INBOX_STATUSES.join(', ')}.` }], isError: true };
         const tag = typeof args.tag === 'string' && args.tag.trim() ? args.tag.trim().slice(0, 80) : null;
-        _focus = focus;
-        await mcpFleetTransport.durable('agent-focus', { agent: AGENT_ID, focus, tag });
-        changes.push(`focus=${focus}${tag ? ` (${tag})` : ''}`);
+        _inboxStatus = status;
+        await mcpFleetTransport.durable('inbox-status', { agent: AGENT_ID, status, tag });
+        changes.push(`status=${status}${tag ? ` (${tag})` : ''}`);
       }
       if (args.channel != null) {
         const channel = validateDeliveryChannel(args.channel);
@@ -3361,7 +3359,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
         changes.push(`channel=${channel}`);
       }
-      if (!changes.length) return { content: [{ type: 'text', text: 'Pass focus/tag and/or channel.' }], isError: true };
+      if (!changes.length) return { content: [{ type: 'text', text: 'Pass status/tag and/or channel.' }], isError: true };
       return { content: [{ type: 'text', text: `Configuration updated for ${agent}: ${changes.join(', ')}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Configuration failed: ${e.message}` }], isError: true };
@@ -4086,11 +4084,11 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         .join(', ');
       const summaryLines = [];
       const modelSummary = formatCountSummary(data.summary?.models);
-      const focusSummary = formatCountSummary(data.summary?.focus);
+      const statusSummary = formatCountSummary(data.summary?.inbox_statuses);
       const channelSummary = formatCountSummary(data.summary?.delivery_channels);
       const cwdSummary = formatCountSummary(data.summary?.working_dirs);
       if (modelSummary) summaryLines.push(`Models: ${modelSummary}`);
-      if (focusSummary) summaryLines.push(`Focus: ${focusSummary}`);
+      if (statusSummary) summaryLines.push(`Inbox statuses: ${statusSummary}`);
       if (channelSummary) summaryLines.push(`Delivery channels: ${channelSummary}`);
       if (cwdSummary) summaryLines.push(`Working dirs: ${cwdSummary}`);
       const summaryText = summaryLines.length ? `\n${summaryLines.join('\n')}` : '';
@@ -4104,18 +4102,18 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
         const health = formatActivityHealthStatus(a.activity_health, { idleText: act });
-        return { name: a.name, status: a.status, seen, focus: a.focus || '', delivery: a.delivery_channel || '', model: a.model || '', cwd: a.cwd || '', act: health || act };
+        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', cwd: a.cwd || '', act: health || act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
       const wn = w('name'), ws = w('status'), wsa = Math.max(4, ...f.map(r => r.seen.length));
-      const wf = w('focus');
+      const wi = w('inbox');
       const wc = w('delivery');
       const wm = w('model');
       const lines = f.map(r =>
-        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.focus.padEnd(wf)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
       );
-      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'focus'.padEnd(wf)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
       return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `roster failed before transport ACK: ${e.message}` }], isError: true };
