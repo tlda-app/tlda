@@ -217,12 +217,19 @@ export function createHtmlShapes(
       changed = true
       continue
     }
+    const viewport = existing.parentId === editor.getCurrentPageId()
+      ? editor.getViewportPageBounds()
+      : null
+    const h = viewport && existing.y + existing.props.h < viewport.minY
+      ? Math.max(existing.props.h, viewport.maxY - existing.y + 1)
+      : existing.props.h
     if (
       existing.parentId === targetPageId &&
       existing.x === page.bounds.x &&
       existing.y === page.bounds.y &&
       existing.isLocked === true &&
       existing.props?.w === page.bounds.w &&
+      existing.props?.h === h &&
       existing.props?.url === page.src &&
       (existing.props?.source || '') === source
     ) continue
@@ -235,6 +242,7 @@ export function createHtmlShapes(
       props: {
         ...existing.props,
         w: page.bounds.w,
+        h,
         url: page.src,
         source,
       },
