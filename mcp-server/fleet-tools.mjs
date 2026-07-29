@@ -1736,6 +1736,8 @@ export async function resolveInboxMessage(message, resolvers) {
   const pendingFootnote = renderedPendingPlaceholder || hasPendingAttachmentPlaceholders(message.metadata, recipientId)
     ? `\n\n${PENDING_ATTACHMENT_FOOTNOTE}`
     : '';
+  const subscriptionDelivery = (message.metadata?.subscription_deliveries || [])
+    .find(d => d?.recipient === recipientId) || null;
   const idHint = message.id ? `, id:${message.id}` : '';
   return {
     id: message.id,
@@ -1743,10 +1745,11 @@ export async function resolveInboxMessage(message, resolvers) {
     fromLabel,
     kind: inboxMessageKind(message),
     priority: message.metadata?.priority || 'normal',
-    inboxDelivery: message.metadata?.inbox_delivery || 'notified',
+    inboxDelivery: subscriptionDelivery?.delivery || message.metadata?.inbox_delivery || 'notified',
     inboxStatus: message.metadata?.inbox_status || null,
     inboxStatusTag: message.metadata?.inbox_status_tag || null,
-    notifyBy: message.metadata?.notify_by || null,
+    notificationPolicy: subscriptionDelivery?.notification_policy || null,
+    notifyBy: subscriptionDelivery?.notifyBy || message.metadata?.notify_by || null,
     images,
     // Markdown-formatted so the inbox renders cleanly in Skip's chat (which
     // markdown-renders tool output) AND reads well as raw text for agents:
@@ -1794,8 +1797,12 @@ function inboxStatusHint(message) {
   return ` [recipient was ${message.inboxStatus}${tag}]`;
 }
 
+function inboxPolicyHint(message) {
+  return message.notificationPolicy ? ` [policy:${message.notificationPolicy}]` : '';
+}
+
 function inboxDefaultLine(message, now = Date.now()) {
-  return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${inboxStatusHint(message)}`;
+  return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${inboxPolicyHint(message)}${inboxStatusHint(message)}`;
 }
 
 function groupedInboxLines(messages) {

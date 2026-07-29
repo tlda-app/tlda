@@ -1458,6 +1458,30 @@ export class FleetStore {
       SELECT * FROM wiretaps
       WHERE json_type(CASE WHEN json_valid(filter) THEN filter ELSE 'null' END) = 'text'
         AND json_extract(filter, '$') != 'to:' || agent_id
+        AND id NOT IN (
+          SELECT adapter_id FROM subscriptions
+          WHERE adapter = 'wiretap' AND adapter_id IS NOT NULL
+        )
+    `);
+    this._getResolvableSubscriptionWiretaps = this.db.prepare(`
+      SELECT
+        s.subscription_id,
+        s.owner,
+        s.query,
+        s.notification_policy,
+        s.created_at AS subscription_created_at,
+        s.created_by,
+        s.adapter,
+        s.adapter_id,
+        w.id,
+        w.agent_id,
+        w.filter,
+        w.types,
+        w.created_at
+      FROM subscriptions s
+      JOIN wiretaps w ON s.adapter = 'wiretap' AND s.adapter_id = w.id
+      WHERE json_type(CASE WHEN json_valid(w.filter) THEN w.filter ELSE 'null' END) = 'text'
+        AND json_extract(w.filter, '$') != 'to:' || s.owner
     `);
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
@@ -3564,6 +3588,7 @@ export class FleetStore {
     const info = this._addWiretap.run(agentId, JSON.stringify(filter), validTypes ? JSON.stringify(validTypes) : null);
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
+    this._resolvableSubscriptionWiretapCache = null;
     return { id: info.lastInsertRowid, agent_id: agentId, filter, types: validTypes };
   }
 
@@ -3582,16 +3607,19 @@ export class FleetStore {
     this._deleteWiretap.run(id);
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
+    this._resolvableSubscriptionWiretapCache = null;
   }
 
   removeWiretapsByAgent(agentId) {
     this._deleteWiretapsByAgent.run(agentId);
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
+    this._resolvableSubscriptionWiretapCache = null;
   }
 
   addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null }) {
     const info = this._addSubscription.run(owner, query, notificationPolicy, new Date().toISOString(), createdBy, adapter, adapterId);
+    this._resolvableSubscriptionWiretapCache = null;
     return this.getSubscription(info.lastInsertRowid);
   }
 
@@ -3608,7 +3636,9 @@ export class FleetStore {
   }
 
   removeSubscription(subscriptionId) {
-    return this._deleteSubscription.run(subscriptionId).changes > 0;
+    const removed = this._deleteSubscription.run(subscriptionId).changes > 0;
+    if (removed) this._resolvableSubscriptionWiretapCache = null;
+    return removed;
   }
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
@@ -3649,6 +3679,43 @@ export class FleetStore {
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
+  }
+
+  resolveSubscriptionDeliveries(senderId, recipientId, eventType) {
+    if (!this._resolvableSubscriptionWiretapCache) {
+      this._resolvableSubscriptionWiretapCache = this._getResolvableSubscriptionWiretaps.all().map(r => {
+        const tap = this._hydrateWiretap(r)
+        tap.subscription_id = r.subscription_id
+        tap.owner = r.owner
+        tap.query = r.query
+        tap.notification_policy = r.notification_policy
+        tap.created_by = r.created_by
+        tap.adapter = r.adapter
+        tap.adapter_id = r.adapter_id
+        tap.subscription_created_at = r.subscription_created_at
+        return tap
+      });
+    }
+    const taps = this._resolvableSubscriptionWiretapCache;
+    if (taps.length === 0) return [];
+    const matched = [];
+    const senderLabels = this._agentLabelsById(senderId);
+    const recipientLabels = this._agentLabelsById(recipientId);
+
+    for (const tap of taps) {
+      if (tap.owner === senderId || tap.owner === recipientId) continue;
+      if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
+      if (!tap._ast) continue;
+      const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.owner) : [];
+      if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels })) continue;
+      matched.push({
+        recipient: tap.owner,
+        subscription_id: tap.subscription_id,
+        query: tap.query,
+        notification_policy: tap.notification_policy,
+      });
+    }
+    return matched;
   }
 
   // Reads the in-memory agent registry, not the database. `resolveChatRecipients`

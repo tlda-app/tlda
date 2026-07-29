@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { FleetStore } from './fleet-store.mjs'
+import { decideSubscriptionDelivery } from '../../shared/inbox-attention.mjs'
 
 async function withStore(testFn) {
   const dir = await mkdtemp(join(tmpdir(), 'tlda-subscription-restart-'))
@@ -65,5 +66,64 @@ test('restart cannot orphan an explicit subscription sharing an adapter', async 
     assert.equal(store.getSubscription(second.subscription_id)?.adapter_id, tap.id)
     assert.equal(store.getWiretaps().some(row => row.id === tap.id), true)
     store.close()
+  })
+})
+
+test('subscription deliveries retain notification policy and bypass raw wiretap fanout', async () => {
+  await withStore(async dbPath => {
+    const store = new FleetStore(dbPath, { taskDoc: false })
+    const now = new Date().toISOString()
+    await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
+    await store.upsertAgent({ id: 'fleet:target', friendly_name: 'target', labels: ['reviewers'], registered_at: now, last_seen: now })
+    await store.upsertAgent({ id: 'fleet:subscriber', friendly_name: 'subscriber', labels: [], registered_at: now, last_seen: now })
+
+    const tap = store.addWiretap('fleet:subscriber', 'to:reviewers', null)
+    store.addSubscription({
+      owner: 'fleet:subscriber',
+      query: 'to:reviewers',
+      notificationPolicy: 'batch(30s)',
+      createdBy: 'fleet:subscriber',
+      adapter: 'wiretap',
+      adapterId: tap.id,
+    })
+
+    assert.deepEqual(store.resolveWiretaps('fleet:sender', 'fleet:target', 'chat'), [])
+    assert.deepEqual(store.resolveSubscriptionDeliveries('fleet:sender', 'fleet:target', 'chat'), [{
+      recipient: 'fleet:subscriber',
+      subscription_id: 1,
+      query: 'to:reviewers',
+      notification_policy: 'batch(30s)',
+    }])
+    store.close()
+  })
+})
+
+test('subscription notification policy controls delivery and urgent pierces it', () => {
+  const now = Date.parse('2026-07-29T07:00:00.000Z')
+
+  assert.deepEqual(decideSubscriptionDelivery({ policy: 'immediate', priority: 'normal', now }), {
+    delivery: 'notified',
+    wokeRecipient: 'yes',
+    notifyBy: null,
+  })
+  assert.deepEqual(decideSubscriptionDelivery({ policy: 'hold', priority: 'normal', now }), {
+    delivery: 'queued',
+    wokeRecipient: 'no',
+    notifyBy: null,
+  })
+  assert.deepEqual(decideSubscriptionDelivery({ policy: 'batch(30s)', priority: 'normal', now }), {
+    delivery: 'batched',
+    wokeRecipient: 'not_yet',
+    notifyBy: '2026-07-29T07:00:30.000Z',
+  })
+  assert.deepEqual(decideSubscriptionDelivery({ policy: 'hold', priority: 'urgent', now }), {
+    delivery: 'notified',
+    wokeRecipient: 'yes',
+    notifyBy: null,
+  })
+  assert.deepEqual(decideSubscriptionDelivery({ policy: 'batch(30s)', priority: 'urgent', now }), {
+    delivery: 'notified',
+    wokeRecipient: 'yes',
+    notifyBy: null,
   })
 })

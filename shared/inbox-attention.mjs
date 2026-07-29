@@ -2,18 +2,7 @@ export const INBOX_STATUSES = ['available', 'busy', 'dnd']
 export const INBOX_VIEWS = ['default', 'review', 'monitoring', 'current-task', 'all']
 export const MESSAGE_PRIORITIES = ['normal', 'important', 'urgent']
 export const DELIVERY_CHANNELS = ['channel', 'tmux']
-
-const PRIORITY_LEVEL = {
-  normal: 1,
-  important: 2,
-  urgent: 3,
-}
-
-const STATUS_THRESHOLD = {
-  available: 'normal',
-  busy: 'important',
-  dnd: 'urgent',
-}
+export const DEFAULT_SUBSCRIPTION_BATCH_MS = 5 * 60 * 1000
 
 export function normalizeInboxStatus(status) {
   const s = String(status || 'available').trim().toLowerCase()
@@ -57,37 +46,51 @@ export function parsePriorityPhrase(text) {
   return null
 }
 
-export function thresholdForStatus(status) {
-  return STATUS_THRESHOLD[normalizeInboxStatus(status)]
+export function parseBatchWindowMs(policy, { defaultMs = DEFAULT_SUBSCRIPTION_BATCH_MS } = {}) {
+  const match = String(policy || '').trim().match(/^batch\((.+)\)$/i)
+  if (!match) return null
+  const spec = match[1].trim().toLowerCase()
+  if (!spec) return null
+  if (spec === 'default') return defaultMs
+  const duration = spec.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/)
+  if (!duration) return null
+  const value = Number(duration[1])
+  if (!Number.isFinite(value) || value <= 0) return null
+  const unit = duration[2] || 'm'
+  const scale = unit === 'ms' ? 1
+    : ['s', 'sec', 'secs', 'second', 'seconds'].includes(unit) ? 1000
+      : ['h', 'hr', 'hrs', 'hour', 'hours'].includes(unit) ? 60 * 60 * 1000
+        : 60 * 1000
+  const ms = Math.round(value * scale)
+  return Number.isFinite(ms) && ms > 0 ? ms : null
 }
 
-export function priorityMeetsStatus(priority, status) {
-  return PRIORITY_LEVEL[normalizeMessagePriority(priority)] >= PRIORITY_LEVEL[thresholdForStatus(status)]
-}
-
-export function decideInboxDelivery({ status, priority, now = Date.now(), batchWindowMs = 2 * 60 * 1000 } = {}) {
-  const s = normalizeInboxStatus(status)
-  const p = normalizeMessagePriority(priority)
-  if (priorityMeetsStatus(p, s)) {
+export function decideSubscriptionDelivery({ policy, priority, now = Date.now() } = {}) {
+  const p = String(policy || 'immediate').trim()
+  if (normalizeMessagePriority(priority) === 'urgent') {
     return { delivery: 'notified', wokeRecipient: 'yes', notifyBy: null }
   }
-  if (s === 'busy') {
+  if (p === 'immediate') return { delivery: 'notified', wokeRecipient: 'yes', notifyBy: null }
+  if (p === 'hold') return { delivery: 'queued', wokeRecipient: 'no', notifyBy: null }
+  const batchWindowMs = parseBatchWindowMs(p)
+  if (batchWindowMs != null) {
     return { delivery: 'batched', wokeRecipient: 'not_yet', notifyBy: new Date(now + batchWindowMs).toISOString() }
   }
-  return { delivery: 'queued', wokeRecipient: 'no', notifyBy: null }
+  return null
 }
 
-export function shouldWakeBatchedMessage({ status, unreadPending }) {
-  return normalizeInboxStatus(status) === 'busy' && unreadPending === true
-}
-
-export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy }) {
-  const label = `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
+export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy, notificationPolicy }) {
+  const label = notificationPolicy
+    ? `${recipientLabel || 'recipient'} [${notificationPolicy}]`
+    : `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
   const p = normalizeMessagePriority(priority)
   if (delivery === 'notified') return `Notified ${label}${p === 'normal' ? '' : ` as ${p}`}.`
   if (delivery === 'batched') {
     const when = notifyBy ? ` This will be delivered by ${new Date(notifyBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''
-    return `Batched for ${label}.${when}\nSay "this is important" if it should interrupt.`
+    return `Batched for ${label}.${when}\nSay "this is urgent" if it should interrupt now.`
+  }
+  if (notificationPolicy === 'hold') {
+    return `Held for ${label}. It did not wake them.\nSay "this is urgent" if it should interrupt now.`
   }
   if (normalizeInboxStatus(status) === 'dnd') {
     return `Queued for ${label}. It did not wake them.\nSay "this is urgent" if it should interrupt.`

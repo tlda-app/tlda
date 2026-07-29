@@ -98,12 +98,11 @@ import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerm
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
-  decideInboxDelivery,
+  decideSubscriptionDelivery,
   normalizeDeliveryChannel,
   normalizeInboxStatus,
   normalizeMessagePriority,
   parsePriorityPhrase,
-  shouldWakeBatchedMessage,
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
 import {
@@ -762,6 +761,8 @@ setInterval(() => {
   const cutoff = Date.now() - CHAT_TEMPID_TTL_MS
   for (const [k, v] of _chatTempIds) { if (v.ts < cutoff) _chatTempIds.delete(k) }
 }, 30_000).unref?.()
+
+const _subscriptionBatchWakes = new Map()
 
 const TASK_RENUDGE_SWEEP_MS = Number(process.env.TLDA_TASK_RENUDGE_SWEEP_MS || 60_000)
 const TASK_RENUDGE_INTERVAL_MS = Number(process.env.TLDA_TASK_RENUDGE_INTERVAL_MS || 5 * 60_000)
@@ -6102,6 +6103,58 @@ async function handleFleetWsMessage(ws, msg) {
   }
   const chatWakeText = async (text, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
   const delegateWakeText = async (description, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
+  const subscriptionBatchKey = (delivery) => `${delivery.recipient}\u0000${delivery.subscription_id}\u0000${delivery.notification_policy}`
+  const reserveSubscriptionBatch = (delivery) => {
+    if (delivery.delivery !== 'batched' || !delivery.notifyBy) return delivery
+    const key = subscriptionBatchKey(delivery)
+    const now = Date.now()
+    let state = _subscriptionBatchWakes.get(key)
+    if (!state || (Date.parse(state.notifyBy) || 0) <= now) {
+      state = {
+        key,
+        recipient: delivery.recipient,
+        subscriptionId: delivery.subscription_id,
+        notifyBy: delivery.notifyBy,
+        eventIds: new Set(),
+        timer: null,
+        preview: null,
+        from: null,
+        traceId: null,
+        priority: null,
+      }
+      _subscriptionBatchWakes.set(key, state)
+    }
+    return { ...delivery, notifyBy: state.notifyBy, batch_key: key }
+  }
+  const queueSubscriptionBatchWake = ({ delivery, eventId, text, from, traceId, priority }) => {
+    if (delivery.delivery !== 'batched' || !delivery.batch_key) return
+    const state = _subscriptionBatchWakes.get(delivery.batch_key)
+    if (!state) return
+    state.eventIds.add(eventId)
+    state.preview ||= text
+    state.from ||= from
+    state.traceId ||= traceId
+    state.priority ||= priority
+    if (state.timer) return
+    const delay = Math.max(0, Date.parse(state.notifyBy) - Date.now())
+    state.timer = setTimeout(() => { (async () => {
+      _subscriptionBatchWakes.delete(state.key)
+      let pending = false
+      for (const id of state.eventIds) {
+        if (await unreadPendingFor(id, state.recipient)) { pending = true; break }
+      }
+      if (!pending) return
+      const latestStatus = await inboxStatusFor(state.recipient)
+      await requestWake(state.recipient, wakeText({
+        status: latestStatus,
+        event: 'batched subscription matches ready',
+        preview: previewForWake(state.preview),
+        action: 'read and respond',
+      }), state.from, state.traceId, { sourceEventIds: [...state.eventIds], priority: state.priority, subscriptionId: state.subscriptionId })
+    })().catch(e => console.error(`[wake] subscription batch wake failed for ${state.recipient}: ${e?.message || e}`))
+    }, delay)
+    state.timer.unref?.()
+  }
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -6267,13 +6320,32 @@ async function handleFleetWsMessage(ws, msg) {
       detail: { from, to: rawTo, recipients },
     })
     for (const to of recipients) {
-      // Resolve wiretaps per recipient — tap labels are matched against this `to`.
+      // Resolve subscriptions per recipient — tap labels are matched against this `to`.
+      const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat') || []
       const wiretapRecipients = await fleetStore.resolveWiretaps(from, to, 'chat')
       const recipientAgent = await fleetStore.getAgent?.(to)
       const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
       const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
       const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
-      const deliveryDecision = decideInboxDelivery({ status: inboxStatus, priority: basePriority, now: Date.parse(ts) || Date.now() })
+      const nowMs = Date.parse(ts) || Date.now()
+      const deliveryDecision = decideSubscriptionDelivery({ policy: 'immediate', priority: basePriority, now: nowMs })
+      const subscriptionDeliveries = []
+      for (const match of subscriptionMatches) {
+        const decision = decideSubscriptionDelivery({ policy: match.notification_policy, priority: basePriority, now: nowMs })
+        if (!decision) continue
+        subscriptionDeliveries.push({
+          recipient: match.recipient,
+          subscription_id: match.subscription_id,
+          query: match.query,
+          notification_policy: match.notification_policy,
+          ...decision,
+        })
+      }
+      for (let i = 0; i < subscriptionDeliveries.length; i++) {
+        subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
+      }
+      const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
+      const watchRecipients = [...new Set([...(wiretapRecipients || []), ...subscriptionRecipients])]
       const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
       let combinedMetadata = {
         ...(metadata || {}),
@@ -6288,7 +6360,8 @@ async function handleFleetWsMessage(ws, msg) {
         ...(processedAttachments ? { attachments: processedAttachments } : {}),
         ...(inline_attachments ? { inline_attachments } : {}),
         ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
-        ...(wiretapRecipients.length ? { wiretap_cc: wiretapRecipients } : {}),
+        ...(watchRecipients.length ? { wiretap_cc: watchRecipients } : {}),
+        ...(subscriptionDeliveries.length ? { subscription_deliveries: subscriptionDeliveries } : {}),
         ...(outContext ? { context: outContext } : {}),
         ...(preambleRef ? { preambleRef } : {}),
         ...(chatReminder ? { chatReminder } : {}),
@@ -6341,28 +6414,20 @@ async function handleFleetWsMessage(ws, msg) {
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
         wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
-      } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
-        const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
-        // async callback: the batched-wake decision now reads the agent's inbox
-        // status and its unread row through the store. setTimeout discards the
-        // returned promise, so the body is wrapped — an async timer callback
-        // that throws is an unhandled rejection, and a batched wake that
-        // silently stopped deciding is exactly the quiet failure this branch
-        // exists to avoid.
-        setTimeout(() => { (async () => {
-          const latestStatus = await inboxStatusFor(to)
-          const unreadPending = await unreadPendingFor(eventId, to)
-          if (shouldWakeBatchedMessage({ status: latestStatus, unreadPending })) {
-            // Not awaited, for the same reason as the retry timer above.
-            void requestWake(to, wakeText({
-              status: latestStatus,
-              event: 'batched message ready',
-              preview: previewForWake(text),
-              action: 'read and respond',
-            }), from, traceId, { sourceEventId: eventId, priority: basePriority })
-          }
-        })().catch(e => console.error(`[wake] batched wake decision failed for ${to}: ${e?.message || e}`))
-        }, delay)
+      }
+      for (const subDelivery of subscriptionDeliveries) {
+        if (subDelivery.delivery === 'notified') {
+          const subscriptionStatus = await inboxStatusFor(subDelivery.recipient)
+          wakeRequests.push({
+            to: subDelivery.recipient,
+            text: wakeText({ status: subscriptionStatus, event: 'subscription match', preview: previewForWake(text), action: 'read and respond' }),
+            asker: from,
+            traceId,
+            source: { sourceEventId: eventId, priority: basePriority, subscriptionId: subDelivery.subscription_id },
+          })
+        } else if (subDelivery.delivery === 'batched' && subDelivery.notifyBy) {
+          queueSubscriptionBatchWake({ delivery: subDelivery, eventId, text, from, traceId, priority: basePriority })
+        }
       }
     }
     // Cache _tempId for idempotent retries
@@ -7320,6 +7385,9 @@ async function handleFleetWsMessage(ws, msg) {
     if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
       error('notification_policy must be immediate, hold, or batch(spec)'); return
     }
+    if (/^batch\(.+\)$/.test(policy) && !decideSubscriptionDelivery({ policy })) {
+      error('unsupported batch notification_policy; use a duration like batch(5m), batch(30s), or batch(1h)'); return
+    }
     const docMatch = query.match(/^doc:([^\s]+)$/i)
     if (!docMatch && (/\b(doc|event|type|since|after|before|agent):/i.test(query) || /\bto:me\b/i.test(query))) {
       error('unsupported subscription query term: stage-1 supports directional fleet labels or a single doc:<name> query'); return
@@ -7327,9 +7395,6 @@ async function handleFleetWsMessage(ws, msg) {
     if (!docMatch) {
       try { parseFilter(query) } catch (e) { error(`bad subscription query: ${e.message}`); return }
     }
-    // Stage 1 persists every requested policy, but the existing fanout path is
-    // immediate-only. Until batch/hold schedulers exist, supported matches
-    // still enter the same server notification path.
     let adapter = 'wiretap'
     let adapterId = null
     try {
