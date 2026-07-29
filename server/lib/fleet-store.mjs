@@ -715,6 +715,12 @@ export class FleetStore {
       `);
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id, dead, last_active)");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS native_subagent_bindings (
+        binding_key TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL UNIQUE
+      );
+    `);
 
     // Lineage tables
     this.db.exec(`
@@ -2130,6 +2136,54 @@ export class FleetStore {
       }
       throw e;
     }
+  }
+
+  registerNativeSubagent({
+    bindingKey,
+    parentAgentId,
+    childAgentId,
+    requestedName,
+    now = new Date().toISOString(),
+  }) {
+    if (!bindingKey) throw new Error('native subagent binding requires bindingKey');
+    if (!parentAgentId) throw new Error('native subagent binding requires parentAgentId');
+    if (!childAgentId) throw new Error('native subagent binding requires childAgentId');
+
+    const register = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        'SELECT agent_id FROM native_subagent_bindings WHERE binding_key = ?'
+      ).get(bindingKey);
+      if (existing?.agent_id) return { agentId: existing.agent_id, created: false };
+
+      const parent = this.db.prepare(
+        'SELECT id, friendly_name FROM agents WHERE id = ?'
+      ).get(parentAgentId);
+      if (!parent) throw new Error(`subagent parent "${parentAgentId}" does not exist`);
+
+      const assignedName = this.allocateFreshFriendlyName(requestedName, { excludeId: childAgentId });
+      this.upsertAgent({
+        id: childAgentId,
+        parent_agent_id: parent.id,
+        friendly_name: assignedName,
+        labels: [],
+        registered_at: now,
+        last_seen: now,
+        dead: false,
+        human: false,
+        is_manager: false,
+        metadata: null,
+      });
+      this.db.prepare(
+        'INSERT INTO native_subagent_bindings (binding_key, agent_id) VALUES (?, ?)'
+      ).run(bindingKey, childAgentId);
+      return { agentId: childAgentId, created: true };
+    });
+
+    const result = register();
+    return {
+      agent: this.getAgent(result.agentId),
+      created: result.created,
+    };
   }
 
   // Agents associated with a particular daemon registry identity. Used by the

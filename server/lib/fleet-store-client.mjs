@@ -33,6 +33,7 @@ const AGENT_RESULT_SHAPE = {
   getAliveAgents: 'many',
   getLineageRoster: 'many',
   getAliveAgentsPage: 'page',
+  registerNativeSubagent: 'registration',
 }
 
 export class FleetStoreClient {
@@ -145,6 +146,9 @@ export class FleetStoreClient {
     if (shape === 'many') return Array.isArray(result) ? result.map(one) : result
     if (shape === 'page') {
       return Array.isArray(result?.agents) ? { ...result, agents: result.agents.map(one) } : result
+    }
+    if (shape === 'registration') {
+      return result?.agent ? { ...result, agent: one(result.agent) } : result
     }
     return result
   }

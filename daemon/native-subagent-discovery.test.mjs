@@ -27,6 +27,7 @@ test('describes Codex native subagent ownership from session metadata', () => {
       harnessChildId: 'child-thread',
       parentSessionId: 'parent-thread',
       childName: 'worker',
+      agentPath: null,
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -49,6 +50,7 @@ test('describes Claude native subagent ownership from sidechain metadata and pat
       harnessChildId: 'child-id',
       parentSessionId: 'parent-session',
       childName: null,
+      agentPath: null,
     })
   } finally {
     rmSync(dir, { recursive: true, force: true })

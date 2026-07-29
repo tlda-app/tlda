@@ -5402,38 +5402,32 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'subagent-observed') {
     const parentAgentId = msg.parent_agent_id || null
     if (!parentAgentId) { error('subagent-observed requires parent_agent_id'); return }
+    const bindingKey = msg.binding_key || null
+    if (!bindingKey) { error('subagent-observed requires binding_key'); return }
     const parent = await fleetStore.getAgent?.(parentAgentId)
-    if (!parent || parent.dead) { error(`subagent parent "${parentAgentId}" is not live`); return }
+    if (!parent) { error(`subagent parent "${parentAgentId}" does not exist`); return }
 
     const childAgentId = mintFleetId()
     const childPart = String(msg.child_name || 'subagent').trim() || 'subagent'
     const requestedName = `${parent.friendly_name || parent.id}:${childPart}`
-    let assignedName
+    let registration
     try {
-      assignedName = await fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: childAgentId })
+      registration = await fleetStore.registerNativeSubagent({
+        bindingKey,
+        parentAgentId: parent.id,
+        childAgentId,
+        requestedName,
+        now: new Date().toISOString(),
+      })
     } catch (e) {
       error(e)
       return
     }
-    const now = new Date().toISOString()
-    const child = {
-      id: childAgentId,
-      parent_agent_id: parent.id,
-      friendly_name: assignedName,
-      cwd: parent.cwd || null,
-      labels: [],
-      registered_at: now,
-      last_seen: now,
-      dead: false,
-      human: false,
-      is_manager: false,
-      metadata: null,
-    }
-    await fleetStore.upsertAgent(child)
+    const child = registration?.agent
+    if (!child?.id) { error('subagent binding returned no child agent'); return }
     await fleetStore.ensureDefaultSubscription?.(child.id)
-    const stored = await fleetStore.getAgent?.(child.id) || child
-    broadcastState(stored)
-    reply({ ok: true, agent: stored })
+    if (registration.created) broadcastState(child)
+    reply({ ok: true, agent: child })
     return
   }
 
