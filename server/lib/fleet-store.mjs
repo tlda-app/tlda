@@ -366,10 +366,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_source_record
-        ON events(from_id, json_extract(metadata, '$.source_record_id'))
-        WHERE type = 'activity'
-          AND json_extract(metadata, '$.source_record_id') IS NOT NULL;
       CREATE TABLE IF NOT EXISTS transport_operations (
         operation_id TEXT PRIMARY KEY,
         operation_type TEXT NOT NULL,
@@ -1253,14 +1249,6 @@ export class FleetStore {
       INSERT INTO events (type, timestamp, from_id, to_id, text, metadata, task_id, agent_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    this._getActivityBySourceRecord = this.db.prepare(`
-      SELECT ${this._EVT}
-      FROM events
-      WHERE type = 'activity'
-        AND from_id = ?
-        AND json_extract(metadata, '$.source_record_id') = ?
-      LIMIT 1
-    `);
 
     this._insertUnread = this.db.prepare(`
       INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)
@@ -1590,48 +1578,20 @@ export class FleetStore {
       if (wiretapCc.length) metadata = { ...metadata, wiretap_cc: wiretapCc };
     }
     const meta = metadata ? JSON.stringify(metadata) : null;
-    const sourceRecordId = event.type === 'activity' && metadata && typeof metadata === 'object'
-      ? metadata.source_record_id
-      : null;
-    const restoredEvent = existing => ({
-      id: Number(existing.id),
-      type: existing.type,
-      timestamp: existing.timestamp,
-      from_id: existing.from || null,
-      to_id: existing.to || null,
-      text: existing.text || null,
-      metadata: existing.metadata ? JSON.parse(existing.metadata) : null,
-      task_id: existing.task_id || null,
-      agent_id: existing.agent_id || null,
-      read: false,
-    });
-    if (sourceRecordId && event.from) {
-      const existing = this._getActivityBySourceRecord.get(event.from, sourceRecordId);
-      if (existing) return restoredEvent(existing);
-    }
 
     // The events INSERT runs inside fleet-store.worker.mjs: a slow FTS merge
     // here never freezes the main event loop. We await it because we need the
     // real row id.
-    let result;
-    try {
-      result = await this._wAwait(this._insertEvent, [
-        event.type,
-        ts,
-        event.from || null,
-        event.to || null,
-        event.text || null,
-        meta,
-        event.taskId || null,
-        event.agentId || null,
-      ]);
-    } catch (error) {
-      if (sourceRecordId && event.from) {
-        const existing = this._getActivityBySourceRecord.get(event.from, sourceRecordId);
-        if (existing) return restoredEvent(existing);
-      }
-      throw error;
-    }
+    const result = await this._wAwait(this._insertEvent, [
+      event.type,
+      ts,
+      event.from || null,
+      event.to || null,
+      event.text || null,
+      meta,
+      event.taskId || null,
+      event.agentId || null,
+    ]);
 
     const eventId = result.lastInsertRowid;
 

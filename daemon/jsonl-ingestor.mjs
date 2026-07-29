@@ -1197,7 +1197,6 @@ export function createJsonlIngestor({
         startOffset,
         terminalChat: !!harness.terminalChat,
         backfillSearch: !!harness.backfillSearch,
-        nativeSubagent: !!nativeSubagent,
       })
     } catch (e) {
       childWatchers.delete(watchId)

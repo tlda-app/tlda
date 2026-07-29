@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { nativeActivitySourceRecordId } from '../../bin/fleet-jsonl-ingester.mjs'
 import { FleetStoreClient } from './fleet-store-client.mjs'
 import { FleetStore } from './fleet-store.mjs'
 
@@ -116,37 +115,6 @@ test('native child binding crosses the store worker boundary', async () => {
     assert.equal(retry.created, false)
     assert.equal(retry.agent.id, 'fleet:worker-child')
     assert.equal(await store.getAgent('fleet:worker-duplicate'), null)
-  } finally {
-    await store.close()
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('crash after child activity ACK but before cursor save inserts one authoritative activity', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-subagent-activity-'))
-  const store = new FleetStoreClient(join(dir, 'fleet.db'), { taskDoc: false })
-  try {
-    await store.ready()
-    const sourceRecordId = nativeActivitySourceRecordId('fleet:native-child', 417)
-    const activity = {
-      type: 'activity',
-      from: 'fleet:native-child',
-      to: 'fleet:native-child',
-      text: 'exec_command',
-      metadata: { source_record_id: sourceRecordId },
-      unread: false,
-    }
-
-    const acknowledged = await store.share(activity)
-    // A daemon restart before its delayed cursor save replays the same source
-    // record under a fresh transport/outbox operation.
-    const replayed = await store.share({
-      ...activity,
-      metadata: { ...activity.metadata, replay_delivery: 'fresh-outbox-id' },
-    })
-
-    assert.equal(replayed.id, acknowledged.id)
-    assert.equal((await store.getEventById(acknowledged.id)).metadata.source_record_id, sourceRecordId)
   } finally {
     await store.close()
     rmSync(dir, { recursive: true, force: true })
