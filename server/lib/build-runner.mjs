@@ -64,6 +64,7 @@ import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
+import { finalizeEditEventsForSourceRevision } from './edit-events.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -1736,6 +1737,12 @@ export async function recordBuildVersion({
     return { hash: current?.hash || null, committed: false }
   }
 
+  try {
+    await finalizeEditEventsForSourceRevision(name, { sourceRevision: sourceVersion, shadowRevision: result.hash })
+  } catch (e) {
+    console.error(`[build:${name}] edit-event finalization failed: ${e.message}`)
+    ctx.addLog(`Edit-event finalization failed after version commit: ${e.message}`)
+  }
   await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceVersion)
   _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
   return { hash: result.hash, committed: true, result }

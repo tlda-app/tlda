@@ -127,6 +127,7 @@ import {
 import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
+import { appendAgentActionFromActivity } from './lib/edit-events.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
@@ -8246,7 +8247,14 @@ async function handleDaemonWsMessage(ws, msg) {
     try {
       const serverBroadcastQueuedAtMs = Date.now()
       const activity = buildDaemonActivityRecord(msg, { serverReceivedAtMs, serverBroadcastQueuedAtMs })
-      await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
+      const storedActivity = await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
+      if (['Edit', 'Write', 'MultiEdit'].includes(tool)) {
+        appendAgentActionFromActivity({ ...activity, id: storedActivity?.id }, {
+          daemonKey: ws._daemonKey || null,
+          machineId: ws._machineId || null,
+          envName: ws._envName || null,
+        }).catch(e => console.error(`[edit-events] activity attribution ingest failed: ${e.message}`))
+      }
     } catch (e) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e
@@ -8507,7 +8515,17 @@ async function handleDaemonWsMessage(ws, msg) {
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     let replied = false
     try {
-      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId, sourceDaemonKey: ws._daemonKey || null })
+      const result = await processProjectPush(project, {
+        files,
+        deletedFiles,
+        sourceManifest,
+        editedBy,
+        expectedRevision,
+        requestId,
+        sourceDaemonKey: ws._daemonKey || null,
+        sourceMachineId: ws._machineId || null,
+        sourceEnvName: ws._envName || null,
+      })
       const { status: httpStatus, lifecycleStatus, ...payload } = result
       const reply = { type: 'source-change-result', requestId, project, ...payload, httpStatus, status: lifecycleStatus || (result.ok ? 'accepted' : 'error') }
       resultCache.record(requestId, cached.hash, reply)

@@ -34,6 +34,7 @@ import {
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
+import { recordAcceptedSourceTransaction } from '../lib/edit-events.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -1005,6 +1006,14 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       if (transactionTest.failAt === 'after-remote') throw new Error('Injected failure after remote success')
     }
     transaction.commit()
+    if (acceptedSourceMutation) {
+      try {
+        await recordAcceptedSourceTransaction(name, body || {}, acceptedSourceMutation)
+      } catch (attributionError) {
+        // Source is already committed; attribution is derived and must not roll it back.
+        console.error(`[${name}] edit-event attribution record failed: ${attributionError.message}`)
+      }
+    }
   } catch (e) {
     if (remotePublished) {
       try {

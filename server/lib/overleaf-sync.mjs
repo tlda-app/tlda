@@ -128,6 +128,47 @@ function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }
 
+async function gitCommitRecords(dir, range) {
+  const { stdout } = await execAsync(
+    `git log --reverse --format=%H%x00%aN%x00%aE%x00%aI%x00%cN%x00%cE%x00%cI%x00 ${range}`,
+    { cwd: dir, timeout: 30000, maxBuffer: 50 * 1024 * 1024 },
+  )
+  const fields = stdout.split('\0')
+  const commits = []
+  for (let i = 0; i + 7 < fields.length; i += 8) {
+    const hash = fields[i]?.trim()
+    if (!hash) continue
+    const changed = await execAsync(
+      `git diff-tree --no-commit-id --name-status -r -z ${shellQuote(hash)}`,
+      { cwd: dir, timeout: 30000, maxBuffer: 10 * 1024 * 1024 },
+    )
+    const changedPaths = []
+    const deletedPaths = []
+    const tokens = changed.stdout.split('\0').filter(Boolean)
+    for (let j = 0; j < tokens.length;) {
+      const status = tokens[j++]
+      if (status.startsWith('R') || status.startsWith('C')) {
+        const oldPath = tokens[j++]
+        const newPath = tokens[j++]
+        if (status.startsWith('R')) deletedPaths.push(oldPath)
+        changedPaths.push(newPath)
+      } else {
+        const relPath = tokens[j++]
+        if (status === 'D') deletedPaths.push(relPath)
+        else changedPaths.push(relPath)
+      }
+    }
+    commits.push({
+      hash,
+      author: { name: fields[i + 1] || '', email: fields[i + 2] || '', timestamp: fields[i + 3] || null },
+      committer: { name: fields[i + 4] || '', email: fields[i + 5] || '', timestamp: fields[i + 6] || null },
+      changed_paths: changedPaths.filter(p => !shouldSkip(p)),
+      deleted_paths: deletedPaths.filter(p => !shouldSkip(p)),
+    })
+  }
+  return commits
+}
+
 function pathInsideClone(name, relPath) {
   const dir = cloneDir(name)
   const full = join(dir, relPath)
@@ -178,7 +219,8 @@ async function fetchAndDiff(dir) {
   }
   const upstream = (await execAsync('git rev-parse @{u}', { cwd: dir, timeout: 5000 })).stdout.trim()
 
-  if (upstream === before) return { changed: [], deleted: [], head: before, unchanged: true }
+  if (upstream === before) return { changed: [], deleted: [], head: before, unchanged: true, commits: [] }
+  const commits = await gitCommitRecords(dir, `${shellQuote(before)}..${shellQuote(upstream)}`)
 
   // name-status diff: lines are "<status>\t<path>" (R/C give two paths).
   const { stdout } = await execAsync(
@@ -209,6 +251,7 @@ async function fetchAndDiff(dir) {
     changed: [...changed].filter(p => !shouldSkip(p)),
     deleted: [...deleted].filter(p => !shouldSkip(p)),
     head: upstream,
+    commits,
     unchanged: false,
   }
 }
@@ -382,11 +425,12 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   const retryHead = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
   const sourceContext = sourceManifestContext(project)
   const isAuthoredSource = path => !shouldSkip(path) && isSourceFilePath(path, sourceContext)
-  let changedPaths, deletedPaths, head
+  let changedPaths, deletedPaths, head, commits = []
   if (initial) {
     changedPaths = (await trackedFiles(dir)).filter(isAuthoredSource)
     deletedPaths = []
     head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
+    commits = await gitCommitRecords(dir, shellQuote(head))
   } else {
     const diff = await fetchAndDiff(dir)
     if (diff.unchanged) {
@@ -401,6 +445,11 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     changedPaths = diff.changed.filter(isAuthoredSource)
     deletedPaths = diff.deleted.filter(isAuthoredSource)
     head = diff.head
+    commits = (diff.commits || []).map(commit => ({
+      ...commit,
+      changed_paths: (commit.changed_paths || []).filter(isAuthoredSource),
+      deleted_paths: (commit.deleted_paths || []).filter(isAuthoredSource),
+    }))
   }
 
   let sourceManifest
@@ -422,7 +471,15 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
   const expectedRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
-  const result = await processPush(name, { expectedRevision, files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
+  const result = await processPush(name, {
+    expectedRevision,
+    files,
+    deletedFiles: deletedPaths,
+    sourceManifest,
+    overleafSync: true,
+    overleafRemote: project.overleafRemote || null,
+    overleafCommits: commits,
+  })
 
   if (!result?.ok) {
     await execAsync(`git reset --hard ${shellQuote(retryHead)}`, { cwd: dir, timeout: 30000 })
