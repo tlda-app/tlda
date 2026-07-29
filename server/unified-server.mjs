@@ -1379,10 +1379,21 @@ const filterSubscriptions = createFilterSubscriptions({
     const ids = [...new Set((agentIds || []).filter(Boolean))]
     if (!ids.length) return []
     const agents = await fleetStore?.getAgentsByIds?.(ids) || []
-    const parentIds = [...new Set(agents.map(agent => agent?.parent_agent_id).filter(Boolean))]
-    if (!parentIds.length) return agents
-    const parents = await fleetStore?.getAgentsByIds?.(parentIds) || []
-    return [...agents, ...parents.filter(parent => !ids.includes(parent.id))]
+    const seen = new Set(agents.map(agent => agent.id))
+    let frontier = [...new Set(agents.map(agent => agent?.parent_agent_id).filter(Boolean))]
+    while (frontier.length) {
+      const parents = await fleetStore?.getAgentsByIds?.(frontier) || []
+      frontier = []
+      for (const parent of parents) {
+        if (seen.has(parent.id)) continue
+        seen.add(parent.id)
+        agents.push(parent)
+        if (parent.parent_agent_id && !seen.has(parent.parent_agent_id)) {
+          frontier.push(parent.parent_agent_id)
+        }
+      }
+    }
+    return agents
   },
   loadMembershipSpans: async (labels, bounds) =>
     await fleetStore?.filterMembershipSpans?.(labels, bounds) || [],

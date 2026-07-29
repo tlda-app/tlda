@@ -245,7 +245,7 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
 
 interface DragState {
   pillId: string | null
-  pillType: 'agent' | 'label'
+  pillType: 'agent' | 'label' | 'team'
   value: string
   displayName: string
   color: string
@@ -278,7 +278,7 @@ export function usePillDrag() {
 
   const startDrag = useCallback((
     e: React.PointerEvent,
-    pillType: 'agent' | 'label',
+    pillType: 'agent' | 'label' | 'team',
     value: string,
     displayName: string,
     color: string,
@@ -846,12 +846,17 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       lastMessage={lastMessages[agentExactName(item.agent)] || ''}
                       childCount={childFolding.childCounts.get(item.agent.id) || 0}
                       childrenFolded={childFolding.foldedParentIds.has(item.agent.id)}
-                      onToggleChildren={() => {
-                        setChildFoldOverrides(current => ({
+                      onChildrenPointerDown={(e) => startDrag(
+                        e,
+                        'team',
+                        item.agent.id,
+                        `${agentDisplayLabel(item.agent)} + team`,
+                        getFleetAgentNickColor(item.agent.id),
+                        () => setChildFoldOverrides(current => ({
                           ...current,
                           [item.agent.id]: !childFolding.foldedParentIds.has(item.agent.id),
-                        }))
-                      }}
+                        })),
+                      )}
                       onToggleExpand={toggleAgent}
                       onHibernate={() => hibernateSession(item.agent.id)}
                       onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color, toggleAgent) }}
@@ -1010,7 +1015,7 @@ function OptimisticAgentRow({
   opt: OptimisticAgent
   onDismiss: () => void
   onRetry: () => void
-  onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
+  onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label' | 'team', value: string, displayName: string, color: string) => void
 }) {
   const isError = opt.status === 'error'
   const nameText = opt.name || '…'

@@ -2096,6 +2096,10 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-fold-btn {
   width: 12px;
   font-size: 10px;
+  cursor: grab;
+}
+.fleet-filter-replace-zone-disabled {
+  opacity: 0.45;
 }
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-fold-btn,

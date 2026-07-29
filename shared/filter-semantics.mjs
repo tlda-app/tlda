@@ -1,11 +1,49 @@
 import { labelsForAgent, evalExprDirectional } from './fleet-labels.mjs'
 
+export const FLEET_TEAM_FROM_ROLE = 'team-from'
+export const FLEET_TEAM_TO_ROLE = 'team-to'
+export const FLEET_DESCENDANT_LABEL_PREFIX = 'descendant-of:'
+
+export function fleetDescendantLabel(parentId) {
+  return `${FLEET_DESCENDANT_LABEL_PREFIX}${parentId}`
+}
+
+/**
+ * @param {any} filter
+ * @param {{ agents?: any[] }} [options]
+ */
+export function fleetFilterSendTargets(filter, { agents = [] } = {}) {
+  const seen = new Set()
+  const targets = []
+  for (const clause of filter || []) {
+    for (const term of clause || []) {
+      if (!Array.isArray(term)) continue
+      const [role, label] = term
+      if (role !== 'to' && role !== 'dm' && role !== FLEET_TEAM_TO_ROLE) continue
+      const agent = agents.find(candidate => labelsForAgent(candidate).includes(label))
+      const key = agent?.id || label
+      if (seen.has(key)) continue
+      seen.add(key)
+      targets.push(label)
+    }
+  }
+  return targets
+}
+
 export function filterLabelsForAgent(agent, agents = []) {
   const labels = new Set(labelsForAgent(agent))
   if (!agent?.parent_agent_id) return [...labels]
   labels.add(agent.parent_agent_id)
   const parent = agents.find(candidate => candidate?.id === agent.parent_agent_id)
   if (parent?.friendly_name) labels.add(parent.friendly_name)
+  const byId = new Map(agents.map(candidate => [candidate?.id, candidate]))
+  const seen = new Set()
+  let parentId = agent.parent_agent_id
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId)
+    labels.add(fleetDescendantLabel(parentId))
+    parentId = byId.get(parentId)?.parent_agent_id || null
+  }
   return [...labels]
 }
 
@@ -77,6 +115,11 @@ function isDmWithTarget(event, targetLabel, context) {
 // counterpart, so it stays a local pre-check rather than a shared leaf.
 function leafNode(token) { return { t: 'lit', v: token } }
 
+function participantId(event, role) {
+  if (role === 'from') return event.from || event.from_id || event.agent || event.agent_id || null
+  return event.to || event.to_id || event.agent || event.agent_id || null
+}
+
 export function matchesFleetFilter(filter, event, context = {}) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
@@ -96,6 +139,16 @@ export function matchesFleetFilter(filter, event, context = {}) {
     if (Array.isArray(term)) {
       const [role, label] = term
       if (role === 'dm') return isDmWithTarget(event, label, context)
+      if (role === FLEET_TEAM_FROM_ROLE) {
+        const actor = participantId(event, 'from')
+        return actor === label ||
+          agentMatchesLabel(actor, fleetDescendantLabel(label), context)
+      }
+      if (role === FLEET_TEAM_TO_ROLE) {
+        const actor = participantId(event, 'from')
+        return participantId(event, 'to') === label ||
+          agentMatchesLabel(actor, fleetDescendantLabel(label), context)
+      }
       // [from,x] -> "from:x", [to,x] -> "to:x" leaf for the shared evaluator.
       return evalExprDirectional(leafNode(`${role}:${label}`), dirCtx)
     }
@@ -115,7 +168,12 @@ export function fleetFilterLabels(filter) {
     if (!Array.isArray(clause)) continue
     for (const term of clause) {
       const label = termLabel(term)
-      if (label) labels.add(label)
+      if (!label) continue
+      labels.add(label)
+      if (Array.isArray(term) &&
+          (term[0] === FLEET_TEAM_FROM_ROLE || term[0] === FLEET_TEAM_TO_ROLE)) {
+        labels.add(fleetDescendantLabel(label))
+      }
     }
   }
   return labels

@@ -38,7 +38,7 @@ export function FleetAgentDirectoryRow({
   onToggleExpand,
   childCount = 0,
   childrenFolded = false,
-  onToggleChildren,
+  onChildrenPointerDown,
   onHibernate,
   onAgentPointerDown,
   onAgentPointerUp,
@@ -55,7 +55,7 @@ export function FleetAgentDirectoryRow({
   onToggleExpand?: (e: React.PointerEvent) => void
   childCount?: number
   childrenFolded?: boolean
-  onToggleChildren?: (e: React.PointerEvent) => void
+  onChildrenPointerDown?: (e: React.PointerEvent) => void
   onHibernate?: (e: React.PointerEvent) => void
   onAgentPointerDown?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onAgentPointerUp?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
@@ -81,12 +81,12 @@ export function FleetAgentDirectoryRow({
           {childCount > 0 && (
             <span
               className="fleet-agents-fold-btn"
-              onPointerDown={(e) => e.stopPropagation()}
-              onPointerUp={(e) => {
+              onPointerDown={(e) => {
                 e.stopPropagation()
-                onToggleChildren?.(e)
+                onChildrenPointerDown?.(e)
               }}
-              title={`${childrenFolded ? 'Show' : 'Hide'} ${childCount} native ${childCount === 1 ? 'child' : 'children'}`}
+              onPointerUp={(e) => e.stopPropagation()}
+              title={`${childrenFolded ? 'Show' : 'Hide'} ${childCount} native ${childCount === 1 ? 'child' : 'children'}; drag to filter parent + team`}
             >
               {childrenFolded ? '▸' : '▾'}
             </span>

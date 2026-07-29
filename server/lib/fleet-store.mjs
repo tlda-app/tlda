@@ -2529,6 +2529,26 @@ export class FleetStore {
         WHERE child.parent_agent_id IN (${holes})
       `).all(...chunk);
       out.push(...parentIds.filter(row => overlap(row.from_ts, row.to_ts)));
+
+      for (const label of chunk) {
+        const prefix = 'descendant-of:';
+        if (!label.startsWith(prefix)) continue;
+        const parentId = label.slice(prefix.length);
+        if (!parentId) continue;
+        const descendants = this.db.prepare(`
+          WITH RECURSIVE subtree(id, registered_at) AS (
+            SELECT id, registered_at FROM agents WHERE parent_agent_id = ?
+            UNION
+            SELECT child.id, child.registered_at
+            FROM agents child JOIN subtree parent ON child.parent_agent_id = parent.id
+          )
+          SELECT id AS fleet_id, ? AS label,
+                 COALESCE(registered_at, '1970-01-01T00:00:00.000Z') AS from_ts,
+                 NULL AS to_ts
+          FROM subtree
+        `).all(parentId, label);
+        out.push(...descendants.filter(row => overlap(row.from_ts, row.to_ts)));
+      }
     }
 
     // `human` is an identity fact, separate from the human `here`/`away`

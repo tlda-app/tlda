@@ -44,7 +44,10 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
 import {
+  FLEET_TEAM_FROM_ROLE,
+  FLEET_TEAM_TO_ROLE,
   classifyFleetComposerTrafficMode,
+  fleetFilterSendTargets,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
   nextFleetComposerTrafficMode,
@@ -4473,7 +4476,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!myBounds) return ''
     for (const pill of pills) {
       const props = pill.props
-      if (props.pillType !== 'agent' && props.pillType !== 'label') continue
+      if (props.pillType !== 'agent' && props.pillType !== 'label' && props.pillType !== 'team') continue
       const pb = editor.getShapePageBounds(pill.id)
       if (!pb) continue
       const cx = pb.x + pb.w / 2
@@ -4481,15 +4484,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (cx >= myBounds.x && cx <= myBounds.x + myBounds.w &&
           cy >= myBounds.y && cy <= myBounds.y + myBounds.h) {
         const role = cy < myBounds.y + myBounds.h / 2 ? 'to' : 'from'
-        return `${role}\0${props.value}\0${props.displayName}`
+        return `${role}\0${props.value}\0${props.displayName}\0${props.pillType}`
       }
     }
     return ''
   }, [editor, shape.id, fleetPillCount])
   const pillOver = useMemo(() => {
     if (!pillOverKey) return null
-    const [role, value, displayName] = pillOverKey.split('\0')
-    return { role, value, displayName }
+    const [role, value, displayName, pillType] = pillOverKey.split('\0')
+    return { role, value, displayName, pillType }
   }, [pillOverKey])
 
   // Auto-open filter mode when pill hovers over this chat
@@ -4505,14 +4508,8 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Derive send targets: unique agents in "to" clauses only
   const sendTargets = useMemo(() => {
-    const seen = new Set<string>()
-    for (const clause of filter) {
-      for (const [role, label] of clause) {
-        if (role === 'to' || role === 'dm') seen.add(label)
-      }
-    }
-    return [...seen]
-  }, [filterKey])
+    return fleetFilterSendTargets(filter, { agents })
+  }, [filterKey, agents])
   sendTargetsRef.current = sendTargets
 
   const humanFilterLabel = getHumanName() || getHumanId() || 'user'
@@ -6245,7 +6242,7 @@ export function FleetChatFilterMode({
   filter: [string, string][][]
   shapeId: any
   editor: any
-  externalPillOver?: { role: string; value: string; displayName: string } | null
+  externalPillOver?: { role: string; value: string; displayName: string; pillType?: string } | null
   surface?: 'body' | 'overlay'
 }) {
   // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
@@ -6312,13 +6309,13 @@ export function FleetChatFilterMode({
     const shapeBounds = editor.getShapePageBounds(shapeId)
     if (!shapeBounds || cx < shapeBounds.x || cx > shapeBounds.x + shapeBounds.w ||
         cy < shapeBounds.y || cy > shapeBounds.y + shapeBounds.h) return ''
-    return `${pill.props.value}\0${pill.props.displayName}`
+    return `${pill.props.value}\0${pill.props.displayName}\0${pill.props.pillType}`
   }, [editor, shapeId, fleetPillCount])
 
   const internalPillOver = useMemo(() => {
     if (!pillOverKey) return null
-    const [value, displayName] = pillOverKey.split('\0')
-    return { value, displayName }
+    const [value, displayName, pillType] = pillOverKey.split('\0')
+    return { value, displayName, pillType }
   }, [pillOverKey])
   const pillOver = externalPillOver ?? internalPillOver
   const externalPane = fleetPillCount === 0 && (
@@ -6408,12 +6405,14 @@ export function FleetChatFilterMode({
 
   const toPreview = useMemo(() => {
     if (!pillOver) return null
-    return buildFilterPreview(filter, 'to', pillOver.value, toGroupIdx)
+    const role = pillOver.pillType === 'team' ? FLEET_TEAM_TO_ROLE : 'to'
+    return buildFilterPreview(filter, role, pillOver.value, toGroupIdx)
   }, [pillOver, filter, toGroupIdx])
 
   const fromPreview = useMemo(() => {
     if (!pillOver) return null
-    return buildFilterPreview(filter, 'from', pillOver.value, fromGroupIdx)
+    const role = pillOver.pillType === 'team' ? FLEET_TEAM_FROM_ROLE : 'from'
+    return buildFilterPreview(filter, role, pillOver.value, fromGroupIdx)
   }, [pillOver, filter, fromGroupIdx])
 
   // Highlight index: if hovering a group, that group; if new OR clause, the last group
@@ -6426,7 +6425,9 @@ export function FleetChatFilterMode({
   // where the preview is visible but activePaneRole is still null/stale.
   useLayoutEffect(() => {
     if (pillOver) {
-      const replacePreview: [string, string][][] = [[['to', pillOver.value]], [['from', pillOver.value]]]
+      const replacePreview: [string, string][][] | null = pillOver.pillType === 'team'
+        ? null
+        : [[['to', pillOver.value]], [['from', pillOver.value]]]
       const activePaneRole = (hoveredGroup?.pane as 'to' | 'from' | 'replace' | null) ?? null
       const activePreview = activePaneRole === 'replace'
         ? replacePreview
@@ -6492,13 +6493,22 @@ export function FleetChatFilterMode({
 
   // Render a single chip (role:label) — matches dashboard's chipHtml
   function renderChip(role: string, label: string, opts?: { ghost?: boolean; x?: { ci: number; ti: number } }) {
+    const isTeam = role === FLEET_TEAM_FROM_ROLE || role === FLEET_TEAM_TO_ROLE
+    const visibleRole = role === FLEET_TEAM_FROM_ROLE
+      ? 'from'
+      : role === FLEET_TEAM_TO_ROLE
+        ? 'to'
+        : role
+    const teamParent = isTeam ? choiceAgents.find(agent => agent.id === label) : null
+    const visibleLabel = teamParent ? agentDisplayLabel(teamParent) : label
     // The value is always the exact friendly_name (an opaque atom); PrettyName is
     // display-only. A plain non-agent label renders verbatim.
     return (
       <span className={`fleet-filter-chip fleet-filter-chip-${role}${opts?.ghost ? ' fleet-filter-chip-ghost' : ''}`}>
-        <span className="fleet-filter-chip-role">{role}:</span>
+        <span className="fleet-filter-chip-role">{visibleRole}:</span>
         <span className="fleet-filter-chip-label">
-          <PrettyName prettyName={label} />
+          <PrettyName prettyName={visibleLabel} />
+          {isTeam && <span> + team</span>}
         </span>
         {opts?.x && (
           <span className="fleet-filter-term-x" data-clause={opts.x.ci} data-term={opts.x.ti}>×</span>
@@ -6583,15 +6593,22 @@ export function FleetChatFilterMode({
       {pillOver ? (
         /* Drop preview: left third = only/to+from, right side stacks to/from */
         <div className="fleet-filter-drop-panes">
-          <div
-            ref={replaceZoneRef}
-            className={`fleet-filter-replace-zone${hoveredGroup?.pane === 'replace' ? ' fleet-filter-replace-zone-active' : ''}`}
-          >
-            <span className="fleet-filter-replace-label">only</span>
-            {renderChip('to', pillOver.value)}
-            <span className="fleet-filter-replace-sep">+</span>
-            {renderChip('from', pillOver.value)}
-          </div>
+          {pillOver.pillType === 'team' ? (
+            <div className="fleet-filter-replace-zone fleet-filter-replace-zone-disabled">
+              <span className="fleet-filter-replace-label">parent + team</span>
+              <span className="fleet-filter-replace-sep">choose to or from</span>
+            </div>
+          ) : (
+            <div
+              ref={replaceZoneRef}
+              className={`fleet-filter-replace-zone${hoveredGroup?.pane === 'replace' ? ' fleet-filter-replace-zone-active' : ''}`}
+            >
+              <span className="fleet-filter-replace-label">only</span>
+              {renderChip('to', pillOver.value)}
+              <span className="fleet-filter-replace-sep">+</span>
+              {renderChip('from', pillOver.value)}
+            </div>
+          )}
           <div
             ref={toPaneRef}
             className={`fleet-filter-drop-pane fleet-filter-pane-to${hoveredGroup?.pane === 'to' ? ' fleet-filter-pane-active' : ''}`}
@@ -6601,7 +6618,7 @@ export function FleetChatFilterMode({
               highlightIdx: toHighlightIdx,
             }) : (
               <div className="fleet-filter-and-group fleet-filter-and-group-highlight">
-                {renderChip('to', pillOver.value, { ghost: true })}
+                {renderChip(pillOver.pillType === 'team' ? FLEET_TEAM_TO_ROLE : 'to', pillOver.value, { ghost: true })}
               </div>
             )}
           </div>
@@ -6614,7 +6631,7 @@ export function FleetChatFilterMode({
               highlightIdx: fromHighlightIdx,
             }) : (
               <div className="fleet-filter-and-group fleet-filter-and-group-highlight">
-                {renderChip('from', pillOver.value, { ghost: true })}
+                {renderChip(pillOver.pillType === 'team' ? FLEET_TEAM_FROM_ROLE : 'from', pillOver.value, { ghost: true })}
               </div>
             )}
           </div>

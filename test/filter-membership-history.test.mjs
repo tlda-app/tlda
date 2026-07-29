@@ -200,3 +200,25 @@ test('native child membership follows the parent name and id across ingested chi
   )
   store.close()
 })
+
+test('descendant membership spans include the full native subtree', () => {
+  const dbPath = tempDb()
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  insertAgent(store, 'fleet:parent', '2026-07-28T09:00:00.000Z')
+  insertAgent(store, 'fleet:child', '2026-07-28T10:00:00.000Z', {
+    parent_agent_id: 'fleet:parent',
+  })
+  insertAgent(store, 'fleet:grandchild', '2026-07-28T11:00:00.000Z', {
+    parent_agent_id: 'fleet:child',
+  })
+
+  assert.deepEqual(
+    store.filterMembershipSpans(['descendant-of:fleet:parent'], {})
+      .map(span => [span.label, span.fleet_id, span.from_ts, span.to_ts]),
+    [
+      ['descendant-of:fleet:parent', 'fleet:child', '2026-07-28T10:00:00.000Z', null],
+      ['descendant-of:fleet:parent', 'fleet:grandchild', '2026-07-28T11:00:00.000Z', null],
+    ],
+  )
+  store.close()
+})

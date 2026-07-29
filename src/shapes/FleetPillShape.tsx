@@ -304,6 +304,7 @@ export async function dropPillOnTarget(
   pagePoint: { x: number; y: number },
   content?: string,
 ) {
+  const draggedPillType = (editor.getShape(pillId)?.props as { pillType?: string } | undefined)?.pillType
   // Prefer the main editor for shape creation — the calling editor may be a
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
@@ -545,7 +546,7 @@ export async function dropPillOnTarget(
         collapsed: true,
       },
     })
-  } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
+  } else if (!content && draggedPillType !== 'team' && (!hitShape || hitShape.type !== 'fleet-agents')) {
     await createFleetShape(createEditor, 'fleet-chat', createPagePoint.x, createPagePoint.y, {
       w: CHAT_W,
       h: CHAT_H,
@@ -587,7 +588,8 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => false
   override canBind = () => false
-  override canSnap = (shape: any) => shape.props?.pillType === 'agent' || shape.props?.pillType === 'label'
+  override canSnap = (shape: any) =>
+    shape.props?.pillType === 'agent' || shape.props?.pillType === 'label' || shape.props?.pillType === 'team'
   override hideRotateHandle = () => true
   override hideSelectionBoundsBg = () => true
   override hideSelectionBoundsFg = () => true
@@ -604,7 +606,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     // Fleet pills move freely even when native snap mode is enabled elsewhere.
     // Save the user's previous state and restore it when the drag ends.
     const pill = shape as any
-    if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label') {
+    if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label' || pill.props?.pillType === 'team') {
       _snapState.prevSnapMode = this.editor.user.getIsSnapMode()
       this.editor.user.updateUserPreferences({ isSnapMode: false })
     }
@@ -614,7 +616,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   // collapse back when over a fleet shape.
   override onTranslate = (_initial: TLShape, current: TLShape) => {
     const pill = current as any
-    if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label') return
+    if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label' && pill.props?.pillType !== 'team') return
 
     const editor = this.editor
     const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
@@ -703,7 +705,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     const isContent = pillType === 'msg' || pillType === 'code' || pillType === 'activity' || pillType === 'tool'
     const isFileBackedDoc = pillType === 'doc' && typeof shape.props.value === 'string' && shape.props.value.startsWith('file:')
     const isDotForm = (pillType === 'doc' && !isFileBackedDoc) || pillType === 'annotation' || pillType === 'file'
-    const isAgentPill = pillType === 'agent' || pillType === 'label'
+    const isAgentPill = pillType === 'agent' || pillType === 'label' || pillType === 'team'
 
     // Hide ghost when the pill is over an existing fleet shape (drop = filter update, not new chat)
     const overFleetShape = useValue('pill-over-fleet', () => {

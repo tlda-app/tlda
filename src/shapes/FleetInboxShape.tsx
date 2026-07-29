@@ -547,7 +547,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     if (!myBounds) return ''
     for (const pill of pills) {
       const props = pill.props
-      if (props.pillType !== 'agent' && props.pillType !== 'label') continue
+      if (props.pillType !== 'agent' && props.pillType !== 'label' && props.pillType !== 'team') continue
       const pb = editor.getShapePageBounds(pill.id)
       if (!pb) continue
       const cx = pb.x + pb.w / 2
@@ -555,15 +555,15 @@ function FleetInboxInner({ shape }: { shape: any }) {
       if (cx >= myBounds.x && cx <= myBounds.x + myBounds.w &&
           cy >= myBounds.y && cy <= myBounds.y + myBounds.h) {
         const role = cy < myBounds.y + myBounds.h / 2 ? 'to' : 'from'
-        return `${role}\0${props.value}\0${props.displayName}`
+        return `${role}\0${props.value}\0${props.displayName}\0${props.pillType}`
       }
     }
     return ''
   }, [editor, shape.id])
   const pillOver = useMemo(() => {
     if (!pillOverKey) return null
-    const [role, value, displayName] = pillOverKey.split('\0')
-    return { role, value, displayName }
+    const [role, value, displayName, pillType] = pillOverKey.split('\0')
+    return { role, value, displayName, pillType }
   }, [pillOverKey])
 
   useEffect(() => {

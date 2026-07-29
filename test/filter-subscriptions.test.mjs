@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createFilterSubscriptions, filterKey } from '../server/lib/filter-subscriptions.mjs';
+import { fleetFilterSendTargets } from '../shared/filter-semantics.mjs';
 
 const CHIEF = { id: 'fleet:b6d7cc18', friendly_name: 'chief2', labels: [] };
+const CHILD = { id: 'fleet:child', parent_agent_id: CHIEF.id, friendly_name: 'chief2:Plan', labels: [] };
+const GRANDCHILD = { id: 'fleet:grandchild', parent_agent_id: CHILD.id, friendly_name: 'chief2:Plan:Probe', labels: [] };
 const TODD = { id: 'fleet:t0dd', friendly_name: 'todd', labels: [] };
 const SKIP = 'fleet:skip';
 
@@ -70,6 +73,45 @@ test('direction is preserved through the registry', async () => {
   subs.subscribe({}, 'p', [[['to', 'chief2']]], { humanId: SKIP });
   assert.equal((await subs.match(chat(CHIEF.id, SKIP))).length, 0, 'to: must not match a message FROM');
   assert.equal((await subs.match(chat(SKIP, CHIEF.id))).length, 1, 'to: must match a message TO');
+});
+
+test('team filters keep the parent relation and add descendant activity only', async () => {
+  const roster = () => [CHIEF, CHILD, GRANDCHILD, TODD];
+  const subs = makeSubs(roster);
+  const teamFrom = [[['team-from', CHIEF.id]]];
+  const teamTo = [[['team-to', CHIEF.id]]];
+  const withRoster = event => ({ ...event, _filter_agents: roster() });
+
+  for (const event of [
+    chat(CHIEF.id, SKIP),
+    chat(CHILD.id, SKIP),
+    chat(GRANDCHILD.id, SKIP),
+  ]) {
+    assert.equal(await subs.verdict(teamFrom, withRoster(event), { humanId: SKIP }), true);
+  }
+  assert.equal(await subs.verdict(teamFrom, withRoster(chat(TODD.id, SKIP)), { humanId: SKIP }), false);
+
+  assert.equal(await subs.verdict(teamTo, withRoster(chat(SKIP, CHIEF.id)), { humanId: SKIP }), true);
+  assert.equal(await subs.verdict(teamTo, withRoster(chat(CHILD.id, SKIP)), { humanId: SKIP }), true);
+  assert.equal(await subs.verdict(teamTo, withRoster(chat(GRANDCHILD.id, SKIP)), { humanId: SKIP }), true);
+  assert.equal(
+    await subs.verdict(teamTo, withRoster({ type: 'activity', agent: CHIEF.id, _activity: true }), { humanId: SKIP }),
+    true,
+    'the parent must retain the to pane’s ordinary activity semantics',
+  );
+  assert.equal(
+    await subs.verdict(teamTo, withRoster(chat(CHIEF.id, SKIP)), { humanId: SKIP }),
+    false,
+    'a to/team pill must not turn parent-sent traffic into a symmetric team relation',
+  );
+  assert.equal(await subs.verdict(teamTo, withRoster(chat(SKIP, CHILD.id)), { humanId: SKIP }), false);
+  assert.deepEqual(fleetFilterSendTargets(teamTo), [CHIEF.id]);
+  assert.deepEqual(fleetFilterSendTargets(teamFrom), []);
+  assert.deepEqual(
+    fleetFilterSendTargets([[['to', CHIEF.friendly_name]], [['team-to', CHIEF.id]]], { agents: roster() }),
+    [CHIEF.friendly_name],
+    'the parent id and friendly name must not become duplicate composer recipients',
+  );
 });
 
 test('dm: is scoped per subscriber, and two humans on one filter cost two evaluations', async () => {
