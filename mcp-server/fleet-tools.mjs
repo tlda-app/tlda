@@ -1986,6 +1986,7 @@ async function nativeChildBinding(threadId) {
     `${TLDA_FLEET_SERVER}/api/fleet/native-subagent-binding/${encodeURIComponent(PARENT_AGENT_ID)}/${encodeURIComponent(threadId)}`,
     { signal: AbortSignal.timeout(2000) },
   );
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error(`native child identity lookup returned HTTP ${res.status}`);
   return await res.json();
 }
