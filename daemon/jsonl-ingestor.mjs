@@ -349,6 +349,7 @@ export function createJsonlIngestor({
   }
   let cursors = loadCursors() // { sessionId: { inode, offset } }
   const nativeSubagentDescriptors = new Map()
+  const pendingNativeSubagentPaths = new Set()
 
   // Throttle saveCursors — flush at most once per 2s.
   let _cursorSaveTimer = null
@@ -678,6 +679,14 @@ export function createJsonlIngestor({
     return true
   }
 
+  function retryPendingNativeSubagents() {
+    if (pendingNativeSubagentPaths.size === 0 || !isServerReady()) return false
+    const paths = [...pendingNativeSubagentPaths]
+    void sessionWatcherSyncRunner.sync({ agentList: getAgents(), paths })
+      .catch(e => log.error(`native subagent retry failed: ${e.stack || e.message}`))
+    return true
+  }
+
   function retryPendingJsonlBackfillJobs() {
     const jobs = [...searchBackfillJobs.values()]
     if (jobs.length === 0) return
@@ -898,6 +907,7 @@ export function createJsonlIngestor({
       try {
         nativeSubagent = await resolveNativeSubagent(resolvedPath, sessionId)
       } catch (e) {
+        pendingNativeSubagentPaths.add(resolvedPath)
         log.warn(`native subagent registration failed for ${path.basename(resolvedPath)}: ${e?.message || e}`)
         sendMsg({
           type: 'daemon-warning',
@@ -907,7 +917,11 @@ export function createJsonlIngestor({
         })
         continue
       }
-      if (nativeSubagent?.pendingParent) continue
+      if (nativeSubagent?.pendingParent) {
+        pendingNativeSubagentPaths.add(resolvedPath)
+        continue
+      }
+      pendingNativeSubagentPaths.delete(resolvedPath)
 
       if (pathWatchers.has(resolvedPath)) {
         const pw = pathWatchers.get(resolvedPath)
@@ -1613,6 +1627,7 @@ export function createJsonlIngestor({
     rosterSignature: sessionWatcherRosterSignature,
     scheduleJsonlDirSync,
     resumeAfterServerReady: resumeJsonlIngesterAfterServerReady,
+    retryPendingNativeSubagents,
     resolveEditor,
     hasWatcherForAgent,
     teardown,

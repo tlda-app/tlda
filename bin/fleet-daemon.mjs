@@ -1383,6 +1383,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     reconcileJsonlProcessBindings('daemon-welcome')
     registerHostedAgentRoutes()
     jsonlIngestor.resumeAfterServerReady()
+    jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     agentLiveness.start()
