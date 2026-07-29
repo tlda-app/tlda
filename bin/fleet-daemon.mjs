@@ -997,6 +997,7 @@ machineRpc.register({
   ...localArtifacts.handlers,
   'write-backing-file': backingFiles.write,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
+  'apply-source-update': params => sourceSync.applyAcceptedSourceUpdate(params),
   'reaper-kill': devReaper.rpcKill,
   'reaper-sweep': devReaper.rpcSweep,
 })

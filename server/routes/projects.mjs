@@ -783,6 +783,17 @@ function withAcceptedChangedFiles(result, files) {
   return result
 }
 
+function withAcceptedSourceMutation(result, mutation) {
+  if (mutation) Object.defineProperty(result, 'acceptedSourceMutation', { value: mutation })
+  return result
+}
+
+let acceptedSourceMutationHandler = null
+
+export function setAcceptedSourceMutationHandler(handler) {
+  acceptedSourceMutationHandler = typeof handler === 'function' ? handler : null
+}
+
 export async function runSerializedProjectSourceOperation(name, operation) {
   const previous = sourcePushQueues.get(name) || Promise.resolve()
   let release
@@ -804,6 +815,15 @@ export async function processProjectPush(name, body, transactionTest = {}) {
   )
   if (result.ok && (((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
     result.sourceRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
+  }
+  if (result.ok && result.acceptedSourceMutation && acceptedSourceMutationHandler) {
+    await acceptedSourceMutationHandler({
+      project: name,
+      ...result.acceptedSourceMutation,
+      sourceRevision: result.sourceRevision || result.acceptedSourceMutation.sourceRevision,
+      sourceDaemonKey: body?.sourceDaemonKey || null,
+      requestId: body?.requestId || null,
+    })
   }
   emitSourceEditEvent({
     emit: emitGlobalEvent,
@@ -897,6 +917,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   const changedPushFiles = []
   let remotePublished = false
   let recoveryJournal = null
+  let acceptedSourceMutation = null
   try {
     if (transactionTest.simulateCrashAfterJournal) {
       return { status: 598, ok: false, simulatedCrash: true, recovery: transaction.identity() }
@@ -952,6 +973,17 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         const error = new Error(lifecycleResult.status)
         error.lifecycleResult = lifecycleResult
         throw error
+      }
+      acceptedSourceMutation = {
+        previousRevision: authorityBefore.currentRevision || null,
+        sourceRevision: lifecycleResult.authority?.currentRevision || null,
+        files: changedPushFiles.map(file => ({
+          path: file.path,
+          content: Buffer.isBuffer(file.content) ? file.content.toString('base64') : Buffer.from(String(file.content ?? '')).toString('base64'),
+          encoding: 'base64',
+        })),
+        deletedFiles: deletedFiles || [],
+        sourceManifest: nextManifest || [],
       }
     }
     if (transactionTest.failAt === 'manifest' || transactionTest.failAt === 'clone-restore') {
@@ -1026,20 +1058,20 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     if (projectPartsChanged) {
       await rebuildProjectPartsView(name, project)
       broadcastProjectPartsChanged(name, changedPartFiles)
-      return withAcceptedChangedFiles({ status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true,
+      return withAcceptedSourceMutation(withAcceptedChangedFiles({ status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true,
         ...(decision.reason === 'already-building' ? { alreadyBuilding: true } : {}),
-      }, changedPushFiles)
+      }, changedPushFiles), acceptedSourceMutation)
     }
     const filtered = decision.reason === 'outside-tree' || decision.reason === 'relevant-files-parse-failed'
     if (decision.reason === 'relevant-files-parse-failed') {
       console.error(`[${name}] relevant-files.json parse failed`)
     }
-    return withAcceptedChangedFiles({ status: 200, ok: true, filesWritten: files?.length || 0,
+    return withAcceptedSourceMutation(withAcceptedChangedFiles({ status: 200, ok: true, filesWritten: files?.length || 0,
       building: decision.reason === 'already-building',
       ...(decision.reason === 'already-building' ? { alreadyBuilding: true } : {}),
       ...(decision.reason === 'unchanged' ? { unchanged: true } : {}),
       ...(filtered ? { filtered: true, reason: decision.reason } : {}),
-    }, changedPushFiles)
+    }, changedPushFiles), acceptedSourceMutation)
   }
 
   if (decision.eager) {
@@ -1061,10 +1093,10 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         console.error(`[${project.format}] Failed to record build error for ${name}: ${updateError.message}`)
       }
     })
-    return withAcceptedChangedFiles(
+    return withAcceptedSourceMutation(withAcceptedChangedFiles(
       { status: 200, ok: true, filesWritten: files?.length || 0, building: true },
       changedPushFiles,
-    )
+    ), acceptedSourceMutation)
   }
 
   if (projectPartsChanged) {

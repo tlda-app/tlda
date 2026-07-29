@@ -60,7 +60,7 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
-import projectRoutes, { processProjectPush } from './routes/projects.mjs'
+import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler } from './routes/projects.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
@@ -1345,6 +1345,27 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
   // does not hold the project declines for itself.
   listDaemonKeys: () => [...daemonConnections.keys()],
 }))
+
+setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
+  const keys = [...daemonConnections.keys()].filter(key => key !== sourceDaemonKey)
+  if (keys.length === 0) return
+  const settled = await Promise.allSettled(keys.map(key =>
+    sendDaemonDurable(key, 'apply-source-update', message, { totalDeadlineMs: 5000, timeoutMs: 2000 })
+      .then(result => ({ key, result })),
+  ))
+  const failed = []
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]
+    if (outcome.status === 'rejected') {
+      failed.push(`${keys[i]} (${outcome.reason?.message || outcome.reason})`)
+    } else if (outcome.value.result?.ok === false && outcome.value.result?.reason !== 'project-not-watched') {
+      failed.push(`${keys[i]} (${outcome.value.result?.reason || 'declined'})`)
+    }
+  }
+  if (failed.length > 0) {
+    console.error(`[source-sync] accepted source update for ${message.project} did not reach all linked checkouts: ${failed.join(', ')}`)
+  }
+})
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
@@ -8467,7 +8488,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     let replied = false
     try {
-      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId })
+      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId, sourceDaemonKey: ws._daemonKey || null })
       const { status: httpStatus, lifecycleStatus, ...payload } = result
       const reply = { type: 'source-change-result', requestId, project, ...payload, httpStatus, status: lifecycleStatus || (result.ok ? 'accepted' : 'error') }
       resultCache.record(requestId, cached.hash, reply)

@@ -4,7 +4,7 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
-import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
+import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, isTextSourcePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 
 export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
   const revisions = new Map()
@@ -125,6 +125,23 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   const sourceWatchers = new Map()
   const sourceCorrelation = createSourceChangeCorrelation({ log })
 
+  function filePayloadBuffer(file) {
+    return file?.encoding === 'base64'
+      ? Buffer.from(file.content || '', 'base64')
+      : Buffer.from(String(file?.content ?? ''))
+  }
+
+  function conflictText({ project, rel, incoming, current }) {
+    return [
+      '<<<<<<< local checkout',
+      current.toString('utf8'),
+      '=======',
+      incoming.toString('utf8'),
+      `>>>>>>> accepted server source for ${project}:${rel}`,
+      '',
+    ].join('\n')
+  }
+
   function sendSourceChange(payload, retried = false) {
     const message = sourceCorrelation.prepare(payload, retried)
     if (!message) {
@@ -190,6 +207,105 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     let retry
     while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry.payload, retry.retried)
     return true
+  }
+
+  function applyAcceptedSourceUpdate(message = {}) {
+    const { project, sourceRevision, previousRevision, files = [], deletedFiles = [], sourceManifest = [] } = message
+    if (!project) throw new Error('project is required')
+    const state = sourceWatchers.get(project)
+    if (!state?.sourceDir) return { ok: false, accepted: false, reason: 'project-not-watched' }
+    const local = sourceCorrelation.state(project)
+    if (sourceRevision && local.revision === sourceRevision) return { ok: true, accepted: true, unchanged: true, sourceRevision }
+
+    const remoteApplied = state.remoteApplied ||= new Set()
+    const applied = []
+    const conflicted = []
+    const failed = []
+
+    for (const file of files || []) {
+      const rel = sourceRel(state.sourceDir, file?.path)
+      if (!rel) continue
+      const full = path.join(state.sourceDir, rel)
+      const incoming = filePayloadBuffer(file)
+      const previousFingerprint = state.pathFingerprints.get(full)
+      const currentFingerprint = sourcePathFingerprint(full)
+      const currentExists = fs.existsSync(full)
+      const current = currentExists ? fs.readFileSync(full) : null
+      try {
+        fs.mkdirSync(path.dirname(full), { recursive: true })
+        if (currentExists && currentFingerprint !== previousFingerprint && !current.equals(incoming)) {
+          if (!isTextSourcePath(rel)) {
+            failed.push({ path: rel, error: 'binary conflict requires manual reconciliation' })
+            continue
+          }
+          const markers = Buffer.from(conflictText({ project, rel, incoming, current }))
+          fs.writeFileSync(full, markers)
+          state.pathFingerprints.set(full, sourcePathFingerprint(full))
+          remoteApplied.add(rel)
+          conflicted.push(rel)
+          continue
+        }
+        if (!current || !current.equals(incoming)) {
+          fs.writeFileSync(full, incoming)
+          applied.push(rel)
+        }
+        state.pathFingerprints.set(full, sourcePathFingerprint(full))
+        remoteApplied.add(rel)
+      } catch (e) {
+        failed.push({ path: rel, error: e.message })
+      }
+    }
+
+    for (const filePath of deletedFiles || []) {
+      const rel = sourceRel(state.sourceDir, filePath)
+      if (!rel) continue
+      const full = path.join(state.sourceDir, rel)
+      const previousFingerprint = state.pathFingerprints.get(full)
+      const currentFingerprint = sourcePathFingerprint(full)
+      try {
+        if (fs.existsSync(full) && currentFingerprint !== previousFingerprint) {
+          if (!isTextSourcePath(rel)) {
+            failed.push({ path: rel, error: 'binary delete conflict requires manual reconciliation' })
+            continue
+          }
+          const current = fs.readFileSync(full)
+          const markers = Buffer.from(conflictText({ project, rel, incoming: Buffer.from(''), current }))
+          fs.writeFileSync(full, markers)
+          state.pathFingerprints.set(full, sourcePathFingerprint(full))
+          remoteApplied.add(rel)
+          conflicted.push(rel)
+          continue
+        }
+        if (fs.existsSync(full)) {
+          fs.rmSync(full, { force: true })
+          applied.push(rel)
+        }
+        state.pathFingerprints.set(full, sourcePathFingerprint(full))
+        remoteApplied.add(rel)
+      } catch (e) {
+        failed.push({ path: rel, error: e.message })
+      }
+    }
+
+    if (failed.length > 0) {
+      const detail = failed.map(f => `${f.path} (${f.error})`).join(', ')
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'source-update-undeliverable',
+        severity: 'critical',
+        project,
+        message: `Accepted server source for ${project} could not be written to this machine's linked checkout (${detail}).`,
+      })
+      return { ok: false, accepted: true, reason: 'write-failed', failed, applied, conflicted }
+    }
+
+    if (sourceRevision) sourceCorrelation.seed(project, sourceRevision, { authoritative: true })
+    if (conflicted.length > 0) {
+      sourceCorrelation.holdForHuman(project)
+      log.warn(`${project}: accepted server source conflicted locally in ${conflicted.join(', ')} — resolve the markers; the next save syncs`)
+    }
+    if (Array.isArray(sourceManifest)) state.authorityManifest = new Set(sourceManifest)
+    return { ok: true, accepted: true, sourceRevision, applied, conflicted }
   }
 
   function loadSourceBindings() {
@@ -491,8 +607,14 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     state.pathFingerprints = new Map(watchPaths.map(filePath => [filePath, sourcePathFingerprint(filePath)]))
     const handle = (filePath) => {
       if (state.watcher !== watcher) return
-      state.pathFingerprints.set(filePath, sourcePathFingerprint(filePath))
       const rel = sourceRel(state.sourceDir, filePath)
+      const fingerprint = sourcePathFingerprint(filePath)
+      const previous = state.pathFingerprints.get(filePath)
+      if (rel && state.remoteApplied?.has(rel) && previous === fingerprint) {
+        state.remoteApplied.delete(rel)
+        return
+      }
+      state.pathFingerprints.set(filePath, fingerprint)
       if (rel) state.onFileChange(rel)
     }
     watcher
@@ -565,7 +687,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         }
       }
 
-      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), reconcileTimer: null, _symlinkWatchers: new Map() }
+      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), remoteApplied: new Set(), reconcileTimer: null, _symlinkWatchers: new Map() }
 
       const onFileChange = (filename) => {
         if (!filename) return
@@ -792,6 +914,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     finishReconnect,
     flushPending,
     getSourceDir,
+    applyAcceptedSourceUpdate,
     closeAll,
     handleSourceChangeResult,
   }
