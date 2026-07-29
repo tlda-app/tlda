@@ -536,12 +536,14 @@ async function loadLocallyBoundProjects() {
   for (const name of sourceSync.boundProjectNames()) {
     try {
       const encodedName = encodeURIComponent(name)
-      const [project, sourceFiles] = await Promise.all([
+      const [project, sourceFiles, sourceAuthority] = await Promise.all([
         daemonApi('GET', `/api/projects/${encodedName}`),
         daemonApi('GET', `/api/projects/${encodedName}/files`),
+        daemonApi('GET', `/api/projects/${encodedName}/source-authority`),
       ])
       loaded.push({
         ...project,
+        sourceRevision: sourceAuthority.currentRevision,
         sourceManifest: sourceFilesFromApiResponse(sourceFiles),
       })
     } catch (error) {
