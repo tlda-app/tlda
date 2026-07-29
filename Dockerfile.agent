@@ -51,7 +51,6 @@ RUN npm install -g @openai/codex@0.142.3
 # helpers resolve the same dependencies they use in the main app.
 COPY package.json ./package.json
 COPY package-lock.json* ./
-COPY tldraw-fork/ ./tldraw-fork/
 RUN npm install --omit=dev --ignore-scripts \
     && npm rebuild better-sqlite3 node-pty
 

@@ -21,7 +21,6 @@ export default defineConfig([
     'server/projects/**',
     'scratch/**',
     'telemetry/**',
-    'tldraw-fork/**',
   ]),
   {
     files: ['**/*.{ts,tsx}'],

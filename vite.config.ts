@@ -11,25 +11,6 @@ const tlsDir = join(homedir(), '.config/tlda')
 const tlsCert = join(tlsDir, 'localhost+2.pem')
 const tlsKey  = join(tlsDir, 'localhost+2-key.pem')
 const hasLocalTls = process.env.TLDA_VITE_HTTP !== '1' && existsSync(tlsCert) && existsSync(tlsKey)
-const tldrawForkPackages = resolve('./tldraw-fork/packages')
-const hasTldrawForkSources = existsSync(resolve(tldrawForkPackages, 'tldraw/src/index.ts'))
-
-const tldrawForkAliases = hasTldrawForkSources ? [
-  { find: /^tldraw$/, replacement: resolve(tldrawForkPackages, 'tldraw/src/index.ts') },
-  { find: /^tldraw\/tldraw\.css$/, replacement: resolve(tldrawForkPackages, 'tldraw/tldraw.css') },
-  { find: /^@tldraw\/driver$/, replacement: resolve(tldrawForkPackages, 'driver/src/index.ts') },
-  { find: /^@tldraw\/editor$/, replacement: resolve(tldrawForkPackages, 'editor/src/index.ts') },
-  { find: /^@tldraw\/state$/, replacement: resolve(tldrawForkPackages, 'state/src/index.ts') },
-  { find: /^@tldraw\/state-react$/, replacement: resolve(tldrawForkPackages, 'state-react/src/index.ts') },
-  { find: /^@tldraw\/store$/, replacement: resolve(tldrawForkPackages, 'store/src/index.ts') },
-  { find: /^@tldraw\/sync$/, replacement: resolve(tldrawForkPackages, 'sync/src/index.ts') },
-  { find: /^@tldraw\/sync-core$/, replacement: resolve(tldrawForkPackages, 'sync-core/src/index.ts') },
-  { find: /^@tldraw\/tlschema$/, replacement: resolve(tldrawForkPackages, 'tlschema/src/index.ts') },
-  { find: /^@tldraw\/utils$/, replacement: resolve(tldrawForkPackages, 'utils/src/index.ts') },
-  { find: /^@tldraw\/validate$/, replacement: resolve(tldrawForkPackages, 'validate/src/index.ts') },
-  { find: /^rbush$/, replacement: resolve('node_modules/rbush/index.js') },
-] : []
-
 function injectedConfig(hasTls: boolean) {
   const cfg = resolveConfig()
   const serverPort = process.env.VITE_SERVER_PORT
@@ -162,7 +143,6 @@ return {
     localImagePlugin,
   ],
   resolve: {
-    alias: tldrawForkAliases,
     dedupe: ['react', 'react-dom'],
   },
   build: {
@@ -173,7 +153,7 @@ return {
     port: 5179,
     ...(hasTls ? localTlsHttps() : {}),
     fs: {
-      allow: hasTldrawForkSources ? ['..', resolve('./tldraw-fork')] : ['..'],
+      allow: ['..'],
     },
     hmr: process.env.VITE_HMR !== '1',
     watch: {
