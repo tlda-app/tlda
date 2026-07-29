@@ -1354,6 +1354,63 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.7;
 }
 .fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+.fleet-chat-shape .semantic-operation-inspected {
+  color: var(--text-dim, #666);
+  font-size: 9px;
+  opacity: 0.7;
+  padding: 2px 6px;
+}
+.fleet-chat-shape .semantic-operation-body {
+  margin-top: 4px;
+}
+.fleet-chat-shape .semantic-operation-expanded-shell {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+}
+.fleet-chat-shape .semantic-operation-collapse {
+  position: sticky;
+  top: 50vh;
+  left: 0;
+  align-self: start;
+  border: 0;
+  background: transparent;
+  color: var(--accent, #7a9ec8);
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 0;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.75;
+  z-index: 1;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+.fleet-chat-shape .semantic-operation-collapse:hover { opacity: 1; }
+.fleet-chat-shape .semantic-operation-view {
+  min-width: 0;
+}
+.fleet-chat-shape .semantic-operation-result {
+  border-top: 1px solid rgba(128, 128, 128, 0.08);
+}
+.fleet-chat-shape .semantic-operation-status {
+  color: var(--text-dim, #666);
+  font-size: 10px;
+  opacity: 0.7;
+  padding: 6px 2px;
+}
+.fleet-chat-shape .semantic-operation-more {
+  border: 0;
+  background: transparent;
+  color: var(--accent, #7a9ec8);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 5px 0;
+  opacity: 0.75;
+}
+.fleet-chat-shape .semantic-operation-more:hover { opacity: 1; }
 /* Schedule / timer cards */
 .fleet-chat-shape .tool-pretty-schedule {
   display: flex;

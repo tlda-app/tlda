@@ -17,6 +17,7 @@ import {
 import { fleetChatProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
+import { createRoot } from 'react-dom/client'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { probe } from '../perf-probe'
 import { isPhoneViewport } from '../phoneViewport'
@@ -32,7 +33,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
 // surviving a remount is informative — the viewport-driven unmount at the bottom
 // of this file tears down every subscription, and a remount whose tail goes
@@ -53,7 +54,8 @@ import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
+import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -1830,6 +1832,140 @@ function transformNonCode(html: string, transform: (text: string) => string): st
   })
 }
 
+function decodeSemanticOperation(el: HTMLElement): any | null {
+  const raw = el.getAttribute('data-semantic-operation')
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch { return null }
+}
+
+function eventFromSearchResult(result: any) {
+  const text = result.text ?? result.snippet ?? ''
+  return result.source === 'session'
+    ? { type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: result.agentId, to: null, text, timestamp: result.timestamp, id: result.id }
+    : { ...result, text, id: result.id }
+}
+
+function semanticSearchRequest(descriptor: any, limit: number, currentProject?: string, before?: string | null) {
+  const view = descriptor?.view || {}
+  const kind = descriptor?.kind
+  if (kind === 'thread') {
+    const filters: any = {
+      eventOnly: true,
+      historyOnly: true,
+      currentProject,
+      eventType: view.type || view.eventType || 'chat',
+    }
+    if (before) filters.before = before
+    const filterExpression = descriptor.filterExpression || view.filterExpression || view.filter || ''
+    if (filterExpression) filters.filterExpression = filterExpression
+    else if (view.agent || view.from || view.to) {
+      const agent = view.agent || view.from || view.to
+      if (String(agent).startsWith('fleet:')) filters.agent = agent
+      else filters.agentQuery = agent
+      if (view.from && !view.agent) filters.fromOnly = true
+    }
+    return { query: '', limit, filters }
+  }
+
+  const rawQuery = String(descriptor?.query || descriptor?.arg || view.query || '')
+  let query = rawQuery
+  let filters: any = {}
+  try {
+    const parsed = parseSearchQuery(rawQuery)
+    query = parsed.query
+    const parsedFilters: Record<string, any> = { ...(parsed.filters || {}) }
+    delete parsedFilters.since
+    delete parsedFilters.after
+    delete parsedFilters.before
+    filters = buildFleetSearchFilters(parsedFilters)
+  } catch {
+    filters = {}
+  }
+  if (descriptor?.filterExpression && !filters.filterExpression) filters.filterExpression = descriptor.filterExpression
+  if (view.agent && !filters.agent && !filters.agentQuery) {
+    if (String(view.agent).startsWith('fleet:')) filters.agent = view.agent
+    else filters.agentQuery = view.agent
+  }
+  filters.eventOnly = true
+  if (currentProject) filters.currentProject = currentProject
+  if (before) filters.before = before
+  return { query, limit, filters }
+}
+
+function SemanticChatOperationView({
+  descriptor,
+  renderCtx,
+  pageSize,
+  currentProject,
+  host,
+}: {
+  descriptor: any
+  renderCtx: any
+  pageSize: number
+  currentProject?: string
+  host: HTMLElement
+}) {
+  const [results, setResults] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [before, setBefore] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(true)
+
+  const loadPage = useCallback(async (reset = false) => {
+    const cursor = reset ? null : before
+    setLoading(true)
+    setError('')
+    try {
+      const request = semanticSearchRequest(descriptor, pageSize, currentProject, cursor)
+      const fetched = await searchFleet(request.query, request.limit, request.filters)
+      const ordered = descriptor?.kind === 'thread'
+        ? fetched.slice().sort((a: any, b: any) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
+        : rankSearchResults(fetched, request.query)
+      setResults(prev => reset ? ordered : [...prev, ...ordered])
+      setHasMore(fetched.length >= pageSize)
+      const oldest = fetched
+        .map((r: any) => r.timestamp)
+        .filter(Boolean)
+        .sort()[0] || null
+      setBefore(oldest)
+    } catch (err: any) {
+      setError(err?.message || 'search failed')
+    } finally {
+      setLoading(false)
+    }
+  }, [before, currentProject, descriptor, pageSize])
+
+  useEffect(() => {
+    setResults([])
+    setBefore(null)
+    setHasMore(true)
+    void loadPage(true)
+  }, [descriptor?.semanticKey, pageSize, currentProject])
+
+  const collapse = useCallback((event: any) => {
+    stopEventPropagation(event)
+    const op = host.closest('.semantic-chat-operation') as HTMLElement | null
+    const btn = op?.querySelector('.pretty-expand-btn') as HTMLElement | null
+    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  }, [host])
+
+  return (
+    <div className="semantic-operation-expanded-shell">
+      <button type="button" className="semantic-operation-collapse" onPointerUp={collapse}>Collapse</button>
+      <div className="semantic-operation-view">
+        {error ? <div className="semantic-operation-status">{error}</div> : null}
+        {!error && results.length === 0 && !loading ? <div className="semantic-operation-status">no results</div> : null}
+        {results.map((result, i) => {
+          const html = renderChatLine(convertChatEvent(eventFromSearchResult(result)), renderCtx)
+          return <div key={`${result.id || result.timestamp || i}:${i}`} className="semantic-operation-result" dangerouslySetInnerHTML={{ __html: html }} />
+        })}
+        {loading ? <div className="semantic-operation-status">loading...</div> : null}
+        {!loading && hasMore ? <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void loadPage(false) }}>More</button> : null}
+      </div>
+    </div>
+  )
+}
+
 // --- Virtual chat message row ---
 // Defined outside FleetChatInner so React.memo comparisons are stable.
 // Receives raw rendered HTML from renderChatLine/renderActivityGroup and a
@@ -1839,11 +1975,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess,
   itemKey,
   expandedRowsRef,
+  semanticRenderCtx,
+  semanticOperationPageSize,
+  currentProject,
 }: {
   html: string
   postProcess: (html: string) => string
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
+  semanticRenderCtx: any
+  semanticOperationPageSize: number
+  currentProject?: string
 }) {
   recordChatRenderProbe('row-render', itemKey, { htmlLength: html.length })
   const processed = useMemo(() => probe.time('chat', 'chat-row-postprocess', () => postProcess(html), {
@@ -1878,14 +2020,42 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     const expanded = expandedRowsRef.current
-    if (expanded.has(itemKey)) {
-      const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
-      if (moreRows) {
+    el.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, i) => {
+      const key = `${itemKey}:pretty:${i}`
+      if (expanded.has(key) || expanded.has(itemKey)) {
         moreRows.style.display = ''
-        const btn = el.querySelector('.pretty-expand-btn') as HTMLElement | null
+        const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
         if (btn) btn.textContent = 'collapse'
       }
-    }
+    })
+    el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
+      const key = `${itemKey}:semantic:${body.closest('.semantic-chat-operation')?.getAttribute('data-semantic-key') || i}`
+      if (expanded.has(key)) {
+        body.style.display = ''
+        body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
+        const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
+        if (btn) {
+          if (!btn.dataset.semanticCollapsedLabel) btn.dataset.semanticCollapsedLabel = btn.textContent || 'Expand'
+          btn.textContent = 'collapse'
+        }
+      }
+    })
+    const semanticRoots: any[] = []
+    el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach(body => {
+      const descriptor = decodeSemanticOperation(body)
+      if (!descriptor) return
+      const root = createRoot(body)
+      root.render(
+        <SemanticChatOperationView
+          descriptor={descriptor}
+          renderCtx={semanticRenderCtx}
+          pageSize={semanticOperationPageSize}
+          currentProject={currentProject}
+          host={body}
+        />,
+      )
+      semanticRoots.push(root)
+    })
     // Restore code-block expand state (each block keyed by index within the row)
     el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
       if (expanded.has(`${itemKey}:code:${i}`)) {
@@ -1899,10 +2069,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
       const dt = performance.now() - t0
       if (dt > 1) probe.record('chat', 'chat-row-layout-restore', dt, { itemKey })
     }
-  }, [processed, itemKey, expandedRowsRef])
+    return () => {
+      for (const root of semanticRoots) root.unmount()
+    }
+  }, [processed, itemKey, expandedRowsRef, semanticRenderCtx, semanticOperationPageSize, currentProject])
 
-  return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey)
+  return (
+    <>
+      <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
+    </>
+  )
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx)
 
 function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
@@ -2223,6 +2400,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const ctx = useMemo(() => makeCtx(ctxAgents, ctxTasks, preambleMacros), [ctxRenderKey])
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
+  const semanticOperationPageSize = Math.max(5, Number(getPref('semantic-operation-page-size')) || 40)
 
   const docRef = useRef<typeof doc>(doc)
   useEffect(() => { docRef.current = doc }, [doc])
@@ -3939,6 +4117,25 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
+        const semanticOp = expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
+        const semanticBody = semanticOp?.querySelector('.semantic-operation-body') as HTMLElement | null
+        if (semanticOp && semanticBody) {
+          const wasExpanded = semanticBody.style.display !== 'none'
+          if (!expandBtn.dataset.semanticCollapsedLabel) {
+            expandBtn.dataset.semanticCollapsedLabel = expandBtn.textContent || 'Expand'
+          }
+          semanticBody.style.display = wasExpanded ? 'none' : ''
+          semanticOp.classList.toggle('semantic-operation-expanded', !wasExpanded)
+          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : 'collapse'
+          const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
+          const semanticKey = semanticOp.getAttribute('data-semantic-key') || '0'
+          if (itemKey) {
+            const key = `${itemKey}:semantic:${semanticKey}`
+            if (wasExpanded) expandedRowsRef.current.delete(key)
+            else expandedRowsRef.current.add(key)
+          }
+          return
+        }
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
           const wasExpanded = moreRows.style.display !== 'none'
@@ -3946,8 +4143,10 @@ function FleetChatInner({ shape }: { shape: any }) {
           expandBtn.textContent = wasExpanded ? expandBtn.textContent! : 'collapse'
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
-            if (wasExpanded) expandedRowsRef.current.delete(itemKey)
-            else expandedRowsRef.current.add(itemKey)
+            const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])
+            const key = `${itemKey}:pretty:${Math.max(0, allBtns.indexOf(expandBtn))}`
+            if (wasExpanded) expandedRowsRef.current.delete(key)
+            else expandedRowsRef.current.add(key)
           }
         }
         return
@@ -5478,7 +5677,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                     suggestions={suggestionsPending}
                   />
                 ) : (
-                  <ChatMessageRow html={item.html} postProcess={postProcess} itemKey={item.key} expandedRowsRef={expandedRowsRef} />
+                  <ChatMessageRow
+                    html={item.html}
+                    postProcess={postProcess}
+                    itemKey={item.key}
+                    expandedRowsRef={expandedRowsRef}
+                    semanticRenderCtx={ctx}
+                    semanticOperationPageSize={semanticOperationPageSize}
+                    currentProject={doc?.projectName}
+                  />
                 )}
               </div>
             )}

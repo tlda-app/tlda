@@ -60,14 +60,115 @@ function normalizedToolName(toolName) {
   return String(toolName || '').toLowerCase().replace(/^mcp__/, 'mcp/').replace(/__/g, '/')
 }
 
-function renderPrettyResult(toolName, text, ctx, input, ts) {
+const SEMANTIC_RANGE_KEYS = new Set([
+  'since', 'after', 'before', 'until', 'page', 'page_size', 'pageSize', 'limit',
+  'cursor', 'nextCursor', 'context', 'context_before', 'context_after',
+])
+
+function stableSemanticJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableSemanticJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableSemanticJson(value[k])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function semanticOperationKind(toolName) {
+  const tool = normalizedToolName(toolName)
+  if (tool.includes('thread')) return 'thread'
+  if (tool.includes('search')) return 'search'
+  return ''
+}
+
+function semanticOperationDescriptor(toolName, input, arg, ts) {
+  const kind = semanticOperationKind(toolName)
+  if (!kind) return null
+  const rawInput = input && typeof input === 'object' ? input : {}
+  const view = {}
+  const inspected = {}
+  for (const [key, value] of Object.entries(rawInput)) {
+    if (key.startsWith('_semantic')) continue
+    if (SEMANTIC_RANGE_KEYS.has(key)) inspected[key] = value
+    else view[key] = value
+  }
+  const argText = String(arg || rawInput.query || rawInput.filter || '')
+  const query = String(rawInput.query || rawInput.q || (kind === 'search' ? argText : '') || '')
+  const filterExpression = String(rawInput.filter || rawInput.filterExpression || (kind === 'thread' ? argText : '') || '')
+  const semanticIdentity = {
+    kind,
+    query,
+    filterExpression,
+    agent: rawInput.agent || rawInput.from || rawInput.to || '',
+    role: rawInput.role || '',
+    type: rawInput.type || rawInput.eventType || '',
+    types: rawInput.types || '',
+    task_id: rawInput.task_id || rawInput.task || '',
+    project: rawInput.project || rawInput.currentProject || '',
+    view,
+  }
+  return {
+    descriptorShape: 'SemanticChatOperationDescriptor',
+    kind,
+    tool: toolName || '',
+    arg: argText,
+    query,
+    filterExpression,
+    view,
+    inspected,
+    semanticKey: stableSemanticJson(semanticIdentity),
+    generatedAt: ts || null,
+  }
+}
+
+function semanticOperationKey(item) {
+  return semanticOperationDescriptor(item?._toolName, item?._toolInput, item?._toolArg, item?.timestamp)?.semanticKey || ''
+}
+
+function mergeSemanticInspected(host, item) {
+  const pages = host._semanticInspectedPages || []
+  const desc = semanticOperationDescriptor(item._toolName, item._toolInput, item._toolArg, item.timestamp)
+  if (desc) pages.push(desc.inspected)
+  host._semanticInspectedPages = pages
+  host._toolInput = { ...(host._toolInput || {}), _semanticInspectedPages: pages }
+  host._semanticMergedCount = (host._semanticMergedCount || 1) + 1
+}
+
+function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '') {
+  const kind = semanticOperationKind(toolName)
+  const descriptor = semanticOperationDescriptor(toolName, input, arg, ts)
+  if (!descriptor) return null
+  const legacy = kind === 'thread' ? renderThreadResult(text, ctx) : renderSearchResult(text, ctx)
+  const semanticExpand = legacy.includes('pretty-expand-btn')
+    ? ''
+    : '<div class="pretty-expand-btn">Expand</div>'
+  const inspectedPages = [descriptor.inspected || {}, ...(Array.isArray(input?._semanticInspectedPages) ? input._semanticInspectedPages : [])]
+    .filter(page => page && Object.keys(page).length > 0)
+  const inspected = inspectedPages[0] || {}
+  const inspectedParts = Object.entries(inspected)
+    .filter(([, value]) => value != null && value !== '')
+    .map(([key, value]) => `${key}: ${String(value)}`)
+  if (inspectedPages.length > 1) inspectedParts.push(`${inspectedPages.length - 1} continuation${inspectedPages.length === 2 ? '' : 's'}`)
+  const inspectedHtml = inspectedParts.length
+    ? `<div class="semantic-operation-inspected">inspected ${esc(inspectedParts.join('; '))}</div>`
+    : ''
+  const json = esc(JSON.stringify(descriptor))
+  const key = esc(descriptor.semanticKey)
+  return `<div class="semantic-chat-operation" data-semantic-key="${key}">
+    ${legacy}
+    ${semanticExpand}
+    ${inspectedHtml}
+    <div class="semantic-operation-body" data-semantic-operation="${json}" style="display:none"></div>
+  </div>`
+}
+
+function renderPrettyResult(toolName, text, ctx, input, ts, arg = '') {
   text = normalizePrettyResult(text)
   const tool = normalizedToolName(toolName)
   if (tool.includes('thread')) {
-    return renderThreadResult(text, ctx)
+    return renderSemanticOperationResult(toolName, text, ctx, input, ts, arg) || renderThreadResult(text, ctx)
   }
   if (tool.includes('search')) {
-    return renderSearchResult(text, ctx)
+    return renderSemanticOperationResult(toolName, text, ctx, input, ts, arg) || renderSearchResult(text, ctx)
   }
   if (tool.includes('screenshot')) {
     return renderScreenshotResult(text)
@@ -706,6 +807,7 @@ export function dedupTools(toolItems) {
   for (let i = 0; i < toolItems.length; i++) {
     const t = toolItems[i]
     const key = (t._toolName || '') + ':' + (t._toolArg || '')
+    const semanticKey = semanticOperationKey(t)
     const prev = result.length ? result[result.length - 1] : null
     const name = (t._toolName || '').toLowerCase()
     if (name === 'read' && editedFiles.has(t._toolArg)) continue
@@ -723,15 +825,24 @@ export function dedupTools(toolItems) {
     // follow-up would carry the result. Merge onto the first matching tool item
     // regardless of adjacency, then drop the follow-up.
     if (t._prettyResult) {
-      const host = result.find(r => r._key === key && !r._prettyResult)
-      if (host) { host._prettyResult = t._prettyResult; host._count++; continue }
+      const host = result.find(r => (semanticKey ? r._semanticKey === semanticKey : r._key === key) && !r._prettyResult)
+      if (host) { host._prettyResult = t._prettyResult; host._count++; if (semanticKey) mergeSemanticInspected(host, t); continue }
+    }
+    if (semanticKey) {
+      const host = result.find(r => r._semanticKey === semanticKey)
+      if (host) {
+        host._count++
+        mergeSemanticInspected(host, t)
+        if (!host._prettyResult && t._prettyResult) host._prettyResult = t._prettyResult
+        continue
+      }
     }
     if (prev && prev._key === key) {
       prev._count++
       // Merge prettyResult from follow-up event (e.g. _prettyResult events arriving after the tool_use)
       if (!prev._prettyResult && t._prettyResult) prev._prettyResult = t._prettyResult
     } else {
-      result.push({ ...t, _key: key, _count: 1 })
+      result.push({ ...t, _key: key, _semanticKey: semanticKey, _count: 1 })
     }
   }
   return result
@@ -859,7 +970,7 @@ export function renderActivityGroup(group, ctx) {
       // ("**Proposal proposal-N**…") is only consumed to extract the id above, so
       // don't also render it as a raw result block under the card.
       const prettyHtml = (t._prettyResult && !isPropose)
-        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp)
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
         : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`

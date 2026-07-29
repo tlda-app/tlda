@@ -923,6 +923,8 @@ export interface FleetSearchFilters {
   before?: string
   filterExpression?: string
   eventType?: string
+  eventOnly?: boolean
+  historyOnly?: boolean
   currentProject?: string
 }
 
@@ -943,6 +945,8 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
     if (filters.before) payload.before = filters.before
     if (filters.filterExpression) payload.filterExpression = filters.filterExpression
     if (filters.eventType) payload.eventType = filters.eventType
+    if (filters.eventOnly) payload.eventOnly = true
+    if (filters.historyOnly) payload.historyOnly = true
     if (filters.currentProject) payload.currentProject = filters.currentProject
     const data = await _fleetEphemeral('fleet-search', payload)
     return data?.results || []

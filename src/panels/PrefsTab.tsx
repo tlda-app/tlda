@@ -297,6 +297,7 @@ function readAll() {
     foldWrite: getPref('fold-write-lines'),
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
+    semanticOperationPageSize: getPref('semantic-operation-page-size'),
     hlZone: getPref('hl-zone-enabled'),
     cornerRail: getPref('corner-rail-enabled'),
     cornerSize: getPref('corner-control-size'),
@@ -500,6 +501,11 @@ export function PrefsTab() {
               <span className="prefs-num-unit">{val === 0 ? 'full' : 'lines'}</span>
             </div>
           ))}
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Thread/search cards</span>
+            <input type="number" min={5} step={5} value={prefs.semanticOperationPageSize} onChange={e => setPref('semantic-operation-page-size', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">items</span>
+          </div>
         </PrefSubsection>
 
         <PrefSubsection title="Doc viewer sources">
