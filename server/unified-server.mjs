@@ -1972,7 +1972,6 @@ async function performSpawnRelay(caller, msg) {
       metadata: { shell: true },
     })
     await fleetStore.setAgentDaemonRoute(pendingAgentId, daemonAddress(route.machine_id, route.env_name))
-    await fleetStore.ensureDefaultSubscription?.(pendingAgentId)
   }
   const spawnRequest = {
     agent_id: targetAgentId,
@@ -3196,7 +3195,7 @@ app.get('/api/diagnostics/filter-subscriptions', requireRead, async (req, res) =
     // Read these before reading any zero above.
     startedAt: filterPushStartedAt,
     uptimeMs: Date.now() - Date.parse(filterPushStartedAt),
-    rosterSize: (await fleetStore?.getAllAgents?.() || []).length,
+    rosterSize: (await fleetStore?.getAgentSummary?.() || {}).total || 0,
   })
 })
 
@@ -4291,14 +4290,7 @@ app.use('/docs', (req, res, next) => {
         if (column) {
           const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
-          const agentNames = isTaskDoc
-            ? (await fleetStore.getAllAgents()).map(agent => ({
-                id: agent.id,
-                pretty_name: agent.pretty_name,
-                friendly_name: agent.friendly_name,
-                lineage_name: agent.lineage_name,
-              }))
-            : []
+          const agentNames = isTaskDoc ? await fleetStore.getAgentDisplayNames() : []
           const html = renderMarkdownColumnHtml({ source, title: column.title, isTaskDoc, agentNames })
           const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
 
@@ -5502,9 +5494,6 @@ async function handleFleetWsMessage(ws, msg) {
       if (agent.human) {
         ws._tldaAgentId = null
         humanPresence.attach(ws, agent.id)
-      }
-      if (isShellReservation && !agent.human) {
-        await fleetStore.ensureDefaultSubscription?.(agent.id)
       }
     } catch (e) {
       if (e.message?.includes('already taken')) {

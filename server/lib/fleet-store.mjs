@@ -299,8 +299,8 @@ export class FleetStore {
     this._closed = false;
     this._initAgentRegistry();
     this._wiretapCache = null;
+    this._resolvableWiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
-    this._upgradeLegacyDefaultSubscriptions();
     this._backfillNameHistory();
     this._backfillLabelHistory();
     this._backfillRuntimeStatusHistory();
@@ -1100,6 +1100,10 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
       CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
+      CREATE INDEX IF NOT EXISTS idx_events_pending_timer
+        ON events(json_extract(metadata, '$.fire_at'), id)
+        WHERE type = 'timer'
+          AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1;
     `);
 
     // ---- Name provenance (name-at-time) ----
@@ -1370,6 +1374,12 @@ export class FleetStore {
     // id→friendly_name only — for labeling chat history without hydrating all
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
+    this._getAgentDisplayNames = this.db.prepare(`
+      SELECT agents.id, agents.pretty_name, agents.friendly_name,
+             lineages.friendly_name AS lineage_name
+      FROM agents
+      LEFT JOIN lineages ON lineages.id = agents.lineage_id
+    `);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
@@ -1444,6 +1454,11 @@ export class FleetStore {
     // Wiretap queries
     this._addWiretap = this.db.prepare('INSERT INTO wiretaps (agent_id, filter, types) VALUES (?, ?, ?)');
     this._getWiretaps = this.db.prepare('SELECT * FROM wiretaps');
+    this._getResolvableWiretaps = this.db.prepare(`
+      SELECT * FROM wiretaps
+      WHERE json_type(CASE WHEN json_valid(filter) THEN filter ELSE 'null' END) = 'text'
+        AND json_extract(filter, '$') != 'to:' || agent_id
+    `);
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
     this._deleteWiretapsByAgent = this.db.prepare('DELETE FROM wiretaps WHERE agent_id = ?');
@@ -1452,7 +1467,6 @@ export class FleetStore {
     this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? ORDER BY subscription_id');
     this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
     this._deleteSubscription = this.db.prepare('DELETE FROM subscriptions WHERE subscription_id = ?');
-    this._updateSubscriptionQuery = this.db.prepare('UPDATE subscriptions SET query = ?, adapter_id = ? WHERE subscription_id = ?');
     this._updateWiretapFilter = this.db.prepare('UPDATE wiretaps SET filter = ? WHERE id = ?');
 
     // Event queries for chat history
@@ -1969,10 +1983,6 @@ export class FleetStore {
     this._aliveAgentById = this._aliveAgentRegistry.index('byId', a => a.id);
     this._aliveAgentByName = this._aliveAgentRegistry.index('byName', a => a.friendly_name || []);
     this._aliveAgentByLabel = this._aliveAgentRegistry.index('byLabel', a => labelsForAgent(a));
-    this._agentRosterView = this._agentRegistry.view(
-      () => true,
-      { key: 'fleet-roster:all', compare: compareAgentsForRoster }
-    );
     this._aliveAgentRosterView = this._aliveAgentRegistry.view(
       () => true,
       { key: 'fleet-roster:alive', compare: compareAgentsForRoster }
@@ -1990,7 +2000,7 @@ export class FleetStore {
 
   _reloadAgentRegistry() {
     if (!this._agentRegistry || !this._aliveAgentRegistry) return;
-    const rows = this._getAllAgents.all().map(r => this.projectAgentDaemonRoute(this._hydrateAgent(r)));
+    const rows = this._getAliveAgents.all().map(r => this.projectAgentDaemonRoute(this._hydrateAgent(r)));
     const ids = new Set(rows.map(a => a.id));
     const aliveIds = new Set(rows.filter(isFleetRosterAgent).map(a => a.id));
     this._agentRegistry.bulk(s => {
@@ -2471,12 +2481,16 @@ export class FleetStore {
   }
 
   getAllAgents() {
-    this._ensureAgentRegistryLoaded();
-    // Maintained roster view. Startup/reconciliation may reload the registry
-    // from SQLite, but hot callers (store-agents, fleet-table, WS init,
-    // broadcastState paths) should never rebuild the whole roster from SQL.
-    // Treat the returned agent objects as read-only.
-    return this._agentRosterView?.list || [];
+    return this._getAllAgents.all().map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
+  }
+
+  getAgentDisplayNames() {
+    return this._getAgentDisplayNames.all().map(row => ({
+      id: row.id,
+      pretty_name: parsePrettyName(row.pretty_name),
+      friendly_name: row.friendly_name,
+      lineage_name: row.lineage_name,
+    }));
   }
 
   getAgentSummary() {
@@ -3548,6 +3562,7 @@ export class FleetStore {
     const validTypes = types && types.length > 0 ? types : null;
     const info = this._addWiretap.run(agentId, JSON.stringify(filter), validTypes ? JSON.stringify(validTypes) : null);
     this._wiretapCache = null;
+    this._resolvableWiretapCache = null;
     return { id: info.lastInsertRowid, agent_id: agentId, filter, types: validTypes };
   }
 
@@ -3565,11 +3580,13 @@ export class FleetStore {
   removeWiretap(id) {
     this._deleteWiretap.run(id);
     this._wiretapCache = null;
+    this._resolvableWiretapCache = null;
   }
 
   removeWiretapsByAgent(agentId) {
     this._deleteWiretapsByAgent.run(agentId);
     this._wiretapCache = null;
+    this._resolvableWiretapCache = null;
   }
 
   addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null }) {
@@ -3589,57 +3606,6 @@ export class FleetStore {
     return this._getSubscriptionsByAdapter.all(adapter);
   }
 
-  _upgradeLegacyDefaultSubscriptions() {
-    const legacyRows = this.db.prepare(`
-      SELECT subscription_id, owner, adapter_id
-      FROM subscriptions
-      WHERE query = 'to:my_labels'
-        AND adapter = 'wiretap'
-        AND created_by = owner
-    `).all();
-    let upgraded = 0;
-    for (const row of legacyRows) {
-      const query = `to:${row.owner}`;
-      let adapterId = row.adapter_id;
-      if (adapterId) {
-        this._updateWiretapFilter.run(JSON.stringify(query), adapterId);
-      } else {
-        adapterId = this.addWiretap(row.owner, query, null).id;
-      }
-      this._updateSubscriptionQuery.run(query, adapterId, row.subscription_id);
-      upgraded++;
-    }
-    if (upgraded) {
-      this._wiretapCache = null;
-      console.log(`[fleet-store] upgraded ${upgraded} legacy default subscription(s)`);
-    }
-  }
-
-  ensureDefaultSubscription(agentId) {
-    // A default subscription is the agent's own address, not every label it
-    // currently has. In particular, status labels such as `awake` are shared
-    // by most agents and turned the old `to:my_labels` default into a wiretap
-    // for unrelated traffic.
-    const query = `to:${agentId}`;
-    const subscriptions = this._getSubscriptionsByOwner.all(agentId);
-    const existing = subscriptions.find(row => row.query === query);
-    if (existing) return existing;
-    const legacy = subscriptions.find(row => row.query === 'to:my_labels' && row.adapter === 'wiretap' && row.created_by === agentId);
-    if (legacy) {
-      let adapterId = legacy.adapter_id;
-      if (adapterId) {
-        this._updateWiretapFilter.run(JSON.stringify(query), adapterId);
-        this._wiretapCache = null;
-      } else {
-        adapterId = this.addWiretap(agentId, query, null).id;
-      }
-      this._updateSubscriptionQuery.run(query, adapterId, legacy.subscription_id);
-      return this.getSubscription(legacy.subscription_id);
-    }
-    const tap = this.addWiretap(agentId, query, null);
-    return this.addSubscription({ owner: agentId, query, notificationPolicy: 'immediate', createdBy: agentId, adapter: 'wiretap', adapterId: tap.id });
-  }
-
   removeSubscription(subscriptionId) {
     return this._deleteSubscription.run(subscriptionId).changes > 0;
   }
@@ -3648,7 +3614,10 @@ export class FleetStore {
   // Filter is a string expression with directional `to:`/`from:` prefixes:
   // "to:skip & from:math" fires on a message TO skip FROM math.
   resolveWiretaps(senderId, recipientId, eventType) {
-    const taps = this.getWiretaps();
+    if (!this._resolvableWiretapCache) {
+      this._resolvableWiretapCache = this._getResolvableWiretaps.all().map(r => this._hydrateWiretap(r));
+    }
+    const taps = this._resolvableWiretapCache;
     if (taps.length === 0) return [];
     const matched = new Set();
 
@@ -3985,7 +3954,7 @@ export class FleetStore {
   listPendingTimerEvents() {
     const rows = this.db.prepare(`
       SELECT ${this._EVT}
-      FROM events
+      FROM events INDEXED BY idx_events_pending_timer
       WHERE type = 'timer'
         AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1
       ORDER BY json_extract(metadata, '$.fire_at') ASC, id ASC
