@@ -17,6 +17,7 @@ test('UserPromptSubmit hook injects route metadata without copying the message b
       ok: true,
       notifications: [{
         event_id: 42,
+        child_agent_id: 'fleet:child',
         child_name: 'parent:worker',
         sender_name: 'skip',
         native_agent_id: 'worker',
@@ -57,6 +58,7 @@ environments:
     assert.equal(stderr, '')
     assert.match(stdout, /Pending native-subagent delivery obligations/)
     assert.match(stdout, /event 42/)
+    assert.match(stdout, /thread\(agent: "fleet:child"\)/)
     assert.match(stdout, /agent id worker/)
     assert.doesNotMatch(stdout, /message body/)
   } finally {
