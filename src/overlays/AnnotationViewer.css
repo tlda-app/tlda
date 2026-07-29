@@ -71,7 +71,7 @@
   border: none;
   cursor: pointer;
   pointer-events: all;
-  color: rgba(140, 140, 140, 0.0375);
+  color: rgba(90, 90, 90, 0.55);
   transition: color 0.2s;
   padding: 0;
   overflow: visible;
@@ -82,7 +82,7 @@
   height: 72px;
 }
 .annotation-viewer-nav-btn:hover {
-  color: rgba(140, 140, 140, 0.225);
+  color: rgba(70, 70, 70, 0.9);
 }
 
 .annotation-viewer-nav-left {
@@ -103,14 +103,15 @@
 
 .annotation-viewer-return-hud {
   position: fixed;
-  width: 72px;
+  display: flex;
+  width: auto;
   height: 72px;
   z-index: var(--tlda-z-managed-surface);
   pointer-events: auto;
 }
 
 .annotation-viewer-return-hud .annotation-viewer-nav-btn {
-  left: 0;
+  position: relative;
   width: 72px;
   height: 72px;
 }

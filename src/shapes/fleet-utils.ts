@@ -16,7 +16,6 @@ import {
   getAnchorIdForOwnerKey,
   getMyAnchorId,
   isFleetShapeForOwnerKey,
-  isMyFleetShape,
 } from './fleet-ownership'
 import {
   buildFleetLayoutPlanInput,
@@ -304,82 +303,6 @@ export type FleetLayoutCreateResult = {
  *  TLDraw's ID factory; the layout planner only asks for slot IDs. */
 function layoutSlotId(userId: string, deviceId: string, slot: string) {
   return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`) as unknown as string
-}
-
-/**
- * Move this device's fleet panels onto the layout the destination document
- * would have given them — the workspace travels with the reader and is laid out
- * for that document's width.
- *
- * Placement is derived by re-running the same planner that created the layout,
- * against the destination's bounds. It is not a translation: the previous
- * implementation guessed a source document from the viewport midpoint and
- * shifted panels by the difference between the two documents' edges, which
- * could not adapt to a different width and mutated persisted coordinates by an
- * inferred distance.
- *
- * Only shapes whose ids match a planned slot move, so panels the person added
- * themselves are untouched, and nothing is recreated — panels keep their
- * contents and filters. Returns the pre-move positions so the caller can put
- * them back.
- */
-export function replanFleetLayoutForBounds(
-  editor: Editor,
-  target: { x: number; y: number; w: number },
-  variant: FleetLayoutVariant = '3-col',
-): Array<{ id: any; x: number; y: number }> {
-  const myId = getHumanId()
-  const myDevice = getDeviceId()
-  if (!myId || !myDevice) return []
-
-  let plan
-  try {
-    plan = planFleetLayoutShapes(buildFleetLayoutPlanInput({
-      editor,
-      // Geometry only. Nothing here applies props, so seeded chat filters are
-      // irrelevant and must not be computed from a roster the caller may not have.
-      agents: [],
-      variant,
-      myId,
-      myDevice,
-      docBounds: { pageShapes: [], minLeft: target.x, minTop: target.y, maxRight: target.x + target.w },
-      makeSlotId: (slot: string) => layoutSlotId(myId, myDevice, slot),
-    }))
-  } catch {
-    // A plan we cannot compute means we do not know where the panels belong at
-    // the destination. Leaving them where they are is the honest outcome; the
-    // reader still travels, the workspace just does not re-lay-out.
-    return []
-  }
-
-  const plannedById = new Map(plan.shapes.map((shape: any) => [String(shape.id), shape]))
-  const moved: Array<{ id: any; x: number; y: number }> = []
-  const updates: any[] = []
-
-  for (const shape of editor.getCurrentPageShapes().filter(isMyFleetShape) as any[]) {
-    const planned: any = plannedById.get(String(shape.id))
-    if (!planned) continue
-    const w = planned.props?.w
-    const h = planned.props?.h
-    const sameX = Math.abs(shape.x - planned.x) < 0.5
-    const sameY = Math.abs(shape.y - planned.y) < 0.5
-    const sameW = w == null || Math.abs((shape.props?.w ?? w) - w) < 0.5
-    const sameH = h == null || Math.abs((shape.props?.h ?? h) - h) < 0.5
-    if (sameX && sameY && sameW && sameH) continue
-    moved.push({ id: shape.id, x: shape.x, y: shape.y })
-    updates.push({
-      id: shape.id,
-      type: shape.type,
-      x: planned.x,
-      y: planned.y,
-      ...(w != null || h != null
-        ? { props: { ...(w != null ? { w } : {}), ...(h != null ? { h } : {}) } }
-        : {}),
-    })
-  }
-
-  if (updates.length > 0) editor.updateShapes(updates)
-  return moved
 }
 
 export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {

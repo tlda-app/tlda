@@ -21,7 +21,6 @@ import type {
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
-import { replanFleetLayoutForBounds } from '../shapes/fleet-utils'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -88,7 +87,6 @@ export function AnnotationViewer({
   type ViewSnapshot = {
     pageId: ReturnType<Editor['getCurrentPageId']>
     camera: { x: number; y: number; z: number }
-    movedShapes?: Array<{ id: TLShapeId; x: number; y: number }>
   }
   const [data, setData] = useState<ViewerData | null>(null)
   const [state, setState] = useState<ViewerState>('hovering')
@@ -168,16 +166,6 @@ export function AnnotationViewer({
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
 
-  // The workspace travels with the reader and is laid out for the destination
-  // document's width — see replanFleetLayoutForBounds, which owns the placement.
-  const shiftMarginShapesForTarget = useCallback((target: ClipBounds) => {
-    const moved = replanFleetLayoutForBounds(mainEditor, target)
-    if (moved.length > 0) {
-      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
-    }
-    return moved
-  }, [mainEditor])
-
   useEffect(() => {
     if (data?.bulletIdx == null) return
     const el = canvasWrapRef.current
@@ -200,7 +188,7 @@ export function AnnotationViewer({
     if (!data) return
     const onNavigationStart = (e: Event) => {
       const shapeId = (e as CustomEvent).detail?.shapeId
-      if (!shapeId || !data.shapeIds?.includes(shapeId)) return
+      if (shapeId && !data.shapeIds?.includes(shapeId)) return
       const cam = mainEditor.getCamera()
       prevViewStackRef.current = [
         ...prevViewStackRef.current,
@@ -218,7 +206,7 @@ export function AnnotationViewer({
     return () => {
       window.removeEventListener('annotation-viewer-navigation-start', onNavigationStart)
     }
-  }, [data, mainEditor, shiftMarginShapesForTarget, syncNavDepth])
+  }, [data, mainEditor, syncNavDepth])
   useEffect(() => {
     const el = canvasWrapRef.current
     if (!el || !data) return
@@ -267,7 +255,6 @@ export function AnnotationViewer({
       {
         pageId: mainEditor.getCurrentPageId(),
         camera: { x: cam.x, y: cam.y, z: cam.z },
-        movedShapes: shiftMarginShapesForTarget(targetBounds),
       },
     ]
     sendCanvasPageShapesToBack(mainEditor)
@@ -287,35 +274,20 @@ export function AnnotationViewer({
     forwardViewStackRef.current = []
     syncNavDepth()
     setState('navigated')
-  }, [data, mainEditor, shiftMarginShapesForTarget, targetBounds, syncNavDepth])
+  }, [data, mainEditor, targetBounds, syncNavDepth])
 
   // Restore a stored view. Returns a snapshot of the view being left, so the
   // opposite stack can bring the reader back to it.
   const enterView = useCallback((view: ViewSnapshot): ViewSnapshot => {
     const cam = mainEditor.getCamera()
-    const restoring = view.movedShapes || []
     const departing: ViewSnapshot = {
       pageId: mainEditor.getCurrentPageId(),
       camera: { x: cam.x, y: cam.y, z: cam.z },
-      // Record where the same shapes sit now, so reversing this move puts them back.
-      movedShapes: restoring
-        .map((shape) => {
-          const current = mainEditor.getShape(shape.id) as any
-          return current ? { id: shape.id, x: current.x, y: current.y } : null
-        })
-        .filter(Boolean) as ViewSnapshot['movedShapes'],
     }
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
     if (mainEditor.getCurrentPageId() !== view.pageId) {
       mainEditor.setCurrentPage(view.pageId)
-    }
-    if (restoring.length > 0) {
-      mainEditor.updateShapes(restoring.map((shape) => {
-        const current = mainEditor.getShape(shape.id) as any
-        return current ? { id: shape.id, type: current.type, x: shape.x, y: shape.y } : null
-      }).filter(Boolean) as any)
-      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
     }
     mainEditor.setCamera(view.camera, { animation: { duration: 300 } })
     window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
@@ -328,14 +300,6 @@ export function AnnotationViewer({
     const prevView = prevViewStackRef.current.pop()
     if (!prevView) return
     const departed = enterView(prevView)
-    if (prevViewStackRef.current.length === 0) {
-      // Back to where the viewer was pinned: that is the pinned surface again,
-      // not a place in the stack. Forward from here is the Go arrow's job.
-      forwardViewStackRef.current = []
-      syncNavDepth()
-      setState('pinned')
-      return
-    }
     forwardViewStackRef.current = [...forwardViewStackRef.current, departed]
     syncNavDepth()
     setState('navigated')
@@ -500,6 +464,7 @@ export function AnnotationViewer({
         {navDepth.back > 0 && (
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            aria-label="Back"
             onPointerDown={stopEventPropagation}
             onClick={handleBack}
           >
@@ -511,6 +476,7 @@ export function AnnotationViewer({
         {navDepth.forward > 0 && (
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            aria-label="Forward"
             onPointerDown={stopEventPropagation}
             onClick={handleForward}
           >
@@ -579,6 +545,7 @@ export function AnnotationViewer({
         <>
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            aria-label={state === 'pinned' ? 'Open document' : 'Back'}
             onPointerDown={stopEventPropagation}
             onClick={state === 'pinned' ? handleGo : handleBack}
           >
@@ -594,6 +561,7 @@ export function AnnotationViewer({
 
           <button
             className="annotation-viewer-nav-btn annotation-viewer-nav-right"
+            aria-label="Close viewer"
             onPointerDown={stopEventPropagation}
             onClick={handleClose}
           >

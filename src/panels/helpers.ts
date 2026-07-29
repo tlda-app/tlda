@@ -34,6 +34,11 @@ function currentHtmlPageShape(editor: Editor): HtmlPageNavShape | undefined {
   return undefined
 }
 
+function recordAnnotationViewerNavigationStart() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('annotation-viewer-navigation-start'))
+}
+
 export function formatRelativeTime(ts: number | undefined): string {
   if (!ts) return ''
   const delta = Date.now() - ts
@@ -44,6 +49,7 @@ export function formatRelativeTime(ts: number | undefined): string {
 }
 
 export function navigateTo(editor: Editor, canvasX: number, canvasY: number, pageCenterX?: number) {
+  recordAnnotationViewerNavigationStart()
   const x = pageCenterX ?? canvasX
   editor.centerOnPoint({ x, y: canvasY }, { animation: { duration: 300 } })
 }
@@ -56,6 +62,7 @@ export function navigateToPage(editor: Editor, doc: Pick<ProjectContextValue, 'p
   const tlPageId = pageShape?.parentId || (page.tldrawPageId as TLPageId | undefined)
 
   if (tlPageId) {
+    recordAnnotationViewerNavigationStart()
     // Multipage HTML: switch TLDraw page and center on the shape
     editor.setCurrentPage(tlPageId)
     const shape = pageShape || currentHtmlPageShape(editor)
@@ -83,6 +90,7 @@ export function navigateToAnchor(editor: Editor, doc: Pick<ProjectContextValue, 
     return navigateToPage(editor, doc, pageNum)
   }
 
+  recordAnnotationViewerNavigationStart()
   // Switch to the target TLDraw page
   editor.setCurrentPage(tlPageId)
   const shape = pageShape || currentHtmlPageShape(editor)
