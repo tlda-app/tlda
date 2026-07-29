@@ -173,7 +173,7 @@ test('unknown liveness does not write a hibernating transition', () => {
     body.indexOf('if (!detail.unknown)'))
 })
 
-test('native child membership follows the parent name and id from child registration', () => {
+test('native child membership follows the parent name and id across ingested child history', () => {
   const dbPath = tempDb()
   const store = new FleetStore(dbPath, { taskDoc: false })
   const parentRegistered = '2026-07-28T09:00:00.000Z'
@@ -189,8 +189,8 @@ test('native child membership follows the parent name and id from child registra
       .filter(span => span.fleet_id === 'fleet:child')
       .map(span => [span.label, span.from_ts, span.to_ts]),
     [
-      ['chief13', childRegistered, null],
-      ['fleet:parent', childRegistered, null],
+      ['chief13', parentRegistered, null],
+      ['fleet:parent', '1970-01-01T00:00:00.000Z', null],
     ],
   )
   assert.deepEqual(
