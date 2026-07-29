@@ -18,6 +18,7 @@ export function activityEventMessage(agentId, evt) {
     ...(evt.usage ? { usage: evt.usage } : {}),
     ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
     ...(evt.origTool ? { origTool: evt.origTool } : {}),
+    ...(evt.sourceRecordId ? { source_record_id: evt.sourceRecordId } : {}),
   }
 }
 

@@ -5,7 +5,12 @@ import { appendFileSync, createReadStream, mkdtempSync, rmSync, statSync, writeF
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { WatchReadTailFile } from './fleet-jsonl-ingester.mjs'
+import {
+  JsonlOffsetParser,
+  WatchReadTailFile,
+  nativeActivitySourceRecordId,
+  stampNativeActivitySourceRecord,
+} from './fleet-jsonl-ingester.mjs'
 
 function onceEvent(emitter, event) {
   return new Promise(resolve => emitter.once(event, resolve))
@@ -63,4 +68,36 @@ test('watch-read JSONL tail stats once at idle and reads only after chokidar eve
     await tail.quit()
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('native child source record identity is stable across replay from the saved offset', async () => {
+  async function parse(startOffset, chunks) {
+    const parser = new JsonlOffsetParser({ startOffset })
+    const records = []
+    parser.on('data', record => records.push(record))
+    for (const chunk of chunks) parser.write(chunk)
+    parser.end()
+    await onceEvent(parser, 'end')
+    return records
+  }
+
+  const line = '{"type":"assistant","message":{"content":"heard"}}\n'
+  const first = await parse(300, [line.slice(0, 17), line.slice(17)])
+  const replay = await parse(300, [line])
+  assert.equal(first[0].sourceRecordOffset, 300 + Buffer.byteLength(line))
+  assert.equal(replay[0].sourceRecordOffset, first[0].sourceRecordOffset)
+  assert.equal(
+    nativeActivitySourceRecordId('fleet:native-child', replay[0].sourceRecordOffset),
+    nativeActivitySourceRecordId('fleet:native-child', first[0].sourceRecordOffset),
+  )
+  const outputs = [{ type: 'activity', events: [{ tool: 'exec_command' }] }]
+  stampNativeActivitySourceRecord(outputs, {
+    nativeSubagent: true,
+    agentId: 'fleet:native-child',
+    sourceRecordOffset: first[0].sourceRecordOffset,
+  })
+  assert.equal(
+    outputs[0].events[0].sourceRecordId,
+    nativeActivitySourceRecordId('fleet:native-child', first[0].sourceRecordOffset),
+  )
 })

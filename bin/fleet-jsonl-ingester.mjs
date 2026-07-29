@@ -6,11 +6,11 @@
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
-import { PassThrough } from 'stream'
+import crypto from 'crypto'
+import { PassThrough, Transform } from 'stream'
 import { createInterface } from 'readline'
 import { pathToFileURL } from 'url'
 import chokidar from 'chokidar'
-import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import {
   extractIdentityFromRecord,
@@ -28,6 +28,53 @@ const MAX_CONTEXT = 200_000
 const watchers = new Map()
 const pendingJobAcks = new Map()
 const activeJobs = new Map()
+
+export function nativeActivitySourceRecordId(agentId, sourceRecordOffset) {
+  return crypto
+    .createHash('sha256')
+    .update(`${agentId}:${sourceRecordOffset}`)
+    .digest('hex')
+}
+
+export function stampNativeActivitySourceRecord(outputs, {
+  nativeSubagent = false,
+  agentId = null,
+  sourceRecordOffset = null,
+} = {}) {
+  if (!nativeSubagent || !agentId || !Number.isInteger(sourceRecordOffset)) return outputs
+  const sourceRecordId = nativeActivitySourceRecordId(agentId, sourceRecordOffset)
+  for (const output of outputs) {
+    if (output.type !== 'activity') continue
+    for (const event of output.events || []) event.sourceRecordId = sourceRecordId
+  }
+  return outputs
+}
+
+export class JsonlOffsetParser extends Transform {
+  constructor({ startOffset = 0 } = {}) {
+    super({ readableObjectMode: true })
+    this.buffer = Buffer.alloc(0)
+    this.offset = startOffset
+  }
+
+  _transform(chunk, _encoding, callback) {
+    this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)])
+    let newline
+    while ((newline = this.buffer.indexOf(0x0a)) !== -1) {
+      const line = this.buffer.subarray(0, newline)
+      this.buffer = this.buffer.subarray(newline + 1)
+      this.offset += newline + 1
+      const json = line.at(-1) === 0x0d ? line.subarray(0, -1) : line
+      if (json.length === 0) continue
+      try {
+        this.push({ value: JSON.parse(json.toString('utf8')), sourceRecordOffset: this.offset })
+      } catch {
+        // Preserve the prior JSONL parser's ignoreErrors behavior for malformed records.
+      }
+    }
+    callback()
+  }
+}
 
 export class WatchReadTailFile extends PassThrough {
   constructor(filename, {
@@ -465,7 +512,7 @@ function sendNext(w) {
   })
 }
 
-function enqueueRecord(w, record) {
+function enqueueRecord(w, record, sourceRecordOffset = null) {
   const daemonReceivedAtMs = Date.now()
   const outputs = extractRecordOutputsWithState(w, record, w.nativeTaskState)
   for (const output of outputs) {
@@ -475,6 +522,11 @@ function enqueueRecord(w, record) {
       event.daemonReceivedAt = new Date(daemonReceivedAtMs).toISOString()
     }
   }
+  stampNativeActivitySourceRecord(outputs, {
+    nativeSubagent: w.nativeSubagent,
+    agentId: w.agentId,
+    sourceRecordOffset,
+  })
   if (outputs.length === 0) return
   w.queue.push({ seq: ++w.nextSeq, outputs })
   sendNext(w)
@@ -482,7 +534,7 @@ function enqueueRecord(w, record) {
 
 function startWatch(msg) {
   stopWatch(msg.watchId, 'replace')
-  const parser = jsonlParser.asStream({ ignoreErrors: true })
+  const parser = new JsonlOffsetParser({ startOffset: msg.startOffset })
   const tail = new WatchReadTailFile(msg.jsonlPath, {
     startPos: msg.startOffset,
   })
@@ -494,6 +546,7 @@ function startWatch(msg) {
     harnessKind: msg.harnessKind,
     terminalChat: !!msg.terminalChat,
     backfillSearch: !!msg.backfillSearch,
+    nativeSubagent: !!msg.nativeSubagent,
     tail,
     parser,
     queue: [],
@@ -508,7 +561,7 @@ function startWatch(msg) {
   parser.on('data', item => {
     if (w.stopped || !item || item.value === undefined) return
     try {
-      enqueueRecord(w, item.value)
+      enqueueRecord(w, item.value, item.sourceRecordOffset)
     } catch (e) {
       send({ type: 'error', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, error: e?.message || String(e) })
     }
