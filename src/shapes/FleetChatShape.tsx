@@ -2942,6 +2942,31 @@ function FleetChatInner({ shape }: { shape: any }) {
     items.push({ key: '__status__', html: '', _status: true })
     return items
   }, [rawItems])
+  // Virtuoso needs a stable logical index when rows are prepended. Without it,
+  // loading the previous subscription page reinterprets the new first row as
+  // index zero and jumps the viewport to the oldest fetched message.
+  const virtuosoFirstItemIndexRef = useRef(1_000_000)
+  const previousVirtuosoItemKeysRef = useRef<string[]>([])
+  const previousVirtuosoFilterKeyRef = useRef(filterKey)
+  const nextVirtuosoItemKeys = allItems.map(item => item.key)
+  if (previousVirtuosoFilterKeyRef.current !== filterKey) {
+    previousVirtuosoFilterKeyRef.current = filterKey
+    virtuosoFirstItemIndexRef.current = 1_000_000
+  } else {
+    const previousKeys = previousVirtuosoItemKeysRef.current
+    const previousKeyIndexes = new Map(previousKeys.map((key, index) => [key, index]))
+    for (let nextIndex = 0; nextIndex < nextVirtuosoItemKeys.length; nextIndex++) {
+      const previousIndex = previousKeyIndexes.get(nextVirtuosoItemKeys[nextIndex])
+      if (previousIndex === undefined) continue
+      const prependedCount = nextIndex - previousIndex
+      if (prependedCount > 0) {
+        virtuosoFirstItemIndexRef.current -= prependedCount
+      }
+      break
+    }
+  }
+  previousVirtuosoItemKeysRef.current = nextVirtuosoItemKeys
+  const virtuosoFirstItemIndex = virtuosoFirstItemIndexRef.current
   const tailMessageKey = useMemo(() => {
     const m = chatMessages[chatMessages.length - 1]
     if (!m) return ''
@@ -5596,6 +5621,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               <Virtuoso
             ref={virtuosoRef}
             data={allItems}
+            firstItemIndex={virtuosoFirstItemIndex}
             startReached={() => {
               if (chatEventBufferKey) requestEarlierChatHistory(chatEventBufferKey)
             }}
