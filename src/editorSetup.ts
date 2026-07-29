@@ -388,20 +388,6 @@ function waitForHtmlPageReload(shapeId: string): Promise<void> | null {
 
 async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<ReloadResult> {
   const timestamp = Date.now()
-  const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
-
-  try {
-    const res = await fetch(`${basePath}page-info.json?t=${timestamp}`)
-    if (!res.ok) throw new Error(`page-info.json returned ${res.status}`)
-    const pageInfos = await res.json()
-    const fresh = createHtmlDocumentFromPageInfo(document.name, basePath, pageInfos)
-    document.pages.length = 0
-    document.pages.push(...fresh.pages)
-    document.basePath = basePath
-    createHtmlShapes(editor, document)
-  } catch (e) {
-    console.warn('[Reload] HTML page-info refresh failed:', (e as Error).message)
-  }
 
   const pageShapeIds = new Set(document.pages.map(page => page.shapeId))
   const reloads: Promise<void>[] = []
