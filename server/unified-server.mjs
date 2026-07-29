@@ -1623,6 +1623,7 @@ let _lastReaperStatus = null       // latest reaper snapshot from daemon
 const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 const MY_TASK_TASK_LIMIT = 20
+const MY_TASK_DELIVERY_LIMIT = 50
 
 function touchActivity(agentId) {
   _lastActivityAt.set(agentId, Date.now())
@@ -6952,15 +6953,32 @@ async function handleFleetWsMessage(ws, msg) {
     const tasks = await fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = await fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || await fleetStore.getTaskByAgent?.(agentId) || null
+    const messages = await fleetStore.getInboxDeliveriesLimited?.(agentId, MY_TASK_DELIVERY_LIMIT) || []
+    const messageCount = await fleetStore.getInboxDeliveryCount?.(agentId) ?? messages.length
     reply({
       task,
       tasks: tasks.length ? tasks : (task ? [task] : []),
+      messages,
       counts: {
         tasks: taskCount,
+        messages: messageCount,
         task_limit: MY_TASK_TASK_LIMIT,
+        message_limit: MY_TASK_DELIVERY_LIMIT,
         tasks_truncated: taskCount > tasks.length,
+        messages_truncated: messageCount > messages.length,
       },
     })
+    return
+  }
+
+  if (type === 'ack-inbox') {
+    const agentId = msg.agent
+    if (!agentId) { error('missing agent'); return }
+    const eventIds = Array.isArray(msg.event_ids) ? msg.event_ids : []
+    const readIds = await fleetStore.markEventsRead?.(agentId, eventIds) || []
+    await fleetStore.updateHeartbeat?.(agentId)
+    if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
+    reply({ ok: true, event_ids: readIds })
     return
   }
 

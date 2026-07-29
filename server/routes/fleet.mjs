@@ -42,6 +42,7 @@ const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
 // container path that Fly wipes on every deploy.
 export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
+const MY_TASK_DELIVERY_LIMIT = 50
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first
@@ -466,13 +467,19 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const tasks = await fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = await fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || await fleetStore?.getTaskByAgent(agentId) || null
+    const messages = await fleetStore?.getInboxDeliveriesLimited?.(agentId, MY_TASK_DELIVERY_LIMIT) || []
+    const messageCount = await fleetStore?.getInboxDeliveryCount?.(agentId) ?? messages.length
     res.json({
       task,
       tasks: tasks.length ? tasks : (task ? [task] : []),
+      messages,
       counts: {
         tasks: taskCount,
+        messages: messageCount,
         task_limit: MY_TASK_TASK_LIMIT,
+        message_limit: MY_TASK_DELIVERY_LIMIT,
         tasks_truncated: taskCount > tasks.length,
+        messages_truncated: messageCount > messages.length,
       },
     })
   })

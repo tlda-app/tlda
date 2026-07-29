@@ -1257,6 +1257,21 @@ export class FleetStore {
       INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)
     `);
 
+    // `unread` is the durable inbox-delivery projection. Read through that
+    // projection only: callers cannot use this as a general event-history
+    // query, and the bounded join runs inside the store worker.
+    this._getInboxDeliveriesLimited = this.db.prepare(`
+      SELECT ${this._EVTE} FROM unread u
+      JOIN events e ON e.id = u.event_id
+      WHERE u.to_id = ? AND u.read = 0
+      ORDER BY e.timestamp ASC
+      LIMIT ?
+    `);
+
+    this._getInboxDeliveryCount = this.db.prepare(`
+      SELECT COUNT(*) AS c FROM unread WHERE to_id = ? AND read = 0
+    `);
+
     // Incrementally bump last_active for the event's sender + recipient. Both
     // params are the event timestamp; MAX keeps the newest if events arrive out
     // of order. id IN (?, ?) is an O(1) PK lookup; null from/to simply matches
@@ -3956,6 +3971,14 @@ export class FleetStore {
 
   // ---- Message/event queries ----
 
+  getInboxDeliveriesLimited(agentId, limit = 50) {
+    const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
+    return this._query(this._getInboxDeliveriesLimited, agentId, n);
+  }
+
+  getInboxDeliveryCount(agentId) {
+    return this._getInboxDeliveryCount.get(agentId).c;
+  }
 
   // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in
   // `buildFiles` (array of absolute paths) since `since` (ISO timestamp).

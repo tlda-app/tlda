@@ -3378,7 +3378,22 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return { content: [{ type: 'text', text: `Fleet transport failed before ACK. This read was not completed: ${e.message}` }], isError: true };
     }
 
-    const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages: [], counts: data.counts || null });
+    const messages = await Promise.all((data.messages || []).map(m => resolveInboxMessage(m, {
+      resolveChipTokens: resolveInboxChipTokens,
+      resolveTheoremRefs,
+      resolveImages: resolveInboxImages,
+    })));
+    let text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages, counts: data.counts || null });
+    if (!args?.peek && data.messages?.length) {
+      try {
+        await mcpFleetTransport.ephemeral('ack-inbox', {
+          agent: AGENT_ID,
+          event_ids: data.messages.map(message => message.id),
+        });
+      } catch (e) {
+        text += `\n\n⚠️ Inbox acknowledgement failed; these messages remain unread: ${e.message}`;
+      }
+    }
     return { content: [{ type: 'text', text }] };
   }
 

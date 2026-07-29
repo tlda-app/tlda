@@ -64,6 +64,8 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getDrillCards',
   'getEventById',
   'getFleetPref',
+  'getInboxDeliveriesLimited',
+  'getInboxDeliveryCount',
   'getLatestChatFrom',
   'getLineage',
   'getLineageFleetIds',
