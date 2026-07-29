@@ -14,10 +14,11 @@ import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
-import { join, basename, dirname } from 'path'
+import { join, basename, dirname, posix } from 'path'
 import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { getBuildReporter } from './build-runner.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 const FRONTMATTER_RE = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/
 
@@ -711,11 +712,22 @@ function markdownPathToHtmlPath(file) {
   return clean.replace(/\.(md|markdown)$/i, '.html')
 }
 
-function rewriteMarkdownHrefTargets(html) {
-  return html.replace(/\bhref="([^"]+\.(?:md|markdown)(?:#[^"]*)?)"/gi, (_m, href) => {
-    const [path, hash = ''] = String(href).split('#', 2)
-    const next = markdownPathToHtmlPath(path)
-    return `href="${escAttr(hash ? `${next}#${hash}` : next)}"`
+function rewriteMarkdownHrefTargets(html, { projectName = null, sourceFile = null, mainFile = null } = {}) {
+  return html.replace(/\bhref="([^"]+\.(?:md|markdown)(?:[?#][^"]*)?)"/gi, (_m, href) => {
+    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href)) return `href="${escAttr(href)}"`
+    const match = String(href).match(/^([^?#]+)(\?[^#]*)?(#.*)?$/)
+    if (!match) return `href="${escAttr(href)}"`
+    const [, path, query = '', hash = ''] = match
+    const targetSource = sourceFile
+      ? posix.normalize(posix.join(posix.dirname(sourceFile.replace(/\\/g, '/')), path))
+      : path
+    if (targetSource.startsWith('../') || targetSource.startsWith('/')) return `href="${escAttr(href)}"`
+    const normalizedMain = String(mainFile || '').replace(/\\/g, '/').replace(/^\/+/, '')
+    const targetHtml = targetSource === normalizedMain ? 'index.html' : markdownPathToHtmlPath(targetSource)
+    const next = projectName
+      ? `/docs/${encodeURIComponent(projectName)}/${targetHtml.split('/').map(encodeURIComponent).join('/')}`
+      : markdownPathToHtmlPath(path)
+    return `href="${escAttr(`${next}${query}${hash}`)}"`
   })
 }
 
@@ -741,7 +753,7 @@ function markdownTocForSource(source, page) {
   return toc
 }
 
-export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [] }) {
+export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, mainFile = null }) {
   _macros = extractMacros(source)
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
@@ -764,7 +776,7 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames 
   const env = {}
   const tokens = md.parse(processedSource, env)
   let content = md.renderer.render(tokens, md.options, env)
-  content = rewriteMarkdownHrefTargets(linkifyMarkdownDocRefs(content))
+  content = rewriteMarkdownHrefTargets(linkifyMarkdownDocRefs(content), { projectName, sourceFile, mainFile })
   const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc, agentNames)
   return `<!DOCTYPE html>
 <html lang="en">
@@ -832,47 +844,18 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
 
   mkdirSync(outDir, { recursive: true })
   const columns = await listDocumentColumns(name, { project, srcDir })
+  const closure = scanMarkdownDependencyClosure(mainFile, srcDir)
   const toc = []
   for (let i = 0; i < columns.length; i++) {
     const columnSource = readFileSync(join(srcDir, columns[i].sourceFile), 'utf8')
     toc.push(...markdownTocForSource(columnSource, i + 1))
   }
 
-  // Copy image/asset directories from source to output
-  for (const dir of ['img', 'images', 'assets', 'png']) {
-    const src = join(srcDir, dir)
-    if (existsSync(src)) {
-      cpSync(src, join(outDir, dir), { recursive: true })
-      addLog(`[markdown] Copied ${dir}/ to output`)
-    }
-  }
-
-  // Copy loose image files from source root (screenshots, etc.)
-  try {
-    const files = readdirSync(srcDir)
-    for (const f of files) {
-      if (/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(f)) {
-        cpSync(join(srcDir, f), join(outDir, f))
-      }
-    }
-  } catch {}
-
-  // Copy every locally-referenced image at its own relative subpath, so nested
-  // refs like docs/images/x.png or public/logo.svg land at the matching path
-  // under output/ (the dir allowlist above only catches top-level img dirs).
-  const copyRef = (raw) => {
-    const rel = raw.split(/[#?]/)[0].trim()
-    if (!rel || /^(https?:|data:|\/\/)/i.test(rel)) return
+  for (const rel of closure.assets) {
     const from = join(srcDir, rel)
-    if (!existsSync(from)) return
     const to = join(outDir, rel)
     mkdirSync(dirname(to), { recursive: true })
     cpSync(from, to)
-  }
-  for (const column of columns) {
-    const columnSource = readFileSync(join(srcDir, column.sourceFile), 'utf8')
-    for (const m of columnSource.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) copyRef(m[1])
-    for (const m of columnSource.matchAll(/<img\s[^>]*\bsrc=["']([^"']+)["']/g)) copyRef(m[1])
   }
 
 
@@ -885,26 +868,9 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   // not resolve to a file inside this project is not part of the document and
   // never enters a version. That is why an external part's absolute source path
   // is not written out — it belongs to the project that owns it.
-  const authorDir = project.sourceDir || srcDir
-  const referencedFiles = new Set()
-  const addRef = (rel) => {
-    if (!rel || rel.startsWith('/')) return
-    if (existsSync(join(srcDir, rel)) || existsSync(join(authorDir, rel))) referencedFiles.add(rel)
-  }
-  for (const column of columns) {
-    addRef(column.sourceFile)
-    const columnSource = readFileSync(join(srcDir, column.sourceFile), 'utf8')
-    for (const raw of [
-      ...[...columnSource.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m => m[1]),
-      ...[...columnSource.matchAll(/<img\s[^>]*src=["']([^"']+)["']/g)].map(m => m[1]),
-    ]) {
-      const ref = raw.split(/[#?]/)[0].trim()
-      if (ref && !/^(https?:|data:|\/\/)/i.test(ref)) addRef(ref)
-    }
-  }
   writeFileSync(
     join(outDir, 'relevant-files.json'),
-    JSON.stringify({ generated_at: new Date().toISOString(), files: [...referencedFiles].sort() }, null, 2),
+    JSON.stringify({ generated_at: new Date().toISOString(), files: closure.files }, null, 2),
   )
 
   const pageInfo = pageInfoFromDocumentColumns(name, columns)

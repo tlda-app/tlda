@@ -25,7 +25,7 @@ import { tldaFetch } from '../shared/http-client.mjs'
 import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
-import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
+import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import {
@@ -713,24 +713,18 @@ async function cmdCreate() {
     }
     await activateLocalSource()
 
-    // Push the main file PLUS every locally-referenced image. A remote server
-    // (e.g. hosted) can't read the author's disk, and build-markdown.mjs copies
-    // referenced images from the PUSHED source mirror — so if we only send the
-    // .md, every image 404s off-machine. Scan with the same ref patterns the
-    // server uses (build-markdown.mjs) and upload each referenced local file at
-    // its relative path, so it lands where the server's copyRef looks for it.
-    const mdSource = readFileSync(join(dir, mainFile), 'utf8')
-    const files = [{ path: mainFile, content: Buffer.from(mdSource).toString('base64'), encoding: 'base64' }]
-
-    const missing = []
-    for (const { ref, abs } of scanMarkdownDeps(mdSource, dir)) {
-      if (!abs || !existsSync(abs)) { missing.push(ref); continue }
-      files.push({ path: ref, content: readFileSync(abs).toString('base64'), encoding: 'base64' })
+    const closure = scanMarkdownDependencyClosure(mainFile, dir)
+    const files = closure.files.map(file => ({
+      path: file,
+      content: readFileSync(join(dir, file)).toString('base64'),
+      encoding: 'base64',
+    }))
+    const linkedCount = Math.max(0, closure.markdown.length - 1)
+    console.log(`Pushing ${mainFile}${linkedCount ? ` + ${linkedCount} linked document(s)` : ''}${closure.assets.length ? ` + ${closure.assets.length} asset(s)` : ''}...`)
+    if (closure.missing.length) {
+      const labels = closure.missing.slice(0, 5).map(item => `${item.from} → ${item.ref}`)
+      console.log(dim(`  Skipped ${closure.missing.length} unresolved local ref(s): ${labels.join(', ')}${closure.missing.length > 5 ? '…' : ''}`))
     }
-    const assetCount = files.length - 1
-
-    console.log(`Pushing ${mainFile}${assetCount ? ` + ${assetCount} image(s)` : ''}...`)
-    if (missing.length) console.log(dim(`  Skipped ${missing.length} unresolved image ref(s): ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`))
     await api('POST', `/api/projects/${name}/push`, {
       files,
       sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
@@ -855,6 +849,7 @@ async function cmdLink() {
 async function cmdLinkRemote(gitUrl) {
   const name = getPositional(0)
   const mainFile = getFlag('main')
+  const format = getFlag('format')
   if (!name) {
     console.error('Usage: tlda project link <name> <git-url> [--main <file>] [--token TOKEN] [--title "Title"] [--poll 60]')
     process.exit(1)
@@ -865,7 +860,7 @@ async function cmdLinkRemote(gitUrl) {
 
   console.log(`Linking ${name} ← ${gitUrl}${mainFile ? ` (main: ${mainFile})` : ''}…`)
   const result = await api('POST', `/api/projects/${name}/link`,
-    { source: gitUrl, token, title, mainFile, pollSeconds },
+    { source: gitUrl, token, title, mainFile, format, pollSeconds },
     { timeoutMs: 300000, token: getRwToken() })
   if (result.alreadyLinked) {
     console.log(dim(`Project "${name}" is already linked to ${gitUrl}.`))

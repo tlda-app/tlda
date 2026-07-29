@@ -4297,7 +4297,15 @@ app.use('/docs', (req, res, next) => {
           const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
           const agentNames = isTaskDoc ? await fleetStore.getAgentDisplayNames() : []
-          const html = renderMarkdownColumnHtml({ source, title: column.title, isTaskDoc, agentNames })
+          const html = renderMarkdownColumnHtml({
+            source,
+            title: column.title,
+            isTaskDoc,
+            agentNames,
+            projectName: name,
+            sourceFile: column.sourceFile,
+            mainFile: project.mainFile || 'index.md',
+          })
           const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
 
           function memberTitle(memberName) {

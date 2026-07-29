@@ -522,15 +522,15 @@ router.patch('/:name/auto-sync', requireRw, async (req, res) => {
 })
 
 // Link a Git remote → clone, initial sync, start polling.
-// Body: { source, token?, title?, mainFile?, pollSeconds? }
+// Body: { source, token?, title?, mainFile?, format?, pollSeconds? }
 router.post('/:name/link', requireRw, async (req, res) => {
   try {
-    const { source, token, title, mainFile, pollSeconds } = req.body || {}
+    const { source, token, title, mainFile, format, pollSeconds } = req.body || {}
     if (!source) return res.status(400).json({ error: 'source is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
-    const result = await linkOverleaf(req.params.name, { gitUrl: source, token, title, mainFile, pollSeconds })
+    const result = await linkOverleaf(req.params.name, { gitUrl: source, token, title, mainFile, format, pollSeconds })
     if (result.linked) {
       const project = await readProject(req.params.name)
       if (project?.format === 'svg') {

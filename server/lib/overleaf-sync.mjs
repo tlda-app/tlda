@@ -33,9 +33,10 @@ import { dirname, join } from 'path'
 import {
   projectDir, readProject, updateProject, createProject,
   listProjectSourceRecoveries, rollbackProjectSourceRecovery, removeProjectSourceRecovery,
-  sourceLifecycleStore,
+  sourceLifecycleStore, readClientSourceManifest,
 } from './project-store.mjs'
 import { isSourceFilePath, sourceManifestContext } from '../../shared/source-manifest.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { processProjectPushSerialized, runSerializedProjectSourceOperation } from '../routes/projects.mjs'
 import { createLogger } from '../../shared/logger.mjs'
 
@@ -103,6 +104,24 @@ function readFileForPush(absPath) {
 
 function shouldSkip(relPath) {
   return SKIP_PATHS.some(re => re.test(relPath))
+}
+
+export function resolveRemoteProjectEntry({ project, requestedMain, tracked, cloneRoot }) {
+  let mainFile = requestedMain || project.mainFile
+  let format = project.format
+  if (!mainFile || !existsSync(join(cloneRoot, mainFile))) {
+    const markdownCandidates = tracked.filter(file => /\.(?:md|markdown)$/i.test(file))
+    const latexCandidates = tracked.filter(file => file.endsWith('.tex') && readFileSync(join(cloneRoot, file), 'utf8').includes('\\documentclass'))
+    const candidates = format === 'markdown'
+      ? markdownCandidates
+      : latexCandidates.length > 0 ? latexCandidates : markdownCandidates
+    if (candidates.length !== 1) {
+      throw new Error('Could not infer the main file; pass --main <file>')
+    }
+    mainFile = candidates[0]
+    if (markdownCandidates.includes(mainFile)) format = 'markdown'
+  }
+  return { mainFile, format }
 }
 
 function shellQuote(s) {
@@ -384,8 +403,23 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     head = diff.head
   }
 
+  let sourceManifest
+  if (project.format === 'markdown') {
+    sourceManifest = scanMarkdownDependencyClosure(project.mainFile || 'index.md', dir).files
+    const next = new Set(sourceManifest)
+    const previous = new Set(await readClientSourceManifest(name))
+    changedPaths = [...new Set([
+      ...changedPaths.filter(path => next.has(path)),
+      ...sourceManifest.filter(path => !previous.has(path)),
+    ])]
+    deletedPaths = [...new Set([
+      ...deletedPaths.filter(path => previous.has(path)),
+      ...[...previous].filter(path => !next.has(path)),
+    ])]
+  } else {
+    sourceManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
+  }
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  const sourceManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
   const expectedRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
   const result = await processPush(name, { expectedRevision, files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
@@ -415,7 +449,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
  * Link a project to an Overleaf git remote: create it if missing, clone, do the
  * initial full sync, persist metadata, and start polling. Returns a summary.
  */
-export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollSeconds = 60 } = {}) {
+export async function linkOverleaf(name, { gitUrl, token, title, mainFile, format, pollSeconds = 60 } = {}) {
   if (!gitUrl) throw new Error('gitUrl is required')
 
   let project = await readProject(name)
@@ -427,27 +461,30 @@ export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollS
     throw new Error(`Project "${name}" is already linked to ${project.overleafRemote}; unlink it first`)
   }
   if (!project) {
-    project = createProject({ name, title: title || name, mainFile: mainFile || 'main.tex', format: 'svg' })
+    const inferredFormat = format || (/\.(?:md|markdown)$/i.test(mainFile || '') ? 'markdown' : 'svg')
+    const defaultMain = inferredFormat === 'markdown' ? 'main.md' : 'main.tex'
+    project = createProject({ name, title: title || name, mainFile: mainFile || defaultMain, format: inferredFormat })
+  } else if (format && format !== project.format) {
+    throw new Error(`Project "${name}" already has format ${project.format}; cannot link it as ${format}`)
   }
 
   const dir = cloneDir(name)
   await cloneRemote(name, gitUrl, token)
-  let resolvedMain = mainFile || project.mainFile
   const tracked = await trackedFiles(dir)
-  if (!resolvedMain || !existsSync(join(dir, resolvedMain))) {
-    const candidates = tracked.filter(file => file.endsWith('.tex') && readFileSync(join(dir, file), 'utf8').includes('\\documentclass'))
-    if (candidates.length !== 1) {
-      rmSync(dir, { recursive: true, force: true })
-      throw new Error('Could not infer the main file; pass --main <file>')
-    }
-    resolvedMain = candidates[0]
+  let entry
+  try {
+    entry = resolveRemoteProjectEntry({ project, requestedMain: mainFile, tracked, cloneRoot: dir })
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true })
+    throw error
   }
 
   await updateProject(name, {
     overleafRemote: remote,
     overleafPollSeconds: pollSeconds,
     autoSync: true,
-    mainFile: resolvedMain,
+    mainFile: entry.mainFile,
+    format: entry.format,
   })
 
   const summary = await syncOverleaf(name, { initial: true })

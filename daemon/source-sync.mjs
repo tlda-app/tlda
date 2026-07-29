@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
 
-import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
+import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 
 export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
@@ -314,26 +314,15 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return result
   }
 
-  // A markdown doc is NOT a single file — it's the main .md PLUS the images it
-  // references. This is the markdown analog of scanTexInputs: returns a Set of
-  // sourceDir-relative paths (main + referenced images that live under sourceDir),
-  // computed locally on the agent's machine via the shared scanner. Mirrors the
-  // server's ref-scan in build-markdown.mjs.
+  // Markdown scope is the transitive closure rooted at mainFile. Linked Markdown
+  // files remain separate documents, but their bytes and local assets belong to
+  // the same project version and watcher set.
   function scanMarkdownInputs(sourceDir, mainFile) {
-    const result = new Set([mainFile])
-    const full = path.join(sourceDir, mainFile)
-    let content
-    try { content = fs.readFileSync(full, 'utf8') } catch { return result }
-    for (const { abs } of scanMarkdownDeps(content, path.dirname(full))) {
-      if (!abs) continue
-      const rel = path.relative(sourceDir, abs)
-      if (rel.startsWith('..') || path.isAbsolute(rel)) continue
-      result.add(rel)
-    }
-    return result
+    return new Set(scanMarkdownDependencyClosure(mainFile, sourceDir).files)
   }
 
-  // A markdown doc bundles only its dependency graph (main + images), never the
+  // A markdown doc bundles only its dependency graph (main + linked documents
+  // and supported assets), never the
   // rest of sourceDir — so the "any source file always passes" escape hatch must
   // not apply to it.
   function isMarkdownDoc(format, mainFile) {
@@ -698,16 +687,18 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       }
     }
 
-    // When the main .md of a markdown doc changes, rescan its image refs. A newly-
-    // referenced image must be pushed now (the build will otherwise 404 it) and
-    // added to the watchSet so later edits to it pass the strict filter.
-    if (state.isMarkdown && state.mainFile && filePaths.includes(state.mainFile)) {
+    // A link added or removed in any Markdown document changes the project
+    // closure. Recompute it from the main file, add newly reachable bytes, and
+    // delete files that are no longer reachable from this immutable version.
+    if (state.isMarkdown && state.mainFile && filePaths.some(file => /\.(?:md|markdown)$/i.test(file))) {
       const alreadyPushed = new Set(filePaths)
       const deps = scanMarkdownInputs(state.sourceDir, state.mainFile)
+      for (const rel of state.watchSet) {
+        if (!deps.has(rel) && state.authorityManifest.has(rel) && !deleted.includes(rel)) deleted.push(rel)
+      }
+      state.watchSet = deps
+      state.authorityManifest = new Set(deps)
       for (const rel of deps) {
-        if (!state.watchSet.has(rel)) {
-          state.watchSet.add(rel)
-        }
         if (alreadyPushed.has(rel)) continue
         const full = path.join(state.sourceDir, rel)
         if (!fs.existsSync(full)) continue
@@ -761,7 +752,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         state.sourceDir,
         { format: state.format, mainFile: state.mainFile },
         state.isMarkdown ? state.watchSet : null,
-        [...state.authorityManifest],
+        state.isMarkdown ? null : [...state.authorityManifest],
       ),
       ...(deleted.length > 0 && { deletedFiles: deleted }),
       ...(editedBy && { editedBy }),

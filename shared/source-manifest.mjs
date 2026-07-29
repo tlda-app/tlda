@@ -5,6 +5,13 @@ export const SOURCE_EXTENSIONS = new Set([
   '.md',
 ])
 
+const MARKDOWN_DEPENDENCY_EXTENSIONS = new Set([
+  '.md', '.markdown',
+  '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf',
+  '.css', '.js', '.json', '.csv', '.txt',
+  '.mp4', '.webm', '.mp3', '.wav',
+])
+
 export const TEXT_EXTENSIONS = new Set([
   '.tex', '.bib', '.sty', '.cls', '.bst', '.def', '.bbl',
   '.tikz', '.pgf', '.dtx', '.ins', '.fd',
@@ -51,6 +58,7 @@ export function isSourceFilePath(path, context = {}) {
   const ctx = sourceManifestContext(context)
   if (ctx.format === 'html' || ctx.format === 'slides') return true
   const ext = extname(rel).toLowerCase()
+  if (ctx.format === 'markdown') return MARKDOWN_DEPENDENCY_EXTENSIONS.has(ext)
   if (!SOURCE_EXTENSIONS.has(ext)) return false
 
   if (ext === '.md') {

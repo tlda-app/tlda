@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import { readProject, sourceDir as getSourceDir, projectPartsRoot } from './project-store.mjs'
 import { readProjectPartsManifest } from './project-parts-scanner.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 const DEFAULT_COLUMN_WIDTH = 800
 const DEFAULT_COLUMN_HEIGHT = 1200
@@ -59,15 +60,25 @@ export function pageInfoFromDocumentColumns(_name, columns) {
 
 function listMarkdownDocumentColumns(name, { project, srcDir }) {
   const columns = []
-  const configuredFile = project.mainFile || 'index.md'
+  const configuredFile = String(project.mainFile || 'index.md').replace(/\\/g, '/').replace(/^\.?\//, '')
   addMarkdownColumn(columns, {
     sourceFile: configuredFile,
     outputFile: markdownColumnFileForSource(configuredFile, { defaultColumn: true }),
     srcDir,
   })
 
+  const closure = scanMarkdownDependencyClosure(configuredFile, srcDir)
+  for (const sourceFile of closure.markdown) {
+    if (sourceFile === configuredFile) continue
+    addMarkdownColumn(columns, {
+      sourceFile,
+      outputFile: markdownColumnFileForSource(sourceFile),
+      srcDir,
+    })
+  }
+
   for (const column of listProjectPartColumns(name, { srcDir })) {
-    if (column.sourceFile === configuredFile) continue
+    if (columns.some(existing => existing.sourceFile === column.sourceFile)) continue
     columns.push(column)
   }
 
