@@ -8,6 +8,7 @@ import { IdentityPicker } from './IdentityPicker'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
+import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import './App.css'
 import './themes.css'
@@ -77,6 +78,7 @@ interface FleetConfigResponse {
 type ErrorType = 'not-found' | 'auth' | 'generic'
 
 const HISTORY_INDEX_BATCH_SIZE = 500
+const HISTORY_CHANGELOG_BATCH_SIZE = 50
 
 
 type State =
@@ -466,6 +468,7 @@ type ProjectHistoryIndex = {
   projects: Record<string, { commitCount: number; oldest: { hash: string; timestamp: number } }>
   oldest: number | null
 }
+type ProjectChangelog = { commits: ChangelogCommit[]; totalPages: number; error?: string }
 function relativeTime(iso: string | undefined): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()
@@ -503,8 +506,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [restoredProjects, setRestoredProjects] = useState<Record<string, DocConfig>>({})
   const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
   const [historyIndex, setHistoryIndex] = useState<ProjectHistoryIndex | null>(null)
+  const [changelogs, setChangelogs] = useState<Record<string, ProjectChangelog>>({})
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [timeAxisNow] = useState(() => Date.now())
   const pointerStart = useRef<PointerStart | null>(null)
   const pointerSwiped = useRef(false)
+  const requestedHistoriesRef = useRef(new Set<string>())
   const [dragPreview, setDragPreview] = useState<{ key: string; action: ProjectAction; dx: number } | null>(null)
 
   useEffect(() => {
@@ -564,16 +571,23 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         return response.json()
       }))
-      return parts.reduce((acc, data) => ({
-        projects: { ...acc.projects, ...(data.projects || {}) },
-        oldest: acc.oldest,
-      }), { projects: {}, oldest: null } as ProjectHistoryIndex)
+      return parts.reduce((acc, data) => {
+        const oldest = Number.isFinite(data.oldest) ? data.oldest : null
+        return {
+          projects: { ...acc.projects, ...(data.projects || {}) },
+          oldest: oldest == null ? acc.oldest : (acc.oldest == null ? oldest : Math.min(acc.oldest, oldest)),
+        }
+      }, { projects: {}, oldest: null } as ProjectHistoryIndex)
     }
     fetchHistoryIndex()
-      .then(setHistoryIndex)
+      .then(data => {
+        setHistoryError(null)
+        setHistoryIndex(data)
+      })
       .catch(error => {
         // Best effort: keep the index usable if history indexing is unavailable.
         if (error.name !== 'AbortError') {
+          setHistoryError('Project history unavailable')
           console.warn('[app] project history index fetch failed:', error.message)
         }
       })
@@ -598,6 +612,62 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     })
 
   const visibleEntries = entries
+  const visibleProjectNames = visibleEntries.map(([key]) => key)
+  const visibleProjectKey = visibleProjectNames.join('\n')
+
+  useEffect(() => {
+    const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
+      .filter(name => !requestedHistoriesRef.current.has(name))
+    if (projectNames.length === 0) return
+    for (const name of projectNames) requestedHistoriesRef.current.add(name)
+    async function fetchChangelogs() {
+      const batches: string[][] = []
+      for (let i = 0; i < projectNames.length; i += HISTORY_CHANGELOG_BATCH_SIZE) {
+        batches.push(projectNames.slice(i, i + HISTORY_CHANGELOG_BATCH_SIZE))
+      }
+      const parts = await Promise.all(batches.map(async batch => {
+        const response = await fetch(`${ASSET_BASE}/api/projects/history/shadow/changelog/batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projects: batch }),
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.json()
+      }))
+      return parts.reduce((projects, data) => ({ ...projects, ...(data.projects || {}) }), {} as Record<string, ProjectChangelog>)
+    }
+    fetchChangelogs()
+      .then(data => {
+        setHistoryError(null)
+        setChangelogs(current => ({ ...current, ...data }))
+      })
+      .catch(error => {
+        for (const name of projectNames) requestedHistoriesRef.current.delete(name)
+        setHistoryError('History unavailable')
+        console.warn('[app] project history batch fetch failed:', error.message)
+      })
+  }, [visibleProjectKey])
+
+  const timeRange = historyIndex?.oldest
+    ? { oldest: historyIndex.oldest, newest: timeAxisNow }
+    : null
+
+  const dateTicks = timeRange
+    ? Array.from({ length: 5 }, (_, index) => {
+        const xProgress = index / 4
+        const ageFraction = Math.expm1((1 - xProgress) * Math.log1p(LOG_AGE_CURVE)) / LOG_AGE_CURVE
+        const timestamp = timeRange.newest - ageFraction * (timeRange.newest - timeRange.oldest)
+        return {
+          timestamp,
+          left: `${(index / 4) * 100}%`,
+          label: new Date(timestamp).toLocaleDateString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          }),
+        }
+      })
+    : []
 
   const archivedFiltered = archived
     .filter(p => !restoredKeys.has(p.name))
@@ -650,6 +720,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         ...prev,
         [key]: {
           name: archivedProject.title || archivedProject.name,
+          pages: 1,
+          basePath: `${ASSET_BASE}/docs/${key}/`,
           mainFile: 'notes.md',
           format: 'markdown',
           starred: archivedProject.starred,
@@ -691,6 +763,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           ...prev,
           [key]: {
             name: archivedProject.title || archivedProject.name,
+            pages: 1,
+            basePath: `${ASSET_BASE}/docs/${key}/`,
             mainFile: 'notes.md',
             format: 'markdown',
             starred: true,
@@ -763,6 +837,15 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     onSelect(key, config)
   }
 
+  const openHistoryPoint = (project: string, commit: ChangelogCommit, page: number) => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('project', project)
+    url.searchParams.set('history', commit.hash)
+    url.searchParams.set('historyTime', String(commit.timestamp))
+    url.searchParams.set('page', String(page))
+    window.location.assign(url.toString())
+  }
+
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
       <div className="picker-controls">
@@ -786,7 +869,11 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       <div className="project-index">
         <div className="project-index-axis" aria-hidden="true">
           <span className="project-index-axis-label">Project</span>
-          <div className="project-index-axis-ticks" />
+          <div className="project-index-axis-ticks">
+            {dateTicks.map(tick => (
+              <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
+            ))}
+          </div>
           <span className="project-index-axis-spacer" />
         </div>
         <div className="project-index-rows">
@@ -795,6 +882,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
             const isBroken = health && !health.ok
             const isStarred = starredKeys.has(key) || !!config.starred
             const preview = dragPreview?.key === key ? dragPreview : null
+            const changelog = changelogs[key]
+            const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
             return (
               <div
                 key={key}
@@ -812,7 +901,29 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
                   <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
                   {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
                 </div>
-                <div className="project-index-history" />
+                <div className="project-index-history">
+                  {!changelog && !historyError && (
+                    <span className="project-index-history-loading">Loading history...</span>
+                  )}
+                  {changelog && !hasPageEdits && (
+                    <span className="project-index-history-loading">No page edits</span>
+                  )}
+                  {changelog && hasPageEdits && timeRange && (
+                    <SpaceTimeDots
+                      changelog={changelog}
+                      timeRange={timeRange}
+                      timeScale="log-age"
+                      showPageLabels={false}
+                      className="project-index-spacetime"
+                      onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
+                    />
+                  )}
+                  {(historyError || changelog?.error) && (
+                    <span className="project-index-history-status">
+                      {changelog?.error || historyError}
+                    </span>
+                  )}
+                </div>
                 <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
                   <button
                     className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
