@@ -19,6 +19,7 @@ import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir,
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { stripVolatileMarkdownMarkersForRender } from '../../shared/markdown-volatile.mjs'
 
 const FRONTMATTER_RE = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/
 
@@ -757,7 +758,8 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames 
   _macros = extractMacros(source)
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
-  const processedSource = renderSource.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
+  const processedSource = stripVolatileMarkdownMarkersForRender(renderSource)
+    .replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
   const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
     .use(mathPlugin)
     .use(markdownItAnchor, { slugify })

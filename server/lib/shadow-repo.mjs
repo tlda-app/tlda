@@ -38,6 +38,7 @@ export function setCompareRef(projectName, hash7) {
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 import { projectDir, sourceDir, outputDir, readProject } from './project-store.mjs'
+import { markdownVersionTriggerProjection } from '../../shared/markdown-volatile.mjs'
 
 const GITIGNORE_CONTENT = `# Build artifacts
 *.aux
@@ -282,6 +283,21 @@ export async function commitSnapshot(name) {
     // would re-introduce the bug class this whole change is fixing) — but hand
     // the caller the reason so it lands on a surface someone reads.
     return { status: 'no-scope', reason }
+  }
+
+  const project = await readProject(name)
+  if (project?.format === 'markdown') {
+    const { stdout } = await execAsync('git ls-tree -rz --name-only HEAD', { cwd: repoDir, timeout: 10000 })
+    const previousFiles = stdout.split('\0').filter(rel => rel && rel !== '.gitignore' && rel !== 'CLAUDE.md')
+    const mainFile = project.mainFile || 'index.md'
+    const previousProjection = await markdownVersionTriggerProjection({ root: repoDir, mainFile, files: previousFiles })
+    const currentProjection = await markdownVersionTriggerProjection({ root: srcDir, mainFile, files: scope })
+    if (
+      previousProjection.length > 0 &&
+      JSON.stringify(previousProjection) === JSON.stringify(currentProjection)
+    ) {
+      return { status: 'volatile-only' }
+    }
   }
 
   // Clear existing non-.git, non-.gitignore content from the shadow repo.

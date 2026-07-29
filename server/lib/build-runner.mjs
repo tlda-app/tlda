@@ -1718,7 +1718,8 @@ export async function recordBuildVersion({
 
   const result = await commitSnapshot(name)
   if (result.status !== 'committed') {
-    // 'unchanged' is correct and quiet — the source really is identical.
+    // 'unchanged' and 'volatile-only' are correct and quiet — either the source
+    // is identical, or the only edits are inside explicitly volatile Markdown.
     // 'no-scope' means this build recorded NO version. That is data not being
     // recorded, so it goes on the surfaces someone actually reads: the build
     // log, the server log, the event stream, and — because the viewer must not
