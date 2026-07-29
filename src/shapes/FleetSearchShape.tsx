@@ -19,7 +19,7 @@ import { beginFleetDragWithoutSnap, createFleetShape, agentDisplayLabel, endFlee
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
-import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
+import { searchFleet, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import { fleetSearchResultAgentChatFilter, fleetSearchResultParticipantLabel } from '../../shared/filter-semantics.mjs'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
@@ -239,6 +239,26 @@ function renderProjectAgentSearchLine(result: any, ctx: ReturnType<typeof makeCh
   </div>`
 }
 
+function renderDocumentContentSearchLine(result: any) {
+  const project = result.project || result.doc || ''
+  const title = result.title || project || 'document'
+  const where = [
+    project,
+    result.page ? `page ${result.page}` : '',
+    result.label && result.label !== result.file ? result.label : '',
+    result.file || '',
+  ].filter(Boolean).join(' · ')
+  const snippet = result.snippet || result.text || ''
+  return `<div class="chat-line fleet-search-document-line">
+    <span class="pretty-search-source">doc</span>
+    <span class="pretty-search-snippet">
+      <span class="fleet-search-document-title">${esc(title)}</span>
+      ${where ? `<span class="fleet-search-document-where">${esc(where)}</span>` : ''}
+      ${snippet ? `<span class="fleet-search-document-snippet">${searchRenderMarkdown(esc(snippet))}</span>` : ''}
+    </span>
+  </div>`
+}
+
 function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
@@ -362,7 +382,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
-  const [docResults, setDocResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
   const [queryError, setQueryError] = useState<string | null>(null)
@@ -410,7 +429,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
       setResults([])
-      setDocResults([])
       setSearched(false)
       setLoading(false)
       setQueryError(null)
@@ -423,7 +441,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
       parsed = parseSearchQuery(q)
     } catch (e) {
       setResults([])
-      setDocResults([])
       setSearched(false)
       setLoading(false)
       setQueryError((e as Error).message || 'Invalid search query')
@@ -436,7 +453,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
     // Need at least a query or a filter
     if (!ftsQuery && !filters.from && !filters.to && !filters.agent && !filters.filterExpression) {
       setResults([])
-      setDocResults([])
       setSearched(false)
       setLoading(false)
       return
@@ -448,20 +464,9 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
     try {
       const serverFilters = buildFleetSearchFilters(filters)
-      const [res, allDocs] = await Promise.all([
-        searchFleet(ftsQuery || '', 100, serverFilters),
-        fetchSharedDocs(),
-      ])
-
+      const currentProject = new URLSearchParams(window.location.search).get('project') || undefined
+      const res = await searchFleet(ftsQuery || '', 100, { ...serverFilters, currentProject })
       setResults(rankSearchResults(res, ftsQuery).slice(0, 50))
-
-      // Filter shared docs by title match (only if there's an FTS query)
-      if (ftsQuery) {
-        const ql = ftsQuery.toLowerCase()
-        setDocResults(allDocs.filter(d => d.title?.toLowerCase().includes(ql) || d.doc?.toLowerCase().includes(ql)))
-      } else {
-        setDocResults([])
-      }
     } finally {
       setLoading(false)
     }
@@ -644,39 +649,13 @@ function FleetSearchInner({ shape }: { shape: any }) {
               {queryError}
             </div>
           )}
-          {!loading && searched && results.length === 0 && docResults.length === 0 && (
+          {!loading && searched && results.length === 0 && (
             <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
               no results
             </div>
           )}
-          {/* Shared docs section */}
-          {docResults.length > 0 && (
-            <>
-              <div className="fleet-search-section-header">Docs</div>
-              {docResults.map((d: any, i: number) => (
-                <div
-                  key={`doc-${i}`}
-                  className="fleet-search-doc-result"
-                  onPointerDown={(e) => {
-                    stopEventPropagation(e)
-                    window.open(appendToken(`${window.location.origin}/?project=${encodeURIComponent(d.doc)}`), '_blank')
-                  }}
-                >
-                  <span style={{ fontSize: 12 }}>📄</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, fontWeight: 500, opacity: 0.8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {d.title || d.doc}
-                    </div>
-                    <div style={{ fontSize: 9, opacity: 0.4 }}>
-                      {d.agent_name || d.agent} · {d.shared_at ? new Date(d.shared_at).toLocaleDateString() : ''}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
           {results.length > 0 && (
-            <div className="fleet-search-section-header">Messages</div>
+            <div className="fleet-search-section-header">Results</div>
           )}
           {!loading && !searched && (
             <div style={{ padding: '20px 10px', opacity: 0.4, textAlign: 'center', fontSize: 10 }}>
@@ -692,14 +671,21 @@ function FleetSearchInner({ shape }: { shape: any }) {
               : { ...r, text, id: r.id }
             const lineHtml = r.type === 'project_agent'
               ? renderProjectAgentSearchLine(r, ctx, agents)
+              : r.type === 'document_content'
+                ? renderDocumentContentSearchLine(r)
               : renderChatLine(convertChatEvent(rawEvent), ctx)
             if (!lineHtml) return null
+            const openDocument = r.type === 'document_content'
+              ? () => window.open(appendToken(`${window.location.origin}/?project=${encodeURIComponent(r.project || r.doc)}`), '_blank')
+              : null
             return (
               <div
                 key={i}
                 className="fleet-search-result"
+                title={r.type === 'document_content' ? 'Open document' : undefined}
                 onPointerDown={(e) => {
                   stopEventPropagation(e)
+                  if (openDocument) return
                   // Delegate nick drags to startDrag
                   const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
                   if (nick) {
@@ -717,13 +703,20 @@ function FleetSearchInner({ shape }: { shape: any }) {
                     startDrag(e, 'msg', drag.value, drag.displayName, drag.color, drag.content)
                   }
                 }}
+                onPointerUp={(e) => {
+                  if (!openDocument) return
+                  stopEventPropagation(e)
+                  openDocument()
+                }}
               >
                 <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-                <span
-                  className="search-result-open"
-                  onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
-                  title="Open in chat"
-                >↗</span>
+                {r.type !== 'document_content' && (
+                  <span
+                    className="search-result-open"
+                    onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
+                    title="Open in chat"
+                  >↗</span>
+                )}
               </div>
             )
           })}
@@ -741,7 +734,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
           opacity: 0.4,
           flexShrink: 0,
         }}>
-          {searched ? `${results.length + docResults.length} result${results.length + docResults.length !== 1 ? 's' : ''}${docResults.length > 0 ? ` · ${docResults.length} doc${docResults.length !== 1 ? 's' : ''}` : ''}` : ''}
+          {searched ? `${results.length} result${results.length !== 1 ? 's' : ''}${results.some(r => r.type === 'document_content') ? ` · ${results.filter(r => r.type === 'document_content').length} doc${results.filter(r => r.type === 'document_content').length !== 1 ? 's' : ''}` : ''}` : ''}
         </div>
 
         </>}

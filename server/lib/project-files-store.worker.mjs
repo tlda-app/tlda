@@ -1,9 +1,10 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 
 import { normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
+import { resolveContainedPath } from './path-containment.mjs'
 
 const projectsDir = workerData.projectsDir
 const dataDir = join(projectsDir, '..', 'data')
@@ -38,6 +39,141 @@ const replace = db.transaction((project, paths) => {
 const seed = db.transaction((project, paths) => {
   for (const filePath of paths) seedInsert.run(project, filePath)
 })
+
+const normalizeSearchText = (value) => String(value || '').replace(/\s+/g, ' ').trim()
+
+const documentSearchExcerpt = (text, query, terms, max = 260) => {
+  const normalized = normalizeSearchText(text)
+  if (!normalized) return ''
+  const lower = normalized.toLowerCase()
+  const needles = [query, ...terms].map(s => String(s || '').toLowerCase()).filter(Boolean)
+  let idx = needles.map(needle => lower.indexOf(needle)).find(i => i >= 0)
+  if (idx == null || idx < 0) idx = 0
+  const start = Math.max(0, idx - Math.floor(max / 3))
+  const end = Math.min(normalized.length, start + max)
+  const prefix = start > 0 ? '…' : ''
+  const suffix = end < normalized.length ? '…' : ''
+  return `${prefix}${normalized.slice(start, end)}${suffix}`
+}
+
+const sourceSearchFiles = new Set(['.tex', '.bib', '.sty', '.cls', '.md', '.qmd', '.html', '.txt'])
+
+const sourceSearchExt = (file) => {
+  const match = String(file || '').match(/(\.[^./]+)$/)
+  return match ? match[1].toLowerCase() : ''
+}
+
+const documentSearchScore = ({ project, title, label, text, sourceKind, page }, query, terms, currentProject) => {
+  const hay = `${title || ''} ${label || ''} ${text || ''}`.toLowerCase()
+  const q = query.toLowerCase()
+  let score = 0
+  if (q && hay.includes(q)) score += 80
+  for (const term of terms) if (term && hay.includes(term)) score += 12
+  if (title?.toLowerCase?.().includes(q)) score += 30
+  if (label?.toLowerCase?.().includes(q)) score += 12
+  if (project && currentProject && project === currentProject) score += 35
+  if (sourceKind === 'rendered') score += 8
+  if (Number.isFinite(page)) score += Math.max(0, 8 - Math.min(page, 8))
+  return score
+}
+
+function readProjectSearchIndexEntries(project) {
+  const name = project?.name
+  if (!name) return []
+  const searchIndexPath = join(projectsDir, name, 'output', 'search-index.json')
+  if (!existsSync(searchIndexPath)) return []
+  try {
+    const rows = JSON.parse(readFileSync(searchIndexPath, 'utf8'))
+    if (!Array.isArray(rows)) return []
+    return rows.map((entry, index) => ({
+      sourceKind: 'rendered',
+      index,
+      project: name,
+      title: project.title || name,
+      page: entry?.page ?? null,
+      label: entry?.label || entry?.title || null,
+      anchor: entry?.anchor || null,
+      text: entry?.text || '',
+    }))
+  } catch {
+    return []
+  }
+}
+
+function readProjectSourceSearchEntries(project) {
+  const name = project?.name
+  if (!name) return []
+  const sourceRoot = resolve(projectsDir, name, 'source')
+  const files = read.all(name)
+    .map(row => row.path)
+    .filter(file => sourceSearchFiles.has(sourceSearchExt(file)))
+    .slice(0, 80)
+  return files.map((file, index) => {
+    let text = ''
+    try {
+      const sourcePath = resolveContainedPath(sourceRoot, file)
+      if (existsSync(sourcePath)) text = readFileSync(sourcePath, 'utf8')
+    } catch {
+      text = ''
+    }
+    if (text.length > 80_000) text = text.slice(0, 80_000)
+    return {
+      sourceKind: 'source',
+      index,
+      project: name,
+      title: project.title || name,
+      page: null,
+      file,
+      label: file,
+      anchor: null,
+      text,
+    }
+  })
+}
+
+function searchContent(query, options = {}) {
+  const q = normalizeSearchText(query)
+  if (q.length < 2) return []
+  const limit = Number(options.limit) > 0 ? Number(options.limit) : 50
+  const currentProject = String(options.currentProject || '').trim()
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean)
+  const projects = listProjects()
+    .filter(p => p?.name && !p.archived)
+    .slice(0, 200)
+  const rows = []
+  for (const project of projects) {
+    const renderedEntries = readProjectSearchIndexEntries(project)
+    const entries = renderedEntries.length ? renderedEntries : readProjectSourceSearchEntries(project)
+    for (const entry of entries) {
+      const hay = `${entry.title || ''} ${entry.label || ''} ${entry.text || ''}`.toLowerCase()
+      if (!terms.every(term => hay.includes(term))) continue
+      const score = documentSearchScore(entry, q, terms, currentProject)
+      if (score <= 0) continue
+      const snippet = documentSearchExcerpt(entry.text || entry.label || entry.title, q, terms)
+      const timestamp = project.lastBuild || project.updatedAt || project.createdAt || null
+      rows.push({
+        source: 'project',
+        type: 'document_content',
+        id: `document:${entry.project}:${entry.sourceKind}:${entry.page || entry.file || entry.index}:${entry.anchor || ''}`,
+        timestamp,
+        project: entry.project,
+        doc: entry.project,
+        title: entry.title || entry.project,
+        text: snippet,
+        snippet,
+        page: entry.page,
+        file: entry.file || null,
+        label: entry.label,
+        anchor: entry.anchor,
+        sourceKind: entry.sourceKind,
+        score,
+      })
+    }
+  }
+  return rows
+    .sort((a, b) => (b.score - a.score) || ((b.timestamp || '').localeCompare(a.timestamp || '')) || a.project.localeCompare(b.project))
+    .slice(0, limit)
+}
 
 function migrateLegacyClientSourceManifests() {
   if (!existsSync(projectsDir)) return
@@ -105,7 +241,9 @@ parentPort.on('message', (message) => {
             ? read.all(message.project).map(row => row.path)
             : message.method === 'replace'
               ? (replace(message.project, message.paths), true)
-              : (() => { throw new Error(`unknown project-files method: ${message.method}`) })()
+              : message.method === 'searchContent'
+                ? searchContent(message.query, message.options)
+                : (() => { throw new Error(`unknown project-files method: ${message.method}`) })()
     parentPort.postMessage({ id: message.id, result })
   } catch (error) {
     parentPort.postMessage({

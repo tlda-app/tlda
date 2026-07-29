@@ -54,7 +54,7 @@ import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../sh
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
-import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, readClientSourceManifest, sourceLifecycleStore } from './lib/project-store.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
@@ -5824,6 +5824,29 @@ async function handleFleetWsMessage(ws, msg) {
           if (await matchesMessageNode(messageFilter, row)) filtered.push(row)
         }
         results = filtered
+      }
+      if (hasText && !msg.historyOnly && !msg.eventOnly) {
+        const documentRows = await searchProjectContent(msg.query || '', {
+          limit: msg.limit || 50,
+          currentProject: msg.currentProject || null,
+        })
+        if (documentRows.length) {
+          const seen = new Set(results.map(r => `${r.source}:${r.id}`))
+          for (const row of documentRows) {
+            const key = `${row.source}:${row.id}`
+            if (!seen.has(key)) {
+              seen.add(key)
+              results.push(row)
+            }
+          }
+          results = results
+            .sort((a, b) => {
+              const scoreDelta = (b.score || 0) - (a.score || 0)
+              if (scoreDelta) return scoreDelta
+              return (b.timestamp ?? '').localeCompare(a.timestamp ?? '')
+            })
+            .slice(0, msg.limit || 50)
+        }
       }
       results = await stampNames(results)
       const context = {}

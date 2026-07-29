@@ -2430,6 +2430,23 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-search-result .chat-line {
   padding-right: 20px;
 }
+.fleet-search-document-title,
+.fleet-search-document-where,
+.fleet-search-document-snippet {
+  display: block;
+}
+.fleet-search-document-title {
+  font-weight: 500;
+  opacity: 0.82;
+}
+.fleet-search-document-where {
+  font-size: 9px;
+  opacity: 0.46;
+}
+.fleet-search-document-snippet {
+  margin-top: 2px;
+  opacity: 0.72;
+}
 .fleet-search-result mark {
   background: rgba(255, 220, 80, 0.25);
   color: inherit;

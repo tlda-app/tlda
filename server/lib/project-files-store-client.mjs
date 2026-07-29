@@ -55,6 +55,7 @@ export class ProjectFilesStoreClient {
   updateProject(project, updates) { return this._call('update-project', { project, updates }) }
   read(project) { return this._call('read', { project }) }
   replace(project, paths) { return this._call('replace', { project, paths }) }
+  searchContent(query, options = {}) { return this._call('searchContent', { query, options }) }
 
   async close() {
     if (this._closed) return

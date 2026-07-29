@@ -204,8 +204,10 @@ function shouldTreatAsStructuredNaturalAgentToken(value, tokenCount) {
 }
 
 function scoreResult(result, query, terms) {
+  const serverScore = Number(result?.score)
+  const base = Number.isFinite(serverScore) ? serverScore : 0
   const haystack = `${result.snippet || ''}\n${result.text || ''}`.toLowerCase()
-  let score = 0
+  let score = base
   if (haystack.includes(query)) score += 1000
   for (const term of terms) {
     if (haystack.includes(term)) score += 20

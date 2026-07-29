@@ -64,4 +64,5 @@ export interface FleetSearchPayloadFilters {
   eventType?: string
   cwd?: string
   project?: string
+  currentProject?: string
 }

@@ -22,12 +22,20 @@ test('project files worker preserves migration, ordering, atomic replace, and lo
   const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-project-files-worker-'))
   const root = join(tempRoot, 'projects')
   const projectDir = join(root, 'legacy')
+  const outputDir = join(projectDir, 'output')
   mkdirSync(projectDir, { recursive: true })
+  mkdirSync(outputDir, { recursive: true })
   writeFileSync(join(projectDir, 'project.json'), JSON.stringify({
     name: 'legacy',
+    title: 'Legacy Search',
     mainFile: 'main.tex',
     clientSourceManifest: ['z.tex', './a.tex', 'z.tex'],
   }))
+  writeFileSync(join(outputDir, 'search-index.json'), JSON.stringify([{
+    page: 1,
+    label: 'Legacy Search',
+    text: 'The rendered document contains spectral banana calculus.',
+  }]))
 
   const client = new ProjectFilesStoreClient(root)
   try {
@@ -47,6 +55,11 @@ test('project files worker preserves migration, ordering, atomic replace, and lo
     clearInterval(timer)
     assert.equal((await client.read('legacy')).length, paths.length)
     assert.ok(ticks > 0, `main loop did not tick during ${replaceMs.toFixed(1)}ms replace`)
+    const searchRows = await client.searchContent('spectral banana calculus', { currentProject: 'legacy' })
+    assert.equal(searchRows.length, 1)
+    assert.equal(searchRows[0].type, 'document_content')
+    assert.equal(searchRows[0].project, 'legacy')
+    assert.equal(searchRows[0].sourceKind, 'rendered')
     console.log(`project-files off-loop proof: replace=${replaceMs.toFixed(1)}ms ticks=${ticks}`)
   } finally {
     await client.close()
