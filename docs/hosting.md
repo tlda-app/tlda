@@ -37,16 +37,57 @@ private network with `TLDA_NO_AUTH=1`; the tailnet is the authentication
 boundary. `tailscale serve` can put the local server behind the machine's valid
 `.ts.net` HTTPS name.
 
+### Invite a collaborator
+
+Choose the collaborator's level before sending the project. The same levels are
+described from the collaborator's side in
+[Join a project](../README.md#join-a-project).
+
+| Level | Host provides | Collaborator does |
+| --- | --- | --- |
+| **Browser collaborator** | Reachable project URL, network access when required, build environment, and agents | Accept the network invitation, open the URL, choose an identity, and work in the browser |
+| **Local author** | Browser access plus the repository remote and ordinary Git permissions | Install tlda, clone the repository, link the checkout, and edit locally |
+| **Local agent operator** | Local-author access plus the named tlda environment | Run a daemon for that environment and configure MCP in the paper directory |
+
+For a browser collaborator on a private deployment:
+
+1. Add the collaborator to the tailnet or other authenticated network.
+2. Link the intended local or remote-backed project.
+3. Open the real project and verify source editing, Yjs synchronization,
+   persistence after reload, a successful rebuild, version history, and any
+   configured remote push.
+4. Run `tlda project share <name>` and confirm that the printed URL is reachable
+   through the selected boundary.
+5. Send the collaborator the project URL and any project-specific handoff or
+   working document.
+
+At that level, the collaborator installs nothing besides the private-network
+client when one is required. They use the browser source editor and the host's
+agents. Do not ask them to clone the repository, install tlda, or configure a
+daemon unless they are deliberately moving to one of the local levels.
+
+For a local agent operator, provide the name of the complete environment rather
+than separate database and store URLs. In their paper directory they run:
+
+```bash
+tlda daemon start --env <host-config-name>
+TLDA_ENV=<host-config-name> tlda config mcp-setup
+```
+
+Exactly one daemon may watch that environment on their machine.
+
 ### Funnel boundary
 
-Funnel makes the selected `.ts.net` URL public. Before enabling it, configure
-tlda token authentication rather than relying on tailnet membership. Check the
-actual URL with `tailscale funnel status`; `tlda project share` detects that URL and
-includes the document's read-only login token.
+Funnel makes the selected `.ts.net` URL public. tlda's tokens protect ordinary
+HTTP viewer routes, but not every fleet and daemon channel. They are not a
+server security boundary. Use Funnel only behind an authenticating proxy or
+when every reachable agent runs inside a locked-down container that cannot
+reach anything you care about. Check the actual URL with
+`tailscale funnel status`.
 
-Never expose the standard server port publicly with neither token authentication
-nor an authenticated network boundary. The application deliberately includes
-terminal and agent-control surfaces.
+Never expose the standard server port publicly without an authenticated network
+or proxy boundary. The application deliberately includes terminal and
+agent-control surfaces.
 
 ### Providing agents for browser-only collaborators
 
@@ -150,4 +191,4 @@ part of this documentation audit.
 The daemon is the bridge to files and sessions on its own machine. If a daemon
 route is unavailable, operations needing that machine fail with 503; the server
 must not process a same-named local path as a fallback. Exactly one daemon may
-watch a given environment.
+watch a given environment on one machine.

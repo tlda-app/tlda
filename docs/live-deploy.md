@@ -104,9 +104,12 @@ After Fly reports success:
 fly status -c fly.live.toml
 curl -fsS https://tlda-fly.cormorant-matrix.ts.net/health
 curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/fleet-config
+curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
 ```
 
-Then open the tailnet URL in a browser for the behavior being shipped. For touch
+Confirm that `gitSha` in `/api/build-info` is the exact commit intended for the
+deployment. Then open the tailnet URL in a browser for the behavior being
+shipped. For touch
 or iPad behavior, do not ask another agent to fake manual iPad testing; report
 the deploy and let Skip drive the physical-device check when needed.
 
