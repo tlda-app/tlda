@@ -94,6 +94,7 @@ import {
 } from '../agent-runtime/daemon-guards.mjs'
 import { createDevReaper } from '../agent-runtime/dev-reaper.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
+import { sourceFilesFromApiResponse } from '../shared/source-manifest.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
 import {
   createJsonlProcessBindingReconciler,
@@ -534,7 +535,15 @@ async function loadLocallyBoundProjects() {
   const loaded = []
   for (const name of sourceSync.boundProjectNames()) {
     try {
-      loaded.push(await daemonApi('GET', `/api/projects/${encodeURIComponent(name)}`))
+      const encodedName = encodeURIComponent(name)
+      const [project, sourceFiles] = await Promise.all([
+        daemonApi('GET', `/api/projects/${encodedName}`),
+        daemonApi('GET', `/api/projects/${encodedName}/files`),
+      ])
+      loaded.push({
+        ...project,
+        sourceManifest: sourceFilesFromApiResponse(sourceFiles),
+      })
     } catch (error) {
       sendMsg({
         type: 'daemon-warning',
