@@ -277,7 +277,7 @@ router.get('/archived', requireRead, async (req, res) => {
 // Create project
 router.post('/', requireRw, async (req, res) => {
   try {
-    const { name, title, mainFile, sourceDir, format, members } = req.body
+    const { name, title, mainFile, format, members } = req.body
     if (!name) return res.status(400).json({ error: 'name is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
@@ -285,9 +285,8 @@ router.post('/', requireRw, async (req, res) => {
     if (format === 'book' && (!members || !Array.isArray(members) || members.length === 0)) {
       return res.status(400).json({ error: 'book format requires a non-empty members array' })
     }
-    const project = createProject({ name, title, mainFile, sourceDir, format, members })
-    // Notify fleet-daemons so they can start watching the new sourceDir.
-    if (project.sourceDir) emitGlobalEvent('project-changed', { name: project.name })
+    const project = createProject({ name, title, mainFile, format, members })
+    emitGlobalEvent('project-changed', { name: project.name })
     res.status(201).json(project)
   } catch (e) {
     res.status(409).json({ error: e.message })
@@ -522,16 +521,16 @@ router.patch('/:name/auto-sync', requireRw, async (req, res) => {
   }
 })
 
-// Link an Overleaf (or any) git remote → clone, initial sync, start polling.
-// Body: { gitUrl, token?, title?, mainFile?, pollSeconds? }
-router.post('/:name/overleaf-link', requireRw, async (req, res) => {
+// Link a Git remote → clone, initial sync, start polling.
+// Body: { source, token?, title?, mainFile?, pollSeconds? }
+router.post('/:name/link', requireRw, async (req, res) => {
   try {
-    const { gitUrl, token, title, mainFile, pollSeconds } = req.body || {}
-    if (!gitUrl) return res.status(400).json({ error: 'gitUrl is required' })
+    const { source, token, title, mainFile, pollSeconds } = req.body || {}
+    if (!source) return res.status(400).json({ error: 'source is required' })
     if (!/^[a-z0-9][a-z0-9-]*$/.test(req.params.name)) {
       return res.status(400).json({ error: 'name must be lowercase alphanumeric with hyphens' })
     }
-    const result = await linkOverleaf(req.params.name, { gitUrl, token, title, mainFile, pollSeconds })
+    const result = await linkOverleaf(req.params.name, { gitUrl: source, token, title, mainFile, pollSeconds })
     if (result.linked) {
       const project = await readProject(req.params.name)
       if (project?.format === 'svg') {
@@ -555,11 +554,13 @@ router.post('/:name/overleaf-sync', requireRw, async (req, res) => {
   }
 })
 
-// Unlink the Overleaf remote (stops polling, removes the clone; keeps the project).
-router.post('/:name/overleaf-unlink', requireRw, async (req, res) => {
+// Unlink the exact Git remote (stops polling, removes the clone; keeps the project).
+router.post('/:name/unlink', requireRw, async (req, res) => {
   try {
-    await unlinkOverleaf(req.params.name)
-    res.json({ ok: true })
+    const { source } = req.body || {}
+    if (!source) return res.status(400).json({ error: 'source is required' })
+    const result = await unlinkOverleaf(req.params.name, { gitUrl: source })
+    res.json({ ok: true, ...result })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -713,7 +714,7 @@ router.get('/:name/outline', requireRead, async (req, res) => {
   const region = regionFromSpan(text, startLine, startCol, endLine, endCol)
   // Backing file for the outline note — lives under <project-root>/.outlines/ in
   // the authoring source tree so agents can open/edit it. Stable per span.
-  const root = project.sourceDir || getSourceDir(req.params.name)
+  const root = getSourceDir(req.params.name)
   const base = String(file).replace(/\.tex$/, '').split('/').pop()
   const slug = `${base}-L${startLine}c${startCol}-L${endLine}c${endCol}`
   const backingFile = join(root, '.outlines', `${slug}.md`)
@@ -819,7 +820,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   let project = await readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, sourceManifest, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
+  const { files, deletedFiles, sourceManifest, priorityPages, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
 
   const recoveries = await recoverProjectSourceTransactions(name)
   const unresolved = recoveries.find(item => item.state === 'recovery-required')
@@ -930,7 +931,6 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       ? normalizeSourceManifest(sourceManifest, sourceManifestContext(project))
       : null
     const metadata = {
-      ...(sourceDir && !project.sourceDir ? { sourceDir } : {}),
       ...(session ? { session, sessionAt: sessionAt || Date.now() } : {}),
       ...(editedBy ? { lastEditedBy: editedBy, lastEditedByAt: Date.now() } : {}),
       ...(members && Array.isArray(members) ? { members } : {}),
@@ -1080,7 +1080,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 async function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {
   if (!changedPushFiles.length) return []
   const manifest = await readProjectPartsManifest(name)
-  const sourceRoot = project.sourceDir || getSourceDir(name)
+  const sourceRoot = getSourceDir(name)
   const changedPartFiles = new Set()
 
   for (const file of changedPushFiles) {
@@ -2003,7 +2003,7 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
       mainLines[scratchLineIdx] = `\\inputscratch{${displayPath}}{${label}}{${displayHeader}}`
       mainContentUpdated = mainLines.join('\n')
     }
-    return res.json({ ok: true, scratchPath, sourcePath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile: project.mainFile, mainContent: mainContentUpdated, sourceDir: project.sourceDir || null, action: 'replaced' })
+    return res.json({ ok: true, scratchPath, sourcePath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile: project.mainFile, mainContent: mainContentUpdated, action: 'replaced' })
   }
 
   // Check if this scratch label already exists — agents should edit in place, not create new files
@@ -2172,7 +2172,6 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
     mainContent: mainLines2.join('\n'),
     targetFile: resolved.file !== project.mainFile ? resolved.file : undefined,
     targetContent: resolved.file !== project.mainFile ? targetLines.join('\n') : undefined,
-    sourceDir: project.sourceDir || null,
     insertedAt: resolved.line,
     action: after ? 'inserted-after' : 'inserted-before',
   })
@@ -2218,7 +2217,6 @@ router.post('/:name/inline-scratch', requireRw, async (req, res) => {
     mainFile: project.mainFile,
     mainContent: newLines.join('\n'),
     scratchPath,
-    sourceDir: project.sourceDir || null,
   })
 })
 

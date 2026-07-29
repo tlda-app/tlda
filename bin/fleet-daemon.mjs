@@ -530,6 +530,23 @@ function applyProjectWorldOwnership(reason, { authoritativeRevisions = false } =
   log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
 
+function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
+  if (!project || !sourceDir) throw new Error('project and sourceDir are required')
+  const result = sourceSync.bindSource(project, sourceDir)
+  if (projectMetadata?.name === project) {
+    serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
+  }
+  applyProjectWorldOwnership('local-source-link')
+  return result
+}
+
+function rpcUnlinkProjectSource({ project, sourceDir }) {
+  if (!project) throw new Error('project is required')
+  const result = sourceSync.unbindSource(project, sourceDir)
+  applyProjectWorldOwnership('local-source-unlink')
+  return result
+}
+
 fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
 
 const backingFiles = createBackingFiles({
@@ -972,7 +989,13 @@ function startLocalLifecycleRpc() {
       try {
         request = JSON.parse(raw || '{}')
         const op = String(request.op || '').trim()
-        const handlers = { mint: rpcMint, wake: rpcWake, spawn: agentLauncher.handlers.spawn }
+        const handlers = {
+          mint: rpcMint,
+          wake: rpcWake,
+          spawn: agentLauncher.handlers.spawn,
+          'project-source-link': rpcLinkProjectSource,
+          'project-source-unlink': rpcUnlinkProjectSource,
+        }
         const handler = handlers[op]
         if (!handler) throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
         const params = {

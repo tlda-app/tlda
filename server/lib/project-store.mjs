@@ -44,21 +44,18 @@ export async function closeProjectStore() {
 }
 export async function listProjects() {
   if (!projectFilesDb) throw new Error('project store is not initialized')
-  return projectFilesDb.listProjects()
+  return (await projectFilesDb.listProjects()).map(({ sourceDir: _sourceDir, ...project }) => project)
 }
 
 export async function readProject(name) {
   if (!projectFilesDb) throw new Error('project store is not initialized')
-  return projectFilesDb.readProject(name)
+  const project = await projectFilesDb.readProject(name)
+  if (!project) return project
+  const { sourceDir: _sourceDir, ...sharedProject } = project
+  return sharedProject
 }
 
-// Reject sourceDirs that would cause runaway file watching: the tlda repo
-// itself, the fleet repo, or any other repo containing CLAUDE.md + a busy
-// .git directory. The watcher would fire on every git index update, build
-// artifact, or scratch file edit and rebuild every project pointed at it
-// in a tight loop. (Lost a day to this on 2026-04-10.)
-
-export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', sourceDir: srcDir, members }) {
+export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', members }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -73,7 +70,6 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
     title: title || name,
     ...(!isBook && { mainFile }),
     format,
-    ...(srcDir && { sourceDir: srcDir }),
     ...(isBook && members && { members }),
     pages: 0,
     createdAt: new Date().toISOString(),
@@ -90,7 +86,10 @@ export async function updateProject(name, updates) {
     throw new Error('clientSourceManifest is stored in project_files; use updateClientSourceManifest()')
   }
   if (!projectFilesDb) throw new Error('project store is not initialized')
-  return projectFilesDb.updateProject(name, updates)
+  const project = await projectFilesDb.updateProject(name, { ...updates, sourceDir: undefined })
+  if (!project) return project
+  const { sourceDir: _sourceDir, ...sharedProject } = project
+  return sharedProject
 }
 
 /**

@@ -7,7 +7,7 @@
  * ad-hoc fallback chains here.
  */
 
-import { resolve, basename, dirname, join, delimiter } from 'path'
+import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
@@ -82,7 +82,7 @@ import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mj
 // are their own top-level commands.)
 const PROJECT_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'init',
+  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'unlink', 'init',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_PROJECT_SUBS = new Set(['create', 'preview'])
@@ -103,6 +103,7 @@ const TOP_LEVEL_COMMANDS = [
 const PROJECT_COMMANDS = [
   ['init', 'Create a new blank git-backed project'],
   ['link', 'Link an existing project, push files, build'],
+  ['unlink', 'Detach a local path or Git remote from a project'],
   ['open', 'Open the viewer'],
   ['push', 'Push source, rebuild'],
   ['status', 'Build status'],
@@ -196,7 +197,8 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> [file] [--title "Title"] [--format slides|html|markdown]\n  tlda project link <name> <main-file> --from <git-url> [--token TOKEN] [--poll 60]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild. With --from, the server clones and polls an Overleaf,\n  GitHub, SSH, or other Git remote and pushes tlda source edits back to it.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper paper.tex --from https://git.overleaf.com/project-id --token "$OVERLEAF_TOKEN"\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced local options: --dir <path> and --main <file> override file-derived paths.\n  Remote options: --from <git-url>, --token TOKEN, --poll SECONDS (default 60; minimum 15).',
+  link:    'tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown]\n\n  Attach a source to a project. <source> is either a local file/repository path or a Git URL.\n  Local paths are bound only on this machine; Git URLs are cloned and polled by the server.\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper https://git.overleaf.com/project-id --main paper.tex --token "$OVERLEAF_TOKEN"\n\n  Remote options: --token TOKEN, --poll SECONDS (default 60; minimum 15).',
+  unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local path or Git URL currently linked to the project.\n  The source must match the existing binding.',
   init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
@@ -222,7 +224,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
-  'agent-id', 'policy', 'permissions', 'machine', 'limit', 'from', 'poll', 'config',
+  'agent-id', 'policy', 'permissions', 'machine', 'limit', 'poll', 'config',
   'label', 'plist', 'only',
 ])
 
@@ -494,7 +496,7 @@ async function cmdScratch() {
 
   // Create or update markdown project
   try {
-    await api('POST', '/api/projects', { name, title, mainFile: fileName, format: 'markdown', sourceDir: dir })
+    await api('POST', '/api/projects', { name, title, mainFile: fileName, format: 'markdown' })
     console.log(green(`Created scratch project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -503,6 +505,8 @@ async function cmdScratch() {
       throw e
     }
   }
+  const projectMetadata = await api('GET', `/api/projects/${name}`)
+  await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata })
 
   // Push the file
   const content = readFileSync(absPath)
@@ -510,7 +514,6 @@ async function cmdScratch() {
   await api('POST', `/api/projects/${name}/push`, {
     files,
     sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile: fileName }),
-    sourceDir: dir,
     expectedRevision: await currentSourceRevision(name),
   })
   console.log(green('Pushed.'))
@@ -529,18 +532,30 @@ async function cmdScratch() {
 
 async function cmdCreate() {
   const name = getPositional(0)
-  if (!name) { console.error('Usage: tlda project link <name> [file] [--title "Title"] [--format slides|html|markdown]'); process.exit(1) }
+  const source = getPositional(1)
+  if (!name || !source) { console.error('Usage: tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown]'); process.exit(1) }
 
   let format = getFlag('format') || null
-  const positionalMain = getPositional(1)
-  let dir = resolve(getFlag('dir') || '.')
-  let mainArg = getFlag('main')
-  if (positionalMain) {
-    const mainPath = resolve(positionalMain)
-    dir = dirname(mainPath)
-    mainArg = basename(mainPath)
+  const sourcePath = resolve(source)
+  if (!existsSync(sourcePath)) {
+    console.error(red(`Source does not exist: ${sourcePath}`))
+    process.exit(1)
   }
+  const sourceStats = statSync(sourcePath)
+  let dir = sourceStats.isDirectory() ? sourcePath : dirname(sourcePath)
+  let mainArg = getFlag('main')
+  if (!sourceStats.isDirectory()) mainArg = basename(sourcePath)
   const title = getFlag('title') || name
+
+  const bindLocalSource = async () => {
+    const binding = await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir })
+    if (binding.alreadyLinked) console.log(dim(`Project "${name}" is already linked to ${dir}.`))
+    return binding.alreadyLinked
+  }
+  const activateLocalSource = async () => {
+    const projectMetadata = await api('GET', `/api/projects/${name}`)
+    await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: dir, projectMetadata })
+  }
 
   // Infer the format from the file argument when --format is omitted. Without
   // this, `tlda project link x README.md` falls through to the LaTeX/svg
@@ -556,12 +571,13 @@ async function cmdCreate() {
 
   // Slides format: push HTML files, no TeX
   if (format === 'slides') {
+    if (await bindLocalSource()) return
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: slides`))
 
     // Create or update project
     try {
-      await api('POST', '/api/projects', { name, title, format: 'slides', sourceDir: dir })
+      await api('POST', '/api/projects', { name, title, format: 'slides' })
       console.log(green(`Created slides project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -570,6 +586,7 @@ async function cmdCreate() {
         throw e
       }
     }
+    await activateLocalSource()
 
     const slidesMain = htmlArtifactMainForSource(mainArg)
     const artifact = collectHtmlArtifactFiles(dir, { mainFile: slidesMain })
@@ -608,7 +625,6 @@ async function cmdCreate() {
     await api('POST', `/api/projects/${name}/push`, {
       files: allFiles,
       sourceManifest,
-      sourceDir: dir,
       expectedRevision: await currentSourceRevision(name),
       ...(deletedFiles.length > 0 && { deletedFiles }),
     })
@@ -621,12 +637,13 @@ async function cmdCreate() {
 
   // HTML format: push HTML chapters (e.g. from Quarto book render)
   if (format === 'html') {
+    if (await bindLocalSource()) return
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: html`))
 
     // Create or update project
     try {
-      await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: dir })
+      await api('POST', '/api/projects', { name, title, format: 'html' })
       console.log(green(`Created HTML project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -635,6 +652,7 @@ async function cmdCreate() {
         throw e
       }
     }
+    await activateLocalSource()
 
     // Collect all files from the directory (HTML, CSS, JS, fonts, images, site_libs)
     const allFiles = []
@@ -664,7 +682,6 @@ async function cmdCreate() {
     await api('POST', `/api/projects/${name}/push`, {
       files: allFiles,
       sourceManifest: sourceManifestForFiles(allFiles, { format: 'html' }),
-      sourceDir: dir,
       expectedRevision: await currentSourceRevision(name),
     })
     console.log(green('HTML project processed.'))
@@ -676,6 +693,7 @@ async function cmdCreate() {
 
   // Markdown format: push .md file, server renders to HTML with KaTeX
   if (format === 'markdown') {
+    if (await bindLocalSource()) return
     const mainFile = mainArg || readdirSync(dir).find(f => f.endsWith('.md'))
     if (!mainFile) { console.error(`No .md file found in ${dir}`); process.exit(1) }
 
@@ -684,7 +702,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown', sourceDir: dir })
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown' })
       console.log(green(`Created markdown project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -693,6 +711,7 @@ async function cmdCreate() {
         throw e
       }
     }
+    await activateLocalSource()
 
     // Push the main file PLUS every locally-referenced image. A remote server
     // (e.g. hosted) can't read the author's disk, and build-markdown.mjs copies
@@ -715,7 +734,6 @@ async function cmdCreate() {
     await api('POST', `/api/projects/${name}/push`, {
       files,
       sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
-      sourceDir: dir,
       expectedRevision: await currentSourceRevision(name),
     })
     console.log(green('Markdown project processed.'))
@@ -738,20 +756,25 @@ async function cmdCreate() {
     process.exit(1)
   }
   if (realpathSync(repoRoot) !== realpathSync(dir)) {
-    console.error(red(`Refusing to link ${dir}`))
-    console.error(red(`  — use the Git repository root: ${repoRoot}`))
-    process.exit(1)
+    if (sourceStats.isDirectory()) {
+      console.error(red(`Refusing to link ${dir}`))
+      console.error(red(`  — use the Git repository root: ${repoRoot}`))
+      process.exit(1)
+    }
+    mainArg = relative(repoRoot, sourcePath)
+    dir = repoRoot
   }
 
   const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
+  if (await bindLocalSource()) return
   console.log(dim(`  Source: ${dir}`))
   console.log(dim(`  Main file: ${mainFile}`))
 
   // Create or update project on server
   try {
-    await api('POST', '/api/projects', { name, title, mainFile, sourceDir: dir })
+    await api('POST', '/api/projects', { name, title, mainFile })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -760,10 +783,11 @@ async function cmdCreate() {
       throw e
     }
   }
+  await activateLocalSource()
 
   // Push source files (incremental)
   console.log(`Pushing source files...`)
-  const result = await incrementalPush(name, dir, { sourceDir: dir })
+  const result = await incrementalPush(name, dir)
   if (result.unchanged) {
     console.log(dim('No changes detected.'))
   } else {
@@ -785,7 +809,6 @@ async function cmdPush() {
 
   console.log(`Pushing to "${name}"...`)
   const result = await incrementalPush(name, dir, {
-    sourceDir: dir,
     ...(session && { session, sessionAt: Date.now() }),
   }, { forceMetadata: !!session })
   printPushBuildStatus(result, 'No changes detected (use `tlda build` to force a rebuild).')
@@ -811,36 +834,65 @@ async function cmdPush() {
   }
 }
 
-// A repository is just a remote you haven't cloned yet. `link` takes the main
-// file either way; add `--from <git-url>` (Overleaf, GitHub, ssh, …) and the
-// server clones + polls that remote instead of watching a local directory.
-//   tlda project link <name> <main-file> [--from <git-url>] [--token TOKEN] [--title T] [--poll 60]
+function isGitUrl(source) {
+  return /^(?:https?|ssh|git|file):\/\//i.test(source) || /^[^/@\s]+@[^:\s]+:.+/.test(source)
+}
+
 async function cmdLink() {
-  const from = getFlag('from')
-  if (from) await cmdLinkRemote(from)
+  if (args.includes('--from')) {
+    console.error('Unknown option: --from')
+    process.exit(1)
+  }
+  const source = getPositional(1)
+  if (!source) {
+    console.error('Usage: tlda project link <name> <source> [--main <file>]')
+    process.exit(1)
+  }
+  if (isGitUrl(source)) await cmdLinkRemote(source)
   else await cmdCreate()
 }
 
-// Link a project to a git remote (e.g. Overleaf). The server clones it, does an
-// initial sync, and polls for changes — the author keeps editing upstream while
-// tlda mirrors + rebuilds. The main file is the entry point *inside* the repo.
 async function cmdLinkRemote(gitUrl) {
   const name = getPositional(0)
-  const mainFile = getPositional(1) || getFlag('main')
-  if (!name || !mainFile) {
-    console.error('Usage: tlda project link <name> <main-file> --from <git-url> [--token TOKEN] [--title "Title"] [--poll 60]')
-    console.error('  <main-file> is the entry .tex inside the repo (no default — papers aren\'t all main.tex)')
+  const mainFile = getFlag('main')
+  if (!name) {
+    console.error('Usage: tlda project link <name> <git-url> [--main <file>] [--token TOKEN] [--title "Title"] [--poll 60]')
     process.exit(1)
   }
-  const overleafToken = getFlag('token')
+  const token = getFlag('token')
   const title = getFlag('title')
   const pollSeconds = Number(getFlag('poll') || '60') || 60
 
-  console.log(`Linking ${name} ← ${gitUrl} (main: ${mainFile}; cloning + initial build, this can take a minute)…`)
-  const result = await api('POST', `/api/projects/${name}/overleaf-link`,
-    { gitUrl, token: overleafToken, title, mainFile, pollSeconds },
+  console.log(`Linking ${name} ← ${gitUrl}${mainFile ? ` (main: ${mainFile})` : ''}…`)
+  const result = await api('POST', `/api/projects/${name}/link`,
+    { source: gitUrl, token, title, mainFile, pollSeconds },
     { timeoutMs: 300000, token: getRwToken() })
-  console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
+  if (result.alreadyLinked) {
+    console.log(dim(`Project "${name}" is already linked to ${gitUrl}.`))
+  } else {
+    console.log(`✓ Linked. Synced ${result.changed} file(s) at ${String(result.head || '').slice(0, 7)}; polling every ${pollSeconds}s.`)
+  }
+}
+
+async function cmdUnlink() {
+  const name = getPositional(0)
+  const source = getPositional(1)
+  if (!name || !source) {
+    console.error('Usage: tlda project unlink <name> <source>')
+    process.exit(1)
+  }
+  if (isGitUrl(source)) {
+    const result = await api('POST', `/api/projects/${name}/unlink`, { source }, { token: getRwToken() })
+    console.log(result.alreadyUnlinked ? dim(`Project "${name}" is not linked to a Git remote.`) : `Unlinked ${name} from ${source}.`)
+    return
+  }
+  const sourcePath = resolve(source)
+  let sourceDir = existsSync(sourcePath) && !statSync(sourcePath).isDirectory() ? dirname(sourcePath) : sourcePath
+  if (sourcePath.toLowerCase().endsWith('.tex')) {
+    sourceDir = execFileSync('git', ['-C', sourceDir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  }
+  const result = await callLocalDaemonLifecycle('project-source-unlink', { project: name, sourceDir })
+  console.log(result.alreadyUnlinked ? dim(`Project "${name}" is not linked on this machine.`) : `Unlinked ${name} from ${result.sourceDir}.`)
 }
 
 async function cmdInit() {
@@ -935,9 +987,15 @@ async function cmdInit() {
 
   // Register on the server and push the seeded files
   try {
+    await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: targetDir })
     if (isMarkdown) {
-      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown', sourceDir: targetDir })
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown' })
       console.log(green(`Created markdown project "${name}".`))
+      await callLocalDaemonLifecycle('project-source-link', {
+        project: name,
+        sourceDir: targetDir,
+        projectMetadata: await api('GET', `/api/projects/${name}`),
+      })
       const files = [{
         path: mainFile,
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
@@ -946,12 +1004,16 @@ async function cmdInit() {
       await api('POST', `/api/projects/${name}/push`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
-        sourceDir: targetDir,
         expectedRevision: await currentSourceRevision(name),
       })
     } else if (isHtml) {
-      await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: targetDir })
+      await api('POST', '/api/projects', { name, title, format: 'html' })
       console.log(green(`Created HTML project "${name}".`))
+      await callLocalDaemonLifecycle('project-source-link', {
+        project: name,
+        sourceDir: targetDir,
+        projectMetadata: await api('GET', `/api/projects/${name}`),
+      })
       const files = [{
         path: mainFile,
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
@@ -960,12 +1022,16 @@ async function cmdInit() {
       await api('POST', `/api/projects/${name}/push`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'html', mainFile }),
-        sourceDir: targetDir,
         expectedRevision: await currentSourceRevision(name),
       })
     } else {
-      await api('POST', '/api/projects', { name, title, mainFile, sourceDir: targetDir })
+      await api('POST', '/api/projects', { name, title, mainFile })
       console.log(green(`Created project "${name}".`))
+      await callLocalDaemonLifecycle('project-source-link', {
+        project: name,
+        sourceDir: targetDir,
+        projectMetadata: await api('GET', `/api/projects/${name}`),
+      })
       const files = [{
         path: mainFile,
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
@@ -974,7 +1040,6 @@ async function cmdInit() {
       await api('POST', `/api/projects/${name}/push`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'svg', mainFile }),
-        sourceDir: targetDir,
         expectedRevision: await currentSourceRevision(name),
       })
       console.log(green('Build triggered.'))
@@ -5361,11 +5426,11 @@ async function cmdSystem() {
 async function inferProjectName() {
   const dir = resolve(getFlag('dir') || '.')
 
-  // Try to match by sourceDir from the server
   try {
-    const data = await api('GET', '/api/projects')
-    for (const p of data.projects) {
-      if (p.sourceDir && resolve(p.sourceDir) === dir) return p.name
+    const bindingsFile = join(CONFIG_DIR, `source-bindings${DAEMON_WORLD_SUFFIX}.json`)
+    const bindings = JSON.parse(readFileSync(bindingsFile, 'utf8'))
+    for (const [project, sourceDir] of Object.entries(bindings || {})) {
+      if (resolve(String(sourceDir)) === dir) return project
     }
   } catch {}
 
@@ -5540,6 +5605,7 @@ async function main() {
       case 'book':   await cmdBook(); break
       case 'push':   await cmdPush(); break
       case 'link':   await cmdLink(); break
+      case 'unlink': await cmdUnlink(); break
       case 'init':   await cmdInit(); break
       case 'daemon': await cmdWatch(); break
       case 'bot': await cmdBot(); break

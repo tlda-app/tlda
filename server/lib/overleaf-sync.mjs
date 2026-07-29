@@ -417,43 +417,59 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
  */
 export async function linkOverleaf(name, { gitUrl, token, title, mainFile, pollSeconds = 60 } = {}) {
   if (!gitUrl) throw new Error('gitUrl is required')
-  // No main.tex default — papers aren't all called main.tex, and silently
-  // building the wrong entry point is worse than failing loud.
-  if (!mainFile) throw new Error('mainFile is required (the entry .tex inside the repo)')
 
   let project = await readProject(name)
+  const remote = sanitizeUrl(gitUrl)
+  if (project?.overleafRemote) {
+    if (sanitizeUrl(project.overleafRemote) === remote) {
+      return { linked: false, alreadyLinked: true, remote }
+    }
+    throw new Error(`Project "${name}" is already linked to ${project.overleafRemote}; unlink it first`)
+  }
   if (!project) {
-    project = createProject({ name, title: title || name, mainFile, format: 'svg' })
+    project = createProject({ name, title: title || name, mainFile: mainFile || 'main.tex', format: 'svg' })
   }
 
   const dir = cloneDir(name)
-  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
   await cloneRemote(name, gitUrl, token)
+  let resolvedMain = mainFile || project.mainFile
+  const tracked = await trackedFiles(dir)
+  if (!resolvedMain || !existsSync(join(dir, resolvedMain))) {
+    const candidates = tracked.filter(file => file.endsWith('.tex') && readFileSync(join(dir, file), 'utf8').includes('\\documentclass'))
+    if (candidates.length !== 1) {
+      rmSync(dir, { recursive: true, force: true })
+      throw new Error('Could not infer the main file; pass --main <file>')
+    }
+    resolvedMain = candidates[0]
+  }
 
   await updateProject(name, {
-    overleafRemote: sanitizeUrl(gitUrl),
+    overleafRemote: remote,
     overleafPollSeconds: pollSeconds,
     autoSync: true,
-    ...(mainFile && { mainFile }),
+    mainFile: resolvedMain,
   })
 
   const summary = await syncOverleaf(name, { initial: true })
   startPolling(name, pollSeconds)
-  return { ...summary, linked: true, remote: sanitizeUrl(gitUrl) }
+  return { ...summary, linked: true, alreadyLinked: false, remote }
 }
 
 /** Stop polling and remove the clone + metadata (does not delete the project). */
-export async function unlinkOverleaf(name) {
+export async function unlinkOverleaf(name, { gitUrl } = {}) {
+  const project = await readProject(name)
+  if (!project?.overleafRemote) return { unlinked: false, alreadyUnlinked: true }
+  if (gitUrl && sanitizeUrl(project.overleafRemote) !== sanitizeUrl(gitUrl)) {
+    throw new Error(`Project "${name}" is linked to ${project.overleafRemote}, not ${sanitizeUrl(gitUrl)}`)
+  }
   stopPolling(name)
   const dir = cloneDir(name)
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-  const project = await readProject(name)
-  if (project) {
-    await updateProject(name, {
-      overleafRemote: null, overleafHead: null, overleafPollSeconds: null,
-      overleafLastPullAt: null, autoSync: false,
-    })
-  }
+  await updateProject(name, {
+    overleafRemote: null, overleafHead: null, overleafPollSeconds: null,
+    overleafLastPullAt: null, autoSync: false,
+  })
+  return { unlinked: true, alreadyUnlinked: false }
 }
 
 /** Start a polling loop for a project. Replaces any existing poller. */

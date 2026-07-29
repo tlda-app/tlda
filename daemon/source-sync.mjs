@@ -202,6 +202,41 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
+  function saveSourceBindings(bindings) {
+    fs.mkdirSync(path.dirname(sourceBindingsFile), { recursive: true })
+    const pending = `${sourceBindingsFile}.pending-${process.pid}`
+    fs.writeFileSync(pending, `${JSON.stringify(bindings, null, 2)}\n`)
+    fs.renameSync(pending, sourceBindingsFile)
+  }
+
+  function bindSource(project, sourceDir) {
+    const normalized = path.resolve(sourceDir)
+    if (!fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
+      throw new Error(`Source directory does not exist: ${normalized}`)
+    }
+    const bindings = loadSourceBindings()
+    const existing = bindings[project] ? path.resolve(bindings[project]) : null
+    if (existing === normalized) return { linked: false, alreadyLinked: true, sourceDir: normalized }
+    if (existing) {
+      throw new Error(`Project "${project}" is already linked to ${existing}; unlink it first`)
+    }
+    bindings[project] = normalized
+    saveSourceBindings(bindings)
+    return { linked: true, alreadyLinked: false, sourceDir: normalized }
+  }
+
+  function unbindSource(project, expectedSourceDir = null) {
+    const bindings = loadSourceBindings()
+    if (!bindings[project]) return { unlinked: false, alreadyUnlinked: true }
+    const sourceDir = path.resolve(bindings[project])
+    if (expectedSourceDir && sourceDir !== path.resolve(expectedSourceDir)) {
+      throw new Error(`Project "${project}" is linked to ${sourceDir}, not ${path.resolve(expectedSourceDir)}`)
+    }
+    delete bindings[project]
+    saveSourceBindings(bindings)
+    return { unlinked: true, alreadyUnlinked: false, sourceDir }
+  }
+
   // ---------- source watching ----------
 
   const JUNK_PATTERNS = [/^\.#/, /\.swp$/, /~$/, /\.tmp$/, /\.lock$/]
@@ -501,9 +536,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       sourceCorrelation.seed(p.name, p.sourceRevision, {
         authoritative: authoritativeRevisions || !sourceWatchers.has(p.name),
       })
-      // Per-machine binding wins over the server-provided sourceDir (the host's
-      // path). No binding → fall back to the server's sourceDir (single-host case).
-      const sourceDir = bindings[p.name] || p.sourceDir
+      const sourceDir = bindings[p.name]
       if (!sourceDir) continue
       if (!fs.existsSync(sourceDir)) continue
       activeNames.add(p.name)
@@ -756,6 +789,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   }
 
   return {
+    bindSource,
+    unbindSource,
     sync,
     beginReconnect,
     finishReconnect,
