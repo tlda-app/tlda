@@ -14,7 +14,7 @@ import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { execFileSync, spawn as cpSpawn } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
-import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
+import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
@@ -334,7 +334,7 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
   }
   const sourceContext = { format: project.format, mainFile: project.mainFile }
   // Compute local hashes (fast — just reads + MD5, no encoding)
-  const localHashes = collectSourceHashes(dir, sourceContext)
+  const localHashes = collectProjectSourceHashes(dir, sourceContext)
   const localPaths = Object.keys(localHashes)
   const sourceManifest = normalizeSourceManifest(localPaths, sourceContext)
 

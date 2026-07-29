@@ -16,6 +16,7 @@ import {
   isSourceFilePath,
   isTextSourcePath,
 } from '../../shared/source-manifest.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 export { SOURCE_EXTENSIONS }
 export const JUNK_PATTERNS = BUILD_JUNK_SUFFIXES
@@ -49,6 +50,20 @@ export function collectSourceFiles(dir, context = {}) {
 export function collectSourceHashes(dir, context = {}) {
   const hashes = {}
   walkHash(dir, dir, hashes, context)
+  return hashes
+}
+
+/** Collect hashes through the project's format-specific source-set adapter. */
+export function collectProjectSourceHashes(dir, context = {}) {
+  if (context.format !== 'markdown' || !context.mainFile) {
+    return collectSourceHashes(dir, context)
+  }
+
+  const hashes = {}
+  for (const rel of scanMarkdownDependencyClosure(context.mainFile, dir).files) {
+    const full = join(dir, rel)
+    hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
+  }
   return hashes
 }
 
