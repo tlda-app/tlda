@@ -1100,10 +1100,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
       CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
-      CREATE INDEX IF NOT EXISTS idx_events_pending_timer
-        ON events(json_extract(metadata, '$.fire_at'), id)
-        WHERE type = 'timer'
-          AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1;
     `);
 
     // ---- Name provenance (name-at-time) ----
@@ -3954,7 +3950,7 @@ export class FleetStore {
   listPendingTimerEvents() {
     const rows = this.db.prepare(`
       SELECT ${this._EVT}
-      FROM events INDEXED BY idx_events_pending_timer
+      FROM events
       WHERE type = 'timer'
         AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1
       ORDER BY json_extract(metadata, '$.fire_at') ASC, id ASC
