@@ -142,7 +142,7 @@ export async function checkFreshNameAvailable(name, { api = resolveApi(), server
     kinds.get(c.kind).push(c.agent_id)
   }
   const lines = [`'${name}' is not available:`]
-  if (kinds.has('pseudo_label')) lines.push('reserved routing label (awake / hibernating / human / human-away)')
+  if (kinds.has('pseudo_label')) lines.push('reserved routing label (here / away / awake / hibernating / dead / human)')
   if (kinds.has('friendly_name')) lines.push(`already the friendly_name of ${kinds.get('friendly_name')[0]}`)
   if (kinds.has('label')) lines.push(`collides with a label on ${kinds.get('label').length} live agent(s)`)
   throw new Error(lines.join(' '))

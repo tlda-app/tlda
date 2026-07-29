@@ -55,7 +55,7 @@ export function buildFleetActivityReport({
 
   const rows = []
   for (const task of activeTasks) {
-    const agent = agentById.get(task.agent) || { id: task.agent, runtime_status: { status: 'unknown' } }
+    const agent = agentById.get(task.agent) || { id: task.agent, runtime_status: { kind: 'ai', status: 'hibernating' } }
     const agentStatus = String(runtimeStatusName(agent) || 'unknown').toLowerCase()
     const kick = kickByAgent.get(task.agent)
     const waiting = taskLooksWaiting(task)

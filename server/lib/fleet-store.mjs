@@ -27,13 +27,14 @@ import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 // isFleetRosterAgent only. fleetRosterCategory went with the count's move:
 // the store no longer categorises an agent, it is told which ids are alive and
 // joins that against its own roster.
-import { isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
+import {
+  RUNTIME_KIND,
+  RUNTIME_STATUS,
+  assertRuntimeState,
+  isFleetRosterAgent,
+} from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
-// The one liveness constant this file needs, and only as a threshold: the count
-// derives human-vs-human-away from last_seen on every call. Importing the same
-// number the projector uses is what stops the two drifting apart.
-import { HUMAN_HEARTBEAT_TTL_MS } from './agent-runtime-status.mjs';
 import { CHAT_HISTORY_EVENT_TYPES, resolveNameAt } from './fleet-history.mjs';
 
 export { CHAT_HISTORY_EVENT_TYPES } from './fleet-history.mjs';
@@ -1175,16 +1176,22 @@ export class FleetStore {
     `);
 
     // Runtime routing status is also temporal state. Unlike explicit labels,
-    // it is written from the server's liveness authority through
-    // recordRuntimeStatus(); these triggers establish/close the initial state
+    // it is written from the server's liveness/presence authorities through
+    // recordRuntimeState(); these triggers establish/close the initial state
     // when an agent row is created, killed, or reanimated.
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runtime_status_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         fleet_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('human', 'ai')),
         status TEXT NOT NULL,
         from_ts TEXT NOT NULL,
-        to_ts TEXT
+        to_ts TEXT,
+        CHECK (
+          (kind = 'human' AND status IN ('here', 'away'))
+          OR
+          (kind = 'ai' AND status IN ('awake', 'hibernating', 'dead'))
+        )
       );
       CREATE INDEX IF NOT EXISTS idx_runtime_status_history_fleet
         ON runtime_status_history(fleet_id, from_ts);
@@ -1194,26 +1201,28 @@ export class FleetStore {
         ON runtime_status_history(fleet_id) WHERE to_ts IS NULL;
 
       CREATE TRIGGER IF NOT EXISTS runtime_status_history_ai AFTER INSERT ON agents BEGIN
-        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
         VALUES (
           NEW.id,
-          'awake',
+          CASE WHEN NEW.human = 1 THEN 'human' ELSE 'ai' END,
+          CASE WHEN NEW.human = 1 THEN 'here' ELSE 'awake' END,
           COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-          CASE WHEN NEW.dead = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END
+          CASE WHEN NEW.human = 0 AND NEW.dead = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END
         );
-        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
-        SELECT NEW.id, 'dead', strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL
-        WHERE NEW.dead = 1;
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        SELECT NEW.id, 'ai', 'dead', strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL
+        WHERE NEW.human = 0 AND NEW.dead = 1;
       END;
 
       CREATE TRIGGER IF NOT EXISTS runtime_status_history_au
       AFTER UPDATE OF dead ON agents
-      WHEN NEW.dead IS NOT OLD.dead BEGIN
+      WHEN NEW.human = 0 AND NEW.dead IS NOT OLD.dead BEGIN
         UPDATE runtime_status_history
           SET to_ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')
           WHERE fleet_id = NEW.id AND to_ts IS NULL;
-        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
         SELECT NEW.id,
+               'ai',
                CASE WHEN NEW.dead = 1 THEN 'dead' ELSE 'awake' END,
                strftime('%Y-%m-%dT%H:%M:%fZ','now'),
                NULL;
@@ -2259,19 +2268,25 @@ export class FleetStore {
     `).run(now);
   }
 
-  // The pre-migration database has no runtime timeline. Every agent enters
-  // `awake` at mint/registration. For rows that predate this
-  // table, seed that known initial state from registered_at. The current dead
-  // bit has no timestamp, so it is not a historical boundary: without a stored
-  // death transition, awake remains open. Future accepted liveness observations
-  // and dead-bit writes advance the span through recordRuntimeStatus()/trigger.
+  // The pre-migration database has no runtime timeline. Humans start `here`;
+  // AIs start `awake`. For rows that predate this table, seed that known initial
+  // state from registered_at. The server starts with zero browser connections,
+  // so any existing human's initial span closes at startup and an explicit
+  // `away` span begins there. This also closes a persisted `here` span after a
+  // server restart whose socket-close callbacks could not run.
+  //
+  // The current dead bit has no timestamp, so it is not a historical boundary:
+  // without a stored death transition, an AI's awake span remains open. Future
+  // accepted liveness observations and dead-bit writes advance the span through
+  // recordRuntimeState()/the dead trigger.
   _backfillRuntimeStatusHistory() {
     const now = new Date().toISOString();
     this.db.transaction(() => {
       this.db.prepare(`
-        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
         SELECT a.id,
-               'awake',
+               CASE WHEN a.human = 1 THEN 'human' ELSE 'ai' END,
+               CASE WHEN a.human = 1 THEN 'here' ELSE 'awake' END,
                COALESCE(a.registered_at, ?),
                NULL
         FROM agents a
@@ -2280,33 +2295,60 @@ export class FleetStore {
           WHERE h.fleet_id = a.id
         )
       `).run(now);
+
+      const humansHere = this.db.prepare(`
+        SELECT h.fleet_id
+        FROM runtime_status_history h
+        JOIN agents a ON a.id = h.fleet_id
+        WHERE a.human = 1
+          AND h.to_ts IS NULL
+          AND h.kind = 'human'
+          AND h.status = 'here'
+      `).all();
+      const close = this.db.prepare(`
+        UPDATE runtime_status_history
+        SET to_ts = ?
+        WHERE fleet_id = ? AND to_ts IS NULL
+      `);
+      const away = this.db.prepare(`
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        VALUES (?, 'human', 'away', ?, NULL)
+      `);
+      for (const row of humansHere) {
+        close.run(now, row.fleet_id);
+        away.run(row.fleet_id, now);
+      }
     })();
   }
 
-  recordRuntimeStatus(id, status, timestamp = null) {
-    if (!id) throw new Error('runtime status requires agent id');
-    if (!['awake', 'hibernating', 'dead'].includes(status)) {
-      throw new Error(`unsupported durable runtime status: ${status}`);
-    }
+  recordRuntimeState(id, state, timestamp = null) {
+    if (!id) throw new Error('runtime state requires agent id');
+    assertRuntimeState(state, `durable runtime state for ${id}`);
     const agent = this._getAgent.get(id);
-    if (!agent || agent.human) return false;
+    if (!agent) return false;
+    const storedKind = agent.human ? RUNTIME_KIND.HUMAN : RUNTIME_KIND.AI;
+    if (state.kind !== storedKind) {
+      throw new TypeError(`runtime kind ${state.kind} does not match ${id} kind ${storedKind}`);
+    }
     let metadata = {};
     try { metadata = agent.metadata ? JSON.parse(agent.metadata) : {}; } catch (e) {
-      throw new Error(`corrupt metadata JSON for runtime status ${id}: ${e.message}`);
+      throw new Error(`corrupt metadata JSON for runtime state ${id}: ${e.message}`);
     }
-    const durableStatus = agent.dead
-      ? 'dead'
-      : metadata?.shell ? 'hibernating' : status;
+    const durableStatus = state.kind === RUNTIME_KIND.HUMAN
+      ? state.status
+      : agent.dead
+        ? RUNTIME_STATUS.DEAD
+        : metadata?.shell ? RUNTIME_STATUS.HIBERNATING : state.status;
     const at = timestamp || new Date().toISOString();
     return this.db.transaction(() => {
       const open = this.db.prepare(`
-        SELECT id, status, from_ts
+        SELECT id, kind, status, from_ts
         FROM runtime_status_history
         WHERE fleet_id = ? AND to_ts IS NULL
         ORDER BY from_ts DESC, id DESC
         LIMIT 1
       `).get(id);
-      if (open?.status === durableStatus) return false;
+      if (open?.kind === state.kind && open?.status === durableStatus) return false;
       // The liveness authority already rejects stale observations. Keep the
       // durable boundary monotone as a second line of defence.
       if (open && at < open.from_ts) return false;
@@ -2316,9 +2358,9 @@ export class FleetStore {
         ).run(at, id);
       }
       this.db.prepare(`
-        INSERT INTO runtime_status_history (fleet_id, status, from_ts, to_ts)
-        VALUES (?, ?, ?, NULL)
-      `).run(id, durableStatus, at);
+        INSERT INTO runtime_status_history (fleet_id, kind, status, from_ts, to_ts)
+        VALUES (?, ?, ?, ?, NULL)
+      `).run(id, state.kind, durableStatus, at);
       return true;
     })();
   }
@@ -2328,8 +2370,9 @@ export class FleetStore {
    *
    * Returns only memberships for labels the filter actually references and
    * only intervals overlapping [from, to). Name and explicit-label intervals
-   * are durable. Id is stable, bounded by registration. Runtime
-   * awake/hibernating membership comes from accepted liveness transitions.
+   * are durable. Id is stable, bounded by registration. Runtime membership
+   * comes from accepted human connection-count edges or AI liveness
+   * transitions.
    */
   filterMembershipSpans(labels, { from = null, to = null } = {}) {
     const wanted = [...new Set((labels || []).filter(Boolean).map(String))];
@@ -2378,10 +2421,8 @@ export class FleetStore {
       out.push(...identities.filter(row => overlap(row.from_ts, row.to_ts)));
     }
 
-    // `human` is an identity fact, not an awake/away guess. It begins at the
-    // intentional human registration and does not inherit the current TTL
-    // projection. Live evaluation can still see `human-away`; historical human
-    // status is the non-nullable `awake`.
+    // `human` is an identity fact, separate from the human `here`/`away`
+    // runtime state. It begins at intentional human registration.
     if (wanted.includes('human')) {
       const humans = this.db.prepare(`
         SELECT id AS fleet_id, 'human' AS label,
@@ -2499,7 +2540,7 @@ export class FleetStore {
   // Single gate for naming/labeling. Returns [] if all `names` are available.
   //
   // Rules (DNF chat routing treats friendly_names and labels equivalently):
-  //   1. No name may equal a pseudo-label (awake/hibernating/human/human-away)
+  //   1. No name may equal a pseudo-label (here/away/awake/hibernating/dead/human)
   //      — would silently shadow the routing category.
   //   2. No name may equal another live agent's durable id or friendly_name — would fan out
   //      every message addressed to that name across both agents.
@@ -2697,8 +2738,8 @@ export class FleetStore {
   //
   // THESE ARE PARAMETERS. THEY ARE NOT STORED.
   //
-  // Nothing on this instance remembers liveEvidenceIds after this call returns,
-  // and nothing else may read them. That is deliberate
+  // Nothing on this instance remembers liveEvidenceIds or humanHereIds after
+  // this call returns, and nothing else may read them. That is deliberate
   // and it is the condition on which this design was accepted: a retained copy
   // of live state is the thing that goes stale and reaps working agents, and a
   // set sitting on the store as a field would look authoritative enough that the
@@ -2706,16 +2747,17 @@ export class FleetStore {
   // of one computation; it never decides, and it never remembers.
   //
   // This recomputes the same predicate the roster-wide version computed, from
-  // the same inputs — it is not a cache and not an approximation. `human` vs
-  // `human-away` is derived from last_seen against nowMs on EVERY call, which is
-  // why no timer is needed to keep the count honest as a human goes idle.
-  getAliveAgentCounts({ liveEvidenceIds = [], nowMs = Date.now() } = {}) {
+  // the same inputs — it is not a cache and not an approximation. Human
+  // presence is the current aggregate browser-connection set supplied by the
+  // main thread; last_seen and TTLs do not define it.
+  getAliveAgentCounts({ liveEvidenceIds = [], humanHereIds = [] } = {}) {
     this._ensureAgentRegistryLoaded();
     const alive = liveEvidenceIds instanceof Set ? liveEvidenceIds : new Set(liveEvidenceIds);
+    const here = humanHereIds instanceof Set ? humanHereIds : new Set(humanHereIds);
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (this._countsAsAwake(agent, alive, nowMs)) totals.awake += 1;
+      if (this._countsAsAwake(agent, alive, here)) totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;
@@ -2723,26 +2765,19 @@ export class FleetStore {
 
   // fleetRosterCategory(agent) === 'awake', with the projection inlined against
   // the row's own fields. Mirrors projectAgentRuntimeStatus branch for branch:
-  // dead, then human by heartbeat recency, then shell, then positive evidence
+  // dead, then human by browser presence, then shell, then positive evidence
   // from the daemon. Anything else is hibernating.
   //
   // Note what this does NOT consult: agent.runtime_status. It computes from
-  // dead / human / last_seen / evidence directly, so the `unknown` that
-  // runtimeStatusForAgent now returns for an unstamped row can never reach the
-  // count and be silently bucketed as hibernating. That was the fabrication
-  // coming back through a different door, and this shape is immune to it by
-  // construction rather than by a check.
+  // dead / human / presence / evidence directly.
   //
   // The shell branch is kept although isFleetRosterAgent already excludes shells
   // from the roster this iterates. It costs one property read, and it keeps this
   // predicate a faithful mirror of the projection rather than something that is
   // only correct given a filter applied somewhere else.
-  _countsAsAwake(agent, aliveIds, nowMs) {
+  _countsAsAwake(agent, aliveIds, humanHereIds) {
     if (!agent || agent.dead) return false;
-    if (agent.human) {
-      if (!agent.last_seen) return false;
-      return (nowMs - new Date(agent.last_seen).getTime()) < HUMAN_HEARTBEAT_TTL_MS;
-    }
+    if (agent.human) return humanHereIds.has(agent.id);
     if (agent.metadata?.shell) return false;
     return aliveIds.has(agent.id);
   }

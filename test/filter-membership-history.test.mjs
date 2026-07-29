@@ -31,9 +31,9 @@ test('runtime membership starts awake at mint and follows durable transitions', 
   const reawakened = '2026-07-28T12:00:00.000Z'
   insertAgent(store, 'fleet:agent', minted)
 
-  assert.equal(store.recordRuntimeStatus('fleet:agent', 'hibernating', hibernated), true)
-  assert.equal(store.recordRuntimeStatus('fleet:agent', 'hibernating', hibernated), false)
-  assert.equal(store.recordRuntimeStatus('fleet:agent', 'awake', reawakened), true)
+  assert.equal(store.recordRuntimeState('fleet:agent', { kind: 'ai', status: 'hibernating' }, hibernated), true)
+  assert.equal(store.recordRuntimeState('fleet:agent', { kind: 'ai', status: 'hibernating' }, hibernated), false)
+  assert.equal(store.recordRuntimeState('fleet:agent', { kind: 'ai', status: 'awake' }, reawakened), true)
 
   assert.deepEqual(
     store.filterMembershipSpans(['awake', 'hibernating'], {}).map(span => ({
@@ -50,21 +50,35 @@ test('runtime membership starts awake at mint and follows durable transitions', 
   store.close()
 })
 
-test('human identity has non-nullable awake status from registration', () => {
+test('human identity starts here and follows durable here/away transitions', () => {
   const dbPath = tempDb()
   const store = new FleetStore(dbPath, { taskDoc: false })
   const registered = '2026-07-28T09:00:00.000Z'
   insertAgent(store, 'fleet:skip', registered, { human: true })
 
-  const spans = store.filterMembershipSpans(['awake', 'human'], {})
+  const away = '2026-07-28T10:00:00.000Z'
+  const returned = '2026-07-28T11:00:00.000Z'
+  assert.equal(store.recordRuntimeState('fleet:skip', { kind: 'human', status: 'away' }, away), true)
+  assert.equal(store.recordRuntimeState('fleet:skip', { kind: 'human', status: 'here' }, returned), true)
+
+  const spans = store.filterMembershipSpans(['here', 'away', 'human'], {})
   assert.deepEqual(
     spans.map(span => [span.label, span.fleet_id, span.from_ts, span.to_ts]),
     [
-      ['awake', 'fleet:skip', registered, null],
+      ['away', 'fleet:skip', away, returned],
+      ['here', 'fleet:skip', registered, away],
+      ['here', 'fleet:skip', returned, null],
       ['human', 'fleet:skip', registered, null],
     ],
   )
-  assert.equal(store.recordRuntimeStatus('fleet:skip', 'hibernating', '2026-07-28T10:00:00.000Z'), false)
+  assert.throws(
+    () => store.recordRuntimeState('fleet:skip', { kind: 'ai', status: 'hibernating' }, returned),
+    /does not match/,
+  )
+  assert.throws(
+    () => store.recordRuntimeState('fleet:skip', { kind: 'human', status: 'awake' }, returned),
+    /human→here\|away/,
+  )
   store.close()
 })
 
@@ -92,11 +106,11 @@ test('migration backfill keeps awake from mint without inventing a death timesta
   assert.equal(spans[0].to_ts, null)
 
   const open = migrated.db.prepare(`
-    SELECT status, from_ts, to_ts
+    SELECT kind, status, from_ts, to_ts
     FROM runtime_status_history
     WHERE fleet_id = 'fleet:old' AND to_ts IS NULL
   `).get()
-  assert.deepEqual(open, { status: 'awake', from_ts: minted, to_ts: null })
+  assert.deepEqual(open, { kind: 'ai', status: 'awake', from_ts: minted, to_ts: null })
   assert.equal(
     migrated.db.prepare(`
       SELECT 1 FROM runtime_status_history
@@ -104,6 +118,44 @@ test('migration backfill keeps awake from mint without inventing a death timesta
     `).get(),
     undefined,
   )
+  migrated.close()
+})
+
+test('migration backfill records existing humans away when startup has zero browser connections', () => {
+  const dbPath = tempDb()
+  const registered = '2026-07-20T10:00:00.000Z'
+  const original = new FleetStore(dbPath, { taskDoc: false })
+  insertAgent(original, 'fleet:skip', registered, { human: true })
+  original.close()
+
+  const db = new Database(dbPath)
+  db.exec(`
+    DROP TRIGGER runtime_status_history_ai;
+    DROP TRIGGER runtime_status_history_au;
+    DROP TABLE runtime_status_history;
+  `)
+  db.close()
+
+  const migrated = new FleetStore(dbPath, { taskDoc: false })
+  const rows = migrated.db.prepare(`
+    SELECT kind, status, from_ts, to_ts
+    FROM runtime_status_history
+    WHERE fleet_id = 'fleet:skip'
+    ORDER BY id
+  `).all()
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows[0], {
+    kind: 'human',
+    status: 'here',
+    from_ts: registered,
+    to_ts: rows[1].from_ts,
+  })
+  assert.deepEqual(rows[1], {
+    kind: 'human',
+    status: 'away',
+    from_ts: rows[0].to_ts,
+    to_ts: null,
+  })
   migrated.close()
 })
 
@@ -116,6 +168,6 @@ test('unknown liveness does not write a hibernating transition', () => {
   const end = source.indexOf('function recordExplicitCheckAliveLiveness(', start)
   const body = source.slice(start, end)
   assert.ok(body.includes('if (!detail.unknown)'))
-  assert.ok(body.indexOf("recordRuntimeStatus(agentId, 'hibernating'") >
+  assert.ok(body.indexOf('recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.HIBERNATING }') >
     body.indexOf('if (!detail.unknown)'))
 })

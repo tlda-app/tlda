@@ -88,7 +88,9 @@ interface Agent {
   id: string
   friendly_name: string
   tmux_session?: string
-  runtime_status?: { status?: string }
+  runtime_status?:
+    | { kind: 'human'; status: 'here' | 'away' }
+    | { kind: 'ai'; status: 'awake' | 'hibernating' | 'dead' }
   dead?: boolean
 }
 

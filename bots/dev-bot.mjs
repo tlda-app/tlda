@@ -252,8 +252,7 @@ async function runChecks() {
 }
 
 function isNudgeTarget(agent) {
-  const status = String(agent?.status || '').toLowerCase()
-  if (!agent || agent.dead || agent.human || status === 'human' || status === 'human-away' || agent.id === OWNER_ID || agent.id === AGENT_ID) return false
+  if (!agent || agent.dead || agent.human || agent.id === OWNER_ID || agent.id === AGENT_ID) return false
   const labels = labelsForAgent(agent)
   if (labels.includes('bot')) return false
   if (agent.id?.startsWith?.('fleet:dev-probe-')) return false

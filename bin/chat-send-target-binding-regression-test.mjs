@@ -9,8 +9,8 @@ import { uniqueLiveAgentForLabel, bindSendTargetId, inboxConversationRecipientId
 
 let failed = false
 try {
-  const chiefdoc = { id: 'fleet:921026ec', friendly_name: 'chiefdoc-coordinator-sol:day', labels: ['tlda'], human: false, dead: false, runtime_status: { status: 'awake' } }
-  const sol = { id: 'fleet:30028dba', friendly_name: 'sol-introspection', labels: ['tlda'], human: false, dead: false, runtime_status: { status: 'awake' } }
+  const chiefdoc = { id: 'fleet:921026ec', friendly_name: 'chiefdoc-coordinator-sol:day', labels: ['tlda'], human: false, dead: false, runtime_status: { kind: 'ai', status: 'awake' } }
+  const sol = { id: 'fleet:30028dba', friendly_name: 'sol-introspection', labels: ['tlda'], human: false, dead: false, runtime_status: { kind: 'ai', status: 'awake' } }
   const agents = [chiefdoc, sol]
 
   // Core invariant: displayed name and bound payload id come from the SAME agent.
@@ -36,7 +36,7 @@ try {
 
   // Name collision: a dead namesake plus a live holder resolves to the LIVE one,
   // and binds to the live holder's id.
-  const deadTwin = { id: 'fleet:dead-twin', friendly_name: 'sol-introspection', labels: [], human: false, dead: true, runtime_status: { status: 'dead' } }
+  const deadTwin = { id: 'fleet:dead-twin', friendly_name: 'sol-introspection', labels: [], human: false, dead: true, runtime_status: { kind: 'ai', status: 'dead' } }
   const collided = [deadTwin, sol]
   assert.equal(uniqueLiveAgentForLabel('sol-introspection', collided).id, 'fleet:30028dba',
     'live holder wins over dead namesake')

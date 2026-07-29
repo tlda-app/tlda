@@ -14,8 +14,8 @@ import test from 'node:test';
 import { createFilterSubscriptions } from '../server/lib/filter-subscriptions.mjs';
 import { labelsForAgent } from '../shared/fleet-labels.mjs';
 
-const CHIEF = { id: 'fleet:b6d7cc18', friendly_name: 'chief2', labels: [], runtime_status: { status: 'awake' } };
-const NOISE = { id: 'fleet:n0ise', friendly_name: 'noisy', labels: [], runtime_status: { status: 'hibernating' } };
+const CHIEF = { id: 'fleet:b6d7cc18', friendly_name: 'chief2', labels: [], runtime_status: { kind: 'ai', status: 'awake' } };
+const NOISE = { id: 'fleet:n0ise', friendly_name: 'noisy', labels: [], runtime_status: { kind: 'ai', status: 'hibernating' } };
 const SKIP = 'fleet:skip';
 const who = { humanId: SKIP, humanName: 'skip' };
 
@@ -136,7 +136,7 @@ test('runtime pseudo-labels use durable event-time membership spans', async () =
     getAgentsByIds: async (agentIds) => roster
       .filter(agent => agentIds.includes(agent.id))
       .map(agent => agent.id === CHIEF.id
-        ? { ...agent, runtime_status: { status: 'hibernating' } }
+        ? { ...agent, runtime_status: { kind: 'ai', status: 'hibernating' } }
         : agent),
     loadMembershipSpans: async labels => labels.includes('awake')
       ? [{

@@ -75,7 +75,7 @@ function labelsFor(agent: any): string[] {
 
 function isRunningBot(agent: any): boolean {
   const status = runtimeStatusName(agent)
-  return !agent?.dead && labelsFor(agent).includes('bot') && status !== 'dead' && status !== 'hibernating' && status !== 'human-away'
+  return !agent?.dead && labelsFor(agent).includes('bot') && status !== 'dead' && status !== 'hibernating'
 }
 
 function useVoiceBackends(): VoiceBackendOption[] {

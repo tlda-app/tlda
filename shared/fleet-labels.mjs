@@ -6,7 +6,7 @@
  * (client display `agentMatchesLabel`, client history `resolveFilter`, client
  * send `resolveToFleetId(s)`, the server chat router, the server wiretap
  * matcher, and bots). The copies had already drifted — e.g. `resolveFilter`
- * dropped the `human`/`human-away` pseudo-labels, so a chat scoped to `human`
+ * dropped the human runtime/identity pseudo-labels, so a chat scoped to `human`
  * showed live messages but returned empty backfilled history (the same class
  * of bug as the lineage-agent scrollback issue). One resolver kills that.
  *
@@ -15,7 +15,8 @@
  * dependency-free.
  *
  * Inputs are *hydrated* agent objects (fleet-store `_hydrateAgent`): they carry
- * `runtime_status.status` (awake|hibernating|human|human-away|dead), parsed
+ * `runtime_status` as a validated human→here|away or
+ * ai→awake|hibernating|dead pair, parsed
  * `labels`, `friendly_name`, `id`, and `lineage_name`. The client
  * receives the same shape over /api/state and the WS push.
  */
@@ -24,17 +25,11 @@
  * The reserved routing labels derived from an agent's status. A friendly_name
  * or explicit label may not collide with these (see fleet-store name checks).
  */
-export const PSEUDO_LABELS = Object.freeze(['awake', 'hibernating', 'human', 'human-away'])
+export const PSEUDO_LABELS = Object.freeze(['here', 'away', 'awake', 'hibernating', 'dead', 'human'])
 
 /** Pseudo-labels implied by an agent's status. */
-export function statusLabels(status) {
-  switch (status) {
-    case 'awake': return ['awake']
-    case 'hibernating': return ['hibernating']
-    case 'human': return ['human']
-    case 'human-away': return ['human', 'human-away']
-    default: return []
-  }
+export function statusLabels(runtime) {
+  return runtime?.status ? [runtime.status] : []
 }
 
 /**
@@ -48,12 +43,11 @@ export function statusLabels(status) {
  */
 export function labelsForAgent(agent) {
   if (!agent) return []
-  const category = fleetRosterCategory(agent)
+  const runtime = runtimeStatusForAgent(agent)
   const out = [
     ...(agent.labels || []),
-    ...statusLabels(runtimeStatusName(agent)),
-    category === 'awake' ? 'awake' : null,
-    category === 'hibernating' ? 'hibernating' : null,
+    ...statusLabels(runtime),
+    runtime.kind === RUNTIME_KIND.HUMAN ? 'human' : null,
     agent.friendly_name,
     agent.id,
   ]
@@ -84,7 +78,7 @@ export function labelsForAgent(agent) {
  * or injection surface.
  */
 
-import { fleetRosterCategory, runtimeStatusName } from './fleet-runtime-status.mjs'
+import { RUNTIME_KIND, runtimeStatusForAgent } from './fleet-runtime-status.mjs'
 import { desugarMessageFilter, parseUnifiedFilter } from './unified-filter-grammar.mjs'
 
 /**

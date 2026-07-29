@@ -88,11 +88,11 @@ test('getAllAgents applies the same runtime projection as getAgent', async () =>
   const client = new FleetStoreClient(dbPath, { taskDoc: false })
   try {
     await client.ready()
-    client.setRuntimeProjector(() => 'awake')
+    client.setRuntimeProjector(() => ({ kind: 'ai', status: 'awake' }))
     const one = await client.getAgent('fleet:test')
     const all = await client.getAllAgents()
-    assert.equal(one.runtime_status, 'awake')
-    assert.equal(all.find(agent => agent.id === 'fleet:test')?.runtime_status, 'awake')
+    assert.deepEqual(one.runtime_status, { kind: 'ai', status: 'awake' })
+    assert.deepEqual(all.find(agent => agent.id === 'fleet:test')?.runtime_status, { kind: 'ai', status: 'awake' })
   } finally {
     await client.close()
     rmSync(dir, { recursive: true, force: true })

@@ -1,12 +1,10 @@
-export const HUMAN_HEARTBEAT_TTL_MS = 90_000
+import {
+  RUNTIME_KIND,
+  RUNTIME_STATUS,
+  runtimeState,
+} from '../../shared/fleet-runtime-status.mjs'
 
-export const RUNTIME_STATUS = Object.freeze({
-  AWAKE: 'awake',
-  HIBERNATING: 'hibernating',
-  DEAD: 'dead',
-  HUMAN: 'human',
-  HUMAN_AWAY: 'human-away',
-})
+export { RUNTIME_KIND, RUNTIME_STATUS }
 
 export const LIVENESS = Object.freeze({
   ALIVE: 'alive',
@@ -26,7 +24,7 @@ export function createAgentRuntimeStatusStore({
     return evidenceByAgent.get(agentId) || null
   }
 
-  function update(agentId, patch = {}) {
+  function update(agentId, patch = {}, { notify = true } = {}) {
     if (!agentId) return null
     const previous = evidenceByAgent.get(agentId) || {}
     const ts = Number.isFinite(patch.atMs) ? patch.atMs : now()
@@ -39,7 +37,7 @@ export function createAgentRuntimeStatusStore({
     }
     delete next.atMs
     evidenceByAgent.set(agentId, next)
-    onChange(agentId)
+    if (notify) onChange(agentId)
     return next
   }
 
@@ -64,7 +62,7 @@ export function createAgentRuntimeStatusStore({
       liveness_daemon_key: detail.daemon_key || null,
       liveness_daemon_boot_id: detail.daemon_boot_id ?? null,
       liveness_report_seq: detail.report_seq ?? null,
-    })
+    }, { notify: previous?.liveness !== LIVENESS.ALIVE })
   }
 
   function markNotAlive(agentId, source, detail = {}) {
@@ -85,7 +83,7 @@ export function createAgentRuntimeStatusStore({
       liveness_daemon_key: detail.daemon_key || null,
       liveness_daemon_boot_id: detail.daemon_boot_id ?? null,
       liveness_report_seq: detail.report_seq ?? null,
-    })
+    }, { notify: previous?.liveness === LIVENESS.ALIVE })
   }
 
   function markUnknown(agentId, source, detail = {}) {
@@ -105,16 +103,33 @@ export function createAgentRuntimeStatusStore({
       liveness_daemon_key: detail.daemon_key || null,
       liveness_daemon_boot_id: detail.daemon_boot_id ?? null,
       liveness_report_seq: detail.report_seq ?? null,
-    })
+    }, { notify: previous?.liveness === LIVENESS.ALIVE })
   }
 
   function updateActivity(agentId, activity, detail = {}) {
+    const previous = evidenceFor(agentId)
+    const nextActivity = activity || 'unknown'
+    const nextTool = detail.tool || null
     return update(agentId, {
-      activity: activity || 'unknown',
-      activity_tool: detail.tool || null,
+      activity: nextActivity,
+      activity_tool: nextTool,
       activity_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
       activity_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
+    }, {
+      notify: previous?.activity !== nextActivity || previous?.activity_tool !== nextTool,
     })
+  }
+
+  function markHumanPresence(agentId, status, source, detail = {}) {
+    runtimeState(RUNTIME_KIND.HUMAN, status)
+    const atMs = Number.isFinite(detail.atMs) ? detail.atMs : now()
+    const previous = evidenceFor(agentId)
+    return update(agentId, {
+      human_presence: status,
+      human_presence_source: source,
+      human_presence_at_ms: atMs,
+      human_presence_at: new Date(atMs).toISOString(),
+    }, { notify: previous?.human_presence !== status })
   }
 
   function clear(agentId) {
@@ -138,6 +153,7 @@ export function createAgentRuntimeStatusStore({
     markAlive,
     markNotAlive,
     markUnknown,
+    markHumanPresence,
     updateActivity,
     clear,
     project,
@@ -161,10 +177,14 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     liveness_daemon_key: evidence?.liveness_daemon_key || null,
     liveness_daemon_boot_id: evidence?.liveness_daemon_boot_id ?? null,
     liveness_report_seq: evidence?.liveness_report_seq ?? null,
+    human_presence: evidence?.human_presence || null,
+    human_presence_source: evidence?.human_presence_source || null,
+    human_presence_at: evidence?.human_presence_at || null,
   }
 
   if (!agent) {
     return runtimeProjection({
+      kind: RUNTIME_KIND.AI,
       status: RUNTIME_STATUS.HIBERNATING,
       activity: 'unknown',
       evidence: baseEvidence,
@@ -173,8 +193,23 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     })
   }
 
+  if (agent.human) {
+    const here = evidence?.human_presence === RUNTIME_STATUS.HERE
+    return runtimeProjection({
+      kind: RUNTIME_KIND.HUMAN,
+      status: here ? RUNTIME_STATUS.HERE : RUNTIME_STATUS.AWAY,
+      activity: baseEvidence.activity,
+      evidence: baseEvidence,
+      reason: here
+        ? evidence?.human_presence_source || 'browser-connection-count-positive'
+        : evidence?.human_presence_source || 'browser-connection-count-zero',
+      nowMs,
+    })
+  }
+
   if (agent.dead) {
     return runtimeProjection({
+      kind: RUNTIME_KIND.AI,
       status: RUNTIME_STATUS.DEAD,
       activity: baseEvidence.activity,
       evidence: baseEvidence,
@@ -183,20 +218,9 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     })
   }
 
-  if (agent.human) {
-    const seenAgo = agent.last_seen ? nowMs - new Date(agent.last_seen).getTime() : Infinity
-    const recent = seenAgo < HUMAN_HEARTBEAT_TTL_MS
-    return runtimeProjection({
-      status: recent ? RUNTIME_STATUS.HUMAN : RUNTIME_STATUS.HUMAN_AWAY,
-      activity: baseEvidence.activity,
-      evidence: baseEvidence,
-      reason: recent ? 'human-recent-heartbeat' : 'human-heartbeat-stale',
-      nowMs,
-    })
-  }
-
   if (metadata.shell) {
     return runtimeProjection({
+      kind: RUNTIME_KIND.AI,
       status: RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
       evidence: baseEvidence,
@@ -207,6 +231,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.DEAD || evidence?.liveness === LIVENESS.WEDGED) {
     return runtimeProjection({
+      kind: RUNTIME_KIND.AI,
       status: RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
       evidence: baseEvidence,
@@ -217,6 +242,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.ALIVE) {
     return runtimeProjection({
+      kind: RUNTIME_KIND.AI,
       status: RUNTIME_STATUS.AWAKE,
       activity: baseEvidence.activity,
       evidence: baseEvidence,
@@ -226,6 +252,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   }
 
   return runtimeProjection({
+    kind: RUNTIME_KIND.AI,
     status: RUNTIME_STATUS.HIBERNATING,
     activity: baseEvidence.activity,
     evidence: baseEvidence,
@@ -234,12 +261,11 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   })
 }
 
-function runtimeProjection({ status, activity, evidence, reason, nowMs }) {
-  return {
-    status,
+function runtimeProjection({ kind, status, activity, evidence, reason, nowMs }) {
+  return runtimeState(kind, status, {
     activity: activity || 'unknown',
     evidence,
     reason,
     updated_at: new Date(nowMs).toISOString(),
-  }
+  })
 }

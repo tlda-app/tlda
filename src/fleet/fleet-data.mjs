@@ -210,7 +210,7 @@ export async function hydrateFleetAgentsForFilter(filter) {
   if (!Array.isArray(filter)) return
   const ids = new Set()
   const names = new Set()
-  const pseudo = new Set(['awake', 'hibernating', 'human', 'human-away', 'dead', 'me', 'my_labels'])
+  const pseudo = new Set(['here', 'away', 'awake', 'hibernating', 'dead', 'human', 'me', 'my_labels'])
   for (const clause of filter) {
     if (!Array.isArray(clause)) continue
     for (const term of clause) {

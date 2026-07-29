@@ -24,6 +24,7 @@ const human = {
   dead: false,
   metadata: { activityHealth: staleNoTmux },
   registered_at: new Date().toISOString(),
+  runtime_status: { kind: 'human', status: 'here' },
 }
 
 assert.equal(fleetAgentCategory(human), 'awake')
@@ -41,7 +42,7 @@ const routableAgent = {
   human: false,
   dead: false,
   metadata: { activityHealth: staleNoTmux },
-  runtime_status: { route_state: 'routable' },
+  runtime_status: { kind: 'ai', status: 'awake', route_state: 'routable' },
   session_id: 'session-routable-agent',
   resume_id: 'session-routable-agent',
 }
@@ -51,7 +52,7 @@ assert.equal(toFleetAgentDirectoryRow(routableAgent).activityHealth, '')
 
 const disconnectedAgent = {
   ...routableAgent,
-  runtime_status: { route_state: 'daemon-disconnected' },
+  runtime_status: { kind: 'ai', status: 'hibernating', route_state: 'daemon-disconnected' },
 }
 
 assert.equal(formatFleetAgentActivityHealthForAgent(disconnectedAgent), '')

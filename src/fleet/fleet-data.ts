@@ -58,7 +58,9 @@ export type FleetAgent = Record<string, unknown> & {
   id: string
   friendly_name?: string
   pretty_name?: string | Array<string | { kind: 'glyph'; id?: string; glyph?: string }>
-  runtime_status?: { status?: string }
+  runtime_status?:
+    | { kind: 'human'; status: 'here' | 'away' }
+    | { kind: 'ai'; status: 'awake' | 'hibernating' | 'dead' }
   labels?: string[]
   dead?: boolean
 }

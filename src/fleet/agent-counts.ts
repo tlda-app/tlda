@@ -1,7 +1,9 @@
 type FleetAgentCountInput = {
   dead?: boolean
   human?: boolean
-  runtime_status?: { status?: string }
+  runtime_status?:
+    | { kind: 'human'; status: 'here' | 'away' }
+    | { kind: 'ai'; status: 'awake' | 'hibernating' | 'dead' }
 }
 
 export function countAwakeFleetAgents(agents: FleetAgentCountInput[]): number {

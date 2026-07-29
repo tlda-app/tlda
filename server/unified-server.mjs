@@ -73,7 +73,8 @@ import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
-import { createAgentRuntimeStatusStore } from './lib/agent-runtime-status.mjs'
+import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './lib/agent-runtime-status.mjs'
+import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
@@ -414,6 +415,20 @@ const runtimeStatusStore = createAgentRuntimeStatusStore({
 })
 fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
 
+const humanPresence = createHumanPresenceTracker({
+  onEdge: ({ humanId, status, atMs }) => {
+    const source = status === RUNTIME_STATUS.HERE
+      ? 'browser-connections-0-to-1'
+      : 'browser-connections-1-to-0'
+    runtimeStatusStore.markHumanPresence(humanId, status, source, { atMs })
+    fleetStore.recordRuntimeState(
+      humanId,
+      { kind: RUNTIME_KIND.HUMAN, status },
+      new Date(atMs).toISOString(),
+    ).catch(e => console.error(`[human-presence] durable state write failed for ${humanId}: ${e?.message || e}`))
+  },
+})
+
 // Awake, projected from the agent ROW. It used to take an id and call back
 // into the store for a seat — per check — while both of its callers already
 // held the agent and its seat a couple of lines above. The seat facts now ride
@@ -423,14 +438,13 @@ fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
 // computation. `liveEvidenceIds` is the agents for which the daemon/process has
 // supplied positive evidence without a later explicit negative observation.
 function rosterCountInputs() {
-  const nowMs = Date.now()
   const liveEvidenceIds = []
   for (const agentId of _aliveAgents) {
     const evidence = runtimeStatusStore.evidenceFor(agentId)
     if (evidence?.liveness !== 'alive') continue
     liveEvidenceIds.push(agentId)
   }
-  return { liveEvidenceIds, nowMs }
+  return { liveEvidenceIds, humanHereIds: humanPresence.hereIds() }
 }
 
 function isReservedShellAgent(agent) {
@@ -441,7 +455,7 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
   const wasAlive = _aliveAgents.has(agentId)
   const evidence = runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
   if (evidence?.liveness !== 'alive') return
-  fleetStore.recordRuntimeStatus(agentId, 'awake', evidence.liveness_at)
+  fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.AWAKE }, evidence.liveness_at)
     .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
   _aliveAgents.add(agentId)
@@ -461,7 +475,7 @@ function markAgentNotAlive(agentId, detail = {}) {
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   if (evidence?.liveness === 'alive') return
   if (!detail.unknown) {
-    fleetStore.recordRuntimeStatus(agentId, 'hibernating', evidence.liveness_at)
+    fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
       .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   }
   _aliveAgents.delete(agentId)
@@ -2144,6 +2158,10 @@ if (fleetStore) {
     registered_at: new Date().toISOString(),
     last_seen: new Date().toISOString(),
   })
+  await fleetStore.recordRuntimeState(
+    SERVER_OWNER_ID,
+    { kind: RUNTIME_KIND.HUMAN, status: RUNTIME_STATUS.AWAY },
+  )
   const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || readDaemonConfig().spawnMachineId
   if (configuredSpawnMachine && !await fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
     await fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
@@ -5012,6 +5030,7 @@ server.on('upgrade', async (req, socket, head) => {
         logWsClose('fleet', ws, code, reason?.toString?.() || '')
         wsFleetClients.delete(ws)
         filterSubscriptions.dropConnection(ws)
+        humanPresence.detach(ws)
         // A doc subscription is durable and outlives this socket. Closing it
         // used to tear down the agent's tlda-feedback watches, which silently
         // disarmed every subscription whose row was still in the table.
@@ -5022,6 +5041,7 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('error', () => {
         wsFleetClients.delete(ws)
         filterSubscriptions.dropConnection(ws)
+        humanPresence.detach(ws)
         if (ws._tldaAgentId && agentFleetConnections.get(ws._tldaAgentId) === ws) {
           agentFleetConnections.delete(ws._tldaAgentId)
         }
@@ -5410,10 +5430,12 @@ async function handleFleetWsMessage(ws, msg) {
     // Duplicate clients are allowed to coexist. Closing an existing socket here
     // is unsafe because fleet clients such as Todd auto-reconnect on close; two
     // same-identity clients then repeatedly kick each other off the server.
-    agentFleetConnections.set(agentId, ws)
-    // Remember which agent owns this WS so we can clean up their tlda-feedback
-    // subscriptions on close.
-    ws._tldaAgentId = agentId
+    if (!msg.human) {
+      agentFleetConnections.set(agentId, ws)
+      // Remember which agent owns this WS so we can clean up their
+      // tlda-feedback subscriptions on close.
+      ws._tldaAgentId = agentId
+    }
     const now = new Date().toISOString()
     const existing = await fleetStore.getAgent?.(agentId)
     // The friendly name is set once (first identity creation) and is thereafter owned
@@ -5477,6 +5499,10 @@ async function handleFleetWsMessage(ws, msg) {
     }
     try {
       await fleetStore.upsertAgent(agent)
+      if (agent.human) {
+        ws._tldaAgentId = null
+        humanPresence.attach(ws, agent.id)
+      }
       if (isShellReservation && !agent.human) {
         await fleetStore.ensureDefaultSubscription?.(agent.id)
       }
@@ -5517,6 +5543,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (loginAgentId) {
       const existing = await fleetStore.getAgent?.(loginAgentId)
       if (!existing || existing.dead) { error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`); return }
+      humanPresence.detach(ws)
       agentFleetConnections.set(loginAgentId, ws)
       ws._tldaAgentId = loginAgentId
       const now = new Date().toISOString()
@@ -5562,7 +5589,8 @@ async function handleFleetWsMessage(ws, msg) {
       return
     }
     await fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
-    ws._tldaHumanId = agent.id
+    ws._tldaAgentId = null
+    humanPresence.attach(ws, agent.id)
     broadcastState(agent.id)
     reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
     return
