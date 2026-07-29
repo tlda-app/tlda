@@ -351,6 +351,10 @@ type HtmlPageShapeRecord = {
     h?: number
     source?: string
   }
+  meta?: {
+    temporaryMarkdownColumn?: boolean
+    materializedDoc?: string
+  }
 }
 
 function isHtmlPageShapeRecord(record: unknown): record is HtmlPageShapeRecord {
@@ -406,7 +410,10 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
   for (const record of records) {
     if (!isHtmlPageShapeRecord(record)) continue
     const shape = record
-    if (!pageShapeIds.has(shape.id)) continue
+    const isCurrentProjectPreview =
+      shape.meta?.temporaryMarkdownColumn === true &&
+      shape.meta?.materializedDoc === document.name
+    if (!pageShapeIds.has(shape.id) && !isCurrentProjectPreview) continue
     const currentUrl = shape.props.url
     if (!currentUrl) continue
 
