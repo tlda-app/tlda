@@ -63,7 +63,7 @@ const sourceSearchExt = (file) => {
   return match ? match[1].toLowerCase() : ''
 }
 
-const documentSearchScore = ({ project, title, label, text, sourceKind, page }, query, terms, currentProject) => {
+const documentSearchScore = ({ project, title, label, text }, query, terms, currentProject) => {
   const hay = `${title || ''} ${label || ''} ${text || ''}`.toLowerCase()
   const q = query.toLowerCase()
   let score = 0
@@ -72,32 +72,7 @@ const documentSearchScore = ({ project, title, label, text, sourceKind, page }, 
   if (title?.toLowerCase?.().includes(q)) score += 30
   if (label?.toLowerCase?.().includes(q)) score += 12
   if (project && currentProject && project === currentProject) score += 35
-  if (sourceKind === 'rendered') score += 8
-  if (Number.isFinite(page)) score += Math.max(0, 8 - Math.min(page, 8))
   return score
-}
-
-function readProjectSearchIndexEntries(project) {
-  const name = project?.name
-  if (!name) return []
-  const searchIndexPath = join(projectsDir, name, 'output', 'search-index.json')
-  if (!existsSync(searchIndexPath)) return []
-  try {
-    const rows = JSON.parse(readFileSync(searchIndexPath, 'utf8'))
-    if (!Array.isArray(rows)) return []
-    return rows.map((entry, index) => ({
-      sourceKind: 'rendered',
-      index,
-      project: name,
-      title: project.title || name,
-      page: entry?.page ?? null,
-      label: entry?.label || entry?.title || null,
-      anchor: entry?.anchor || null,
-      text: entry?.text || '',
-    }))
-  } catch {
-    return []
-  }
 }
 
 function readProjectSourceSearchEntries(project) {
@@ -142,8 +117,7 @@ function searchContent(query, options = {}) {
     .slice(0, 200)
   const rows = []
   for (const project of projects) {
-    const renderedEntries = readProjectSearchIndexEntries(project)
-    const entries = renderedEntries.length ? renderedEntries : readProjectSourceSearchEntries(project)
+    const entries = readProjectSourceSearchEntries(project)
     for (const entry of entries) {
       const hay = `${entry.title || ''} ${entry.label || ''} ${entry.text || ''}`.toLowerCase()
       if (!terms.every(term => hay.includes(term))) continue

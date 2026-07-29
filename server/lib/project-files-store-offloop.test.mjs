@@ -23,8 +23,10 @@ test('project files worker preserves migration, ordering, atomic replace, and lo
   const root = join(tempRoot, 'projects')
   const projectDir = join(root, 'legacy')
   const outputDir = join(projectDir, 'output')
+  const sourceDir = join(projectDir, 'source')
   mkdirSync(projectDir, { recursive: true })
   mkdirSync(outputDir, { recursive: true })
+  mkdirSync(sourceDir, { recursive: true })
   writeFileSync(join(projectDir, 'project.json'), JSON.stringify({
     name: 'legacy',
     title: 'Legacy Search',
@@ -34,8 +36,9 @@ test('project files worker preserves migration, ordering, atomic replace, and lo
   writeFileSync(join(outputDir, 'search-index.json'), JSON.stringify([{
     page: 1,
     label: 'Legacy Search',
-    text: 'The rendered document contains spectral banana calculus.',
+    text: 'This rendered-only phrase must not be searchable.',
   }]))
+  writeFileSync(join(sourceDir, 'z.tex'), String.raw`The source contains \int spectral banana calculus.`)
 
   const client = new ProjectFilesStoreClient(root)
   try {
@@ -46,6 +49,13 @@ test('project files worker preserves migration, ordering, atomic replace, and lo
     await assert.rejects(client.replace('legacy', ['next.tex', 'next.tex']))
     assert.deepEqual(await client.read('legacy'), ['./a.tex', 'z.tex'])
 
+    const searchRows = await client.searchContent(String.raw`\int spectral banana calculus`, { currentProject: 'legacy' })
+    assert.equal(searchRows.length, 1)
+    assert.equal(searchRows[0].type, 'document_content')
+    assert.equal(searchRows[0].project, 'legacy')
+    assert.equal(searchRows[0].sourceKind, 'source')
+    assert.equal((await client.searchContent('rendered-only phrase')).length, 0)
+
     let ticks = 0
     const timer = setInterval(() => { ticks += 1 }, 1)
     const paths = Array.from({ length: 10_000 }, (_, index) => `chapters/${String(index).padStart(5, '0')}.tex`)
@@ -55,11 +65,6 @@ test('project files worker preserves migration, ordering, atomic replace, and lo
     clearInterval(timer)
     assert.equal((await client.read('legacy')).length, paths.length)
     assert.ok(ticks > 0, `main loop did not tick during ${replaceMs.toFixed(1)}ms replace`)
-    const searchRows = await client.searchContent('spectral banana calculus', { currentProject: 'legacy' })
-    assert.equal(searchRows.length, 1)
-    assert.equal(searchRows[0].type, 'document_content')
-    assert.equal(searchRows[0].project, 'legacy')
-    assert.equal(searchRows[0].sourceKind, 'rendered')
     console.log(`project-files off-loop proof: replace=${replaceMs.toFixed(1)}ms ticks=${ticks}`)
   } finally {
     await client.close()
