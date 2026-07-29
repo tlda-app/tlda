@@ -1355,7 +1355,12 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 const filterSubscriptions = createFilterSubscriptions({
   getAgentsByIds: async (agentIds) => {
     const ids = [...new Set((agentIds || []).filter(Boolean))]
-    return ids.length ? await fleetStore?.getAgentsByIds?.(ids) || [] : []
+    if (!ids.length) return []
+    const agents = await fleetStore?.getAgentsByIds?.(ids) || []
+    const parentIds = [...new Set(agents.map(agent => agent?.parent_agent_id).filter(Boolean))]
+    if (!parentIds.length) return agents
+    const parents = await fleetStore?.getAgentsByIds?.(parentIds) || []
+    return [...agents, ...parents.filter(parent => !ids.includes(parent.id))]
   },
   loadMembershipSpans: async (labels, bounds) =>
     await fleetStore?.filterMembershipSpans?.(labels, bounds) || [],

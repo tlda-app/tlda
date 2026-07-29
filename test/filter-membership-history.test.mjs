@@ -7,6 +7,7 @@ import test from 'node:test'
 import Database from 'better-sqlite3'
 
 import { FleetStore } from '../server/lib/fleet-store.mjs'
+import { parseFilter } from '../shared/fleet-labels.mjs'
 
 function tempDb() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'tlda-filter-membership-'))
@@ -170,4 +171,32 @@ test('unknown liveness does not write a hibernating transition', () => {
   assert.ok(body.includes('if (!detail.unknown)'))
   assert.ok(body.indexOf('recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.HIBERNATING }') >
     body.indexOf('if (!detail.unknown)'))
+})
+
+test('native child membership follows the parent name and id from child registration', () => {
+  const dbPath = tempDb()
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  const parentRegistered = '2026-07-28T09:00:00.000Z'
+  const childRegistered = '2026-07-28T10:00:00.000Z'
+  insertAgent(store, 'fleet:parent', parentRegistered, { friendly_name: 'chief13' })
+  insertAgent(store, 'fleet:child', childRegistered, {
+    friendly_name: 'chief13:Planck',
+    parent_agent_id: 'fleet:parent',
+  })
+
+  assert.deepEqual(
+    store.filterMembershipSpans(['chief13', 'fleet:parent'], {})
+      .filter(span => span.fleet_id === 'fleet:child')
+      .map(span => [span.label, span.from_ts, span.to_ts]),
+    [
+      ['chief13', childRegistered, null],
+      ['fleet:parent', childRegistered, null],
+    ],
+  )
+  assert.deepEqual(
+    store.resolveChatRecipients(parseFilter('chief13')),
+    ['fleet:parent'],
+    'parent visibility must not turn a direct message into child fan-out',
+  )
+  store.close()
 })

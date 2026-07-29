@@ -112,3 +112,21 @@ test('an event carrying from_id/to_id matches the same as one carrying from/to',
   assert.equal(matchesFleetFilter([[['to', 'chief2']]], storeShaped, authoritative), false,
     'direction must still hold on store-shaped events');
 });
+
+test('a parent chat filter includes native child activity without routing by the parent label', () => {
+  const child = {
+    id: 'fleet:child',
+    friendly_name: 'chief2:Planck',
+    parent_agent_id: AGENT.id,
+    labels: [],
+  };
+  const context = { agents: [AGENT, child], ...HUMAN };
+  const activity = { type: 'activity', agent_id: child.id, from_id: child.id };
+
+  assert.equal(matchesFleetFilter([[['from', AGENT.friendly_name]]], activity, context), true);
+  assert.equal(matchesFleetFilter([[['from', AGENT.id]]], activity, context), true);
+  assert.deepEqual(
+    [...resolveFleetFilter([[['from', AGENT.friendly_name]]], context)].sort(),
+    [AGENT.id, child.id].sort(),
+  );
+});

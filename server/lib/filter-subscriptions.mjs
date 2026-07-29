@@ -21,7 +21,7 @@
 // does not try — but it is the one obligation that comes with handing it a
 // handle.
 
-import { matchesFleetFilter, fleetFilterLabels } from '../../shared/filter-semantics.mjs'
+import { matchesFleetFilter, fleetFilterLabels, filterLabelsForAgent } from '../../shared/filter-semantics.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 
 /** Canonical key for a DNF filter, so equal filters share one evaluation. */
@@ -59,7 +59,7 @@ class TemporalMembership {
     for (const agent of agents || []) {
       if (!agent?.id) continue
       for (const ids of this.current.values()) ids.delete(agent.id)
-      const expanded = new Set(labelsForAgent(agent))
+      const expanded = new Set(filterLabelsForAgent(agent, agents))
       for (const label of this.labels) {
         if (expanded.has(label)) this.current.get(label).add(agent.id)
       }

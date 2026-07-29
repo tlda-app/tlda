@@ -2454,6 +2454,30 @@ export class FleetStore {
         FROM agents WHERE id IN (${holes})
       `).all(...chunk);
       out.push(...identities.filter(row => overlap(row.from_ts, row.to_ts)));
+
+      const parentNames = this.db.prepare(`
+        SELECT child.id AS fleet_id, history.friendly_name AS label,
+               CASE
+                 WHEN COALESCE(child.registered_at, '1970-01-01T00:00:00.000Z') > history.from_ts
+                 THEN COALESCE(child.registered_at, '1970-01-01T00:00:00.000Z')
+                 ELSE history.from_ts
+               END AS from_ts,
+               history.to_ts AS to_ts
+        FROM agents child
+        JOIN name_history history ON history.fleet_id = child.parent_agent_id
+        WHERE history.friendly_name IN (${holes})
+          AND (history.to_ts IS NULL OR COALESCE(child.registered_at, '1970-01-01T00:00:00.000Z') < history.to_ts)
+      `).all(...chunk);
+      out.push(...parentNames.filter(row => overlap(row.from_ts, row.to_ts)));
+
+      const parentIds = this.db.prepare(`
+        SELECT child.id AS fleet_id, child.parent_agent_id AS label,
+               COALESCE(child.registered_at, '1970-01-01T00:00:00.000Z') AS from_ts,
+               NULL AS to_ts
+        FROM agents child
+        WHERE child.parent_agent_id IN (${holes})
+      `).all(...chunk);
+      out.push(...parentIds.filter(row => overlap(row.from_ts, row.to_ts)));
     }
 
     // `human` is an identity fact, separate from the human `here`/`away`

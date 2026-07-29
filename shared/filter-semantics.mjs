@@ -1,5 +1,14 @@
 import { labelsForAgent, evalExprDirectional } from './fleet-labels.mjs'
 
+export function filterLabelsForAgent(agent, agents = []) {
+  const labels = new Set(labelsForAgent(agent))
+  if (!agent?.parent_agent_id) return [...labels]
+  labels.add(agent.parent_agent_id)
+  const parent = agents.find(candidate => candidate?.id === agent.parent_agent_id)
+  if (parent?.friendly_name) labels.add(parent.friendly_name)
+  return [...labels]
+}
+
 // The set of labels a participant (an event's from/to/agent id) answers to.
 // Label expansion has a single source of truth — `labelsForAgent` in
 // shared/fleet-labels.mjs, the same function the server uses — so client and
@@ -17,7 +26,7 @@ function labelSetForParticipant(agentId, {
   if (!agent && humanId && agentId === humanId) {
     agent = { id: humanId, friendly_name: humanName || 'user', human: true, runtime_status: { kind: 'human', status: 'here' }, labels: [] }
   }
-  return new Set(agent ? labelsForAgent(agent) : [agentId])
+  return new Set(agent ? filterLabelsForAgent(agent, agents) : [agentId])
 }
 
 function agentMatchesLabel(agentId, label, context = {}) {
@@ -138,10 +147,10 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
   const liveLabels = new Set()
   for (const a of allAgents) {
     if (a.dead) continue
-    for (const l of labelsForAgent(a)) liveLabels.add(l)
+    for (const l of filterLabelsForAgent(a, allAgents)) liveLabels.add(l)
   }
   for (const a of allAgents) {
-    const agentLabels = labelsForAgent(a)
+    const agentLabels = filterLabelsForAgent(a, allAgents)
     const matched = [...labels].some(label =>
       agentLabels.includes(label) && (!a.dead || !liveLabels.has(label)))
     if (matched) ids.add(a.id)
