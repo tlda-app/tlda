@@ -1,5 +1,4 @@
 import { fork } from 'child_process'
-import { createHash } from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -23,75 +22,10 @@ const JSONL_RUNTIME_FAILURE_BOUNDARIES = {
   'delivery-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_DELIVERY_FAILED,
 }
 const CLOSED_IPC_ERROR_CODES = new Set(['EPIPE', 'ERR_IPC_CHANNEL_CLOSED'])
-const FIRST_JSONL_RECORD_MAX_BYTES = 2 * 1024 * 1024
 
 function isClosedIpcError(e) {
   if (CLOSED_IPC_ERROR_CODES.has(e?.code)) return true
   return /EPIPE|IPC channel closed|channel closed/i.test(String(e?.message || e || ''))
-}
-
-function readFirstJsonlRecord(jsonlPath) {
-  let fd
-  try {
-    fd = fs.openSync(jsonlPath, 'r')
-    const chunks = []
-    let total = 0
-    while (total < FIRST_JSONL_RECORD_MAX_BYTES) {
-      const chunk = Buffer.alloc(Math.min(64 * 1024, FIRST_JSONL_RECORD_MAX_BYTES - total))
-      const bytes = fs.readSync(fd, chunk, 0, chunk.length, total)
-      if (!bytes) break
-      const newline = chunk.subarray(0, bytes).indexOf(10)
-      if (newline >= 0) {
-        chunks.push(chunk.subarray(0, newline))
-        break
-      }
-      chunks.push(chunk.subarray(0, bytes))
-      total += bytes
-    }
-    const line = Buffer.concat(chunks).toString('utf8').trim()
-    return line ? JSON.parse(line) : null
-  } catch {
-    return null
-  } finally {
-    if (fd != null) fs.closeSync(fd)
-  }
-}
-
-function nativeSubagentDescriptorFromRecord(first, jsonlPath) {
-  if (first.type === 'session_meta' && first.payload?.thread_source === 'subagent') {
-    const payload = first.payload
-    const source = payload.source?.subagent?.thread_spawn || {}
-    const harnessChildId = payload.id || payload.session_id
-    const parentSessionId = payload.parent_thread_id || source.parent_thread_id
-    if (!harnessChildId || !parentSessionId) return null
-    return {
-      harnessKind: 'codex',
-      harnessChildId,
-      parentSessionId,
-      childName: payload.agent_nickname || source.agent_nickname || null,
-    }
-  }
-  if (first.isSidechain === true && first.agentId) {
-    const parentSessionId = first.sessionId || path.basename(path.dirname(path.dirname(jsonlPath)))
-    if (!parentSessionId) return null
-    return {
-      harnessKind: 'claude',
-      harnessChildId: first.agentId,
-      parentSessionId,
-      childName: null,
-    }
-  }
-  return null
-}
-
-export function nativeSubagentDescriptor(jsonlPath) {
-  const first = readFirstJsonlRecord(jsonlPath)
-  return first ? nativeSubagentDescriptorFromRecord(first, jsonlPath) : null
-}
-
-export function nativeSubagentOperationId({ daemonKey, parentAgentId, harnessKind, harnessChildId }) {
-  const key = [daemonKey, parentAgentId, harnessKind, harnessChildId].join('\0')
-  return `subagent-observed:${createHash('sha256').update(key).digest('hex')}`
 }
 
 export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
@@ -348,7 +282,6 @@ export function createJsonlIngestor({
     }
   }
   let cursors = loadCursors() // { sessionId: { inode, offset } }
-  const nativeSubagentDescriptors = new Map()
 
   // Throttle saveCursors — flush at most once per 2s.
   let _cursorSaveTimer = null
@@ -819,62 +752,6 @@ export function createJsonlIngestor({
     return paths
   }
 
-  function parentAgentIdForNativeSubagent(descriptor) {
-    for (const [cursorSessionId, entry] of Object.entries(cursors)) {
-      if (cursorSessionId !== descriptor.parentSessionId
-          && !cursorSessionId.endsWith(descriptor.parentSessionId)) continue
-      if (jsonlOwnershipState(entry, daemonKey) !== 'mine') continue
-      if (entry.owner?.fleet_id) return entry.owner.fleet_id
-    }
-    return null
-  }
-
-  function nativeSubagentDescriptorForPath(jsonlPath) {
-    if (nativeSubagentDescriptors.has(jsonlPath)) return nativeSubagentDescriptors.get(jsonlPath)
-    const first = readFirstJsonlRecord(jsonlPath)
-    if (!first) return null
-    const descriptor = nativeSubagentDescriptorFromRecord(first, jsonlPath)
-    nativeSubagentDescriptors.set(jsonlPath, descriptor)
-    return descriptor
-  }
-
-  async function resolveNativeSubagent(jsonlPath, sessionId) {
-    const descriptor = nativeSubagentDescriptorForPath(jsonlPath)
-    if (!descriptor) return null
-    const entry = cursors[sessionId] || (cursors[sessionId] = {})
-    if (entry.nativeSubagent?.agent_id) {
-      return { ...descriptor, agentId: entry.nativeSubagent.agent_id }
-    }
-    const parentAgentId = parentAgentIdForNativeSubagent(descriptor)
-    if (!parentAgentId) return { ...descriptor, pendingParent: true }
-    const operationId = nativeSubagentOperationId({
-      daemonKey,
-      parentAgentId,
-      harnessKind: descriptor.harnessKind,
-      harnessChildId: descriptor.harnessChildId,
-    })
-    const result = await sendMsgWithReply({
-      type: 'subagent-observed',
-      operation_id: operationId,
-      parent_agent_id: parentAgentId,
-      child_name: descriptor.childName || descriptor.harnessChildId.slice(0, 8),
-    })
-    const child = result?.agent
-    if (!child?.id) throw new Error('subagent-observed returned no child agent')
-    entry.nativeSubagent = {
-      agent_id: child.id,
-      parent_agent_id: parentAgentId,
-    }
-    entry.owner = {
-      state: 'mine',
-      daemon_key: daemonKey,
-      fleet_id: child.id,
-      decided_at: new Date().toISOString(),
-    }
-    scheduleCursorSave()
-    return { ...descriptor, agentId: child.id }
-  }
-
   async function syncSessionWatchersOnce(input) {
     const agentList = Array.isArray(input) ? input : (input?.agentList || [])
     const requestedPaths = Array.isArray(input?.paths) ? input.paths : null
@@ -893,33 +770,12 @@ export function createJsonlIngestor({
         continue
       }
 
-      const sessionId = path.basename(resolvedPath, '.jsonl')
-      let nativeSubagent = null
-      try {
-        nativeSubagent = await resolveNativeSubagent(resolvedPath, sessionId)
-      } catch (e) {
-        log.warn(`native subagent registration failed for ${path.basename(resolvedPath)}: ${e?.message || e}`)
-        sendMsg({
-          type: 'daemon-warning',
-          warning: 'native-subagent-registration-failed',
-          message: e?.message || String(e),
-          jsonl_path: resolvedPath,
-        })
-        continue
-      }
-      if (nativeSubagent?.pendingParent) continue
-
       if (pathWatchers.has(resolvedPath)) {
         const pw = pathWatchers.get(resolvedPath)
         if (pw.stopped) {
           pathWatchers.delete(resolvedPath)
         } else {
-          const fileSessionId = sessionId
-          if (nativeSubagent?.agentId) {
-            pw.primaryAgentId = nativeSubagent.agentId
-            pw.ownershipState = 'mine'
-            pw.nativeSubagent = nativeSubagent
-          }
+          const fileSessionId = path.basename(resolvedPath, '.jsonl')
           let currentStat
           try { currentStat = fs.statSync(resolvedPath) } catch (e) {
             if (e?.code === 'ENOENT') {
@@ -979,6 +835,7 @@ export function createJsonlIngestor({
       }
 
       // First time watching this JSONL — initialize cursor.
+      const sessionId = path.basename(resolvedPath, '.jsonl')
       let stat
       try { stat = fs.statSync(resolvedPath) } catch (e) {
         if (e?.code !== 'ENOENT') {
@@ -1028,7 +885,6 @@ export function createJsonlIngestor({
           startOffset: offset,
           liveOffset: stat.size,
           ownershipState: initialOwnership,
-          nativeSubagent,
         })
         if (initialOwnership === 'mine') startOwnedJsonlBackfill(pwState)
         pathWatchers.set(resolvedPath, pwState)
@@ -1146,7 +1002,6 @@ export function createJsonlIngestor({
     startOffset,
     liveOffset,
     ownershipState = 'unknown',
-    nativeSubagent = null,
   }) {
     startJsonlIngester()
     const initialAgentId = cursors[sessionId]?.owner?.fleet_id || null
@@ -1167,7 +1022,6 @@ export function createJsonlIngestor({
       pendingDeliveries: 0,
       pendingFlushOffset: null,
       ownershipState,
-      nativeSubagent,
       terminalChat: !!harness.terminalChat,
       backfillSearch: !!harness.backfillSearch,
       catchupUntilOffset,
@@ -1292,7 +1146,7 @@ export function createJsonlIngestor({
     const connected = isConnected()
     let delivered = true
     for (const output of outputs) {
-      if (!pw.nativeSubagent && output.type === 'identity' && output.identity?.marker) {
+      if (output.type === 'identity' && output.identity?.marker) {
         applyLoginMarkerOwnership(pw, output.identity.marker)
       }
       const agentId = pw.primaryAgentId
@@ -1338,7 +1192,7 @@ export function createJsonlIngestor({
           source_path: pw.jsonlPath,
           events: output.events || [],
         })) delivered = false
-      } else if (!pw.nativeSubagent && output.type === 'identity') {
+      } else if (output.type === 'identity') {
         recordSessionIdentity(tailLedgerSessionInput({
           sessionId: pw.sessionId,
           harnessKind: pw.harnessKind,

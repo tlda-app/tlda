@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null, sendMsgWithReply = async () => ({}) } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -92,7 +92,7 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
     daemonDir: here,
     log: { info() {}, warn() {}, error() {} },
     sendMsg(message) { sentToServer.push(message) },
-    sendMsgWithReply,
+    sendMsgWithReply() {},
     isConnected: () => true,
     isServerReady: () => ready,
     getAgents: () => projectJsonlAgentsFromProcessBindings(rows, { daemonKey: 'mini:default' }),
@@ -192,61 +192,6 @@ function assertWatcher(harness, expected, kind = 'codex') {
 
 function assertTailCount(harness, expected) {
   assert.equal(harness.sentToChild.filter(m => m.type === 'watch').length, expected)
-}
-
-{
-  const parentThreadId = '019fa554-0000-7000-8000-000000000010'
-  const childThreadId = '019fa554-0000-7000-8000-000000000011'
-  const observed = []
-  const harness = createHarness({
-    jsonlFileName: `rollout-2026-07-28T15-00-00-${childThreadId}.jsonl`,
-    initialCursors: {
-      [`rollout-2026-07-28T14-00-00-${parentThreadId}`]: {
-        offset: 0,
-        owner: {
-          state: 'mine',
-          daemon_key: 'mini:default',
-          fleet_id: 'fleet:jsonl-owner',
-        },
-      },
-    },
-    sendMsgWithReply: async message => {
-      observed.push(message)
-      return {
-        ok: true,
-        agent: {
-          id: 'fleet:native-child',
-          parent_agent_id: 'fleet:jsonl-owner',
-          friendly_name: 'jsonl-owner:worker',
-        },
-      }
-    },
-  })
-  try {
-    writeFileSync(harness.jsonlPath, `${JSON.stringify({
-      type: 'session_meta',
-      payload: {
-        id: childThreadId,
-        parent_thread_id: parentThreadId,
-        thread_source: 'subagent',
-        agent_nickname: 'worker',
-      },
-    })}\n{}\n`)
-    harness.setRows([])
-    await harness.sync('native-subagent-discovery')
-    assert.equal(observed.length, 1)
-    assert.equal(observed[0].type, 'subagent-observed')
-    assert.equal(observed[0].parent_agent_id, 'fleet:jsonl-owner')
-    assert.equal(observed[0].child_name, 'worker')
-    assert.match(observed[0].operation_id, /^subagent-observed:[a-f0-9]{64}$/)
-    const watch = harness.sentToChild.find(message => message.type === 'watch')
-    assert.equal(watch.agentId, 'fleet:native-child')
-
-    await harness.sync('native-subagent-rediscovery')
-    assert.equal(observed.length, 1)
-  } finally {
-    harness.cleanup()
-  }
 }
 
 {
