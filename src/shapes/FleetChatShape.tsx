@@ -2769,7 +2769,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!m) return ''
     return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
   }, [chatMessages])
-  const [firstItemIndex, setFirstItemIndex] = useState(1_000_000)
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -3424,7 +3423,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         panelId: String(shape.id),
         anchorKey: anchor.key,
         itemCount: allItems.length,
-        firstItemIndex,
       })
       captureViewportAnchor()
       return
@@ -3438,11 +3436,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         anchorKey: anchor.key,
         delta: Math.round(delta),
         itemCount: allItems.length,
-        firstItemIndex,
       })
     }
     captureViewportAnchor()
-  }, [allItems, firstItemIndex, shape.id, captureViewportAnchor])
+  }, [allItems, shape.id, captureViewportAnchor])
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearedComposerDraftRef = useRef<string | null>(null)
   const termAutoPinnedRef = useRef(false)
@@ -3664,7 +3661,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     viewportAnchorRef.current = null
     isAtBottomRef.current = true
     setAtBottom(true)
-    setFirstItemIndex(1_000_000)
     setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
     settleToTail('filter-change', { force: true, resumeFollow: true })
   }, [filterKey, shape.id, settleToTail, chatEventBufferKey])
@@ -5401,12 +5397,11 @@ function FleetChatInner({ shape }: { shape: any }) {
               <Virtuoso
             ref={virtuosoRef}
             data={allItems}
-            firstItemIndex={firstItemIndex}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
             alignToBottom
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
-            atBottomThreshold={24}
+            atBottomThreshold={1}
             totalListHeightChanged={(h) => {
               const prev = prevTotalHeightRef.current
               prevTotalHeightRef.current = h
