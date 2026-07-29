@@ -96,6 +96,10 @@
 .annotation-viewer-nav-right {
   right: 0;
 }
+
+body.phone-mode .annotation-viewer-nav-right {
+  top: 54px;
+}
 .annotation-viewer-nav-right svg {
   top: 0;
   right: 0;

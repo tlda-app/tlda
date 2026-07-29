@@ -1,4 +1,4 @@
-import type { Editor, TLShapeId } from 'tldraw'
+import type { Editor } from 'tldraw'
 import { log } from '../logger'
 import { createTemporaryMarkdownColumn } from './FleetPillShape'
 import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
@@ -110,16 +110,6 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
   const top = Math.max(12, sourceRect.bottom + 8)
   const mainEditor = (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__ || editor
   const chipAnchor = clientPointToPage(mainEditor, { x: left, y: top })
-  const occupiedBounds = (mainEditor.getCurrentPageShapes() as Array<{ id: TLShapeId; meta?: { temporaryMarkdownColumn?: unknown } }>)
-    .filter((s) => !s.meta?.temporaryMarkdownColumn)
-    .map((s) => mainEditor.getShapePageBounds(s.id))
-    .filter(Boolean) as Array<{ x: number; y: number; w: number; h: number }>
-  const anchor = occupiedBounds.length
-    ? {
-        x: Math.max(...occupiedBounds.map(b => b.x + b.w)) + 10000,
-        y: Math.max(...occupiedBounds.map(b => b.y + b.h)) + 10000,
-      }
-    : chipAnchor
 
   const projectName = new URLSearchParams(window.location.search).get('project')
 
@@ -129,7 +119,7 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
       return
     }
     const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
-    return createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
+    return createTemporaryMarkdownColumn(mainEditor, chipAnchor, title, markdown || title, {
       sourceChatShapeId: sourceShapeId,
       materializedDoc: projectName,
       materializedFile: materialized.outputFile,

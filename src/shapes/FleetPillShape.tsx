@@ -46,7 +46,6 @@ const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
 const TEMP_MARKDOWN_W = 800
 const TEMP_MARKDOWN_H = 1200
-const TEMP_MARKDOWN_PARKING_OFFSET = 50000
 
 const FLEET_TYPES = FLEET_SHAPE_TYPES
 
@@ -175,34 +174,12 @@ export async function createTemporaryMarkdownPageUrl(title: string, markdown: st
   return `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
 }
 
-function getParkedMarkdownPoint(editor: Editor, fallbackPoint: { x: number; y: number }) {
-  const occupiedBounds = []
-  for (const shape of editor.getCurrentPageShapes()) {
-    if (shape.meta?.temporaryMarkdownColumn) continue
-    const bounds = editor.getShapePageBounds(shape.id)
-    if (bounds) occupiedBounds.push(bounds)
-  }
-
-  if (!occupiedBounds.length) {
-    return {
-      x: fallbackPoint.x - TEMP_MARKDOWN_PARKING_OFFSET,
-      y: fallbackPoint.y - TEMP_MARKDOWN_PARKING_OFFSET,
-    }
-  }
-
-  const minX = Math.min(...occupiedBounds.map(bounds => bounds.x))
-  const minY = Math.min(...occupiedBounds.map(bounds => bounds.y))
-  return {
-    x: minX - TEMP_MARKDOWN_W - TEMP_MARKDOWN_PARKING_OFFSET,
-    y: minY - TEMP_MARKDOWN_H - TEMP_MARKDOWN_PARKING_OFFSET,
-  }
-}
-
 function lockPageShapeAndSendPagesToBack(editor: Editor, shapeId: TLShapeId) {
   const shape = editor.getShape(shapeId)
   if (!shape) return
   if (shape.isLocked) editor.updateShape({ id: shapeId, type: shape.type, isLocked: false })
   sendCanvasPageShapesToBack(editor)
+  editor.sendToBack([shapeId])
   editor.updateShape({ id: shapeId, type: shape.type, isLocked: true })
 }
 
@@ -234,7 +211,7 @@ export async function createTemporaryMarkdownColumn(
     .filter((shape: any) => shape.meta?.temporaryMarkdownColumn && shape.id !== TEMP_MARKDOWN_SHAPE_ID)
     .map(shape => shape.id)
   if (staleTemporaryMarkdown.length > 0) editor.store.remove(staleTemporaryMarkdown)
-  const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
+  const parkedPoint = pagePoint
   const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
   if (existing) {
     if (existing.isLocked) {
