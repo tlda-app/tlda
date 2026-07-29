@@ -1,4 +1,4 @@
-import { useState, useEffect, Component, type ReactNode } from 'react'
+import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
@@ -58,6 +58,7 @@ interface DocConfig {
   members?: string[]
   buildStatus?: string
   autoSync?: boolean
+  starred?: boolean
   lastBuild?: string
   targets?: { texBase: string; mainFile: string; pages: number }[]
 }
@@ -478,7 +479,10 @@ function relativeTime(iso: string | undefined): string {
   return `${Math.floor(days / 30)}mo ago`
 }
 
-interface ArchivedProject { name: string; title?: string }
+interface ArchivedProject { name: string; title?: string; starred?: boolean }
+
+type ProjectAction = 'star' | 'archive'
+type PointerStart = { key: string; x: number; y: number; archived: boolean }
 
 function DocumentPicker({ isDark, manifest, onSelect }: {
   isDark: boolean
@@ -489,12 +493,19 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+  const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set(
+    Object.entries(manifest).filter(([, config]) => config.starred).map(([key]) => key)
+  ))
   const [search, setSearch] = useState('')
   const [hideJunk, setHideJunk] = useState(true)
   const [archived, setArchived] = useState<ArchivedProject[]>([])
   const [restoredKeys, setRestoredKeys] = useState<Set<string>>(new Set())
+  const [restoredProjects, setRestoredProjects] = useState<Record<string, DocConfig>>({})
   const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
   const [historyIndex, setHistoryIndex] = useState<ProjectHistoryIndex | null>(null)
+  const pointerStart = useRef<PointerStart | null>(null)
+  const pointerSwiped = useRef(false)
+  const [dragPreview, setDragPreview] = useState<{ key: string; action: ProjectAction; dx: number } | null>(null)
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -569,7 +580,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     return () => controller.abort()
   }, [indexProjectKey])
 
-  const entries = Object.entries(manifest)
+  const entries = Object.entries({ ...manifest, ...restoredProjects })
     .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
     .filter(([key, config]) =>
       historyIndex === null
@@ -578,10 +589,13 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       || Boolean(historyIndex.projects[key])
     )
     .filter(([key, config]) => !q || (config.name || key).toLowerCase().includes(q) || key.includes(q))
-    .sort(([keyA, configA], [keyB, configB]) =>
-      String(meta[keyB]?.lastBuild || configB.lastBuild || '')
+    .sort(([keyA, configA], [keyB, configB]) => {
+      const starA = starredKeys.has(keyA) || !!configA.starred
+      const starB = starredKeys.has(keyB) || !!configB.starred
+      if (starA !== starB) return starA ? -1 : 1
+      return String(meta[keyB]?.lastBuild || configB.lastBuild || '')
         .localeCompare(String(meta[keyA]?.lastBuild || configA.lastBuild || ''))
-    )
+    })
 
   const visibleEntries = entries
 
@@ -589,9 +603,32 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     .filter(p => !restoredKeys.has(p.name))
     .filter(p => (p.title || p.name).toLowerCase().includes(q) || p.name.includes(q))
 
-  const archiveProject = (key: string, e: React.MouseEvent) => {
-    e.stopPropagation()
+  const archiveProject = (key: string, e?: React.MouseEvent | React.PointerEvent) => {
+    e?.stopPropagation()
+    pointerSwiped.current = true
+    setDragPreview(null)
     setHiddenKeys(prev => new Set(prev).add(key))
+    setRestoredKeys(prev => {
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      return next
+    })
+    setArchived(prev => (
+      prev.some(p => p.name === key)
+        ? prev
+        : [...prev, {
+          name: key,
+          title: manifest[key]?.name || restoredProjects[key]?.name || key,
+          starred: starredKeys.has(key) || !!manifest[key]?.starred || !!restoredProjects[key]?.starred,
+        }]
+    ))
+    setRestoredProjects(prev => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
     fetch(`${ASSET_BASE}/api/projects/${key}/archive`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -601,15 +638,129 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     })
   }
 
-  const restoreProject = (key: string) => {
+  const restoreProject = (key: string, e?: React.MouseEvent | React.PointerEvent) => {
+    e?.stopPropagation()
+    pointerSwiped.current = true
+    setDragPreview(null)
+    setHiddenKeys(prev => { const next = new Set(prev); next.delete(key); return next })
     setRestoredKeys(prev => new Set(prev).add(key))
+    const archivedProject = archived.find(p => p.name === key)
+    if (archivedProject) {
+      setRestoredProjects(prev => ({
+        ...prev,
+        [key]: {
+          name: archivedProject.title || archivedProject.name,
+          mainFile: 'notes.md',
+          format: 'markdown',
+          starred: archivedProject.starred,
+        },
+      }))
+    }
     fetch(`${ASSET_BASE}/api/projects/${key}/archive`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ archived: false }),
     }).catch(() => {
       setRestoredKeys(prev => { const next = new Set(prev); next.delete(key); return next })
+      setRestoredProjects(prev => {
+        if (!prev[key]) return prev
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
     })
+  }
+
+  const starProject = (key: string, archivedRow: boolean, e?: React.MouseEvent | React.PointerEvent) => {
+    e?.stopPropagation()
+    pointerSwiped.current = true
+    setDragPreview(null)
+    const wasStarred = starredKeys.has(key) || !!manifest[key]?.starred
+    const nextStarred = archivedRow ? true : !wasStarred
+    setStarredKeys(prev => {
+      const next = new Set(prev)
+      if (nextStarred) next.add(key)
+      else next.delete(key)
+      return next
+    })
+    if (archivedRow) {
+      setRestoredKeys(prev => new Set(prev).add(key))
+      const archivedProject = archived.find(p => p.name === key)
+      if (archivedProject) {
+        setRestoredProjects(prev => ({
+          ...prev,
+          [key]: {
+            name: archivedProject.title || archivedProject.name,
+            mainFile: 'notes.md',
+            format: 'markdown',
+            starred: true,
+          },
+        }))
+      }
+    }
+    fetch(`${ASSET_BASE}/api/projects/${key}/star`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starred: nextStarred }),
+    }).catch(() => {
+      setStarredKeys(prev => {
+        const next = new Set(prev)
+        if (wasStarred) next.add(key)
+        else next.delete(key)
+        return next
+      })
+      if (archivedRow) {
+        setRestoredKeys(prev => { const next = new Set(prev); next.delete(key); return next })
+        setRestoredProjects(prev => {
+          if (!prev[key]) return prev
+          const next = { ...prev }
+          delete next[key]
+          return next
+        })
+      }
+    })
+  }
+
+  const onRowPointerDown = (key: string, archivedRow: boolean, e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    pointerSwiped.current = false
+    pointerStart.current = { key, x: e.clientX, y: e.clientY, archived: archivedRow }
+  }
+
+  const onRowPointerMove = (key: string, e: React.PointerEvent) => {
+    const start = pointerStart.current
+    if (!start || start.key !== key) return
+    const dx = e.clientX - start.x
+    const dy = e.clientY - start.y
+    if (Math.abs(dx) < 18 || Math.abs(dx) < Math.abs(dy) * 1.4) {
+      if (dragPreview?.key === key) setDragPreview(null)
+      return
+    }
+    setDragPreview({ key, action: dx > 0 ? 'star' : 'archive', dx: Math.max(-96, Math.min(96, dx)) })
+  }
+
+  const onRowPointerEnd = (key: string, e: React.PointerEvent) => {
+    const start = pointerStart.current
+    pointerStart.current = null
+    const preview = dragPreview
+    setDragPreview(null)
+    if (!start || start.key !== key || preview?.key !== key || Math.abs(preview.dx) < 72) return
+    pointerSwiped.current = true
+    if (preview.action === 'star') {
+      starProject(key, start.archived, e)
+    } else if (start.archived) {
+      restoreProject(key, e)
+    } else {
+      archiveProject(key, e)
+    }
+  }
+
+  const onRowClick = (key: string, config: DocConfig) => {
+    if (pointerSwiped.current) {
+      pointerSwiped.current = false
+      return
+    }
+    onSelect(key, config)
   }
 
   return (
@@ -642,11 +793,18 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           {visibleEntries.map(([key, config]) => {
             const health = docHealth[key]
             const isBroken = health && !health.ok
+            const isStarred = starredKeys.has(key) || !!config.starred
+            const preview = dragPreview?.key === key ? dragPreview : null
             return (
               <div
                 key={key}
-                className={`project-index-row${isBroken ? ' picker-row-broken' : ''}`}
-                onClick={() => onSelect(key, config)}
+                className={`project-index-row${isBroken ? ' picker-row-broken' : ''}${isStarred ? ' project-index-row-starred' : ''}${preview ? ` is-swiping is-swiping-${preview.action}` : ''}`}
+                style={preview ? { transform: `translateX(${preview.dx}px)` } : undefined}
+                onPointerDown={(e) => onRowPointerDown(key, false, e)}
+                onPointerMove={(e) => onRowPointerMove(key, e)}
+                onPointerUp={(e) => onRowPointerEnd(key, e)}
+                onPointerCancel={() => { pointerStart.current = null; setDragPreview(null) }}
+                onClick={() => onRowClick(key, config)}
               >
                 <div className="project-index-name">
                   {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
@@ -655,12 +813,19 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
                   {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
                 </div>
                 <div className="project-index-history" />
-                <div className="picker-archive">
+                <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
                   <button
-                    className="archive-btn"
+                    className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
+                    title={isStarred ? 'Unstar' : 'Star'}
+                    aria-label={isStarred ? 'Unstar project' : 'Star project'}
+                    onClick={(e) => starProject(key, false, e)}
+                  >★</button>
+                  <button
+                    className="project-row-action project-row-archive"
                     title="Archive"
+                    aria-label="Archive project"
                     onClick={(e) => archiveProject(key, e)}
-                  >&times;</button>
+                  >×</button>
                 </div>
               </div>
             )
@@ -676,22 +841,45 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       {archivedFiltered.length > 0 && (
         <>
           <div className="picker-archived-header">Archived</div>
-          <table className="picker-table picker-table-archived">
-            <tbody>
-              {archivedFiltered.map(p => (
-                <tr key={p.name}>
-                  <td className="picker-archived-name">{p.title || p.name}</td>
-                  <td className="picker-archive">
-                    <button
-                      className="restore-btn"
-                      title="Restore"
-                      onClick={() => restoreProject(p.name)}
-                    >Restore</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="project-index project-index-archived">
+            <div className="project-index-rows">
+              {archivedFiltered.map(p => {
+                const preview = dragPreview?.key === p.name ? dragPreview : null
+                const isStarred = starredKeys.has(p.name) || !!p.starred
+                return (
+                  <div
+                    key={p.name}
+                    className={`project-index-row project-index-row-archived${isStarred ? ' project-index-row-starred' : ''}${preview ? ` is-swiping is-swiping-${preview.action}` : ''}`}
+                    style={preview ? { transform: `translateX(${preview.dx}px)` } : undefined}
+                    onPointerDown={(e) => onRowPointerDown(p.name, true, e)}
+                    onPointerMove={(e) => onRowPointerMove(p.name, e)}
+                    onPointerUp={(e) => onRowPointerEnd(p.name, e)}
+                    onPointerCancel={() => { pointerStart.current = null; setDragPreview(null) }}
+                  >
+                    <div className="project-index-name">
+                      <span className="picker-archived-name">{p.title || p.name}</span>
+                      <span className="picker-date">Archived</span>
+                    </div>
+                    <div className="project-index-history" />
+                    <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
+                      <button
+                        className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
+                        title="Star and unarchive"
+                        aria-label="Star and unarchive project"
+                        onClick={(e) => starProject(p.name, true, e)}
+                      >★</button>
+                      <button
+                        className="project-row-action project-row-archive"
+                        title="Unarchive"
+                        aria-label="Unarchive project"
+                        onClick={(e) => restoreProject(p.name, e)}
+                      >↩</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         </>
       )}
     </div>

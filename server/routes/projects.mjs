@@ -271,7 +271,7 @@ router.get('/events/stream', requireRead, async (req, res) => {
 
 // List archived projects
 router.get('/archived', requireRead, async (req, res) => {
-  const projects = await listProjects().filter(p => p.archived)
+  const projects = (await listProjects()).filter(p => p.archived)
   res.json({ projects })
 })
 
@@ -506,6 +506,18 @@ router.patch('/:name/archive', requireRw, async (req, res) => {
     const { archived } = req.body
     const project = await updateProject(req.params.name, { archived: !!archived })
     res.json({ ok: true, archived: project.archived })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
+})
+
+router.patch('/:name/star', requireRw, async (req, res) => {
+  try {
+    const { starred } = req.body
+    const updates = { starred: !!starred }
+    if (updates.starred) updates.archived = false
+    const project = await updateProject(req.params.name, updates)
+    res.json({ ok: true, starred: project.starred, archived: project.archived })
   } catch (e) {
     res.status(404).json({ error: e.message })
   }
