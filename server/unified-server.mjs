@@ -7935,6 +7935,11 @@ async function handleDaemonWsMessage(ws, msg) {
   // From here on, the daemon must be identified.
   if (!ws._machineId) return
 
+  if (type === 'subagent-observed') {
+    await handleFleetWsMessage(ws, msg)
+    return
+  }
+
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
