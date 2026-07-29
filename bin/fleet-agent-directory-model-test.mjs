@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   fleetAgentCategory,
+  fleetAgentVisibleName,
   formatFleetAgentActivityHealthForAgent,
   toFleetAgentDirectoryRow,
 } from '../src/shapes/FleetAgentDirectoryModel.ts'
@@ -90,5 +91,15 @@ const transportRow = toFleetAgentDirectoryRow(transportFailureAgent)
 assert.equal(transportRow.activityHealth, 'activity unavailable:never')
 assert(!transportRow.activityHealth.includes('daemon'))
 assert(!transportRow.activityHealth.includes('transport'))
+
+assert.equal(fleetAgentVisibleName({
+  id: 'fleet:child',
+  parent_agent_id: 'fleet:parent',
+  friendly_name: 'chief13:Plan',
+}), ':Plan')
+assert.equal(fleetAgentVisibleName({
+  id: 'fleet:parent',
+  friendly_name: 'chief13',
+}), 'chief13')
 
 console.log('fleet-agent-directory-model-test: ok')

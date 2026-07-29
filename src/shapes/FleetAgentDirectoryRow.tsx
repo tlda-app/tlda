@@ -14,6 +14,7 @@ export {
   formatFleetAgentSpawnOptions,
   formatFleetAgentPermission,
   formatFleetAgentRelativeTime,
+  fleetAgentVisibleName,
   getFleetAgentDirectoryRows,
   getFleetAgentNickColor,
   sortFleetAgentDirectoryRows,

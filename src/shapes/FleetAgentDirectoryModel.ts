@@ -130,6 +130,13 @@ export function fleetAgentExactName(agent: any): string {
   return agent.friendly_name || agent.id || ''
 }
 
+export function fleetAgentVisibleName(agent: any): string {
+  if (!agent?.parent_agent_id) return agent?.pretty_name ?? agent?.friendly_name ?? agent?.id ?? ''
+  const exactName = fleetAgentExactName(agent)
+  const childName = exactName.slice(exactName.lastIndexOf(':') + 1)
+  return `:${childName}`
+}
+
 function agentTimestamp(agent: any): number {
   if (typeof agent._ts === 'number') return agent._ts
   const raw = agent.last_active || agent.last_seen || agent.registered_at
@@ -184,7 +191,7 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
     id,
     exactName,
     displayName,
-    prettyName: agent?.pretty_name ?? agent?.friendly_name ?? displayName,
+    prettyName: fleetAgentVisibleName(agent),
     color: getFleetAgentNickColor(id, agent?.is_manager),
     labels: Array.isArray(agent?.labels) ? agent.labels : [],
     lastActiveAt: ts,
