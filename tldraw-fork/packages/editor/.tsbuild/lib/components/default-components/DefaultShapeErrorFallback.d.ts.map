@@ -1,1 +1,0 @@
-{"version":3,"file":"DefaultShapeErrorFallback.d.ts","sourceRoot":"","sources":["../../../../src/lib/components/default-components/DefaultShapeErrorFallback.tsx"],"names":[],"mappings":"AAAA,OAAO,EAAE,aAAa,EAAE,MAAM,OAAO,CAAA;AAErC,cAAc;AACd,MAAM,MAAM,6BAA6B,GAAG,aAAa,CAAC;IAAE,KAAK,EAAE,GAAG,CAAA;CAAE,CAAC,CAAA;AAEzE,gBAAgB;AAChB,eAAO,MAAM,yBAAyB,EAAE,6BAGtC,CAAA"}

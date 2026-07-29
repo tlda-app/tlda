@@ -1,1 +1,0 @@
-{"version":3,"file":"browserCanvasMaxSize.d.ts","sourceRoot":"","sources":["../../../src/lib/utils/browserCanvasMaxSize.ts"],"names":[],"mappings":"AAEA,gBAAgB;AAChB,MAAM,WAAW,aAAa;IAC7B,QAAQ,EAAE,MAAM,CAAA;IAChB,SAAS,EAAE,MAAM,CAAA;IACjB,OAAO,EAAE,MAAM,CAAA;CACf;AAqID,gBAAgB;AAChB,wBAAgB,2BAA2B,CAAC,KAAK,EAAE,MAAM,EAAE,MAAM,EAAE,MAAM,GAAG,CAAC,MAAM,EAAE,MAAM,CAAC,CA6B3F"}

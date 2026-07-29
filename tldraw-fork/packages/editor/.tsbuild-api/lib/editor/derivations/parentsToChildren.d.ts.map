@@ -1,1 +1,0 @@
-{"version":3,"file":"parentsToChildren.d.ts","sourceRoot":"","sources":["../../../../src/lib/editor/derivations/parentsToChildren.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,QAAQ,EAA0C,MAAM,eAAe,CAAA;AAEhF,OAAO,EAAW,UAAU,EAAqB,SAAS,EAAE,OAAO,EAAE,MAAM,kBAAkB,CAAA;AAG7F,KAAK,6BAA6B,GAAG,MAAM,CAAC,UAAU,EAAE,SAAS,EAAE,CAAC,CAAA;AAmBpE,wBAAgB,iBAAiB,CAAC,KAAK,EAAE,OAAO,oDAkG/C"}
