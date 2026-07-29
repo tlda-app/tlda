@@ -8,8 +8,7 @@ import { IdentityPicker } from './IdentityPicker'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
-import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
-import { fetchEditEventChangelog } from './historyStore'
+import { LOG_AGE_CURVE } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import './App.css'
 import './themes.css'
@@ -470,8 +469,6 @@ type ProjectHistoryIndex = {
   projects: Record<string, { commitCount: number; oldest: { hash: string; timestamp: number } }>
   oldest: number | null
 }
-type ProjectChangelog = { commits: ChangelogCommit[]; totalPages: number; error?: string }
-
 type CommitCountFilter = { min?: number; max?: number }
 type CreatedAgeFilter = { minAgeMs?: number; maxAgeMs?: number }
 type ProjectSearchClause = { text: string; commitFilters: CommitCountFilter[]; createdAgeFilters: CreatedAgeFilter[] }
@@ -638,12 +635,10 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [restoredProjects, setRestoredProjects] = useState<Record<string, DocConfig>>({})
   const [docHealth, setDocHealth] = useState<Record<string, { ok: boolean; error?: string }>>({})
   const [historyIndex, setHistoryIndex] = useState<ProjectHistoryIndex | null>(null)
-  const [changelogs, setChangelogs] = useState<Record<string, ProjectChangelog>>({})
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [timeAxisNow] = useState(() => Date.now())
   const pointerStart = useRef<PointerStart | null>(null)
   const pointerSwiped = useRef(false)
-  const requestedHistoriesRef = useRef(new Set<string>())
   const [dragPreview, setDragPreview] = useState<{ key: string; action: ProjectAction; dx: number } | null>(null)
   const parsedSearch = useMemo(() => parseProjectSearchQuery(search), [search])
   const parsedDefaultSearch = useMemo(() => parseProjectSearchQuery(defaultSearch), [defaultSearch])
@@ -744,33 +739,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     })
 
   const visibleEntries = entries
-  const visibleProjectNames = visibleEntries.map(([key]) => key)
-  const visibleProjectKey = visibleProjectNames.join('\n')
-
-  useEffect(() => {
-    const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
-      .filter(name => !requestedHistoriesRef.current.has(name))
-    if (projectNames.length === 0) return
-    for (const name of projectNames) requestedHistoriesRef.current.add(name)
-    async function fetchChangelogs() {
-      const entries = await Promise.all(projectNames.map(async name => {
-        const data = await fetchEditEventChangelog(name, 0, 1000, ASSET_BASE)
-        return [name, data ?? { commits: [], totalPages: 0, error: 'History unavailable' }] as const
-      }))
-      return Object.fromEntries(entries) as Record<string, ProjectChangelog>
-    }
-    fetchChangelogs()
-      .then(data => {
-        setHistoryError(null)
-        setChangelogs(current => ({ ...current, ...data }))
-      })
-      .catch(error => {
-        for (const name of projectNames) requestedHistoriesRef.current.delete(name)
-        setHistoryError('History unavailable')
-        console.warn('[app] project edit-events fetch failed:', error.message)
-      })
-  }, [visibleProjectKey])
-
   const timeRange = historyIndex?.oldest
     ? { oldest: historyIndex.oldest, newest: timeAxisNow }
     : null
@@ -962,15 +930,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     onSelect(key, config)
   }
 
-  const openHistoryPoint = (project: string, commit: ChangelogCommit, page: number) => {
-    const url = new URL(window.location.href)
-    url.searchParams.set('project', project)
-    url.searchParams.set('history', commit.hash)
-    url.searchParams.set('historyTime', String(commit.timestamp))
-    url.searchParams.set('page', String(page))
-    window.location.assign(url.toString())
-  }
-
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
       <div className="picker-controls">
@@ -999,8 +958,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
             const isBroken = health && !health.ok
             const isStarred = starredKeys.has(key) || !!config.starred
             const preview = dragPreview?.key === key ? dragPreview : null
-            const changelog = changelogs[key]
-            const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
             return (
               <div
                 key={key}
@@ -1019,25 +976,9 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
                   {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
                 </div>
                 <div className="project-index-history">
-                  {!changelog && !historyError && (
-                    <span className="project-index-history-loading">Loading history...</span>
-                  )}
-                  {changelog && !hasPageEdits && (
-                    <span className="project-index-history-loading">No page edits</span>
-                  )}
-                  {changelog && hasPageEdits && timeRange && (
-                    <SpaceTimeDots
-                      changelog={changelog}
-                      timeRange={timeRange}
-                      timeScale="log-age"
-                      showPageLabels={false}
-                      className="project-index-spacetime"
-                      onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
-                    />
-                  )}
-                  {(historyError || changelog?.error) && (
+                  {historyError && (
                     <span className="project-index-history-status">
-                      {changelog?.error || historyError}
+                      {historyError}
                     </span>
                   )}
                 </div>

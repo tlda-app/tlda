@@ -3,10 +3,8 @@ import test from 'node:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import express from 'express'
 
 import { initProjectStore, closeProjectStore, createProject, sourceLifecycleStore } from './project-store.mjs'
-import historyRoutes from '../routes/history.mjs'
 import {
   appendAgentAction,
   finalizeEditEventsForSourceRevision,
@@ -211,7 +209,7 @@ test('overleaf transaction uses git author as actor and keeps committer as basis
   })
 })
 
-test('history edit-events endpoint returns canonical events and actor facets', async () => {
+test('readEditEvents returns canonical events and actor facets', async () => {
   await withProject(async name => {
     const before = await bootstrap(name)
     const after = await submit(name, before, 'api edit\n')
@@ -226,22 +224,10 @@ test('history edit-events endpoint returns canonical events and actor facets', a
       sourceManifest: ['main.tex'],
     })
 
-    const app = express()
-    app.use(express.json())
-    app.use('/api/projects/:name/history', historyRoutes)
-    const server = app.listen(0, '127.0.0.1')
-    try {
-      await new Promise(resolve => server.once('listening', resolve))
-      const { port } = server.address()
-      const res = await fetch(`http://127.0.0.1:${port}/api/projects/${name}/history/edit-events`)
-      assert.equal(res.status, 200)
-      const payload = await res.json()
-      assert.equal(payload.project, name)
-      assert.equal(payload.events.length, 1)
-      assert.equal(payload.events[0].event_id.startsWith('edit-'), true)
-      assert.equal(payload.actors[0].display_name, 'skip')
-    } finally {
-      await new Promise(resolve => server.close(resolve))
-    }
+    const payload = await readEditEvents(name)
+    assert.equal(payload.project, name)
+    assert.equal(payload.events.length, 1)
+    assert.equal(payload.events[0].event_id.startsWith('edit-'), true)
+    assert.equal(payload.actors[0].display_name, 'skip')
   })
 })

@@ -20,7 +20,6 @@ import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBound
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
-import { readEditEvents } from '../lib/edit-events.mjs'
 
 // ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
 const _PDF_WIDTH = 612, _TARGET_WIDTH = 800, _PDF_HEIGHT = 792, _PAGE_GAP = 32
@@ -588,27 +587,6 @@ router.get('/shadow/adjacent', requireRead, async (req, res) => {
   try {
     const version = await adjacentVersion(name, hash, dir)
     res.json({ version })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-router.get('/edit-events', requireRead, async (req, res) => {
-  const { name } = req.params
-  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000)
-  const project = await readProject(name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-  try {
-    res.json(await readEditEvents(name, {
-      since: req.query.since,
-      until: req.query.until,
-      limit,
-      origin: req.query.origin,
-      actor: req.query.actor,
-      actor_kind: req.query.actor_kind,
-      attribution_status: req.query.attribution_status,
-      include_pending: req.query.include_pending === 'true',
-    }))
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

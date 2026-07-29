@@ -1,10 +1,9 @@
 /**
- * useTimelineOverlay — fetches timeline data from edit-events + annotation history,
+ * useTimelineOverlay — fetches timeline data from annotation history,
  * creates/removes the TimelineOverlayShape on toggle.
  *
  * Data sources:
- *   1. GET /api/projects/{name}/history/edit-events — canonical source edit events
- *   2. GET /api/projects/{name}/shapes — current annotation shapes with createdAt meta
+ *   1. GET /api/projects/{name}/shapes — current annotation shapes with createdAt meta
  *
  * Positions the timeline shape to the right of the document pages.
  */
@@ -30,35 +29,12 @@ export function useTimelineOverlay(
     const editor = editorRef.current
     if (!editor) return
 
-    // Fetch data from both endpoints concurrently
-    const [historyRes, shapesRes] = await Promise.all([
-      fetch(`/api/projects/${projectName}/history/edit-events`).then(r => r.ok ? r.json() : { events: [] }).catch(() => ({ events: [] })),
-      fetch(`/api/projects/${projectName}/shapes`).then(r => r.ok ? r.json() : []).catch(() => []),
-    ])
+    const shapesRes = await fetch(`/api/projects/${projectName}/shapes`)
+      .then(r => r.ok ? r.json() : [])
+      .catch(() => [])
 
     const totalPages = document.pages.length
     const events: TimelineEvent[] = []
-
-    // Process canonical edit-event history entries
-    const historyEntries = historyRes.events || []
-    for (const entry of historyEntries) {
-      if (!entry.timestamp) continue
-
-      const changedPages = entry.changed_pages || []
-      const primaryPage = changedPages.length > 0 ? Math.min(...changedPages) : 1
-      const significance = Math.min(1, (changedPages.length || 1) / Math.max(totalPages, 1))
-      const actor = entry.actor_display_name || entry.actor_id || entry.origin || 'Edit'
-
-      events.push({
-        ts: entry.timestamp,
-        type: 'build',
-        page: primaryPage,
-        pages: changedPages.length > 0 ? changedPages : [primaryPage],
-        significance,
-        label: `${actor}: ${changedPages.length || '?'} page(s) changed`,
-        buildHash: entry.after_shadow_revision || entry.event_id,
-      })
-    }
 
     // Process annotation shapes — extract creation timestamps from meta
     const annotationTypes = new Set(['math-note', 'highlight', 'draw', 'arrow', 'text', 'note'])
