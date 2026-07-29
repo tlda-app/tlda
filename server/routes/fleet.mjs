@@ -207,6 +207,47 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, operation })
   })
 
+  router.get('/api/fleet/native-subagent-notifications/:parentAgentId', async (req, res) => {
+    const parentAgentId = req.params.parentAgentId
+    const parent = await fleetStore.getAgent(parentAgentId)
+    if (!parent || parent.dead) {
+      res.status(404).json({ ok: false, error: 'parent agent not found' })
+      return
+    }
+    const pending = await fleetStore.getPendingNativeSubagentNotifications(parentAgentId)
+    if (!pending.length) {
+      res.json({ ok: true, notifications: [] })
+      return
+    }
+    const seat = await agentRouteOrHttpError(res, parent)
+    if (!seat) return
+    try {
+      const routes = await sendDaemonEphemeral(seat.daemon_key, 'native-subagent-routes', {
+        parent_agent_id: parentAgentId,
+        child_agent_ids: [...new Set(pending.map(item => item.child_agent_id))],
+      })
+      const byChild = new Map((routes || []).map(route => [route.child_agent_id, route]))
+      res.json({
+        ok: true,
+        notifications: pending.flatMap(item => {
+          const route = byChild.get(item.child_agent_id)
+          return route ? [{
+            event_id: item.event_id,
+            child_agent_id: item.child_agent_id,
+            child_name: item.child_name || item.child_agent_id,
+            sender_agent_id: item.sender_agent_id,
+            sender_name: item.sender_name || item.sender_agent_id,
+            created_at: item.created_at,
+            native_agent_id: route.native_agent_id,
+            harness: route.harness,
+          }] : []
+        }),
+      })
+    } catch (e) {
+      res.status(e.code === 'NO_DAEMON' ? 503 : 502).json({ ok: false, error: e.message })
+    }
+  })
+
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).

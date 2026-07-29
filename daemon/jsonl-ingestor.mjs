@@ -94,6 +94,24 @@ export function nativeSubagentOperationId({ daemonKey, parentAgentId, harnessKin
   return `subagent-observed:${createHash('sha256').update(key).digest('hex')}`
 }
 
+export function nativeSubagentRoutesFromWatchers(watchers, parentAgentId, childAgentIds = []) {
+  const wanted = new Set(childAgentIds)
+  const routes = []
+  for (const pw of watchers) {
+    const native = pw.nativeSubagent
+    if (!native?.agentId || native.parentAgentId !== parentAgentId) continue
+    if (wanted.size && !wanted.has(native.agentId)) continue
+    routes.push({
+      child_agent_id: native.agentId,
+      native_agent_id: native.harnessKind === 'codex'
+        ? native.childName || native.harnessChildId
+        : native.harnessChildId,
+      harness: native.harnessKind,
+    })
+  }
+  return routes
+}
+
 export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
   if (!Number.isFinite(startOffset) || !Number.isFinite(liveOffset)) return null
   if (!Number.isFinite(thresholdBytes) || thresholdBytes < 0) return null
@@ -852,7 +870,11 @@ export function createJsonlIngestor({
     if (!descriptor) return null
     const entry = cursors[sessionId] || (cursors[sessionId] = {})
     if (entry.nativeSubagent?.agent_id) {
-      return { ...descriptor, agentId: entry.nativeSubagent.agent_id }
+      return {
+        ...descriptor,
+        agentId: entry.nativeSubagent.agent_id,
+        parentAgentId: entry.nativeSubagent.parent_agent_id,
+      }
     }
     const parentAgentId = parentAgentIdForNativeSubagent(descriptor)
     if (!parentAgentId) return { ...descriptor, pendingParent: true }
@@ -881,7 +903,7 @@ export function createJsonlIngestor({
       decided_at: new Date().toISOString(),
     }
     scheduleCursorSave()
-    return { ...descriptor, agentId: child.id }
+    return { ...descriptor, agentId: child.id, parentAgentId }
   }
 
   async function syncSessionWatchersOnce(input) {
@@ -1467,11 +1489,35 @@ export function createJsonlIngestor({
         if (!sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })) delivered = false
       }
       processQualificationEvent(agentId, ev)
+      processNativeSubagentSend(pw, ev)
     }
 
     if (harness.terminalChat && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
     if (harness.backfillSearch && !sendSearchIndexFromRecord(pw, agentId, pw.sessionId, record)) delivered = false
     return delivered
+  }
+
+  function nativeSubagentRoutes(parentAgentId, childAgentIds = []) {
+    return nativeSubagentRoutesFromWatchers(pathWatchers.values(), parentAgentId, childAgentIds)
+  }
+
+  function processNativeSubagentSend(pw, ev) {
+    if (pw.nativeSubagent || !ev?.blocks) return
+    for (const block of ev.blocks) {
+      if (block.type !== 'tool_use') continue
+      const tool = String(block.name || '').split('__').pop()
+      if (!['SendMessage', 'send_message', 'followup_task'].includes(tool)) continue
+      const target = block.input?.recipient || block.input?.agent_id || block.input?.target
+      if (!target) continue
+      const route = nativeSubagentRoutes(pw.primaryAgentId)
+        .find(item => item.native_agent_id === target)
+      if (!route) continue
+      sendMsg({
+        type: 'native-subagent-notification-ack',
+        parent_agent_id: pw.primaryAgentId,
+        child_agent_id: route.child_agent_id,
+      })
+    }
   }
 
   function processQualificationEvent(agentId, ev) {
@@ -1628,6 +1674,7 @@ export function createJsonlIngestor({
     scheduleJsonlDirSync,
     resumeAfterServerReady: resumeJsonlIngesterAfterServerReady,
     retryPendingNativeSubagents,
+    nativeSubagentRoutes,
     resolveEditor,
     hasWatcherForAgent,
     teardown,

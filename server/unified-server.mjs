@@ -5443,6 +5443,18 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'native-subagent-notification-ack') {
+    const parentAgentId = msg.parent_agent_id || null
+    const childAgentId = msg.child_agent_id || null
+    if (!parentAgentId || !childAgentId) {
+      error('native-subagent-notification-ack requires parent_agent_id and child_agent_id')
+      return
+    }
+    const result = await fleetStore.acknowledgeNativeSubagentNotifications?.(parentAgentId, childAgentId)
+    reply({ ok: true, ...(result || { acknowledged: 0 }) })
+    return
+  }
+
   if (type === 'register' || type === 'reserve-shell' || type === 'mint-shell') {
     // Prefer agent_id over id: the transport adapter stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling
@@ -6329,6 +6341,11 @@ async function handleFleetWsMessage(ws, msg) {
       const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat') || []
       const wiretapRecipients = await fleetStore.resolveWiretaps(from, to, 'chat')
       const recipientAgent = await fleetStore.getAgent?.(to)
+      const nativeParentId = recipientAgent?.parent_agent_id || null
+      const nativeChildHasDirectChannel = nativeParentId
+        ? hasOpenFleetSocketForAgent(to) || !!(await fleetStore.getAgentDaemonRoute?.(to))
+        : false
+      const nativeNeedsParent = !!nativeParentId && !nativeChildHasDirectChannel
       const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
       const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
       const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
@@ -6356,7 +6373,7 @@ async function handleFleetWsMessage(ws, msg) {
         ...(metadata || {}),
         priority: basePriority,
         trace_id: traceId,
-        inbox_delivery: deliveryDecision.delivery,
+        inbox_delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
         inbox_status: inboxStatus,
         delivery_channel: deliveryChannel,
         ...(inboxStatusTag ? { inbox_status_tag: inboxStatusTag } : {}),
@@ -6385,6 +6402,15 @@ async function handleFleetWsMessage(ws, msg) {
         unread: true,
       }, { notify: false }))
       const eventId = Number(inserted.id)
+      if (nativeNeedsParent) {
+        await fleetStore.createNativeSubagentNotification?.({
+          eventId,
+          parentAgentId: nativeParentId,
+          childAgentId: to,
+          senderAgentId: from,
+          createdAt: ts,
+        })
+      }
       if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
         combinedMetadata = finalizeRecipientPlaceholderPaths(combinedMetadata, {
           recipientId: to,
@@ -6408,9 +6434,9 @@ async function handleFleetWsMessage(ws, msg) {
         status: inboxStatus,
         tag: inboxStatusTag,
         priority: basePriority,
-        delivery: deliveryDecision.delivery,
+        delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
         deliveryChannel,
-        wokeRecipient: deliveryDecision.wokeRecipient,
+        wokeRecipient: nativeNeedsParent ? false : deliveryDecision.wokeRecipient,
         notifyBy: deliveryDecision.notifyBy,
       })
       // Echo _tempId on the broadcast so a client whose WS reply was lost during
@@ -6418,7 +6444,17 @@ async function handleFleetWsMessage(ws, msg) {
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
-        wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+        if (nativeNeedsParent) {
+          wakeRequests.push({
+            to: nativeParentId,
+            text: `📬 Message queued for native subagent ${recipientAgent.friendly_name || to}.`,
+            asker: from,
+            traceId,
+            source: { sourceEventId: eventId, priority: basePriority },
+          })
+        } else {
+          wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+        }
       }
       for (const subDelivery of subscriptionDeliveries) {
         if (subDelivery.delivery === 'notified') {
@@ -8004,7 +8040,7 @@ async function handleDaemonWsMessage(ws, msg) {
   // From here on, the daemon must be identified.
   if (!ws._machineId) return
 
-  if (type === 'subagent-observed') {
+  if (type === 'subagent-observed' || type === 'native-subagent-notification-ack') {
     await handleFleetWsMessage(ws, msg)
     return
   }

@@ -1,6 +1,7 @@
 import fs from 'fs'
 import { execFile } from 'child_process'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import { promisify } from 'util'
 import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
@@ -101,6 +102,18 @@ export function buildCmd({
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   parts.push('claude')
+  const notificationHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-notification-hook.mjs')
+  parts.push(`--settings ${sq(JSON.stringify({
+    hooks: {
+      UserPromptSubmit: [{
+        hooks: [{
+          type: 'command',
+          command: `${process.execPath} ${notificationHook}`,
+          timeout: 5,
+        }],
+      }],
+    },
+  }))}`)
   appendLaunchFlags(parts, effectiveHarnessOptions)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   else if (freshSessionId) parts.push(`--session-id ${sq(freshSessionId)}`)

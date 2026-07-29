@@ -2,6 +2,7 @@ import fs from 'fs'
 import { execFile } from 'child_process'
 import os from 'os'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import { promisify } from 'util'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
 import {
@@ -216,6 +217,10 @@ export function buildCmd({
     processEnv.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   const parts = [...processEnv, 'codex', '--no-alt-screen']
+  const notificationHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-notification-hook.mjs')
+  parts.push('--dangerously-bypass-hook-trust')
+  parts.push(`-c ${sq(`features.hooks=true`)}`)
+  parts.push(`-c ${sq(`hooks.UserPromptSubmit=[{hooks=[{type="command",command=${tomlBasicString(`${process.execPath} ${notificationHook}`)},timeout=5}]}]`)}`)
   const trustOverride = cprojectTrust(cwd)
   if (trustOverride) parts.push(trustOverride)
   if (resumeId) parts.push(`resume ${sq(resumeId)}`)

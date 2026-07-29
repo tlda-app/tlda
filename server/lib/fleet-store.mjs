@@ -494,6 +494,17 @@ export class FleetStore {
         daemon_key TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS native_subagent_notifications (
+        event_id INTEGER PRIMARY KEY,
+        parent_agent_id TEXT NOT NULL,
+        child_agent_id TEXT NOT NULL,
+        sender_agent_id TEXT,
+        created_at TEXT NOT NULL,
+        acknowledged_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_native_subagent_notifications_parent_pending
+        ON native_subagent_notifications(parent_agent_id, acknowledged_at, event_id);
+
       -- Materialized task state (cache, rebuilt from events)
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -2078,6 +2089,46 @@ export class FleetStore {
 
   getAgentDaemonRoute(agentId) {
     return this._getAgentDaemonRoute.get(agentId) || null;
+  }
+
+  createNativeSubagentNotification({ eventId, parentAgentId, childAgentId, senderAgentId = null, createdAt = new Date().toISOString() }) {
+    this.db.prepare(`
+      INSERT INTO native_subagent_notifications (
+        event_id, parent_agent_id, child_agent_id, sender_agent_id, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(event_id) DO NOTHING
+    `).run(eventId, parentAgentId, childAgentId, senderAgentId, createdAt);
+    return this.db.prepare(`
+      SELECT event_id, parent_agent_id, child_agent_id, sender_agent_id, created_at, acknowledged_at
+      FROM native_subagent_notifications WHERE event_id = ?
+    `).get(eventId) || null;
+  }
+
+  getPendingNativeSubagentNotifications(parentAgentId) {
+    return this.db.prepare(`
+      SELECT
+        n.event_id,
+        n.parent_agent_id,
+        n.child_agent_id,
+        n.sender_agent_id,
+        n.created_at,
+        child.friendly_name AS child_name,
+        sender.friendly_name AS sender_name
+      FROM native_subagent_notifications n
+      LEFT JOIN agents child ON child.id = n.child_agent_id
+      LEFT JOIN agents sender ON sender.id = n.sender_agent_id
+      WHERE n.parent_agent_id = ? AND n.acknowledged_at IS NULL
+      ORDER BY n.event_id ASC
+    `).all(parentAgentId);
+  }
+
+  acknowledgeNativeSubagentNotifications(parentAgentId, childAgentId, acknowledgedAt = new Date().toISOString()) {
+    const result = this.db.prepare(`
+      UPDATE native_subagent_notifications
+      SET acknowledged_at = ?
+      WHERE parent_agent_id = ? AND child_agent_id = ? AND acknowledged_at IS NULL
+    `).run(acknowledgedAt, parentAgentId, childAgentId);
+    return { acknowledged: Number(result.changes || 0) };
   }
 
   getAgentDaemonRoutes(agentIds) {

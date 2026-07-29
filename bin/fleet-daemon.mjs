@@ -987,6 +987,8 @@ const machineRpc = createMachineRpc({
 })
 machineRpc.register({
   'resolve-agent-route': resolveAgentRoute,
+  'native-subagent-routes': ({ parent_agent_id, child_agent_ids }) =>
+    jsonlIngestor.nativeSubagentRoutes(parent_agent_id, child_agent_ids),
   ...terminalRpc.handlers,
   'kick': rpcKick,
   ...agentLauncher.handlers,
