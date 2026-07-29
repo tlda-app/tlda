@@ -26,10 +26,9 @@ import { dragCoordinator } from './shapes/dragCoordinator'
 import { FLEET_HUD_VIEWPORT_ID } from './wm/fleet-hud-layer'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from './wm/fleet-interaction-frame'
 import type { TargetInfo } from './loaders/types'
-import { getViewerId } from './useYjsSync'
 import { log } from './logger'
 import type { SourceLineMeta } from './sourceLocation'
-import { anchoredSourceLocation, sourceLineMetaFromRankerLine } from './sourceLocation'
+import { sourceLineMetaFromRankerLine } from './sourceLocation'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -327,14 +326,6 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, projectName?: s
       highlighted: sourceLines.filter(l => l.highlighted).length,
       projectName,
     })
-    // Outline highlighter: word-precise span → clause outline → file-backed
-    // sticky note. Routed through this path so it reuses the same fragment
-    // matching that gives us per-word hlStart/hlEnd columns.
-    if (hlColor === 'light-violet') {
-      await handleOutlineSelection(editor, shape, bounds, sourceLines, projectName)
-      return
-    }
-
     // Attach metadata to the highlight shape
     editor.updateShape({
       id: shape.id,
@@ -379,133 +370,6 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, projectName?: s
   }
   // Defer slightly so flash isn't wiped by re-render
   setTimeout(resolveAndStore, 50)
-}
-
-/**
- * Outline highlighter (light-violet). Given the resolved source lines (with
- * per-word hlStart/hlEnd columns), compute the span from the FIRST highlighted
- * word to the LAST — a continuous, word-precise range; the stroke shape is
- * irrelevant. Fetch a clause-grain outline of exactly that span and drop it as
- * a file-backed `math-note` sticky. The violet stroke is removed — the note IS
- * the result, not a mark.
- */
-async function handleOutlineSelection(
-  editor: Editor,
-  shape: any,
-  bounds: { minX: number; minY: number; maxX: number; maxY: number },
-  sourceLines: SourceLine[],
-  projectName?: string,
-) {
-  log.info('outline-hl', 'handleOutlineSelection enter', { projectName, sourceLines: sourceLines.length })
-  if (!projectName) { log.warn('outline-hl', 'no projectName'); return }
-
-  // Outline extraction must be word-precise. Falling back to whole source lines
-  // would turn an ambiguous ranker result into a fabricated source span.
-  const anchoredLines = anchoredSourceLines(sourceLines)
-  const span = anchoredLines.filter(l =>
-    l.highlighted &&
-    !l.ambiguous &&
-    l.hlStart != null &&
-    l.hlEnd != null &&
-    l.hlEnd > l.hlStart
-  )
-    .slice()
-    .sort((a, b) => a.line - b.line)
-  if (span.length === 0) {
-    log.warn('outline-hl', 'no precise source span resolved', {
-      sourceLines: sourceLines.length,
-      ambiguous: sourceLines.some(l => l.highlighted && l.ambiguous),
-      withCandidates: sourceLines.some(l => l.highlighted && (((l as any).candidates?.length || 0) > 0)),
-    })
-    return
-  }
-
-  const ordered = span
-  const first = ordered[0]
-  const last = ordered[ordered.length - 1]
-  const startLine = first.line
-  const startCol = first.hlStart
-  const endLine = last.line
-  const endCol = last.hlEnd
-  const file = ordered.find(l => l.file)?.file
-  log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol })
-
-  const serverUrl = serverBase()
-  const qs = new URLSearchParams({
-    startLine: String(startLine), startCol: String(startCol),
-    endLine: String(endLine), endCol: String(endCol),
-  })
-  if (file) qs.set('file', file)
-
-  let markdown = ''
-  let texView = ''
-  let mdView = ''
-  let backingFile = ''
-  let backingName = ''
-  let slug = ''
-  try {
-    const url = `${serverUrl}/api/projects/${projectName}/outline?${qs}`
-    log.info('outline-hl', 'fetching outline', { url })
-    const resp = await fetch(url)
-    log.info('outline-hl', 'outline response', { status: resp.status, ok: resp.ok })
-    if (!resp.ok) { log.warn('outline-hl', 'outline endpoint non-ok', { status: resp.status }); return }
-    const data = await resp.json()
-    markdown = data?.markdown || ''
-    texView = data?.tex || ''
-    mdView = data?.md || ''
-    backingFile = data?.backingFile || ''
-    backingName = data?.backingName || backingFile
-    slug = data?.slug || ''
-  } catch (e: any) {
-    log.error('outline-hl', 'outline fetch threw', { error: String(e?.message || e) })
-    return
-  }
-  log.info('outline-hl', 'markdown length', { len: markdown.length, backingFile })
-  if (!markdown.trim()) { log.warn('outline-hl', 'empty outline'); return }
-
-  // Write the initial outline to its backing file (under <project>/.outlines/)
-  // so it exists on disk for agents and the file-back icon lights up. The write
-  // goes through the daemon (multi-machine correct), so it must target the live
-  // server, not __tlda_server (which may be a read-only mirror).
-  if (backingName) {
-    fetch(`/api/backing-file-write`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backingName, filePath: backingFile, projectName, content: markdown, restore: true }),
-    }).catch(e => log.warn('outline-hl', 'backing-file-write failed', { error: String(e?.message || e) }))
-  }
-
-  // Drop a file-backed sticky note just past the right edge of the selection.
-  // anchorLocked tells anchorShape to respect the source anchor we set here
-  // (the selected span) instead of re-anchoring by the note's drop position.
-  const id = createShapeId()
-  const sourceAnchor = anchoredSourceLocation(file || first.file, startLine)
-  try {
-    editor.createShape({
-      id,
-      type: 'math-note' as any,
-      x: bounds.maxX + 24,
-      y: bounds.minY,
-      meta: {
-        createdAt: Date.now(),
-        authorId: getViewerId(),
-        anchorLocked: true,
-        ...(sourceAnchor ? { sourceAnchor } : {}),
-        // Handle for the token-ops tools: outline_open(doc, slug) / outline_apply.
-        ...(slug ? { outlineSlug: slug } : {}),
-      },
-      // tabs are [md, tex, outline] (the order MathNoteShape's switch expects);
-      // default to the outline tab since that's what this slot is for.
-      props: { w: 460, h: 200, text: markdown, color: 'light-violet', autoSize: true, tabs: [mdView, texView, markdown], activeTab: 2, ...(backingFile ? { backingFile } : {}), ...(backingName ? { backingName, backingSyncStatus: 'owner-missing' } : {}) },
-    } as any)
-  } catch (e: any) {
-    log.error('outline-hl', 'createShape threw', { error: String(e?.message || e) })
-    return
-  }
-  const created = !!editor.getShape(id)
-  // The outline replaces the mark — remove the light-violet stroke gesture.
-  editor.deleteShapes([shape.id])
-  log.info('outline-hl', 'note created', { id, created, file: file || 'main', startLine, startCol, endLine, endCol })
 }
 
 /** Resolve tint color, compensating for dark mode filter if needed. */

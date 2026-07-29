@@ -888,17 +888,6 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
             processRibbonHighlight(editor, shape.id as any, document.name, document.pages)
             return
           }
-          // Outline highlighter (light-violet): snapHighlighterToText branches
-          // internally to build a clause-outline sticky note instead of a mark.
-          // Skip agent-feedback processing — it's not a review annotation.
-          if ((s.props as any).color === 'light-violet') {
-            if (applyHtmlSelectionToHighlight(editor, shape.id)) {
-              processHighlightFeedback(editor, shape.id, document.name)
-              return
-            }
-            snapHighlighterToText(editor, shape.id, document.name, document.targets)
-            return
-          }
           if (applyHtmlSelectionToHighlight(editor, shape.id)) {
             processHighlightFeedback(editor, shape.id, document.name)
             return
