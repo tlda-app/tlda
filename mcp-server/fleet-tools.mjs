@@ -421,6 +421,7 @@ let _fleetTransportAgentId = null;
 let _fleetTransportFlushTimer = null;
 let _fleetTransportFlushInFlight = null;
 const _fleetTransportRecoveredAgents = new Set();
+const WS_REQUEST_IDLE_MS = 45_000;
 
 const ENV_SCOPED_TOOL_NAMES = new Set([
   'delegate', 'chat',
