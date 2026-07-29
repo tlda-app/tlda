@@ -280,6 +280,23 @@ function assertTailCount(harness, expected) {
 }
 
 {
+  const rows = [{ id: 'fleet:jsonl-owner', ...fullBinding() }]
+  let syncCount = 0
+  const reconciler = createJsonlProcessBindingReconciler({
+    listProcessBindings: () => rows,
+    sync: async () => { syncCount++ },
+    daemonKey: 'mini:default',
+    log: { info() {} },
+  })
+  await reconciler.reconcile('initial')
+  await reconciler.reconcile('unchanged')
+  assert.equal(syncCount, 1)
+  reconciler.invalidate()
+  await reconciler.reconcile('after-watcher-teardown')
+  assert.equal(syncCount, 2)
+}
+
+{
   const changes = []
   const { ledger, cleanup } = createLedger(event => changes.push(event))
   try {

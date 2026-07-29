@@ -51,7 +51,7 @@ export function createJsonlProcessBindingReconciler({
   daemonKey,
   log = console,
 } = {}) {
-  let appliedSignature = ''
+  let appliedSignature = null
   let generation = 0
 
   return {
@@ -65,6 +65,10 @@ export function createJsonlProcessBindingReconciler({
       await sync(bindingAgents)
       if (current === generation) appliedSignature = nextSignature
       return true
+    },
+    invalidate() {
+      generation++
+      appliedSignature = null
     },
     appliedSignature() {
       return appliedSignature

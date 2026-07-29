@@ -1177,6 +1177,7 @@ function teardownWatchers({ jsonl = true, reason = 'unspecified' } = {}) {
   log.info(`teardown watchers (${reason})${jsonl ? '' : ' [jsonl retained]'}`)
   if (jsonl) {
     jsonlIngestor.teardown()
+    jsonlBindingReconciler.invalidate()
     _lastSessionWatcherRosterSig = ''
   }
   // Source watchers survive WS disconnects — they detect file changes
