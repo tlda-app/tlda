@@ -117,6 +117,7 @@ import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
+import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
@@ -786,6 +787,7 @@ daemonMintCore = createDaemonMintCore({
 
 const wakeMint = createDaemonWakeCore({
   store: mintStore,
+  targetDaemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   processAlive: async facts => {
     const tmuxSession = facts.processState?.tmux_session
     if (!tmuxSession) return false
@@ -795,6 +797,17 @@ const wakeMint = createDaemonWakeCore({
     } catch {
       return false
     }
+  },
+  processDaemonKey: async facts => {
+    const tmuxSession = facts.processState?.tmux_session
+    if (!tmuxSession) return null
+    const runtime = await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })
+    return runtime.daemonKey || facts.processState?.daemon_key || null
+  },
+  replaceProcess: async facts => {
+    const tmuxSession = facts.processState?.tmux_session
+    if (!tmuxSession) return false
+    return terminateTmuxSession(tmuxSession, { tmuxSocket: TMUX_SOCKET })
   },
   resumeSession: async (facts, wakeParams = {}) => {
     const wakePermission = compileWakePermissionProfile({

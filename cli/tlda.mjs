@@ -4342,7 +4342,11 @@ async function moveAgentToEnvironment({
     envName: targetEnv,
     api: targetServer,
   })
-  const wake = await callLocalDaemonLifecycle('wake', { fleet_id: agent.id, ...wakeGrant }, { socketPath: targetSocket, timeoutMs: 120000 })
+  const wake = await callLocalDaemonLifecycle('wake', {
+    fleet_id: agent.id,
+    ...wakeGrant,
+    ...(alreadyOnTarget ? { takeover_existing: true } : {}),
+  }, { socketPath: targetSocket, timeoutMs: 120000 })
   if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
   log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(targetMachine, targetEnv)}.`)
   return { ok: true, agent, name, wake }

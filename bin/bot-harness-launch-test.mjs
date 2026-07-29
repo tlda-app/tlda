@@ -45,6 +45,7 @@ const result = await launchMintProcess({
 assert.equal(result.harness, 'bot')
 assert.equal(result.model, 'bot')
 assert.equal(result.tmux_session, 'fleet-sodd')
+assert.equal(result.daemon_key, 'mini:testing')
 assert.equal(captured.tmuxSession, 'fleet-sodd')
 assert.match(captured.cmd, /FLEET_ID=.*fleet:bot-test/)
 assert.match(captured.cmd, /FLEET_NAME=.*sodd/)

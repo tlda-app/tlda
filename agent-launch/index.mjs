@@ -386,6 +386,11 @@ export async function launchMintProcess(params) {
     session_id: requestedKind === 'bot' ? (resumeId || mintId) : (resumeId || freshSessionId),
     permission_grant: launchPolicy.permissionGrant,
     permission_set: launchPolicy.permissionSet,
+    machine_id: params.machineId || null,
+    env_name: params.activeEnvName || null,
+    daemon_key: params.machineId && params.activeEnvName
+      ? `${params.machineId}:${params.activeEnvName}`
+      : null,
     alive: true,
   }
 }
