@@ -5432,6 +5432,13 @@ async function handleFleetWsMessage(ws, msg) {
     await fleetStore.upsertAgent(child)
     await fleetStore.ensureDefaultSubscription?.(child.id)
     const stored = await fleetStore.getAgent?.(child.id) || child
+    void fleetStore.share?.({
+      type: 'lifecycle',
+      agent_id: child.id,
+      from: child.id,
+      to: parent.id,
+      text: `${stored.friendly_name || child.id} observed`,
+    })
     broadcastState(stored)
     reply({ ok: true, agent: stored })
     return
