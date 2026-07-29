@@ -1319,9 +1319,8 @@ function reconcileRoster(reason) {
 }
 
 function reconcileJsonlProcessBindings(reason) {
-  void jsonlBindingReconciler.reconcile(reason)
+  return jsonlBindingReconciler.reconcile(reason)
     .catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
-  return true
 }
 
 _onPermissionLedgerProcessBindingChange = () => {
@@ -1380,7 +1379,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     daemonDelivery.noteReady()
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.flushPending()
-    reconcileJsonlProcessBindings('daemon-welcome')
+    await reconcileJsonlProcessBindings('daemon-welcome')
     registerHostedAgentRoutes()
     jsonlIngestor.resumeAfterServerReady()
     jsonlIngestor.retryPendingNativeSubagents()
