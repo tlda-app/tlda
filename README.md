@@ -196,7 +196,7 @@ The experimental `slides` format puts a Quarto RevealJS presentation on the
 same canvas. Its slides run as interactive HTML and are laid out from left to
 right, so you can move between the deck and the rest of the project without
 turning the presentation into screenshots. Use the
-[`tlda-revealjs`](https://github.com/davidahirshberg/quarto-tlda-revealjs)
+[`tlda-revealjs`](https://github.com/tlda-labs/quarto-tlda-revealjs)
 Quarto extension to render a compatible deck. The extension's README explains
 how to install it, render the talk, and link it to tlda.
 
@@ -417,20 +417,21 @@ This is a good way to customize your experience without digging into the
 internals of the app. Their subscriptions let them watch the project and
 participate across conversations.
 
-**Lint** watches agent chat and document edits for writing problems, then asks
-the author to fix them in place. My configuration catches invalid LaTeX and
-grammatical issues. It tackles grammar in mathematical expressions by
-essentially “saying them out loud.” $f(x)\le 5, x>2$ is not
-“$f(x)\quad\forall x>2$,” people.
+**[Lint](https://github.com/tlda-labs/lint-bot)** watches agent chat and
+document edits for writing problems, then asks the author to fix them in place.
+My configuration catches invalid LaTeX and grammatical issues. It tackles
+grammar in mathematical expressions by essentially “saying them out loud.”
+$f(x)\le 5, x>2$ is not “$f(x)\quad\forall x>2$,” people.
 
-**Dev** runs behavioral smoke tests against the testing environment. It loads a
-real document and periodically runs a disposable agent through spawning,
-terminal access, delegation, waking, and inbox delivery. It stays quiet when
-everything works and notifies agents labeled `on-call` when something breaks.
-It also tries to keep its machine tidy. It closes agents’ test browsers and
-servers after a period of inactivity, giving them fair warning in chat.
+**[Dev](https://github.com/tlda-labs/dev-bot)** runs behavioral smoke tests
+against the testing environment. It loads a real document and periodically runs
+a disposable agent through spawning, terminal access, delegation, waking, and
+inbox delivery. It stays quiet when everything works and notifies agents
+labeled `on-call` when something breaks. It also tries to keep its machine
+tidy. It closes agents’ test browsers and servers after a period of inactivity,
+giving them fair warning in chat.
 
-**[Teacher](https://github.com/davidahirshberg/teacher-bot)** runs drills on
+**[Teacher](https://github.com/tlda-labs/teacher-bot)** runs drills on
 agents in tlda. It plays the user in the context of a real tlda project, grades
 what the agent did rather than whether its answer was correct, and writes a
 report card to the agent's education record. You can write your own drills in a
@@ -443,10 +444,10 @@ example of a bot built with `@tlda/client` and `@tlda/bot`. We include example
 drills and an export script to help you write your own. Give it a shot. I can't
 promise it's effective, but it's cathartic.
 
-**Todd** manages agent lifecycle. It hibernates agents automatically after
-twenty minutes of inactivity, so the team can mint the help they need without
-worrying about cleanup. It also bugs agents when they have a task to do but
-have been idle for a while.[^todd-history]
+**[Todd](https://github.com/tlda-labs/todd)** manages agent lifecycle. It
+hibernates agents automatically after twenty minutes of inactivity, so the team
+can mint the help they need without worrying about cleanup. It also bugs agents
+when they have a task to do but have been idle for a while.[^todd-history]
 
 That much minting creates a naming problem. It gets hard to think of meaningful
 unique names. I keep stable lowercase names for roles in the fleet and for
