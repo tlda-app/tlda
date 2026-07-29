@@ -56,7 +56,7 @@ export function FleetAgentDirectoryRow({
 }) {
   return (
     <div
-      className={`fleet-agents-row${row.dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}
+      className={`fleet-agents-row${row.agent?.parent_agent_id ? ' native-child' : ''}${row.dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}
       data-agent-id={row.id}
       data-agent-name={row.exactName}
     >

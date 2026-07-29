@@ -134,9 +134,7 @@ function compareAgentsForRoster(a, b) {
   const active = compareIsoMinute(a.last_active || '', b.last_active || '');
   if (active !== 0) return active;
   // Deterministic tiebreak so rows inside a minute bucket cannot swap places on
-  // a re-render or a re-insert. `id DESC` is the same tiebreak the keyset
-  // pagination cursor already uses (_getAliveAgentsPage), so the in-memory order
-  // and the SQL order agree instead of diverging on ties.
+  // a re-render or a re-insert.
   const aId = a.id || '', bId = b.id || '';
   if (aId !== bId) return aId < bId ? 1 : -1;
   return 0;
@@ -1363,14 +1361,6 @@ export class FleetStore {
     // Live-only roster (the agents panel never shows dead agents). Indexed by
     // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
     this._getAliveAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1 ORDER BY agents.last_seen DESC`);
-    this._getAliveAgentsPage = this.db.prepare(`
-      SELECT ${AGENT_SELECT} ${AGENT_JOIN}
-      WHERE agents.dead = 0
-        AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1
-        AND (agents.last_seen < @lastSeen OR (agents.last_seen = @lastSeen AND agents.id < @id))
-      ORDER BY agents.last_seen DESC, agents.id DESC
-      LIMIT @limit
-    `);
     // id→friendly_name only — for labeling chat history without hydrating all
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
@@ -2754,25 +2744,89 @@ export class FleetStore {
   }
 
   getAliveAgentsPage({ limit = 100, cursor = null } = {}) {
+    this._ensureAgentRegistryLoaded();
     const size = Math.max(1, Math.min(Number(limit) || 100, 200));
-    let boundary = { lastSeen: '9999-12-31T23:59:59.999Z', id: '\uffff' };
+    let afterGroupId = null;
     if (cursor) {
       try {
         const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-        if (typeof decoded.lastSeen !== 'string' || typeof decoded.id !== 'string') throw new Error('bad cursor');
-        boundary = decoded;
+        if (typeof decoded.afterGroupId !== 'string') throw new Error('bad cursor');
+        afterGroupId = decoded.afterGroupId;
       } catch {
         const error = new Error('invalid agents cursor');
         error.code = 'INVALID_CURSOR';
         throw error;
       }
     }
-    const rows = this._getAliveAgentsPage.all({ ...boundary, limit: size + 1 });
-    const hasMore = rows.length > size;
-    const page = rows.slice(0, size).map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
-    const tail = page[page.length - 1];
-    const nextCursor = hasMore && tail
-      ? Buffer.from(JSON.stringify({ lastSeen: tail.last_seen, id: tail.id })).toString('base64url')
+
+    const ordered = this._aliveAgentRosterView.list;
+    const byId = new Map(ordered.map(agent => [agent.id, agent]));
+    const childrenByParent = new Map();
+    for (const agent of ordered) {
+      if (!agent.parent_agent_id || !byId.has(agent.parent_agent_id)) continue;
+      const children = childrenByParent.get(agent.parent_agent_id) || [];
+      children.push(agent);
+      childrenByParent.set(agent.parent_agent_id, children);
+    }
+
+    const visited = new Set();
+    const groups = [];
+    const appendFamily = (agent, family) => {
+      if (!agent || visited.has(agent.id)) return;
+      visited.add(agent.id);
+      family.push(agent);
+      for (const child of childrenByParent.get(agent.id) || []) appendFamily(child, family);
+    };
+    for (const agent of ordered) {
+      if (agent.parent_agent_id && byId.has(agent.parent_agent_id)) continue;
+      const family = [];
+      appendFamily(agent, family);
+      groups.push(family);
+    }
+    // Corrupt parent cycles must remain visible instead of disappearing.
+    for (const agent of ordered) {
+      if (visited.has(agent.id)) continue;
+      const family = [];
+      appendFamily(agent, family);
+      groups.push(family);
+    }
+    const rosterIndex = new Map(ordered.map((agent, index) => [agent.id, index]));
+    groups.sort((a, b) => {
+      const aLatest = a.reduce((latest, agent) => {
+        const value = agent.last_active || '';
+        return value > latest ? value : latest;
+      }, '');
+      const bLatest = b.reduce((latest, agent) => {
+        const value = agent.last_active || '';
+        return value > latest ? value : latest;
+      }, '');
+      if (aLatest !== bLatest) return aLatest < bLatest ? 1 : -1;
+      return (rosterIndex.get(a[0]?.id) ?? Number.MAX_SAFE_INTEGER)
+        - (rosterIndex.get(b[0]?.id) ?? Number.MAX_SAFE_INTEGER);
+    });
+
+    let groupIndex = 0;
+    if (afterGroupId) {
+      const previousIndex = groups.findIndex(group => group[0]?.id === afterGroupId);
+      if (previousIndex < 0) {
+        const error = new Error('invalid agents cursor');
+        error.code = 'INVALID_CURSOR';
+        throw error;
+      }
+      groupIndex = previousIndex + 1;
+    }
+
+    const page = [];
+    let lastGroupId = null;
+    while (groupIndex < groups.length) {
+      const family = groups[groupIndex];
+      if (page.length > 0 && page.length + family.length > size) break;
+      page.push(...family);
+      lastGroupId = family[0]?.id || null;
+      groupIndex += 1;
+    }
+    const nextCursor = groupIndex < groups.length && lastGroupId
+      ? Buffer.from(JSON.stringify({ afterGroupId: lastGroupId })).toString('base64url')
       : null;
     return { agents: page, nextCursor };
   }

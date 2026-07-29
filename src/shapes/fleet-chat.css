@@ -1735,6 +1735,9 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   padding: 0 8px;
   cursor: pointer;
 }
+.fleet-agents-shape .fleet-agents-row.native-child .fleet-agents-row-main {
+  padding-left: 20px;
+}
 .fleet-agents-shape .fleet-agents-row-detail {
   padding: 3px 10px 7px 18px;
   font-size: 10px;

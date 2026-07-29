@@ -671,7 +671,43 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       if (a._band !== b._band) return dir * (a._ts - b._ts)
       return dir * (a._bandEnteredAt - b._bandEnteredAt)
     })
-    return list
+    const byId = new Map(list.map(agent => [agent.id, agent]))
+    const childrenByParent = new Map<string, any[]>()
+    for (const agent of list) {
+      if (!agent.parent_agent_id || !byId.has(agent.parent_agent_id)) continue
+      const children = childrenByParent.get(agent.parent_agent_id) || []
+      children.push(agent)
+      childrenByParent.set(agent.parent_agent_id, children)
+    }
+    const visited = new Set<string>()
+    const families: any[][] = []
+    const appendFamily = (agent: any, family: any[]) => {
+      if (!agent || visited.has(agent.id)) return
+      visited.add(agent.id)
+      family.push(agent)
+      for (const child of childrenByParent.get(agent.id) || []) appendFamily(child, family)
+    }
+    for (const agent of list) {
+      if (agent.parent_agent_id && byId.has(agent.parent_agent_id)) continue
+      const family: any[] = []
+      appendFamily(agent, family)
+      families.push(family)
+    }
+    // Keep malformed/cyclic lineage visible instead of dropping rows.
+    for (const agent of list) {
+      if (visited.has(agent.id)) continue
+      const family: any[] = []
+      appendFamily(agent, family)
+      families.push(family)
+    }
+    if (sortKey === 'active') {
+      families.sort((a, b) => {
+        const aLatest = Math.max(...a.map(agent => agent._ts))
+        const bLatest = Math.max(...b.map(agent => agent._ts))
+        return dir * (aLatest - bLatest)
+      })
+    }
+    return families.flat()
   }, [agents, sortKey, sortAsc])
 
   // Playback has its own fixed roster; live panels use server-provided totals
