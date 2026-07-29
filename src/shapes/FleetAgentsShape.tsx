@@ -36,6 +36,7 @@ import {
   formatFleetAgentModel,
   formatFleetAgentRelativeTime,
   getFleetAgentNickColor,
+  projectFleetAgentDirectoryFolding,
   toFleetAgentDirectoryRow,
 } from './FleetAgentDirectoryRow'
 
@@ -719,16 +720,22 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const hibernatingCount = frameId?.startsWith('shape:') ? playbackCounts.hibernating : agentTotals.hibernating
   const awakeCount = frameId?.startsWith('shape:') ? playbackCounts.awake : agentTotals.awake
 
+  const [childFoldOverrides, setChildFoldOverrides] = useState<Record<string, boolean>>({})
+  const childFolding = useMemo(
+    () => projectFleetAgentDirectoryFolding(sortedAgents, childFoldOverrides),
+    [sortedAgents, childFoldOverrides],
+  )
+
   // Fetch last messages for visible agents
-  const lastMessages = useLastMessages(sortedAgents)
+  const lastMessages = useLastMessages(childFolding.visibleAgents)
 
   const contextPercent = useFleetContext(null, frameId)
   const rowItems = useMemo<AgentListItem[]>(
     () => [
       ...optimisticAgents.map((opt) => ({ type: 'optimistic' as const, opt })),
-      ...sortedAgents.map((agent) => ({ type: 'agent' as const, agent })),
+      ...childFolding.visibleAgents.map((agent) => ({ type: 'agent' as const, agent })),
     ],
-    [optimisticAgents, sortedAgents],
+    [optimisticAgents, childFolding.visibleAgents],
   )
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
@@ -774,7 +781,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           onPointerDown={(e) => stopEventPropagation(e)}
         >
           <span className="fleet-agents-unread-dot" />
-          <span style={{ width: 18, flexShrink: 0 }} />
+          <span style={{ width: 30, flexShrink: 0 }} />
           <span className="fleet-agents-col-name fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'name') setSortAsc(p => !p); else { setSortKey('name'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
@@ -837,6 +844,14 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       contextPct={contextPercent.get(item.agent.id)}
                       expanded={expandedId === item.agent.id}
                       lastMessage={lastMessages[agentExactName(item.agent)] || ''}
+                      childCount={childFolding.childCounts.get(item.agent.id) || 0}
+                      childrenFolded={childFolding.foldedParentIds.has(item.agent.id)}
+                      onToggleChildren={() => {
+                        setChildFoldOverrides(current => ({
+                          ...current,
+                          [item.agent.id]: !childFolding.foldedParentIds.has(item.agent.id),
+                        }))
+                      }}
                       onToggleExpand={toggleAgent}
                       onHibernate={() => hibernateSession(item.agent.id)}
                       onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color, toggleAgent) }}

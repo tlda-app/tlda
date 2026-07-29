@@ -17,6 +17,7 @@ export {
   fleetAgentVisibleName,
   getFleetAgentDirectoryRows,
   getFleetAgentNickColor,
+  projectFleetAgentDirectoryFolding,
   sortFleetAgentDirectoryRows,
   sortFleetAgentDirectoryRowsByRecency,
   toFleetAgentDirectoryRow,
@@ -35,6 +36,9 @@ export function FleetAgentDirectoryRow({
   expanded = false,
   lastMessage = '',
   onToggleExpand,
+  childCount = 0,
+  childrenFolded = false,
+  onToggleChildren,
   onHibernate,
   onAgentPointerDown,
   onAgentPointerUp,
@@ -49,6 +53,9 @@ export function FleetAgentDirectoryRow({
   expanded?: boolean
   lastMessage?: string
   onToggleExpand?: (e: React.PointerEvent) => void
+  childCount?: number
+  childrenFolded?: boolean
+  onToggleChildren?: (e: React.PointerEvent) => void
   onHibernate?: (e: React.PointerEvent) => void
   onAgentPointerDown?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onAgentPointerUp?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
@@ -70,16 +77,31 @@ export function FleetAgentDirectoryRow({
         }}
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
-        <span
-          className="fleet-agents-kill-btn"
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => {
-            e.stopPropagation()
-            onHibernate?.(e)
-          }}
-          title="Hibernate agent"
-        >
-          ×
+        <span className="fleet-agents-row-controls">
+          {childCount > 0 && (
+            <span
+              className="fleet-agents-fold-btn"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => {
+                e.stopPropagation()
+                onToggleChildren?.(e)
+              }}
+              title={`${childrenFolded ? 'Show' : 'Hide'} ${childCount} native ${childCount === 1 ? 'child' : 'children'}`}
+            >
+              {childrenFolded ? '▸' : '▾'}
+            </span>
+          )}
+          <span
+            className="fleet-agents-kill-btn"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => {
+              e.stopPropagation()
+              onHibernate?.(e)
+            }}
+            title="Hibernate agent"
+          >
+            ×
+          </span>
         </span>
         <FleetAgentDirectoryNameColumn
           row={row}

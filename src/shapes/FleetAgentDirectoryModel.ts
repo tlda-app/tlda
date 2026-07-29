@@ -225,3 +225,62 @@ export function sortFleetAgentDirectoryRowsByRecency(rows: FleetAgentDirectoryRo
     b.lastActiveAt - a.lastActiveAt || a.displayName.localeCompare(b.displayName)
   )
 }
+
+export type FleetAgentDirectoryFolding = {
+  visibleAgents: any[]
+  childCounts: Map<string, number>
+  foldedParentIds: Set<string>
+}
+
+export function projectFleetAgentDirectoryFolding(
+  agents: any[],
+  overrides: Record<string, boolean> = {},
+): FleetAgentDirectoryFolding {
+  const byId = new Map(agents.map(agent => [agent.id, agent]))
+  const childrenByParent = new Map<string, any[]>()
+  for (const agent of agents) {
+    if (!agent?.parent_agent_id || !byId.has(agent.parent_agent_id)) continue
+    const children = childrenByParent.get(agent.parent_agent_id) || []
+    children.push(agent)
+    childrenByParent.set(agent.parent_agent_id, children)
+  }
+
+  const descendants = (parentId: string): any[] => {
+    const out: any[] = []
+    const seen = new Set<string>([parentId])
+    const visit = (id: string) => {
+      for (const child of childrenByParent.get(id) || []) {
+        if (seen.has(child.id)) continue
+        seen.add(child.id)
+        out.push(child)
+        visit(child.id)
+      }
+    }
+    visit(parentId)
+    return out
+  }
+
+  const childCounts = new Map<string, number>()
+  const foldedParentIds = new Set<string>()
+  for (const parentId of childrenByParent.keys()) {
+    const familyChildren = descendants(parentId)
+    childCounts.set(parentId, familyChildren.length)
+    const folded = Object.prototype.hasOwnProperty.call(overrides, parentId)
+      ? overrides[parentId]
+      : familyChildren.every(child => fleetAgentCategory(child) === 'hibernating')
+    if (folded) foldedParentIds.add(parentId)
+  }
+
+  const visibleAgents = agents.filter(agent => {
+    let parentId = agent?.parent_agent_id
+    const seen = new Set<string>()
+    while (parentId && byId.has(parentId) && !seen.has(parentId)) {
+      if (foldedParentIds.has(parentId)) return false
+      seen.add(parentId)
+      parentId = byId.get(parentId)?.parent_agent_id
+    }
+    return true
+  })
+
+  return { visibleAgents, childCounts, foldedParentIds }
+}

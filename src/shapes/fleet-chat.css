@@ -2026,6 +2026,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 /* --- Kill/respawn button (left of agent name, on hover) --- */
 
 .fleet-agents-shape .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-kill-btn {
   opacity: 0;
   transition: opacity 0.2s;
@@ -2039,9 +2040,23 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   padding: 0;
   color: rgba(128, 128, 128, 0.7);
 }
+.fleet-agents-shape .fleet-agents-row-controls {
+  display: flex;
+  width: 30px;
+  flex-shrink: 0;
+  align-items: center;
+}
+.fleet-agents-shape .fleet-agents-fold-btn {
+  width: 12px;
+  font-size: 10px;
+}
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row:hover .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
   opacity: 0.5;
+}
+.fleet-agents-shape .fleet-agents-fold-btn:hover {
+  opacity: 1 !important;
 }
 .fleet-agents-shape .fleet-agents-kill-btn:hover {
   opacity: 1 !important;
@@ -2051,6 +2066,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   opacity: 1 !important;
 }
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
+.fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-kill-btn {
   opacity: 0;
 }

@@ -4,6 +4,7 @@ import {
   fleetAgentCategory,
   fleetAgentVisibleName,
   formatFleetAgentActivityHealthForAgent,
+  projectFleetAgentDirectoryFolding,
   toFleetAgentDirectoryRow,
 } from '../src/shapes/FleetAgentDirectoryModel.ts'
 import {
@@ -101,5 +102,44 @@ assert.equal(fleetAgentVisibleName({
   id: 'fleet:parent',
   friendly_name: 'chief13',
 }), 'chief13')
+
+const parent = {
+  id: 'fleet:parent',
+  friendly_name: 'chief13',
+  runtime_status: { kind: 'ai', status: 'awake', route_state: 'routable' },
+}
+const awakeChild = {
+  id: 'fleet:awake-child',
+  parent_agent_id: parent.id,
+  friendly_name: 'chief13:Plan',
+  runtime_status: { kind: 'ai', status: 'awake', route_state: 'routable' },
+}
+const sleepingChild = {
+  id: 'fleet:sleeping-child',
+  parent_agent_id: parent.id,
+  friendly_name: 'chief13:Nash',
+  runtime_status: { kind: 'ai', status: 'hibernating', route_state: 'no-current-durable-seat' },
+}
+
+const activeFamily = projectFleetAgentDirectoryFolding([parent, awakeChild, sleepingChild])
+assert.deepEqual(activeFamily.visibleAgents.map(agent => agent.id), [parent.id, awakeChild.id, sleepingChild.id])
+assert.equal(activeFamily.foldedParentIds.has(parent.id), false)
+assert.equal(activeFamily.childCounts.get(parent.id), 2)
+
+const sleepingFamily = projectFleetAgentDirectoryFolding([parent, sleepingChild])
+assert.deepEqual(sleepingFamily.visibleAgents.map(agent => agent.id), [parent.id])
+assert.equal(sleepingFamily.foldedParentIds.has(parent.id), true)
+
+const manuallyOpened = projectFleetAgentDirectoryFolding([parent, sleepingChild], { [parent.id]: false })
+assert.deepEqual(manuallyOpened.visibleAgents.map(agent => agent.id), [parent.id, sleepingChild.id])
+
+const manuallyFolded = projectFleetAgentDirectoryFolding([parent, awakeChild], { [parent.id]: true })
+assert.deepEqual(manuallyFolded.visibleAgents.map(agent => agent.id), [parent.id])
+
+const cyclicParent = { ...parent, id: 'fleet:cyclic-parent', parent_agent_id: 'fleet:cyclic-child' }
+const cyclicChild = { ...sleepingChild, id: 'fleet:cyclic-child', parent_agent_id: cyclicParent.id }
+const cyclicFamily = projectFleetAgentDirectoryFolding([cyclicParent, cyclicChild])
+assert.equal(cyclicFamily.childCounts.get(cyclicParent.id), 1)
+assert.equal(cyclicFamily.childCounts.get(cyclicChild.id), 1)
 
 console.log('fleet-agent-directory-model-test: ok')
