@@ -939,6 +939,14 @@ export function createJsonlIngestor({
         })
         continue
       }
+      if (!nativeSubagent && !agent && requestedPaths) {
+        let recentlyCreated = false
+        try { recentlyCreated = nowMs() - fs.statSync(resolvedPath).birthtimeMs < 5000 } catch { /* path may vanish */ }
+        if (recentlyCreated) {
+          const retry = setTimeout(() => scheduleJsonlPathSync(resolvedPath), 250)
+          retry.unref?.()
+        }
+      }
       if (nativeSubagent?.pendingParent) {
         pendingNativeSubagentPaths.add(resolvedPath)
         continue
