@@ -53,7 +53,7 @@ Managed bots are configured in `~/.config/tlda/bots.yaml`:
 ```yaml
 bots:
   todd:
-    script: bin/bots/todd.mjs
+    script: /Users/you/work/tlda-bots/todd/todd.mjs
   teacher:
     script: /absolute/path/to/teacher-bot.mjs
     machine_id: mini

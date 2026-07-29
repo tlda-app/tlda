@@ -97,7 +97,7 @@ export function createHarnessRuntime({
     },
     bot: {
       kind: 'bot',
-      processRe: /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?(?:[/\\]bots[/\\].*\.mjs|[/\\][^/\\\s]*(?:-|_)bot\.mjs\b)/,
+      processRe: /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?\.mjs\b/,
       activity: {
         kind: 'bot',
         usesClaudeSessionIds: false,

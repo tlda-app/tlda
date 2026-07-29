@@ -13,7 +13,7 @@ const result = await launchMintProcess({
   kind: 'bot',
   cwd: process.cwd(),
   botName: 'todd',
-  botScript: 'bin/bots/todd.mjs',
+  botScript: '/opt/tlda-bots/todd/todd.mjs',
   botIdFile: '/tmp/tlda-bot-test/todd.fleet-id',
   botPidFile: '/tmp/tlda-bot-test/todd.pid',
   botHeartbeatFile: '/tmp/tlda-bot-test/todd.heartbeat',
@@ -66,8 +66,8 @@ const runtime = createHarnessRuntime({
       callback(null, {
         stdout: [
           '  PID  PPID ARGS',
-          ' 100     1 zsh -lc node /Users/skip/work/tlda/bin/bots/todd.mjs',
-          ' 101   100 /opt/homebrew/bin/node /Users/skip/work/tlda/bin/bots/todd.mjs',
+          ' 100     1 zsh -lc node /opt/tlda-bots/todd/todd.mjs',
+          ' 101   100 /opt/homebrew/bin/node /opt/tlda-bots/todd/todd.mjs',
         ].join('\n'),
       })
       return

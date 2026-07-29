@@ -96,12 +96,11 @@ COPY bin/deepgram-runtime/ ./bin/deepgram-runtime/
 
 # Agent/fleet runtime modules. These are real top-level modules on this branch:
 # unified-server imports agent-launch + agent-runtime, and fleet-daemon imports
-# daemon + bots. Copy the module boundaries directly rather than recreating the
+# daemon. Copy the module boundaries directly rather than recreating the
 # old bin/lib layout.
 COPY agent-launch/ ./agent-launch/
 COPY agent-runtime/ ./agent-runtime/
 COPY daemon/ ./daemon/
-COPY bots/ ./bots/
 COPY migrations/ ./migrations/
 COPY cli/lib/ ./cli/lib/
 

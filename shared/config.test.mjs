@@ -164,8 +164,8 @@ writeFileSync(join(DIR, 'tokens.json'), JSON.stringify({ tokenRw: 'RW123' }))
 check('valid tokens.json => token returned', cfg.getRwToken() === 'RW123')
 
 writeFileSync(join(DIR, 'bots.yaml'), `bots:
-  todd: { script: bin/bots/todd.mjs }
-  grammar: { script: bin/bots/grammar-bot.mjs }
+  todd: { script: /opt/tlda-bots/todd/todd.mjs }
+  grammar: { script: /opt/tlda-bots/grammar/grammar-bot.mjs }
 environments:
   complete: [todd]
   unlicensed: [todd, grammar]
@@ -173,7 +173,7 @@ environments:
 const todd = cfg.getManagedBots().find(b => b.name === 'todd')
 const botEnvironments = cfg.getManagedBotEnvironments()
 check('bots.yaml definitions become named bot objects',
-      todd.script === 'bin/bots/todd.mjs')
+      todd.script === '/opt/tlda-bots/todd/todd.mjs')
 check('bots.yaml environments list bot names by environment',
       botEnvironments.unlicensed.join(',') === 'todd,grammar')
 check('bot environment names route to fleet/database, never the store axis',
