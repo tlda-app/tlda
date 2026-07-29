@@ -69,7 +69,6 @@ function nativeSubagentDescriptorFromRecord(first, jsonlPath) {
       harnessChildId,
       parentSessionId,
       childName: payload.agent_nickname || source.agent_nickname || null,
-      agentPath: payload.agent_path || source.agent_path || null,
     }
   }
   if (first.isSidechain === true && first.agentId) {
@@ -80,7 +79,6 @@ function nativeSubagentDescriptorFromRecord(first, jsonlPath) {
       harnessChildId: first.agentId,
       parentSessionId,
       childName: null,
-      agentPath: null,
     }
   }
   return null
@@ -858,7 +856,6 @@ export function createJsonlIngestor({
     const result = await sendMsgWithReply({
       type: 'subagent-observed',
       operation_id: operationId,
-      binding_key: operationId,
       parent_agent_id: parentAgentId,
       child_name: descriptor.childName || descriptor.harnessChildId.slice(0, 8),
     })
@@ -867,12 +864,6 @@ export function createJsonlIngestor({
     entry.nativeSubagent = {
       agent_id: child.id,
       parent_agent_id: parentAgentId,
-      harness_kind: descriptor.harnessKind,
-      harness_child_id: descriptor.harnessChildId,
-      parent_session_id: descriptor.parentSessionId,
-      child_name: descriptor.childName,
-      agent_path: descriptor.agentPath,
-      transcript_path: jsonlPath,
     }
     entry.owner = {
       state: 'mine',

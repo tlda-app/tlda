@@ -230,7 +230,6 @@ function assertTailCount(harness, expected) {
         parent_thread_id: parentThreadId,
         thread_source: 'subagent',
         agent_nickname: 'worker',
-        agent_path: 'root/worker',
       },
     })}\n{}\n`)
     harness.setRows([])
@@ -240,25 +239,11 @@ function assertTailCount(harness, expected) {
     assert.equal(observed[0].parent_agent_id, 'fleet:jsonl-owner')
     assert.equal(observed[0].child_name, 'worker')
     assert.match(observed[0].operation_id, /^subagent-observed:[a-f0-9]{64}$/)
-    assert.equal(observed[0].binding_key, observed[0].operation_id)
     const watch = harness.sentToChild.find(message => message.type === 'watch')
     assert.equal(watch.agentId, 'fleet:native-child')
 
     await harness.sync('native-subagent-rediscovery')
     assert.equal(observed.length, 1)
-    harness.ingestor.saveCursors()
-    const cursors = JSON.parse(readFileSync(join(harness.dir, 'config', 'cursors.json'), 'utf8'))
-    const binding = cursors[`rollout-2026-07-28T15-00-00-${childThreadId}`].nativeSubagent
-    assert.deepEqual(binding, {
-      agent_id: 'fleet:native-child',
-      parent_agent_id: 'fleet:jsonl-owner',
-      harness_kind: 'codex',
-      harness_child_id: childThreadId,
-      parent_session_id: parentThreadId,
-      child_name: 'worker',
-      agent_path: 'root/worker',
-      transcript_path: harness.jsonlPath,
-    })
   } finally {
     harness.cleanup()
   }

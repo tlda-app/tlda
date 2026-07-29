@@ -118,7 +118,6 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'pushExisting',
   'queryChatHistory',
   'recentDocAgents',
-  'registerNativeSubagent',
   'recordRuntimeState',
   'recordTransportOperationResult',
   'refreshAgentLiveness',
