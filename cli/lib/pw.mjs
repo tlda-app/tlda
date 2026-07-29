@@ -221,13 +221,26 @@ function myMarker() {
 function sessionLeaseId(session = SESSION) { return `playwright-session:${session}` }
 function tabLeaseId(session = SESSION, key = myTabKey()) { return `playwright-tab:${session}:${key}` }
 function leaseOwner() { return { id: who(), type: process.env.FLEET_ID ? 'agent' : 'human' } }
+
+function warnLeaseFailure(action, error) {
+  console.error(`pw: WARN resource lease ${action} failed: ${error?.message || error}`)
+}
+
 function renewSessionLease() {
   const procs = listSessionProcesses(SESSION)
   const browser = procs.find(p => p.kind === 'browser')
-  acquireLease({ kind: 'playwright-session', resource_id: sessionLeaseId(), owner: { id: 'tlda-dev', type: 'system' }, metadata: { cwd: AGENT_CWD, session: SESSION, pid: browser?.pid || null, process_pids: procs.map(p => p.pid) }, policy: { ttl_ms: 20 * 60_000, idle_policy: 'expire-after-all-tabs-parked' } })
+  try {
+    acquireLease({ kind: 'playwright-session', resource_id: sessionLeaseId(), owner: { id: 'tlda-dev', type: 'system' }, metadata: { cwd: AGENT_CWD, session: SESSION, pid: browser?.pid || null, process_pids: procs.map(p => p.pid) }, policy: { ttl_ms: 20 * 60_000, idle_policy: 'expire-after-all-tabs-parked' } })
+  } catch (error) {
+    warnLeaseFailure('renew session', error)
+  }
 }
 function renewTabLease(tab = null) {
-  acquireLease({ kind: 'playwright-tab', resource_id: tabLeaseId(), owner: leaseOwner(), metadata: { cwd: AGENT_CWD, worktree: AGENT_CWD, session: SESSION, tab }, policy: { ttl_ms: 15 * 60_000, idle_policy: 'warn-then-park' } })
+  try {
+    acquireLease({ kind: 'playwright-tab', resource_id: tabLeaseId(), owner: leaseOwner(), metadata: { cwd: AGENT_CWD, worktree: AGENT_CWD, session: SESSION, tab }, policy: { ttl_ms: 15 * 60_000, idle_policy: 'warn-then-park' } })
+  } catch (error) {
+    warnLeaseFailure('renew tab', error)
+  }
 }
 
 // Per-agent last-touch files so eliza's idle reaper can tell how long an agent's
@@ -1054,7 +1067,7 @@ export async function cmdPw(args, repoRoot) {
     if (!sessionOpen()) console.log('browser already down')
     else { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
     const killed = reapSessionProcesses(SESSION)
-    releaseLeases(lease => lease.metadata?.session === SESSION)
+    try { releaseLeases(lease => lease.metadata?.session === SESSION) } catch (error) { warnLeaseFailure('release session leases', error) }
     if (killed.length) console.log(`killed ${killed.length} playwright ${SESSION} process(es)`)
     // Reaping frees the lock regardless of holder.
     spawnSync('bash', [lockScript(repoRoot), 'steal', `reaper:${me}`], { encoding: 'utf8', env: lockEnv(repoRoot) })
