@@ -21,6 +21,7 @@ import type {
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
+import { recordSpatialTraversalToShape } from '../spatialDocumentWorld'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -250,6 +251,8 @@ export function AnnotationViewer({
       return
     }
     const cam = mainEditor.getCamera()
+    const targetShapeId = data.shapeIds?.[0] as TLShapeId | undefined
+    if (targetShapeId) recordSpatialTraversalToShape(mainEditor, targetShapeId)
     prevViewStackRef.current = [
       ...prevViewStackRef.current,
       {
@@ -316,18 +319,7 @@ export function AnnotationViewer({
   }, [enterView, syncNavDepth])
 
   const closeViewer = useCallback(() => {
-    const currentPageTemporaryMarkdownShapes = mainEditor.getCurrentPageShapes()
-      .filter((shape: any) => shape.meta?.temporaryMarkdownColumn)
-      .map((shape) => shape.id) as TLShapeId[]
-    const temporaryMarkdownShapes = (data?.shapeIds || [])
-      .filter((shapeId) => {
-        const shape = mainEditor.getShape(shapeId as TLShapeId)
-        return !!shape?.meta?.temporaryMarkdownColumn
-      }) as TLShapeId[]
-    const removeIds = Array.from(new Set([...currentPageTemporaryMarkdownShapes, ...temporaryMarkdownShapes]))
-    if (removeIds.length > 0) {
-      mainEditor.store.remove(removeIds)
-    } else if (data?.managedCleanup && typeof data.managedCleanup === 'object' && 'onClose' in data.managedCleanup) {
+    if (data?.managedCleanup && typeof data.managedCleanup === 'object' && 'onClose' in data.managedCleanup) {
       const cleanup = data.managedCleanup as { onClose?: string }
       if (cleanup.onClose === 'remove-surface') {
         const removable = (data.shapeIds || [])

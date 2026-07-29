@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { createShapeId } from 'tldraw'
-import type { Editor, TLShape } from 'tldraw'
+import { createShapeId, type Editor, type TLShape } from 'tldraw'
 import { onReloadSignal, onSourceChangedSignal, onProjectPartsChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
@@ -15,8 +14,6 @@ import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
-
-const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
 
 type ProjectPartMarkdownShape = TLShape & {
   props: TLShape['props'] & { url?: string }
@@ -140,24 +137,25 @@ export function useYjsSignals({
     return onProjectPartsChangedSignal((signal) => {
       const editor = editorRef.current
       if (!editor || !Array.isArray(signal.files) || signal.files.length === 0) return
-      const shape = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
-      if (!isProjectPartMarkdownShape(shape)) return
-      if (shape.meta.materializedDoc !== document.name) return
-      const materializedFile = shape.meta.materializedFile
-      if (typeof materializedFile !== 'string' || !signal.files.includes(materializedFile)) return
-      const currentUrl = shape.props?.url
-      if (typeof currentUrl !== 'string' || !currentUrl) return
-      const nextUrl = withCacheBust(currentUrl, signal.timestamp || Date.now())
-      if (nextUrl === currentUrl) return
-      const wasLocked = !!shape.isLocked
-      if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false } as unknown as Parameters<Editor['updateShape']>[0])
-      editor.updateShape({
-        id: shape.id,
-        type: shape.type,
-        props: { ...shape.props, url: nextUrl },
-        meta: { ...shape.meta, updatedAt: Date.now() },
-      } as unknown as Parameters<Editor['updateShape']>[0])
-      if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: true } as unknown as Parameters<Editor['updateShape']>[0])
+      const shapes = editor.getCurrentPageShapes().filter(isProjectPartMarkdownShape)
+      for (const shape of shapes) {
+        if (shape.meta.materializedDoc !== document.name) continue
+        const materializedFile = shape.meta.materializedFile
+        if (typeof materializedFile !== 'string' || !signal.files.includes(materializedFile)) continue
+        const currentUrl = shape.props?.url
+        if (typeof currentUrl !== 'string' || !currentUrl) continue
+        const nextUrl = withCacheBust(currentUrl, signal.timestamp || Date.now())
+        if (nextUrl === currentUrl) continue
+        const wasLocked = !!shape.isLocked
+        if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false } as unknown as Parameters<Editor['updateShape']>[0])
+        editor.updateShape({
+          id: shape.id,
+          type: shape.type,
+          props: { ...shape.props, url: nextUrl },
+          meta: { ...shape.meta, updatedAt: Date.now() },
+        } as unknown as Parameters<Editor['updateShape']>[0])
+        if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: true } as unknown as Parameters<Editor['updateShape']>[0])
+      }
     })
   }, [document.name])
 

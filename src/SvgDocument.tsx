@@ -74,6 +74,7 @@ import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
+import { SpatialWorldMap } from './overlays/SpatialWorldMap'
 import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -745,8 +746,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const components = useMemo<TLComponents>(
     () => {
       const chrome = isPresentation
-        ? <><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
-        : <><RibbonLane /><ProvenancePanel projectName={projectName} /><ProvenanceInline projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
+        ? <><SpatialWorldMap projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
+        : <><SpatialWorldMap projectName={projectName} /><RibbonLane /><ProvenancePanel projectName={projectName} /><ProvenanceInline projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /></>
       return {
         PageMenu: null,
         SharePanel: null,

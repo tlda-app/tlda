@@ -1,0 +1,36 @@
+.spatial-world-map {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.spatial-world-roads {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.spatial-world-roads line {
+  stroke: color-mix(in srgb, var(--color-text-1, #1f2937) 55%, transparent);
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.spatial-world-label {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 8px));
+  max-width: 240px;
+  overflow: hidden;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-panel, white) 88%, transparent);
+  box-shadow: 0 1px 5px rgb(15 23 42 / 16%);
+  color: var(--color-text-1, #1f2937);
+  font: 600 13px/1.25 system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

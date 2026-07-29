@@ -36,6 +36,13 @@ import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filt
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
 import { finishFleetPillTranslation } from './fleet-pill-lifecycle'
 import { markFleetPillActive, markFleetPillInactive } from './fleet-pill-transient'
+import {
+  findSpatialSourceShape,
+  placeSpatialDocument,
+  recordSpatialTraversal,
+  spatialDocumentIdentity,
+  spatialDocumentShapeId,
+} from '../spatialDocumentWorld'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -43,7 +50,6 @@ const CHAT_W = 400
 const CHAT_H = 600
 const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
 const TEMP_MARKDOWN_FILE = 'content.md'
-const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
 const TEMP_MARKDOWN_W = 800
 const TEMP_MARKDOWN_H = 1200
 
@@ -207,18 +213,19 @@ export async function createTemporaryMarkdownColumn(
   } else {
     url = await createTemporaryMarkdownPageUrl(title, source)
   }
-  const staleTemporaryMarkdown = editor.getCurrentPageShapes()
-    .filter((shape: any) => shape.meta?.temporaryMarkdownColumn && shape.id !== TEMP_MARKDOWN_SHAPE_ID)
-    .map(shape => shape.id)
-  if (staleTemporaryMarkdown.length > 0) editor.store.remove(staleTemporaryMarkdown)
-  const parkedPoint = pagePoint
-  const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
+  const identity = spatialDocumentIdentity(title, url, meta)
+  const shapeId = spatialDocumentShapeId(identity)
+  const existing = editor.getShape(shapeId)
+  const sourceShape = findSpatialSourceShape(editor, shapeId)
+  const parkedPoint = existing
+    ? { x: existing.x, y: existing.y }
+    : placeSpatialDocument(editor, identity, sourceShape, { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H }, pagePoint)
   if (existing) {
     if (existing.isLocked) {
-      editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: existing.type, isLocked: false })
+      editor.updateShape({ id: shapeId, type: existing.type, isLocked: false })
     }
     editor.updateShape({
-      id: TEMP_MARKDOWN_SHAPE_ID,
+      id: shapeId,
       type: 'html-page',
       x: parkedPoint.x,
       y: parkedPoint.y,
@@ -227,6 +234,9 @@ export async function createTemporaryMarkdownColumn(
       meta: {
         ...existing.meta,
         temporaryMarkdownColumn: true,
+        spatialWorldDocument: true,
+        spatialWorldIdentity: identity,
+        spatialWorldTitle: title,
         title,
         updatedAt: Date.now(),
         ...meta,
@@ -234,7 +244,7 @@ export async function createTemporaryMarkdownColumn(
     } as unknown as Parameters<Editor['updateShape']>[0])
   } else {
     editor.createShape({
-      id: TEMP_MARKDOWN_SHAPE_ID,
+      id: shapeId,
       type: 'html-page',
       x: parkedPoint.x,
       y: parkedPoint.y,
@@ -242,14 +252,18 @@ export async function createTemporaryMarkdownColumn(
       props: { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H, url },
       meta: {
         temporaryMarkdownColumn: true,
+        spatialWorldDocument: true,
+        spatialWorldIdentity: identity,
+        spatialWorldTitle: title,
         title,
         createdAt: Date.now(),
         ...meta,
       },
     } as unknown as Parameters<Editor['createShape']>[0])
   }
-  lockPageShapeAndSendPagesToBack(editor, TEMP_MARKDOWN_SHAPE_ID)
-  const bounds = getShapeClipBounds(editor, TEMP_MARKDOWN_SHAPE_ID) || {
+  lockPageShapeAndSendPagesToBack(editor, shapeId)
+  recordSpatialTraversal(editor, sourceShape?.id || null, shapeId)
+  const bounds = getShapeClipBounds(editor, shapeId) || {
     x: parkedPoint.x,
     y: parkedPoint.y,
     w: TEMP_MARKDOWN_W,
@@ -260,7 +274,7 @@ export async function createTemporaryMarkdownColumn(
   const deviceId = getDeviceId()
   if (!userId || !deviceId) return
   const surface = createTemporaryMarkdownSurfaceRequest({
-    shapeId: TEMP_MARKDOWN_SHAPE_ID,
+    shapeId,
     bounds,
     title,
     url,
@@ -269,21 +283,21 @@ export async function createTemporaryMarkdownColumn(
     sharedDocPath: typeof meta.sharedDocPath === 'string' ? meta.sharedDocPath : undefined,
     authorId: typeof meta.authorId === 'string' ? meta.authorId : undefined,
   })
-  const surfaceShape = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
+  const surfaceShape = editor.getShape(shapeId)
   if (surfaceShape) {
-    if (surfaceShape.isLocked) editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: surfaceShape.type, isLocked: false })
+    if (surfaceShape.isLocked) editor.updateShape({ id: shapeId, type: surfaceShape.type, isLocked: false })
     editor.updateShape({
-      id: TEMP_MARKDOWN_SHAPE_ID,
+      id: shapeId,
       type: surfaceShape.type,
       meta: {
         ...surfaceShape.meta,
         ...temporaryMarkdownShapeMeta(surface),
       },
     } as unknown as Parameters<Editor['updateShape']>[0])
-    editor.updateShape({ id: TEMP_MARKDOWN_SHAPE_ID, type: surfaceShape.type, isLocked: true })
+    editor.updateShape({ id: shapeId, type: surfaceShape.type, isLocked: true })
   }
   return {
-    shapeId: TEMP_MARKDOWN_SHAPE_ID,
+    shapeId,
     bounds,
     url,
     surface,
