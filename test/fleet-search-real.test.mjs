@@ -303,8 +303,49 @@ test('search stats report corpus scale and index version', () => withStore(store
     chat: 1,
   });
   assert.equal(stats.sessionEntries.total, 1);
-  assert.equal(stats.fts.eventsContentVersion, 'primary-events-plus-activity-diagnostics-v2');
+  assert.equal(stats.fts.eventsContentVersion, 'primary-events-plus-activity-diagnostics-v3');
 }));
+
+test('startup deletes obsolete notification attempts and rebuilds valid event FTS indexes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-notification-attempt-migration-'));
+  const dbPath = join(dir, 'fleet.db');
+  let store = new FleetStore(dbPath, { taskDoc: false });
+  try {
+    insertEvent(store, {
+      type: 'chat',
+      timestamp: '2026-07-29T12:00:00.000Z',
+      from: 'fleet:skip',
+      to: 'fleet:agent',
+      text: 'preserved searchable conversation',
+    });
+    insertEvent(store, {
+      type: 'notification_attempt',
+      timestamp: '2026-07-29T12:00:01.000Z',
+      from: 'fleet:tlda',
+      to: 'fleet:agent',
+      text: 'obsolete-delivery-ledger-token',
+    });
+    store.db.prepare(`
+      UPDATE search_index_meta
+      SET value = 'primary-events-plus-activity-diagnostics-v2'
+      WHERE key = 'events_fts_content_version'
+    `).run();
+    store.close();
+
+    store = new FleetStore(dbPath, { taskDoc: false });
+    assert.equal(store.db.prepare(
+      "SELECT COUNT(*) AS count FROM events WHERE type = 'notification_attempt'"
+    ).get().count, 0);
+    assert.equal((await store.searchAll('obsolete-delivery-ledger-token', { limit: 10 })).length, 0);
+    assert.equal((await store.searchAll('preserved searchable conversation', { limit: 10 }))[0]?.type, 'chat');
+    assert.equal((await store.getSearchStats()).fts.eventsContentVersion, 'primary-events-plus-activity-diagnostics-v3');
+    store.db.prepare("INSERT INTO events_fts(events_fts) VALUES ('integrity-check')").run();
+    store.db.prepare("INSERT INTO activity_events_fts(activity_events_fts) VALUES ('integrity-check')").run();
+  } finally {
+    store?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('search query plans do not sort the full matched event set', () => withStore(store => {
   const eventPlan = store.db.prepare(`EXPLAIN QUERY PLAN
