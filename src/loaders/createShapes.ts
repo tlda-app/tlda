@@ -223,7 +223,6 @@ export function createHtmlShapes(
       existing.y === page.bounds.y &&
       existing.isLocked === true &&
       existing.props?.w === page.bounds.w &&
-      existing.props?.h === page.bounds.h &&
       existing.props?.url === page.src &&
       (existing.props?.source || '') === source
     ) continue
@@ -236,7 +235,6 @@ export function createHtmlShapes(
       props: {
         ...existing.props,
         w: page.bounds.w,
-        h: page.bounds.h,
         url: page.src,
         source,
       },
