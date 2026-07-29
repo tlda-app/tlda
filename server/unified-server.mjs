@@ -7843,7 +7843,6 @@ async function handleDaemonWsMessage(ws, msg) {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
-        projects: [],
         connection_attempt_id: ws._connectionAttemptId || null,
         server_ws_session_id: ws._wsSessionId || null,
       }))

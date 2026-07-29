@@ -530,6 +530,24 @@ function applyProjectWorldOwnership(reason, { authoritativeRevisions = false } =
   log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
 
+async function loadLocallyBoundProjects() {
+  const loaded = []
+  for (const name of sourceSync.boundProjectNames()) {
+    try {
+      loaded.push(await daemonApi('GET', `/api/projects/${encodeURIComponent(name)}`))
+    } catch (error) {
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'linked-project-metadata-unavailable',
+        severity: 'error',
+        project: name,
+        message: `Linked project metadata is unavailable for ${name}: ${error.message}`,
+      })
+    }
+  }
+  return loaded
+}
+
 function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
   const result = sourceSync.bindSource(project, sourceDir)
@@ -1323,7 +1341,7 @@ function applyAgentStatusEvents(events = []) {
   }
 }
 
-function handleServerMessage(msg, wsAttemptId) {
+async function handleServerMessage(msg, wsAttemptId) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === 'source-change-result') {
     sourceSync.handleSourceChangeResult(msg)
@@ -1349,7 +1367,7 @@ function handleServerMessage(msg, wsAttemptId) {
       echoed_connection_attempt_id: msg.connection_attempt_id || null,
     })
     _serverReady = true
-    serverProjects = msg.projects || []
+    serverProjects = await loadLocallyBoundProjects()
     // beginReconnect first: applyProjectWorldOwnership calls sourceSync.sync,
     // which seeds each project's current revision. Anything still in flight on
     // the dead socket has to be folded into the queue before that seed lands,

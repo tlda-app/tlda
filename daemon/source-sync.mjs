@@ -202,6 +202,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
+  function boundProjectNames() {
+    return Object.keys(loadSourceBindings()).sort()
+  }
+
   function saveSourceBindings(bindings) {
     fs.mkdirSync(path.dirname(sourceBindingsFile), { recursive: true })
     const pending = `${sourceBindingsFile}.pending-${process.pid}`
@@ -790,6 +794,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   return {
     bindSource,
+    boundProjectNames,
     unbindSource,
     sync,
     beginReconnect,
