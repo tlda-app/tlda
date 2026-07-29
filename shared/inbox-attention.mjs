@@ -1,4 +1,4 @@
-export const INBOX_STATUSES = ['available', 'busy', 'dnd']
+export const FOCUS_STATES = ['available', 'busy', 'dnd']
 export const INBOX_VIEWS = ['default', 'review', 'monitoring', 'current-task', 'all']
 export const MESSAGE_PRIORITIES = ['normal', 'important', 'urgent']
 export const DELIVERY_CHANNELS = ['channel', 'tmux']
@@ -9,20 +9,20 @@ const PRIORITY_LEVEL = {
   urgent: 3,
 }
 
-const STATUS_THRESHOLD = {
+const FOCUS_THRESHOLD = {
   available: 'normal',
   busy: 'important',
   dnd: 'urgent',
 }
 
-export function normalizeInboxStatus(status) {
-  const s = String(status || 'available').trim().toLowerCase()
-  return INBOX_STATUSES.includes(s) ? s : 'available'
+export function normalizeFocus(focus) {
+  const s = String(focus || 'available').trim().toLowerCase()
+  return FOCUS_STATES.includes(s) ? s : 'available'
 }
 
-export function validateInboxStatus(status) {
-  const s = String(status || '').trim().toLowerCase()
-  return INBOX_STATUSES.includes(s) ? s : null
+export function validateFocus(focus) {
+  const s = String(focus || '').trim().toLowerCase()
+  return FOCUS_STATES.includes(s) ? s : null
 }
 
 export function normalizeInboxView(view) {
@@ -57,18 +57,18 @@ export function parsePriorityPhrase(text) {
   return null
 }
 
-export function thresholdForStatus(status) {
-  return STATUS_THRESHOLD[normalizeInboxStatus(status)]
+export function thresholdForFocus(focus) {
+  return FOCUS_THRESHOLD[normalizeFocus(focus)]
 }
 
-export function priorityMeetsStatus(priority, status) {
-  return PRIORITY_LEVEL[normalizeMessagePriority(priority)] >= PRIORITY_LEVEL[thresholdForStatus(status)]
+export function priorityMeetsFocus(priority, focus) {
+  return PRIORITY_LEVEL[normalizeMessagePriority(priority)] >= PRIORITY_LEVEL[thresholdForFocus(focus)]
 }
 
-export function decideInboxDelivery({ status, priority, now = Date.now(), batchWindowMs = 2 * 60 * 1000 } = {}) {
-  const s = normalizeInboxStatus(status)
+export function decideInboxDelivery({ focus, priority, now = Date.now(), batchWindowMs = 2 * 60 * 1000 } = {}) {
+  const s = normalizeFocus(focus)
   const p = normalizeMessagePriority(priority)
-  if (priorityMeetsStatus(p, s)) {
+  if (priorityMeetsFocus(p, s)) {
     return { delivery: 'notified', wokeRecipient: 'yes', notifyBy: null }
   }
   if (s === 'busy') {
@@ -77,19 +77,19 @@ export function decideInboxDelivery({ status, priority, now = Date.now(), batchW
   return { delivery: 'queued', wokeRecipient: 'no', notifyBy: null }
 }
 
-export function shouldWakeBatchedMessage({ status, unreadPending }) {
-  return normalizeInboxStatus(status) === 'busy' && unreadPending === true
+export function shouldWakeBatchedMessage({ focus, unreadPending }) {
+  return normalizeFocus(focus) === 'busy' && unreadPending === true
 }
 
-export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy }) {
-  const label = `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
+export function formatAttentionReceipt({ recipientLabel, focus, tag, priority, delivery, notifyBy }) {
+  const label = `${recipientLabel || 'recipient'} [focus:${normalizeFocus(focus)}${tag ? ` (${tag})` : ''}]`
   const p = normalizeMessagePriority(priority)
   if (delivery === 'notified') return `Notified ${label}${p === 'normal' ? '' : ` as ${p}`}.`
   if (delivery === 'batched') {
     const when = notifyBy ? ` This will be delivered by ${new Date(notifyBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''
     return `Batched for ${label}.${when}\nSay "this is important" if it should interrupt.`
   }
-  if (normalizeInboxStatus(status) === 'dnd') {
+  if (normalizeFocus(focus) === 'dnd') {
     return `Queued for ${label}. It did not wake them.\nSay "this is urgent" if it should interrupt.`
   }
   return `Queued for ${label}. It did not wake them.\nSay "this is important" if it should interrupt.`
