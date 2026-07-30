@@ -103,12 +103,20 @@ export function buildCmd({
   }
   parts.push('claude')
   const notificationHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-notification-hook.mjs')
+  const subagentStartHook = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../bin/native-subagent-start-hook.mjs')
   parts.push(`--settings ${sq(JSON.stringify({
     hooks: {
       UserPromptSubmit: [{
         hooks: [{
           type: 'command',
           command: `${process.execPath} ${notificationHook}`,
+          timeout: 5,
+        }],
+      }],
+      SubagentStart: [{
+        hooks: [{
+          type: 'command',
+          command: `${process.execPath} ${subagentStartHook}`,
           timeout: 5,
         }],
       }],

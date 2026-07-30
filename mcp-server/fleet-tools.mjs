@@ -647,6 +647,7 @@ function logEvent(event) {
 const ALIVE_THRESHOLD_MS = 10 * 60 * 1000;
 let AGENT_ID = process.env.FLEET_ID || null;
 const PARENT_AGENT_ID = process.env.FLEET_ID || null;
+let NATIVE_CHILD_BINDING = null;
 // Ref tokens created by tlda_highlight — keyed by «annotation:label» token
 const _refTokens = new Map();
 
@@ -2114,6 +2115,7 @@ export async function handleFleetTool(name, args, context = {}) {
       ].join('\n') }], isError: true };
     }
     AGENT_ID = loggedInAgentId;
+    NATIVE_CHILD_BINDING = nativeBinding;
     if (nativeBinding && _channelRWS) _channelRWS.reconnect();
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
@@ -3395,6 +3397,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         });
       } catch (e) {
         text += `\n\n⚠️ Inbox acknowledgement failed; these messages remain unread: ${e.message}`;
+      }
+    }
+    if (!args?.peek && NATIVE_CHILD_BINDING?.child_agent_id && PARENT_AGENT_ID) {
+      try {
+        await sendFleetRequestAttempt('native-subagent-notification-ack', {
+          parent_agent_id: PARENT_AGENT_ID,
+          child_agent_id: NATIVE_CHILD_BINDING.child_agent_id,
+        }, { deadlineMs: 5000 });
+      } catch (e) {
+        text += `\n\n⚠️ Parent fallback acknowledgement failed; these messages may be offered again: ${e.message}`;
       }
     }
     return { content: [{ type: 'text', text }] };

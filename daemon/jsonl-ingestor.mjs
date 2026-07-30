@@ -1495,7 +1495,6 @@ export function createJsonlIngestor({
         if (!sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })) delivered = false
       }
       processQualificationEvent(agentId, ev)
-      processNativeSubagentSend(pw, ev)
     }
 
     if (harness.terminalChat && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
@@ -1505,25 +1504,6 @@ export function createJsonlIngestor({
 
   function nativeSubagentRoutes(parentAgentId, childAgentIds = []) {
     return nativeSubagentRoutesFromWatchers(pathWatchers.values(), parentAgentId, childAgentIds)
-  }
-
-  function processNativeSubagentSend(pw, ev) {
-    if (pw.nativeSubagent || !ev?.blocks) return
-    for (const block of ev.blocks) {
-      if (block.type !== 'tool_use') continue
-      const tool = String(block.name || '').split('__').pop()
-      if (!['SendMessage', 'send_message', 'followup_task'].includes(tool)) continue
-      const target = block.input?.recipient || block.input?.agent_id || block.input?.target
-      if (!target) continue
-      const route = nativeSubagentRoutes(pw.primaryAgentId)
-        .find(item => item.native_agent_id === target)
-      if (!route) continue
-      sendMsg({
-        type: 'native-subagent-notification-ack',
-        parent_agent_id: pw.primaryAgentId,
-        child_agent_id: route.child_agent_id,
-      })
-    }
   }
 
   function processQualificationEvent(agentId, ev) {

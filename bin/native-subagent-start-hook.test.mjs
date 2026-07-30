@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { buildCmd } from '../agent-launch/harness/codex.mjs'
+import { buildCmd as buildClaudeCmd } from '../agent-launch/harness/claude.mjs'
+import { buildCmd as buildCodexCmd } from '../agent-launch/harness/codex.mjs'
 
 test('Codex launch installs the native child identity bootstrap hook', () => {
-  const cmd = buildCmd({
+  const cmd = buildCodexCmd({
     fleetId: 'fleet:parent',
     localAgentId: 'mint-parent',
     tmuxSession: 'fleet-parent',
@@ -13,6 +14,20 @@ test('Codex launch installs the native child identity bootstrap hook', () => {
   })
   assert.match(cmd, /hooks\.SubagentStart=/)
   assert.match(cmd, /native-subagent-start-hook\.mjs/)
+})
+
+test('Claude launch installs native child bootstrap and pending-delivery hooks', () => {
+  const cmd = buildClaudeCmd({
+    fleetId: 'fleet:parent',
+    localAgentId: 'mint-parent',
+    tmuxSession: 'fleet-parent',
+    model: 'claude-opus-5',
+    config: {},
+  })
+  assert.match(cmd, /SubagentStart/)
+  assert.match(cmd, /native-subagent-start-hook\.mjs/)
+  assert.match(cmd, /UserPromptSubmit/)
+  assert.match(cmd, /native-subagent-notification-hook\.mjs/)
 })
 
 test('SubagentStart tells the child to bind and read its own inbox', () => {
