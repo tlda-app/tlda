@@ -17,10 +17,11 @@
  */
 
 import { Router } from 'express'
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
 import { randomUUID } from 'crypto'
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'fs'
+import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/promises'
 import { join, dirname, resolve } from 'path'
+import { promisify } from 'util'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
@@ -57,6 +58,22 @@ import { readSharedDocumentThroughOwner } from '../lib/document-association-sour
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 
 const router = Router()
+const execFileAsync = promisify(execFile)
+
+function execFileWithInput(file, args, input, options) {
+  const execution = execFileAsync(file, args, options)
+  execution.child.stdin.end(input)
+  return execution
+}
+
+async function pathExists(path) {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
 
 async function mapWithConcurrency(items, concurrency, mapper) {
   const results = {}
@@ -248,7 +265,7 @@ router.get('/health', requireRead, async (req, res) => {
   const dir = getProjectsDir()
   for (const project of await listProjects()) {
     const snapPath = join(dir, project.name, 'sync-snapshot.json')
-    if (!existsSync(snapPath)) continue
+    if (!await pathExists(snapPath)) continue
     try {
       const room = await getOrCreateRoom(syncRoomName(project.name))
       const snapshot = room.getCurrentSnapshot()
@@ -433,7 +450,7 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
   const targetPath = String(part.path || part.storage?.path || '')
   if (targetPath && !targetPath.startsWith('/') && !targetPath.split('/').includes('..')) {
     const localPath = join(root, targetPath)
-    if (existsSync(localPath)) rmSync(localPath)
+    if (await pathExists(localPath)) await rm(localPath)
   }
   await writeProjectPartsManifest(req.params.name, {
     ...manifest,
@@ -469,13 +486,12 @@ router.get('/:name/parts/:partId/markdown', requireRead, async (req, res) => {
       if (!/^[0-9a-f]{7,40}$/i.test(version)) {
         return res.status(400).json({ ok: false, error: 'Invalid project part version' })
       }
-      markdown = execFileSync('git', ['show', `${version}:${targetPath}`], {
+      ;({ stdout: markdown } = await execFileAsync('git', ['show', `${version}:${targetPath}`], {
         cwd: root,
         encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+      }))
     } else {
-      markdown = readFileSync(join(root, targetPath), 'utf8')
+      markdown = await readFile(join(root, targetPath), 'utf8')
     }
 
     res.type('text/markdown').send(markdown)
@@ -708,9 +724,9 @@ router.get('/:name/macros', requireRead, async (req, res) => {
   if (!project) return res.json({ macros: {} })
   const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
   const outputPath = join(getOutputDir(req.params.name), `${texBase}-macros.json`)
-  if (!existsSync(outputPath)) return res.json({ macros: {} })
+  if (!await pathExists(outputPath)) return res.json({ macros: {} })
   try {
-    const data = JSON.parse(readFileSync(outputPath, 'utf8'))
+    const data = JSON.parse(await readFile(outputPath, 'utf8'))
     res.json({ macros: data.macros || {} })
   } catch {
     res.json({ macros: {} })
@@ -735,8 +751,8 @@ router.get('/:name/outline', requireRead, async (req, res) => {
   }
   const file = String(req.query.file || project.mainFile || 'main.tex')
   const texPath = join(getSourceDir(req.params.name), file)
-  if (!existsSync(texPath)) return res.status(404).json({ error: `tex not found: ${file}` })
-  const text = readFileSync(texPath, 'utf8')
+  if (!await pathExists(texPath)) return res.status(404).json({ error: `tex not found: ${file}` })
+  const text = await readFile(texPath, 'utf8')
   const region = regionFromSpan(text, startLine, startCol, endLine, endCol)
   const base = String(file).replace(/\.tex$/, '').split('/').pop()
   const slug = `${base}-L${startLine}c${startCol}-L${endLine}c${endCol}`
@@ -756,8 +772,8 @@ router.get('/:name/outline', requireRead, async (req, res) => {
       model.regionFile = file
       model.span = { startLine, startCol, endLine, endCol }
       const modelDir = join(getOutputDir(req.params.name), 'outlines')
-      mkdirSync(modelDir, { recursive: true })
-      writeFileSync(join(modelDir, `${slug}.model.json`), JSON.stringify(model), 'utf8')
+      await mkdir(modelDir, { recursive: true })
+      await writeFile(join(modelDir, `${slug}.model.json`), JSON.stringify(model), 'utf8')
       modelOk = true
     } catch (modelErr) {
       console.warn(`[outline] token model unavailable for ${slug} (${String(modelErr?.message || modelErr)}); returning plain note`)
@@ -767,8 +783,12 @@ router.get('/:name/outline', requireRead, async (req, res) => {
     const tex = region
     let mdView = region
     try {
-      const { execSync } = await import('child_process')
-      mdView = execSync('pandoc -f latex -t markdown --wrap=none', { input: region, encoding: 'utf8', timeout: 10000 })
+      ;({ stdout: mdView } = await execFileWithInput(
+        'pandoc',
+        ['-f', 'latex', '-t', 'markdown', '--wrap=none'],
+        region,
+        { encoding: 'utf8', timeout: 10000 },
+      ))
     } catch { /* pandoc unavailable — fall back to raw tex */ }
     res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, slug: modelOk ? slug : '' })
   } catch (e) {
@@ -1245,7 +1265,7 @@ async function validateSourcePushRequest(name, project, { files, deletedFiles, s
   for (const filePath of await readClientSourceManifest(name)) {
     const error = validateAuthoredPath(filePath, 'stored sourceManifest entry')
     if (error) return { status: 400, ok: false, error }
-    if (existsSync(join(sourceRoot, filePath))) proposed.add(filePath)
+    if (await pathExists(join(sourceRoot, filePath))) proposed.add(filePath)
   }
   for (const filePath of deletes) proposed.delete(filePath)
   for (const file of pushFiles) proposed.add(file.path)
@@ -1273,11 +1293,11 @@ async function sourcePushWouldChange(name, { files, deletedFiles }) {
       ? Buffer.from(file.content, 'base64')
       : Buffer.from(String(file.content ?? ''))
     const full = join(getSourceDir(name), file.path)
-    if (!existsSync(full)) return true
-    if (!readFileSync(full).equals(next)) return true
+    if (!await pathExists(full)) return true
+    if (!(await readFile(full)).equals(next)) return true
   }
   for (const filePath of deletedFiles || []) {
-    if (await isClientOwnedSourcePath(name, filePath) && existsSync(join(getSourceDir(name), filePath))) return true
+    if (await isClientOwnedSourcePath(name, filePath) && await pathExists(join(getSourceDir(name), filePath))) return true
   }
   return false
 }
@@ -1303,9 +1323,9 @@ router.post('/:name/build', requireRw, async (req, res) => {
     const mainFile = project.mainFile || 'main.tex'
     const texBase = mainFile.split('/').pop().replace(/\.tex$/i, '')
     try {
-      rmSync(join(projDir, '.biber-par-cache'), { recursive: true, force: true })
+      await rm(join(projDir, '.biber-par-cache'), { recursive: true, force: true })
       for (const ext of ['.bbl', '.blg', '.run.xml']) {
-        rmSync(join(projDir, 'build-cache', `${texBase}${ext}`), { force: true })
+        await rm(join(projDir, 'build-cache', `${texBase}${ext}`), { force: true })
       }
       console.log(`[api] Clean build: cleared biber cache for ${req.params.name}`)
     } catch (e) {
@@ -1313,12 +1333,12 @@ router.post('/:name/build', requireRw, async (req, res) => {
       return res.status(500).json({ error: 'Clean build failed to clear biber cache', detail: e.message })
     }
     const srcDir = getSourceDir(req.params.name)
-    if (existsSync(srcDir)) {
+    if (await pathExists(srcDir)) {
       const cleanExts = ['.aux', '.bbl', '.bcf', '.blg', '.run.xml', '.fls', '.fdb_latexmk', '.synctex.gz', '.log', '.out', '.toc', '.lof', '.lot']
-      for (const file of readdirSync(srcDir)) {
+      for (const file of await readdir(srcDir)) {
         if (cleanExts.some(ext => file.endsWith(ext))) {
           try {
-            unlinkSync(join(srcDir, file))
+            await unlink(join(srcDir, file))
           } catch (e) {
             console.error(`[api] Clean build: failed to delete aux file ${file} for ${req.params.name}: ${e.message}`)
             return res.status(500).json({ error: 'Clean build failed to delete aux file', file, detail: e.message })
@@ -1584,8 +1604,12 @@ router.post('/:name/extract', requireRw, async (req, res) => {
 
   let mdContent
   try {
-    const { execSync } = await import('child_process')
-    mdContent = execSync('pandoc -f latex -t markdown --wrap=none', { input: extracted, encoding: 'utf8', timeout: 10000 })
+    ;({ stdout: mdContent } = await execFileWithInput(
+      'pandoc',
+      ['-f', 'latex', '-t', 'markdown', '--wrap=none'],
+      extracted,
+      { encoding: 'utf8', timeout: 10000 },
+    ))
   } catch (e) {
     return res.status(500).json({ error: `pandoc conversion failed: ${e.message}` })
   }
@@ -1594,9 +1618,9 @@ router.post('/:name/extract', requireRw, async (req, res) => {
   const slug = `extract-L${startLine}-${endLine}`
   const srcDir = getSourceDir(req.params.name)
   const scratchDir = join(srcDir, 'scratch')
-  mkdirSync(scratchDir, { recursive: true })
+  await mkdir(scratchDir, { recursive: true })
   const mdPath = join(scratchDir, `${slug}.md`)
-  writeFileSync(mdPath, mdContent, 'utf8')
+  await writeFile(mdPath, mdContent, 'utf8')
 
   const noteX = (x ?? 690) + 20
   const noteY = y ?? 0
@@ -1646,8 +1670,12 @@ router.post('/:name/inject', requireRw, async (req, res) => {
 
   let texContent = markdown.replace(/(?<![\\@\w])@([\w:.-]+)/g, '\\ref{$1}')
   try {
-    const { execSync } = await import('child_process')
-    texContent = execSync('pandoc -f markdown -t latex --wrap=none', { input: texContent, encoding: 'utf8', timeout: 10000 })
+    ;({ stdout: texContent } = await execFileWithInput(
+      'pandoc',
+      ['-f', 'markdown', '-t', 'latex', '--wrap=none'],
+      texContent,
+      { encoding: 'utf8', timeout: 10000 },
+    ))
   } catch (e) {
     return res.status(500).json({ error: `pandoc conversion failed: ${e.message}` })
   }
@@ -1661,8 +1689,8 @@ router.post('/:name/inject', requireRw, async (req, res) => {
   if (!sourceDir) return res.status(400).json({ error: 'No sourceDir for this project' })
 
   const scratchDir = join(sourceDir, '.tlda', 'scratch')
-  mkdirSync(scratchDir, { recursive: true })
-  writeFileSync(join(sourceDir, scratchPath), rawContent, 'utf8')
+  await mkdir(scratchDir, { recursive: true })
+  await writeFile(join(sourceDir, scratchPath), rawContent, 'utf8')
 
   res.json({ ok: true, scratchPath, label, texContent })
 })
@@ -1712,7 +1740,7 @@ router.get('/:name/shapes/:id', requireRead, async (req, res) => {
 })
 
 // --- Coordinate constants (shared/layout-constants.json) ---
-const _lc = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'shared', 'layout-constants.json'), 'utf8'))
+const _lc = JSON.parse(await readFile(join(import.meta.dirname, '..', '..', 'shared', 'layout-constants.json'), 'utf8'))
 const PDF_WIDTH = _lc.PDF_WIDTH        // 612
 const PDF_HEIGHT = _lc.PDF_HEIGHT      // 792
 const TARGET_WIDTH = _lc.TARGET_WIDTH  // 800
@@ -2283,10 +2311,13 @@ router.post('/:name/inline-scratch', requireRw, async (req, res) => {
 
 // GET /:name/shadow/log — list shadow commits with hashes and timestamps
 router.get('/:name/shadow/log', requireRead, async (req, res) => {
-  const { execSync } = await import('child_process')
   const repoDir = join(getProjectDir(req.params.name), 'shadow-repo')
   try {
-    const log = execSync('git log --format="%H %aI" --max-count=500', { cwd: repoDir, encoding: 'utf8', timeout: 5000 })
+    const { stdout: log } = await execFileAsync(
+      'git',
+      ['log', '--format=%H %aI', '--max-count=500'],
+      { cwd: repoDir, encoding: 'utf8', timeout: 5000 },
+    )
     const commits = log.trim().split('\n').filter(Boolean).map(line => {
       const [hash, ts] = line.split(' ')
       return { hash: hash.slice(0, 7), timestamp: ts }
