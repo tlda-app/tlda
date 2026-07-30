@@ -990,7 +990,8 @@ async function drainTaskWakeQueue() {
       }
       const nextSeat = await fleetStore?.getAgentDaemonRoute?.(agentId)
       if (!nextSeat) throw new Error(`respawn for ${agentId} did not create a daemon route`)
-      await sendWakeNudge(nextSeat.daemon_key, agent, withAgentReturnNotice(agent, nudgeText), spawnResult.already ? 'already-awake' : 'post-respawn', 'task-renudge')
+      const deliveredNudge = spawnResult.already ? nudgeText : withAgentReturnNotice(agent, nudgeText)
+      await sendWakeNudge(nextSeat.daemon_key, agent, deliveredNudge, spawnResult.already ? 'already-awake' : 'post-respawn', 'task-renudge')
       onTaskWakeSuccess(agentId, taskKeys)
     } catch (e) {
       // Record a terminal wake failure → open/extend the agent's circuit breaker
@@ -6056,7 +6057,8 @@ async function handleFleetWsMessage(ws, msg) {
           agent,
           daemonKey,
           ownerDaemon: daemonConnections.get(daemonKey),
-          nudgeText: withAgentReturnNotice(agent, nudgeText),
+          nudgeText,
+          returnNoticeText: withAgentReturnNotice(agent, nudgeText),
           traceId,
           sendDaemonDurable,
           appendControlTrace: (event) => controlPlaneTraces.append(event),

@@ -28,6 +28,7 @@ export async function runWakeRouteLifecycle({
   daemonKey,
   ownerDaemon,
   nudgeText = null,
+  returnNoticeText = null,
   traceId = null,
   sendDaemonDurable,
   appendControlTrace = () => {},
@@ -53,11 +54,14 @@ export async function runWakeRouteLifecycle({
   }
   const nextSeat = await getAgentDaemonRoute?.(agentId)
   if (!nextSeat?.daemon_key) throw new Error(`wake for ${agentId} did not retain a daemon route`)
+  const deliveredNudge = spawnResult.already
+    ? nudgeText
+    : (returnNoticeText || nudgeText)
   await sendWakeNudge(
     nextSeat.daemon_key,
     agent,
-    nudgeText,
-    'post-respawn',
+    deliveredNudge,
+    spawnResult.already ? 'already-awake' : 'post-respawn',
     'wake-route',
   )
   if (traceId) {
