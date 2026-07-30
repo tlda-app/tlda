@@ -1,15 +1,22 @@
-import { useState, useEffect, useMemo, useRef, Component, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, Component, type FormEvent, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
-import { useFleetIdentity } from './fleet-data-adapter'
+import { sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
+import { ChatComposer } from './shapes/ChatComposer'
+import {
+  getFleetAgentDirectoryRows,
+  sortFleetAgentDirectoryRowsByRecency,
+  type FleetAgentDirectoryRowModel,
+} from './shapes/FleetAgentDirectoryModel'
+import { isUsableIdentityName, sanitizeIdentityName } from './fleet/identity-persistence.mjs'
 import './App.css'
 import './themes.css'
 
@@ -617,6 +624,28 @@ interface ArchivedProject { name: string; title?: string; starred?: boolean }
 
 type ProjectAction = 'star' | 'archive'
 type PointerStart = { key: string; x: number; y: number; archived: boolean; dx: number; action: ProjectAction | null }
+type FleetChatFilter = [string, string][][]
+
+function fleetEventTimestamp(event: any) {
+  const ts = event?.timestamp || event?.ts || ''
+  const parsed = ts ? new Date(ts).getTime() : 0
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function fleetEventText(event: any) {
+  return String(event?.text || event?.message || event?.metadata?.message || '')
+}
+
+function projectLabelMatches(row: FleetAgentDirectoryRowModel, project: string) {
+  if (!project) return false
+  if (row.project === project) return true
+  return row.labels.some(label => label === project || label === `project:${project}` || label.endsWith(`/${project}`))
+}
+
+function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null): FleetChatFilter | null {
+  if (!row?.exactName) return null
+  return [[['from', row.exactName]], [['to', row.exactName]]]
+}
 
 function DocumentPicker({ isDark, manifest, onSelect }: {
   isDark: boolean
@@ -624,6 +653,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   onSelect: (key: string, config: DocConfig) => void
 }) {
   const identity = useFleetIdentity()
+  const agents = useFleetAgents()
+  const agentRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(agents)), [agents])
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
   const [defaultSearch, setDefaultSearch] = useState('')
@@ -640,6 +671,12 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [changelogs, setChangelogs] = useState<Record<string, ProjectChangelog>>({})
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [timeAxisNow] = useState(() => Date.now())
+  const [identityDraft, setIdentityDraft] = useState(identity.name || '')
+  const [identityMessage, setIdentityMessage] = useState('')
+  const [identitySaving, setIdentitySaving] = useState(false)
+  const [activeChromeProject, setActiveChromeProject] = useState('')
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [chatSendError, setChatSendError] = useState('')
   const pointerStart = useRef<PointerStart | null>(null)
   const pointerSwiped = useRef(false)
   const requestedHistoriesRef = useRef(new Set<string>())
@@ -745,6 +782,36 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const visibleEntries = entries
   const visibleProjectNames = visibleEntries.map(([key]) => key)
   const visibleProjectKey = visibleProjectNames.join('\n')
+  const chromeProject = activeChromeProject && visibleProjectNames.includes(activeChromeProject)
+    ? activeChromeProject
+    : visibleProjectNames[0] || ''
+  const projectAgentRows = useMemo(() => {
+    if (!chromeProject) return []
+    return agentRows.filter(row => projectLabelMatches(row, chromeProject))
+  }, [agentRows, chromeProject])
+  const chromeAgentRows = projectAgentRows.length > 0 ? projectAgentRows : agentRows.slice(0, 12)
+  const selectedAgent = useMemo(() => {
+    if (!selectedAgentId) return null
+    return agentRows.find(row => row.id === selectedAgentId || row.exactName === selectedAgentId) || null
+  }, [agentRows, selectedAgentId])
+  const selectedAgentFilter = useMemo(() => fleetChatFilterForAgent(selectedAgent), [selectedAgent])
+  const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
+  const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, selectedAgent?.id ? `index:${selectedAgent.id}` : 'index:no-agent')
+  const selectedChatRows = useMemo(() => {
+    if (!selectedAgent) return []
+    return selectedChatEvents
+      .filter(event => fleetEventText(event))
+      .sort((a, b) => fleetEventTimestamp(a) - fleetEventTimestamp(b))
+      .slice(-24)
+  }, [selectedAgent, selectedChatEvents])
+  const composerAgentNames = useMemo(() => (
+    selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
+  ), [selectedAgent])
+  const sendTargets = selectedAgent?.exactName ? [selectedAgent.exactName] : []
+
+  useEffect(() => {
+    setIdentityDraft(identity.name || '')
+  }, [identity.name])
 
   useEffect(() => {
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
@@ -979,94 +1046,219 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     window.location.assign(url.toString())
   }
 
+  const saveIdentityName = async (event: FormEvent) => {
+    event.preventDefault()
+    const candidate = sanitizeIdentityName(identityDraft)
+    if (!isUsableIdentityName(candidate)) {
+      setIdentityMessage('Enter a name.')
+      return
+    }
+    setIdentitySaving(true)
+    setIdentityMessage('')
+    try {
+      await identity.login(candidate)
+      setIdentityMessage(`Signed in as ${candidate}.`)
+    } catch {
+      await identity.register(candidate)
+      setIdentityMessage(`Signed in as ${candidate}.`)
+    } finally {
+      setIdentitySaving(false)
+    }
+  }
+
+  const sendChromeChat = (text: string, targets: string[]) => {
+    setChatSendError('')
+    void Promise.all(targets.map(target => sendMessage(target, text)))
+      .then(results => {
+        if (!results.every(result => result.ok || result.queued)) {
+          setChatSendError('Message was not sent.')
+        }
+      })
+      .catch(error => setChatSendError(error instanceof Error ? error.message : 'Message was not sent.'))
+  }
+
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
-      <div className="picker-controls">
-        <input
-          className="picker-search"
-          type="text"
-          placeholder={defaultSearch || 'Search projects...'}
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          autoFocus
-        />
-      </div>
-      <div className="project-index">
-        <div className="project-index-axis" aria-hidden="true">
-          <span className="project-index-axis-label">Project</span>
-          <div className="project-index-axis-ticks">
-            {dateTicks.map(tick => (
-              <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
-            ))}
-          </div>
-          <span className="project-index-axis-spacer" />
-        </div>
-        <div className="project-index-rows">
-          {visibleEntries.map(([key, config]) => {
-            const health = docHealth[key]
-            const isBroken = health && !health.ok
-            const isStarred = starredKeys.has(key) || !!config.starred
-            const preview = dragPreview?.key === key ? dragPreview : null
-            const changelog = changelogs[key]
-            const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
-            return (
-              <div
-                key={key}
-                className={`project-index-row${isBroken ? ' picker-row-broken' : ''}${isStarred ? ' project-index-row-starred' : ''}${preview ? ` is-swiping is-swiping-${preview.action}` : ''}`}
-                style={preview ? { transform: `translateX(${preview.dx}px)` } : undefined}
-                onPointerDown={(e) => onRowPointerDown(key, false, e)}
-                onPointerMove={(e) => onRowPointerMove(key, e)}
-                onPointerUp={(e) => onRowPointerEnd(key, e)}
-                onPointerCancel={() => { pointerStart.current = null; setDragPreview(null) }}
-                onClick={() => onRowClick(key, config)}
-              >
-                <div className="project-index-name">
-                  {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
-                  <a href={`?project=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
-                  <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
-                  {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
-                </div>
-                <div className="project-index-history">
-                  {!changelog && !historyError && (
-                    <span className="project-index-history-loading">Loading history...</span>
-                  )}
-                  {changelog && !hasPageEdits && (
-                    <span className="project-index-history-loading">No page edits</span>
-                  )}
-                  {changelog && hasPageEdits && timeRange && (
-                    <SpaceTimeDots
-                      changelog={changelog}
-                      timeRange={timeRange}
-                      timeScale="log-age"
-                      showPageLabels={false}
-                      className="project-index-spacetime"
-                      onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
-                    />
-                  )}
-                  {(historyError || changelog?.error) && (
-                    <span className="project-index-history-status">
-                      {changelog?.error || historyError}
-                    </span>
-                  )}
-                </div>
-                <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
-                  <button
-                    className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
-                    title={isStarred ? 'Unstar' : 'Star'}
-                    aria-label={isStarred ? 'Unstar project' : 'Star project'}
-                    onClick={(e) => starProject(key, false, e)}
-                  >★</button>
-                  <button
-                    className="project-row-action project-row-archive"
-                    title="Archive"
-                    aria-label="Archive project"
-                    onClick={(e) => archiveProject(key, e)}
-                  >×</button>
-                </div>
+      <div className="picker-layout">
+        <main className="picker-main">
+          <div className="project-index">
+            <div className="project-index-axis" aria-hidden="true">
+              <span className="project-index-axis-label">Project</span>
+              <div className="project-index-axis-ticks">
+                {dateTicks.map(tick => (
+                  <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
+                ))}
               </div>
-            )
-          })}
-        </div>
+              <span className="project-index-axis-spacer" />
+            </div>
+            <div className="project-index-rows">
+              {visibleEntries.map(([key, config]) => {
+                const health = docHealth[key]
+                const isBroken = health && !health.ok
+                const isStarred = starredKeys.has(key) || !!config.starred
+                const preview = dragPreview?.key === key ? dragPreview : null
+                const changelog = changelogs[key]
+                const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
+                return (
+                  <div
+                    key={key}
+                    className={`project-index-row${isBroken ? ' picker-row-broken' : ''}${isStarred ? ' project-index-row-starred' : ''}${preview ? ` is-swiping is-swiping-${preview.action}` : ''}`}
+                    style={preview ? { transform: `translateX(${preview.dx}px)` } : undefined}
+                    onPointerDown={(e) => onRowPointerDown(key, false, e)}
+                    onPointerMove={(e) => onRowPointerMove(key, e)}
+                    onPointerUp={(e) => onRowPointerEnd(key, e)}
+                    onPointerCancel={() => { pointerStart.current = null; setDragPreview(null) }}
+                    onClick={() => onRowClick(key, config)}
+                  >
+                    <div className="project-index-name">
+                      {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
+                      <a href={`?project=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
+                      <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
+                      {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
+                    </div>
+                    <div className="project-index-history">
+                      {!changelog && !historyError && (
+                        <span className="project-index-history-loading">Loading history...</span>
+                      )}
+                      {changelog && !hasPageEdits && (
+                        <span className="project-index-history-loading">No page edits</span>
+                      )}
+                      {changelog && hasPageEdits && timeRange && (
+                        <SpaceTimeDots
+                          changelog={changelog}
+                          timeRange={timeRange}
+                          timeScale="log-age"
+                          showPageLabels={false}
+                          className="project-index-spacetime"
+                          onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
+                        />
+                      )}
+                      {(historyError || changelog?.error) && (
+                        <span className="project-index-history-status">
+                          {changelog?.error || historyError}
+                        </span>
+                      )}
+                    </div>
+                    <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
+                      <button
+                        className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
+                        title={isStarred ? 'Unstar' : 'Star'}
+                        aria-label={isStarred ? 'Unstar project' : 'Star project'}
+                        onClick={(e) => starProject(key, false, e)}
+                      >★</button>
+                      <button
+                        className="project-row-action project-row-archive"
+                        title="Archive"
+                        aria-label="Archive project"
+                        onClick={(e) => archiveProject(key, e)}
+                      >×</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </main>
+        <aside className="page-chrome" aria-label="Page chrome chat and project agents">
+          <section className="page-chrome-section page-chrome-chat">
+            <div className="page-chrome-section-title">
+              <span>Chat</span>
+              {selectedAgent && <button type="button" onClick={() => setSelectedAgentId(null)}>All</button>}
+            </div>
+            <div className="page-chrome-chat-target">
+              {selectedAgent ? selectedAgent.displayName : 'Choose an agent'}
+            </div>
+            <div className="page-chrome-chat-log" aria-live="polite">
+              {selectedAgent && selectedChatRows.length === 0 && (
+                <div className="page-chrome-empty">No recent messages</div>
+              )}
+              {!selectedAgent && (
+                <div className="page-chrome-empty">Select an agent below for one-on-one chat.</div>
+              )}
+              {selectedChatRows.map((event, index) => {
+                const from = event.from_id || event.from || ''
+                const isHuman = identity.id && from === identity.id
+                const author = isHuman ? (identity.name || 'You') : selectedAgent?.displayName || String(from).replace(/^fleet:/, '')
+                return (
+                  <div key={event.id || event._tempId || `${event.timestamp}-${index}`} className="page-chrome-chat-row">
+                    <span className="page-chrome-chat-meta">{author}</span>
+                    <span className="page-chrome-chat-text">{fleetEventText(event)}</span>
+                  </div>
+                )
+              })}
+            </div>
+            <ChatComposer
+              className="page-chrome-composer"
+              sendTargets={sendTargets}
+              agentNames={composerAgentNames}
+              onSend={sendChromeChat}
+              placeholder={selectedAgent ? `Message ${selectedAgent.displayName}` : ''}
+            />
+            {chatSendError && <div className="page-chrome-error">{chatSendError}</div>}
+          </section>
+          <section className="page-chrome-section">
+            <div className="page-chrome-section-title"><span>Search</span></div>
+            <input
+              className="picker-search"
+              type="text"
+              placeholder={defaultSearch || 'Search projects...'}
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              autoFocus
+            />
+          </section>
+          <section className="page-chrome-section">
+            <div className="page-chrome-section-title"><span>Projects</span></div>
+            <div className="page-chrome-projects">
+              {visibleProjectNames.slice(0, 12).map(project => (
+                <button
+                  key={project}
+                  type="button"
+                  className={project === chromeProject ? 'active' : ''}
+                  onClick={() => setActiveChromeProject(project)}
+                >
+                  {manifest[project]?.name || restoredProjects[project]?.name || project}
+                </button>
+              ))}
+            </div>
+            <div className="page-chrome-project-agents">
+              <div className="page-chrome-section-title">
+                <span>{projectAgentRows.length > 0 ? 'Agents' : 'Recent contributions'}</span>
+              </div>
+              <div className="page-chrome-agents">
+                {chromeAgentRows.length === 0 && <div className="page-chrome-empty">No agents</div>}
+                {chromeAgentRows.map(row => (
+                  <button
+                    key={row.id || row.exactName}
+                    type="button"
+                    className={selectedAgent?.id === row.id ? 'active' : ''}
+                    onClick={() => setSelectedAgentId(row.id || row.exactName)}
+                    title={row.hoverTitle}
+                  >
+                    <span className="page-chrome-agent-name" style={{ color: row.color }}>{row.displayName}</span>
+                    <span className="page-chrome-agent-meta">{row.project || row.cwdLabel || row.ago}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+          <section className="page-chrome-section page-chrome-identity">
+            <div className="page-chrome-section-title"><span>Identity</span></div>
+            <form onSubmit={saveIdentityName}>
+              <input
+                type="text"
+                value={identityDraft}
+                onChange={e => setIdentityDraft(e.target.value)}
+                placeholder="Your name"
+                aria-label="Your name"
+              />
+              <button type="submit" disabled={identitySaving}>Save</button>
+            </form>
+            {(identityMessage || identity.name) && (
+              <div className="page-chrome-identity-status">{identityMessage || `Signed in as ${identity.name}`}</div>
+            )}
+          </section>
+        </aside>
       </div>
       {(identity.name || telemetryUrl) && (
         <div className="project-index-tools">
