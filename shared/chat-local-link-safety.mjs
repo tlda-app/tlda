@@ -35,9 +35,15 @@ export function rewriteBareLocalPaths(html = '') {
       }
       return `<span class="file-path" title="${esc(fullPath)}" style="cursor:pointer;text-decoration:underline dotted">~/${esc(rel)}</span>`
     })
+    const absoluteMarkdownChips = []
+    segment = segment.replace(/(^|\s)(\/(?!\/|Users\/)[\w/._-]+\.(?:md|markdown))(?=\s|$|[)\].,;!?])/gi, (_, before, fullPath) => {
+      const index = absoluteMarkdownChips.push(fileChip(fullPath, fullPath.split('/').pop())) - 1
+      return `${before}\u0000absolute-markdown-chip-${index}\u0000`
+    })
     segment = segment.replace(/(?<![/"'>\w])(?:(?:[\w.-]+\/)+[\w.-]+\.md)/g, (relPath) => {
       return fileChip(relPath, relPath.split('/').pop())
     })
+    segment = segment.replace(/\u0000absolute-markdown-chip-(\d+)\u0000/g, (_, index) => absoluteMarkdownChips[Number(index)])
     return segment
   })
 }

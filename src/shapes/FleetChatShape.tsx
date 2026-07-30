@@ -10,6 +10,7 @@ import {
   createShapeId,
   stopEventPropagation,
   useEditor,
+  useToasts,
   useValue,
   type Editor,
   type TLShapeId,
@@ -2179,6 +2180,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 }, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx)
 
 function FleetChatInner({ shape }: { shape: any }) {
+  const { addToast } = useToasts()
   recordFleetChatRender(shape)
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
@@ -5325,6 +5327,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           drag = {
             pillId: null, pillType: 'doc' as any, value,
             displayName: name, color: '#63a0db', content: filePath,
+            filePath,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -5525,8 +5528,33 @@ function FleetChatInner({ shape }: { shape: any }) {
           e.clientX < chatRect.left || e.clientX > chatRect.right ||
           e.clientY < chatRect.top || e.clientY > chatRect.bottom
         )
+        const movePill = (targetEditor: Editor, x: number, y: number) => {
+          const update = {
+            id: drag.pillId as TLShapeId,
+            type: 'fleet-pill',
+            x,
+            y,
+          } as unknown as Parameters<typeof targetEditor.updateShape>[0]
+          targetEditor.updateShape(update)
+        }
 
-        if (mainEditor && mainEditor !== editor) {
+        if (mainEditor === editor) {
+          const onMain = !!drag._onMain
+          if (outside && !onMain) {
+            const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
+            movePill(mainEditor, mainPos.x - 5, mainPos.y - 5)
+            drag._onMain = true
+            return
+          } else if (!outside && onMain) {
+            const panelPos = fleetPointerEventPagePoint(editor, frame, e)
+            movePill(editor, panelPos.x - 35, panelPos.y - 9)
+            drag._onMain = false
+          } else if (onMain) {
+            const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
+            movePill(mainEditor, mainPos.x - 5, mainPos.y - 5)
+            return
+          }
+        } else if (mainEditor) {
           const onMain = !!drag._onMain
           if (outside && !onMain) {
             // Handoff: panel → main
@@ -5655,7 +5683,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       const pagePos = onMain
         ? clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY })
         : fleetPointerEventPagePoint(dropEditor, frame, e)
-      dropPillOnTarget(dropEditor, drag.pillId as TLShapeId, drag.value, pagePos, drag.content)
+      dropPillOnTarget(
+        dropEditor,
+        drag.pillId as TLShapeId,
+        drag.value,
+        pagePos,
+        drag.content,
+        (message) => addToast({ title: message, severity: 'error' }),
+      )
       try {
         const id = drag.pillId as TLShapeId
         if (dropEditor.getShape(id)) {
@@ -5674,7 +5709,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Delete any in-flight pill before releasing its coordinator handlers.
       if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
-  }, [chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
+  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {

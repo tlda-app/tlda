@@ -237,8 +237,11 @@ function reportArtifactNameCandidate(url?: string, path?: string, title?: string
   return [...pieces, ...derived].join(' ')
 }
 
-function isSupportedReportArtifact(url?: string, path?: string, title?: string) {
-  return /\.(html?|svg)(?:$|[?#\s])/i.test(`${reportArtifactNameCandidate(url, path, title)} `)
+function reportArtifactSourceKind(url?: string, path?: string, title?: string) {
+  const candidate = `${reportArtifactNameCandidate(url, path, title)} `
+  if (/\.(?:md|markdown)(?:$|[?#\s])/i.test(candidate)) return 'markdown'
+  if (/\.(?:html?|svg)(?:$|[?#\s])/i.test(candidate)) return 'rendered'
+  return null
 }
 
 function reportArtifactUrl(url?: string, path?: string) {
@@ -251,13 +254,33 @@ async function createReportArtifactShapeFromPill(
   editor: Editor,
   screenPoint: { x: number; y: number },
   pill: FleetPillRecord,
+  content?: string,
+  showError?: (message: string) => void,
 ) {
-  const filePath = typeof pill.meta.filePath === 'string' ? pill.meta.filePath : undefined
+  const value = typeof pill.props.value === 'string' ? pill.props.value : ''
+  const valuePath = value.startsWith('file:') ? value.slice('file:'.length) : undefined
+  const filePath = typeof pill.meta.filePath === 'string' ? pill.meta.filePath : valuePath
   const fileUrl = typeof pill.meta.fileUrl === 'string' ? pill.meta.fileUrl : undefined
   const displayName = typeof pill.props.displayName === 'string' ? pill.props.displayName : undefined
   const title = displayName || filePath?.split('/').pop() || 'Report artifact'
-  const url = reportArtifactUrl(fileUrl, filePath)
-  if (!url || !isSupportedReportArtifact(url, filePath, title)) return false
+  const sourceKind = reportArtifactSourceKind(fileUrl, filePath, title)
+  if (!sourceKind) return false
+  let url = reportArtifactUrl(fileUrl, filePath)
+  if (sourceKind === 'markdown') {
+    let markdown = content
+    if (!markdown || markdown === filePath || markdown === value) {
+      if (!fileUrl) {
+        showError?.('This Markdown file wasn’t uploaded, so it can’t be opened here.')
+        return true
+      }
+      if (!url) return false
+      const sourceRes = await fetch(url)
+      if (!sourceRes.ok) throw new Error(`markdown artifact read failed: ${sourceRes.status}`)
+      markdown = await sourceRes.text()
+    }
+    url = await createTemporaryMarkdownPageUrl(title, markdown)
+  }
+  if (!url) return false
   await placeFleetShapeAtScreenPoint(editor, 'fleet-report-artifact', screenPoint.x, screenPoint.y, REPORT_ARTIFACT_W, REPORT_ARTIFACT_H, {
     url,
     title,
@@ -390,6 +413,7 @@ export async function dropPillOnTarget(
   value: string,
   pagePoint: { x: number; y: number },
   content?: string,
+  showError?: (message: string) => void,
 ) {
   const draggedPillType = (editor.getShape(pillId)?.props as { pillType?: string } | undefined)?.pillType
   // Prefer the main editor for shape creation — the calling editor may be a
@@ -525,7 +549,7 @@ export async function dropPillOnTarget(
     const pillType = isFleetPillRecord(pill) ? pill.props.pillType : undefined
     const reportDropScreenPoint = hitEditor.pageToScreen(targetPagePoint)
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
-        await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill)) {
+        await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill, content, showError)) {
       return
     }
   }
