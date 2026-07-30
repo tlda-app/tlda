@@ -823,8 +823,7 @@ function timestampMs(value) {
 }
 
 function agentAwaySinceMs(agent) {
-  return timestampMs(agent?.last_active)
-    || timestampMs(agent?.last_seen)
+  return timestampMs(agent?.last_seen)
     || timestampMs(agent?.registered_at)
 }
 
