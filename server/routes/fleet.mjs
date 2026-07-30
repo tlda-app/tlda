@@ -833,23 +833,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/label ---
   router.post('/api/label', async (req, res) => {
-    const { agent: agentQuery, labels } = req.body || {}
-    if (!agentQuery || !Array.isArray(labels)) { res.status(400).json({ error: 'agent and labels[] required' }); return }
-    const agent = await fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const collisions = await fleetStore?.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false }) || []
-    for (const label of labels) {
-      if (label === SERVER_OWNER_NAME) collisions.push({ name: label, kind: 'server_owner' })
-      if (label === agent.id) collisions.push({ name: label, kind: 'self_id' })
-    }
-    if (collisions.length) {
-      res.status(400).json({ error: `Label(s) unavailable: ${formatNameCollisions(collisions)}` })
+    const { agent: agentQuery, operation, labels } = req.body || {}
+    const validValue = operation === 'replace'
+      ? Array.isArray(labels)
+      : (operation === 'add' || operation === 'remove')
+        && (typeof labels === 'string' || Array.isArray(labels))
+    if (!agentQuery || !validValue) {
+      res.status(400).json({ error: 'agent, operation, and labels are required; replace requires a list' })
       return
     }
-    agent.labels = labels
-    if (fleetStore) await fleetStore.upsertAgent(agent)
+    const agent = await fleetStore?.findAgent(agentQuery)
+    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
+    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: SERVER_OWNER_ID })
     broadcastState()
-    res.json({ ok: true, agent: agent.id, labels })
+    res.json({ ok: true, ...result })
   })
 
   // --- POST /api/set-metadata ---

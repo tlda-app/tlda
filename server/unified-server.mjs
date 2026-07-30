@@ -7184,20 +7184,20 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- label ----
   if (type === 'label') {
-    const { agent: agentQuery, labels } = msg
-    if (!agentQuery || !Array.isArray(labels)) { error('agent and labels[] required'); return }
-    const agent = await fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    const cols = await fleetStore.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false })
-    if (cols.length) {
-      const list = cols.map(c => c.kind === 'pseudo_label' ? `"${c.name}" is a reserved routing label` : `"${c.name}" is ${c.agent_id}'s friendly_name`).join('; ')
-      error(`Label collision: ${list}. Pick a different label or rename the other agent first.`)
+    const { agent: agentQuery, operation, labels } = msg
+    const validValue = operation === 'replace'
+      ? Array.isArray(labels)
+      : (operation === 'add' || operation === 'remove')
+        && (typeof labels === 'string' || Array.isArray(labels))
+    if (!agentQuery || !validValue) {
+      error('agent, operation, and labels are required; replace requires a list')
       return
     }
-    agent.labels = labels
-    await fleetStore.upsertAgent(agent)
+    const agent = await fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const result = await fleetStore.mutateAgentLabels(agent.id, operation, labels, { actorId: msg.caller || agent.id })
     broadcastState()
-    reply({ ok: true, agent: agent.id, labels })
+    reply({ ok: true, ...result })
     return
   }
 

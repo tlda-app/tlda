@@ -1406,7 +1406,14 @@ export function getFleetTools() {
         properties: {
           agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name).' },
           name: { type: 'string', description: 'Friendly name.' },
-          labels: { type: 'array', items: { type: 'string' }, description: 'Labels to set (replaces existing labels).' },
+          operation: { type: 'string', enum: ['add', 'remove', 'replace'], description: 'How to change labels. replace sets the complete list.' },
+          labels: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } },
+            ],
+            description: 'One label or a list for add/remove. replace requires the complete list; [] clears all labels.',
+          },
         },
         required: ['agent'],
       },
@@ -4072,8 +4079,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         if (renamed.error) return { content: [{ type: 'text', text: `Label failed: ${renamed.error}` }], isError: true };
         changes.push(`name="${args.name}"`);
       }
-      if (args.labels != null) {
-        const labeled = await mcpFleetTransport.durable('label', { agent: args.agent, labels: args.labels });
+      if (args.labels != null || args.operation != null) {
+        if (!args.operation) return { content: [{ type: 'text', text: 'Label operation is required.' }], isError: true };
+        if (args.operation === 'replace' && !Array.isArray(args.labels)) {
+          return { content: [{ type: 'text', text: 'replace requires the complete labels list.' }], isError: true };
+        }
+        const labeled = await mcpFleetTransport.durable('label', {
+          agent: args.agent,
+          operation: args.operation,
+          labels: args.labels,
+        });
         if (labeled.error) return { content: [{ type: 'text', text: `Label failed: ${labeled.error}` }], isError: true };
         changes.push(`labels=${(labeled.labels || []).join(',') || '(none)'}`);
       }

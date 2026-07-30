@@ -609,7 +609,7 @@ export function renameAgent(id, name) {
 }
 
 export function setAgentLabels(id, labels) {
-  return browserFleetTransport.durable('label', { agent: id, labels })
+  return browserFleetTransport.durable('label', { agent: id, operation: 'replace', labels })
 }
 
 export function kickAgent(id) {

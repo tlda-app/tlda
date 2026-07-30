@@ -300,7 +300,6 @@ export class FleetStore {
     this._resolvableWiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
     this._backfillNameHistory();
-    this._backfillLabelHistory();
     this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
@@ -1155,12 +1154,12 @@ export class FleetStore {
       END;
     `);
 
-    // Explicit labels are temporal routing state in exactly the same sense as
-    // friendly_name. Keep intervals at the write boundary so a history filter
-    // can join a message to the labels its participants held then. Existing
-    // agents are seeded at first observation in _backfillLabelHistory(); their
-    // present labels are deliberately not projected into earlier history.
+    // Explicit labels are projected from canonical events. The table is only a
+    // query cache; every row is rebuildable from events whose metadata contains
+    // label_state.labels.
     this.db.exec(`
+      DROP TRIGGER IF EXISTS label_history_ai;
+      DROP TRIGGER IF EXISTS label_history_au;
       CREATE TABLE IF NOT EXISTS label_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         fleet_id TEXT NOT NULL,
@@ -1170,21 +1169,6 @@ export class FleetStore {
       );
       CREATE INDEX IF NOT EXISTS idx_label_history_fleet ON label_history(fleet_id, from_ts);
       CREATE INDEX IF NOT EXISTS idx_label_history_open ON label_history(fleet_id) WHERE to_ts IS NULL;
-
-      CREATE TRIGGER IF NOT EXISTS label_history_ai AFTER INSERT ON agents BEGIN
-        INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
-        VALUES (NEW.id, COALESCE(NEW.labels, '[]'),
-                COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), NULL);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS label_history_au AFTER UPDATE OF labels ON agents
-      WHEN COALESCE(NEW.labels, '[]') IS NOT COALESCE(OLD.labels, '[]') BEGIN
-        UPDATE label_history SET to_ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-          WHERE fleet_id = NEW.id AND to_ts IS NULL;
-        INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
-        VALUES (NEW.id, COALESCE(NEW.labels, '[]'),
-                strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL);
-      END;
     `);
 
     // Runtime routing status is also temporal state. Unlike explicit labels,
@@ -2189,27 +2173,210 @@ export class FleetStore {
           agent = { ...agent, labels: filtered };
         }
       }
-      this._upsertAgent.run(
-        agent.id,
-        agent.parent_agent_id || null,
-        agent.friendly_name || null,
-        serializePrettyName(agent.pretty_name),
-        agent.labels ? JSON.stringify(agent.labels) : null,
-        agent.registered_at || null,
-        agent.last_seen || new Date().toISOString(),
-        agent.dead ? 1 : 0,
-        agent.human ? 1 : 0,
-        agent.is_manager ? 1 : 0,
-        agent.metadata ? JSON.stringify(agent.metadata) : null
-      );
+      const before = this._getAgent.get(agent.id);
+      const hasLabels = Object.prototype.hasOwnProperty.call(agent, 'labels');
+      const nextLabels = hasLabels ? this._normalizeCompleteLabels(agent.labels) : null;
+      const labelsChanged = hasLabels
+        && JSON.stringify(nextLabels) !== (before?.labels || '[]');
+      let insertedEvent = null;
+      this.db.transaction(() => {
+        this._upsertAgent.run(
+          agent.id,
+          agent.parent_agent_id || null,
+          agent.friendly_name || null,
+          serializePrettyName(agent.pretty_name),
+          hasLabels ? JSON.stringify(nextLabels) : null,
+          agent.registered_at || null,
+          agent.last_seen || new Date().toISOString(),
+          agent.dead ? 1 : 0,
+          agent.human ? 1 : 0,
+          agent.is_manager ? 1 : 0,
+          agent.metadata ? JSON.stringify(agent.metadata) : null
+        );
+        if (!before || labelsChanged) {
+          const timestamp = !before
+            ? (agent.registered_at || new Date().toISOString())
+            : new Date().toISOString();
+          insertedEvent = this._insertLabelStateEvent({
+            type: before ? 'label' : 'register',
+            agentId: agent.id,
+            actorId: agent.id,
+            labels: nextLabels || [],
+            operation: before ? 'replace' : 'register',
+            timestamp,
+          });
+          this._rebuildLabelHistoryForAgent(agent.id);
+        }
+      })();
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
+      if (insertedEvent) this._notifyEvent(insertedEvent);
     } catch (e) {
       if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
         throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
       }
       throw e;
     }
+  }
+
+  _normalizeCompleteLabels(labels) {
+    if (!Array.isArray(labels)) throw new TypeError('complete labels must be a list');
+    const normalized = [];
+    const seen = new Set();
+    for (const raw of labels) {
+      if (typeof raw !== 'string' || !raw) throw new TypeError('labels must be non-empty strings');
+      if (seen.has(raw)) continue;
+      seen.add(raw);
+      normalized.push(raw);
+    }
+    return normalized;
+  }
+
+  _insertLabelStateEvent({ type, agentId, actorId, labels, operation, timestamp }) {
+    const metadata = { label_state: { labels, operation } };
+    const result = this._insertEvent.run(
+      type,
+      timestamp,
+      actorId || null,
+      null,
+      operation === 'register' ? 'initial labels' : `labels ${operation}`,
+      JSON.stringify(metadata),
+      null,
+      agentId,
+    );
+    return {
+      id: Number(result.lastInsertRowid),
+      type,
+      timestamp,
+      from_id: actorId || null,
+      to_id: null,
+      text: operation === 'register' ? 'initial labels' : `labels ${operation}`,
+      metadata,
+      task_id: null,
+      agent_id: agentId,
+      read: false,
+    };
+  }
+
+  _notifyEvent(inserted) {
+    const broadcastEvent = {
+      ...inserted,
+      _filter_agents: this._filterAgentsCurrent([
+        inserted.from_id,
+        inserted.to_id,
+        inserted.agent_id,
+      ]),
+    };
+    for (const fn of this._listeners) {
+      try { fn(broadcastEvent); } catch (error) {
+        // The database commit is authoritative; one observer cannot undo it or block other observers.
+        console.error('[fleet-store] label event listener threw:', error?.message || error);
+      }
+    }
+  }
+
+  _rebuildLabelHistoryForAgent(agentId) {
+    const rows = this.db.prepare(`
+      SELECT id, timestamp, json_extract(metadata, '$.label_state.labels') AS labels
+      FROM events
+      WHERE agent_id = ?
+        AND json_type(metadata, '$.label_state.labels') = 'array'
+      ORDER BY timestamp ASC, id ASC
+    `).all(agentId);
+    this.db.prepare('DELETE FROM label_history WHERE fleet_id = ?').run(agentId);
+    const insert = this.db.prepare(`
+      INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (let i = 0; i < rows.length; i++) {
+      insert.run(agentId, rows[i].labels, rows[i].timestamp, rows[i + 1]?.timestamp || null);
+    }
+    if (rows.length) {
+      this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?')
+        .run(rows[rows.length - 1].labels, agentId);
+    }
+  }
+
+  rebuildLabelHistoryFromEvents() {
+    const result = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM label_history').run();
+      const agents = this.db.prepare(`
+        SELECT DISTINCT agent_id
+        FROM events
+        WHERE agent_id IS NOT NULL
+          AND json_type(metadata, '$.label_state.labels') = 'array'
+      `).all();
+      for (const { agent_id } of agents) this._rebuildLabelHistoryForAgent(agent_id);
+      return { agents: agents.length };
+    })();
+    this._bustAgentsCache();
+    this._reloadAgentRegistry();
+    return result;
+  }
+
+  migrateExistingAgentLabelsToEvents() {
+    const inserted = [];
+    this.db.transaction(() => {
+      const agents = this.db.prepare(`
+        SELECT id, COALESCE(labels, '[]') AS labels,
+               COALESCE(registered_at, last_seen, '1970-01-01T00:00:00.000Z') AS timestamp
+        FROM agents
+        WHERE NOT EXISTS (
+          SELECT 1 FROM events e
+          WHERE e.agent_id = agents.id
+            AND json_type(e.metadata, '$.label_state.labels') = 'array'
+        )
+        ORDER BY id
+      `).all();
+      for (const agent of agents) {
+        const labels = this._normalizeCompleteLabels(JSON.parse(agent.labels));
+        inserted.push(this._insertLabelStateEvent({
+          type: 'register',
+          agentId: agent.id,
+          actorId: agent.id,
+          labels,
+          operation: 'migration',
+          timestamp: agent.timestamp,
+        }));
+      }
+      this.rebuildLabelHistoryFromEvents();
+    })();
+    for (const event of inserted) this._notifyEvent(event);
+    return { events: inserted.length };
+  }
+
+  mutateAgentLabels(id, operation, value, { actorId = null, timestamp = null } = {}) {
+    if (!['add', 'remove', 'replace'].includes(operation)) throw new Error('label operation must be add, remove, or replace');
+    const incoming = operation === 'replace'
+      ? this._normalizeCompleteLabels(value)
+      : this._normalizeCompleteLabels(Array.isArray(value) ? value : [value]);
+    let inserted;
+    let labels;
+    this.db.transaction(() => {
+      const row = this._getAgent.get(id);
+      if (!row) throw new Error('agent not found');
+      const current = this._normalizeCompleteLabels(row.labels ? JSON.parse(row.labels) : []);
+      if (operation === 'add') labels = [...current, ...incoming.filter(label => !current.includes(label))];
+      else if (operation === 'remove') labels = current.filter(label => !incoming.includes(label));
+      else labels = incoming;
+      const collisions = this.checkNameAvailable(labels, { excludeId: id, asFriendlyName: false });
+      if (collisions.length) throw new Error(`Label collision: ${collisions.map(c => c.name).join(', ')}`);
+      this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(labels), id);
+      inserted = this._insertLabelStateEvent({
+        type: 'label',
+        agentId: id,
+        actorId: actorId || id,
+        labels,
+        operation,
+        timestamp: timestamp || new Date().toISOString(),
+      });
+      this._rebuildLabelHistoryForAgent(id);
+      labels = JSON.parse(this._getAgent.get(id).labels || '[]');
+    })();
+    this._bustAgentsCache();
+    this._syncAgentRegistry(id);
+    this._notifyEvent(inserted);
+    return { agent: id, labels, eventId: inserted.id };
   }
 
   // Agents associated with a particular daemon registry identity. Used by the
@@ -2341,22 +2508,6 @@ export class FleetStore {
       }
     })();
     if (spans > 0) console.log(`[fleet-store] name_history backfill: ${spans} spans across ${seeded.size} agents`);
-  }
-
-  // label_history did not exist before temporal filter subscriptions. The only
-  // fact available for an existing row is what its labels are now, so open the
-  // first interval now. Backdating it to registered_at would invent history.
-  _backfillLabelHistory() {
-    const now = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO label_history (fleet_id, labels, from_ts, to_ts)
-      SELECT a.id, COALESCE(a.labels, '[]'), ?, NULL
-      FROM agents a
-      WHERE NOT EXISTS (
-        SELECT 1 FROM label_history h
-        WHERE h.fleet_id = a.id AND h.to_ts IS NULL
-      )
-    `).run(now);
   }
 
   // The pre-migration database has no runtime timeline. Humans start `here`;
@@ -3207,15 +3358,32 @@ export class FleetStore {
   // name or null) so the name it holds is freed for whoever takes it.
   async _applyNameAssignments(nameAssignments, { actorId = null, reason = 'stack' } = {}) {
     if (!nameAssignments || !nameAssignments.length) return;
+    const finalNames = new Map(
+      this.db.prepare('SELECT id, friendly_name FROM agents WHERE dead = 0').all()
+        .map(row => [row.id, row.friendly_name])
+    );
+    for (const { fleetId, friendlyName } of nameAssignments) {
+      finalNames.set(fleetId, friendlyName || null);
+    }
+    for (const { fleetId, labels } of nameAssignments) {
+      if (labels === undefined) continue;
+      for (const label of this._normalizeCompleteLabels(labels)) {
+        const holder = [...finalNames].find(([id, name]) => id !== fleetId && name === label);
+        if (holder) throw new Error(`Label collision: ${label}`);
+      }
+    }
     this.db.transaction(() => {
       const clear = this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL WHERE id = ?');
-      const setLabels = this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?');
-      for (const { fleetId, labels } of nameAssignments) {
+      for (const { fleetId } of nameAssignments) {
         clear.run(fleetId);
-        if (labels !== undefined) setLabels.run(JSON.stringify(labels), fleetId);
       }
       this._bustAgentsCache();
     })();
+    for (const { fleetId, labels } of nameAssignments) {
+      if (labels !== undefined) {
+        this.mutateAgentLabels(fleetId, 'replace', labels, { actorId });
+      }
+    }
     for (const { fleetId, friendlyName, prettyName } of nameAssignments) {
       await this.renameAgentFriendlyName(fleetId, friendlyName || null, { actorId, reason, prettyName });
     }
