@@ -137,6 +137,10 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   const kind = semanticOperationKind(toolName)
   const descriptor = semanticOperationDescriptor(toolName, input, arg, ts)
   if (!descriptor) return null
+  const legacy = kind === 'thread' ? renderThreadResult(text, ctx) : renderSearchResult(text, ctx)
+  const semanticExpand = legacy.includes('pretty-expand-btn')
+    ? ''
+    : '<div class="pretty-expand-btn">Expand</div>'
   const inspectedPages = [descriptor.inspected || {}, ...(Array.isArray(input?._semanticInspectedPages) ? input._semanticInspectedPages : [])]
     .filter(page => page && Object.keys(page).length > 0)
   const inspected = inspectedPages[0] || {}
@@ -150,7 +154,8 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   const json = esc(JSON.stringify(descriptor))
   const key = esc(descriptor.semanticKey)
   return `<div class="semantic-chat-operation" data-semantic-key="${key}">
-    <div class="pretty-expand-btn">Open ${kind === 'thread' ? 'thread' : 'search results'}</div>
+    ${legacy}
+    ${semanticExpand}
     ${inspectedHtml}
     <div class="semantic-operation-body" data-semantic-operation="${json}" style="display:none"></div>
   </div>`
@@ -964,12 +969,9 @@ export function renderActivityGroup(group, ctx) {
       // For a propose_edit the diff card already shows the change; its result text
       // ("**Proposal proposal-N**…") is only consumed to extract the id above, so
       // don't also render it as a raw result block under the card.
-      const semanticKind = semanticOperationKind(t._toolName)
-      const prettyHtml = semanticKind
-        ? renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg)
-        : (t._prettyResult && !isPropose)
-          ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
-          : ''
+      const prettyHtml = (t._prettyResult && !isPropose)
+        ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
+        : ''
       return `<div class="tool-line${hasDiff}"${cmdAttr} data-line="${num}" data-tool-name="${esc(t._toolName || '')}" data-tool-arg="${esc(t._toolArg || '')}">`
         + `<span class="drag-handle" title="Drag tool call"></span>`
         + `<span class="tool-linenum">${num}</span>`

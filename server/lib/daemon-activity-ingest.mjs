@@ -1,9 +1,5 @@
 import { boundActivityMetadata, boundActivityPayload } from '../../shared/activity-payload-bounds.mjs'
 
-export function shouldStoreDaemonActivity(msg) {
-  return msg?.tool !== '_usage' && msg?.tool !== '_prettyResult'
-}
-
 export function finiteMessageMs(value) {
   if (value == null || value === '') return null
   const n = Number(value)
@@ -17,6 +13,7 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
     input,
     ts,
     usage,
+    prettyResult,
     origTool,
     status,
     duration,
@@ -41,7 +38,7 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
 
   return {
     text: tool === '_text' ? boundActivityPayload(arg || '') : (tool || ''),
-    metadata: boundActivityMetadata({ tool, arg, input, usage, origTool, status, duration, correlationId, activityLatency }),
+    metadata: boundActivityMetadata({ tool, arg, input, usage, prettyResult, origTool, status, duration, correlationId, activityLatency }),
     timestamp: ts || new Date().toISOString(),
     activityLatency,
   }

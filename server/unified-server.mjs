@@ -126,7 +126,7 @@ import {
 } from './lib/observability/telemetry-status.mjs'
 import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
-import { buildDaemonActivityRecord, shouldStoreDaemonActivity } from './lib/daemon-activity-ingest.mjs'
+import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
 import { appendAgentActionFromActivity } from './lib/edit-events.mjs'
 import {
   agentLivenessTraceResponse,
@@ -8233,7 +8233,7 @@ async function handleDaemonWsMessage(ws, msg) {
       tool,
     })
     touchActivity(agent_id)
-    if (!shouldStoreDaemonActivity(msg)) return
+    if (tool === '_usage') return // usage stats don't need DB storage
     try {
       const serverBroadcastQueuedAtMs = Date.now()
       const activity = buildDaemonActivityRecord(msg, { serverReceivedAtMs, serverBroadcastQueuedAtMs })
