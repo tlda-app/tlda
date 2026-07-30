@@ -2621,17 +2621,6 @@ export class FleetStore {
     })();
   }
 
-  getCurrentRuntimeState(id) {
-    if (!id) return null;
-    return this.db.prepare(`
-      SELECT fleet_id, kind, status, from_ts, to_ts
-      FROM runtime_status_history
-      WHERE fleet_id = ? AND to_ts IS NULL
-      ORDER BY from_ts DESC, id DESC
-      LIMIT 1
-    `).get(id) || null;
-  }
-
   /**
    * The bounded temporal table for one instantiated filter.
    *

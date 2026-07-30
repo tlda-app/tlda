@@ -57,7 +57,6 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getAllTasks',
   'getChatContext',
   'getChatTempIdResult',
-  'getCurrentRuntimeState',
   'getAgentDaemonRoute',
   'getAgentDaemonRoutes',
   'setAgentDaemonRoute',
