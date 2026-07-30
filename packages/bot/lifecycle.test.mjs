@@ -13,6 +13,8 @@ async function login(socket, assignedName, id = 'fleet:fixture') {
   const request = socket.sent.find(message => message.type === 'login')
   assert.ok(request)
   socket.reply(request, { ok: true, agent: { id, friendly_name: assignedName } })
+  const subscription = socket.sent.find(message => message.type === 'subscribe-filter')
+  if (subscription) socket.reply(subscription, { ok: true })
   await turn()
 }
 
@@ -52,7 +54,12 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
   transport.sockets[0].event({ event: 'agents-delta', data: {
     changed: [{ id: 'fleet:fixture', friendly_name: 'fixture' }],
   } })
-  for (const text of ['probe', 'help', 'missing']) {
+  transport.sockets[0].event({ event: 'filter-event', data: { subId: 'bot-chat-fleet:fixture', event: {
+    type: 'chat', from_id: 'fleet:user', to_id: 'fleet:fixture', text: 'probe',
+  } } })
+  await turn()
+  assert.equal(handled, 1)
+  for (const text of ['help', 'missing']) {
     transport.sockets[0].event({ event: 'fleet-event', data: {
       type: 'chat', from_id: 'fleet:user', to_id: 'fleet:fixture', text,
     } })

@@ -195,6 +195,14 @@ export function createBot({
       result = { ok: true, agent };
     }
     updateAssignedNameFromAgent(result?.agent);
+    if (isCanonical()) {
+      await requestRaw({
+        type: 'subscribe-filter',
+        subId: `bot-chat-${id}`,
+        filter: [[['to', id]], [['from', id]]],
+        window: 0,
+      });
+    }
     if (!isCanonical()) log(`inert: requested "${key}", assigned "${assignedName || '(none)'}"`);
     return result;
   }
@@ -232,6 +240,9 @@ export function createBot({
     if (!isCanonical()) return;
     fire('message', msg);
     // The server wraps chats in a fleet-event envelope: { event, data: { type, from_id, to_id, text } }.
+    if (msg.event === 'filter-event') {
+      msg = { event: 'fleet-event', data: msg.data?.event || {} };
+    }
     if (msg.event !== 'fleet-event') return;
     const data = msg.data || {};
     if (data.type !== 'chat') return;
