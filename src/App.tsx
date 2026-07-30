@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo, useRef, Component, type FormEvent, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
-import { sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity } from './fleet-data-adapter'
+import { sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
@@ -16,9 +16,14 @@ import {
   sortFleetAgentDirectoryRowsByRecency,
   type FleetAgentDirectoryRowModel,
 } from './shapes/FleetAgentDirectoryModel'
-import { isUsableIdentityName, sanitizeIdentityName } from './fleet/identity-persistence.mjs'
+import { FleetAgentDirectoryRow } from './shapes/FleetAgentDirectoryRow'
+// @ts-ignore — vanilla JS module
+import { renderChatLine, esc } from './fleet/chat-render.mjs'
+// @ts-ignore — vanilla JS module
+import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
 import './App.css'
 import './themes.css'
+import './shapes/fleet-chat.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()
@@ -642,9 +647,69 @@ function projectLabelMatches(row: FleetAgentDirectoryRowModel, project: string) 
   return row.labels.some(label => label === project || label === `project:${project}` || label.endsWith(`/${project}`))
 }
 
-function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null): FleetChatFilter | null {
-  if (!row?.exactName) return null
-  return [[['from', row.exactName]], [['to', row.exactName]]]
+function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null, humanId: string | null | undefined): FleetChatFilter | null {
+  if (!row?.exactName || !humanId) return null
+  return [
+    [['from', humanId], ['to', row.exactName]],
+    [['from', row.exactName], ['to', humanId]],
+  ]
+}
+
+function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>) {
+  const agentLabel = (id: string) => {
+    if (!id) return '[unknown]'
+    if (identity.id && id === identity.id) return identity.name || 'You'
+    const agent = agents.find((a: any) => a.id === id || a.friendly_name === id)
+    return agent?.friendly_name || agent?.name || String(id).replace(/^fleet:/, '')
+  }
+  const getNickClass = (id: string) => {
+    if (identity.id && id === identity.id) return 'nick-human'
+    return 'nick-agent-0'
+  }
+  return {
+    agentLabel,
+    getNickClass,
+    isHumanId: (id: string) => !!identity.id && id === identity.id,
+    getAgents: () => agents,
+    getTasks: () => tasks,
+    tldaToken: null,
+    renderMarkdown: (input: string) => renderMarkdownUtil(input),
+    highlightSyntax: (code: string) => esc(code),
+    langFromFilePath: () => '',
+    preambleMacros: {},
+  }
+}
+
+function ProjectAgentColumn({
+  project,
+  title,
+  rows,
+  selectedAgentId,
+  onSelectAgent,
+}: {
+  project: string
+  title: string
+  rows: FleetAgentDirectoryRowModel[]
+  selectedAgentId: string | null
+  onSelectAgent: (row: FleetAgentDirectoryRowModel) => void
+}) {
+  return (
+    <section className="index-project-agent-column" aria-label={`${title} recent agents`}>
+      <div className="index-project-agent-title">{title}</div>
+      <div className="index-project-agent-list">
+        {rows.length === 0 && <div className="index-project-agent-empty">No recent agents</div>}
+        {rows.map(row => (
+          <div
+            key={row.id || row.exactName}
+            className={selectedAgentId === row.id || selectedAgentId === row.exactName ? 'index-agent-row selected' : 'index-agent-row'}
+            onClick={() => onSelectAgent(row)}
+          >
+            <FleetAgentDirectoryRow row={row} knownProjects={[project]} />
+          </div>
+        ))}
+      </div>
+    </section>
+  )
 }
 
 function DocumentPicker({ isDark, manifest, onSelect }: {
@@ -654,6 +719,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 }) {
   const identity = useFleetIdentity()
   const agents = useFleetAgents()
+  const tasks = useFleetTasks()
   const agentRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(agents)), [agents])
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
@@ -671,10 +737,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [changelogs, setChangelogs] = useState<Record<string, ProjectChangelog>>({})
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [timeAxisNow] = useState(() => Date.now())
-  const [identityDraft, setIdentityDraft] = useState(identity.name || '')
-  const [identityMessage, setIdentityMessage] = useState('')
-  const [identitySaving, setIdentitySaving] = useState(false)
-  const [activeChromeProject, setActiveChromeProject] = useState('')
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [chatSendError, setChatSendError] = useState('')
   const pointerStart = useRef<PointerStart | null>(null)
@@ -782,21 +844,22 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const visibleEntries = entries
   const visibleProjectNames = visibleEntries.map(([key]) => key)
   const visibleProjectKey = visibleProjectNames.join('\n')
-  const chromeProject = activeChromeProject && visibleProjectNames.includes(activeChromeProject)
-    ? activeChromeProject
-    : visibleProjectNames[0] || ''
-  const projectAgentRows = useMemo(() => {
-    if (!chromeProject) return []
-    return agentRows.filter(row => projectLabelMatches(row, chromeProject))
-  }, [agentRows, chromeProject])
-  const chromeAgentRows = projectAgentRows.length > 0 ? projectAgentRows : agentRows.slice(0, 12)
+  const projectAgentColumns = useMemo(() => (
+    visibleEntries
+      .map(([project, config]) => ({
+        project,
+        title: config.name || project,
+        rows: agentRows.filter(row => projectLabelMatches(row, project)).slice(0, 8),
+      }))
+  ), [agentRows, visibleEntries])
   const selectedAgent = useMemo(() => {
     if (!selectedAgentId) return null
     return agentRows.find(row => row.id === selectedAgentId || row.exactName === selectedAgentId) || null
   }, [agentRows, selectedAgentId])
-  const selectedAgentFilter = useMemo(() => fleetChatFilterForAgent(selectedAgent), [selectedAgent])
+  const selectedAgentFilter = useMemo(() => fleetChatFilterForAgent(selectedAgent, identity.id), [selectedAgent, identity.id])
   const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
   const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, selectedAgent?.id ? `index:${selectedAgent.id}` : 'index:no-agent')
+  const chatRenderContext = useMemo(() => makeIndexChatRenderContext(agents, tasks, identity), [agents, tasks, identity])
   const selectedChatRows = useMemo(() => {
     if (!selectedAgent) return []
     return selectedChatEvents
@@ -804,14 +867,16 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .sort((a, b) => fleetEventTimestamp(a) - fleetEventTimestamp(b))
       .slice(-24)
   }, [selectedAgent, selectedChatEvents])
+  const renderedChatRows = useMemo(() => (
+    selectedChatRows.map((event, index) => ({
+      key: event.id || event._tempId || `${event.timestamp}-${index}`,
+      html: renderChatLine(event, chatRenderContext),
+    }))
+  ), [chatRenderContext, selectedChatRows])
   const composerAgentNames = useMemo(() => (
     selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
   ), [selectedAgent])
   const sendTargets = selectedAgent?.exactName ? [selectedAgent.exactName] : []
-
-  useEffect(() => {
-    setIdentityDraft(identity.name || '')
-  }, [identity.name])
 
   useEffect(() => {
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
@@ -1046,26 +1111,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     window.location.assign(url.toString())
   }
 
-  const saveIdentityName = async (event: FormEvent) => {
-    event.preventDefault()
-    const candidate = sanitizeIdentityName(identityDraft)
-    if (!isUsableIdentityName(candidate)) {
-      setIdentityMessage('Enter a name.')
-      return
-    }
-    setIdentitySaving(true)
-    setIdentityMessage('')
-    try {
-      await identity.login(candidate)
-      setIdentityMessage(`Signed in as ${candidate}.`)
-    } catch {
-      await identity.register(candidate)
-      setIdentityMessage(`Signed in as ${candidate}.`)
-    } finally {
-      setIdentitySaving(false)
-    }
-  }
-
   const sendChromeChat = (text: string, targets: string[]) => {
     setChatSendError('')
     void Promise.all(targets.map(target => sendMessage(target, text)))
@@ -1079,7 +1124,40 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   return (
     <div className={`PickerScreen${isDark ? ' tl-theme__dark' : ''}`}>
-      <div className="picker-layout">
+      <div className="index-top-chat fleet-chat-shape">
+        <div className="index-top-chat-header">
+          <span>{selectedAgent ? selectedAgent.displayName : 'Chat'}</span>
+          {selectedAgent && <button type="button" onClick={() => setSelectedAgentId(null)}>All</button>}
+        </div>
+        <div className="index-top-chat-log fleet-chat-log" aria-live="polite">
+          {!selectedAgent && <div className="index-top-chat-empty">Select an agent from a project column.</div>}
+          {selectedAgent && renderedChatRows.length === 0 && <div className="index-top-chat-empty">No messages</div>}
+          {renderedChatRows.map(row => (
+            <div key={row.key} className="chat-row-wrap" dangerouslySetInnerHTML={{ __html: row.html }} />
+          ))}
+        </div>
+        <ChatComposer
+          className="index-top-chat-composer"
+          sendTargets={sendTargets}
+          agentNames={composerAgentNames}
+          onSend={sendChromeChat}
+          placeholder={selectedAgent ? `Message ${selectedAgent.displayName}` : ''}
+        />
+        {chatSendError && <div className="index-top-chat-error">{chatSendError}</div>}
+      </div>
+
+      <div className="project-index-search-row">
+        <input
+          className="picker-search"
+          type="text"
+          placeholder={defaultSearch || 'Search projects...'}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          autoFocus
+        />
+      </div>
+
+      <div className="index-content-layout">
         <main className="picker-main">
           <div className="project-index">
             <div className="project-index-axis" aria-hidden="true">
@@ -1159,105 +1237,17 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
             </div>
           </div>
         </main>
-        <aside className="page-chrome" aria-label="Page chrome chat and project agents">
-          <section className="page-chrome-section page-chrome-chat">
-            <div className="page-chrome-section-title">
-              <span>Chat</span>
-              {selectedAgent && <button type="button" onClick={() => setSelectedAgentId(null)}>All</button>}
-            </div>
-            <div className="page-chrome-chat-target">
-              {selectedAgent ? selectedAgent.displayName : 'Choose an agent'}
-            </div>
-            <div className="page-chrome-chat-log" aria-live="polite">
-              {selectedAgent && selectedChatRows.length === 0 && (
-                <div className="page-chrome-empty">No recent messages</div>
-              )}
-              {!selectedAgent && (
-                <div className="page-chrome-empty">Select an agent below for one-on-one chat.</div>
-              )}
-              {selectedChatRows.map((event, index) => {
-                const from = event.from_id || event.from || ''
-                const isHuman = identity.id && from === identity.id
-                const author = isHuman ? (identity.name || 'You') : selectedAgent?.displayName || String(from).replace(/^fleet:/, '')
-                return (
-                  <div key={event.id || event._tempId || `${event.timestamp}-${index}`} className="page-chrome-chat-row">
-                    <span className="page-chrome-chat-meta">{author}</span>
-                    <span className="page-chrome-chat-text">{fleetEventText(event)}</span>
-                  </div>
-                )
-              })}
-            </div>
-            <ChatComposer
-              className="page-chrome-composer"
-              sendTargets={sendTargets}
-              agentNames={composerAgentNames}
-              onSend={sendChromeChat}
-              placeholder={selectedAgent ? `Message ${selectedAgent.displayName}` : ''}
+        <aside className="index-project-agent-columns" aria-label="Recent agents by project">
+          {projectAgentColumns.map(column => (
+            <ProjectAgentColumn
+              key={column.project}
+              project={column.project}
+              title={column.title}
+              rows={column.rows}
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={(row) => setSelectedAgentId(row.id || row.exactName)}
             />
-            {chatSendError && <div className="page-chrome-error">{chatSendError}</div>}
-          </section>
-          <section className="page-chrome-section">
-            <div className="page-chrome-section-title"><span>Search</span></div>
-            <input
-              className="picker-search"
-              type="text"
-              placeholder={defaultSearch || 'Search projects...'}
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              autoFocus
-            />
-          </section>
-          <section className="page-chrome-section">
-            <div className="page-chrome-section-title"><span>Projects</span></div>
-            <div className="page-chrome-projects">
-              {visibleProjectNames.slice(0, 12).map(project => (
-                <button
-                  key={project}
-                  type="button"
-                  className={project === chromeProject ? 'active' : ''}
-                  onClick={() => setActiveChromeProject(project)}
-                >
-                  {manifest[project]?.name || restoredProjects[project]?.name || project}
-                </button>
-              ))}
-            </div>
-            <div className="page-chrome-project-agents">
-              <div className="page-chrome-section-title">
-                <span>{projectAgentRows.length > 0 ? 'Agents' : 'Recent contributions'}</span>
-              </div>
-              <div className="page-chrome-agents">
-                {chromeAgentRows.length === 0 && <div className="page-chrome-empty">No agents</div>}
-                {chromeAgentRows.map(row => (
-                  <button
-                    key={row.id || row.exactName}
-                    type="button"
-                    className={selectedAgent?.id === row.id ? 'active' : ''}
-                    onClick={() => setSelectedAgentId(row.id || row.exactName)}
-                    title={row.hoverTitle}
-                  >
-                    <span className="page-chrome-agent-name" style={{ color: row.color }}>{row.displayName}</span>
-                    <span className="page-chrome-agent-meta">{row.project || row.cwdLabel || row.ago}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-          <section className="page-chrome-section page-chrome-identity">
-            <div className="page-chrome-section-title"><span>Identity</span></div>
-            <form onSubmit={saveIdentityName}>
-              <input
-                type="text"
-                value={identityDraft}
-                onChange={e => setIdentityDraft(e.target.value)}
-                placeholder="Your name"
-                aria-label="Your name"
-              />
-              <button type="submit" disabled={identitySaving}>Save</button>
-            </form>
-            {(identityMessage || identity.name) && (
-              <div className="page-chrome-identity-status">{identityMessage || `Signed in as ${identity.name}`}</div>
-            )}
-          </section>
+          ))}
         </aside>
       </div>
       {(identity.name || telemetryUrl) && (
