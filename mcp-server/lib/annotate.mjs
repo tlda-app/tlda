@@ -72,7 +72,7 @@ async function getShapes(projectName, server, typeFilter) {
  */
 export async function stageNote(doc, line, text, {
   color = 'orange', size, width, height, side = 'right', file, choices, page: pageNum,
-  server, fleetId = process.env.FLEET_ID, fleetName = process.env.FLEET_NAME,
+  server, fleetId = process.env.FLEET_ID, fleetName = process.env.FLEET_NAME, markdownSelectorSource,
 } = {}) {
   const dims = resolveSize({ size, width, height });
   width = dims.width;
@@ -125,6 +125,7 @@ export async function stageNote(doc, line, text, {
       sourceAnchor: { file: `./${linePos.texFile || doc + '.tex'}`, line, column: -1, content: linePos.content },
       ...(fleetId ? { fleet_id: fleetId } : {}),
       ...(fleetName ? { friendly_name: fleetName } : {}),
+      ...(markdownSelectorSource ? { markdownSelectorSource } : {}),
     },
     parentId: 'page:page',
     index: noteIndex,
