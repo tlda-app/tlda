@@ -752,13 +752,8 @@ router.get('/:name/outline', requireRead, async (req, res) => {
   if (!existsSync(texPath)) return res.status(404).json({ error: `tex not found: ${file}` })
   const text = readFileSync(texPath, 'utf8')
   const region = regionFromSpan(text, startLine, startCol, endLine, endCol)
-  // Backing file for the outline note — lives under <project-root>/.outlines/ in
-  // the authoring source tree so agents can open/edit it. Stable per span.
-  const root = getSourceDir(req.params.name)
   const base = String(file).replace(/\.tex$/, '').split('/').pop()
   const slug = `${base}-L${startLine}c${startCol}-L${endLine}c${endCol}`
-  const backingFile = join(root, '.outlines', `${slug}.md`)
-  const backingName = `.outlines/${slug}.md`
   try {
     // Best-effort clause outline; if the span yields nothing, fall back to the
     // raw highlighted text so the extracted note is never empty.
@@ -789,7 +784,7 @@ router.get('/:name/outline', requireRead, async (req, res) => {
       const { execSync } = await import('child_process')
       mdView = execSync('pandoc -f latex -t markdown --wrap=none', { input: region, encoding: 'utf8', timeout: 10000 })
     } catch { /* pandoc unavailable — fall back to raw tex */ }
-    res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, backingFile, backingName, slug: modelOk ? slug : '' })
+    res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, slug: modelOk ? slug : '' })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }

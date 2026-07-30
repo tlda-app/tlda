@@ -9,7 +9,6 @@ const read = (path) => readFileSync(join(root, path), 'utf8')
 
 const svgDocument = read('src/SvgDocument.tsx')
 const bookViewer = read('src/BookViewer.tsx')
-const mathNote = read('src/shapes/MathNoteShape.tsx')
 const fleetAgents = read('src/shapes/FleetAgentsShape.tsx')
 const fleetPill = read('src/shapes/FleetPillShape.tsx')
 const fleetChat = read('src/shapes/FleetChatShape.tsx')
@@ -45,15 +44,6 @@ assert.ok(bookViewer.includes('loadHtmlDocument(member.key, member.basePath)'), 
 assert.ok(bookViewer.includes('doc = createSvgDocumentLayout(member.key, member.pages, member.basePath)'), 'BookViewer must load SVG members with member key')
 assert.ok(bookViewer.includes('`doc-${activeMember.key}`'), 'BookViewer roomId must be keyed by active member key')
 
-assert.doesNotMatch(
-  mathNote,
-  /new URLSearchParams\(window\.location\.search\)\.get\(['"]doc['"]\)/,
-  'MathNote backing-file operations must use DocContext active member docName, not URL ?doc',
-)
-assert.ok(mathNote.includes('const activeDocName = pageDoc?.docName'), 'MathNote should capture active member docName from DocContext')
-assert.ok(mathNote.includes('docName: activeDocName'), 'MathNote backing-file payload should target active member docName')
-assert.ok(mathNote.includes("fetch('/api/backing-file-register'"), 'MathNote should remain the sole backing-file registration publisher')
-
 assert.ok(fleetAgents.includes('useContext(DocContext)'), 'FleetAgents should read current document from DocContext')
 assert.ok(fleetAgents.includes('const currentDoc = docCtx?.docName || \'\''), 'FleetAgents spawn defaults should use active member docName')
 assert.doesNotMatch(
@@ -61,7 +51,7 @@ assert.doesNotMatch(
   /new URLSearchParams\(window\.location\.search\)\.get\(['"]doc['"]\)/,
   'FleetAgents spawn defaults must not use outer book URL ?doc',
 )
-assert.ok(fleetAgents.includes('export function usePillDrag()'), 'FleetAgents drag helper should not carry a second backing-file doc authority')
+assert.ok(fleetAgents.includes('export function usePillDrag()'), 'FleetAgents drag helper should not carry a second doc authority')
 assert.ok(fleetAgents.includes('dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)'), 'FleetAgents drops should use the canonical FleetPill signature')
 
 for (const [name, source] of [
@@ -77,10 +67,9 @@ for (const [name, source] of [
   )
 }
 
-assert.doesNotMatch(fleetPill, /backing-file-register/, 'FleetPill must not publish backing-file registration')
-assert.doesNotMatch(fleetPill, /options\?: \{ docName\?: string \}/, 'FleetPill must not accept a second backing-file doc authority')
+assert.doesNotMatch(fleetPill, /options\?: \{ docName\?: string \}/, 'FleetPill must not accept a second doc authority')
 assert.ok(fleetChat.includes('dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)'), 'FleetChat drops should use the canonical FleetPill signature')
-assert.ok(fleetSearch.includes('function usePillDrag()'), 'FleetSearch drag helper should not carry a second backing-file doc authority')
+assert.ok(fleetSearch.includes('function usePillDrag()'), 'FleetSearch drag helper should not carry a second doc authority')
 assert.ok(fleetSearch.includes('dropPillOnTarget(editor, id, drag.value, pagePos)'), 'FleetSearch drops should use the canonical FleetPill signature')
 assert.ok(svgPage.includes('const doc = useContext(DocContext)'), 'SvgPage should read active member docName from DocContext')
 assert.ok(svgPage.includes('const docName = doc?.docName || \'\''), 'SvgPage should not derive active member docName from URL')

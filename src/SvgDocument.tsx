@@ -70,7 +70,7 @@ import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
@@ -549,31 +549,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const pillWarnings = useMemo(() => [...remapWarnings, ...reloadWarnings], [remapWarnings, reloadWarnings])
   const buildWarnings = useMemo(() => [...texWarnings, ...pillWarnings], [texWarnings, pillWarnings])
-
-  // File-backed notes: update shape text when the backing file changes on disk
-  useEffect(() => {
-    return onFileUpdatedSignal((signal) => {
-      const editor = editorRef.current
-      if (!editor) return
-      for (const record of editor.store.allRecords()) {
-        if (record.typeName !== 'shape') continue
-        const shape = record as any
-        if (shape.type !== 'math-note') continue
-        const shapeBackingName = shape.props.backingName || shape.props.backingFile
-        const signalBackingName = signal.backingName || signal.filePath
-        if (shapeBackingName !== signalBackingName && shape.props.backingFile !== signal.filePath) continue
-        if (signal.status && signal.status !== 'synced') continue
-        if (shape.props.text === signal.content) continue
-        const backingStatus = shape.props.backingSyncStatus || 'synced'
-        if (backingStatus !== 'synced' && backingStatus !== 'pushing') {
-          editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { backingSyncStatus: 'conflict' } })
-          continue
-        }
-        if (editor.getEditingShapeId() === shape.id) continue
-        editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content ?? '', backingSyncStatus: 'synced', backingLastSyncedAt: Date.now() } })
-      }
-    })
-  }, [])
 
   // Guard: skip keyboard shortcuts when a DOM input/textarea has focus
   function isInputFocused() {

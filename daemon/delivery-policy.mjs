@@ -37,7 +37,6 @@ const LATEST_WINS_TYPES = new Set([
 ])
 
 const DIRECT_TYPES = new Set([
-  'backing-file-status',
   'daemon-hello',
 ])
 

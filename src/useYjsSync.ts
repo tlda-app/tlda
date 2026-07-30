@@ -240,18 +240,6 @@ const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; ti
 })
 export const onDiffSummaries = diffSummariesHandle.on
 
-export type FileUpdatedSignal = {
-  filePath?: string
-  backingName?: string
-  project?: string
-  content?: string
-  status?: 'synced' | 'pending' | 'owner-unavailable' | 'owner-missing' | 'deleted' | 'conflict' | 'failed'
-  message?: string
-  timestamp: number
-}
-const fileUpdatedHandle = bus.register<FileUpdatedSignal>({ key: 'signal:file-updated' })
-export const onFileUpdatedSignal = fileUpdatedHandle.on
-
 /**
  * Write a signal via HTTP POST. Timestamp is added automatically.
  * Also caches locally and dispatches to the signal bus so own UI reacts.

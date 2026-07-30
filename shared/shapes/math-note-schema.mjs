@@ -34,9 +34,4 @@ export const mathNoteProps = {
   collapsed: T.optional(T.boolean),
   docName: T.optional(T.string),
   docView: T.optional(T.boolean),
-  backingFile: T.optional(T.string),
-  backingName: T.optional(T.string),
-  backingOwnerMachineId: T.optional(T.string),
-  backingSyncStatus: T.optional(T.string),
-  backingLastSyncedAt: T.optional(T.number),
 }

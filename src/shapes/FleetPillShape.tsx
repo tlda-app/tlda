@@ -589,8 +589,6 @@ export async function dropPillOnTarget(
               color: 'light-violet',
               autoSize: true,
               collapsed: false, // open sticky, not a touch-untappable dot
-              backingFile: filePath,
-              backingSyncStatus: 'owner-missing',
             },
           })
         } catch (e) {

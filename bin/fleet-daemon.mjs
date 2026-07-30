@@ -104,7 +104,6 @@ import {
 import { createMachineRpc } from '../daemon/machine-rpc.mjs'
 import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { createAgentRouteResolver } from '../daemon/agent-route.mjs'
-import { createBackingFiles } from '../daemon/backing-files.mjs'
 import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
@@ -579,12 +578,6 @@ function rpcUnlinkProjectSource({ project, sourceDir }) {
 
 fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
 
-const backingFiles = createBackingFiles({
-  getSourceDir: project => sourceSync.getSourceDir(project),
-  log,
-  sendMsg,
-})
-
 const localArtifacts = createLocalArtifacts({
   getServerUrl: () => getDaemonStoreUrl(),
   getFleetServerUrl: () => getDaemonFleetServerUrl(),
@@ -996,7 +989,6 @@ machineRpc.register({
   'mint': rpcMint,
   'wake': rpcWake,
   ...localArtifacts.handlers,
-  'write-backing-file': backingFiles.write,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
   'apply-source-update': params => sourceSync.applyAcceptedSourceUpdate(params),
 })
@@ -1196,7 +1188,6 @@ function teardownWatchers({ jsonl = true, reason = 'unspecified' } = {}) {
   // Source watchers survive WS disconnects — they detect file changes
   // independently and queue them for the next connected window.
   terminalRpc.stopAllTerminalWatches()
-  backingFiles.teardown()
 }
 
 // Gate 1 observability: correlates one daemon WS connection attempt across
@@ -1454,11 +1445,6 @@ async function handleServerMessage(msg, wsAttemptId) {
     // scheduleReconnect() (→ uncaught ReferenceError crashing the evicted daemon)
     // right after _rws.close(), which would have wedged reconnects anyway.
     _rws?.reconnect()
-    return
-  }
-  if (msg.type === 'watch-backing-files') {
-    backingFiles.sync(msg.files || [])
-    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'rpc') {

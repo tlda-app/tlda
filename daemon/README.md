@@ -14,8 +14,6 @@ lifecycle, module construction, and RPC/event routing.
 - `terminal-rpc.mjs`: tmux session validation/control, terminal capture/input,
   interrupt/soft-interrupt, terminal-card PTY streaming, terminal resize, and
   check-alive/list-sessions RPCs.
-- `backing-files.mjs`: project-local backing-file watcher sync, backing-file
-  status messages, write suppression, and write/restore RPC behavior.
 - `local-artifacts.mjs`: machine-local file upload/rechat materialization,
   inbox attachment materialization, and playwright orphan cleanup handlers.
 - `prompt-plan.mjs`: permission prompt detection, auto-accept cooldown/sweep

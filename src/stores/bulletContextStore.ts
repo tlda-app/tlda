@@ -4,7 +4,6 @@ export type BulletContext = {
   noteShapeId: string
   tuplePath: number[]
   owner?: string
-  backingFile?: string
   bulletIndex: number
 }
 

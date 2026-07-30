@@ -52,14 +52,7 @@ export const ASYNC_CASCADE = Object.freeze([
   'markDaemonOutboxMessageProcessed',
   'ackServerDaemonOutboxMessage',
   'errorServerDaemonOutboxMessage',
-  // Converted because they enqueue through the store, which is now a boundary
-  // crossing. Each one pulled its own callers with it — the express handlers
-  // for backing-file register/unregister, and the project-changed global-event
-  // listener — which is the second-order cascade this guard exists to catch.
-  'sendWatchBackingFiles',
   'broadcastDaemonProjectsUpdated',
-  'backingFileRegister',
-  'backingFileUnregister',
   // The daemon-event seat authority: one store read, two exported functions,
   // four call sites across the daemon WS message handler.
   'daemonEventSeatDecision',

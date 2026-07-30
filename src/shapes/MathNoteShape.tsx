@@ -48,7 +48,6 @@ md.renderer.rules.image = (tokens, idx, options, _env, self) => {
 }
 import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMoved } from '../voice.mjs'
 import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts, genBulletId } from '../stores'
-import { onFileUpdatedSignal } from '../useYjsSync'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { appendToken } from '../authToken'
@@ -372,24 +371,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // but a drag still moves the shape (see the dot's onPointerUp).
     const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
-    type BackingSyncState = 'synced' | 'pushing' | 'stale' | 'deleted' | 'conflict' | 'owner-missing' | 'owner-unavailable' | 'failed'
-    const initialBackingStatus = (shape.props.backingSyncStatus as BackingSyncState | undefined) || 'synced'
-    const [backingSyncState, setBackingSyncStateState] = useState<BackingSyncState>(initialBackingStatus)
-    const backingSyncStateRef = useRef<BackingSyncState>(initialBackingStatus)
-    const setBackingSyncState = useCallback((status: BackingSyncState, clean = false) => {
-      backingSyncStateRef.current = status
-      setBackingSyncStateState(status)
-      const props: any = { backingSyncStatus: status }
-      if (clean) props.backingLastSyncedAt = Date.now()
-      editor.updateShape({ id: shape.id, type: 'math-note' as any, props })
-    }, [editor, shape.id])
-
     const projectName = shape.props.docName as string | undefined
     const showDoc = !!(shape.props.docName && shape.props.docView)
     // True while this note is pushing content to the doc — prevents echo-back on next poll
     const pushingToDocRef = useRef(false)
-    // Track text at edit start so backing-file write-back only fires on actual edits
-    const textAtEditStartRef = useRef<string | null>(null)
 
     // Label regions from the current document (for [->label] links)
     const pageDoc = useContext(ProjectContext)
@@ -494,90 +479,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => clearInterval(interval)
     }, [projectName, shape.id, editor])
 
-    // Backing file: register with the server so the daemon watches for changes
-    const backingFile = shape.props.backingFile as string | undefined
-    const backingName = shape.props.backingName as string | undefined
-    const backingKey = backingName || backingFile
-    const backingLabel = backingName || backingFile
-    const backingOwnerMachineId = shape.props.backingOwnerMachineId as string | undefined
-    const legacyBackfill = !backingName && !backingOwnerMachineId && !shape.props.backingSyncStatus
     const hasOutlineTabs = (shape.props.tabs as string[] | undefined)?.length === 3
     const isOutlineTabActive = hasOutlineTabs && (shape.props.activeTab as number | undefined) === 2
-    const activeProjectName = pageDoc?.projectName
-    useEffect(() => {
-      if (!backingKey) return
-      if (!activeProjectName) return
-      fetch('/api/backing-file-register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeProjectName }),
-      }).then(async resp => {
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}))
-          setBackingSyncState((data.status as any) || 'owner-missing')
-        }
-      }).catch(e => {
-        setBackingSyncState('owner-unavailable')
-        console.warn('[math-note] backing file register failed:', e.message)
-      })
-    }, [backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeProjectName, setBackingSyncState])
-
-    // Backing file: write to file only when the user actually changed the text
-    useEffect(() => {
-      if (!backingKey) return
-      if (!activeProjectName) { setBackingSyncState('owner-missing'); return }
-      if (isEditing) {
-        textAtEditStartRef.current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
-        return
-      }
-      const content = (editor.getShape(shape.id) as any)?.props?.text ?? ''
-      if (textAtEditStartRef.current === null || content === textAtEditStartRef.current) return
-      textAtEditStartRef.current = null
-      setBackingSyncState('pushing')
-      fetch('/api/backing-file-write', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeProjectName, content }),
-      }).then(async resp => {
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}))
-          setBackingSyncState((data.status as any) || 'failed')
-          return
-        }
-        setBackingSyncState('synced', true)
-      }).catch(() => setBackingSyncState('failed'))
-    }, [isEditing, backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeProjectName, shape.id, editor, setBackingSyncState])
-
-    // Backing file changed externally: the file is the source of truth for a
-    // file-backed note, so update the note in place. (We must NOT spawn a sibling
-    // on every divergence — with many actively-edited backing files that floods
-    // the room with orphan notes.) Don't clobber while the user is editing.
-    useEffect(() => {
-      if (!backingKey) return
-      return onFileUpdatedSignal((signal) => {
-        const signalName = signal.backingName || signal.filePath
-        if (signalName !== backingKey && signal.filePath !== backingFile) return
-        if (signal.status && signal.status !== 'synced') {
-          setBackingSyncState(signal.status as any)
-          return
-        }
-        const current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
-        const currentBackingStatus = backingSyncStateRef.current
-        if (currentBackingStatus !== 'synced' && currentBackingStatus !== 'pushing') {
-          if ((signal.content ?? '') !== current) setBackingSyncState('conflict')
-          return
-        }
-        if ((signal.content ?? '') === current) { setBackingSyncState('synced', true); return }
-        if (editor.getEditingShapeId() === shape.id) { setBackingSyncState('conflict'); return }
-        editor.updateShape({
-          id: shape.id,
-          type: 'math-note' as any,
-          props: { text: signal.content ?? '', backingSyncStatus: 'synced', backingLastSyncedAt: Date.now() },
-        })
-        setBackingSyncState('synced', true)
-      })
-    }, [backingKey, backingFile, shape.id, editor, setBackingSyncState])
-
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtmlBase = useMemo(
       () => {
@@ -1060,7 +963,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }, [pageDoc, editor])
 
     const handleBulletClick = useCallback((e: React.MouseEvent): boolean => {
-      if (!backingFile) return false
       if (!isOutlineTabActive) return false
       const li = (e.target as HTMLElement).closest('li') as HTMLLIElement | null
       if (!li) return false
@@ -1092,7 +994,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         noteShapeId: shape.id,
         tuplePath,
         owner,
-        backingFile,
         bulletIndex,
       }
       addBulletContext(ctx)
@@ -1103,7 +1004,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }, 50)
 
       return true
-    }, [backingFile, isOutlineTabActive, shape.id, shape.meta?.authorId])
+    }, [isOutlineTabActive, shape.id, shape.meta?.authorId])
 
     // Bullet clicks must intercept on pointerDown — TLDraw's capture-phase
     // listeners prevent onClick from ever firing on unselected shape content.
@@ -1311,11 +1212,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
           >
             <span>
-              {backingKey && <span title={backingLabel} style={{
-                opacity: 0.7,
-                marginRight: 4,
-                color: backingSyncState === 'synced' ? '#4a9' : backingSyncState === 'pushing' ? '#aa7' : '#c55',
-              }}>{backingSyncState === 'synced' ? '⇄' : backingSyncState === 'pushing' ? '⇄' : '⇉'}</span>}
               {useVim ? `-- ${vimMode.toUpperCase()} --` : ''}
             </span>
             <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1428,7 +1324,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose.tappable-bullets li.bullet-selected { background-color: rgba(124, 58, 237, 0.15); border-left: 3px solid rgba(124, 58, 237, 0.6); padding-left: 6px; }
             `}</style>
             <div
-              className={`math-note-prose${backingKey && isOutlineTabActive ? ' tappable-bullets' : ''}`}
+              className={`math-note-prose${isOutlineTabActive ? ' tappable-bullets' : ''}`}
               style={{ maxWidth: '72ch', margin: '0 auto' }}
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
@@ -1633,19 +1529,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                 <path d="M10 11v4l4-4h-4z" fill={dotColor} opacity="0.6" />
               </svg>
             </div>
-            {/* Sync state pip on collapsed dot */}
-            {backingKey && backingSyncState !== 'synced' && (
-              <div style={{
-                position: 'absolute',
-                top: -1,
-                left: 8,
-                width: 5,
-                height: 5,
-                borderRadius: '50%',
-                backgroundColor: backingSyncState === 'pushing' ? '#aa7' : '#c55',
-                zIndex: 11,
-              }} />
-            )}
             {/* Hover preview */}
             {dotHovered && (
               <div
@@ -1719,26 +1602,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
             title="Collapse in place"
           />
-          {/* Sync state indicator */}
-          {backingKey && (
-            <div
-              title={`${backingLabel} — ${backingSyncState}`}
-              style={{
-                position: 'absolute',
-                top: 2,
-                left: 16,
-                fontSize: 12,
-                lineHeight: '16px',
-                color: backingSyncState === 'synced' ? '#4a9' : backingSyncState === 'pushing' ? '#aa7' : '#c55',
-                userSelect: 'none',
-                zIndex: 10,
-                opacity: backingSyncState === 'synced' ? 0.7 : 1,
-                transition: 'opacity 0.15s, color 0.15s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = backingSyncState === 'synced' ? '0.7' : '1' }}
-            >{backingSyncState === 'stale' ? '⇉' : '⇄'}</div>
-          )}
           {/* Inject into document — converts markdown to LaTeX via pandoc */}
           {pageDoc?.projectName && shape.props.text && (
             <div
