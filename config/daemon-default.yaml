@@ -1,0 +1,78 @@
+# Safe starter daemon configuration.
+#
+# This connects Claude through tlda's development channel but leaves each
+# harness's own permissions and sandboxing enabled. It grants no filesystem
+# regions or permission profiles through tlda.
+models:
+  default: terra
+  values:
+    opus:
+      id: opus
+      harness:
+        kind: claude
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+        preferences: []
+        controls: true
+      group: claude
+      level: 4
+      description: Claude Opus
+      options: {}
+    gpt:
+      id: gpt-5.5
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 1
+      description: Codex GPT
+      options: {}
+    sol:
+      id: gpt-5.6-sol
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 2
+      description: Codex Sol
+      options: {}
+    luna:
+      id: gpt-5.6-luna
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 3
+      description: Codex Luna
+      options: {}
+    terra:
+      id: gpt-5.6-terra
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+      group: codex
+      level: 4
+      description: Codex Terra
+      options: {}
+
+regions: {}
+profiles: {}
+grants: {}
+environments:
+  default: local
+  values:
+    local:
+      database: http://localhost:5176
+      store: http://localhost:5176
+      licenseKey: ""
+
+statusScanSeconds: 3
+jsonlTailIdleSeconds: 600
