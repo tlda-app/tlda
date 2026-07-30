@@ -26,8 +26,8 @@ import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   readProjectMeta,
-  listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
-  extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
+  listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
+  extractBuildErrors, extractPipelineWarningsAsync, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
   listDocumentAssociations,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
@@ -654,7 +654,7 @@ router.get('/:name/source/:file', requireRead, async (req, res) => {
       res.set('X-TLDA-Source-Revision', current.sourceRevision)
       return res.set('Content-Type', 'text/plain; charset=utf-8').send(current.content)
     }
-    const content = readSourceFile(req.params.name, req.params.file)
+    const content = await readSourceFileAsync(req.params.name, req.params.file)
     if (content === null) return res.status(404).json({ error: 'File not found' })
     res.set('Content-Type', 'text/plain; charset=utf-8').send(content)
   } catch (e) {
@@ -909,7 +909,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     if (authorityBefore.state === 'uninitialized') {
       for (const filePath of normalizeSourceManifest(sourceManifest, sourceManifestContext(project))) {
         if (!inheritedManifest.has(filePath)) continue
-        const content = readSourceFile(name, filePath)
+        const content = await readSourceFileAsync(name, filePath)
         if (content !== null) candidate.set(filePath, { path: filePath, content: Buffer.from(content).toString('base64'), encoding: 'base64' })
       }
     }
@@ -924,13 +924,13 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       return { status: 409, ok: false, error: authorityBefore.state === 'uninitialized' ? 'Bootstrap requires a complete source snapshot' : 'Proposed snapshot does not match sourceManifest', authority: authorityBefore }
     }
     const observed = inheritedManifest.size > 0
-      ? manifest.map(path => {
-          const serverContent = readSourceFile(name, path)
+      ? await Promise.all(manifest.map(async path => {
+          const serverContent = await readSourceFileAsync(name, path)
           return inheritedManifest.has(path) || serverContent === null
             ? candidate.get(path)
             : { path, content: serverContent }
-        })
-      : manifest.map(path => ({ path, content: readSourceFile(name, path) })).filter(file => file.content !== null)
+        }))
+      : (await Promise.all(manifest.map(async path => ({ path, content: await readSourceFileAsync(name, path) })))).filter(file => file.content !== null)
     lifecycleCandidate = {
       expectedRevision, sourceManifest: manifest, files: manifest.map(path => candidate.get(path)),
       observedServerFiles: authorityBefore.state === 'uninitialized' && observed.length > 0 ? observed : null,
@@ -971,8 +971,8 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       const content = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
         : file.content
-      const previousContent = readSourceFile(name, file.path)
-      if (writeSourceFile(name, file.path, content)) {
+      const previousContent = await readSourceFileAsync(name, file.path)
+      if (await writeSourceFileAsync(name, file.path, content)) {
         changedPushFiles.push({
           path: file.path,
           content,
@@ -985,7 +985,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     if (deletedFiles?.length > 0) {
       for (const [index, filePath] of deletedFiles.entries()) {
         if (!await isClientOwnedSourcePath(name, filePath)) continue
-        deleteSourceFile(name, filePath)
+        await deleteSourceFileAsync(name, filePath)
         if (transactionTest.failAt === `delete:${index + 1}`) throw new Error(`Injected failure at delete:${index + 1}`)
       }
     }
@@ -1364,9 +1364,9 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const activeBuild = getBuildStatus(req.params.name)
-  const buildLog = readBuildLog(req.params.name)
+  const buildLog = await readBuildLogAsync(req.params.name)
   const { errors, warnings } = await extractBuildErrors(req.params.name)
-  const pipelineWarnings = extractPipelineWarnings(req.params.name)
+  const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
   res.json({
     status: activeBuild?.building ? 'building' : project.buildStatus,
@@ -1388,7 +1388,7 @@ router.get('/:name/build/errors', requireRead, async (req, res) => {
   const building = activeBuild?.building || false
 
   const { errors, warnings } = await extractBuildErrors(req.params.name)
-  const pipelineWarnings = extractPipelineWarnings(req.params.name)
+  const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
   res.json({
     building,
@@ -1596,7 +1596,7 @@ router.post('/:name/extract', requireRw, async (req, res) => {
   if (!startLine || !endLine) return res.status(400).json({ error: 'startLine and endLine required' })
 
   const texFile = file || project.mainFile || 'main.tex'
-  const content = readSourceFile(req.params.name, texFile)
+  const content = await readSourceFileAsync(req.params.name, texFile)
   if (content === null) return res.status(404).json({ error: `Source file "${texFile}" not found` })
 
   const lines = content.split('\n')
@@ -1853,7 +1853,7 @@ router.post('/:name/source-cursor', requireRead, async (req, res) => {
   if (!file) return res.status(400).json({ error: 'No source file configured' })
 
   try {
-    const sourceContent = readSourceFile(name, file)
+    const sourceContent = await readSourceFileAsync(name, file)
     if (!sourceContent) return res.status(404).json({ error: `Source file not found: ${file}` })
     const sourceLines = sourceContent.split('\n')
     const lineText = sourceLines[line - 1] || ''
@@ -1899,7 +1899,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
     // 1. Read the source file
     const mainFile = file || project.mainFile || project.main
     if (!mainFile) return res.status(400).json({ error: 'No main file configured for project' })
-    if (!readSourceFile(name, mainFile)) return res.status(404).json({ error: `Source file not found: ${mainFile}` })
+    if (!await readSourceFileAsync(name, mainFile)) return res.status(404).json({ error: `Source file not found: ${mainFile}` })
 
     const match = findTextNearSourceLine(name, mainFile, startLine, text)
     if (!match) {
@@ -2026,7 +2026,7 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
   if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile (book format not supported)' })
 
-  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  const mainContent = await readSourceFileAsync(req.params.name, project.mainFile)
   if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
   const projectSourceFiles = await listSourceFiles(req.params.name)
 
@@ -2099,7 +2099,7 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
   const allSourceFiles = [mainContent]
   for (const f of projectSourceFiles) {
     if (f !== project.mainFile) {
-      const fc = readSourceFile(req.params.name, f)
+      const fc = await readSourceFileAsync(req.params.name, f)
       if (fc) allSourceFiles.push(fc)
     }
   }
@@ -2157,7 +2157,7 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
     return labelLineIdx + 1  // no enclosing env, or couldn't close it — after label line
   }
 
-  function resolveLocation(locLabel) {
+  async function resolveLocation(locLabel) {
     // 1. Search main file for \label{X}
     for (let i = 0; i < mainLines.length; i++) {
       if (mainLines[i].includes(`\\label{${locLabel}}`)) return { file: project.mainFile, line: climbToEnvEnd(i), labelLine: i + 1 }
@@ -2172,7 +2172,7 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
       return aInMain - bInMain
     })
     for (const file of allFiles) {
-      const fc = readSourceFile(req.params.name, file)
+      const fc = await readSourceFileAsync(req.params.name, file)
       if (!fc || !fc.includes(`\\label{${locLabel}}`)) continue
       const incLines = fc.split('\n')
       for (let i = 0; i < incLines.length; i++) {
@@ -2209,14 +2209,14 @@ router.post('/:name/input-scratch', requireRw, async (req, res) => {
     return null
   }
 
-  const resolved = resolveLocation(after || before)
+  const resolved = await resolveLocation(after || before)
   if (resolved === null) {
     return res.status(400).json({
       error: `Cannot resolve location "${after || before}": not a label in the document, and not in line:N format`,
     })
   }
 
-  const targetContent = resolved.file === project.mainFile ? mainContent : readSourceFile(req.params.name, resolved.file)
+  const targetContent = resolved.file === project.mainFile ? mainContent : await readSourceFileAsync(req.params.name, resolved.file)
   const targetLines = targetContent.split('\n')
   const insertLine = `\\inputscratch{${displayPath}}{${label}}{${displayHeader}}`
   if (after) {
@@ -2276,7 +2276,7 @@ router.post('/:name/inline-scratch', requireRw, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
   if (!project.mainFile) return res.status(400).json({ error: 'Project has no mainFile' })
 
-  const mainContent = readSourceFile(req.params.name, project.mainFile)
+  const mainContent = await readSourceFileAsync(req.params.name, project.mainFile)
   if (!mainContent) return res.status(400).json({ error: `Main file not found: ${project.mainFile}` })
 
   const filename = label.replace(/[^a-z0-9]/gi, '-').toLowerCase() + '.tex'
@@ -2284,7 +2284,7 @@ router.post('/:name/inline-scratch', requireRw, async (req, res) => {
   const scratchRel = `.tlda/scratch/${filename}`
   const scratchPath = mainDir !== '.' ? join(mainDir, scratchRel) : scratchRel
 
-  const scratchContent = readSourceFile(req.params.name, scratchPath)
+  const scratchContent = await readSourceFileAsync(req.params.name, scratchPath)
   if (!scratchContent) return res.status(404).json({ error: `Scratch file not found: ${scratchPath} — has it been synced to the server yet?` })
 
   // Content is raw (no wrapper) — just trim trailing blank lines

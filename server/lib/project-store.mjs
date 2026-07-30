@@ -9,6 +9,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync, cpSync, renameSync, openSync, fsyncSync, closeSync, statSync } from 'fs'
+import { access, mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
@@ -378,13 +379,44 @@ export async function recoverProjectPartsManifest(name, options = {}) {
 
 export async function listSourceFiles(name) {
   const dir = sourceDir(name)
-  if (!existsSync(dir)) return []
+  if (!await pathExists(dir)) return []
   const project = await readProject(name)
   const context = sourceManifestContext(project || {})
   const owned = await clientOwnedSourceSet(project)
-  return walkDir(dir)
+  return (await walkDirAsync(dir))
     .map(f => relative(dir, f))
     .filter(f => isClientSourcePath(f, context, owned))
+}
+
+async function pathExists(path) {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function readTextOrNull(path) {
+  try {
+    return await readFile(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+async function walkDirAsync(dir) {
+  const results = []
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (isIgnoredSourceDir(entry.name)) continue
+      results.push(...await walkDirAsync(full))
+    } else {
+      results.push(full)
+    }
+  }
+  return results
 }
 
 function walkDir(dir) {
@@ -406,15 +438,15 @@ function walkDir(dir) {
  */
 export async function hashSourceFiles(name) {
   const dir = sourceDir(name)
-  if (!existsSync(dir)) return {}
+  if (!await pathExists(dir)) return {}
   const project = await readProject(name)
   const context = sourceManifestContext(project || {})
   const owned = await clientOwnedSourceSet(project)
   const hashes = {}
-  for (const full of walkDir(dir)) {
+  for (const full of await walkDirAsync(dir)) {
     const rel = relative(dir, full)
     if (!isClientSourcePath(rel, context, owned)) continue
-    hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
+    hashes[rel] = createHash('md5').update(await readFile(full)).digest('hex')
   }
   return hashes
 }
@@ -507,6 +539,12 @@ export function readSourceFile(name, filePath) {
   return readFileSync(full, 'utf8')
 }
 
+export async function readSourceFileAsync(name, filePath) {
+  const full = sourceFilePath(name, filePath)
+  if (!await pathExists(full)) return null
+  return readFile(full, 'utf8')
+}
+
 /**
  * Delete a source file. Returns true if the file existed and was removed.
  */
@@ -514,6 +552,26 @@ export function deleteSourceFile(name, filePath) {
   const full = sourceFilePath(name, filePath)
   if (!existsSync(full)) return false
   unlinkSync(full)
+  return true
+}
+
+export async function deleteSourceFileAsync(name, filePath) {
+  const full = sourceFilePath(name, filePath)
+  if (!await pathExists(full)) return false
+  await unlink(full)
+  return true
+}
+
+export async function writeSourceFileAsync(name, filePath, content) {
+  const full = sourceFilePath(name, filePath)
+  const parent = dirname(full)
+  if (!await pathExists(parent)) await mkdir(parent, { recursive: true })
+  if (await pathExists(full)) {
+    const existing = await readFile(full)
+    const incoming = Buffer.isBuffer(content) ? content : Buffer.from(content)
+    if (existing.equals(incoming)) return false
+  }
+  await writeFile(full, content)
   return true
 }
 
@@ -531,12 +589,36 @@ export function readBuildLog(name) {
   return readFileSync(logPath, 'utf8')
 }
 
+export async function readBuildLogAsync(name) {
+  const logPath = join(projectsDir, name, 'build.log')
+  if (!await pathExists(logPath)) return null
+  return readFile(logPath, 'utf8')
+}
+
 /**
  * Extract pipeline warnings from the build log (non-fatal failures, skipped phases).
  * These are build-runner issues, not LaTeX issues — synctex missing, image patching failed, etc.
  */
 export function extractPipelineWarnings(name) {
   const log = readBuildLog(name)
+  if (!log) return []
+  const warnings = []
+  for (const line of log.split('\n')) {
+    if (line.includes('(non-fatal)')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    } else if (line.includes('skipping lookup') || line.includes('No synctex.gz found')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    } else if (line.includes('BUILD FAILED')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    } else if (line.includes('pages missing')) {
+      warnings.push(line.replace(/^\[[\d\-T:.Z]+\]\s*/, '').trim())
+    }
+  }
+  return warnings
+}
+
+export async function extractPipelineWarningsAsync(name) {
+  const log = await readBuildLogAsync(name)
   if (!log) return []
   const warnings = []
   for (const line of log.split('\n')) {
@@ -563,9 +645,8 @@ export async function extractBuildErrors(name) {
 
   // latex.log is preserved by build-runner after latexmk runs
   const logPath = join(projectsDir, name, 'latex.log')
-  if (!existsSync(logPath)) return { errors: [], warnings: [] }
-
-  const logText = readFileSync(logPath, 'utf8')
+  const logText = await readTextOrNull(logPath)
+  if (logText === null) return { errors: [], warnings: [] }
   const result = parseLatexErrors(logText)
 
   // Enrich errors with source context (±2 lines around the error)
@@ -576,17 +657,16 @@ export async function extractBuildErrors(name) {
     const file = err.file || mainFile
     if (!file) continue
     const srcPath = join(srcDir, file)
-    if (!existsSync(srcPath)) continue
-    try {
-      const srcLines = readFileSync(srcPath, 'utf8').split('\n')
-      const start = Math.max(0, err.line - 4)   // 3 lines before (0-indexed: line-1 is the error)
-      const end = Math.min(srcLines.length, err.line + 3)  // 3 lines after
-      err.context = srcLines.slice(start, end).map((text, i) => ({
-        line: start + i + 1,
-        text,
-      }))
-      err.errorLine = err.line  // which line in context is the actual error
-    } catch {}
+    const sourceText = await readTextOrNull(srcPath)
+    if (sourceText === null) continue
+    const srcLines = sourceText.split('\n')
+    const start = Math.max(0, err.line - 4)   // 3 lines before (0-indexed: line-1 is the error)
+    const end = Math.min(srcLines.length, err.line + 3)  // 3 lines after
+    err.context = srcLines.slice(start, end).map((text, i) => ({
+      line: start + i + 1,
+      text,
+    }))
+    err.errorLine = err.line  // which line in context is the actual error
   }
 
   return result
