@@ -1262,6 +1262,10 @@ function botLaunchdLabel(name, { configName = null } = {}) {
 }
 
 function botServicePaths(name, { configName = null } = {}) {
+  if (!configName) {
+    const configured = getManagedBots().find(bot => bot.name === name)
+    configName = configured?.environment || getActiveEnvName()
+  }
   const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
   const tmuxSuffix = suffix.replaceAll('.', '_')
   const label = botLaunchdLabel(name, { configName })
@@ -1380,9 +1384,10 @@ ${botEnvironmentPlist(bot, paths)}
 
 function writeBotPlist(bot) {
   const paths = botServicePaths(bot.name)
+  const effectiveBot = bot.environment ? bot : { ...bot, environment: getActiveEnvName() }
   if (!existsSync(dirname(paths.plist))) mkdirSync(dirname(paths.plist), { recursive: true })
   if (!existsSync(dirname(paths.logFile))) mkdirSync(dirname(paths.logFile), { recursive: true })
-  writeFileSync(paths.plist, botPlistContent(bot))
+  writeFileSync(paths.plist, botPlistContent(effectiveBot, paths))
   return paths
 }
 
@@ -1672,12 +1677,25 @@ async function cmdConfigApply() {
 
 async function bootstrapBot(bot) {
   const paths = botServicePaths(bot.name)
-  await runLaunchctl(['bootstrap', `gui/${process.getuid()}`, paths.plist], { ignoreFailure: true })
-  await runLaunchctl(['kickstart', daemonLaunchdTarget(paths.label)])
+  const target = daemonLaunchdTarget(paths.label)
+  try {
+    await runLaunchctl(['print', target])
+    await runLaunchctl(['kickstart', `-k`, target])
+    return
+  } catch {
+    // A missing target must go through bootstrap below.
+  }
+  await bootstrapLaunchdJob({
+    plist: paths.plist,
+    label: paths.label,
+    domain: daemonLaunchdDomain(),
+    runLaunchctl,
+  })
 }
 
 async function bootoutBot(bot) {
-  await runLaunchctl(['bootout', daemonLaunchdTarget(botLaunchdLabel(bot.name))], { ignoreFailure: true })
+  const paths = botServicePaths(bot.name)
+  await runLaunchctl(['bootout', daemonLaunchdTarget(paths.label)], { ignoreFailure: true })
 }
 
 function printBotPlan(bot) {
