@@ -8,7 +8,7 @@ import test from 'node:test'
 
 const hookPath = new URL('./native-subagent-notification-hook.mjs', import.meta.url)
 
-test('UserPromptSubmit hook injects route metadata without copying the message body', async () => {
+test('UserPromptSubmit hook tells the existing child to read and acknowledge its own inbox', async () => {
   const configDir = mkdtempSync(join(tmpdir(), 'tlda-native-hook-'))
   const server = http.createServer((request, response) => {
     assert.equal(request.url, '/api/fleet/native-subagent-notifications/fleet%3Aparent')
@@ -58,8 +58,8 @@ environments:
     assert.equal(stderr, '')
     assert.match(stdout, /Pending native-subagent delivery obligations/)
     assert.match(stdout, /event 42/)
-    assert.match(stdout, /thread\(agent: "fleet:child"\)/)
-    assert.match(stdout, /agent id worker/)
+    assert.match(stdout, /existing agent id worker/)
+    assert.match(stdout, /Call tlda inbox\(\) now and act on every message it returns/)
     assert.doesNotMatch(stdout, /message body/)
   } finally {
     await new Promise(resolve => server.close(resolve))

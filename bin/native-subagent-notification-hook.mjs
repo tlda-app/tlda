@@ -51,6 +51,6 @@ if (!notifications.length) process.exit(0)
 
 const lines = notifications.map(item => {
   const sender = item.sender_name || item.sender_agent_id || 'unknown sender'
-  return `- Native child ${item.child_name} (${item.child_agent_id}) has a pending tlda inbox message from ${sender} (event ${item.event_id}). Read the original with tlda thread(agent: "${item.child_agent_id}"), then forward it with the native SendMessage tool to agent id ${item.native_agent_id}.`
+  return `- Native child ${item.child_name} (${item.child_agent_id}) has a pending tlda inbox message from ${sender} (event ${item.event_id}). Use the native SendMessage tool to tell existing agent id ${item.native_agent_id}: Call tlda inbox() now and act on every message it returns.`
 })
 process.stdout.write(`Pending native-subagent delivery obligations:\n${lines.join('\n')}\n`)
