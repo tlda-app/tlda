@@ -92,6 +92,9 @@ const _snapState = {
 /** Event bus for content drops (msg references, code) → target chat textarea */
 export const chatInsertBus = new EventTarget()
 
+/** Agent-pill drop on a fleet task row. The inbox owns the resulting transfer. */
+export const fleetTaskDropBus = new EventTarget()
+
 /** Content store for chip hover previews — keyed by «token» string, value is preview text.
  *  Populated when a content pill is dropped; read by the chip renderer for hover previews.
  *  Survives within a session but not across page reloads. */

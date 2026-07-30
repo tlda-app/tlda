@@ -61,7 +61,6 @@ let _tasks = []
 let _items = []
 let _nextAgentsCursor = null
 let _agentsPageLoading = null
-let _nextTasksCursor = null
 // One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
 // two sources (live WS + DB history). upsert() dedups by id, binds the
 // optimistic tempId→dbId handoff, and caps memory as one contiguous ordered
@@ -1203,6 +1202,17 @@ export function connect() {
 }
 
 // --- Initial load ---
+async function fetchAllActiveTasks() {
+  const tasks = []
+  let cursor = null
+  do {
+    const page = await browserFleetTransport.ephemeral('tasks-page', { limit: 200, cursor })
+    tasks.push(...(page.tasks || []))
+    cursor = page.nextCursor || null
+  } while (cursor)
+  return tasks
+}
+
 export async function init() {
   // Human identity is established via WS 'login' on connect.
   // If localStorage has a stored name, login is sent automatically.
@@ -1213,15 +1223,14 @@ export async function init() {
   connect()
   const [agentsRes, tasksRes] = await Promise.all([
     browserFleetTransport.ephemeral('agents-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] agents transport failed:', e.message); return {} }),
-    browserFleetTransport.ephemeral('tasks-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] tasks transport failed:', e.message); return {} }),
+    fetchAllActiveTasks().catch(e => { console.warn('[fleet-data] tasks transport failed:', e.message); return [] }),
   ])
 
   // Populate agents + tasks
   _nextAgentsCursor = agentsRes.nextCursor || null
   if (agentsRes.totals) _agentTotals = agentsRes.totals
   updateAgents(agentsRes.agents || [])
-  _nextTasksCursor = tasksRes.nextCursor || null
-  updateTasks(tasksRes.tasks || [])
+  updateTasks(tasksRes || [])
 
   const fetchItemsForHuman = () => {
     if (!_humanId) return
@@ -1288,11 +1297,8 @@ function updateTasks(tasks) {
 function applyTaskDelta(delta) {
   if (!delta) return
   if (delta.overflow) {
-    browserFleetTransport.ephemeral('tasks-page', { limit: 100 })
-      .then(data => {
-        _nextTasksCursor = data.nextCursor || null
-        updateTasks(data.tasks || [])
-      })
+    fetchAllActiveTasks()
+      .then(updateTasks)
       .catch(e => console.warn('[fleet-data] task refresh transport failed:', e.message))
     return
   }

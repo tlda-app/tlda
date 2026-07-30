@@ -21,10 +21,13 @@ import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore — vanilla JS module
 import { inboxConversationRecipientId } from '../fleet/send-target-binding.mjs'
-import type { Editor, TLShapeId } from 'tldraw'
+import type { TLShapeId } from 'tldraw'
 import { agentDisplayLabel, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag } from './FleetAgentsShape'
+import { fleetTaskDropBus } from './FleetPillShape'
+// @ts-ignore — vanilla JS module
+import { inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
 import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
@@ -34,7 +37,6 @@ import { onReloadSignal } from '../useYjsSync'
 import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
 import { CascadeGraph } from './CascadeGraph'
-import { FleetChatFilterMode } from './FleetChatShape'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -54,15 +56,6 @@ import './fleet-inbox.css'
 
 const DEFAULT_W = 360
 const DEFAULT_H = 560
-type FleetFilter = [string, string][][]
-type ChatFilterTargetShape = {
-  id: TLShapeId
-  type: 'fleet-chat'
-  x: number
-  y: number
-  props?: { filter?: FleetFilter }
-}
-
 function copySourceTemplate(text: string): string {
   return `<template class="code-block-copy-source">${esc(text)}</template>`
 }
@@ -174,6 +167,15 @@ interface DocNote {
   createdAt: number     // note creation time (0 if undated) — sort key
 }
 
+interface OwnedFleetTask {
+  id: string
+  description: string
+  status: string
+  delegatedAt: string
+  delegatedBy: string
+  criteria: string[]
+}
+
 // A revalidation task derived from the proof-dependency graph (structural
 // invalidation). `direct` = the node's own statement source changed (it has its
 // own stale ribbon span you can re-approve). `cascade` = a node it depends on
@@ -198,6 +200,7 @@ interface NodeTask {
 // One row of the inbox, regardless of kind. The unified model behind both the
 // time-interleaved stream and the grouped-by-type view.
 type InboxItem =
+  | { kind: 'fleet-task'; key: string; time: number; task: OwnedFleetTask }
   | { kind: 'task'; key: string; time: number; task: RibbonTask }
   | { kind: 'node'; key: string; time: number; node: NodeTask }
   | { kind: 'note'; key: string; time: number; note: DocNote }
@@ -358,9 +361,6 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetInboxInner({ shape }: { shape: any }) {
   const editor = useEditor()
-  const mainEd = (typeof window !== 'undefined'
-    ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
-    : undefined) || editor
   const docCtx = useContext(ProjectContext)
   const projectName = docCtx?.projectName || ''
   const { w, h } = shape.props
@@ -417,9 +417,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const events = useFleetEvents(filter)
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
-  const [filterOpen, setFilterOpen] = useState(false)
-  const [filterOpenByPill, setFilterOpenByPill] = useState(false)
-  const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
   const [openItemKey, setOpenItemKey] = useState<string | null>(null)
 
   // Sort mode — time (one interleaved stream, newest first) or type (grouped
@@ -479,105 +476,27 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const visibleThreads = threads
   const totalUnread = useMemo(() => visibleThreads.reduce((n, t) => n + t.unread, 0), [visibleThreads])
 
-  const resolveFilterTargetChat = useCallback((): ChatFilterTargetShape | null => {
-    const userId = shape.props?.userId
-    const deviceId = shape.props?.deviceId
-    if (!userId || !deviceId) return null
-    const chats = mainEd.getCurrentPageShapes().filter((s: any) =>
-      s.type === 'fleet-chat' &&
-      s.props?.userId === userId &&
-      s.props?.deviceId === deviceId,
-    ) as unknown as ChatFilterTargetShape[]
-    if (chats.length === 0) return null
-    if (chats.length === 1) return chats[0]
-
-    const inboxRight = shape.x + (shape.props?.w || 0)
-    const inboxTop = shape.y
-    const inboxBottom = shape.y + (shape.props?.h || 0)
-    const score = (chat: ChatFilterTargetShape) => {
-      const props = chat.props as { w?: number; h?: number } | undefined
-      const chatTop = chat.y
-      const chatBottom = chat.y + (props?.h || 0)
-      const overlapsY = chatBottom > inboxTop && chatTop < inboxBottom
-      const isRight = chat.x >= inboxRight - 1
-      const slotPenalty = String(chat.id).includes('fleet-chat-0-') ? 0 : 100000
-      return (
-        (isRight ? 0 : 1000000) +
-        (overlapsY ? 0 : 10000) +
-        slotPenalty +
-        Math.abs(chat.x - inboxRight) +
-        Math.abs(chat.y - inboxTop) / 1000
-      )
-    }
-    return [...chats].sort((a, b) => score(a) - score(b) || String(a.id).localeCompare(String(b.id)))[0]
-  }, [mainEd, shape.props?.userId, shape.props?.deviceId])
-
-  const filterTargetChat = useValue(
-    'inbox-chat-filter-target',
-    (): ChatFilterTargetShape | null => {
-      const target = filterTargetId ? mainEd.getShape(filterTargetId) : resolveFilterTargetChat()
-      return target?.type === 'fleet-chat' ? (target as unknown as ChatFilterTargetShape) : null
-    },
-    [mainEd, filterTargetId, resolveFilterTargetChat],
-  )
-
-  const updateFilterTargetChat = useCallback((nextFilter?: FleetFilter): ChatFilterTargetShape | null => {
-    const target = resolveFilterTargetChat()
-    if (target && nextFilter) {
-      const wasLocked = !!(target as any).isLocked
-      if (wasLocked) mainEd.updateShape({ id: target.id, type: 'fleet-chat' as any, isLocked: false } as any)
-      mainEd.updateShape({
-        id: target.id,
-        type: 'fleet-chat' as any,
-        props: { filter: nextFilter },
-      } as any)
-      if (wasLocked) mainEd.updateShape({ id: target.id, type: 'fleet-chat' as any, isLocked: true } as any)
-    }
-    if (target) setFilterTargetId(target.id)
-    return target
-  }, [mainEd, resolveFilterTargetChat])
-
-  // Dragging an agent/label pill over the inbox pops the CHAT's filter overlay on
-  // the inbox surface (the inbox is just a drop target — the overlay edits the
-  // chat's filter). Mirrors the chat's own pill-over auto-open (FleetChatShape).
-  const pillOverKey = useValue('inbox-pill-over', () => {
-    const pills = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-pill') as any[]
-    if (pills.length === 0) return ''
-    const myBounds = editor.getShapePageBounds(shape.id)
-    if (!myBounds) return ''
-    for (const pill of pills) {
-      const props = pill.props
-      if (props.pillType !== 'agent' && props.pillType !== 'label' && props.pillType !== 'team') continue
-      const pb = editor.getShapePageBounds(pill.id)
-      if (!pb) continue
-      const cx = pb.x + pb.w / 2
-      const cy = pb.y + pb.h / 2
-      if (cx >= myBounds.x && cx <= myBounds.x + myBounds.w &&
-          cy >= myBounds.y && cy <= myBounds.y + myBounds.h) {
-        const role = cy < myBounds.y + myBounds.h / 2 ? 'to' : 'from'
-        return `${role}\0${props.value}\0${props.displayName}\0${props.pillType}`
-      }
-    }
-    return ''
-  }, [editor, shape.id])
-  const pillOver = useMemo(() => {
-    if (!pillOverKey) return null
-    const [role, value, displayName, pillType] = pillOverKey.split('\0')
-    return { role, value, displayName, pillType }
-  }, [pillOverKey])
+  const ownedFleetTasks = useMemo<OwnedFleetTask[]>(() => {
+    return projectOwnedFleetTasks(tasks, myId)
+  }, [tasks, myId])
 
   useEffect(() => {
-    if (pillOver && !filterOpen) {
-      const target = updateFilterTargetChat()
-      if (!target) return
-      setFilterTargetId(target.id)
-      setFilterOpenByPill(true)
-      setFilterOpen(true)
-    } else if (!pillOver && filterOpenByPill) {
-      setFilterOpenByPill(false)
-      setFilterOpen(false)
+    const onAssign = (event: Event) => {
+      const { taskId, inboxShapeId, agent } = (event as CustomEvent<{ taskId?: string; inboxShapeId?: string; agent?: string }>).detail || {}
+      if (inboxShapeId !== shape.id) return
+      const task = ownedFleetTasks.find(candidate => candidate.id === taskId)
+      if (!task || !agent || !myId) return
+      fleetDurable('delegate', {
+        ...inboxTaskTransfer(task, agent, myId, myName),
+      }).catch((error: unknown) => log.error('fleet-inbox', 'task assignment failed', {
+        taskId: task.id,
+        agent,
+        error: error instanceof Error ? error.message : String(error),
+      }))
     }
-  }, [!!pillOver, updateFilterTargetChat, filterOpen, filterOpenByPill])
+    fleetTaskDropBus.addEventListener('assign', onAssign)
+    return () => fleetTaskDropBus.removeEventListener('assign', onAssign)
+  }, [ownedFleetTasks, myId, myName, shape.id])
 
   // Tasks group — a live projection of the understanding-ribbon's stale spans.
   // Reading the ribbon shape inside useValue keeps this reactive: re-approving a
@@ -803,6 +722,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // keep their relative order. Messages use last-activity time.
   const timeItems = useMemo<InboxItem[]>(() => {
     const items: InboxItem[] = [
+      ...ownedFleetTasks.map((task): InboxItem => ({ kind: 'fleet-task', key: `fleet-task:${task.id}`, time: Date.parse(task.delegatedAt) || 0, task })),
       ...visibleDirectNodes.map((n): InboxItem => ({ kind: 'node', key: `node:${n.id}`, time: n.time, node: n })),
       ...visibleCascadeNodes.map((n): InboxItem => ({ kind: 'node', key: `node:${n.id}`, time: n.time, node: n })),
       ...visibleSpanTasks.map((t): InboxItem => ({ kind: 'task', key: `task:${t.id}`, time: t.staleAt, task: t })),
@@ -810,10 +730,10 @@ function FleetInboxInner({ shape }: { shape: any }) {
       ...visibleThreads.map((t): InboxItem => ({ kind: 'message', key: `msg:${t.partnerId}`, time: Date.parse(t.lastTs) || 0, thread: t })),
     ]
     return items.sort((a, b) => b.time - a.time)
-  }, [visibleDirectNodes, visibleCascadeNodes, visibleSpanTasks, visibleDocNotes, visibleThreads])
+  }, [ownedFleetTasks, visibleDirectNodes, visibleCascadeNodes, visibleSpanTasks, visibleDocNotes, visibleThreads])
 
   // Total revalidation tasks (node + plain-span) — drives the header badge.
-  const taskCount = visibleDirectNodes.length + visibleCascadeNodes.length + visibleSpanTasks.length
+  const taskCount = ownedFleetTasks.length + visibleDirectNodes.length + visibleCascadeNodes.length + visibleSpanTasks.length
 
   return (
     <HTMLContainer
@@ -838,16 +758,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
         }}
       >
         <FleetPanelButtonGroup editor={editor} shape={shape} />
-
-        {filterOpen && filterTargetChat && (
-          <FleetChatFilterMode
-            filter={filterTargetChat.props?.filter || []}
-            shapeId={filterTargetChat.id}
-            editor={mainEd}
-            externalPillOver={pillOver}
-            surface="overlay"
-          />
-        )}
 
         {/* Header */}
         <div className="fleet-inbox-header" onPointerDown={(e) => stopEventPropagation(e)}>
@@ -916,6 +826,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
           <InboxList
             sortMode={sortMode}
             timeItems={timeItems}
+            fleetTasks={ownedFleetTasks}
+            inboxShapeId={shape.id}
             threads={visibleThreads}
             directNodes={visibleDirectNodes}
             cascadeNodes={visibleCascadeNodes}
@@ -981,6 +893,20 @@ function TaskRow({ t, onOpen }: { t: RibbonTask; onOpen?: () => void }) {
         <span className="fleet-inbox-task-text">Re-vet lines {t.lo}–{t.hi}</span>
       </div>
       <div className="fleet-inbox-task-sub">changed since you approved{t.file ? ` · ${t.file}` : ''}</div>
+    </div>
+  )
+}
+
+function FleetTaskRow({ task, inboxShapeId }: { task: OwnedFleetTask; inboxShapeId: string }) {
+  return (
+    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId}>
+      <div className="fleet-inbox-task-row">
+        <span className="fleet-inbox-task-icon">●</span>
+        <span className="fleet-inbox-task-text">{task.description}</span>
+      </div>
+      <div className="fleet-inbox-task-sub">
+        {task.status}{task.criteria.length ? ` · ${task.criteria.length} ${task.criteria.length === 1 ? 'criterion' : 'criteria'}` : ''} · drop an agent here to assign
+      </div>
     </div>
   )
 }
@@ -1081,6 +1007,8 @@ function MessageRow({
 interface InboxListProps {
   sortMode: SortMode
   timeItems: InboxItem[]
+  fleetTasks: OwnedFleetTask[]
+  inboxShapeId: string
   threads: Thread[]
   directNodes: NodeTask[]
   cascadeNodes: NodeTask[]
@@ -1094,13 +1022,14 @@ interface InboxListProps {
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
+  const { sortMode, timeItems, fleetTasks, inboxShapeId, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
-  const empty = threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
+  const empty = fleetTasks.length === 0 && threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
+    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} inboxShapeId={inboxShapeId} />
     if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} />
@@ -1128,9 +1057,10 @@ function InboxList(props: InboxListProps) {
       ) : (
         // Grouped by type — Tasks (direct + plain spans), Cascade, Notes, Messages.
         <>
-          {(directNodes.length > 0 || spanTasks.length > 0) && (
+          {(fleetTasks.length > 0 || directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
+              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} inboxShapeId={inboxShapeId} />)}
               {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onOpen={() => onOpenItem(`node:${t.id}`)} />)}
               {spanTasks.map((t) => <TaskRow key={t.id} t={t} onOpen={() => onOpenItem(`task:${t.id}`)} />)}
             </div>

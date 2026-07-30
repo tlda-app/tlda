@@ -19,13 +19,15 @@ import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
-import { dropPillOnTarget } from './FleetPillShape'
+import { dropPillOnTarget, fleetTaskDropBus } from './FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { agentDisplayLabel, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+// @ts-ignore — vanilla JS module
+import { fleetTaskDropTarget } from './fleet-task-inbox.mjs'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { ProjectContext } from '../PanelContext'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
@@ -358,7 +360,21 @@ export function usePillDrag() {
         markFleetPillInactive(String(drag.pillId))
 
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
-        dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos)
+        const fleetTaskRow = fleetTaskDropTarget(
+          document.elementsFromPoint(ev.clientX, ev.clientY),
+          drag.pillType,
+        ) as HTMLElement | null
+        if (fleetTaskRow?.dataset.fleetTaskId) {
+          fleetTaskDropBus.dispatchEvent(new CustomEvent('assign', {
+            detail: {
+              taskId: fleetTaskRow.dataset.fleetTaskId,
+              inboxShapeId: fleetTaskRow.dataset.fleetInboxShapeId,
+              agent: drag.value,
+            },
+          }))
+        } else {
+          dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos)
+        }
         editor.run(() => {
           try {
             const id = drag.pillId as TLShapeId
