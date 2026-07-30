@@ -101,6 +101,21 @@ test('agent state, event, and projection roll back together on projection failur
   assert.equal(labelEvents(store, 'fleet:atomic').length, eventCount)
 }))
 
+test('add/remove derive current state from canonical events, not the agents projection', () => withStore(store => {
+  store.upsertAgent({
+    id: 'fleet:canonical',
+    labels: ['canonical'],
+    registered_at: '2026-07-30T00:00:00.000Z',
+  })
+  store.db.prepare('UPDATE agents SET labels = ? WHERE id = ?')
+    .run('["corrupt-projection"]', 'fleet:canonical')
+
+  assert.deepEqual(
+    store.mutateAgentLabels('fleet:canonical', 'add', 'added').labels,
+    ['canonical', 'added'],
+  )
+}))
+
 test('living friendly names block labels and dead names are reusable', () => withStore(store => {
   store.upsertAgent({
     id: 'fleet:holder',
@@ -126,6 +141,10 @@ test('living friendly names block labels and dead names are reusable', () => wit
   assert.deepEqual(
     store.mutateAgentLabels('fleet:target', 'add', 'held-name').labels,
     ['before', 'held-name'],
+  )
+  assert.throws(
+    () => store.mutateAgentLabels('fleet:target', 'add', 'fleet:target'),
+    /Label collision: fleet:target/,
   )
 }))
 

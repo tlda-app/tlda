@@ -2258,6 +2258,18 @@ export class FleetStore {
     };
   }
 
+  _currentLabelStateFromEvents(agentId) {
+    const row = this.db.prepare(`
+      SELECT json_extract(metadata, '$.label_state.labels') AS labels
+      FROM events
+      WHERE agent_id = ?
+        AND json_type(metadata, '$.label_state.labels') = 'array'
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `).get(agentId);
+    return row ? this._normalizeCompleteLabels(JSON.parse(row.labels)) : null;
+  }
+
   _notifyEvent(inserted) {
     const broadcastEvent = {
       ...inserted,
@@ -2355,11 +2367,13 @@ export class FleetStore {
     this.db.transaction(() => {
       const row = this._getAgent.get(id);
       if (!row) throw new Error('agent not found');
-      const current = this._normalizeCompleteLabels(row.labels ? JSON.parse(row.labels) : []);
+      const current = this._currentLabelStateFromEvents(id);
+      if (!current) throw new Error(`agent ${id} has no canonical label event; run the label-history migration`);
       if (operation === 'add') labels = [...current, ...incoming.filter(label => !current.includes(label))];
       else if (operation === 'remove') labels = current.filter(label => !incoming.includes(label));
       else labels = incoming;
       const collisions = this.checkNameAvailable(labels, { excludeId: id, asFriendlyName: false });
+      if (labels.includes(id)) collisions.push({ name: id, kind: 'self_id', agent_id: id });
       if (collisions.length) throw new Error(`Label collision: ${collisions.map(c => c.name).join(', ')}`);
       this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(labels), id);
       inserted = this._insertLabelStateEvent({
