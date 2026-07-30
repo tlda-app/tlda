@@ -81,6 +81,7 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
+import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -483,6 +484,17 @@ function markAgentNotAlive(agentId, detail = {}) {
   clearEphemeralState(agentId)
   // Fire-and-forget for the reason given where onChange does the same.
   if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
+}
+
+function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
+  const descendantIds = unroutedNativeDescendantIds(fleetStore.getAliveAgents(), parentAgentId)
+  for (const descendantId of descendantIds) {
+    markAgentNotAlive(descendantId, {
+      ...detail,
+      source: detail.source || 'native-parent-not-alive',
+      reason: detail.reason || `native parent ${parentAgentId} is not alive`,
+    })
+  }
 }
 
 function recordExplicitCheckAliveLiveness(liveness) {
@@ -7225,6 +7237,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
+      markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
       broadcastState()
@@ -7243,6 +7256,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
+      markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
