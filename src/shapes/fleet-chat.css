@@ -2593,12 +2593,67 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 
 .fleet-search-section-header {
-  padding: 4px 10px 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 10px 3px;
   font-size: 9px;
-  opacity: 0.4;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+  color: rgba(136, 136, 160, 0.72);
+  background: rgba(128, 128, 128, 0.035);
+}
+.fleet-search-section-label {
+  font-weight: 600;
+}
+.fleet-search-section-count {
+  opacity: 0.58;
+}
+.fleet-search-section-detail {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 8px;
+  text-transform: none;
+  opacity: 0.42;
+}
+.fleet-search-results-summary {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+  font-size: 9px;
+  color: rgba(136, 136, 160, 0.5);
+}
+.fleet-search-result-group + .fleet-search-result-group {
+  margin-top: 2px;
+}
+.fleet-search-result-documents .fleet-search-section-header {
+  color: rgba(99, 160, 219, 0.76);
+}
+.fleet-search-result-sessions .fleet-search-section-header {
+  color: rgba(200, 149, 106, 0.78);
+}
+.fleet-search-result-activity .fleet-search-section-header {
+  color: rgba(136, 136, 160, 0.52);
+}
+.fleet-search-group-more {
+  width: 100%;
+  min-height: 28px;
+  border: none;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+  background: transparent;
+  color: rgba(136, 136, 160, 0.62);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+  padding: 5px 10px;
+}
+.fleet-search-group-more:hover {
+  background: rgba(128, 128, 128, 0.06);
+  color: rgba(136, 136, 160, 0.86);
 }
 
 .fleet-search-doc-result {

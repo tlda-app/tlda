@@ -1,6 +1,7 @@
 // @ts-ignore — shared ESM module used by both Node and Vite.
 export {
   buildFleetSearchFilters,
+  groupFleetSearchResults,
   parseAgentSelector,
   parseSearchQuery,
   rankSearchResults,
@@ -65,4 +66,11 @@ export interface FleetSearchPayloadFilters {
   cwd?: string
   project?: string
   currentProject?: string
+}
+
+export interface FleetSearchResultGroup {
+  id: string
+  label: string
+  detail: string
+  results: any[]
 }

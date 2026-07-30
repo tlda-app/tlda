@@ -120,6 +120,20 @@ export function rankSearchResults(results, query) {
     .map(x => x.result)
 }
 
+export function groupFleetSearchResults(results) {
+  const groups = [
+    makeResultGroup('conversation', 'Conversation', 'Fleet chat, reports, and delegated task messages'),
+    makeResultGroup('documents', 'Documents', 'Indexed project source and document text'),
+    makeResultGroup('sessions', 'Session Logs', 'Terminal and agent transcript matches'),
+    makeResultGroup('activity', 'Activity', 'Tool calls and lower-signal operational events'),
+  ]
+  const byId = new Map(groups.map(group => [group.id, group]))
+  for (const result of results || []) {
+    byId.get(searchResultGroupId(result))?.results.push(result)
+  }
+  return groups.filter(group => group.results.length > 0)
+}
+
 export function resolveTimeFilter(val) {
   const now = new Date()
   const lower = String(val || '').toLowerCase()
@@ -205,7 +219,7 @@ function shouldTreatAsStructuredNaturalAgentToken(value, tokenCount) {
 
 function scoreResult(result, query, terms) {
   const serverScore = Number(result?.score)
-  const base = Number.isFinite(serverScore) ? serverScore : 0
+  const base = normalizeServerScore(result, serverScore)
   const haystack = `${result.snippet || ''}\n${result.text || ''}`.toLowerCase()
   let score = base
   if (haystack.includes(query)) score += 1000
@@ -213,5 +227,34 @@ function scoreResult(result, query, terms) {
     if (haystack.includes(term)) score += 20
   }
   if (terms.length > 0 && terms.every(term => haystack.includes(term))) score += 100
+  score += searchResultModalityBoost(result)
   return score
+}
+
+function normalizeServerScore(result, serverScore) {
+  if (!Number.isFinite(serverScore)) return 0
+  if (result?.type === 'document_content') return Math.min(serverScore, 40)
+  return serverScore
+}
+
+function searchResultModalityBoost(result) {
+  if (result?.source === 'fleet' && result?.type === 'chat') return 80
+  if (result?.source === 'fleet' && result?.type === 'report') return 55
+  if (result?.source === 'fleet' && result?.type === 'delegate') return 45
+  if (result?.type === 'project_agent') return 40
+  if (result?.type === 'document_content') return 20
+  if (result?.source === 'session') return -20
+  if (result?.type === 'activity') return -60
+  return 0
+}
+
+function makeResultGroup(id, label, detail) {
+  return { id, label, detail, results: [] }
+}
+
+function searchResultGroupId(result) {
+  if (result?.type === 'document_content') return 'documents'
+  if (result?.source === 'session') return 'sessions'
+  if (result?.type === 'activity') return 'activity'
+  return 'conversation'
 }
