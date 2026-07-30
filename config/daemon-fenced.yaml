@@ -75,6 +75,8 @@ environments:
       store: http://localhost:5176
       licenseKey: ""
 
+terminalInputAllowed: false
+
 regions:
   cwd:
     - cwd

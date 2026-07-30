@@ -378,6 +378,20 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
+function daemonTerminalInputAllowed(daemonKey) {
+  const ws = daemonConnections.get(daemonKey)
+  return ws?._capabilities?.terminalInputAllowed === true
+}
+
+function agentWithDaemonCapabilities(agent) {
+  if (!agent) return agent
+  const daemonKey = agent.daemon_key || agent.route_daemon_key
+  return {
+    ...agent,
+    terminalInputAllowed: daemonKey ? daemonTerminalInputAllowed(daemonKey) : false,
+  }
+}
+
 // Gate 1 observability: correlates one daemon WS connection attempt across
 // server and client logs, keyed by client-minted `connection_attempt_id`
 // (echoed back in daemon-welcome alongside ws._wsSessionId). Observability
@@ -1747,9 +1761,10 @@ function _queueBroadcastAgents(agentUpdates = null) {
 
 function _agentWithEphemeralState(agent) {
   if (!agent) return null
-  if (_thinkingState.has(agent.id)) return { ...agent, status: 'thinking' }
-  if (_compactingState.has(agent.id)) return { ...agent, status: 'compacting' }
-  return agent
+  const withCapabilities = agentWithDaemonCapabilities(agent)
+  if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
+  if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
+  return withCapabilities
 }
 
 // async because building the delta reads each changed agent through the store.
@@ -4801,6 +4816,12 @@ server.on('upgrade', async (req, socket, head) => {
     terminalWss.handleUpgrade(req, socket, head, async (ws) => {
       ws._agentId = agent.id
       ws._machineId = seat.machine_id
+      const terminalInputAllowed = daemonTerminalInputAllowed(seat.daemon_key)
+      sendTerminalFrame(ws, {
+        type: 'capabilities',
+        terminalInputAllowed,
+        capabilities: { terminalInputAllowed },
+      }, { agentId: agent.id, operation: 'terminal-capabilities' })
 
       // Add to watcher set, then start the daemon poll. Always — this set only
       // records which browsers are attached, and says nothing about whether the
@@ -5358,7 +5379,7 @@ async function handleFleetWsMessage(ws, msg) {
     const totals = await fleetStore.getAgentSummary?.() || { total: agents.length }
     reply({
       totals,
-      agents: agents.slice(0, Math.max(1, Math.min(Number(msg.limit) || 50, 500))),
+      agents: agents.slice(0, Math.max(1, Math.min(Number(msg.limit) || 50, 500))).map(agentWithDaemonCapabilities),
       shown: Math.min(agents.length, Math.max(1, Math.min(Number(msg.limit) || 50, 500))),
       matched: agents.length,
       wholeFleet: totals,
@@ -5371,7 +5392,7 @@ async function handleFleetWsMessage(ws, msg) {
       limit: msg.limit,
       cursor: msg.cursor || null,
     })
-    reply({ ...page, totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
+    reply({ ...page, agents: (page.agents || []).map(agentWithDaemonCapabilities), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
@@ -7975,7 +7996,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'daemon-hello') {
-    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id } = msg
+    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id, capabilities } = msg
     if (!machine_id || !env_name) return
     const daemonKey = daemonAddress(machine_id, env_name)
     // §4b backstop: a daemon address is owned by ONE daemon install. If another
@@ -8025,6 +8046,9 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._version = version
     ws._connectionAttemptId = connection_attempt_id || null
     ws._agentStatusSeq = Number.isInteger(last_agent_status_seq) ? last_agent_status_seq : 0
+    ws._capabilities = {
+      terminalInputAllowed: capabilities?.terminalInputAllowed === true,
+    }
     daemonConnections.set(daemonKey, ws)
     traceGate1('registry-set', {
       daemon_key: daemonKey,

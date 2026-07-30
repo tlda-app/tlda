@@ -118,6 +118,7 @@ type TerminalAgent = {
   name?: string
   tmux_session?: string | null
   runtime_status?: unknown
+  terminalInputAllowed?: boolean
   status_reason?: string | null
   activity?: string | null
 } & Record<string, unknown>
@@ -399,10 +400,11 @@ type TerminalOutputFrame = {
 
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
-function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
+function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: advertisedTerminalInputAllowed, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
   agentId: string
   agentName: string
   pinned: boolean
+  terminalInputAllowed: boolean
   anchorRef: React.RefObject<HTMLElement | null>
   onDismiss: () => void
   onMouseEnter: () => void
@@ -441,6 +443,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [height, setHeight] = useState(210)
+  const [terminalInputAllowed, setTerminalInputAllowed] = useState(advertisedTerminalInputAllowed === true)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
   // The peek renders a fixed grid sized to the agent's REAL tmux window width
@@ -473,6 +476,9 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
   }, [])
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
+  useEffect(() => {
+    setTerminalInputAllowed(advertisedTerminalInputAllowed === true)
+  }, [advertisedTerminalInputAllowed])
   useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
 
   // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
@@ -691,6 +697,8 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
               pendingOutput.push(output)
               if (fallbackFlushed) writeOutput(output)
             }
+          } else if (msg.type === 'capabilities') {
+            setTerminalInputAllowed(msg.terminalInputAllowed === true || msg.capabilities?.terminalInputAllowed === true)
           } else if (msg.type === 'error') {
             setStatus('error')
           }
@@ -721,6 +729,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
   }, [agentId])
 
   const sendInput = (data: string) => {
+    if (!terminalInputAllowed) return
     terminalTransportRef.current?.input(data)
     // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
     // command's effect shows up.
@@ -728,10 +737,19 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
   }
 
   const submitInput = (text: string) => {
+    if (!terminalInputAllowed) return
     terminalTransportRef.current?.submit(text)
     // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
     // command's effect shows up.
     refreshHistory()
+  }
+
+  const interruptTerminal = () => {
+    fleetEphemeral('interrupt', { agent: agentId }).then(refreshHistory).catch((e: unknown) => {
+      setStatus('error')
+      const message = e instanceof Error ? e.message : String(e)
+      termRef.current?.write(`\r\nInterrupt failed: ${message}\r\n`)
+    })
   }
 
   // Jump the terminal to its newest output. This deliberately does NOT go
@@ -875,63 +893,60 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
         </div>
       </div>
       {pinned && (
-        // Input bar shows whenever the pane is pinned — Skip's ask is that pinning
-        // ALWAYS gives a field ("when you pin it, I'm not getting a text field").
-        // It used to be gated on status==='connected', so a terminal that hadn't
-        // connected (goose terminals, slow connects) pinned with no field at all.
-        // sendInput() already no-ops while the WS isn't open, so an un-connected
-        // field degrades safely; the placeholder reflects the connection state so
-        // it reads as "waiting", not a dead field. (Making typing actually reach a
-        // goose shell is the separate goose-terminal-connection item.)
+        // Pinned read-only terminals keep dedicated controls but no text field.
         <div className="fleet-terminal-hover-input-bar"
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
         >
-          <span className="fleet-terminal-hover-prompt">$</span>
-          <textarea
-            ref={inputRef}
-            className="fleet-terminal-hover-input"
-            rows={1}
-            onKeyDown={handleInputKeyDown}
-            onKeyUp={(e) => stopEventPropagation(e as any)}
-            // Skip's ask: clicking into the pinned-terminal field must just focus
-            // it so he can type — it must NOT auto-pop the lightbox (the "blowing
-            // up on my screen"). The lightbox was historically spec'd to open on
-            // field-tap; he asked for that removed and made manual. Focus only
-            // here; do not setLightboxed(true).
-            onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
-            onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
-            onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
-            // The pane can now be pinned by a terminal-card notification for an
-            // agent this panel is not addressing, so it has to say whose
-            // terminal this is. Carried in the existing placeholder — which
-            // already reported connection state — rather than a new header.
-            placeholder={status === 'connected' ? `${agentName} — type or speak a command…` : status === 'error' ? `${agentName} — terminal unavailable, reconnecting…` : `${agentName} — connecting…`}
-            // Suppress the iOS soft keyboard on touch (same as the main composer
-            // ChatComposer.tsx + math notes): the field is voice/dictation-first,
-            // and raising the on-screen keyboard shifts visualViewport, which
-            // drags this portaled hover pane out of place (Skip: "the onscreen
-            // keyboard drags the terminal hover somewhere else").
-            inputMode={_isTouchDevice ? 'none' : undefined}
-            spellCheck={false}
-            autoComplete="off"
-            style={{
-              width: '100%',
-              background: 'transparent',
-              border: '1px solid rgba(128, 128, 128, 0.15)',
-              borderRadius: 4,
-              padding: '3px 50px 3px 18px',
-              fontSize: 11,
-              color: 'inherit',
-              outline: 'none',
-              resize: 'none',
-              lineHeight: 1.4,
-              fontFamily: 'inherit',
-              fieldSizing: 'content',
-              maxHeight: 120,
-              boxSizing: 'border-box',
-            } as any}
-          />
+          {terminalInputAllowed && (
+            <>
+              <span className="fleet-terminal-hover-prompt">$</span>
+              <textarea
+                ref={inputRef}
+                className="fleet-terminal-hover-input"
+                rows={1}
+                onKeyDown={handleInputKeyDown}
+                onKeyUp={(e) => stopEventPropagation(e as any)}
+                // Skip's ask: clicking into the pinned-terminal field must just focus
+                // it so he can type — it must NOT auto-pop the lightbox (the "blowing
+                // up on my screen"). The lightbox was historically spec'd to open on
+                // field-tap; he asked for that removed and made manual. Focus only
+                // here; do not setLightboxed(true).
+                onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
+                onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
+                onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
+                // The pane can now be pinned by a terminal-card notification for an
+                // agent this panel is not addressing, so it has to say whose
+                // terminal this is. Carried in the existing placeholder — which
+                // already reported connection state — rather than a new header.
+                placeholder={status === 'connected' ? `${agentName} — type or speak a command…` : status === 'error' ? `${agentName} — terminal unavailable, reconnecting…` : `${agentName} — connecting…`}
+                // Suppress the iOS soft keyboard on touch (same as the main composer
+                // ChatComposer.tsx + math notes): the field is voice/dictation-first,
+                // and raising the on-screen keyboard shifts visualViewport, which
+                // drags this portaled hover pane out of place (Skip: "the onscreen
+                // keyboard drags the terminal hover somewhere else").
+                inputMode={_isTouchDevice ? 'none' : undefined}
+                spellCheck={false}
+                autoComplete="off"
+                style={{
+                  width: '100%',
+                  background: 'transparent',
+                  border: '1px solid rgba(128, 128, 128, 0.15)',
+                  borderRadius: 4,
+                  padding: '3px 50px 3px 18px',
+                  fontSize: 11,
+                  color: 'inherit',
+                  outline: 'none',
+                  resize: 'none',
+                  lineHeight: 1.4,
+                  fontFamily: 'inherit',
+                  fieldSizing: 'content',
+                  maxHeight: 120,
+                  boxSizing: 'border-box',
+                } as any}
+              />
+            </>
+          )}
           <button
             className="fleet-terminal-hover-jump-bottom"
             title="Send Ctrl+End"
@@ -942,7 +957,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, anchorRef, onDismiss, o
           <button
             className="fleet-terminal-hover-ctrl-c"
             title="Send Ctrl+C"
-            onPointerDown={(e) => { stopEventPropagation(e as any); sendInput('\x03') }}
+            onPointerDown={(e) => { stopEventPropagation(e as any); interruptTerminal() }}
           >
             ^C
           </button>
@@ -5913,6 +5928,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               agentId={activeTerminalHoverId}
               agentName={agentNames[activeTerminalHoverId] || activeTerminalHoverId.replace('fleet:', '')}
               pinned={termHoverPinned}
+              terminalInputAllowed={selectedTerminalHoverAgent.terminalInputAllowed === true}
               anchorRef={inputAreaRef}
               onDismiss={() => dismissTerminalNotification(activeTerminalHoverId)}
               onMouseEnter={() => {

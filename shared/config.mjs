@@ -270,6 +270,13 @@ models:
 #
 # "environments.default" names the active one. Add more under "values" and
 # select one for a single run with "--env <name>"; see \`tlda env\`.
+#
+# Terminal viewing is read-only unless this daemon explicitly opts in. When
+# terminalInputAllowed is false or absent, the daemon still streams terminal
+# output and accepts dedicated controls such as interrupt, but rejects terminal
+# text injection.
+terminalInputAllowed: false
+
 environments:
   default: local
   values:

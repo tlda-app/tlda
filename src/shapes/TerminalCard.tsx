@@ -15,6 +15,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalCard.css'
 import { log } from '../logger'
+import { fleetEphemeral } from '../fleet/fleet-data.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 
 // Terminal PTY is daemon-routed through the global fleet server, not the serving
@@ -40,6 +41,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
   const [statusMsg, setStatusMsg] = useState('')
   const [inputFocused, setInputFocused] = useState(false)
   const [inputValue, setInputValue] = useState('')
+  const [terminalInputAllowed, setTerminalInputAllowed] = useState(false)
   const [frozen, setFrozen] = useState(false)
   const [frozenText, setFrozenText] = useState('')
   const retryCountRef = useRef(0)
@@ -141,6 +143,8 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
             log.warn('terminal-card', 'server error', { agentId, agentName, message: msg.message })
             setStatus('error')
             setStatusMsg(msg.message || 'server error')
+          } else if (msg.type === 'capabilities') {
+            setTerminalInputAllowed(msg.terminalInputAllowed === true || msg.capabilities?.terminalInputAllowed === true)
           }
         },
         onError: () => {
@@ -196,8 +200,17 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
 
   // Send raw data to tmux
   const sendInput = useCallback((data: string) => {
+    if (!terminalInputAllowed) return
     terminalTransportRef.current?.input(data)
-  }, [])
+  }, [terminalInputAllowed])
+
+  const interruptTerminal = useCallback(() => {
+    fleetEphemeral('interrupt', { agent: agentId }).catch((e: unknown) => {
+      const message = e instanceof Error ? e.message : String(e)
+      setStatus('error')
+      setStatusMsg(`Interrupt failed: ${message}`)
+    })
+  }, [agentId])
 
   const handleInputSubmit = useCallback(() => {
     // Send even empty string (just Enter) — useful for confirming prompts
@@ -213,7 +226,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       handleInputSubmit()
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault()
-      sendInput('\x03')
+      interruptTerminal()
       setInputValue('')
     } else if (e.key === 'd' && e.ctrlKey) {
       e.preventDefault()
@@ -231,7 +244,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       e.preventDefault()
       sendInput('\x1b')
     }
-  }, [handleInputSubmit, sendInput])
+  }, [handleInputSubmit, sendInput, interruptTerminal])
 
   // Freeze: capture terminal text, close WS, show static snapshot
   const handleFreeze = useCallback(() => {
@@ -331,27 +344,31 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
           onPointerDown={stopEventPropagation}
           onPointerMove={stopEventPropagation}
         >
-          <span className="terminal-card-input-prompt">$</span>
-          <input
-            ref={inputRef}
-            className="terminal-card-input"
-            type="text"
-            value={inputValue}
-            onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
-            onKeyDown={handleInputKeyDown}
-            onKeyUp={(e) => stopEventPropagation(e as any)}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
-            placeholder="type command…"
-            spellCheck={false}
-            autoComplete="off"
-          />
+          {terminalInputAllowed && (
+            <>
+              <span className="terminal-card-input-prompt">$</span>
+              <input
+                ref={inputRef}
+                className="terminal-card-input"
+                type="text"
+                value={inputValue}
+                onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+                onKeyDown={handleInputKeyDown}
+                onKeyUp={(e) => stopEventPropagation(e as any)}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
+                placeholder="type command…"
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </>
+          )}
           <button
             className="terminal-card-ctrl-c"
             title="Send Ctrl+C (interrupt)"
             onPointerDown={(e) => {
               stopEventPropagation(e as any)
-              sendInput('\x03')
+              interruptTerminal()
             }}
           >
             ^C

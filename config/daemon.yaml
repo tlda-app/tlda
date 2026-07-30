@@ -79,3 +79,5 @@ environments:
       database: http://localhost:5176
       store: http://localhost:5176
       licenseKey: ""
+
+terminalInputAllowed: true

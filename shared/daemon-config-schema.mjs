@@ -20,6 +20,7 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // a zero-byte log, so nothing pointed at the cause.
   'statusScanSeconds',
   'jsonlTailIdleSeconds',
+  'terminalInputAllowed',
 ])
 
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
@@ -61,7 +62,11 @@ function validateTopLevelKeys(root, allowedKeys, label) {
 }
 
 export function validateDaemonConfigTopLevel(root, label = 'daemon config') {
-  return validateTopLevelKeys(root, DAEMON_CONFIG_TOP_LEVEL_KEYS, label)
+  const config = validateTopLevelKeys(root, DAEMON_CONFIG_TOP_LEVEL_KEYS, label)
+  if (config.terminalInputAllowed !== undefined && typeof config.terminalInputAllowed !== 'boolean') {
+    throw new Error(`${label}: "terminalInputAllowed" must be a boolean`)
+  }
+  return config
 }
 
 export function validateProjectDaemonOverrideTopLevel(root, label = 'project daemon override') {

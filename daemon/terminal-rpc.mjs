@@ -5,6 +5,7 @@ import {
   terminalVisibleCaptureArgs,
   trimTerminalSeedBlankRows,
 } from '../shared/terminal-seed.mjs'
+import { assertTerminalTextInputAllowed } from '../shared/terminal-input-policy.mjs'
 import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
 
 const execFileP = promisify(execFile)
@@ -48,6 +49,7 @@ export function createTerminalRpc({
   resolveAgentRoute,
   validateTmuxOwner,
   resolveTerminalAgent,
+  terminalInputAllowed = false,
   execFileImpl = execFileP,
 }) {
   const TMUX_ARGS = tmuxArgs || []
@@ -114,6 +116,7 @@ export function createTerminalRpc({
     const { key } = args
     checkSession(tmuxSession)
     if (!key) throw new Error('missing key')
+    assertTerminalTextInputAllowed(terminalInputAllowed, 'send-key', { key })
     onArmBySession(tmuxSession)
     const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
     await tmux('send-keys', '-t', tmuxSession, tmuxKey)
@@ -125,6 +128,7 @@ export function createTerminalRpc({
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
     const { text, enter, enter_delay_ms } = args
     checkSession(tmuxSession)
+    assertTerminalTextInputAllowed(terminalInputAllowed, 'send-text')
     onArmBySession(tmuxSession)
     // A live tmux can still be unable to consume task text. Clear only prompts
     // already classified as safe auto-accepts before injecting the queued text;
@@ -527,6 +531,7 @@ export function createTerminalRpc({
     const { tmuxSession } = resolveTerminalEndpoint(args)
     const { data } = args
     checkSession(tmuxSession)
+    assertTerminalTextInputAllowed(terminalInputAllowed, 'terminal-input')
     const state = terminalWatchPtys.get(tmuxSession)
     if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
     state.pty.write(data)
@@ -570,6 +575,9 @@ export function createTerminalRpc({
       'terminal-input': rpcTerminalInput,
     },
     listSessions: rpcListSessions,
+    capabilities: Object.freeze({
+      terminalInputAllowed,
+    }),
     stopAllTerminalWatches,
     tmux,
   }

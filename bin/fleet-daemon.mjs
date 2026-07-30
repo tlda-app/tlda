@@ -69,6 +69,7 @@ import {
   getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
+import { terminalInputAllowedFromConfig } from '../shared/terminal-input-policy.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
@@ -152,6 +153,7 @@ const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
+const TERMINAL_INPUT_ALLOWED = terminalInputAllowedFromConfig(daemonSpawnConfig)
 const CONFIGURED_ENV_NAMES = Object.keys(daemonSpawnConfig.environments?.values || {})
 const BOT_MODEL_SPEC = {
   alias: 'bot',
@@ -682,6 +684,7 @@ terminalRpc = createTerminalRpc({
   interruptHintRe: INTERRUPT_HINT_RE,
   thinkingScanLines: THINKING_SCAN_LINES,
   terminalSizePollMs: TERMINAL_SIZE_POLL_MS,
+  terminalInputAllowed: TERMINAL_INPUT_ALLOWED,
   decideTerminalWatchExit,
   resolveAgentRoute,
   onArmAgent: agentStatus.armAgent,
@@ -1253,6 +1256,9 @@ function connect() {
         version: VERSION,
         boot_id: BOOT_ID,
         install_path: INSTALL_PATH,
+        capabilities: {
+          terminalInputAllowed: terminalRpc.capabilities.terminalInputAllowed,
+        },
         connection_attempt_id: connectionAttemptId,
         // A cold daemon has no roster to apply a delta to, so 0 deliberately
         // requests the exceptional snapshot. Reconnects retain the cursor.

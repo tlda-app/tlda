@@ -145,6 +145,8 @@ function TerminalComponent({ shape }: { shape: any }) {
   const [statusMsg, setStatusMsg] = useState('')
   const [inputFocused, setInputFocused] = useState(false)
   const [inputValue, setInputValue] = useState('')
+  const [terminalInputAllowed, setTerminalInputAllowed] = useState(false)
+  const terminalInputAllowedRef = useRef(false)
   const { agents, error: agentsError } = useAgents()
 
   // Initialize xterm once
@@ -190,6 +192,7 @@ function TerminalComponent({ shape }: { shape: any }) {
 
     // Forward key input from xterm to WebSocket (for direct xterm focus)
     term.onData((data) => {
+      if (!terminalInputAllowedRef.current) return
       terminalTransportRef.current?.input(data)
     })
 
@@ -254,6 +257,8 @@ function TerminalComponent({ shape }: { shape: any }) {
         if (msg.type === 'output' && msg.data && termRef.current) {
           termRef.current.reset()
           termRef.current.write(msg.data)
+        } else if (msg.type === 'capabilities') {
+          setTerminalInputAllowed(msg.terminalInputAllowed === true || msg.capabilities?.terminalInputAllowed === true)
         } else if (msg.type === 'error') {
           setStatus('error')
           setStatusMsg(msg.message || 'server error')
@@ -280,6 +285,10 @@ function TerminalComponent({ shape }: { shape: any }) {
     }
   }, [agentId])
 
+  useEffect(() => {
+    terminalInputAllowedRef.current = terminalInputAllowed
+  }, [terminalInputAllowed])
+
   const handleAgentChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     stopEventPropagation(e as any)
     editor.updateShape({
@@ -291,8 +300,18 @@ function TerminalComponent({ shape }: { shape: any }) {
 
   // Send raw data to tmux via WebSocket
   const sendInput = useCallback((data: string) => {
+    if (!terminalInputAllowed) return
     terminalTransportRef.current?.input(data)
-  }, [])
+  }, [terminalInputAllowed])
+
+  const interruptTerminal = useCallback(() => {
+    if (!agentId) return
+    fleetEphemeral('interrupt', { agent: agentId }).catch((e: unknown) => {
+      const message = e instanceof Error ? e.message : String(e)
+      setStatus('error')
+      setStatusMsg(`Interrupt failed: ${message}`)
+    })
+  }, [agentId])
 
   // Handle input bar submit
   const handleInputSubmit = useCallback(() => {
@@ -312,7 +331,7 @@ function TerminalComponent({ shape }: { shape: any }) {
     } else if (e.key === 'c' && e.ctrlKey) {
       // Ctrl+C — send interrupt
       e.preventDefault()
-      sendInput('\x03')
+      interruptTerminal()
       setInputValue('')
     } else if (e.key === 'Tab') {
       // Tab completion
@@ -325,7 +344,7 @@ function TerminalComponent({ shape }: { shape: any }) {
       e.preventDefault()
       sendInput('\x1b[B')
     }
-  }, [handleInputSubmit, sendInput])
+  }, [handleInputSubmit, sendInput, interruptTerminal])
 
   const agentName = agents.find(a => a.id === agentId)?.friendly_name
     ?? (agentId ? agentId.slice(0, 12) : 'none')
@@ -398,27 +417,31 @@ function TerminalComponent({ shape }: { shape: any }) {
             onPointerDown={stopEventPropagation}
             onPointerMove={stopEventPropagation}
           >
-            <span className="terminal-shape-input-prompt">$</span>
-            <input
-              ref={inputRef}
-              className="terminal-shape-input"
-              type="text"
-              value={inputValue}
-              onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
-              onKeyDown={handleInputKeyDown}
-              onKeyUp={(e) => stopEventPropagation(e as any)}
-              onFocus={() => setInputFocused(true)}
-              onBlur={() => setInputFocused(false)}
-              placeholder="type command…"
-              spellCheck={false}
-              autoComplete="off"
-            />
+            {terminalInputAllowed && (
+              <>
+                <span className="terminal-shape-input-prompt">$</span>
+                <input
+                  ref={inputRef}
+                  className="terminal-shape-input"
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => { stopEventPropagation(e as any); setInputValue(e.target.value) }}
+                  onKeyDown={handleInputKeyDown}
+                  onKeyUp={(e) => stopEventPropagation(e as any)}
+                  onFocus={() => setInputFocused(true)}
+                  onBlur={() => setInputFocused(false)}
+                  placeholder="type command…"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </>
+            )}
             <button
               className="terminal-shape-ctrl-c"
               title="Send Ctrl+C (interrupt)"
               onPointerDown={(e) => {
                 stopEventPropagation(e as any)
-                sendInput('\x03')
+                interruptTerminal()
               }}
             >
               ^C

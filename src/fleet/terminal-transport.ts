@@ -5,8 +5,9 @@ import { createFleetOperationTransport } from '../../shared/fleet-operation-tran
 export type TerminalTransportFrame =
   | { type: 'output'; data: string; encoding?: string }
   | { type: 'size'; cols: number; rows: number }
+  | { type: 'capabilities'; terminalInputAllowed?: boolean; capabilities?: { terminalInputAllowed?: boolean } }
   | { type: 'error'; message?: string }
-  | { type: string; data?: string; encoding?: string; message?: string; cols?: number; rows?: number }
+  | { type: string; data?: string; encoding?: string; message?: string; cols?: number; rows?: number; terminalInputAllowed?: boolean; capabilities?: { terminalInputAllowed?: boolean } }
 
 export interface TerminalTransport {
   close(): void
