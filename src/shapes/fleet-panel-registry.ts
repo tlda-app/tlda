@@ -14,6 +14,7 @@ export type FleetPanelType =
   | 'fleet-source-editor'
   | 'fleet-inbox'
   | 'fleet-notifications'
+  | 'fleet-report-artifact'
   | 'fleet-video'
 
 export type FleetPanelDefinition = HostedPanelAppDefinition<FleetPanelType>
@@ -26,6 +27,7 @@ export const FLEET_PANEL_DEFINITIONS = defineHostedPanelApps([
   { type: 'fleet-source-editor', defaultSize: { w: 560, h: 520 }, defaultProps: { file: '', line: 1, title: 'Source' } },
   { type: 'fleet-inbox', defaultSize: { w: 360, h: 560 } },
   { type: 'fleet-notifications', defaultSize: { w: 360, h: 220 } },
+  { type: 'fleet-report-artifact', defaultSize: { w: 520, h: 360 }, defaultProps: { url: '', title: 'Report artifact' } },
   { type: 'fleet-video', defaultSize: { w: 260, h: 172 }, defaultProps: { tileKeys: '[]' } },
 ] satisfies readonly FleetPanelDefinition[])
 

@@ -99,7 +99,9 @@ body.fleet-hud-open .fleet-hud-wrap {
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"],
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"] * {
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"] *,
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-report-artifact"],
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-report-artifact"] * {
   pointer-events: auto !important;
 }
 /* In layout/drag mode (fleet-drag-mode on the shape), disable pointer-events
@@ -162,6 +164,9 @@ body.fleet-hud-open .fleet-hud-wrap {
    not interactive. */
 .fleet-hud-wrap iframe {
   pointer-events: none !important;
+}
+.fleet-hud-wrap .fleet-report-artifact-frame {
+  pointer-events: auto !important;
 }
 /* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
 .fleet-hud-wrap [class*="watermark"] {

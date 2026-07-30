@@ -25,7 +25,7 @@ import {
 } from '../wm/markdown-surface'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
-import { createFleetShape, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { createFleetShape, FLEET_SHAPE_TYPES, placeFleetShapeAtScreenPoint } from './fleet-utils'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
   applyFilterPreviewWithIntent,
@@ -48,12 +48,34 @@ const PILL_W = 70
 const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
+const REPORT_ARTIFACT_W = 520
+const REPORT_ARTIFACT_H = 360
 const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
 const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_W = 800
 const TEMP_MARKDOWN_H = 1200
 
 const FLEET_TYPES = FLEET_SHAPE_TYPES
+
+type FleetPillRecord = {
+  id: TLShapeId
+  type: 'fleet-pill'
+  props: Record<string, unknown> & {
+    pillType?: unknown
+    displayName?: unknown
+    value?: unknown
+  }
+  meta: Record<string, unknown>
+}
+
+function isFleetPillRecord(shape: unknown): shape is FleetPillRecord {
+  if (!shape || typeof shape !== 'object') return false
+  const record = shape as Record<string, unknown>
+  return record.type === 'fleet-pill' &&
+    typeof record.id === 'string' &&
+    !!record.props && typeof record.props === 'object' &&
+    !!record.meta && typeof record.meta === 'object'
+}
 
 // Module-level snap state — written by drag handler, read by the component.
 // The component re-renders on every translate frame, so it picks up changes.
@@ -193,6 +215,52 @@ function getShapeClipBounds(editor: Editor, shapeId: TLShapeId) {
   const bounds = editor.getShapePageBounds(shapeId)
   if (!bounds) return null
   return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+}
+
+function reportArtifactNameCandidate(url?: string, path?: string, title?: string) {
+  const pieces = [url, path, title].filter((v): v is string => !!v)
+  const derived: string[] = []
+  for (const piece of pieces) {
+    try {
+      const parsed = new URL(piece, window.location.href)
+      const fromPathParam = parsed.searchParams.get('path')
+      if (fromPathParam) derived.push(decodeURIComponent(fromPathParam))
+      derived.push(parsed.pathname)
+    } catch {
+      // Plain file paths and labels are still useful extension candidates.
+    }
+  }
+  return [...pieces, ...derived].join(' ')
+}
+
+function isSupportedReportArtifact(url?: string, path?: string, title?: string) {
+  return /\.(html?|svg)(?:$|[?#\s])/i.test(`${reportArtifactNameCandidate(url, path, title)} `)
+}
+
+function reportArtifactUrl(url?: string, path?: string) {
+  if (url) return url
+  if (!path) return ''
+  return `/api/file?path=${encodeURIComponent(path)}`
+}
+
+async function createReportArtifactShapeFromPill(
+  editor: Editor,
+  screenPoint: { x: number; y: number },
+  pill: FleetPillRecord,
+) {
+  const filePath = typeof pill.meta.filePath === 'string' ? pill.meta.filePath : undefined
+  const fileUrl = typeof pill.meta.fileUrl === 'string' ? pill.meta.fileUrl : undefined
+  const displayName = typeof pill.props.displayName === 'string' ? pill.props.displayName : undefined
+  const title = displayName || filePath?.split('/').pop() || 'Report artifact'
+  const url = reportArtifactUrl(fileUrl, filePath)
+  if (!url || !isSupportedReportArtifact(url, filePath, title)) return false
+  await placeFleetShapeAtScreenPoint(editor, 'fleet-report-artifact', screenPoint.x, screenPoint.y, REPORT_ARTIFACT_W, REPORT_ARTIFACT_H, {
+    url,
+    title,
+    ...(pill?.props?.value ? { sourceEventId: String(pill.props.value) } : {}),
+    generatedAt: new Date().toISOString(),
+  })
+  return true
 }
 
 export async function createTemporaryMarkdownColumn(
@@ -448,7 +516,17 @@ export async function dropPillOnTarget(
     // always resolves to a pane while dragging; this branch is unreachable in
     // practice. It must never silently AND terms into the last clause — that
     // divergent second path was the unsatisfiable-filter ("mixed state") bug.
-  } else if (overFleet) {
+  } else {
+    const pill: unknown = editor.getShape(pillId)
+    const pillType = isFleetPillRecord(pill) ? pill.props.pillType : undefined
+    const reportDropScreenPoint = hitEditor.pageToScreen(targetPagePoint)
+    if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
+        await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill)) {
+      return
+    }
+  }
+
+  if (overFleet) {
     // Drop landed on the HUD (a fleet shape) but isn't a handled fleet-chat
     // interaction — evaporate instead of spawning a sticky/new-chat on top of
     // the fixed overlay, where it sits on top and becomes undismissable. The

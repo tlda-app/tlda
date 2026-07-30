@@ -23,6 +23,7 @@ import {
   fleetDocviewProps,
   fleetInboxProps,
   fleetNotificationsProps,
+  fleetReportArtifactProps,
   fleetSearchProps,
   fleetSourceEditorProps,
 } from '../../shared/shapes/fleet-panel-schema.mjs'
@@ -86,6 +87,13 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.html-page',
+      sequence: [],
+    }),
+  },
+  'fleet-report-artifact': {
+    props: fleetReportArtifactProps,
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.fleet-report-artifact',
       sequence: [],
     }),
   },

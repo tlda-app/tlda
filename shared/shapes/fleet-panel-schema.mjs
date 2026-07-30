@@ -23,6 +23,13 @@ export const fleetAgentsProps = ownedPanelProps
 export const fleetSearchProps = ownedPanelProps
 export const fleetInboxProps = ownedPanelProps
 export const fleetNotificationsProps = ownedPanelProps
+export const fleetReportArtifactProps = {
+  ...ownedPanelProps,
+  url: T.string,
+  title: T.string,
+  sourceEventId: T.optional(T.string),
+  generatedAt: T.optional(T.string),
+}
 
 export const fleetDocviewProps = {
   ...ownedPanelProps,
