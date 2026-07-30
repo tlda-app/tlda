@@ -38,7 +38,7 @@ import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, 
 // surviving a remount is informative — the viewport-driven unmount at the bottom
 // of this file tears down every subscription, and a remount whose tail goes
 // BACKWARDS is exactly what that would look like.
-import { notePanelTail } from '../fleet/chat-freeze-probe.mjs'
+import { noteFollowTransition, notePanelTail } from '../fleet/chat-freeze-probe.mjs'
 import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscription.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
@@ -3698,6 +3698,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     hardLockedRef.current = hardLocked
     localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
     setFleetEventsLiveTailPinned(shape.id, hardLocked || !userScrolledUpRef.current, chatEventBufferKey)
+    noteFollowTransition(String(shape.id), 'hard-lock', {
+      enabled: hardLocked,
+      scrolledUp: userScrolledUpRef.current,
+      bufferKey: chatEventBufferKey,
+    })
   }, [hardLocked, shape.id, chatEventBufferKey])
 
   useEffect(() => {
@@ -3817,14 +3822,26 @@ function FleetChatInner({ shape }: { shape: any }) {
       const top = el.scrollTop
       const height = el.scrollHeight
       const gap = el.scrollHeight - top - el.clientHeight
+      const previousTop = lastTop
+      const previousHeight = lastHeight
       const { scrolledUp, action } = decideFollowTransition(
-        { top, height, clientHeight: el.clientHeight, lastTop, lastHeight },
+        { top, height, clientHeight: el.clientHeight, lastTop: previousTop, lastHeight: previousHeight },
         { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: activeSettleTailRunRef.current !== 0 },
       )
       lastTop = top
       lastHeight = height
       if (action === 'follow-off') {
         log.debug('chat-scroll', 'user scrolled UP → HOLD position, stop following (new messages will NOT yank)', { top, gap })
+        noteFollowTransition(String(shape.id), action, {
+          top,
+          height,
+          clientHeight: el.clientHeight,
+          gap,
+          lastTop: previousTop,
+          lastHeight: previousHeight,
+          programmatic: activeSettleTailRunRef.current !== 0,
+          bufferKey: chatEventBufferKey,
+        })
         settleTailRunRef.current += 1
         activeSettleTailRunRef.current = 0
         userScrolledUpRef.current = scrolledUp
@@ -3837,6 +3854,16 @@ function FleetChatInner({ shape }: { shape: any }) {
           return
         }
         log.debug('chat-scroll', 'user returned to true bottom → resume stick-to-bottom', { top, gap })
+        noteFollowTransition(String(shape.id), action, {
+          top,
+          height,
+          clientHeight: el.clientHeight,
+          gap,
+          lastTop: previousTop,
+          lastHeight: previousHeight,
+          programmatic: activeSettleTailRunRef.current !== 0,
+          bufferKey: chatEventBufferKey,
+        })
         userScrolledUpRef.current = scrolledUp
         viewportAnchorRef.current = null
         setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
@@ -3863,6 +3890,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the new content down as it arrives. A refilter is a fresh view — bottom is
   // the right default, which is exactly what the user asked for.
   useEffect(() => {
+    noteFollowTransition(String(shape.id), 'filter-reset', {
+      filterKey,
+      bufferKey: chatEventBufferKey,
+    })
     userScrolledUpRef.current = false
     viewportAnchorRef.current = null
     isAtBottomRef.current = true
