@@ -472,7 +472,6 @@ export function createDevReaper({ sendMsg = () => {}, machineId = null, envName 
           console.log(`[node-modules-reaper] evicted ${entry.path} (${formatBytes(entry.sizeBytes)}; mtime=${new Date(entry.mtimeMs).toISOString()})`)
         }
       } catch (e) {
-        _lastWorktreeNodeModulesResult = { error: e.message }
         console.error('[node-modules-reaper] sweep failed:', e.message)
       }
     }
