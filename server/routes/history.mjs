@@ -99,6 +99,25 @@ function _parseDiffOutput(diffText) {
   return { addTexts, delTexts }
 }
 
+export async function runLatexdiffFiles(oldPath, newPath, opts = {}) {
+  try {
+    const { stdout } = await execFileAsync(
+      'latexdiff',
+      ['--math-markup=0', oldPath, newPath],
+      { timeout: 30000, maxBuffer: 10 * 1024 * 1024, ...opts },
+    )
+    return stdout
+  } catch (e) {
+    if (e?.code === 'ENOENT') {
+      const err = new Error('latexdiff is not installed on this server')
+      err.status = 503
+      err.dependency = 'latexdiff'
+      throw err
+    }
+    throw e
+  }
+}
+
 /**
  * Search excerptLines for a changed text span. Returns the first matching line's
  * { lineNum, colStart, colEnd, lineLen }, or null if not found.
@@ -493,11 +512,16 @@ router.post('/diff-region', requireRead, async (req, res) => {
   try {
     writeFileSync(tmpOld, historicalFull)
     writeFileSync(tmpNew, currentFull)
-    const ldOut = await execAsync(
-      `latexdiff --math-markup=0 "${tmpOld}" "${tmpNew}"`,
-      { timeout: 30000, maxBuffer: 10 * 1024 * 1024 },
-    ).then(r => r.stdout).catch(e => e.stdout ?? '')
+    const ldOut = await runLatexdiffFiles(tmpOld, tmpNew)
     ;({ addTexts, delTexts } = _parseDiffOutput(ldOut))
+  } catch (e) {
+    const status = e?.status || 500
+    const detail = e?.stderr ? String(e.stderr).trim() : String(e?.message || e)
+    return res.status(status).json({
+      error: status === 503 ? 'history diff dependency unavailable' : 'latexdiff failed',
+      dependency: e?.dependency || 'latexdiff',
+      detail,
+    })
   } finally {
     try { unlinkSync(tmpOld) } catch {}
     try { unlinkSync(tmpNew) } catch {}

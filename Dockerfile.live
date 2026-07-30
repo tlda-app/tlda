@@ -18,12 +18,12 @@ RUN apt-get update && apt-get install -y \
       texlive-latex-recommended texlive-latex-extra texlive-science \
       texlive-fonts-recommended texlive-fonts-extra texlive-bibtex-extra \
       texlive-pictures texlive-plain-generic texlive-xetex \
-      lmodern dvisvgm biber latexmk ghostscript git git-filter-repo ca-certificates \
+      lmodern dvisvgm biber latexmk latexdiff ghostscript git git-filter-repo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # Fail the build early if any build-pipeline binary is missing or too old.
 # NOTE: the SVG pipeline uses `dvisvgm --font-format=woff2` — verify this dvisvgm
 # supports woff2 on first real build (Debian bookworm texlive should).
-RUN latexmk --version && dvisvgm --version && biber --version && gs --version
+RUN latexmk --version && dvisvgm --version && biber --version && latexdiff --version && gs --version
 
 # Build tools for native npm modules (better-sqlite3 compiles via node-gyp when no
 # prebuilt binary is fetched). Separate layer so the TeXLive layer above stays cached.
