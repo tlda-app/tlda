@@ -991,17 +991,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = await fleetStore.findAgent?.(agentId) || await fleetStore.getAgent?.(agentId)
     if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
 
-    const route = resolveRpc('rechat', agent)
-    if (route.via === 'none') return res.status(503).json({ ok: false, error: route.error })
+    const seat = await agentRouteOrHttpError(res, agent)
+    if (!seat) return
 
     let result
     try {
-      result = await sendDaemonDurable(route.machine_id, 'rechat', {
+      result = await sendDaemonDurable(seat.daemon_key, 'rechat', {
         agent_id: agent.id,
         text: rawText,
       })
     } catch (e) {
-      return res.status(502).json({ ok: false, error: e.message })
+      const code = e.code === 'NO_DAEMON' ? 503 : 502
+      return res.status(code).json({ ok: false, error: e.message })
     }
 
     let { resolvedMessage, inlineAttachments } = result
