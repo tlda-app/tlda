@@ -53,7 +53,7 @@ import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeC
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
-import { readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
+import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 
 const router = Router()
 
@@ -199,6 +199,27 @@ router.get('/meta', requireRead, async (req, res) => {
     }
   }
   res.json(meta)
+})
+
+// Space-time changelogs for an explicit page of project rows.
+router.post('/history/shadow/changelog/batch', requireRead, async (req, res) => {
+  const names = [...new Set(
+    (Array.isArray(req.body?.projects) ? req.body.projects : [])
+      .filter(name => typeof name === 'string' && name.length > 0),
+  )]
+  if (names.length === 0) return res.json({ projects: {} })
+  if (names.length > 50) {
+    return res.status(400).json({ error: 'At most 50 projects may be requested at once' })
+  }
+
+  const projects = await mapWithConcurrency(names, 4, async name => {
+    try {
+      return await readShadowChangelog(name, { limit: null })
+    } catch (error) {
+      return { commits: [], totalPages: 0, error: error.message }
+    }
+  })
+  res.json({ projects })
 })
 
 // Select real project histories and establish the shared clock before any row
