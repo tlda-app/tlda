@@ -8,7 +8,7 @@
 
 import { Router } from 'express'
 import { join } from 'path'
-import { existsSync, readdirSync, readFileSync } from 'fs'
+import { access, cp, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { exec as execCb, execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 const execAsync = promisify(execCb)
@@ -20,6 +20,23 @@ import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBound
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
+
+async function pathExists(path) {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function readJsonOr(path, fallback) {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
 
 // ---- Diff highlight helpers (mirrored from mcp-server draw_highlight logic) ----
 const _PDF_WIDTH = 612, _TARGET_WIDTH = 800, _PDF_HEIGHT = 792, _PAGE_GAP = 32
@@ -188,7 +205,7 @@ router.get('/shadow/diff', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const repoDir = getShadowRepoDir(name)
-  if (!existsSync(join(repoDir, '.git'))) {
+  if (!await pathExists(join(repoDir, '.git'))) {
     return res.status(400).json({ error: 'Shadow repo not initialized for this project' })
   }
 
@@ -253,8 +270,8 @@ router.get('/shadow/:hash7/lookup', requireRead, async (req, res) => {
   const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
   const ctx = historicalCtx(name, hash7, texBase)
   ensure(ctx, `${texBase}-lookup.json`)
-    .then(lookupPath => {
-      const data = readFileSync(lookupPath, 'utf8')
+    .then(async lookupPath => {
+      const data = await readFile(lookupPath, 'utf8')
       res.setHeader('Content-Type', 'application/json')
       res.send(data)
     })
@@ -275,17 +292,15 @@ router.get('/shadow/:hash7/meta', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const metaPath = join(projectDir(name), 'history', `shadow-${hash7}`, 'meta.json')
-  if (existsSync(metaPath)) {
-    try {
-      const meta = JSON.parse(readFileSync(metaPath, 'utf8'))
-      return res.json(meta)
-    } catch {}
+  if (await pathExists(metaPath)) {
+    const meta = await readJsonOr(metaPath, null)
+    if (meta) return res.json(meta)
   }
 
   // Not yet compiled — check if cached SVGs exist (older entries from cacheSvgSnapshot)
   const svgDir = join(projectDir(name), 'history', `shadow-${hash7}`)
-  if (existsSync(svgDir)) {
-    const svgs = readdirSync(svgDir).filter(f => /page-\d+\.svg$/.test(f))
+  if (await pathExists(svgDir)) {
+    const svgs = (await readdir(svgDir)).filter(f => /page-\d+\.svg$/.test(f))
     if (svgs.length > 0) {
       return res.json({ pages: svgs.length, hash7, compiledAt: null })
     }
@@ -357,17 +372,16 @@ router.post('/shadow/:ref/checkout', requireRw, async (req, res) => {
     const srcDir = getSourceDir(name)
 
     // Clear existing source and copy from extracted ref
-    const { readdirSync, rmSync, cpSync } = await import('fs')
-    for (const entry of readdirSync(srcDir)) {
-      rmSync(join(srcDir, entry), { recursive: true, force: true })
+    for (const entry of await readdir(srcDir)) {
+      await rm(join(srcDir, entry), { recursive: true, force: true })
     }
-    for (const entry of readdirSync(tmpDir)) {
+    for (const entry of await readdir(tmpDir)) {
       if (entry === '.gitignore') continue
-      cpSync(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
+      await cp(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
     }
 
     // Clean up temp dir
-    rmSync(tmpDir, { recursive: true, force: true })
+    await rm(tmpDir, { recursive: true, force: true })
 
     // Trigger build
     dispatchBuild(name).catch(e => console.error(`[history] build trigger failed for ${name}: ${e.message}`))
@@ -397,33 +411,32 @@ router.post('/shadow/:ref/revert', requireRw, async (req, res) => {
     const srcDir = getSourceDir(name)
     const authorDir = project.sourceDir
 
-    const { readdirSync, rmSync, cpSync, existsSync, statSync } = await import('fs')
-
     // Write to server source (same as /checkout)
-    for (const entry of readdirSync(srcDir)) {
-      rmSync(join(srcDir, entry), { recursive: true, force: true })
+    for (const entry of await readdir(srcDir)) {
+      await rm(join(srcDir, entry), { recursive: true, force: true })
     }
-    for (const entry of readdirSync(tmpDir)) {
+    for (const entry of await readdir(tmpDir)) {
       if (entry === '.gitignore') continue
-      cpSync(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
+      await cp(join(tmpDir, entry), join(srcDir, entry), { recursive: true })
     }
 
     // Also write to author's working copy — this is what makes revert permanent
-    if (authorDir && existsSync(authorDir)) {
-      for (const entry of readdirSync(tmpDir)) {
+    const authorDirExists = !!(authorDir && await pathExists(authorDir))
+    if (authorDirExists) {
+      for (const entry of await readdir(tmpDir)) {
         if (entry === '.gitignore') continue
         const dest = join(authorDir, entry)
-        cpSync(join(tmpDir, entry), dest, { recursive: true })
+        await cp(join(tmpDir, entry), dest, { recursive: true })
       }
     }
 
-    rmSync(tmpDir, { recursive: true, force: true })
+    await rm(tmpDir, { recursive: true, force: true })
     dispatchBuild(name).catch(e => console.error(`[history] build trigger failed for ${name}: ${e.message}`))
 
     res.json({
       ok: true,
       ref,
-      author_dir_updated: !!(authorDir && existsSync(authorDir)),
+      author_dir_updated: authorDirExists,
       message: `Reverted to ${ref.slice(0, 7)} — server source + author working copy updated, build triggered`,
     })
   } catch (e) {
@@ -482,7 +495,7 @@ router.post('/diff-region', requireRead, async (req, res) => {
   // 2. Read FULL current source file
   let currentLines
   try {
-    currentLines = readFileSync(hitFileAbsolute, 'utf8').split('\n')
+    currentLines = (await readFile(hitFileAbsolute, 'utf8')).split('\n')
   } catch (e) {
     return res.status(500).json({ error: `Cannot read current source: ${e.message}` })
   }
@@ -504,14 +517,13 @@ router.post('/diff-region', requireRead, async (req, res) => {
 
   // 4. Run latexdiff on FULL files — avoids line-alignment issues from excerpts
   const { tmpdir } = await import('os')
-  const { writeFileSync, unlinkSync } = await import('fs')
   const ts = Date.now()
   const tmpOld = join(tmpdir(), `tlda-ldiff-old-${ts}.tex`)
   const tmpNew = join(tmpdir(), `tlda-ldiff-new-${ts}.tex`)
   let addTexts = [], delTexts = []
   try {
-    writeFileSync(tmpOld, historicalFull)
-    writeFileSync(tmpNew, currentFull)
+    await writeFile(tmpOld, historicalFull)
+    await writeFile(tmpNew, currentFull)
     const ldOut = await runLatexdiffFiles(tmpOld, tmpNew)
     ;({ addTexts, delTexts } = _parseDiffOutput(ldOut))
   } catch (e) {
@@ -523,21 +535,17 @@ router.post('/diff-region', requireRead, async (req, res) => {
       detail,
     })
   } finally {
-    try { unlinkSync(tmpOld) } catch {}
-    try { unlinkSync(tmpNew) } catch {}
+    await rm(tmpOld, { force: true })
+    await rm(tmpNew, { force: true })
   }
 
   // 5. Load lookup tables (source line → PDF position) for the primary target.
   const primaryTexBase = (project?.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
 
-  let currentLookup = {}
-  try { currentLookup = JSON.parse(readFileSync(join(outputDir(name), `${primaryTexBase}-lookup.json`), 'utf8')).lines ?? {} } catch {}
+  const currentLookup = (await readJsonOr(join(outputDir(name), `${primaryTexBase}-lookup.json`), {})).lines ?? {}
 
-  let shadowLookup = {}
   const shadowLookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, `${primaryTexBase}-lookup.json`)
-  if (existsSync(shadowLookupPath)) {
-    try { shadowLookup = JSON.parse(readFileSync(shadowLookupPath, 'utf8')).lines ?? {} } catch {}
-  }
+  const shadowLookup = (await readJsonOr(shadowLookupPath, {})).lines ?? {}
 
   // 6. Create highlight shapes for changes in the highlighted Y-region
   // Filter: only include changes whose PDF position falls in the requested page/Y range
@@ -668,7 +676,7 @@ router.post('/ribbon-stale', requireRead, async (req, res) => {
   }
 
   const repoDir = getShadowRepoDir(name)
-  if (!existsSync(join(repoDir, '.git'))) {
+  if (!await pathExists(join(repoDir, '.git'))) {
     return res.json({ results: segments.map(() => ({ stale: false, reason: 'no-shadow-repo' })) })
   }
 
