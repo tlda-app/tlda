@@ -12,6 +12,7 @@ import {
   deleteProject,
   initProjectStore,
   listProjects,
+  readProjectMeta,
   readProject,
   readClientSourceManifest,
   updateProject,
@@ -94,8 +95,10 @@ test('project metadata reads and updates run through the project files worker', 
   try {
     await initProjectStore(root)
     createProject({ name: 'paper', title: 'Paper' })
+    writeFileSync(join(root, 'paper', 'sync-snapshot.json'), '{}')
     assert.equal((await readProject('paper')).title, 'Paper')
     assert.deepEqual((await listProjects()).map(project => project.name), ['paper'])
+    assert.match((await readProjectMeta()).paper.lastAnnotated, /^\d{4}-\d{2}-\d{2}T/)
     assert.equal((await updateProject('paper', { title: 'Revised' })).title, 'Revised')
     assert.equal((await readProject('paper')).title, 'Revised')
   } finally {

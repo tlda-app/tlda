@@ -19,11 +19,12 @@
 import { Router } from 'express'
 import { execFileSync } from 'child_process'
 import { randomUUID } from 'crypto'
-import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
+  readProjectMeta,
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
@@ -182,23 +183,8 @@ router.post('/:name/document-associations', requireRead, async (req, res) => {
   }
 })
 
-// Project timestamps — computed from disk, not stored in manifest
 router.get('/meta', requireRead, async (req, res) => {
-  const meta = {}
-  const dir = getProjectsDir()
-  for (const project of await listProjects()) {
-    const name = project.name
-    let lastAnnotated = null
-    const snapPath = join(dir, name, 'sync-snapshot.json')
-    if (existsSync(snapPath)) {
-      try { lastAnnotated = statSync(snapPath).mtime.toISOString() } catch {}
-    }
-    meta[name] = {
-      ...(project.lastBuild && { lastBuild: project.lastBuild }),
-      ...(lastAnnotated && { lastAnnotated }),
-    }
-  }
-  res.json(meta)
+  res.json(await readProjectMeta())
 })
 
 // Space-time changelogs for an explicit page of project rows.

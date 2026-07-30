@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import winkNLP from 'wink-nlp'
@@ -278,6 +278,29 @@ function listProjects() {
     .filter(Boolean)
 }
 
+function snapshotModifiedAt(project) {
+  const snapshot = join(projectsDir, project, 'sync-snapshot.json')
+  if (!existsSync(snapshot)) return null
+  try {
+    return statSync(snapshot).mtime.toISOString()
+  } catch {
+    return null
+  }
+}
+
+function projectMeta() {
+  return Object.fromEntries(listProjects().map(project => {
+    const lastAnnotated = snapshotModifiedAt(project.name)
+    return [
+      project.name,
+      {
+        ...(project.lastBuild && { lastBuild: project.lastBuild }),
+        ...(lastAnnotated && { lastAnnotated }),
+      },
+    ]
+  }))
+}
+
 function updateProject(projectName, updates) {
   const project = readProject(projectName)
   if (!project) throw new Error(`Project "${projectName}" not found`)
@@ -298,6 +321,8 @@ parentPort.on('message', (message) => {
   try {
     const result = message.method === 'list-projects'
       ? listProjects()
+      : message.method === 'project-meta'
+        ? projectMeta()
       : message.method === 'read-project'
         ? readProject(message.project)
         : message.method === 'update-project'

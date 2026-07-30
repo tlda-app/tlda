@@ -47,6 +47,11 @@ export async function listProjects() {
   return (await projectFilesDb.listProjects()).map(({ sourceDir: _sourceDir, ...project }) => project)
 }
 
+export async function readProjectMeta() {
+  if (!projectFilesDb) throw new Error('project store is not initialized')
+  return projectFilesDb.projectMeta()
+}
+
 export async function readProject(name) {
   if (!projectFilesDb) throw new Error('project store is not initialized')
   const project = await projectFilesDb.readProject(name)

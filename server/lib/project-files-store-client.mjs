@@ -51,6 +51,7 @@ export class ProjectFilesStoreClient {
 
   ready() { return this._ready }
   listProjects() { return this._call('list-projects', {}) }
+  projectMeta() { return this._call('project-meta', {}) }
   readProject(project) { return this._call('read-project', { project }) }
   updateProject(project, updates) { return this._call('update-project', { project, updates }) }
   read(project) { return this._call('read', { project }) }
