@@ -62,6 +62,7 @@ import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '..
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
+import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
 import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
@@ -6573,9 +6574,7 @@ export function FleetChatFilterMode({
   // where the preview is visible but activePaneRole is still null/stale.
   useLayoutEffect(() => {
     if (pillOver) {
-      const replacePreview: [string, string][][] | null = pillOver.pillType === 'team'
-        ? null
-        : [[['to', pillOver.value]], [['from', pillOver.value]]]
+      const replacePreview: [string, string][][] | null = fleetFilterForPillDrop(pillOver.pillType, pillOver.value)
       const activePaneRole = (hoveredGroup?.pane as 'to' | 'from' | 'replace' | null) ?? null
       const activePreview = activePaneRole === 'replace'
         ? replacePreview
@@ -6741,22 +6740,15 @@ export function FleetChatFilterMode({
       {pillOver ? (
         /* Drop preview: left third = only/to+from, right side stacks to/from */
         <div className="fleet-filter-drop-panes">
-          {pillOver.pillType === 'team' ? (
-            <div className="fleet-filter-replace-zone fleet-filter-replace-zone-disabled">
-              <span className="fleet-filter-replace-label">parent + team</span>
-              <span className="fleet-filter-replace-sep">choose to or from</span>
-            </div>
-          ) : (
-            <div
-              ref={replaceZoneRef}
-              className={`fleet-filter-replace-zone${hoveredGroup?.pane === 'replace' ? ' fleet-filter-replace-zone-active' : ''}`}
-            >
-              <span className="fleet-filter-replace-label">only</span>
-              {renderChip('to', pillOver.value)}
-              <span className="fleet-filter-replace-sep">+</span>
-              {renderChip('from', pillOver.value)}
-            </div>
-          )}
+          <div
+            ref={replaceZoneRef}
+            className={`fleet-filter-replace-zone${hoveredGroup?.pane === 'replace' ? ' fleet-filter-replace-zone-active' : ''}`}
+          >
+            <span className="fleet-filter-replace-label">only</span>
+            {renderChip(pillOver.pillType === 'team' ? FLEET_TEAM_TO_ROLE : 'to', pillOver.value)}
+            <span className="fleet-filter-replace-sep">+</span>
+            {renderChip(pillOver.pillType === 'team' ? FLEET_TEAM_FROM_ROLE : 'from', pillOver.value)}
+          </div>
           <div
             ref={toPaneRef}
             className={`fleet-filter-drop-pane fleet-filter-pane-to${hoveredGroup?.pane === 'to' ? ' fleet-filter-pane-active' : ''}`}

@@ -33,6 +33,7 @@ import {
   type FleetFilterIntentEditor,
 } from './fleet-filter-intent-telemetry'
 import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filter-drop-preview'
+import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
 import { finishFleetPillTranslation } from './fleet-pill-lifecycle'
 import { markFleetPillActive, markFleetPillInactive } from './fleet-pill-transient'
@@ -639,11 +640,11 @@ export async function dropPillOnTarget(
         collapsed: true,
       },
     })
-  } else if (!content && draggedPillType !== 'team' && (!hitShape || hitShape.type !== 'fleet-agents')) {
+  } else if (!content && (!hitShape || hitShape.type !== 'fleet-agents')) {
     await createFleetShape(createEditor, 'fleet-chat', createPagePoint.x, createPagePoint.y, {
       w: CHAT_W,
       h: CHAT_H,
-      filter: [[['to', value]], [['from', value]]],
+      filter: fleetFilterForPillDrop(draggedPillType, value),
     })
   }
 }
