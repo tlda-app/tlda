@@ -3364,30 +3364,6 @@ app.get('/api/reaper/report.md', requireRead, async (req, res) => {
 // Sanitized provider/account usage status for the usage-meter shape. Same data
 // as the `usage_status` MCP tool — manual/static config only, no scraping, no
 // tokens. The shape polls this; missing config returns an empty accounts list.
-app.post('/api/reaper/kill', requireRead, async (req, res) => {
-  const { pid } = req.body
-  if (!pid) return res.status(400).json({ error: 'missing pid' })
-  const machineId = _lastReaperStatus?.daemon_key
-  if (!machineId) return res.status(409).json({ error: 'no reporting daemon' })
-  try {
-    const result = await sendDaemonDurable(machineId, 'reaper-kill', { pid })
-    res.json(result || { ok: true })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-app.post('/api/reaper/sweep', requireRead, async (req, res) => {
-  const machineId = _lastReaperStatus?.daemon_key
-  if (!machineId) return res.status(409).json({ error: 'no reporting daemon' })
-  try {
-    const result = await sendDaemonDurable(machineId, 'reaper-sweep', {})
-    res.json(result || { ok: true })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
 app.get('/api/playback/stream', requireRead, async (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',

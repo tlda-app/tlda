@@ -92,7 +92,6 @@ import {
   decideTerminalWatchExit,
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
-import { createDevReaper } from '../agent-runtime/dev-reaper.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
 import { sourceFilesFromApiResponse } from '../shared/source-manifest.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
@@ -721,9 +720,6 @@ gooseSupervisor = createGooseSupervisor({
   sendText: gooseKickSend,
 })
 
-// ─── Dev reaper bot module wiring ──────────────────────────────────
-const devReaper = createDevReaper({ sendMsg, machineId: MACHINE_ID, envName: ACTIVE_ENV })
-
 const agentLauncher = createAgentLauncher({
   activeEnvName: ACTIVE_ENV,
   configDir: CONFIG_DIR,
@@ -998,8 +994,6 @@ machineRpc.register({
   'write-backing-file': backingFiles.write,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
   'apply-source-update': params => sourceSync.applyAcceptedSourceUpdate(params),
-  'reaper-kill': devReaper.rpcKill,
-  'reaper-sweep': devReaper.rpcSweep,
 })
 
 function startLocalLifecycleRpc() {
@@ -1572,11 +1566,6 @@ log.info(`  env_name    = ${ACTIVE_ENV}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-if (process.env.TLDA_DAEMON_DEV_REAPER === '1' || (process.env.TLDA_DAEMON_DEV_REAPER !== '0' && ACTIVE_ENV === 'testing')) {
-  devReaper.start()
-} else {
-  log.info('dev reaper auto-start disabled; use reaper-sweep RPC or TLDA_DAEMON_DEV_REAPER=1')
-}
 // Bots are independent, launchd-owned services (bots.yaml) — the daemon no
 // longer starts a bot-supervisor.
 // Local terminal inspection belongs to the daemon process lifecycle, not the

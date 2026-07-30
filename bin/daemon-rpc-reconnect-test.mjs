@@ -79,22 +79,20 @@ test('agent routes are durable and replay after reconnect', t => {
   assert.ok(h.sent[0].__daemon_outbox_id)
 })
 
-test('liveness and reaper status survive a reconnect as latest-wins messages', t => {
+test('liveness survives a reconnect as a latest-wins message', t => {
   const h = harness(t)
   h.disconnect()
 
   assert.equal(daemonDeliveryPolicy({ type: 'agent-liveness' }), DELIVERY_LATEST_WINS)
-  assert.equal(daemonDeliveryPolicy({ type: 'reaper-status' }), DELIVERY_LATEST_WINS)
 
   assert.equal(h.delivery.send({ type: 'agent-liveness', agent_ids: ['fleet:a'], checked_agent_ids: ['fleet:a'], ts: '2026-07-21T23:00:00.000Z' }), false)
   assert.equal(h.delivery.send({ type: 'agent-liveness', agent_ids: ['fleet:b'], checked_agent_ids: ['fleet:b'], ts: '2026-07-21T23:00:01.000Z' }), false)
-  assert.equal(h.delivery.send({ type: 'reaper-status', ok: true, ts: '2026-07-21T23:00:00.000Z' }), false)
   assert.equal(h.sent.length, 0)
 
   h.reconnect()
   h.delivery.flushEphemeral()
 
-  assert.deepEqual(h.sent.map(m => m.type), ['agent-liveness', 'reaper-status'])
+  assert.deepEqual(h.sent.map(m => m.type), ['agent-liveness'])
   assert.deepEqual(h.sent[0].agent_ids, ['fleet:b'])
 })
 

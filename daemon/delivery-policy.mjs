@@ -33,7 +33,6 @@ const LATEST_WINS_TYPES = new Set([
   // newer one wholly supersedes an older one — queueing stale snapshots behind a
   // reconnect would replay a past state over the present one.
   'agent-liveness-snapshot',
-  'reaper-status',
   'terminal-size',
 ])
 
