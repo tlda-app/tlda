@@ -378,7 +378,7 @@ router.post('/:name/parts', requireRw, async (req, res) => {
 router.get('/:name/parts', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
-  const columns = listProjectPartColumns(req.params.name)
+  const columns = await listProjectPartColumns(req.params.name)
   res.json(pageInfoFromDocumentColumns(req.params.name, columns))
 })
 
@@ -1901,7 +1901,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
     if (!mainFile) return res.status(400).json({ error: 'No main file configured for project' })
     if (!await readSourceFileAsync(name, mainFile)) return res.status(404).json({ error: `Source file not found: ${mainFile}` })
 
-    const match = findTextNearSourceLine(name, mainFile, startLine, text)
+    const match = await findTextNearSourceLine(name, mainFile, startLine, text)
     if (!match) {
       return res.status(404).json({ error: `Text "${text.slice(0, 50)}..." not found near line ${startLine}` })
     }

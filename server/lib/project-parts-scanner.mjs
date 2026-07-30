@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs'
+import { readFile } from 'fs/promises'
 import { dirname, join, relative, sep } from 'path'
 import {
   DEFAULT_PART_DIRS,
@@ -68,6 +69,16 @@ export function readProjectPartsManifest(projectRoot) {
   const path = projectPartsManifestPath(projectRoot)
   if (!existsSync(path)) return createProjectPartsManifest()
   return normalizeProjectPartsManifest(JSON.parse(readFileSync(path, 'utf8')))
+}
+
+export async function readProjectPartsManifestAsync(projectRoot) {
+  const path = projectPartsManifestPath(projectRoot)
+  try {
+    return normalizeProjectPartsManifest(JSON.parse(await readFile(path, 'utf8')))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return createProjectPartsManifest()
+    throw error
+  }
 }
 
 export function writeProjectPartsManifest(projectRoot, manifest) {

@@ -16,6 +16,7 @@ import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceMa
 import {
   projectPartsManifestPath as partsManifestPathForRoot,
   readProjectPartsManifest as readPartsManifestForRoot,
+  readProjectPartsManifestAsync as readPartsManifestForRootAsync,
   recoverProjectPartsManifest as recoverPartsManifestForRoot,
   writeProjectPartsManifest as writePartsManifestForRoot,
 } from './project-parts-scanner.mjs'
@@ -364,7 +365,7 @@ export function projectPartsManifestPath(name) {
 
 export async function readProjectPartsManifest(name) {
   if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
-  return readPartsManifestForRoot(projectPartsRoot(name))
+  return readPartsManifestForRootAsync(projectPartsRoot(name))
 }
 
 export async function writeProjectPartsManifest(name, manifest) {

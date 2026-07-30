@@ -6,16 +6,25 @@
  * Uses bounding boxes (h/v records) for accurate containment queries.
  */
 
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'fs'
 import { createReadStream } from 'fs'
+import { access, readFile, readdir, realpath } from 'fs/promises'
 import { createGunzip } from 'zlib'
 import { createInterface } from 'readline'
 import { dirname, basename, join, resolve } from 'path'
-import { sourceDir, outputDir, getProjectsDir, readProject, readSourceFile } from './project-store.mjs'
+import { sourceDir, outputDir, getProjectsDir, readProject, readSourceFileAsync } from './project-store.mjs'
 
-function realResolve(...args) {
+async function realResolve(...args) {
   const p = resolve(...args)
-  try { return realpathSync(p) } catch { return p }
+  try { return await realpath(p) } catch { return p }
+}
+
+async function pathExists(path) {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Parsed synctex record with bounding box */
@@ -54,13 +63,13 @@ export async function loadSynctex(projectName, texBase, opts = {}) {
   } else if (texBase) {
     synctexFile = `${texBase}.synctex.gz`
   } else {
-    const files = existsSync(synctexDir) ? readdirSync(synctexDir) : []
+    const files = await pathExists(synctexDir) ? await readdir(synctexDir) : []
     synctexFile = files.find(f => f.endsWith('.synctex.gz'))
   }
   if (!synctexPath && !synctexFile) return null
 
   synctexPath ||= join(synctexDir, synctexFile)
-  if (!existsSync(synctexPath)) return null
+  if (!await pathExists(synctexPath)) return null
 
   const inputMap = new Map()
   let unit = 1, magnification = 1000
@@ -75,7 +84,7 @@ export async function loadSynctex(projectName, texBase, opts = {}) {
   for await (const line of rl) {
     if (line.startsWith('Input:')) {
       const match = line.match(/^Input:(\d+):(.+)$/)
-      if (match) inputMap.set(parseInt(match[1]), realResolve(match[2]))
+      if (match) inputMap.set(parseInt(match[1]), await realResolve(match[2]))
       continue
     }
     if (line.startsWith('Unit:')) { unit = parseInt(line.slice(5)) || 1; continue }
@@ -183,11 +192,11 @@ export function clearSynctexCache(projectName) {
   }
 }
 
-function readWordMap(projectName, texBase) {
+async function readWordMap(projectName, texBase) {
   if (!texBase) return null
   const p = join(outputDir(projectName), `${texBase}-word-map.json`)
-  if (!existsSync(p)) return null
-  try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null }
+  if (!await pathExists(p)) return null
+  try { return JSON.parse(await readFile(p, 'utf8')) } catch { return null }
 }
 
 function wordInputRelFile(filePath) {
@@ -249,7 +258,7 @@ function collectPointHits(pageRecords, points) {
 async function getSourceFromWordPath(projectName, page, points, target = '') {
   const project = await readProject(projectName)
   const texBase = target || (project?.mainFile || 'main.tex').replace(/\.tex$/i, '').split('/').pop()
-  const wordMap = readWordMap(projectName, texBase)
+  const wordMap = await readWordMap(projectName, texBase)
   if (!wordMap?.lineMap?.length) return null
 
   const data = await loadSynctex(projectName, texBase, { variant: 'word' })
@@ -288,7 +297,7 @@ async function getSourceFromWordPath(projectName, page, points, target = '') {
   const [file, rows] = [...byFile.entries()].sort((a, b) => b[1].length - a[1].length)[0]
   rows.sort((a, b) => a.line - b.line || a.startCol - b.startCol)
 
-  const sourceContent = readSourceFile(projectName, file)
+  const sourceContent = await readSourceFileAsync(projectName, file)
   if (!sourceContent) return null
   const allLines = sourceContent.split('\n')
   const hitByLine = new Map()
@@ -326,8 +335,8 @@ async function getSourceFromWordPath(projectName, page, points, target = '') {
   }
 }
 
-export function findTextNearSourceLine(projectName, file, startLine, text, radius = 10) {
-  const sourceContent = readSourceFile(projectName, file)
+export async function findTextNearSourceLine(projectName, file, startLine, text, radius = 10) {
+  const sourceContent = await readSourceFileAsync(projectName, file)
   if (!sourceContent) return null
   const sourceLines = sourceContent.split('\n')
   const searchStart = Math.max(0, startLine - radius - 1)
@@ -460,7 +469,7 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   // return null when a hit record maps to the ephemeral wrapper.
   const sourceFileIds = new Set()
   for (const [id, filePath] of data.inputMap) {
-    if (filePath.endsWith('.tex') && existsSync(filePath)) sourceFileIds.add(id)
+    if (filePath.endsWith('.tex') && await pathExists(filePath)) sourceFileIds.add(id)
   }
 
   // Get all synctex records on this page from source files
@@ -513,8 +522,8 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   if (!hitFile) return null
 
   // Read the tex source
-  if (!existsSync(hitFile)) return null
-  const content = readFileSync(hitFile, 'utf8')
+  if (!await pathExists(hitFile)) return null
+  const content = await readFile(hitFile, 'utf8')
   const allLines = content.split('\n')
 
   const sortedLineNums = [...hitLines.keys()].sort((a, b) => a - b)
@@ -758,8 +767,8 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
   const endLine = sortedLines[sortedLines.length - 1]
 
   // Read the actual tex file
-  if (!existsSync(file)) return null
-  const content = readFileSync(file, 'utf8')
+  if (!await pathExists(file)) return null
+  const content = await readFile(file, 'utf8')
   const allLines = content.split('\n')
 
   const from = Math.max(0, startLine - 1 - contextLines)

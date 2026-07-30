@@ -4149,7 +4149,7 @@ app.use('/docs', (req, res, next) => {
         // own main document, not its parts.
         const columns = project.format === 'markdown'
           ? await listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
-          : listProjectPartColumns(name, { srcDir: join(PROJECTS_DIR, name, 'source') })
+          : await listProjectPartColumns(name, { srcDir: join(PROJECTS_DIR, name, 'source') })
         const column = columns.find(c => c.file === filePath)
         if (column) {
           const source = await fs.promises.readFile(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')

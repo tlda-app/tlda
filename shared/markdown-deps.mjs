@@ -16,6 +16,7 @@
 import path from 'path'
 import os from 'os'
 import fs from 'fs'
+import { readFile, stat } from 'fs/promises'
 import { isSourceFilePath } from './source-manifest.mjs'
 
 const MD_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g
@@ -100,6 +101,61 @@ export function scanMarkdownDependencyClosure(mainFile, sourceDir) {
       const targetRel = path.relative(root, targetAbs).replace(/\\/g, '/')
       if (!targetRel || targetRel.startsWith('../') || path.isAbsolute(targetRel)) continue
       if (!fs.existsSync(targetAbs) || !fs.statSync(targetAbs).isFile()) {
+        missing.push({ from: rel, ref: dep.ref, path: targetRel })
+        continue
+      }
+      if (isMarkdownPath(targetRel)) {
+        if (!markdown.has(targetRel)) queue.push(targetRel)
+      } else if (isSourceFilePath(targetRel, { format: 'markdown', mainFile: main })) {
+        assets.add(targetRel)
+      }
+    }
+  }
+
+  return {
+    mainFile: main,
+    markdown: [...markdown].sort(),
+    assets: [...assets].sort(),
+    files: [...markdown, ...assets].sort(),
+    missing,
+  }
+}
+
+async function isFile(path) {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
+export async function scanMarkdownDependencyClosureAsync(mainFile, sourceDir) {
+  const root = path.resolve(sourceDir)
+  const main = String(mainFile || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  const markdown = new Set()
+  const assets = new Set()
+  const missing = []
+  const queue = [main]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || markdown.has(current)) continue
+    const abs = path.resolve(root, current)
+    const rel = path.relative(root, abs).replace(/\\/g, '/')
+    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) continue
+    if (!await isFile(abs)) {
+      missing.push({ from: current, ref: current, path: rel })
+      continue
+    }
+    markdown.add(rel)
+    const content = await readFile(abs, 'utf8')
+    for (const dep of scanMarkdownDeps(content, path.dirname(abs))) {
+      const ref = projectRelativeRef(dep.ref)
+      if (!ref) continue
+      const targetAbs = path.resolve(path.dirname(abs), ref)
+      const targetRel = path.relative(root, targetAbs).replace(/\\/g, '/')
+      if (!targetRel || targetRel.startsWith('../') || path.isAbsolute(targetRel)) continue
+      if (!await isFile(targetAbs)) {
         missing.push({ from: rel, ref: dep.ref, path: targetRel })
         continue
       }

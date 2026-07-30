@@ -6,8 +6,8 @@ import { outputDir as getOutputDir } from './project-store.mjs'
 import { listProjectPartColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 
-export function buildProjectPartsView(name) {
-  const columns = listProjectPartColumns(name)
+export async function buildProjectPartsView(name) {
+  const columns = await listProjectPartColumns(name)
   const pageInfo = pageInfoFromDocumentColumns(name, columns)
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })

@@ -1,9 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { readProject, sourceDir as getSourceDir, projectPartsRoot } from './project-store.mjs'
-import { readProjectPartsManifest } from './project-parts-scanner.mjs'
-import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
+import { readProjectPartsManifestAsync } from './project-parts-scanner.mjs'
+import { scanMarkdownDependencyClosureAsync } from '../../shared/markdown-deps.mjs'
 
 const DEFAULT_COLUMN_WIDTH = 800
 const DEFAULT_COLUMN_HEIGHT = 1200
@@ -33,14 +33,14 @@ export async function listDocumentColumns(name, { project = null, srcDir = getSo
 // markdown (e.g. a LaTeX/svg project's scratch/notes parts). Excludes the
 // project's own main-document concept entirely — that's rendered by
 // whatever pipeline already owns this project's format.
-export function listProjectPartColumns(name, { srcDir = getSourceDir(name) } = {}) {
+export async function listProjectPartColumns(name, { srcDir = getSourceDir(name) } = {}) {
   const columns = []
   const manifestRoot = projectPartsRoot(name)
-  const manifest = readProjectPartsManifest(manifestRoot)
+  const manifest = await readProjectPartsManifestAsync(manifestRoot)
   for (const part of manifest.parts || []) {
     const sourceFile = String(part.path || part.storage?.path || '').replace(/\\/g, '/')
     if (!sourceFile || !/\.(md|markdown)$/i.test(sourceFile)) continue
-    addMarkdownColumn(columns, {
+    await addMarkdownColumn(columns, {
       sourceFile,
       outputFile: markdownColumnFileForSource(sourceFile),
       srcDir,
@@ -58,26 +58,26 @@ export function pageInfoFromDocumentColumns(_name, columns) {
   return columns.map(columnPageInfo)
 }
 
-function listMarkdownDocumentColumns(name, { project, srcDir }) {
+async function listMarkdownDocumentColumns(name, { project, srcDir }) {
   const columns = []
   const configuredFile = String(project.mainFile || 'index.md').replace(/\\/g, '/').replace(/^\.?\//, '')
-  addMarkdownColumn(columns, {
+  await addMarkdownColumn(columns, {
     sourceFile: configuredFile,
     outputFile: markdownColumnFileForSource(configuredFile, { defaultColumn: true }),
     srcDir,
   })
 
-  const closure = scanMarkdownDependencyClosure(configuredFile, srcDir)
+  const closure = await scanMarkdownDependencyClosureAsync(configuredFile, srcDir)
   for (const sourceFile of closure.markdown) {
     if (sourceFile === configuredFile) continue
-    addMarkdownColumn(columns, {
+    await addMarkdownColumn(columns, {
       sourceFile,
       outputFile: markdownColumnFileForSource(sourceFile),
       srcDir,
     })
   }
 
-  for (const column of listProjectPartColumns(name, { srcDir })) {
+  for (const column of await listProjectPartColumns(name, { srcDir })) {
     if (columns.some(existing => existing.sourceFile === column.sourceFile)) continue
     columns.push(column)
   }
@@ -85,10 +85,15 @@ function listMarkdownDocumentColumns(name, { project, srcDir }) {
   return columns
 }
 
-function addMarkdownColumn(columns, { sourceFile, outputFile, srcDir, title = null, partId = null, kind = null }) {
+async function addMarkdownColumn(columns, { sourceFile, outputFile, srcDir, title = null, partId = null, kind = null }) {
   const absPath = join(srcDir, sourceFile)
-  if (!existsSync(absPath)) return
-  const source = readFileSync(absPath, 'utf8')
+  let source
+  try {
+    source = await readFile(absPath, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
   columns.push({
     id: partId || sourceFile,
     format: 'markdown',
