@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
@@ -32,6 +35,44 @@ test('native child routes stay daemon-local and are scoped to the requesting par
       harness: 'codex',
     }],
   )
+})
+
+test('tool-use lookup falls back to the native transcript tail before ingestion catches up', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-tool-route-'))
+  const jsonlPath = path.join(dir, 'agent-child.jsonl')
+  try {
+    fs.writeFileSync(jsonlPath, JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'mcp__tlda__login',
+          id: 'toolu_login_tail',
+          input: {},
+        }],
+      },
+    }))
+    const watchers = [{
+      jsonlPath,
+      nativeSubagent: {
+        agentId: 'fleet:child-tail',
+        parentAgentId: 'fleet:parent-tail',
+        harnessChildId: 'native-tail',
+        harnessKind: 'claude',
+      },
+    }]
+
+    assert.deepEqual(
+      nativeSubagentRouteForToolUseFromWatchers(watchers, 'fleet:parent-tail', 'toolu_login_tail'),
+      {
+        child_agent_id: 'fleet:child-tail',
+        native_agent_id: 'native-tail',
+        harness: 'claude',
+      },
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('Claude MCP tool-use metadata resolves to the native child watcher', () => {

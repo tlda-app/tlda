@@ -115,7 +115,7 @@ export function nativeSubagentRouteForToolUseFromWatchers(watchers, parentAgentI
   for (const pw of watchers) {
     const native = pw.nativeSubagent
     if (!native?.agentId || native.parentAgentId !== parentAgentId) continue
-    if (!pw.nativeToolUseIds?.has(toolUseId)) continue
+    if (!pw.nativeToolUseIds?.has(toolUseId) && !jsonlTailContainsToolUseId(pw.jsonlPath, toolUseId)) continue
     return {
       child_agent_id: native.agentId,
       native_agent_id: native.harnessChildId,
@@ -123,6 +123,23 @@ export function nativeSubagentRouteForToolUseFromWatchers(watchers, parentAgentI
     }
   }
   return null
+}
+
+function jsonlTailContainsToolUseId(jsonlPath, toolUseId) {
+  if (!jsonlPath || !toolUseId) return false
+  let fd
+  try {
+    fd = fs.openSync(jsonlPath, 'r')
+    const size = fs.fstatSync(fd).size
+    const length = Math.min(size, 1024 * 1024)
+    const buffer = Buffer.alloc(length)
+    fs.readSync(fd, buffer, 0, length, size - length)
+    return buffer.toString('utf8').includes(JSON.stringify(toolUseId))
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
 }
 
 export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
