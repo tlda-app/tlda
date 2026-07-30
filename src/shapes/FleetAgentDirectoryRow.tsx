@@ -27,6 +27,23 @@ function stopEventPropagation(e: { stopPropagation: () => void }) {
   e.stopPropagation()
 }
 
+function isCompactFleetAgentLabel(label: string): boolean {
+  return !label.startsWith('project:')
+}
+
+function prettyFleetAgentLabel(label: string): { glyph: string; value: string; title: string } {
+  const idx = label.indexOf(':')
+  if (idx <= 0) return { glyph: '', value: label, title: label }
+  const key = label.slice(0, idx)
+  const value = label.slice(idx + 1)
+  const glyph = key === 'project' ? '⊙'
+    : key === 'machine' ? '▣'
+    : key === 'model' ? '◌'
+    : key === 'permission' ? '◇'
+    : `${key}:`
+  return { glyph, value, title: label }
+}
+
 export function FleetAgentDirectoryRow({
   row,
   taskDesc = '',
@@ -35,10 +52,10 @@ export function FleetAgentDirectoryRow({
   contextPct,
   expanded = false,
   lastMessage = '',
-  onToggleExpand,
   childCount = 0,
   childrenFolded = false,
-  onChildrenPointerDown,
+  onCycleState,
+  onControlPointerDown,
   onHibernate,
   onAgentPointerDown,
   onAgentPointerUp,
@@ -52,55 +69,53 @@ export function FleetAgentDirectoryRow({
   contextPct?: number
   expanded?: boolean
   lastMessage?: string
-  onToggleExpand?: (e: React.PointerEvent) => void
   childCount?: number
   childrenFolded?: boolean
-  onChildrenPointerDown?: (e: React.PointerEvent) => void
-  onHibernate?: (e: React.PointerEvent) => void
+  onCycleState?: (e: React.PointerEvent | PointerEvent) => void
+  onControlPointerDown?: (e: React.PointerEvent) => void
+  onHibernate?: (e: React.SyntheticEvent) => void
   onAgentPointerDown?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onAgentPointerUp?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onLabelPointerDown?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
   onLabelPointerUp?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
 }) {
+  const isNativeChild = !!row.agent?.parent_agent_id
+  const hasChildren = childCount > 0
+  const stateLabel = expanded ? 'details' : hasChildren && !childrenFolded ? 'subtree' : 'collapsed'
+  const nextLabel = expanded ? 'collapse' : hasChildren && childrenFolded ? 'show subagents' : 'show details'
+  const controlGlyph = expanded ? '▴' : hasChildren && childrenFolded ? '▸' : hasChildren ? '▾›' : '›'
+  const canHibernate = !!onHibernate && !isNativeChild && !row.dimmed
+  const compactLabels = row.labels.filter(isCompactFleetAgentLabel)
   return (
     <div
-      className={`fleet-agents-row${row.agent?.parent_agent_id ? ' native-child' : ''}${row.dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}
+      className={`fleet-agents-row${isNativeChild ? ' native-child' : ''}${row.dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}
       data-agent-id={row.id}
       data-agent-name={row.exactName}
+      data-agent-row-state={stateLabel}
     >
       <div
         className="fleet-agents-row-main"
         onPointerDown={(e) => stopEventPropagation(e)}
-        onPointerUp={(e) => {
-          e.stopPropagation()
-          onToggleExpand?.(e)
-        }}
+        onPointerUp={(e) => e.stopPropagation()}
       >
         <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
         <span className="fleet-agents-row-controls">
-          {childCount > 0 && (
-            <span
-              className="fleet-agents-fold-btn"
-              onPointerDown={(e) => {
-                e.stopPropagation()
-                onChildrenPointerDown?.(e)
-              }}
-              onPointerUp={(e) => e.stopPropagation()}
-              title={`${childrenFolded ? 'Show' : 'Hide'} ${childCount} native ${childCount === 1 ? 'child' : 'children'}; drag to filter parent + team`}
-            >
-              {childrenFolded ? '▸' : '▾'}
-            </span>
-          )}
           <span
-            className="fleet-agents-kill-btn"
-            onPointerDown={(e) => e.stopPropagation()}
+            className={`fleet-agents-fold-btn${hasChildren ? ' has-children' : ''}`}
+            data-child-count={hasChildren ? childCount : undefined}
+            onPointerDown={(e) => {
+              if (onControlPointerDown) onControlPointerDown(e)
+              else e.stopPropagation()
+            }}
             onPointerUp={(e) => {
               e.stopPropagation()
-              onHibernate?.(e)
+              if (!onControlPointerDown) onCycleState?.(e)
             }}
-            title="Hibernate agent"
+            title={hasChildren
+              ? `${nextLabel}; drag to filter parent + team`
+              : nextLabel}
           >
-            ×
+            {controlGlyph}
           </span>
         </span>
         <FleetAgentDirectoryNameColumn
@@ -120,7 +135,7 @@ export function FleetAgentDirectoryRow({
           <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
         <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
-          {row.labels.map((label: string) => (
+          {compactLabels.map((label: string) => (
             <span
               key={label}
               className="fleet-agents-label-chip"
@@ -146,7 +161,39 @@ export function FleetAgentDirectoryRow({
             {row.permission && <span className="fleet-agents-detail-cap" title="permission / fence">{row.permission}</span>}
             {row.activityHealth && <span className="fleet-agents-detail-health" title="activity health">{row.activityHealth}</span>}
             {row.ago && <span className="fleet-agents-detail-seen">seen {row.ago}</span>}
+            {canHibernate && (
+              <button
+                className="fleet-agents-detail-action"
+                onPointerDown={(e) => { e.stopPropagation(); e.preventDefault() }}
+                onClick={(e) => { e.stopPropagation(); onHibernate?.(e) }}
+                title="Hibernate agent"
+              >
+                Hibernate
+              </button>
+            )}
           </div>
+          {row.labels.length > 0 && (
+            <div className="fleet-agents-detail-labels" aria-label="agent labels">
+              {row.labels.map((label: string) => {
+                const pretty = prettyFleetAgentLabel(label)
+                return (
+                  <span
+                    key={label}
+                    className="fleet-agents-detail-label-chip"
+                    data-label={label}
+                    data-mode="agent"
+                    title={pretty.title}
+                    aria-label={pretty.title}
+                    onPointerDown={(e) => onLabelPointerDown?.(e, label, row)}
+                    onPointerUp={(e) => onLabelPointerUp?.(e, label, row)}
+                  >
+                    {pretty.glyph && <span className="fleet-agents-detail-label-glyph" aria-hidden="true">{pretty.glyph}</span>}
+                    <span>{pretty.value}</span>
+                  </span>
+                )
+              })}
+            </div>
+          )}
           <div className="fleet-agents-detail-current">
             {taskTitle || '(no task)'}
           </div>

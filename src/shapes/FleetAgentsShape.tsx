@@ -781,7 +781,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           onPointerDown={(e) => stopEventPropagation(e)}
         >
           <span className="fleet-agents-unread-dot" />
-          <span style={{ width: 30, flexShrink: 0 }} />
+          <span style={{ width: 20, flexShrink: 0 }} />
           <span className="fleet-agents-col-name fleet-agents-sort-header"
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'name') setSortAsc(p => !p); else { setSortKey('name'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
@@ -835,7 +835,26 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 (() => {
                   const agentTasks = getTasksForAgent(item.agent.id)
                   const taskText = agentTasks[0]?.title || agentTasks[0]?.description || ''
-                  const toggleAgent = () => setExpandedId(prev => prev === item.agent.id ? null : item.agent.id)
+                  const childCount = childFolding.childCounts.get(item.agent.id) || 0
+                  const childrenFolded = childFolding.foldedParentIds.has(item.agent.id)
+                  const cycleAgentState = () => {
+                    if (expandedId === item.agent.id) {
+                      if (childCount > 0) {
+                        setChildFoldOverrides(current => ({ ...current, [item.agent.id]: true }))
+                      }
+                      setExpandedId(null)
+                      return
+                    }
+                    if (childCount > 0 && childrenFolded) {
+                      setChildFoldOverrides(current => ({ ...current, [item.agent.id]: false }))
+                      setExpandedId(null)
+                      return
+                    }
+                    if (childCount > 0) {
+                      setChildFoldOverrides(current => ({ ...current, [item.agent.id]: false }))
+                    }
+                    setExpandedId(item.agent.id)
+                  }
                   return (
                     <FleetAgentDirectoryRow
                       row={toFleetAgentDirectoryRow(item.agent, { spawnModels: spawnModelInfo.models })}
@@ -844,23 +863,20 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       contextPct={contextPercent.get(item.agent.id)}
                       expanded={expandedId === item.agent.id}
                       lastMessage={lastMessages[agentExactName(item.agent)] || ''}
-                      childCount={childFolding.childCounts.get(item.agent.id) || 0}
-                      childrenFolded={childFolding.foldedParentIds.has(item.agent.id)}
-                      onChildrenPointerDown={(e) => startDrag(
+                      childCount={childCount}
+                      childrenFolded={childrenFolded}
+                      onCycleState={cycleAgentState}
+                      onControlPointerDown={childCount > 0 ? (e) => startDrag(
                         e,
                         'team',
                         item.agent.id,
                         `${agentDisplayLabel(item.agent)} + team`,
                         getFleetAgentNickColor(item.agent.id),
-                        () => setChildFoldOverrides(current => ({
-                          ...current,
-                          [item.agent.id]: !childFolding.foldedParentIds.has(item.agent.id),
-                        })),
-                      )}
-                      onToggleExpand={toggleAgent}
+                        cycleAgentState,
+                      ) : undefined}
                       onHibernate={() => hibernateSession(item.agent.id)}
-                      onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color, toggleAgent) }}
-                      onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label), toggleAgent)}
+                      onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color) }}
+                      onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label))}
                     />
                   )
                 })()
