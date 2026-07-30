@@ -1365,14 +1365,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .semantic-operation-expanded-shell {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   align-items: start;
+  position: relative;
 }
 .fleet-chat-shape .semantic-operation-collapse {
   position: sticky;
   top: 50vh;
-  left: 0;
+  left: -18px;
   align-self: start;
   border: 0;
   background: transparent;
@@ -1381,10 +1382,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: 9px;
   line-height: 1;
   padding: 2px 0;
-  text-align: left;
+  text-align: center;
   cursor: pointer;
   opacity: 0.75;
   z-index: 1;
+  width: 52px;
+  margin-left: -58px;
+  margin-bottom: -14px;
+  transform: rotate(-90deg);
+  transform-origin: right center;
   user-select: none !important;
   -webkit-user-select: none !important;
 }

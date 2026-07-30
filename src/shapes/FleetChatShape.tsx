@@ -4282,8 +4282,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
           const wasExpanded = moreRows.style.display !== 'none'
+          if (!expandBtn.dataset.collapsedLabel) {
+            expandBtn.dataset.collapsedLabel = expandBtn.textContent || 'Expand'
+          }
           moreRows.style.display = wasExpanded ? 'none' : ''
-          expandBtn.textContent = wasExpanded ? expandBtn.textContent! : 'collapse'
+          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.collapsedLabel || 'Expand') : 'collapse'
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
             const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])

@@ -80,6 +80,10 @@ function semanticOperationKind(toolName) {
   return ''
 }
 
+function isThreadTool(toolName) {
+  return semanticOperationKind(toolName) === 'thread'
+}
+
 function semanticOperationDescriptor(toolName, input, arg, ts) {
   const kind = semanticOperationKind(toolName)
   if (!kind) return null
@@ -133,6 +137,26 @@ function mergeSemanticInspected(host, item) {
   host._semanticMergedCount = (host._semanticMergedCount || 1) + 1
 }
 
+function mergeThreadPrettyResults(current, next) {
+  const currentText = normalizePrettyResult(current).trim()
+  const nextText = normalizePrettyResult(next).trim()
+  if (!currentText) return nextText
+  if (!nextText) return currentText
+  const sep = '\n\n---\n\n'
+  const seen = new Set(currentText.split(sep).map(part => part.trim()).filter(Boolean))
+  const additions = nextText.split(sep).map(part => part.trim()).filter(Boolean).filter(part => !seen.has(part))
+  return additions.length ? `${currentText}${sep}${additions.join(sep)}` : currentText
+}
+
+function mergePrettyResultOntoHost(host, item) {
+  if (!item._prettyResult) return
+  if (isThreadTool(host._toolName || item._toolName)) {
+    host._prettyResult = mergeThreadPrettyResults(host._prettyResult, item._prettyResult)
+  } else if (!host._prettyResult) {
+    host._prettyResult = item._prettyResult
+  }
+}
+
 function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '') {
   const kind = semanticOperationKind(toolName)
   const descriptor = semanticOperationDescriptor(toolName, input, arg, ts)
@@ -160,7 +184,7 @@ function renderPrettyResult(toolName, text, ctx, input, ts, arg = '') {
   text = normalizePrettyResult(text)
   const tool = normalizedToolName(toolName)
   if (tool.includes('thread')) {
-    return renderSemanticOperationResult(toolName, text, ctx, input, ts, arg) || renderThreadResult(text, ctx)
+    return renderThreadResult(text, ctx)
   }
   if (tool.includes('search')) {
     return renderSemanticOperationResult(toolName, text, ctx, input, ts, arg) || renderSearchResult(text, ctx)
@@ -821,21 +845,21 @@ export function dedupTools(toolItems) {
     // regardless of adjacency, then drop the follow-up.
     if (t._prettyResult) {
       const host = result.find(r => (semanticKey ? r._semanticKey === semanticKey : r._key === key) && !r._prettyResult)
-      if (host) { host._prettyResult = t._prettyResult; host._count++; if (semanticKey) mergeSemanticInspected(host, t); continue }
+      if (host) { mergePrettyResultOntoHost(host, t); host._count++; if (semanticKey) mergeSemanticInspected(host, t); continue }
     }
     if (semanticKey) {
       const host = result.find(r => r._semanticKey === semanticKey)
       if (host) {
         host._count++
         mergeSemanticInspected(host, t)
-        if (!host._prettyResult && t._prettyResult) host._prettyResult = t._prettyResult
+        mergePrettyResultOntoHost(host, t)
         continue
       }
     }
     if (prev && prev._key === key) {
       prev._count++
       // Merge prettyResult from follow-up event (e.g. _prettyResult events arriving after the tool_use)
-      if (!prev._prettyResult && t._prettyResult) prev._prettyResult = t._prettyResult
+      mergePrettyResultOntoHost(prev, t)
     } else {
       result.push({ ...t, _key: key, _semanticKey: semanticKey, _count: 1 })
     }
@@ -966,7 +990,9 @@ export function renderActivityGroup(group, ctx) {
       // don't also render it as a raw result block under the card.
       const semanticKind = semanticOperationKind(t._toolName)
       const prettyHtml = semanticKind
-        ? renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg)
+        ? (t._prettyResult
+          ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
+          : renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg))
         : (t._prettyResult && !isPropose)
           ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
           : ''
