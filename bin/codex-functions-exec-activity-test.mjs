@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import { extractFunctionsExecCalls } from '../agent-runtime/functions-exec-activity.mjs'
 import { createActivityExtractor } from '../agent-runtime/jsonl-event-extract.mjs'
-import { normalizeDaemonActivityEvent } from '../server/lib/daemon-activity-ingest.mjs'
+import { normalizeDaemonActivityEvent, shouldStoreDaemonActivity } from '../server/lib/daemon-activity-ingest.mjs'
 
 const ts = '2026-07-22T08:54:27.932Z'
 
@@ -86,6 +86,9 @@ function customExec(input, callId = 'call_outer') {
   assert.equal(normalized.metadata.status, 'completed')
   assert.deepEqual(normalized.metadata.duration, { secs: 0, nanos: 222752542 })
   assert.equal(normalized.metadata.correlationId, 'exec-214495b5')
+  assert.equal(Object.hasOwn(normalized.metadata, 'prettyResult'), false)
+  assert.equal(shouldStoreDaemonActivity(activity[0]), true)
+  assert.equal(shouldStoreDaemonActivity({ tool: '_prettyResult' }), false)
 }
 
 {

@@ -35,14 +35,13 @@ export function boundActivityPayload(value, options = {}, depth = 0) {
   return out
 }
 
-export function boundActivityMetadata({ tool, arg, input, usage, prettyResult, origTool, status, duration, correlationId, activityLatency }) {
+export function boundActivityMetadata({ tool, arg, input, usage, origTool, status, duration, correlationId, activityLatency }) {
   return {
     tool: tool || '',
     arg: boundActivityPayload(arg || ''),
     input: input == null ? null : boundActivityPayload(input),
     activityLatency,
     ...(usage ? { usage: boundActivityPayload(usage) } : {}),
-    ...(prettyResult ? { prettyResult: boundActivityPayload(prettyResult) } : {}),
     ...(origTool ? { origTool } : {}),
     ...(status ? { status } : {}),
     ...(duration ? { duration: boundActivityPayload(duration) } : {}),

@@ -1856,8 +1856,12 @@ function semanticSearchRequest(descriptor: any, limit: number, currentProject?: 
       eventOnly: true,
       historyOnly: true,
       currentProject,
-      eventType: view.type || view.eventType || 'chat',
+      throwOnError: true,
     }
+    const requestedTypes = Array.isArray(view.types) ? view.types : []
+    if (requestedTypes.length) filters.eventTypes = requestedTypes
+    else filters.eventType = view.type || view.eventType || 'chat'
+    if (view.role) filters.role = view.role
     if (before) filters.before = before
     const filterExpression = descriptor.filterExpression || view.filterExpression || view.filter || ''
     if (filterExpression) filters.filterExpression = filterExpression
@@ -1889,7 +1893,8 @@ function semanticSearchRequest(descriptor: any, limit: number, currentProject?: 
     if (String(view.agent).startsWith('fleet:')) filters.agent = view.agent
     else filters.agentQuery = view.agent
   }
-  filters.eventOnly = true
+  if (view.role) filters.role = view.role
+  filters.throwOnError = true
   if (currentProject) filters.currentProject = currentProject
   if (before) filters.before = before
   return { query, limit, filters }
@@ -1913,20 +1918,71 @@ function SemanticChatOperationView({
   const [error, setError] = useState('')
   const [before, setBefore] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(true)
+  const [collapseTop, setCollapseTop] = useState('50%')
+  const loadedRef = useRef(false)
+  const searchVisibleLimitRef = useRef(pageSize)
 
   const loadPage = useCallback(async (reset = false) => {
     const cursor = reset ? null : before
     setLoading(true)
     setError('')
     try {
-      const request = semanticSearchRequest(descriptor, pageSize, currentProject, cursor)
-      const fetched = await searchFleet(request.query, request.limit, request.filters)
+      let effectiveDescriptor = descriptor
+      const taskId = descriptor?.kind === 'thread' ? descriptor?.view?.task_id : null
+      if (taskId && !descriptor?.view?.agent && !descriptor?.filterExpression) {
+        const taskData = await fleetEphemeral('task-by-id', { task_id: taskId })
+        const taskAgent = taskData?.task?.agent
+        if (!taskAgent) throw new Error(`Task ${taskId} not found`)
+        effectiveDescriptor = { ...descriptor, view: { ...descriptor.view, agent: taskAgent } }
+      }
+      const displayLimit = descriptor?.kind === 'search'
+        ? (reset ? pageSize : searchVisibleLimitRef.current + pageSize)
+        : pageSize
+      if (descriptor?.kind === 'search') searchVisibleLimitRef.current = displayLimit
+      let requestLimit = displayLimit + 1
+      let request = semanticSearchRequest(
+        effectiveDescriptor,
+        requestLimit,
+        currentProject,
+        descriptor?.kind === 'thread' ? cursor : null,
+      )
+      let fetched = await searchFleet(request.query, request.limit, request.filters)
+      while (
+        descriptor?.kind === 'thread'
+        && fetched.length === requestLimit
+        && fetched[displayLimit - 1]?.timestamp
+        && fetched[fetched.length - 1]?.timestamp === fetched[displayLimit - 1]?.timestamp
+        && requestLimit < 10_000
+      ) {
+        requestLimit = Math.min(10_000, requestLimit * 2)
+        request = semanticSearchRequest(effectiveDescriptor, requestLimit, currentProject, cursor)
+        fetched = await searchFleet(request.query, request.limit, request.filters)
+      }
+      let pageEnd = Math.min(displayLimit, fetched.length)
+      const boundaryTimestamp = fetched[pageEnd - 1]?.timestamp
+      if (descriptor?.kind === 'thread') {
+        while (pageEnd < fetched.length && fetched[pageEnd]?.timestamp === boundaryTimestamp) pageEnd += 1
+      }
+      const page = fetched.slice(0, pageEnd)
       const ordered = descriptor?.kind === 'thread'
-        ? fetched.slice().sort((a: any, b: any) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
-        : rankSearchResults(fetched, request.query)
-      setResults(prev => reset ? ordered : [...prev, ...ordered])
-      setHasMore(fetched.length >= pageSize)
-      const oldest = fetched
+        ? page.slice().sort((a: any, b: any) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
+        : rankSearchResults(page, request.query)
+      setResults(prev => {
+        const combined = reset || descriptor?.kind === 'search'
+          ? ordered
+          : descriptor?.kind === 'thread'
+            ? [...ordered, ...prev]
+            : [...prev, ...ordered]
+        const seen = new Set<string>()
+        return combined.filter((result: any) => {
+          const key = `${result.source || ''}:${result.id || `${result.timestamp || ''}:${result.text || result.snippet || ''}`}`
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+      })
+      setHasMore(fetched.length > pageEnd)
+      const oldest = page
         .map((r: any) => r.timestamp)
         .filter(Boolean)
         .sort()[0] || null
@@ -1942,8 +1998,30 @@ function SemanticChatOperationView({
     setResults([])
     setBefore(null)
     setHasMore(true)
-    void loadPage(true)
+    loadedRef.current = false
+    searchVisibleLimitRef.current = pageSize
   }, [descriptor?.semanticKey, pageSize, currentProject])
+
+  useEffect(() => {
+    const load = () => {
+      if (loadedRef.current) return
+      loadedRef.current = true
+      void loadPage(true)
+    }
+    host.addEventListener('semantic-operation-expand', load)
+    if (host.style.display !== 'none') load()
+    return () => host.removeEventListener('semantic-operation-expand', load)
+  }, [host, loadPage])
+
+  useLayoutEffect(() => {
+    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
+    if (!scroller) return
+    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [host])
 
   const collapse = useCallback((event: any) => {
     stopEventPropagation(event)
@@ -1954,9 +2032,9 @@ function SemanticChatOperationView({
 
   return (
     <div className="semantic-operation-expanded-shell">
-      <button type="button" className="semantic-operation-collapse" onPointerUp={collapse}>Collapse</button>
+      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapse}>Collapse</button>
       <div className="semantic-operation-view">
-        {error ? <div className="semantic-operation-status">{error}</div> : null}
+        {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); loadedRef.current = true; void loadPage(true) }}>Retry</button></div> : null}
         {!error && results.length === 0 && !loading ? <div className="semantic-operation-status">no results</div> : null}
         {results.map((result, i) => {
           const html = renderChatLine(convertChatEvent(eventFromSearchResult(result)), renderCtx)
@@ -3950,6 +4028,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const logEl = chatLogEl
     if (!logEl) return
+    let suppressResendClickUntil = 0
+    const resendFailedMessage = (resendBtn: HTMLElement) => {
+      const to = resendBtn.dataset.resendTo
+      const text = resendBtn.dataset.resendText
+      const tempId = resendBtn.dataset.resendTempid
+      if (!to || !text || !tempId) return
+      updateOptimisticEvent(tempId, { _failed: false }, chatEventBufferKey)
+      sendMessage(to, text, { _tempId: tempId })
+        .then((result: any) => { if (!result?.ok) throw new Error('resend failed') })
+        .catch(() => updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey))
+    }
     function onClick(e: Event) {
       // Amend version stepper ◀▶ — step through a message's versions in place.
       const amendArrow = (e.target as HTMLElement).closest('.amend-arrow') as HTMLElement | null
@@ -3975,16 +4064,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const resendBtn = (e.target as HTMLElement).closest('.chat-resend-btn') as HTMLElement
       if (resendBtn) {
         e.stopPropagation()
-        const to = resendBtn.dataset.resendTo
-        const text = resendBtn.dataset.resendText
-        const tempId = resendBtn.dataset.resendTempid
-        if (to && text && tempId) {
-          updateOptimisticEvent(tempId, { _failed: false }, chatEventBufferKey)
-          const resendOpts: any = { _tempId: tempId }
-          sendMessage(to, text, resendOpts)
-            .then((r: any) => { if (!r?.ok) throw new Error('resend failed') })
-            .catch(() => updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey))
-        }
+        if (Date.now() >= suppressResendClickUntil) resendFailedMessage(resendBtn)
         return
       }
       const dismissFailedBtn = (e.target as HTMLElement).closest('.chat-dismiss-failed-btn') as HTMLElement
@@ -4185,6 +4265,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           }
           semanticBody.style.display = wasExpanded ? 'none' : ''
           semanticOp.classList.toggle('semantic-operation-expanded', !wasExpanded)
+          if (!wasExpanded) semanticBody.dispatchEvent(new Event('semantic-operation-expand'))
           expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : 'collapse'
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           const semanticKey = semanticOp.getAttribute('data-semantic-key') || '0'
@@ -4246,12 +4327,21 @@ function FleetChatInner({ shape }: { shape: any }) {
     // redispatch onto the message (which would collapse it).
     let tapDownX = 0, tapDownY = 0
     const onTapDown = (e: PointerEvent) => {
-      if (e.pointerType === 'touch' || e.pointerType === 'pen') { tapDownX = e.clientX; tapDownY = e.clientY }
+      tapDownX = e.clientX
+      tapDownY = e.clientY
     }
     const onTapUp = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
       if (Math.abs(e.clientX - tapDownX) > 16 || Math.abs(e.clientY - tapDownY) > 16) return
       const t = e.target as HTMLElement
+      const resend = t.closest('.chat-resend-btn') as HTMLButtonElement | null
+      if (resend) {
+        e.preventDefault()
+        e.stopPropagation()
+        suppressResendClickUntil = Date.now() + 500
+        resendFailedMessage(resend)
+        return
+      }
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
       if (t.closest('button')) return
       const hit = t.closest(
         '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
