@@ -1,12 +1,15 @@
 import { execFile } from 'child_process'
 import os from 'os'
+import { fileURLToPath } from 'url'
 import { promisify } from 'util'
 
 import { isPlaywrightBrowserArgs } from './daemon-guards.mjs'
+import { reapWorktreeNodeModules } from './worktree-node-modules-reaper.mjs'
 import { sweepOrphanPreviewDirs } from '../cli/lib/dev-worktree.mjs'
 import { expiredLeases, formatLeaseMarkdownTable, listLeases, releaseLease, renewLease } from '../cli/lib/resource-leases.mjs'
 
 const execFileP = promisify(execFile)
+const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 function formatPercent(value) {
   return Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'unknown'
@@ -102,8 +105,11 @@ export function createDevReaper({ sendMsg = () => {}, machineId = null, envName 
   const DISK_ALERT_FREE_BYTES = (parseFloat(process.env.REAPER_DISK_ALERT_FREE_GIB || '') || 15) * 1024 ** 3
   const DISK_ALERT_COOLDOWN_MS = parseInt(process.env.REAPER_DISK_ALERT_COOLDOWN_MS || '', 10) || 30 * 60 * 1000
   const DISK_ALERT_TO = (process.env.REAPER_DISK_ALERT_TO || 'awake & on-call').trim()
+  const WORKTREE_NODE_MODULES_SWEEP_MS = parseInt(process.env.REAPER_WORKTREE_NODE_MODULES_SWEEP_MS || '', 10) || 60 * 60 * 1000
   let _lastDiskAlertAt = 0
   let _lastDiskAlertKey = null
+  let _lastWorktreeNodeModulesSweepAt = 0
+  let _lastWorktreeNodeModulesResult = null
 
   async function diskPressureSnapshot() {
     const { stdout } = await execFileP('df', ['-Pk', os.homedir()], { timeout: 5000, encoding: 'utf8' })
@@ -458,6 +464,17 @@ export function createDevReaper({ sendMsg = () => {}, machineId = null, envName 
     try { previewDirResult = sweepOrphanPreviewDirs() }
     catch (e) { console.error('[preview-dir-reaper] sweep failed:', e.message); previewDirResult = { swept: [], kept: [] } }
     for (const b of previewDirResult.swept) console.log(`[preview-dir-reaper] swept orphaned preview dir: ${b}`)
+    if (Date.now() - _lastWorktreeNodeModulesSweepAt >= WORKTREE_NODE_MODULES_SWEEP_MS) {
+      try {
+        _lastWorktreeNodeModulesResult = await reapWorktreeNodeModules({ repoRoot: REPO_ROOT })
+        _lastWorktreeNodeModulesSweepAt = Date.now()
+        for (const entry of _lastWorktreeNodeModulesResult.evicted) {
+          console.log(`[node-modules-reaper] evicted ${entry.path} (${formatBytes(entry.sizeBytes)}; mtime=${new Date(entry.mtimeMs).toISOString()})`)
+        }
+      } catch (e) {
+        console.error('[node-modules-reaper] sweep failed:', e.message)
+      }
+    }
     _sweepCount++
 
     const allKills = [...(viteResult.killed || []), ...(pwResult.killed || [])]
@@ -513,6 +530,7 @@ export function createDevReaper({ sendMsg = () => {}, machineId = null, envName 
         leases,
         unleased,
         leaseActions,
+        worktreeNodeModules: _lastWorktreeNodeModulesResult,
         thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS },
         scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS) },
         sweepCount: _sweepCount,
