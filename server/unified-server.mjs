@@ -4407,6 +4407,13 @@ app.get('/{*path}', async (req, res) => {
   if (req.path.startsWith('/api/') || req.path.startsWith('/docs/')) {
     return res.status(404).json({ error: 'Not found' })
   }
+  // Nor built assets. A tab opened before a deploy still requests its own
+  // content-hashed chunks; answering those with index.html means the browser
+  // parses HTML as a module and throws uncaught, and the 200 hides it. A gone
+  // asset must be gone.
+  if (req.path.startsWith('/assets/')) {
+    return res.status(404).json({ error: 'Not found' })
+  }
 
   const indexPath = join(distDir, 'index.html')
   if (existsSync(indexPath)) {
