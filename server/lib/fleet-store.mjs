@@ -965,109 +965,85 @@ export class FleetStore {
       console.log('[fleet-store] migrated session_entries_fts tokenizer: unicode61 → trigram');
     }
 
-    // notification_attempt was a diagnostic delivery ledger whose writers and
-    // readers were deleted. Remove its historical rows without firing one FTS
-    // delete per row; the versioned full rebuild below restores both external-
-    // content indexes from the authoritative events table.
-    let deletedNotificationAttempts = 0;
-    const hasNotificationAttempts = !!this.db.prepare(
-      "SELECT 1 FROM events WHERE type = 'notification_attempt' LIMIT 1"
-    ).get();
-    this.db.transaction(() => {
-      if (hasNotificationAttempts) {
-        this.db.exec(`
-          DROP TRIGGER IF EXISTS events_ai;
-          DROP TRIGGER IF EXISTS events_ad;
-          DROP TRIGGER IF EXISTS events_au;
-        `);
-        deletedNotificationAttempts = this.db.prepare(
-          "DELETE FROM events WHERE type = 'notification_attempt'"
-        ).run().changes;
-      }
-
-      this.db.exec(`
-        DROP TRIGGER IF EXISTS events_ai;
-        DROP TRIGGER IF EXISTS events_ad;
-        DROP TRIGGER IF EXISTS events_au;
-        CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
-          INSERT INTO events_fts(rowid, text) VALUES (
-            new.id,
-            CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
-          );
-          INSERT INTO activity_events_fts(rowid, text)
-          SELECT
-            new.id,
-            trim(
-              coalesce(new.text, '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.command'), '')
-            )
-          WHERE new.type = 'activity';
-        END;
-        CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
-          INSERT INTO events_fts(events_fts, rowid, text) VALUES(
-            'delete',
-            old.id,
-            CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
-          );
-          INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
-          SELECT
-            'delete',
-            old.id,
-            trim(
-              coalesce(old.text, '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.command'), '')
-            )
-          WHERE old.type = 'activity';
-        END;
-        CREATE TRIGGER events_au AFTER UPDATE OF type, text, metadata ON events BEGIN
-          INSERT INTO events_fts(events_fts, rowid, text) VALUES(
-            'delete',
-            old.id,
-            CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
-          );
-          INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
-          SELECT
-            'delete',
-            old.id,
-            trim(
-              coalesce(old.text, '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.command'), '')
-            )
-          WHERE old.type = 'activity';
-          INSERT INTO events_fts(rowid, text) VALUES (
-            new.id,
-            CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
-          );
-          INSERT INTO activity_events_fts(rowid, text)
-          SELECT
-            new.id,
-            trim(
-              coalesce(new.text, '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.command'), '')
-            )
-          WHERE new.type = 'activity';
-        END;
-      `);
-    })();
-    if (deletedNotificationAttempts) {
-      console.log(`[fleet-store] deleted ${deletedNotificationAttempts} obsolete notification_attempt events`);
-    }
+    this.db.exec(`
+      DROP TRIGGER IF EXISTS events_ai;
+      DROP TRIGGER IF EXISTS events_ad;
+      DROP TRIGGER IF EXISTS events_au;
+      CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
+        INSERT INTO events_fts(rowid, text) VALUES (
+          new.id,
+          CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
+        );
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT
+          new.id,
+          trim(
+            coalesce(new.text, '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.command'), '')
+          )
+        WHERE new.type = 'activity';
+      END;
+      CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+          'delete',
+          old.id,
+          CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
+        );
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT
+          'delete',
+          old.id,
+          trim(
+            coalesce(old.text, '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.command'), '')
+          )
+        WHERE old.type = 'activity';
+      END;
+      CREATE TRIGGER events_au AFTER UPDATE OF type, text, metadata ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+          'delete',
+          old.id,
+          CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
+        );
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT
+          'delete',
+          old.id,
+          trim(
+            coalesce(old.text, '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.command'), '')
+          )
+        WHERE old.type = 'activity';
+        INSERT INTO events_fts(rowid, text) VALUES (
+          new.id,
+          CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
+        );
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT
+          new.id,
+          trim(
+            coalesce(new.text, '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.command'), '')
+          )
+        WHERE new.type = 'activity';
+      END;
+    `);
 
     // Backfill/migrate split event FTS indexes for existing events. The primary
     // table indexes conversation/task rows; the activity table indexes compact
@@ -4504,6 +4480,7 @@ export class FleetStore {
     if (role && !sessionRole) eventTypes = eventTypes || [role];
     const defaultEventTypes = ['chat', 'delegate', 'report', 'task_update', 'task_done'];
     const searchedEventTypes = eventTypes || (historyMode ? null : defaultEventTypes);
+    const excludeNotificationAttempts = !eventTypes;
     const explicitActivitySearch = eventTypes?.includes('activity') || false;
     const includeEvents = !sessionRole;
     const includeSessions = !eventTypes || !!sessionRole;
@@ -4524,6 +4501,7 @@ export class FleetStore {
       };
     }
     function eventRowMatches(row) {
+      if (excludeNotificationAttempts && row.type === 'notification_attempt') return false;
       if (searchedEventTypes && !searchedEventTypes.includes(row.type)) return false;
       if (since && row.timestamp < since) return false;
       if (before && row.timestamp >= before) return false;
@@ -4548,6 +4526,7 @@ export class FleetStore {
         const rows = agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
           agent: agentId,
           types: eventTypes,
+          excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
           sinceTs: since,
           untilTs: before,
           limit,
@@ -4575,6 +4554,9 @@ export class FleetStore {
         if (searchedEventTypes) {
           eClauses.push(`e.type IN (${searchedEventTypes.map(() => '?').join(',')})`);
           eParams.push(...searchedEventTypes);
+        } else if (excludeNotificationAttempts) {
+          eClauses.push('e.type != ?');
+          eParams.push('notification_attempt');
         }
         if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
         if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }

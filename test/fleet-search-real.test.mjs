@@ -306,7 +306,7 @@ test('search stats report corpus scale and index version', () => withStore(store
   assert.equal(stats.fts.eventsContentVersion, 'primary-events-plus-activity-diagnostics-v3');
 }));
 
-test('startup deletes obsolete notification attempts and rebuilds valid event FTS indexes', async () => {
+test('startup leaves obsolete notification cleanup off the blocking boot path', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-notification-attempt-migration-'));
   const dbPath = join(dir, 'fleet.db');
   let store = new FleetStore(dbPath, { taskDoc: false });
@@ -325,17 +325,12 @@ test('startup deletes obsolete notification attempts and rebuilds valid event FT
       to: 'fleet:agent',
       text: 'obsolete-delivery-ledger-token',
     });
-    store.db.prepare(`
-      UPDATE search_index_meta
-      SET value = 'primary-events-plus-activity-diagnostics-v2'
-      WHERE key = 'events_fts_content_version'
-    `).run();
     store.close();
 
     store = new FleetStore(dbPath, { taskDoc: false });
     assert.equal(store.db.prepare(
       "SELECT COUNT(*) AS count FROM events WHERE type = 'notification_attempt'"
-    ).get().count, 0);
+    ).get().count, 1);
     assert.equal((await store.searchAll('obsolete-delivery-ledger-token', { limit: 10 })).length, 0);
     assert.equal((await store.searchAll('preserved searchable conversation', { limit: 10 }))[0]?.type, 'chat');
     assert.equal((await store.getSearchStats()).fts.eventsContentVersion, 'primary-events-plus-activity-diagnostics-v3');
