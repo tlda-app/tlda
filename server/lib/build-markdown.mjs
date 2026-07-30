@@ -11,6 +11,7 @@
 
 import MarkdownIt from 'markdown-it'
 import markdownItAnchor from 'markdown-it-anchor'
+import markdownItFootnote from 'markdown-it-footnote'
 import katex from 'katex'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
@@ -762,6 +763,7 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames 
     .replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
   const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
     .use(mathPlugin)
+    .use(markdownItFootnote)
     .use(markdownItAnchor, { slugify })
   let mermaidIndex = 0
   const defaultFence = md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
