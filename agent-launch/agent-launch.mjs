@@ -603,6 +603,7 @@ export function createAgentLauncher({
       }).catch(e => log.warn(`detached startup-failure probe errored for ${agentName}: ${e.message}`))
       return {
         ok: true,
+        already: !!launched.alreadyAlive,
         name: launched.name || agentName,
         agent_id: launched.fleetId,
         tmux_session: launched.tmuxSession,
