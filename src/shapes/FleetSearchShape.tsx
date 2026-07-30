@@ -330,8 +330,21 @@ function searchQueryReadout(query: string) {
 }
 
 function displayImplicitAnd(query: string) {
-  const terms = query.trim().split(/\s+/).filter(Boolean)
-  return terms.length > 1 ? terms.join(' & ') : query.trim()
+  const tokens = query.trim().match(/<>|[()&|!]|[^\s()&|!]+/g) || []
+  const display: string[] = []
+  for (const token of tokens) {
+    const prev = display[display.length - 1]
+    if (needsImplicitAnd(prev, token)) display.push('&')
+    display.push(token)
+  }
+  return display.join(' ')
+}
+
+function needsImplicitAnd(prev: string | undefined, next: string) {
+  if (!prev) return false
+  const prevEndsOperand = prev !== '&' && prev !== '|' && prev !== '!' && prev !== '('
+  const nextStartsOperand = next !== '&' && next !== '|' && next !== ')' && next !== '<>'
+  return prevEndsOperand && nextStartsOperand
 }
 
 export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {

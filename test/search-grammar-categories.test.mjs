@@ -95,13 +95,62 @@ test('explicit ampersand and implicit whitespace both require all search terms',
   assert.deepEqual(store.searchAll('alpha beta', { limit: 10 }).map(row => row.text), ['alpha beta together'])
 }))
 
-test('autocomplete exposes only executable text operators and me through ordinary agent values', () => {
+test('text operators execute with the grammar semantics autocomplete advertises', () => withStore(store => {
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-30T12:00:00.000Z',
+    from: 'fleet:skip',
+    to: 'fleet:pretty',
+    text: 'alpha only',
+  })
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-30T12:01:00.000Z',
+    from: 'fleet:skip',
+    to: 'fleet:pretty',
+    text: 'beta only',
+  })
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-30T12:02:00.000Z',
+    from: 'fleet:skip',
+    to: 'fleet:pretty',
+    text: 'alpha beta',
+  })
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-30T12:03:00.000Z',
+    from: 'fleet:skip',
+    to: 'fleet:pretty',
+    text: 'gamma beta',
+  })
+
+  assert.deepEqual(
+    store.searchAll('alpha | gamma', { limit: 10 }).map(row => row.text),
+    ['gamma beta', 'alpha beta', 'alpha only'],
+  )
+
+  assert.deepEqual(
+    store.searchAll('alpha ! beta', { limit: 10 }).map(row => row.text),
+    ['alpha only'],
+  )
+
+  assert.deepEqual(
+    store.searchAll('( alpha | gamma ) ! beta', { limit: 10 }).map(row => row.text),
+    ['alpha only'],
+  )
+}))
+
+test('autocomplete exposes executable text operators and me through ordinary agent values', () => {
   const initialSuggestions = searchAutocompleteSuggestions('', 0, {})
   assert.equal(initialSuggestions.some(item => item.kind === 'operator'), false)
 
   const operators = searchAutocompleteSuggestions('alpha ', 'alpha '.length, {})
   assert.ok(operators.some(item => item.id === 'operator:and' && item.insert === '& '))
-  assert.equal(operators.some(item => item.id === 'operator:or' || item.id === 'operator:not' || item.label === '(' || item.label === ')'), false)
+  assert.ok(operators.some(item => item.id === 'operator:or' && item.insert === '| '))
+  assert.ok(operators.some(item => item.id === 'operator:not' && item.insert === '! '))
+  assert.ok(operators.some(item => item.id === 'operator:open-paren' && item.insert === '( '))
+  assert.ok(operators.some(item => item.id === 'operator:close-paren' && item.insert === ') '))
 
   const agentValues = searchAutocompleteSuggestions('from:', 'from:'.length, {
     agents: [{ id: 'fleet:pretty', friendly_name: 'pretty', labels: ['reviewer'] }],

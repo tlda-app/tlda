@@ -23,7 +23,8 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
-import { allTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
+import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
+import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
 // isFleetRosterAgent only. fleetRosterCategory went with the count's move:
 // the store no longer categorises an agent, it is told which ids are alive and
 // joins that against its own roster.
@@ -206,6 +207,55 @@ function rankUnifiedSearchRows(rows, { terms = [], query = '', explicitActivityS
       return tc || a.index - b.index;
     })
     .map(x => x.row);
+}
+
+function parseSearchTextExpression(query) {
+  const raw = String(query || '');
+  if (!/[|!()]/.test(raw)) return null;
+  return parseUnifiedFilter(raw, { sort: 'message' });
+}
+
+function collectTextExpressionTerms(ast, { includeNegated = false } = {}) {
+  const terms = [];
+  collectTextExpressionTermsInto(ast, terms, false, includeNegated);
+  return [...new Set(terms)];
+}
+
+function collectTextExpressionTermsInto(ast, terms, negated, includeNegated) {
+  if (!ast) return;
+  switch (ast.t) {
+    case 'lit':
+      if (!negated || includeNegated) terms.push(String(ast.v || ''));
+      return;
+    case 'not':
+      collectTextExpressionTermsInto(ast.x, terms, !negated, includeNegated);
+      return;
+    case 'and':
+    case 'or':
+      collectTextExpressionTermsInto(ast.l, terms, negated, includeNegated);
+      collectTextExpressionTermsInto(ast.r, terms, negated, includeNegated);
+  }
+}
+
+function textExpressionMatches(ast, text) {
+  if (!ast) return true;
+  const haystack = String(text || '').toLowerCase();
+  switch (ast.t) {
+    case 'lit': return haystack.includes(String(ast.v || '').toLowerCase());
+    case 'and': return textExpressionMatches(ast.l, haystack) && textExpressionMatches(ast.r, haystack);
+    case 'or': return textExpressionMatches(ast.l, haystack) || textExpressionMatches(ast.r, haystack);
+    case 'not': return !textExpressionMatches(ast.x, haystack);
+    default: return false;
+  }
+}
+
+function textMatchesSearchExpression(row, textExpression) {
+  if (!textExpression) return true;
+  const text = [
+    row?.text || '',
+    row?.snippet || '',
+  ].join('\n');
+  return textExpressionMatches(textExpression, text);
 }
 
 // Virtual labels emitted by the DNF chat-routing resolver based on liveness
@@ -4649,14 +4699,20 @@ export class FleetStore {
   }
 
   searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
-    const terms = ftsQueryTerms(query);
-    const ftsQuery = allTermFtsQuery(query);
+    const textExpression = parseSearchTextExpression(query);
+    const terms = textExpression ? collectTextExpressionTerms(textExpression, { includeNegated: true }) : ftsQueryTerms(query);
+    const positiveTextTerms = textExpression ? collectTextExpressionTerms(textExpression) : [];
+    const ftsQuery = textExpression
+      ? anyTermFtsQuery(positiveTextTerms.join(' '))
+      : allTermFtsQuery(query);
 
     // Normalize agent to array for multi-ID lineage search
     const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];
     const hasAgent = agentIds.length > 0;
     const agentPlaceholders = agentIds.map(() => '?').join(',');
     const historyMode = historyOnly ?? agentOnly ?? false;
+    const textExpressionOnly = !!textExpression && positiveTextTerms.length === 0;
+    const effectiveHistoryMode = historyMode || textExpressionOnly;
     let eventTypes = Array.isArray(types) && types.length ? types : type ? [type] : null;
     const sessionRole = role === 'user' || role === 'assistant' ? role : null;
     if (role && !sessionRole) eventTypes = eventTypes || [role];
@@ -4704,7 +4760,7 @@ export class FleetStore {
     // 1. Fleet events
     let eventRows = [];
     if (includeEvents) {
-      if (historyMode && hasAgent && eventOnly) {
+      if (effectiveHistoryMode && hasAgent && eventOnly) {
         const rows = agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
           agent: agentId,
           types: eventTypes,
@@ -4724,7 +4780,7 @@ export class FleetStore {
           metadata: r.metadata ? JSON.parse(r.metadata) : null,
           snippet: r.text?.slice(0, 120),
           ftsRank: 0,
-        })).sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit);
+        })).filter(row => textMatchesSearchExpression(row, textExpression)).sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit);
       } else {
         const eClauses = [];
         const eParams = [];
@@ -4742,12 +4798,12 @@ export class FleetStore {
         }
         if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
         if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
-        eParams.push(historyMode ? limit : candidateLimit);
+        eParams.push(effectiveHistoryMode ? limit : candidateLimit);
         const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
         const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
-        const snippetCol = historyMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
-        const hasEventPreFilter = !historyMode && eClauses.length > 0;
-        const eventSql = historyMode ? `
+        const snippetCol = effectiveHistoryMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
+        const hasEventPreFilter = !effectiveHistoryMode && eClauses.length > 0;
+        const eventSql = effectiveHistoryMode ? `
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
                ${snippetCol}, 0 as fts_rank
         FROM events e
@@ -4776,7 +4832,7 @@ export class FleetStore {
         ${eventWhere}
         LIMIT ?
       `;
-        const eventParams = historyMode
+        const eventParams = effectiveHistoryMode
           ? eParams
           : hasEventPreFilter
             ? [...eParams.slice(0, -1), ftsQuery, candidateLimit]
@@ -4793,12 +4849,12 @@ export class FleetStore {
           metadata: r.metadata ? JSON.parse(r.metadata) : null,
           snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
           ftsRank: r.fts_rank ?? 0,
-        })).filter(row => historyMode || eventRowMatches(row));
+        })).filter(row => (effectiveHistoryMode || eventRowMatches(row)) && textMatchesSearchExpression(row, textExpression));
       }
     }
 
     if (eventOnly) {
-      return historyMode
+      return effectiveHistoryMode
         ? eventRows.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit)
         : rankUnifiedSearchRows(eventRows, { terms, query, explicitActivitySearch }).slice(0, limit);
     }
@@ -4820,11 +4876,11 @@ export class FleetStore {
       if (sessionRole) { sClauses.push('s.role = ?'); sParams.push(sessionRole); }
       if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
       if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
-      sParams.push(historyMode ? limit : candidateLimit);
+      sParams.push(effectiveHistoryMode ? limit : candidateLimit);
       const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
-      const sSnippetCol = historyMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
-      const hasSessionPreFilter = !historyMode && sClauses.length > 0;
-      const sessionSql = historyMode ? `
+      const sSnippetCol = effectiveHistoryMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
+      const hasSessionPreFilter = !effectiveHistoryMode && sClauses.length > 0;
+      const sessionSql = effectiveHistoryMode ? `
         SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
                ${sSnippetCol}, 0 as fts_rank
         FROM session_entries s
@@ -4853,7 +4909,7 @@ export class FleetStore {
         ${sessionWhere}
         LIMIT ?
       `;
-      const sessionParams = historyMode
+      const sessionParams = effectiveHistoryMode
         ? sParams
         : hasSessionPreFilter
           ? [...sParams.slice(0, -1), ftsQuery, candidateLimit]
@@ -4868,10 +4924,10 @@ export class FleetStore {
         text: r.text,
         snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
         ftsRank: r.fts_rank ?? 0,
-      })).filter(row => historyMode || sessionRowMatches(row));
+      })).filter(row => (effectiveHistoryMode || sessionRowMatches(row)) && textMatchesSearchExpression(row, textExpression));
     }
 
-    if (historyMode) {
+    if (effectiveHistoryMode) {
       return [...eventRows, ...sessionRows]
         .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
         .slice(0, limit);

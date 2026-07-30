@@ -41,6 +41,10 @@ const ROLES = ['user', 'assistant', 'chat', 'delegate', 'task_done']
 const TIME_VALUES = ['today', 'yesterday', '1h', '4h', '1d', '1w']
 const LOGICAL_OPERATORS: SearchAutocompleteSuggestion[] = [
   { id: 'operator:and', label: '&', insert: '& ', kind: 'operator', detail: 'AND' },
+  { id: 'operator:or', label: '|', insert: '| ', kind: 'operator', detail: 'OR' },
+  { id: 'operator:not', label: '!', insert: '! ', kind: 'operator', detail: 'NOT' },
+  { id: 'operator:open-paren', label: '(', insert: '( ', kind: 'operator', detail: 'group' },
+  { id: 'operator:close-paren', label: ')', insert: ') ', kind: 'operator', detail: 'group' },
 ]
 
 export const SEARCH_AUTOCOMPLETE_EMPTY_TOKEN: SearchAutocompleteToken = {
