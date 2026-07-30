@@ -624,7 +624,7 @@ function tabMarkerKey(t) {
   if (titleMatch) return titleMatch[1]
   try {
     const u = new URL(t.url)
-    return u.searchParams.get('pwtab') || null
+    return u.searchParams.get('pwtab') || u.searchParams.get('name') || null
   } catch {
     return null
   }
@@ -685,7 +685,14 @@ function listTabs() {
 // the marker before the agent's first goto).
 function isMine(t) {
   const marker = myMarker()
-  return (!!t.url && t.url.includes(marker)) || (!!t.title && t.title.includes(marker))
+  return tabMarkerKey(t) === myTabKey() || (!!t.url && t.url.includes(marker)) || (!!t.title && t.title.includes(marker))
+}
+
+function findMyTab(tabs) {
+  const marker = myMarker()
+  return tabs.find(t => tabMarkerKey(t) === myTabKey())
+    || tabs.find(t => !!t.url && t.url.includes(marker))
+    || tabs.find(t => !!t.title && t.title.includes(marker))
 }
 
 // `tab-list` can come back EMPTY during the intermittent snapshot hang even
@@ -715,7 +722,7 @@ function stableTabs(retries = 5) {
 function selectMyTab() {
   touchMine() // refresh idle clock — every verb runs through here
   let tabs = stableTabs()
-  let mine = tabs.find(isMine)
+  let mine = findMyTab(tabs)
   if (!mine) {
     // Never spawn off an empty list. stableTabs() returns [] only when the
     // session is genuinely down (crashed context — caller re-opens) or the
@@ -751,18 +758,18 @@ function selectMyTab() {
       pw(['tab-new'], { stdio: 'ignore' })
       claimCurrentWindow()
     }
-    mine = listTabs().find(isMine)
+    mine = findMyTab(listTabs())
   }
   if (!mine) return null
   for (let i = 0; i < 8; i++) {
-    const cur = listTabs().find(isMine)
+    const cur = findMyTab(listTabs())
     if (!cur) return null
     if (cur.current) { renewTabLease(cur.index); return cur.index } // confirmed: my page is the current one
     pw(['tab-select', String(cur.index)], { stdio: 'ignore' })
     spawnSync('sleep', ['0.15'])
   }
   // Couldn't confirm — return index anyway, but the caller's verb may misfire.
-  const last = listTabs().find(isMine)
+  const last = findMyTab(listTabs())
   return last ? last.index : null
 }
 
