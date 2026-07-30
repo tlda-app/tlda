@@ -238,11 +238,11 @@ export function createBot({
       return;
     }
     if (!isCanonical()) return;
-    fire('message', msg);
     // The server wraps chats in a fleet-event envelope: { event, data: { type, from_id, to_id, text } }.
     if (msg.event === 'filter-event') {
       msg = { event: 'fleet-event', data: msg.data?.event || {} };
     }
+    fire('message', msg);
     if (msg.event !== 'fleet-event') return;
     const data = msg.data || {};
     if (data.type !== 'chat') return;

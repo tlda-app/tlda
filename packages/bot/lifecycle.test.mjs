@@ -27,6 +27,7 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
   const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
   const transport = createTransportFixture()
   let handled = 0
+  let messages = 0
   const bot = createBot({
     name: 'fixture',
     fleetId: 'fleet:fixture',
@@ -45,7 +46,7 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
         await reply('probed')
       },
     }],
-  }).start()
+  }).onMessage(() => { messages++ }).start()
   t.after(() => bot.stop())
 
   await login(transport.sockets[0], 'fixture-2')
@@ -64,6 +65,7 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
   } } })
   await turn()
   assert.equal(handled, 1)
+  assert.equal(messages, 1)
   for (const text of ['help', 'missing']) {
     transport.sockets[0].event({ event: 'fleet-event', data: {
       type: 'chat', from_id: 'fleet:user', to_id: 'fleet:fixture', text,
