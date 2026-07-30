@@ -13,7 +13,12 @@ async function login(socket, assignedName, id = 'fleet:fixture') {
   const request = socket.sent.find(message => message.type === 'login')
   assert.ok(request)
   socket.reply(request, { ok: true, agent: { id, friendly_name: assignedName } })
+  await turn()
   const subscription = socket.sent.find(message => message.type === 'subscribe-filter')
+  if (assignedName === 'fixture') {
+    assert.ok(subscription)
+    assert.deepEqual(subscription.filter, [[['to', id]], [['from', id]]])
+  }
   if (subscription) socket.reply(subscription, { ok: true })
   await turn()
 }
