@@ -15,28 +15,23 @@ type FreshnessStatus =
   | 'missing-loaded-stamp'
   | 'missing-live-stamp'
   | 'check-failed'
-  | 'reload-suppressed'
 
 type FreshnessState = {
   loaded: BuildInfo | null
   latest: BuildInfo | null
   status: FreshnessStatus
   checks: number
-  reloads: number
   lastCheckAt: string | null
   lastReason: string | null
   lastError: string | null
   staleDetectedAt: string | null
-  reloadScheduledAt: string | null
 }
 
 type InstallOptions = {
   fetcher?: typeof fetch
-  reload?: () => void
   intervalMs?: number
   initialDelayMs?: number
   endpoint?: string
-  enableReload?: boolean
 }
 
 declare const __TLDA_APP_BUILD_INFO__: BuildInfo | null
@@ -52,19 +47,16 @@ declare global {
 
 const DEFAULT_CHECK_INTERVAL_MS = 30_000
 const DEFAULT_INITIAL_DELAY_MS = 5_000
-const RELOAD_ATTEMPT_KEY = 'tlda-app-shell-refresh-attempt'
 
 let state: FreshnessState = {
   loaded: normalizeBuildInfo(typeof __TLDA_APP_BUILD_INFO__ !== 'undefined' ? __TLDA_APP_BUILD_INFO__ : null),
   latest: null,
   status: 'missing-live-stamp',
   checks: 0,
-  reloads: 0,
   lastCheckAt: null,
   lastReason: null,
   lastError: null,
   staleDetectedAt: null,
-  reloadScheduledAt: null,
 }
 
 let installed = false
@@ -117,37 +109,12 @@ async function fetchLatestBuildInfo(fetcher: typeof fetch, endpoint: string) {
   return normalizeBuildInfo(json)
 }
 
-function transitionKey(loaded: BuildInfo | null, latest: BuildInfo | null) {
-  return `${shaOf(loaded) || 'unknown'}->${shaOf(latest) || 'unknown'}`
-}
-
-function reloadAlreadyAttempted(key: string) {
-  try {
-    const raw = sessionStorage.getItem(RELOAD_ATTEMPT_KEY)
-    if (!raw) return false
-    const parsed = JSON.parse(raw)
-    return parsed?.key === key
-  } catch {
-    return false
-  }
-}
-
-function rememberReloadAttempt(key: string) {
-  try {
-    sessionStorage.setItem(RELOAD_ATTEMPT_KEY, JSON.stringify({ key, at: new Date().toISOString() }))
-  } catch {
-    // Session storage can be unavailable; that must not block the refresh.
-  }
-}
-
 export async function checkAppShellFreshness(reason = 'manual', options: InstallOptions = {}) {
   if (typeof window === 'undefined') return state
   if (inFlight) return inFlight
 
   const fetcher = options.fetcher || fetch
   const endpoint = options.endpoint || '/api/build-info'
-  const reload = options.reload || (() => window.location.reload())
-  const enableReload = options.enableReload ?? !import.meta.env.DEV
 
   inFlight = (async () => {
     state = {
@@ -163,7 +130,6 @@ export async function checkAppShellFreshness(reason = 'manual', options: Install
       state = { ...state, latest, status }
       if (status === 'stale') {
         state = { ...state, staleDetectedAt: state.staleDetectedAt || new Date().toISOString() }
-        const key = transitionKey(state.loaded, latest)
         log.metric('app-shell', 'stale app shell detected', {
           reason,
           loadedSha: shaOf(state.loaded),
@@ -171,19 +137,6 @@ export async function checkAppShellFreshness(reason = 'manual', options: Install
           loaded: state.loaded,
           latest,
         })
-        if (!enableReload || reloadAlreadyAttempted(key)) {
-          state = { ...state, status: 'reload-suppressed' }
-          return state
-        }
-        if (document.visibilityState !== 'visible') return state
-        rememberReloadAttempt(key)
-        state = {
-          ...state,
-          reloads: state.reloads + 1,
-          reloadScheduledAt: new Date().toISOString(),
-        }
-        log.flush()
-        window.setTimeout(reload, 100)
       }
     } catch (err) {
       state = {
