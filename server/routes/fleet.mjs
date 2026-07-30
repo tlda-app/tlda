@@ -27,7 +27,6 @@ import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.m
 const SERVER_OWNER_NAME = process.env.TLDA_USER || os.userInfo().username || 'user'
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_OWNER_HOST = os.hostname()
-const DEFAULT_PROJECT_INDEX_SEARCH = 'commits:4.. or created:..15m'
 
 // All inline tmux operations were removed — they now route through the
 // fleet-daemon WS RPC layer (`sendDaemonEphemeral(machineId, op, params)` injected
@@ -371,7 +370,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({
       ...resolveConfig(),
       telemetryUrl: serverConfig.telemetryUrl || null,
-      projectIndexDefaultSearch: serverConfig.projectIndexDefaultSearch || DEFAULT_PROJECT_INDEX_SEARCH,
     })
   })
 

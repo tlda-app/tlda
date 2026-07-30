@@ -86,7 +86,6 @@ interface DiffConfig {
 
 interface FleetConfigResponse {
   telemetryUrl?: unknown
-  projectIndexDefaultSearch?: unknown
 }
 
 type ErrorType = 'not-found' | 'auth' | 'generic'
@@ -723,7 +722,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const agentRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(agents)), [agents])
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
-  const [defaultSearch, setDefaultSearch] = useState('')
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set(
     Object.entries(manifest).filter(([, config]) => config.starred).map(([key]) => key)
@@ -744,7 +742,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const requestedHistoriesRef = useRef(new Set<string>())
   const [dragPreview, setDragPreview] = useState<{ key: string; action: ProjectAction; dx: number } | null>(null)
   const parsedSearch = useMemo(() => parseProjectSearchQuery(search), [search])
-  const parsedDefaultSearch = useMemo(() => parseProjectSearchQuery(defaultSearch), [defaultSearch])
 
   useEffect(() => {
     fetch(`${ASSET_BASE}/api/projects/meta`)
@@ -760,7 +757,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .then(r => r.ok ? r.json() as Promise<FleetConfigResponse> : Promise.resolve<FleetConfigResponse>({}))
       .then(data => {
         setTelemetryUrl(typeof data.telemetryUrl === 'string' ? data.telemetryUrl : null)
-        setDefaultSearch(typeof data.projectIndexDefaultSearch === 'string' ? data.projectIndexDefaultSearch.trim() : '')
       })
       .catch(e => console.warn('[app] fleet-config fetch failed:', e.message))
   }, [])
@@ -831,7 +827,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
 
   const entries = Object.entries({ ...manifest, ...restoredProjects })
     .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
-    .filter(([key, config]) => matchesProjectSearchQuery(key, config, historyIndex?.projects[key], parsedDefaultSearch))
     .filter(([key, config]) => matchesProjectSearchQuery(key, config, historyIndex?.projects[key], parsedSearch))
     .sort(([keyA, configA], [keyB, configB]) => {
       const starA = starredKeys.has(keyA) || !!configA.starred
@@ -1150,7 +1145,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         <input
           className="picker-search"
           type="text"
-          placeholder={defaultSearch || 'Search projects...'}
+          placeholder="Search projects..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           autoFocus
