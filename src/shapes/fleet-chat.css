@@ -1793,7 +1793,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   cursor: default;
 }
 .fleet-agents-shape .fleet-agents-row.native-child .fleet-agents-row-main {
-  padding-left: 14px;
+  padding-left: 11px;
 }
 .fleet-agents-shape .fleet-agents-row-detail {
   --detail-name-columns: 112px;
@@ -1805,7 +1805,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   line-height: 1.5;
 }
 .fleet-agents-shape .fleet-agents-row.native-child .fleet-agents-row-detail {
-  padding-left: 14px;
+  padding-left: 11px;
 }
 .fleet-agents-shape .fleet-agents-detail-top,
 .fleet-agents-shape .fleet-agents-detail-task-row {
@@ -1859,18 +1859,16 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   grid-column: 5;
   flex-shrink: 0;
   border: none;
-  padding: 0 4px;
+  padding: 0 2px;
   font: inherit;
-  font-size: 13px;
-  line-height: 16px;
-  color: rgba(232, 136, 136, 0.72);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 14px;
   background: transparent;
   cursor: pointer;
-  opacity: 0.74;
 }
 .fleet-agents-shape .fleet-agents-detail-hibernate:hover {
-  color: rgba(255, 172, 172, 0.95);
-  opacity: 1;
+  filter: brightness(1.15);
 }
 .fleet-agents-shape .fleet-agents-metadata-chip {
   display: inline-flex;
@@ -2176,7 +2174,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   width: 22px;
   height: 22px;
   line-height: 22px;
-  font-size: 13px;
+  font-size: 19.5px;
   cursor: grab;
   opacity: 0.72;
   border-radius: 3px;

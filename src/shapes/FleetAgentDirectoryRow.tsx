@@ -268,6 +268,7 @@ export function FleetAgentDirectoryRow({
             {canHibernate && (
               <button
                 className="fleet-agents-detail-hibernate"
+                style={{ color: row.color, opacity: row.nameOpacity }}
                 onPointerDown={(e) => { e.stopPropagation(); e.preventDefault() }}
                 onClick={(e) => { e.stopPropagation(); onHibernate?.(e) }}
                 aria-label="Hibernate agent"
