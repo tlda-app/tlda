@@ -1033,7 +1033,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       throw new Error('Injected failure after manifest persistence')
     }
     if (preparedOverleaf) {
-      recoveryJournal = transaction.recordRemotePlan({
+      recoveryJournal = await transaction.recordRemotePlan({
         previousRemoteHead: preparedOverleaf.previousRemoteHead,
         proposedRemoteHead: preparedOverleaf.head,
         remoteBranch: preparedOverleaf.remoteBranch,
@@ -1047,7 +1047,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       if (transactionTest.afterRemotePublished) await transactionTest.afterRemotePublished(preparedOverleaf)
       if (transactionTest.failAt === 'after-remote') throw new Error('Injected failure after remote success')
     }
-    transaction.commit()
+    await transaction.commit()
     if (acceptedSourceMutation) {
       try {
         await recordAcceptedSourceTransaction(name, body || {}, acceptedSourceMutation)

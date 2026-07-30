@@ -8,8 +8,8 @@
  *   build.log     — last build log
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync, cpSync, renameSync, openSync, fsyncSync, closeSync, statSync } from 'fs'
-import { access, mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
+import { access, cp, mkdir, open as openFile, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
@@ -104,36 +104,37 @@ export async function updateProject(name, updates) {
  * must be committed or rolled back exactly once. Rollback is deliberately not
  * best-effort: a restore failure is a fatal transaction failure.
  */
-function syncPath(path, durabilityProbe, label) {
-  const fd = openSync(path, 'r')
+async function syncPath(path, durabilityProbe, label) {
+  const file = await openFile(path, 'r')
   try {
-    fsyncSync(fd)
+    await file.sync()
     durabilityProbe?.(label, path)
   } finally {
-    closeSync(fd)
+    await file.close()
   }
 }
 
-function syncTree(root, durabilityProbe) {
-  if (!existsSync(root)) return
-  if (!statSync(root).isDirectory()) {
-    syncPath(root, durabilityProbe, 'snapshot-file')
+async function syncTree(root, durabilityProbe) {
+  if (!await pathExists(root)) return
+  const rootStat = await stat(root)
+  if (!rootStat.isDirectory()) {
+    await syncPath(root, durabilityProbe, 'snapshot-file')
     return
   }
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    syncTree(join(root, entry.name), durabilityProbe)
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    await syncTree(join(root, entry.name), durabilityProbe)
   }
-  syncPath(root, durabilityProbe, 'snapshot-directory')
+  await syncPath(root, durabilityProbe, 'snapshot-directory')
 }
 
-function writeRecoveryJournal(snapshotRoot, journal, durabilityProbe) {
+async function writeRecoveryJournal(snapshotRoot, journal, durabilityProbe) {
   const target = join(snapshotRoot, 'recovery.json')
   const pending = join(snapshotRoot, `.recovery.json.pending-${process.pid}-${randomUUID()}`)
-  writeFileSync(pending, JSON.stringify(journal, null, 2))
-  syncPath(pending, durabilityProbe, 'journal-temp-file')
-  renameSync(pending, target)
-  syncPath(target, durabilityProbe, 'journal-file')
-  syncPath(snapshotRoot, durabilityProbe, 'journal-directory')
+  await writeFile(pending, JSON.stringify(journal, null, 2))
+  await syncPath(pending, durabilityProbe, 'journal-temp-file')
+  await rename(pending, target)
+  await syncPath(target, durabilityProbe, 'journal-file')
+  await syncPath(snapshotRoot, durabilityProbe, 'journal-directory')
 }
 
 export async function beginProjectSourceTransaction(name, { originalLocalHead = null, failJournalWrite = false, durabilityProbe = null } = {}) {
@@ -141,48 +142,48 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
   const id = randomUUID()
   const transactionRoot = join(dir, '.source-transactions')
   const snapshotRoot = join(transactionRoot, id)
-  mkdirSync(snapshotRoot, { recursive: true })
+  await mkdir(snapshotRoot, { recursive: true })
   const source = sourceDir(name)
   const metadata = join(dir, 'project.json')
   const clone = join(dir, 'overleaf-clone')
   const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
   const manifest = await readClientSourceManifest(name)
-  if (existsSync(source)) cpSync(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
-  cpSync(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
-  writeFileSync(join(snapshotRoot, 'client-source-manifest.json'), JSON.stringify(manifest, null, 2))
-  if (existsSync(clone)) {
+  if (await pathExists(source)) await cp(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
+  await cp(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
+  await writeFile(join(snapshotRoot, 'client-source-manifest.json'), JSON.stringify(manifest, null, 2))
+  if (await pathExists(clone)) {
     const cloneSnapshot = join(snapshotRoot, 'overleaf-worktree')
-    mkdirSync(cloneSnapshot, { recursive: true })
-    for (const entry of readdirSync(clone, { withFileTypes: true })) {
+    await mkdir(cloneSnapshot, { recursive: true })
+    for (const entry of await readdir(clone, { withFileTypes: true })) {
       if (entry.name === '.git') continue
-      cpSync(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
+      await cp(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
     }
   }
-  if (existsSync(lifecycleAuthority)) cpSync(lifecycleAuthority, join(snapshotRoot, 'source-lifecycle-authority.json'), { preserveTimestamps: true })
-  syncTree(snapshotRoot, durabilityProbe)
-  syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
-  syncPath(dir, durabilityProbe, 'project-directory')
+  if (await pathExists(lifecycleAuthority)) await cp(lifecycleAuthority, join(snapshotRoot, 'source-lifecycle-authority.json'), { preserveTimestamps: true })
+  await syncTree(snapshotRoot, durabilityProbe)
+  await syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
+  await syncPath(dir, durabilityProbe, 'project-directory')
   if (failJournalWrite) {
-    writeFileSync(join(snapshotRoot, '.recovery.json.pending-injected'), '{')
+    await writeFile(join(snapshotRoot, '.recovery.json.pending-injected'), '{')
     throw new Error('Injected crash during recovery journal creation')
   }
-  writeRecoveryJournal(snapshotRoot, {
+  await writeRecoveryJournal(snapshotRoot, {
     version: 1,
     project: name,
     state: 'snapshot-ready',
     originalLocalHead,
   }, durabilityProbe)
-  syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
-  syncPath(dir, durabilityProbe, 'project-directory')
+  await syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
+  await syncPath(dir, durabilityProbe, 'project-directory')
   let finished = false
 
   return {
     identity() {
       return { id, state: 'snapshot-ready' }
     },
-    recordRemotePlan(plan) {
+    async recordRemotePlan(plan) {
       if (finished) throw new Error('Source transaction already finished')
-      writeRecoveryJournal(snapshotRoot, {
+      await writeRecoveryJournal(snapshotRoot, {
         version: 1,
         project: name,
         state: 'publish-pending',
@@ -191,27 +192,27 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       }, durabilityProbe)
       return { id, state: 'publish-pending' }
     },
-    commit() {
+    async commit() {
       if (finished) throw new Error('Source transaction already finished')
-      rmSync(snapshotRoot, { recursive: true })
+      await rm(snapshotRoot, { recursive: true })
       finished = true
     },
     async rollback() {
       if (finished) throw new Error('Source transaction already finished')
-      rmSync(source, { recursive: true, force: true })
-      if (existsSync(join(snapshotRoot, 'source'))) cpSync(join(snapshotRoot, 'source'), source, { recursive: true, preserveTimestamps: true })
+      await rm(source, { recursive: true, force: true })
+      if (await pathExists(join(snapshotRoot, 'source'))) await cp(join(snapshotRoot, 'source'), source, { recursive: true, preserveTimestamps: true })
       const metadataRestore = join(dir, `.project.json.rollback-${process.pid}-${Date.now()}`)
-      cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
-      renameSync(metadataRestore, metadata)
+      await cp(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
+      await rename(metadataRestore, metadata)
       await restoreClientSourceManifestSnapshot(name, snapshotRoot)
-      restoreCloneWorktree(clone, join(snapshotRoot, 'overleaf-worktree'))
-      rmSync(lifecycleAuthority, { force: true })
-      if (existsSync(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
-        mkdirSync(dirname(lifecycleAuthority), { recursive: true })
-        cpSync(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
+      await restoreCloneWorktreeAsync(clone, join(snapshotRoot, 'overleaf-worktree'))
+      await rm(lifecycleAuthority, { force: true })
+      if (await pathExists(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
+        await mkdir(dirname(lifecycleAuthority), { recursive: true })
+        await cp(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
       }
       finished = true
-      rmSync(snapshotRoot, { recursive: true })
+      await rm(snapshotRoot, { recursive: true })
     },
     abandon() {
       if (finished) throw new Error('Source transaction already finished')
@@ -221,28 +222,28 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
   }
 }
 
-function restoreCloneWorktree(clone, snapshot) {
-  if (!existsSync(clone)) return
-  for (const entry of readdirSync(clone, { withFileTypes: true })) {
+async function restoreCloneWorktreeAsync(clone, snapshot) {
+  if (!await pathExists(clone)) return
+  for (const entry of await readdir(clone, { withFileTypes: true })) {
     if (entry.name === '.git') continue
-    rmSync(join(clone, entry.name), { recursive: true, force: true })
+    await rm(join(clone, entry.name), { recursive: true, force: true })
   }
-  if (!existsSync(snapshot)) return
-  for (const entry of readdirSync(snapshot, { withFileTypes: true })) {
-    cpSync(join(snapshot, entry.name), join(clone, entry.name), { recursive: true, preserveTimestamps: true })
+  if (!await pathExists(snapshot)) return
+  for (const entry of await readdir(snapshot, { withFileTypes: true })) {
+    await cp(join(snapshot, entry.name), join(clone, entry.name), { recursive: true, preserveTimestamps: true })
   }
 }
 
-export function listProjectSourceRecoveries(name) {
+export async function listProjectSourceRecoveries(name) {
   const root = join(projectDir(name), '.source-transactions')
-  if (!existsSync(root)) return []
-  return readdirSync(root, { withFileTypes: true })
+  if (!await pathExists(root)) return []
+  return Promise.all((await readdir(root, { withFileTypes: true }))
     .filter(entry => entry.isDirectory())
-    .map(entry => {
+    .map(async entry => {
       const journal = join(root, entry.name, 'recovery.json')
-      if (!existsSync(journal)) return { id: entry.name, state: 'journal-incomplete' }
-      return { id: entry.name, ...JSON.parse(readFileSync(journal, 'utf8')) }
-    })
+      if (!await pathExists(journal)) return { id: entry.name, state: 'journal-incomplete' }
+      return { id: entry.name, ...JSON.parse(await readFile(journal, 'utf8')) }
+    }))
 }
 
 export async function rollbackProjectSourceRecovery(name, id) {
@@ -250,23 +251,23 @@ export async function rollbackProjectSourceRecovery(name, id) {
   const snapshotRoot = join(dir, '.source-transactions', id)
   const source = sourceDir(name)
   const metadata = join(dir, 'project.json')
-  rmSync(source, { recursive: true, force: true })
-  if (existsSync(join(snapshotRoot, 'source'))) cpSync(join(snapshotRoot, 'source'), source, { recursive: true, preserveTimestamps: true })
+  await rm(source, { recursive: true, force: true })
+  if (await pathExists(join(snapshotRoot, 'source'))) await cp(join(snapshotRoot, 'source'), source, { recursive: true, preserveTimestamps: true })
   const metadataRestore = join(dir, `.project.json.rollback-${process.pid}-${Date.now()}`)
-  cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
-  renameSync(metadataRestore, metadata)
+  await cp(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
+  await rename(metadataRestore, metadata)
   await restoreClientSourceManifestSnapshot(name, snapshotRoot)
-  restoreCloneWorktree(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
+  await restoreCloneWorktreeAsync(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
   const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
-  rmSync(lifecycleAuthority, { force: true })
-  if (existsSync(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
-    mkdirSync(dirname(lifecycleAuthority), { recursive: true })
-    cpSync(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
+  await rm(lifecycleAuthority, { force: true })
+  if (await pathExists(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
+    await mkdir(dirname(lifecycleAuthority), { recursive: true })
+    await cp(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
   }
 }
 
-export function removeProjectSourceRecovery(name, id) {
-  rmSync(join(projectDir(name), '.source-transactions', id), { recursive: true })
+export async function removeProjectSourceRecovery(name, id) {
+  await rm(join(projectDir(name), '.source-transactions', id), { recursive: true })
 }
 
 /**
@@ -505,12 +506,12 @@ async function replaceClientSourceManifestRows(name, manifest) {
 async function restoreClientSourceManifestSnapshot(name, snapshotRoot) {
   const snapshot = join(snapshotRoot, 'client-source-manifest.json')
   let manifest = []
-  if (existsSync(snapshot)) {
-    manifest = JSON.parse(readFileSync(snapshot, 'utf8'))
+  if (await pathExists(snapshot)) {
+    manifest = JSON.parse(await readFile(snapshot, 'utf8'))
   } else {
     const legacyProjectJson = join(snapshotRoot, 'project.json')
-    if (existsSync(legacyProjectJson)) {
-      const project = JSON.parse(readFileSync(legacyProjectJson, 'utf8'))
+    if (await pathExists(legacyProjectJson)) {
+      const project = JSON.parse(await readFile(legacyProjectJson, 'utf8'))
       if (Array.isArray(project.clientSourceManifest)) {
         manifest = normalizeSourceManifest(project.clientSourceManifest, sourceManifestContext(project))
       }

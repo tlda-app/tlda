@@ -346,9 +346,9 @@ export async function prepareSourcePushToOverleaf(name, { files = [], deletedFil
 export async function recoverProjectSourceTransactions(name) {
   const dir = cloneDir(name)
   const results = []
-  for (const recovery of listProjectSourceRecoveries(name)) {
+  for (const recovery of await listProjectSourceRecoveries(name)) {
     if (recovery.state === 'journal-incomplete') {
-      removeProjectSourceRecovery(name, recovery.id)
+      await removeProjectSourceRecovery(name, recovery.id)
       results.push({ id: recovery.id, state: 'incomplete-journal-cleaned' })
       continue
     }
@@ -357,7 +357,7 @@ export async function recoverProjectSourceTransactions(name) {
         await execAsync(`git reset --hard ${shellQuote(recovery.originalLocalHead)}`, { cwd: dir, timeout: 30000 })
       }
       await rollbackProjectSourceRecovery(name, recovery.id)
-      removeProjectSourceRecovery(name, recovery.id)
+      await removeProjectSourceRecovery(name, recovery.id)
       results.push({ id: recovery.id, state: 'snapshot-rolled-back-cleaned' })
       continue
     }
@@ -376,14 +376,14 @@ export async function recoverProjectSourceTransactions(name) {
       } catch { /* unrelated remote head remains unresolved */ }
     }
     if (proposedPublished) {
-      removeProjectSourceRecovery(name, recovery.id)
+      await removeProjectSourceRecovery(name, recovery.id)
       results.push({ id: recovery.id, state: 'committed-cleaned' })
       continue
     }
     if (remoteHead === recovery.previousRemoteHead) {
       await execAsync(`git reset --hard ${shellQuote(recovery.originalLocalHead)}`, { cwd: dir, timeout: 30000 })
       await rollbackProjectSourceRecovery(name, recovery.id)
-      removeProjectSourceRecovery(name, recovery.id)
+      await removeProjectSourceRecovery(name, recovery.id)
       results.push({ id: recovery.id, state: 'rolled-back-cleaned' })
       continue
     }
