@@ -48,6 +48,13 @@ const FLEET_SHAPE_OPTIONS = [
 ] as const
 
 type PrefsSectionId = 'account' | 'appearance' | 'voice' | 'input' | 'bots'
+const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
+  account: 'account user identity devices switch device name',
+  appearance: 'appearance theme readability font line height opacity layout chat margin tool output document viewer sources note color ribbon provenance slides',
+  voice: 'voice backend meter radio subtitles submit phrases ignored deepgram idle cutoff preroll endpointing',
+  input: 'input highlighter edge zone corner controls voice slider response curve editor vim',
+  bots: 'bots self check countdown model',
+}
 type VoiceBackendOption = { value: string; label: string; available: boolean }
 type SpeechRecognitionWindow = Window & {
   SpeechRecognition?: unknown
@@ -312,7 +319,7 @@ function readAll() {
   }
 }
 
-export function PrefsTab() {
+export function PrefsTab({ query = '' }: { query?: string }) {
   const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
@@ -359,6 +366,9 @@ export function PrefsTab() {
     ...DEFAULT_READABILITY_PROFILE,
     ...(prefs.readabilityProfiles[prefs.readabilityDeviceId] ?? {}),
   } as ReadabilityProfile
+  const normalizedQuery = query.trim().toLowerCase()
+  const sectionVisible = (id: PrefsSectionId) =>
+    !normalizedQuery || PREFS_SEARCH_TEXT[id].includes(normalizedQuery)
 
   const setReadabilityDevice = useCallback((deviceId: string) => {
     setPrefs(prev => ({ ...prev, readabilityDeviceId: deviceId }))
@@ -399,7 +409,7 @@ export function PrefsTab() {
           Preferences could not load; defaults are in use until preferences reconnect: {prefs.loadError}
         </div>
       )}
-      <CollapsiblePrefsSection
+      {sectionVisible('account') && <CollapsiblePrefsSection
         id="account"
         title="Account"
         summary="User and devices"
@@ -407,9 +417,9 @@ export function PrefsTab() {
         onToggle={toggleSection}
       >
         <IdentitySectionBody knownDevices={prefs.knownDevices} deviceNames={prefs.deviceNames} />
-      </CollapsiblePrefsSection>
+      </CollapsiblePrefsSection>}
 
-      <CollapsiblePrefsSection
+      {sectionVisible('appearance') && <CollapsiblePrefsSection
         id="appearance"
         title="Appearance"
         summary={`${prefs.deviceNames[prefs.readabilityDeviceId] || (prefs.readabilityDeviceId === currentDeviceId ? 'this device' : prefs.readabilityDeviceId)}: ${activeReadability.fontSize}px / ${Math.round(activeReadability.layoutHeightFrac * 100)}% height`}
@@ -554,9 +564,9 @@ export function PrefsTab() {
             </select>
           </label>
         </PrefSubsection>
-      </CollapsiblePrefsSection>
+      </CollapsiblePrefsSection>}
 
-      <CollapsiblePrefsSection
+      {sectionVisible('voice') && <CollapsiblePrefsSection
         id="voice"
         title="Voice"
         summary={voiceBackends.find(b => b.value === selectedVoiceBackend)?.label || 'Off'}
@@ -641,9 +651,9 @@ export function PrefsTab() {
             ))}
           </PrefSubsection>
         )}
-      </CollapsiblePrefsSection>
+      </CollapsiblePrefsSection>}
 
-      <CollapsiblePrefsSection
+      {sectionVisible('input') && <CollapsiblePrefsSection
         id="input"
         title="Input"
         summary={`${prefs.hlZone ? 'Edge zone on' : 'Edge zone off'} / ${prefs.cornerRail ? `voice slider ${prefs.cornerSize || 'auto'}` : 'classic'}`}
@@ -691,9 +701,9 @@ export function PrefsTab() {
         <PrefSubsection title="Editor input">
           <VimModeToggle />
         </PrefSubsection>
-      </CollapsiblePrefsSection>
+      </CollapsiblePrefsSection>}
 
-      <CollapsiblePrefsSection
+      {sectionVisible('bots') && <CollapsiblePrefsSection
         id="bots"
         title="Bots"
         summary={runningBots.length ? `${runningBots.length} running` : 'No running bots'}
@@ -727,7 +737,10 @@ export function PrefsTab() {
             </PrefSubsection>
           )
         })}
-      </CollapsiblePrefsSection>
+      </CollapsiblePrefsSection>}
+      {normalizedQuery && (Object.keys(PREFS_SEARCH_TEXT) as PrefsSectionId[]).every(id => !sectionVisible(id)) && (
+        <div className="panel-empty">No settings found</div>
+      )}
     </div>
   )
 }

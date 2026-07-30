@@ -217,9 +217,10 @@ export async function createTemporaryMarkdownColumn(
   const shapeId = spatialDocumentShapeId(identity)
   const existing = editor.getShape(shapeId)
   const sourceShape = findSpatialSourceShape(editor, shapeId)
+  const sourceAnchor = sourceShape ? editor.getViewportPageBounds().center : pagePoint
   const parkedPoint = existing
     ? { x: existing.x, y: existing.y }
-    : placeSpatialDocument(editor, identity, sourceShape, { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H }, pagePoint)
+    : placeSpatialDocument(editor, identity, sourceShape, { w: TEMP_MARKDOWN_W, h: TEMP_MARKDOWN_H }, sourceAnchor)
   if (existing) {
     if (existing.isLocked) {
       editor.updateShape({ id: shapeId, type: existing.type, isLocked: false })

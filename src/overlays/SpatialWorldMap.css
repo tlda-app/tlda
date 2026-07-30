@@ -20,17 +20,43 @@
   vector-effect: non-scaling-stroke;
 }
 
+.spatial-world-roads line.active {
+  stroke: color-mix(in srgb, var(--color-primary, #2563eb) 85%, transparent);
+}
+
+.spatial-world-node {
+  position: absolute;
+  border: 1px solid color-mix(in srgb, var(--color-text-1, #1f2937) 28%, transparent);
+  border-radius: 4px;
+  box-sizing: border-box;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.spatial-world-node.active {
+  border-color: color-mix(in srgb, var(--color-primary, #2563eb) 80%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary, #2563eb) 20%, transparent);
+}
+
 .spatial-world-label {
   position: absolute;
+  left: 50%;
+  top: 0;
   transform: translate(-50%, calc(-100% - 8px));
   max-width: 240px;
   overflow: hidden;
   padding: 3px 8px;
+  border: 0;
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-panel, white) 88%, transparent);
   box-shadow: 0 1px 5px rgb(15 23 42 / 16%);
   color: var(--color-text-1, #1f2937);
+  cursor: pointer;
   font: 600 13px/1.25 system-ui, sans-serif;
+  pointer-events: auto;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.spatial-world-node.active .spatial-world-label {
+  background: color-mix(in srgb, var(--color-primary, #2563eb) 14%, var(--color-panel, white));
 }

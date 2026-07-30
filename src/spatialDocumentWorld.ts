@@ -20,6 +20,7 @@ type SpatialDocumentShape = TLShape & {
 export type SpatialWorldRoad = {
   sourceNodeId: string
   strength: number
+  sourcePoint?: { x: number; y: number }
 }
 
 export type SpatialDocumentNode = {
@@ -27,6 +28,44 @@ export type SpatialDocumentNode = {
   bounds: { x: number; y: number; w: number; h: number }
   title: string
   shape?: SpatialDocumentShape
+}
+
+export function spatialWorldBounds(nodes: SpatialDocumentNode[]) {
+  if (nodes.length === 0) return null
+  const x = Math.min(...nodes.map(node => node.bounds.x))
+  const y = Math.min(...nodes.map(node => node.bounds.y))
+  const right = Math.max(...nodes.map(node => node.bounds.x + node.bounds.w))
+  const bottom = Math.max(...nodes.map(node => node.bounds.y + node.bounds.h))
+  return { x, y, w: right - x, h: bottom - y }
+}
+
+export function zoomToSpatialWorld(
+  editor: Editor,
+  bounds: { x: number; y: number; w: number; h: number },
+) {
+  const viewport = editor.getViewportScreenBounds()
+  const availableW = Math.max(1, viewport.w - 80)
+  const availableH = Math.max(1, viewport.h - 80)
+  const z = Math.max(0.01, Math.min(
+    SPATIAL_MAP_ZOOM * 0.9,
+    availableW / Math.max(1, bounds.w),
+    availableH / Math.max(1, bounds.h),
+  ))
+  editor.setCamera({
+    x: viewport.w / (2 * z) - (bounds.x + bounds.w / 2),
+    y: viewport.h / (2 * z) - (bounds.y + bounds.h / 2),
+    z,
+  }, { animation: { duration: 300 } })
+}
+
+export function focusSpatialDocument(editor: Editor, node: SpatialDocumentNode) {
+  const viewport = editor.getViewportScreenBounds()
+  const z = Math.max(0.1, Math.min(1, (viewport.w - 96) / Math.max(1, node.bounds.w)))
+  editor.setCamera({
+    x: viewport.w / (2 * z) - (node.bounds.x + node.bounds.w / 2),
+    y: 48 / z - node.bounds.y,
+    z,
+  }, { animation: { duration: 300 } })
 }
 
 function stableHash(value: string) {
@@ -110,8 +149,16 @@ export function placeSpatialDocument(
 ) {
   const occupied = spatialWorldDocuments(editor).map(node => node.bounds)
   const viewport = editor.getViewportPageBounds()
-  const origin = source
-    ? source.bounds
+  const sourceAnchor = source && anchor
+    ? {
+        x: Math.max(source.bounds.x, Math.min(source.bounds.x + source.bounds.w, anchor.x)),
+        y: Math.max(source.bounds.y, Math.min(source.bounds.y + source.bounds.h, anchor.y)),
+      }
+    : null
+  const origin = sourceAnchor
+    ? { x: sourceAnchor.x, y: sourceAnchor.y, w: 0, h: 0 }
+    : source
+      ? source.bounds
     : {
         x: (anchor?.x ?? viewport.center.x) - size.w / 2,
         y: (anchor?.y ?? viewport.center.y) - size.h / 2,
@@ -120,8 +167,8 @@ export function placeSpatialDocument(
       }
   const originCenter = { x: origin.x + origin.w / 2, y: origin.y + origin.h / 2 }
   const startAngle = stableHash(identity) / 0xffffffff * Math.PI * 2
-  const horizontalClearance = origin.w / 2 + size.w / 2 + WORLD_GAP
-  const verticalClearance = origin.h / 2 + size.h / 2 + WORLD_GAP
+  const horizontalClearance = size.w / 2 + WORLD_GAP
+  const verticalClearance = size.h / 2 + WORLD_GAP
   let best = { x: origin.x + origin.w + WORLD_GAP, y: originCenter.y - size.h / 2 }
   let bestScore = Number.POSITIVE_INFINITY
 
@@ -137,11 +184,14 @@ export function placeSpatialDocument(
         w: size.w,
         h: size.h,
       }
-      let score = ring * 10
+      let score = ring * ring * 10
       for (const other of occupied) {
         const gap = rectGap(candidate, other)
         if (gap === 0) score += 1_000_000
-        else score += 50_000 / (gap * gap)
+        else {
+          const mass = Math.max(1, other.w * other.h / (DOCUMENT_W * DOCUMENT_H))
+          score += mass * 50_000 / (gap * gap)
+        }
       }
       if (score < bestScore) {
         bestScore = score
@@ -176,8 +226,16 @@ export function recordSpatialTraversal(
     : []
   if (existing.some(road => road.sourceNodeId === sourceShapeId)) return
   const strength = 0.65 + (stableHash(`${sourceShapeId}\0${targetShapeId}`) % 25) / 100
+  const source = spatialWorldDocuments(editor).find(node => node.id === sourceShapeId)
+  const viewportCenter = editor.getViewportPageBounds().center
+  const sourcePoint = source
+    ? {
+        x: Math.max(source.bounds.x, Math.min(source.bounds.x + source.bounds.w, viewportCenter.x)),
+        y: Math.max(source.bounds.y, Math.min(source.bounds.y + source.bounds.h, viewportCenter.y)),
+      }
+    : undefined
   updateUnlocked(editor, target, {
-    spatialWorldRoads: [...existing, { sourceNodeId: sourceShapeId, strength }],
+    spatialWorldRoads: [...existing, { sourceNodeId: sourceShapeId, strength, sourcePoint }],
   })
 }
 

@@ -19,6 +19,7 @@ import {
   recordHtmlNavigationEnd,
   recordHtmlNavigationStart,
 } from '../html-page-navigation-history'
+import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
@@ -286,7 +287,7 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   override canBind = () => false
 
   component(shape: any) {
-    return <HtmlPageComponent shape={shape} />
+    return <SpatialLodHtmlPage shape={shape} />
   }
 
   backgroundComponent(shape: any) {
@@ -302,6 +303,19 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   indicator(shape: any) {
     return <rect width={shape.props.w} height={shape.props.h} rx={2} ry={2} />
   }
+}
+
+function SpatialLodHtmlPage({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const mapLevel = useValue(
+    `spatial-lod-html-${shape.id}`,
+    () => editor.getZoomLevel() <= SPATIAL_MAP_ZOOM,
+    [editor, shape.id],
+  )
+  if (mapLevel) {
+    return <HTMLContainer><div style={{ width: shape.props.w, height: shape.props.h }} /></HTMLContainer>
+  }
+  return <HtmlPageComponent shape={shape} />
 }
 
 function HtmlPageBackground({ shape: _shape }: { shape: any }) {

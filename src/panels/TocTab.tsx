@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useBook } from '../BookContext'
 import { useEditor } from 'tldraw'
-import type { TLShape } from 'tldraw'
-import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
+import { loadLookup, clearLookupCache, loadHtmlToc, type LookupEntry, type HtmlTocEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { onReloadSignal } from '../useYjsSync'
@@ -20,7 +19,7 @@ import {
 } from '../livekit/liveSession'
 import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-utils'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
-import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
+import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, type TocLevel, type TocEntry } from './helpers'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const CHILDREN: Record<string, string[]> = {
@@ -43,7 +42,7 @@ function computeDefaultFolded(items: Array<{ level: string }>): Set<number> {
   return set
 }
 
-export function TocTab() {
+export function TocTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
   const doc = useContext(ProjectContext)
   const ctx = useContext(PanelContext)
@@ -270,115 +269,15 @@ export function TocTab() {
     onDrop: handleTocDrop,
   } : {}
 
-  // --- Search state (must be before any early returns) ---
-  const [query, setQuery] = useState('')
-  const [debouncedQuery, setDebouncedQuery] = useState('')
-  const [searchLines, setSearchLines] = useState<Record<string, LookupEntry> | null>(null)
-  const [htmlSearchIndex, setHtmlSearchIndex] = useState<HtmlSearchEntry[] | null>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(null)
-
-  useEffect(() => {
-    if (!doc) return
-    if (doc.format === 'slides') {
-      setSearchLines(null)
-      setHtmlSearchIndex(null)
-      return
-    }
-    loadLookup(doc.projectName).then(data => {
-      if (data) {
-        setSearchLines(data.lines)
-      } else {
-        loadHtmlSearch(doc.projectName).then(index => {
-          if (index) setHtmlSearchIndex(index)
-        })
-      }
-    })
-  }, [doc?.projectName, doc?.format, reloadCount])
-
-  useEffect(() => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setDebouncedQuery(query), 300)
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [query])
-
-  const docResults = useMemo(() => {
-    if (!debouncedQuery) return []
-    const q = debouncedQuery.toLowerCase()
-    if (searchLines) {
-      const results: Array<{ line: string; entry: LookupEntry }> = []
-      for (const [line, entry] of Object.entries(searchLines)) {
-        if (entry.content.toLowerCase().includes(q)) {
-          results.push({ line, entry })
-          if (results.length >= 50) break
-        }
-      }
-      return results
-    }
-    if (htmlSearchIndex) {
-      const results: Array<{ page: number; snippet: string; label?: string; anchor?: string }> = []
-      for (const entry of htmlSearchIndex) {
-        const idx = entry.text.toLowerCase().indexOf(q)
-        if (idx >= 0) {
-          const start = Math.max(0, idx - 30)
-          const end = Math.min(entry.text.length, idx + q.length + 50)
-          const snippet = (start > 0 ? '...' : '') + entry.text.slice(start, end) + (end < entry.text.length ? '...' : '')
-          results.push({ page: entry.page, snippet, label: entry.label, anchor: entry.anchor })
-          if (results.length >= 50) break
-        }
-      }
-      return results
-    }
-    return []
-  }, [debouncedQuery, searchLines, htmlSearchIndex])
-
-  const noteResults = useMemo(() => {
-    if (!debouncedQuery) return []
-    const q = debouncedQuery.toLowerCase()
-    const shapes = editor.getCurrentPageShapes()
-    const results: Array<{ shape: TLShape; text: string }> = []
-    for (const shape of shapes) {
-      if ((shape.type as string) !== 'math-note' && shape.type !== 'note') continue
-      const text = getShapeText(shape)
-      if (text.toLowerCase().includes(q)) {
-        results.push({ shape, text })
-        if (results.length >= 50) break
-      }
-    }
-    return results
-  }, [debouncedQuery, editor])
-
-  const handleDocSearchClick = useCallback((entry: LookupEntry) => {
-    if (!doc) return
-    const pos = pdfToCanvas(entry.page, entry.x, entry.y, doc.pages)
-    if (!pos) return
-    const pageIndex = entry.page - 1
-    const page = doc.pages[pageIndex]
-    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
-    navigateTo(editor, pos.x, pos.y, pageCenterX)
-  }, [editor, doc])
-
-  const handlePageSearchClick = useCallback((pageNum: number, anchor?: string) => {
-    if (!doc) return
-    if (anchor) {
-      navigateToAnchor(editor, doc, pageNum, anchor)
-    } else {
-      navigateToPage(editor, doc, pageNum)
-    }
-  }, [editor, doc])
-
-  const handleNoteSearchClick = useCallback((shape: TLShape) => {
-    navigateTo(editor, shape.x, shape.y)
-  }, [editor])
-
-  const isHtmlSearch = !searchLines && !!htmlSearchIndex
-  const hasSearchResults = debouncedQuery && (docResults.length > 0 || noteResults.length > 0)
-  const hasNoResults = debouncedQuery && docResults.length === 0 && noteResults.length === 0
-
   // Slides format: render TOC from page-info.json titles
   if (doc?.format === 'slides' && slideTitles) {
+    const normalizedQuery = query.trim().toLowerCase()
+    const visibleSlides = slideTitles
+      .map((title, i) => ({ title, i }))
+      .filter(({ title, i }) => !normalizedQuery || (title || `Slide ${i + 1}`).toLowerCase().includes(normalizedQuery))
     return (
       <div className="doc-panel-content" {...tocDropProps}>
-        {slideTitles.map((title, i) => (
+        {visibleSlides.map(({ title, i }) => (
           <div
             key={i}
             className="toc-item section"
@@ -454,6 +353,11 @@ export function TocTab() {
     }))
   }
 
+  const normalizedQuery = stripTex(query).trim().toLowerCase()
+  if (normalizedQuery) {
+    items = items.filter(item => stripTex(item.title).toLowerCase().includes(normalizedQuery))
+  }
+
   // Build visibility: children hidden if their parent is collapsed
   let currentPartIdx = -1
   let currentChapterIdx = -1
@@ -475,7 +379,7 @@ export function TocTab() {
   }
 
   function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }, nextLevel: TocLevel | TocLevel[]) {
-    const isCollapsed = collapsed?.has(i) ?? false
+    const isCollapsed = !normalizedQuery && (collapsed?.has(i) ?? false)
     const next = items[i + 1]
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
     const hasChildren = next && childLevels.includes(next.level)
@@ -498,53 +402,8 @@ export function TocTab() {
   }
 
   return (
-    <>
-    <div className="search-input-wrap">
-      <input
-        className="search-input"
-        type="text"
-        placeholder="Search..."
-        value={query}
-        onChange={e => setQuery(e.target.value)}
-      />
-    </div>
     <div className="doc-panel-content" {...tocDropProps}>
-      {/* Search results first */}
-      {hasSearchResults && (
-        <>
-          {docResults.length > 0 && (
-            <>
-              <div className="search-group-label">Document</div>
-              {isHtmlSearch
-                ? (docResults as Array<{ page: number; snippet: string; label?: string; anchor?: string }>).map((r, i) => (
-                    <div key={`d-${i}`} className="search-result" onClick={() => handlePageSearchClick(r.page, r.anchor)}>
-                      <span className="line-num">{r.label || `p${r.page}`}</span>
-                      {r.snippet}
-                    </div>
-                  ))
-                : (docResults as Array<{ line: string; entry: LookupEntry }>).map((r, i) => (
-                    <div key={`d-${i}`} className="search-result" onClick={() => handleDocSearchClick(r.entry)}>
-                      <span className="line-num">L{r.line}</span>
-                      {stripTex(r.entry.content).slice(0, 80)}
-                    </div>
-                  ))
-              }
-            </>
-          )}
-          {noteResults.length > 0 && (
-            <>
-              <div className="search-group-label">Notes</div>
-              {noteResults.map((r, i) => (
-                <div key={`n-${i}`} className="search-result" onClick={() => handleNoteSearchClick(r.shape)}>
-                  {r.text.slice(0, 80)}
-                </div>
-              ))}
-            </>
-          )}
-          <div className="notes-section-divider" />
-        </>
-      )}
-      {hasNoResults && (
+      {normalizedQuery && items.length === 0 && (
         <div className="panel-empty">No results</div>
       )}
       {/* TOC */}
@@ -563,25 +422,25 @@ export function TocTab() {
           currentSubsectionIdx = -1
           return renderFoldableItem(i, h, ['chapter', 'section', 'subsection', 'subsubsection'])
         }
-        if (currentPartIdx >= 0 && collapsed?.has(currentPartIdx)) return null
+        if (!normalizedQuery && currentPartIdx >= 0 && collapsed?.has(currentPartIdx)) return null
         if (h.level === 'chapter') {
           currentChapterIdx = i
           currentSectionIdx = -1
           currentSubsectionIdx = -1
           return renderFoldableItem(i, h, ['section', 'subsection', 'subsubsection'])
         }
-        if (currentChapterIdx >= 0 && collapsed?.has(currentChapterIdx)) return null
+        if (!normalizedQuery && currentChapterIdx >= 0 && collapsed?.has(currentChapterIdx)) return null
         if (h.level === 'section') {
           currentSectionIdx = i
           currentSubsectionIdx = -1
           return renderFoldableItem(i, h, ['subsection', 'subsubsection'])
         }
-        if (currentSectionIdx >= 0 && collapsed?.has(currentSectionIdx)) return null
+        if (!normalizedQuery && currentSectionIdx >= 0 && collapsed?.has(currentSectionIdx)) return null
         if (h.level === 'subsection') {
           currentSubsectionIdx = i
           return renderFoldableItem(i, h, 'subsubsection')
         }
-        if (currentSubsectionIdx >= 0 && collapsed?.has(currentSubsectionIdx)) return null
+        if (!normalizedQuery && currentSubsectionIdx >= 0 && collapsed?.has(currentSubsectionIdx)) return null
         return (
           <div key={i} className="toc-item subsubsection">
             <span className="toc-fold-spacer" />
@@ -610,7 +469,6 @@ export function TocTab() {
       </div>
       {/* HideDefsToggle removed */}
     </div>
-    </>
   )
 }
 

@@ -945,6 +945,58 @@ html[data-theme="dark"] .toc-drop-hint {
   border-color: rgba(0, 0, 0, 0.2);
 }
 
+.project-tab {
+  padding-top: 0;
+}
+
+.project-tab-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.project-map-button {
+  min-height: 28px;
+  padding: 3px 9px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.project-map-button.active {
+  border-color: color-mix(in srgb, var(--color-primary, #2563eb) 55%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #2563eb) 10%, transparent);
+}
+
+.project-document-row {
+  display: block;
+  width: 100%;
+  min-height: 30px;
+  overflow: hidden;
+  padding: 5px 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-document-row:hover,
+.project-document-row:focus-visible,
+.project-document-row.active {
+  border-left-color: color-mix(in srgb, var(--color-primary, #2563eb) 70%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #2563eb) 9%, transparent);
+  outline: none;
+}
+
 .search-group-label {
   padding: 5px 8px 1px;
   font-size: 9px;

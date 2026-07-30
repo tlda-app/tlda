@@ -9,7 +9,7 @@ import { ProjectContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
-import { NotesTab } from './panels/NotesTab'
+import { ProjectTab } from './panels/ProjectTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
 import { isPhoneViewport } from './phoneViewport'
@@ -78,12 +78,33 @@ export function PingButton() {
 // Main panel
 // ======================
 
-type Tab = 'toc' | 'notes' | 'prefs'
+type Tab = 'document' | 'project' | 'prefs'
+
+function PanelSearch({
+  query,
+  setQuery,
+}: {
+  query: string
+  setQuery: (value: string) => void
+}) {
+  return (
+    <div className="search-input-wrap">
+      <input
+        className="search-input"
+        type="search"
+        placeholder="Search..."
+        value={query}
+        onChange={event => setQuery(event.target.value)}
+      />
+    </div>
+  )
+}
 
 export function DocumentPanel() {
   const doc = useContext(ProjectContext)
   const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
-  const [tab, setTab] = useState<Tab>('toc')
+  const [tab, setTab] = useState<Tab>('document')
+  const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [dragOpen, setDragOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -107,7 +128,7 @@ export function DocumentPanel() {
     function onDragOver(e: DragEvent) {
       const types = e.dataTransfer?.types
       if (!types?.includes('text/plain') && !types?.includes('application/x-chat-attachment')) return
-      if (!dragOpen) { setDragOpen(true); setTab('toc') }
+      if (!dragOpen) { setDragOpen(true); setTab('document') }
       // Reset close timer on every dragover — if no dragover for 500ms, drag ended
       if (dragTimeout.current) clearTimeout(dragTimeout.current)
       dragTimeout.current = setTimeout(() => setDragOpen(false), 500)
@@ -130,7 +151,7 @@ export function DocumentPanel() {
       const active = (e as CustomEvent).detail?.active
       if (active) {
         setDragOpen(true)
-        setTab('toc')
+        setTab('document')
       } else {
         setDragOpen(false)
       }
@@ -157,19 +178,20 @@ export function DocumentPanel() {
         onTouchEnd={stopEventPropagation}
       >
         <div className="doc-panel-tabs">
-          <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
-            TOC
+          <button className={`doc-panel-tab ${tab === 'document' ? 'active' : ''}`} onClick={() => setTab('document')}>
+            Document
           </button>
-          <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
-            Notes
+          <button className={`doc-panel-tab ${tab === 'project' ? 'active' : ''}`} onClick={() => setTab('project')}>
+            Project
           </button>
           <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
           </button>
         </div>
-        {tab === 'toc' && <TocTab />}
-        {tab === 'notes' && <NotesTab />}
-        {tab === 'prefs' && <PrefsTab />}
+        <PanelSearch query={query} setQuery={setQuery} />
+        {tab === 'document' && <TocTab query={query} />}
+        {tab === 'project' && <ProjectTab query={query} />}
+        {tab === 'prefs' && <PrefsTab query={query} />}
         <ZoneWidthSlider />
       </div>
     </>
@@ -593,7 +615,8 @@ function PhonePageIndicator() {
 export function PhoneOverlay() {
   const doc = useContext(ProjectContext)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [tab, setTab] = useState<Tab>('toc')
+  const [tab, setTab] = useState<Tab>('document')
+  const [query, setQuery] = useState('')
   const isPhone = usePhoneSizedViewport()
   const showButtonToc = doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
   useVisualViewportControlAnchor(showButtonToc)
@@ -666,19 +689,20 @@ export function PhoneOverlay() {
             onTouchStart={stopEventPropagation}
           >
             <div className="doc-panel-tabs phone-panel-tabs">
-              <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
-                TOC
+              <button className={`doc-panel-tab ${tab === 'document' ? 'active' : ''}`} onClick={() => setTab('document')}>
+                Document
               </button>
-              <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
-                Notes
+              <button className={`doc-panel-tab ${tab === 'project' ? 'active' : ''}`} onClick={() => setTab('project')}>
+                Project
               </button>
               <button className={`doc-panel-tab doc-panel-tab--gear ${tab === 'prefs' ? 'active' : ''}`} onClick={() => setTab('prefs')} aria-label="Settings">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM6 8a2 2 0 114 0 2 2 0 01-4 0z"/><path d="M9.4 1.2a1.5 1.5 0 00-2.8 0l-.3.9a.5.5 0 01-.7.3l-.8-.5a1.5 1.5 0 00-2 2l.5.8a.5.5 0 01-.3.7l-.9.3a1.5 1.5 0 000 2.8l.9.3a.5.5 0 01.3.7l-.5.8a1.5 1.5 0 002 2l.8-.5a.5.5 0 01.7.3l.3.9a1.5 1.5 0 002.8 0l.3-.9a.5.5 0 01.7-.3l.8.5a1.5 1.5 0 002-2l-.5-.8a.5.5 0 01.3-.7l.9-.3a1.5 1.5 0 000-2.8l-.9-.3a.5.5 0 01-.3-.7l.5-.8a1.5 1.5 0 00-2-2l-.8.5a.5.5 0 01-.7-.3l-.3-.9z"/></svg>
               </button>
             </div>
-            {tab === 'toc' && <TocTab />}
-            {tab === 'notes' && <NotesTab />}
-            {tab === 'prefs' && <PrefsTab />}
+            <PanelSearch query={query} setQuery={setQuery} />
+            {tab === 'document' && <TocTab query={query} />}
+            {tab === 'project' && <ProjectTab query={query} />}
+            {tab === 'prefs' && <PrefsTab query={query} />}
           </div>
         </div>
       )}

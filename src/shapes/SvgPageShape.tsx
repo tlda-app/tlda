@@ -19,6 +19,7 @@ import { setPageRenderHash } from '../stores/renderHashStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 import { isPhoneViewport } from '../phoneViewport'
 import { ProjectContext } from '../PanelContext'
+import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -43,7 +44,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   override canBind = () => false
 
   component(shape: any) {
-    return <SvgPageComponent shape={shape} />
+    return <SpatialLodSvgPage shape={shape} />
   }
 
   backgroundComponent(shape: any) {
@@ -59,6 +60,19 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   indicator(shape: any) {
     return <rect width={shape.props.w} height={shape.props.h} />
   }
+}
+
+function SpatialLodSvgPage({ shape }: { shape: any }) {
+  const editor = useEditor()
+  const mapLevel = useValue(
+    `spatial-lod-svg-${shape.id}`,
+    () => editor.getZoomLevel() <= SPATIAL_MAP_ZOOM,
+    [editor, shape.id],
+  )
+  if (mapLevel) {
+    return <HTMLContainer><div style={{ width: shape.props.w, height: shape.props.h }} /></HTMLContainer>
+  }
+  return <SvgPageComponent shape={shape} />
 }
 
 // Number of page-heights beyond the viewport to keep SVG content injected
