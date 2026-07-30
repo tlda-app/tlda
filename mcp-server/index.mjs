@@ -2489,6 +2489,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const threadId = typeof request.params?._meta?.threadId === 'string'
     ? request.params._meta.threadId
     : null;
+  const toolUseId = typeof request.params?._meta?.['claudecode/toolUseId'] === 'string'
+    ? request.params._meta['claudecode/toolUseId']
+    : null;
 
   if (name === 'screenshot' && args?.target && args.target !== 'viewport') {
     return { content: [{ type: 'text', text: `Invalid screenshot target: ${args.target}` }], isError: true };
@@ -3812,7 +3815,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   // Dispatch to fleet tools
-  const fleetResult = await handleFleetTool(name, args, { threadId });
+  const fleetResult = await handleFleetTool(name, args, { threadId, toolUseId });
   if (fleetResult !== null) return fleetResult;
 
   return {

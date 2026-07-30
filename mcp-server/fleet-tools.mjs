@@ -8,6 +8,7 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 // SearchIndex (search-index.sqlite) replaced by server-side fleet-search WS operation.
@@ -300,7 +301,7 @@ async function postChatAuthoredSuggestions(suggestions, recipients, { messageId 
   const ts = Date.now();
   const targetId = recipients.length === 1 ? recipients[0] : null;
   const stamped = suggestions.map((s, i) => ({
-    id: `${AGENT_ID}:chat:${messageId || ts}:${i}`,
+    id: `${activeAgentId()}:chat:${messageId || ts}:${i}`,
     label: s.label,
     text: s.text || '',
     command: s.command || null,
@@ -312,11 +313,11 @@ async function postChatAuthoredSuggestions(suggestions, recipients, { messageId 
   }));
   const prev = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, { signal: AbortSignal.timeout(3000) });
   const prevData = await prev.json().catch(() => ({}));
-  const retained = (prevData.suggestions || []).filter(s => s.from === AGENT_ID && String(s.messageId || '') !== String(messageId || ''));
+  const retained = (prevData.suggestions || []).filter(s => s.from === activeAgentId() && String(s.messageId || '') !== String(messageId || ''));
   const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/suggestions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agentId: AGENT_ID, suggestions: [...retained, ...stamped] }),
+    body: JSON.stringify({ agentId: activeAgentId(), suggestions: [...retained, ...stamped] }),
     signal: AbortSignal.timeout(3000),
   });
   const postData = await res.json().catch(() => ({}));
@@ -479,7 +480,7 @@ function annotateEnvResult(result, envName) {
 function sendOneShotWS(envName, type, params = {}, opts = {}) {
   const id = crypto.randomUUID();
   const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
-  const wsUrl = `${getFleetServerUrl(envName).replace(/^http/, 'ws')}/ws/fleet?agent=${encodeURIComponent(AGENT_ID || '')}`;
+  const wsUrl = `${getFleetServerUrl(envName).replace(/^http/, 'ws')}/ws/fleet?agent=${encodeURIComponent(activeAgentId() || '')}`;
   return new Promise((resolve, reject) => {
     let settled = false;
     const ws = new WebSocket(wsUrl);
@@ -645,9 +646,15 @@ function logEvent(event) {
 // Simple: $FLEET_ID env var = your identity. Spawned agents claim it with login().
 // No JSONL scanning, no state file reading, no guessing.
 const ALIVE_THRESHOLD_MS = 10 * 60 * 1000;
-let AGENT_ID = process.env.FLEET_ID || null;
+let BASE_AGENT_ID = process.env.FLEET_ID || null;
 const PARENT_AGENT_ID = process.env.FLEET_ID || null;
-let NATIVE_CHILD_BINDING = null;
+const TOOL_IDENTITY = new AsyncLocalStorage();
+function activeAgentId() {
+  return TOOL_IDENTITY.getStore()?.agentId || BASE_AGENT_ID;
+}
+function activeNativeBinding() {
+  return TOOL_IDENTITY.getStore()?.nativeBinding || null;
+}
 // Ref tokens created by tlda_highlight — keyed by «annotation:label» token
 const _refTokens = new Map();
 
@@ -989,7 +996,7 @@ function now() {
 }
 
 function requireManager() {
-  if (!AGENT_ID) return 'Cannot identify caller — no session ID detected.';
+  if (!activeAgentId()) return 'Cannot identify caller — no session ID detected.';
   return null; // No permission gating — any agent can do anything
 }
 
@@ -1173,13 +1180,13 @@ function postMessage(to, from, text, metadata) {
 }
 
 export function startOperationMailbox(kind, meta = {}, options = {}) {
-  if (!AGENT_ID) return null;
+  if (!activeAgentId()) return null;
   const id = `mailbox:mcp-${kind}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
   const now = Date.now();
   return {
     id,
     kind,
-    ownerId: AGENT_ID,
+    ownerId: activeAgentId(),
     startedAt: now,
     deadlineAt: now + (options.timeoutMs || 5 * 60_000),
     meta,
@@ -1206,7 +1213,7 @@ export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) 
   const text = status === 'completed'
     ? `**${mailbox.kind} mailbox ${mailbox.id} complete**: ${label}\n\n${detail.message || detail.url}`
     : `**${mailbox.kind} mailbox ${mailbox.id} failed**: ${label} — ${detail.error || detail.reason || 'failed'}`;
-  postMessage(mailbox.ownerId, AGENT_ID, text, {
+  postMessage(mailbox.ownerId, activeAgentId(), text, {
     metadata: {
       type: 'mailbox_complete',
       mailbox_id: mailbox.id,
@@ -1738,7 +1745,7 @@ export async function resolveInboxMessage(message, resolvers) {
   const ctx = message.metadata?.context;
   const docHint = formatViewingHint(ctx);
   const { text: chipResolvedText, images: chipImages } = await resolvers.resolveChipTokens(message.text, message.metadata);
-  const recipientId = message.to || AGENT_ID;
+  const recipientId = message.to || activeAgentId();
   let renderedPendingPlaceholder = false;
   const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
     const ref = recipientAttachmentRef(message.metadata, recipientId, idx);
@@ -1988,18 +1995,51 @@ export function inboxViewForArgs(args = {}) {
   return normalizeInboxView(args?.view || 'default');
 }
 
-async function nativeChildBinding(threadId) {
-  if (!threadId || !PARENT_AGENT_ID) return null;
-  const res = await fleetFetch(
-    `${TLDA_FLEET_SERVER}/api/fleet/native-subagent-binding/${encodeURIComponent(PARENT_AGENT_ID)}/${encodeURIComponent(threadId)}`,
-    { signal: AbortSignal.timeout(2000) },
-  );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`native child identity lookup returned HTTP ${res.status}`);
-  return await res.json();
+async function nativeChildBinding(threadId, toolUseId, { retry = false } = {}) {
+  if ((!threadId && !toolUseId) || !PARENT_AGENT_ID) return null;
+  const selectors = [
+    threadId ? { value: threadId, kind: 'native' } : null,
+    toolUseId ? { value: toolUseId, kind: 'tool-use' } : null,
+  ].filter(Boolean);
+  const deadline = Date.now() + (retry && toolUseId ? 2000 : 0);
+  do {
+    for (const selector of selectors) {
+      const query = selector.kind === 'tool-use' ? '?selector=tool-use' : '';
+      const res = await fleetFetch(
+        `${TLDA_FLEET_SERVER}/api/fleet/native-subagent-binding/${encodeURIComponent(PARENT_AGENT_ID)}/${encodeURIComponent(selector.value)}${query}`,
+        { signal: AbortSignal.timeout(2000) },
+      );
+      if (res.status === 404) continue;
+      if (!res.ok) throw new Error(`native child identity lookup returned HTTP ${res.status}`);
+      return await res.json();
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (true);
 }
 
 export async function handleFleetTool(name, args, context = {}) {
+  if (TOOL_IDENTITY.getStore()) return handleFleetToolWithIdentity(name, args, context);
+  let nativeBinding = null;
+  try {
+    nativeBinding = await nativeChildBinding(
+      context.threadId,
+      context.toolUseId,
+      { retry: name === 'login' },
+    );
+  } catch (error) {
+    if (name === 'login') {
+      return { content: [{ type: 'text', text: `Login could not resolve this native thread's fleet identity: ${error.message}` }], isError: true };
+    }
+    throw error;
+  }
+  return TOOL_IDENTITY.run({
+    agentId: nativeBinding?.child_agent_id || BASE_AGENT_ID,
+    nativeBinding,
+  }, () => handleFleetToolWithIdentity(name, args, context));
+}
+
+async function handleFleetToolWithIdentity(name, args, context = {}) {
   const requestedEnv = normalizeEnvArg(args);
   if (requestedEnv && ENV_SCOPED_TOOL_NAMES.has(name) && !_activeToolEnv) {
     const scopedArgs = { ...args };
@@ -2028,19 +2068,14 @@ export async function handleFleetTool(name, args, context = {}) {
       return { content: [{ type: 'text', text: 'login() takes no arguments; this process must get its fleet identity from FLEET_ID.' }], isError: true };
     }
     const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
-    let nativeBinding = null;
-    try {
-      nativeBinding = await nativeChildBinding(context.threadId);
-    } catch (error) {
-      return { content: [{ type: 'text', text: `Login could not resolve this Codex thread's fleet identity: ${error.message}` }], isError: true };
-    }
+    const nativeBinding = activeNativeBinding();
     const shellId = nativeBinding?.child_agent_id || process.env.FLEET_ID || null;
     const boundFleetId = shellId;
     if (boundFleetId && shellId !== boundFleetId) {
       return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };
     }
-    if (AGENT_ID && shellId !== AGENT_ID && !nativeBinding) {
-      return { content: [{ type: 'text', text: `Login rejected: session already bound to ${AGENT_ID}, cannot relogin as ${shellId}.` }], isError: true };
+    if (activeAgentId() && shellId !== activeAgentId() && !nativeBinding) {
+      return { content: [{ type: 'text', text: `Login rejected: session already bound to ${activeAgentId()}, cannot relogin as ${shellId}.` }], isError: true };
     }
     let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
     if (!detectedTmux && process.env.TMUX) {
@@ -2087,14 +2122,16 @@ export async function handleFleetTool(name, args, context = {}) {
       return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
     }
 
-    if (!_channelRWS?.connected) {
+    if (!nativeBinding && !_channelRWS?.connected) {
       startChannelWS({ bootstrap: true });
       const deadline = Date.now() + 2000;
       while (!_channelRWS?.connected && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
-    const serverResult = await sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })?.catch(e => ({ error: e.message }));
+    const serverResult = nativeBinding
+      ? { agent: { id: shellId, friendly_name: nativeBinding.child_name } }
+      : await sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: [
         localMarker({}),
@@ -2114,9 +2151,7 @@ export async function handleFleetTool(name, args, context = {}) {
         'Login rejected by server: no fleet identity returned.',
       ].join('\n') }], isError: true };
     }
-    AGENT_ID = loggedInAgentId;
-    NATIVE_CHILD_BINDING = nativeBinding;
-    if (nativeBinding && _channelRWS) _channelRWS.reconnect();
+    if (!nativeBinding) BASE_AGENT_ID = loggedInAgentId;
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
     });
@@ -2162,7 +2197,7 @@ export async function handleFleetTool(name, args, context = {}) {
 
   async function getRoster(targetAgentId) {
     const rows = await Promise.all([
-      resolveAgent(AGENT_ID).catch(() => null),
+      resolveAgent(activeAgentId()).catch(() => null),
       resolveAgent(targetAgentId).catch(() => null),
     ]);
     return rows.filter(Boolean);
@@ -2185,7 +2220,7 @@ export async function handleFleetTool(name, args, context = {}) {
   }
 
   function barePathPreserverForRecipients(agents, recipients, agentCwd) {
-    const sender = agents.find(a => a.id === AGENT_ID) || null;
+    const sender = agents.find(a => a.id === activeAgentId()) || null;
     const senderMachine = agentMachineId(sender) || process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
     if (!senderMachine || !recipients.length) return null;
     const recipientAgents = recipients.map(id => agents.find(a => agentMatches(a, id)));
@@ -2223,7 +2258,7 @@ export async function handleFleetTool(name, args, context = {}) {
 
   async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
     const agents = await getRoster(targetAgentId);
-    const fromAgent = agents.find(a => a.id === AGENT_ID) || { id: AGENT_ID, cwd: getAgentCwd() };
+    const fromAgent = agents.find(a => a.id === activeAgentId()) || { id: activeAgentId(), cwd: getAgentCwd() };
     const toAgent = agents.find(a => agentMatches(a, targetAgentId));
     if (!toAgent) return null;
     const block = crossLaneBlock({ fromAgent, toAgent, action, message, directReply });
@@ -2234,7 +2269,7 @@ export async function handleFleetTool(name, args, context = {}) {
 
   // ---- delegate ----
   if (name === 'delegate') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Cannot delegate: not logged in. Call login() first.' }], isError: true };
     if (args.help) {
       const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
       const profiles = configuredSpawnProfileNames();
@@ -2303,9 +2338,9 @@ export async function handleFleetTool(name, args, context = {}) {
         harnessKind,
       });
 
-      const operationId = args.operation_id || `${AGENT_ID}:mcp-delegate:${crypto.randomUUID()}`;
+      const operationId = args.operation_id || `${activeAgentId()}:mcp-delegate:${crypto.randomUUID()}`;
       const delegateBody = {
-        from: AGENT_ID,
+        from: activeAgentId(),
         agent: targetAgent,
         task_id: args.task_id || undefined,
         description,
@@ -2400,12 +2435,12 @@ export async function handleFleetTool(name, args, context = {}) {
   // ==== Messaging ====
 
   if (name === 'dismiss') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Cannot dismiss: not logged in. Call login() first.' }], isError: true };
     const reason = (args.reason || '').trim();
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
     const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
     try {
-      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/education/dismiss/${encodeURIComponent(AGENT_ID)}`, {
+      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/education/dismiss/${encodeURIComponent(activeAgentId())}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason, ...(skills ? { skills } : {}) }),
@@ -2427,7 +2462,7 @@ export async function handleFleetTool(name, args, context = {}) {
   }
 
   if (name === 'chat') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Cannot send chat: not logged in. Call login() first.' }], isError: true };
 
     // Resolve the message body — either an inline `message` string or a
     // `file`+`selector` markdown reference (extracted agent-side).
@@ -2474,7 +2509,7 @@ export async function handleFleetTool(name, args, context = {}) {
           ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, activeFleetServerUrl()));
         }
         const inlineMarkdownFileIssues = checkSharedMarkdownAttachments(inlineAttachments, macros);
-        const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
+        const body = { from: activeAgentId(), message: resolvedMessage, event_id: args.amend_id };
         if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
         if (source) body.source = source;
         const data = await mcpFleetTransport.durable('amend', body);
@@ -2524,12 +2559,12 @@ export async function handleFleetTool(name, args, context = {}) {
     // { to: "fleet:<id>" } case).
     const bareId = filterAst.t === 'lit' && /^fleet:/.test(filterAst.v) ? filterAst.v : null;
     if (bareId) {
-      if (bareId !== AGENT_ID) recipients.push(bareId);
+      if (bareId !== activeAgentId()) recipients.push(bareId);
     } else {
       try {
         const resolved = await mcpFleetTransport.ephemeral('resolve-chat-recipients', {
           to: args.to,
-          from: AGENT_ID,
+          from: activeAgentId(),
         });
         recipients = resolved?.recipients || [];
       } catch (e) {
@@ -2556,7 +2591,7 @@ export async function handleFleetTool(name, args, context = {}) {
     }
     const laneBlocks = [];
     for (const to of recipients) {
-      const directReply = await recentDirectInbound(AGENT_ID, to);
+      const directReply = await recentDirectInbound(activeAgentId(), to);
       const laneBlock = await requireInLaneAction(to, {
         action: 'chat',
         message,
@@ -2585,7 +2620,7 @@ export async function handleFleetTool(name, args, context = {}) {
       if (!agents.length && recipients.length) {
         try {
           agents = (await mcpFleetTransport.ephemeral('store-agents-by-ids', {
-            ids: [AGENT_ID, ...recipients],
+            ids: [activeAgentId(), ...recipients],
           })) || [];
         } catch (e) {
           process.stderr.write(`[fleet] bounded agent fetch failed for local-path preservation: ${e.message}\n`);
@@ -2641,7 +2676,7 @@ export async function handleFleetTool(name, args, context = {}) {
     let lastEventId = null;
     const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
     for (const to of recipients) {
-      const chatBody = { message: resolvedMessage, to, from: AGENT_ID, metadata: { priority }, _tempId: `${AGENT_ID}:mcp-chat:${crypto.randomUUID()}` };
+      const chatBody = { message: resolvedMessage, to, from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
       if (refAttachments.length) chatBody.attachments = refAttachments;
       if (docContext) chatBody.context = docContext;
@@ -2734,13 +2769,13 @@ export async function handleFleetTool(name, args, context = {}) {
   // browser-side fleet chat opens a live TerminalCard mirroring this agent's
   // tmux session.
   if (name === 'request_terminal') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const { reason } = args || {};
     try {
       const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/terminal-card`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: AGENT_ID, reason: reason || null }),
+        body: JSON.stringify({ from: activeAgentId(), reason: reason || null }),
         signal: AbortSignal.timeout(3000),
       });
       const data = await res.json().catch(() => ({}));
@@ -2755,14 +2790,14 @@ export async function handleFleetTool(name, args, context = {}) {
 
   // ---- notify ----
   if (name === 'notify') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const action = args?.action || 'raise';
     if (action === 'dismiss' && !args?.id) return { content: [{ type: 'text', text: 'notify dismiss requires `id`.' }], isError: true };
     if (action !== 'dismiss' && !args?.title) return { content: [{ type: 'text', text: 'notify raise requires `title`.' }], isError: true };
     const item = action === 'dismiss' ? null : {
-      id: args.id || `${AGENT_ID}:${args.kind || 'info'}:${Date.now()}`,
+      id: args.id || `${activeAgentId()}:${args.kind || 'info'}:${Date.now()}`,
       kind: args.kind || 'info',
-      from: AGENT_ID,
+      from: activeAgentId(),
       title: args.title,
       body: args.body || '',
       actions: Array.isArray(args.actions) ? args.actions : [],
@@ -2916,14 +2951,14 @@ export async function handleFleetTool(name, args, context = {}) {
 
   // ---- report (QA-aware report gate) ----
   if (name === 'report') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
 
     const targetTaskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';
     let task = null;
     if (!targetTaskId) {
       let taskData;
       try {
-        taskData = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: true });
+        taskData = await mcpFleetTransport.ephemeral('my-task', { agent: activeAgentId(), peek: true });
       } catch (e) {
         return { content: [{ type: 'text', text: `Fleet transport failed before ACK. Active task lookup was not completed: ${e.message}` }], isError: true };
       }
@@ -2955,8 +2990,8 @@ export async function handleFleetTool(name, args, context = {}) {
         : '';
       const summaryHash = crypto.createHash('sha256').update(String(summary)).digest('hex').slice(0, 16);
       const reportTaskId = targetTaskId || task.id;
-      const operationId = args.operation_id || `${AGENT_ID}:mcp-report:${reportTaskId}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
-      const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
+      const operationId = args.operation_id || `${activeAgentId()}:mcp-report:${reportTaskId}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
+      const friendlyName = process.env.FLEET_NAME || activeAgentId().slice(0, 8);
 
       const docName = reportDocName(reportTaskId);
       let tldaMsg = '';
@@ -2964,7 +2999,7 @@ export async function handleFleetTool(name, args, context = {}) {
       let data;
       try {
         data = await mcpFleetTransport.durable('report-close', {
-          agent: AGENT_ID,
+          agent: activeAgentId(),
           task_id: reportTaskId,
           summary,
           close: closeRequested,
@@ -2992,13 +3027,13 @@ export async function handleFleetTool(name, args, context = {}) {
           server: activeStoreServerUrl(),
         });
         tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;
-        logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: reportTaskId, status: reportStatus });
+        logEvent({ type: 'report_share', agent: activeAgentId(), doc: docName, task_id: reportTaskId, status: reportStatus });
       } catch (e) {
         tldaMsg = `\n⚠ Report share to tlda failed (${e.message}) — report recorded in chat.`;
       }
 
-      if (closeCompleted) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: reportTaskId, description: taskDescription });
-      logEvent({ type: 'report', agent: AGENT_ID, task_id: reportTaskId, summary });
+      if (closeCompleted) logEvent({ type: 'task_done', agent: activeAgentId(), task_id: reportTaskId, description: taskDescription });
+      logEvent({ type: 'report', agent: activeAgentId(), task_id: reportTaskId, summary });
 
       let msg = data?.queued
         ? `Report queued durably for ${taskDescription}. Operation: ${data.operation_id || operationId}.`
@@ -3373,12 +3408,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
   // ---- inbox ----
   if (name === 'inbox') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const view = inboxViewForArgs(args);
 
     let data;
     try {
-      data = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: !!args?.peek });
+      data = await mcpFleetTransport.ephemeral('my-task', { agent: activeAgentId(), peek: !!args?.peek });
     } catch (e) {
       return { content: [{ type: 'text', text: `Fleet transport failed before ACK. This read was not completed: ${e.message}` }], isError: true };
     }
@@ -3392,18 +3427,18 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     if (!args?.peek && data.messages?.length) {
       try {
         await mcpFleetTransport.ephemeral('ack-inbox', {
-          agent: AGENT_ID,
+          agent: activeAgentId(),
           event_ids: data.messages.map(message => message.id),
         });
       } catch (e) {
         text += `\n\n⚠️ Inbox acknowledgement failed; these messages remain unread: ${e.message}`;
       }
     }
-    if (!args?.peek && NATIVE_CHILD_BINDING?.child_agent_id && PARENT_AGENT_ID) {
+    if (!args?.peek && activeNativeBinding()?.child_agent_id && PARENT_AGENT_ID) {
       try {
         await sendFleetRequestAttempt('native-subagent-notification-ack', {
           parent_agent_id: PARENT_AGENT_ID,
-          child_agent_id: NATIVE_CHILD_BINDING.child_agent_id,
+          child_agent_id: activeNativeBinding().child_agent_id,
         }, { deadlineMs: 5000 });
       } catch (e) {
         text += `\n\n⚠️ Parent fallback acknowledgement failed; these messages may be offered again: ${e.message}`;
@@ -3414,26 +3449,26 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
   // ---- configuration ----
   if (name === 'configuration') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     if (args.project) {
       return { content: [{ type: 'text', text: 'Document preamble configuration requires the full document MCP surface.' }], isError: true };
     }
-    const agent = typeof args?.agent === 'string' && args.agent.trim() ? args.agent.trim() : AGENT_ID;
+    const agent = typeof args?.agent === 'string' && args.agent.trim() ? args.agent.trim() : activeAgentId();
     const changes = [];
     try {
       if (args.status != null || args.tag != null) {
-        if (agent !== AGENT_ID) return { content: [{ type: 'text', text: 'Notification status can only be set for the calling agent.' }], isError: true };
+        if (agent !== activeAgentId()) return { content: [{ type: 'text', text: 'Notification status can only be set for the calling agent.' }], isError: true };
         const status = validateInboxStatus(args.status);
         if (!status) return { content: [{ type: 'text', text: `Bad inbox status: ${args.status || '(missing)'}. Use one of: ${INBOX_STATUSES.join(', ')}.` }], isError: true };
         const tag = typeof args.tag === 'string' && args.tag.trim() ? args.tag.trim().slice(0, 80) : null;
         _inboxStatus = status;
-        await mcpFleetTransport.durable('inbox-status', { agent: AGENT_ID, status, tag });
+        await mcpFleetTransport.durable('inbox-status', { agent: activeAgentId(), status, tag });
         changes.push(`status=${status}${tag ? ` (${tag})` : ''}`);
       }
       if (args.channel != null) {
         const channel = validateDeliveryChannel(args.channel);
         if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args.channel}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
-        const data = await mcpFleetTransport.durable('delivery-channel', { caller: AGENT_ID, agent, channel });
+        const data = await mcpFleetTransport.durable('delivery-channel', { caller: activeAgentId(), agent, channel });
         if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
         changes.push(`channel=${channel}`);
       }
@@ -3488,7 +3523,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
   // ---- search ----
   if (name === 'search') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const rawQuery = args.query;
     if (!rawQuery || rawQuery.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
@@ -3517,7 +3552,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const searchParams = {
         query,
         limit,
-        me: AGENT_ID,
+        me: activeAgentId(),
         role: args.role || searchFilters.role || undefined,
         since: sinceTs,
         before: beforeTs,
@@ -3714,7 +3749,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     if (contextWindow > 0) filters.push(`context=${contextWindow}`);
     logEvent({
       type: 'search',
-      from: AGENT_ID || 'unknown',
+      from: activeAgentId() || 'unknown',
       query: rawQuery,
       filters: filters.join(', '),
       resultCount: results.length,
@@ -4209,14 +4244,14 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   // ==== Utilities ====
 
   if (name === 'subscription') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
       const operation = args.operation || 'list';
       if (operation === 'create') {
         if (!args.query) return { content: [{ type: 'text', text: 'subscription create requires query.' }], isError: true };
         const data = await mcpFleetTransport.durable('subscribe', {
-          caller: AGENT_ID,
-          target: args.target || AGENT_ID,
+          caller: activeAgentId(),
+          target: args.target || activeAgentId(),
           query: args.query,
           notification_policy: args.policy || 'immediate',
         });
@@ -4225,11 +4260,11 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }
       if (operation === 'remove') {
         if (args.id == null) return { content: [{ type: 'text', text: 'subscription remove requires id.' }], isError: true };
-        const data = await mcpFleetTransport.durable('unsubscribe', { caller: AGENT_ID, subscription_id: args.id });
+        const data = await mcpFleetTransport.durable('unsubscribe', { caller: activeAgentId(), subscription_id: args.id });
         if (data?.error) return { content: [{ type: 'text', text: `subscription remove failed: ${data.error}` }], isError: true };
         return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
       }
-      const rows = await mcpFleetTransport.ephemeral('subscriptions', { caller: AGENT_ID, target: args.target || AGENT_ID });
+      const rows = await mcpFleetTransport.ephemeral('subscriptions', { caller: activeAgentId(), target: args.target || activeAgentId() });
       if (rows?.error) return { content: [{ type: 'text', text: `subscription list failed: ${rows.error}` }], isError: true };
       if (!rows.length) return { content: [{ type: 'text', text: 'No subscriptions.' }] };
       return { content: [{ type: 'text', text: rows.map(r => `#${r.subscription_id} ${r.owner}: ${r.query} (${r.notification_policy})`).join('\n') }] };
@@ -4263,7 +4298,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let timerEventId = null;
     try {
       timerEventId = timerSetEventIdFromAck(await mcpFleetTransport.durable('timer-set', timerSetMessage({
-        agentId: AGENT_ID,
+        agentId: activeAgentId(),
         message,
         fireAt,
         to: args.to,
@@ -4326,7 +4361,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       end: args.end,
     });
 
-    logEvent({ type: 'playback_record', from: AGENT_ID || 'unknown', playbackId: result.id, eventCount: result.event_count, title: args.title });
+    logEvent({ type: 'playback_record', from: activeAgentId() || 'unknown', playbackId: result.id, eventCount: result.event_count, title: args.title });
 
     return { content: [{ type: 'text', text: `Playback created: ${result.id}\n\nTitle: ${result.title}\nEvents: ${result.event_count}\nDuration: ${(result.duration_ms / 1000).toFixed(1)}s\nSources: ${result.sources}` }] };
   }
@@ -4482,7 +4517,7 @@ function scheduleFleetTransportFlush(delayMs = 1000) {
   }, Math.max(0, delayMs));
 }
 
-async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = null, agentId = AGENT_ID } = {}) {
+async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = null, agentId = activeAgentId() } = {}) {
   if (!agentId) return null;
   if (_activeToolEnv) return null;
   if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
@@ -4529,7 +4564,7 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 }
 
 async function sendDurableFleet(type, params = {}, opts = {}) {
-  const transportAgentId = opts.agentId || AGENT_ID;
+  const transportAgentId = opts.agentId || activeAgentId();
   if (!transportAgentId) throw new Error(`cannot send durable ${type}: no transport identity`);
   if (_activeToolEnv) return sendFleetRequestAttempt(type, params, opts);
   const outbox = getFleetTransportOutbox(transportAgentId);
@@ -4569,7 +4604,7 @@ const mcpFleetTransport = createFleetOperationTransport({
       idleTimeoutMs: Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : null,
     }),
   sendDurable: sendDurableFleet,
-  resolveSender: () => AGENT_ID,
+  resolveSender: () => activeAgentId(),
   resolveDestination: ({ payload }) => (
     payload.to || payload.agent || payload.agent_id || payload.target || payload.filter || null
   ),
@@ -4581,7 +4616,7 @@ const mcpFleetTransport = createFleetOperationTransport({
 })
 
 async function flushFleetTransportOpportunistically(toolName) {
-  if (!AGENT_ID || toolName === 'login') return;
+  if (!activeAgentId() || toolName === 'login') return;
   try {
     await flushFleetTransport({ limit: 20, deadlineMs: 1500 });
   } catch (e) {
@@ -4592,12 +4627,12 @@ async function flushFleetTransportOpportunistically(toolName) {
 let _channelHasOpened = false;
 
 function startChannelWS({ bootstrap = false } = {}) {
-  if (!AGENT_ID && !bootstrap) return;
+  if (!activeAgentId() && !bootstrap) return;
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: () => AGENT_ID
-      ? `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`
+    url: () => activeAgentId()
+      ? `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(activeAgentId())}`
       : `${TLDA_FLEET_WS_SERVER}/ws/fleet`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
@@ -4607,9 +4642,9 @@ function startChannelWS({ bootstrap = false } = {}) {
       _reconnectBuffer.resolveConnected();
       const reconnect = _channelHasOpened;
       _channelHasOpened = true;
-      if (!AGENT_ID || !reconnect) return;
+      if (!activeAgentId() || !reconnect) return;
       const loginBody = {
-        agent_id: AGENT_ID,
+        agent_id: activeAgentId(),
         session_id: currentTransportSessionId() || undefined,
         tmux_session: _tmuxSession || undefined,
         cwd: getAgentCwd() || process.cwd(),
@@ -4619,7 +4654,7 @@ function startChannelWS({ bootstrap = false } = {}) {
       mcpFleetTransport.durable('login', loginBody)
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
-      process.stderr.write(`[fleet-channel] re-logged-in ${AGENT_ID}\n`);
+      process.stderr.write(`[fleet-channel] re-logged-in ${activeAgentId()}\n`);
     },
     onActivity: () => {
       resetWsRequestIdleTimers(_wsPending);
@@ -4657,13 +4692,13 @@ let _lastStatusReport = 0;
 const STATUS_DEBOUNCE_MS = 2000;
 
 function reportStatus(state, toolName) {
-  if (!AGENT_ID) return;
+  if (!activeAgentId()) return;
   const now = Date.now();
   if (now - _lastStatusReport < STATUS_DEBOUNCE_MS) return;
   _lastStatusReport = now;
 
   mcpFleetTransport.ephemeral('agent-status', {
-    agentId: AGENT_ID,
+    agentId: activeAgentId(),
     state,
     tool: toolName || null,
     ts: new Date().toISOString(),
@@ -4683,5 +4718,5 @@ if (!_tmuxSession) {
 
 export function initFleet(serverInstance) {
   server = serverInstance;
-  if (AGENT_ID) startChannelWS();
+  if (activeAgentId()) startChannelWS();
 }

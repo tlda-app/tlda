@@ -110,6 +110,21 @@ export function nativeSubagentRoutesFromWatchers(watchers, parentAgentId, childA
   return routes
 }
 
+export function nativeSubagentRouteForToolUseFromWatchers(watchers, parentAgentId, toolUseId) {
+  if (!toolUseId) return null
+  for (const pw of watchers) {
+    const native = pw.nativeSubagent
+    if (!native?.agentId || native.parentAgentId !== parentAgentId) continue
+    if (!pw.nativeToolUseIds?.has(toolUseId)) continue
+    return {
+      child_agent_id: native.agentId,
+      native_agent_id: native.harnessChildId,
+      harness: native.harnessKind,
+    }
+  }
+  return null
+}
+
 export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
   if (!Number.isFinite(startOffset) || !Number.isFinite(liveOffset)) return null
   if (!Number.isFinite(thresholdBytes) || thresholdBytes < 0) return null
@@ -1483,6 +1498,13 @@ export function createJsonlIngestor({
     let delivered = true
     const ev = harness.parseRecord ? harness.parseRecord(record) : null
     if (ev) {
+      if (pw.nativeSubagent && ev.blocks) {
+        for (const block of ev.blocks) {
+          if (block.type !== 'tool_use' || !block.id) continue
+          if (!pw.nativeToolUseIds) pw.nativeToolUseIds = new Set()
+          pw.nativeToolUseIds.add(block.id)
+        }
+      }
       const activity = extractActivityEvents([ev])
       if (activity.length > 0) {
         log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(pw.jsonlPath)}`)
@@ -1504,6 +1526,10 @@ export function createJsonlIngestor({
 
   function nativeSubagentRoutes(parentAgentId, childAgentIds = []) {
     return nativeSubagentRoutesFromWatchers(pathWatchers.values(), parentAgentId, childAgentIds)
+  }
+
+  function nativeSubagentRouteForToolUse(parentAgentId, toolUseId) {
+    return nativeSubagentRouteForToolUseFromWatchers(pathWatchers.values(), parentAgentId, toolUseId)
   }
 
   function processQualificationEvent(agentId, ev) {
@@ -1661,6 +1687,7 @@ export function createJsonlIngestor({
     resumeAfterServerReady: resumeJsonlIngesterAfterServerReady,
     retryPendingNativeSubagents,
     nativeSubagentRoutes,
+    nativeSubagentRouteForToolUse,
     resolveEditor,
     hasWatcherForAgent,
     teardown,

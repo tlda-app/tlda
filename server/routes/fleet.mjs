@@ -268,7 +268,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         parent_agent_id: parentAgentId,
         child_agent_ids: [],
       })
-      const route = (routes || []).find(item => item.native_agent_id === req.params.nativeAgentId)
+      let route = (routes || []).find(item => item.native_agent_id === req.params.nativeAgentId)
+      if (!route && req.query.selector === 'tool-use') {
+        route = await sendDaemonEphemeral(seat.daemon_key, 'native-subagent-route-for-tool-use', {
+          parent_agent_id: parentAgentId,
+          tool_use_id: req.params.nativeAgentId,
+        })
+      }
       if (!route) {
         res.status(404).json({ ok: false, error: 'native child binding not found' })
         return

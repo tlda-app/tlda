@@ -985,6 +985,8 @@ machineRpc.register({
   'resolve-agent-route': resolveAgentRoute,
   'native-subagent-routes': ({ parent_agent_id, child_agent_ids }) =>
     jsonlIngestor.nativeSubagentRoutes(parent_agent_id, child_agent_ids),
+  'native-subagent-route-for-tool-use': ({ parent_agent_id, tool_use_id }) =>
+    jsonlIngestor.nativeSubagentRouteForToolUse(parent_agent_id, tool_use_id),
   ...terminalRpc.handlers,
   'kick': rpcKick,
   ...agentLauncher.handlers,
