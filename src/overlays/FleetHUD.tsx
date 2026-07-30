@@ -37,7 +37,13 @@ import { getEditorWMCore } from '../wm/editor-wm'
 import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../wm/editor-host-bridge'
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
-import { consumeFleetLayoutSelectionIntent, enterFleetLayoutMode, exitFleetLayoutMode, fleetLayoutActiveRef } from './fleet-layout-mode'
+import {
+  consumeFleetLayoutSelectionIntent,
+  enterFleetLayoutMode,
+  exitFleetLayoutMode,
+  fleetLayoutActiveRef,
+  registerFleetLayoutViewportSync,
+} from './fleet-layout-mode'
 import './FleetHUD.css'
 
 declare global {
@@ -306,6 +312,10 @@ export function FleetHUD({
     ensureFleetHudLayers(wm)
     return wm
   }, [mainEditor])
+
+  useEffect(() => registerFleetLayoutViewportSync(mainEditor, () => {
+    syncCanvasClipPanelViewportCamera(viewportId, readFleetHudOverlayLayer(hudWm).camera)
+  }), [hudWm, mainEditor, viewportId])
 
   const reconcileLayoutActiveForSelection = useCallback((editor: Editor, selectedShapeIds: readonly TLShapeId[]) => {
     const selectedFleetIds = selectedShapeIds.filter(id => {

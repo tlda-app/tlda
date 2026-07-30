@@ -1,6 +1,20 @@
+import type { Editor } from 'tldraw'
+
 export const fleetLayoutActiveRef = { current: false }
 
 let fleetLayoutSelectionIntentId: string | null = null
+const fleetLayoutViewportSync = new WeakMap<Editor, () => void>()
+
+export function registerFleetLayoutViewportSync(editor: Editor, sync: () => void) {
+  fleetLayoutViewportSync.set(editor, sync)
+  return () => {
+    if (fleetLayoutViewportSync.get(editor) === sync) fleetLayoutViewportSync.delete(editor)
+  }
+}
+
+export function syncFleetLayoutSelectionViewport(editor: Editor) {
+  fleetLayoutViewportSync.get(editor)?.()
+}
 
 export function withFleetLayoutSelectionIntent<T>(shapeId: string, fn: () => T): T {
   fleetLayoutSelectionIntentId = shapeId

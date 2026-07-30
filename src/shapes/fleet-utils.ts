@@ -23,7 +23,11 @@ import {
 } from './fleet-layout-context'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import { planFleetLayoutShapes, type FleetLayoutVariant } from './fleet-layout-plan'
-import { enterFleetLayoutMode, withFleetLayoutSelectionIntent } from '../overlays/fleet-layout-mode'
+import {
+  enterFleetLayoutMode,
+  syncFleetLayoutSelectionViewport,
+  withFleetLayoutSelectionIntent,
+} from '../overlays/fleet-layout-mode'
 
 export {
   FLEET_INTERACTION_SHAPE_SELECTOR,
@@ -258,6 +262,7 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
 /** Enter TLDraw select mode for direct resize/move of a fleet panel. */
 export function selectFleetShapeForLayout(editor: Editor, shape: TLShape) {
   if (shape.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+  syncFleetLayoutSelectionViewport(editor)
   withFleetLayoutSelectionIntent(shape.id, () => {
     editor.setCurrentTool('select')
     editor.select(shape.id)
