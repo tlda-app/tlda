@@ -3529,15 +3529,17 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const logEl = chatLogEl
     if (!logEl) return
-    let showTimer: ReturnType<typeof setTimeout> | null = null
     function onNickOver(e: MouseEvent) {
+      if (activeChatPillDragRef.current) return
       const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
       if (!nick) return
       const agentId = nick.dataset.agentId
       if (!agentId) return
       if (skillHideTimerRef.current) { clearTimeout(skillHideTimerRef.current); skillHideTimerRef.current = null }
-      if (showTimer) clearTimeout(showTimer)
-      showTimer = setTimeout(() => {
+      if (skillShowTimerRef.current) clearTimeout(skillShowTimerRef.current)
+      skillShowTimerRef.current = setTimeout(() => {
+        skillShowTimerRef.current = null
+        if (activeChatPillDragRef.current) return
         if (!nick.matches(':hover')) return
         const r = nick.getBoundingClientRect()
         setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })
@@ -3545,13 +3547,13 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     function onNickOut(e: MouseEvent) {
       if (!(e.target as HTMLElement).closest?.('.agent-nick[data-agent-id]')) return
-      if (showTimer) { clearTimeout(showTimer); showTimer = null }
+      if (skillShowTimerRef.current) { clearTimeout(skillShowTimerRef.current); skillShowTimerRef.current = null }
       skillHideTimerRef.current = setTimeout(() => setSkillHover(null), 220)
     }
     logEl.addEventListener('mouseover', onNickOver)
     logEl.addEventListener('mouseout', onNickOut)
     return () => {
-      if (showTimer) clearTimeout(showTimer)
+      if (skillShowTimerRef.current) { clearTimeout(skillShowTimerRef.current); skillShowTimerRef.current = null }
       logEl.removeEventListener('mouseover', onNickOver)
       logEl.removeEventListener('mouseout', onNickOut)
     }
@@ -3729,6 +3731,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
+  const skillShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skillHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Hover panes are transient even when the element that opened them is replaced
   // before mouseout fires. Dismiss on the next action away from the source/pane,
@@ -5091,6 +5094,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
     _onMain?: boolean
   } | null>(null)
+  const activeChatPillDragRef = useRef(false)
+
+  const suppressSkillHoverDuringChatDrag = useCallback(() => {
+    activeChatPillDragRef.current = true
+    if (skillShowTimerRef.current) {
+      clearTimeout(skillShowTimerRef.current)
+      skillShowTimerRef.current = null
+    }
+    if (skillHideTimerRef.current) {
+      clearTimeout(skillHideTimerRef.current)
+      skillHideTimerRef.current = null
+    }
+    setSkillHover(null)
+  }, [])
+
+  const releaseSkillHoverAfterChatDrag = useCallback(() => {
+    activeChatPillDragRef.current = false
+  }, [])
 
   // Store agent name maps in refs so native listeners can access current values.
   const agentNamesRef = useRef(agentNames)
@@ -5406,6 +5427,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       e.stopImmediatePropagation()
       e.preventDefault()
+      suppressSkillHoverDuringChatDrag()
       dragRef.current = drag
       downTargetEl = target
 
@@ -5416,6 +5438,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     function cancelDrag() {
       const drag = dragRef.current
       dragRef.current = null
+      releaseSkillHoverAfterChatDrag()
       if (drag?.pillId) {
         markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
@@ -5589,6 +5612,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
+      releaseSkillHoverAfterChatDrag()
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
@@ -5631,7 +5655,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Delete any in-flight pill before releasing its coordinator handlers.
       if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
-  }, [chatLogEl, editor, viewportId, openMarkdownChipFromTarget])
+  }, [chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
