@@ -312,7 +312,7 @@ function searchQueryReadout(query: string) {
   const filters = parsed.filters
   const chips: string[] = []
   const structured: string[] = []
-  if (parsed.query) chips.push(`text:${parsed.query}`)
+  if (parsed.query) chips.push(`text:${displayImplicitAnd(parsed.query)}`)
   if (filters.filterExpression) structured.push(filters.filterExpression)
   else {
     if (filters.from) structured.push(`from:${filters.from}`)
@@ -327,6 +327,11 @@ function searchQueryReadout(query: string) {
   if (!parsed.query && filters.naturalAgentQuery) structured.push(`agent:${filters.naturalAgentQuery}`)
   if (structured.length > 0) chips.push(`filters:${structured.join(' ')}`)
   return chips
+}
+
+function displayImplicitAnd(query: string) {
+  const terms = query.trim().split(/\s+/).filter(Boolean)
+  return terms.length > 1 ? terms.join(' & ') : query.trim()
 }
 
 export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
@@ -475,8 +480,9 @@ function FleetSearchInner({ shape }: { shape: any }) {
     const { query: ftsQuery, filters } = parsed
     setQueryError(null)
 
-    // Need at least a query or a filter
-    if (!ftsQuery && !filters.from && !filters.to && !filters.agent && !filters.filterExpression) {
+    const serverFilters = buildFleetSearchFilters(filters)
+    const hasSearchInput = !!ftsQuery || Object.keys(serverFilters).some(key => key !== 'currentProject')
+    if (!hasSearchInput) {
       setResults([])
       setSearched(false)
       setLoading(false)
@@ -488,9 +494,8 @@ function FleetSearchInner({ shape }: { shape: any }) {
     closeChat()
 
     try {
-      const serverFilters = buildFleetSearchFilters(filters)
       const currentProject = new URLSearchParams(window.location.search).get('project') || undefined
-      const res = await searchFleet(ftsQuery || '', 100, { ...serverFilters, currentProject })
+      const res = await searchFleet(ftsQuery || '', 100, { ...serverFilters, currentProject, historyOnly: !ftsQuery })
       setResults(rankSearchResults(res, ftsQuery))
       setExpandedSearchGroups({})
     } finally {

@@ -14,7 +14,7 @@ export type SearchAutocompleteSuggestion = {
   id: string
   label: string
   insert: string
-  kind: 'field' | 'agent' | 'label' | 'type' | 'role' | 'time' | 'project'
+  kind: 'field' | 'agent' | 'label' | 'type' | 'role' | 'time' | 'project' | 'operator'
   detail?: string
 }
 
@@ -39,6 +39,9 @@ const TIME_KEYS = new Set(['since', 'before', 'after'])
 const EVENT_TYPES = ['chat', 'delegate', 'task_done', 'report', 'lifecycle']
 const ROLES = ['user', 'assistant', 'chat', 'delegate', 'task_done']
 const TIME_VALUES = ['today', 'yesterday', '1h', '4h', '1d', '1w']
+const LOGICAL_OPERATORS: SearchAutocompleteSuggestion[] = [
+  { id: 'operator:and', label: '&', insert: '& ', kind: 'operator', detail: 'AND' },
+]
 
 export const SEARCH_AUTOCOMPLETE_EMPTY_TOKEN: SearchAutocompleteToken = {
   start: 0,
@@ -109,6 +112,13 @@ export function searchAutocompleteSuggestions(
   const suggestions: SearchAutocompleteSuggestion[] = []
 
   if (!token.key) {
+    if (hasCompletedOperandBefore(query, token.start)) {
+      for (const operator of LOGICAL_OPERATORS) {
+        if (!text || operator.label.startsWith(text)) {
+          suggestions.push(operator)
+        }
+      }
+    }
     for (const key of FIELD_KEYS) {
       const label = `${key}:`
       if (!text || label.startsWith(text)) {
@@ -162,14 +172,26 @@ function agentValueSuggestion(key: string, value: string, kind: 'agent' | 'label
 }
 
 function agentNames(agents: Array<{ id?: string; friendly_name?: string }>): string[] {
-  const names = new Set<string>()
+  const names = new Set<string>(['me'])
   for (const agent of agents) {
     const friendly = String(agent.friendly_name || '').trim()
     const id = String(agent.id || '').replace(/^fleet:/, '').trim()
     if (friendly) names.add(friendly)
     else if (id) names.add(id)
   }
-  return [...names].sort((a, b) => a.localeCompare(b))
+  return [...names].sort((a, b) => {
+    if (a === 'me') return -1
+    if (b === 'me') return 1
+    return a.localeCompare(b)
+  })
+}
+
+function hasCompletedOperandBefore(query: string, tokenStart: number) {
+  const prefix = query.slice(0, tokenStart).trim()
+  if (!prefix) return false
+  const last = prefix.match(/\S+$/)?.[0] || ''
+  if (!last || last === '&' || last.endsWith(':')) return false
+  return true
 }
 
 function agentLabels(agents: Array<{ labels?: string[] }>): string[] {

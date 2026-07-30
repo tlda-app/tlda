@@ -17,3 +17,9 @@ export function anyTermFtsQuery(query) {
     .map(term => `"${term}"`)
     .join(' OR ');
 }
+
+export function allTermFtsQuery(query) {
+  return ftsQueryTerms(query)
+    .map(term => `"${term}"`)
+    .join(' ');
+}

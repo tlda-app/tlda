@@ -46,7 +46,7 @@ test('default search returns naming chat for original failing query ahead of act
     timestamp: '2026-07-13T10:12:30.000Z',
     from: 'fleet:librarian',
     to: 'fleet:chief',
-    text: 'Current MCP names proposal: rename high-frequency real tools search_logs to search, get_thread to thread, task_list to tasks, fleet_table to roster.',
+    text: 'Current MCP names proposal: annoying name cleanup; rename high-frequency real tools search_logs to search, get_thread to thread, task_list to tasks, fleet_table to roster.',
   });
   insertEvent(store, {
     type: 'activity',
@@ -72,7 +72,7 @@ test('default search returns old naming chat before newer activity for handoff q
     timestamp: '2026-07-13T10:12:30.000Z',
     from: 'fleet:librarian',
     to: 'fleet:chief',
-    text: 'Current MCP names proposal: update task_list to tasks, hand off old search_logs to search, and reassign get_thread to thread.',
+    text: 'Current MCP names proposal: update task_list to tasks, hand off old search_logs to search, and reassign get_thread to chief thread.',
   });
   insertEvent(store, {
     type: 'activity',
@@ -134,11 +134,11 @@ test('legacy event search uses the same split corpus', () => withStore(store => 
     },
   });
 
-  const defaultResults = store.search('get_thread', { limit: 10 });
+  const defaultResults = store.searchAll('get_thread', { limit: 10 });
   assert.equal(defaultResults.length, 1);
   assert.equal(defaultResults[0].type, 'chat');
 
-  const activityResults = store.search('get_thread', { type: 'activity', limit: 10 });
+  const activityResults = store.searchAll('get_thread', { type: 'activity', limit: 10 });
   assert.equal(activityResults.length, 1);
   assert.equal(activityResults[0].type, 'activity');
 }));

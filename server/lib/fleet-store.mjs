@@ -23,7 +23,7 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
-import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
+import { allTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 // isFleetRosterAgent only. fleetRosterCategory went with the count's move:
 // the store no longer categorises an agent, it is told which ids are alive and
 // joins that against its own roster.
@@ -4650,7 +4650,7 @@ export class FleetStore {
 
   searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
     const terms = ftsQueryTerms(query);
-    const ftsQuery = anyTermFtsQuery(query);
+    const ftsQuery = allTermFtsQuery(query);
 
     // Normalize agent to array for multi-ID lineage search
     const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];

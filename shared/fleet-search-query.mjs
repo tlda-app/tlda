@@ -32,6 +32,7 @@ export function parseSearchQuery(raw) {
       continue
     }
 
+    if (token === '&') continue
     if (token === '<>' && queryParts.length > 0 && parts[i + 1]) {
       const left = queryParts.pop()
       filterParts.push(left, '<>', parts[++i])
