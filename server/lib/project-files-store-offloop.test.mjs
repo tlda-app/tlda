@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
 import {
   closeProjectStore,
+  checkpointProjectPartWritebackOffloop,
   createProject,
   deleteProject,
   initProjectStore,
@@ -96,6 +97,12 @@ test('project metadata reads and updates run through the project files worker', 
     await initProjectStore(root)
     createProject({ name: 'paper', title: 'Paper' })
     writeFileSync(join(root, 'paper', 'sync-snapshot.json'), '{}')
+    const checkpoint = await checkpointProjectPartWritebackOffloop({
+      filePath: join(root, 'paper', 'source', 'parts', 'note.md'),
+      content: '# Note\n',
+    })
+    assert.equal(checkpoint.ok, true)
+    assert.equal(readFileSync(join(root, 'paper', 'source', 'parts', 'note.md'), 'utf8'), '# Note\n')
     assert.equal((await readProject('paper')).title, 'Paper')
     assert.deepEqual((await listProjects()).map(project => project.name), ['paper'])
     assert.match((await readProjectMeta()).paper.lastAnnotated, /^\d{4}-\d{2}-\d{2}T/)

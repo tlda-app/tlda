@@ -486,6 +486,11 @@ export async function listDocumentAssociations(project, documents) {
   return projectFilesDb.documentAssociations(project, documents)
 }
 
+export async function checkpointProjectPartWritebackOffloop(payload) {
+  if (!projectFilesDb) throw new Error('Project store is not initialized')
+  return projectFilesDb.checkpointProjectPart({ payload })
+}
+
 export async function updateClientSourceManifest(name, sourceManifest) {
   const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)

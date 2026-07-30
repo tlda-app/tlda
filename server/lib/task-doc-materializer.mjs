@@ -35,6 +35,7 @@ export function createTaskDocMaterializer({
   writebackOptions = {},
   logger = console,
   git = runGit,
+  checkpoint = checkpointProjectPartWriteback,
 } = {}) {
   if (!fleetStore) throw new Error('task doc materializer requires fleetStore')
   const readProjects = projectsProvider || (
@@ -50,7 +51,7 @@ export function createTaskDocMaterializer({
     const changes = pending
     pending = []
     try {
-      const result = await materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider: readProjects, writebackOptions, logger, git })
+      const result = await materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider: readProjects, writebackOptions, logger, git, checkpoint })
       if (!result.ok) {
         logger.warn?.(`[task-doc] ${result.failures.length} writeback(s) did not land`)
       }
@@ -95,6 +96,7 @@ export async function materializeTaskDocs({
   taskTotal = null,
   logger = console,
   git = runGit,
+  checkpoint = checkpointProjectPartWriteback,
 } = {}) {
   const projectNameSet = projectNames == null
     ? null
@@ -159,7 +161,7 @@ export async function materializeTaskDocs({
     const project = grouped.projectMeta.get(projectKey) || changedProjects.get(projectKey) || projectMetaByName.get(projectKey)
     if (!project?.taskDocRoot) continue
     const isGlobalProjectDoc = globalProjectNameSet.has(projectKey)
-    const writeback = writeTaskDoc({
+    const writeback = await writeTaskDoc({
       filePath: join(project.taskDocRoot, TASK_DOC_FILENAME),
       root: project.taskDocRoot,
       id: TASK_DOC_PROJECT_ID,
@@ -169,6 +171,7 @@ export async function materializeTaskDocs({
       rowLimit: isGlobalProjectDoc ? rows.length : null,
       rowTotal: isGlobalProjectDoc ? totalTasks : null,
       writebackOptions,
+      checkpoint,
     })
     writeTaskDocManifest(project.taskDocRoot, {
       id: TASK_DOC_PROJECT_ID,
@@ -181,7 +184,7 @@ export async function materializeTaskDocs({
 
   if (writeGlobal) {
     mkdirSync(globalDir, { recursive: true })
-    const globalWriteback = writeGlobalTaskDoc(globalDir, tasks, { writebackOptions })
+    const globalWriteback = await writeGlobalTaskDoc(globalDir, tasks, { writebackOptions, checkpoint })
     writeTaskDocManifest(globalDir, { id: TASK_DOC_GLOBAL_ID, title: 'Fleet tasks', writeback: globalWriteback.writeback })
     touchedDirs.add(globalDir)
     writebacks.push({ ...globalWriteback, root: globalDir, scope: 'global', project: null })
@@ -271,7 +274,7 @@ function groupTasksByProject(tasks) {
   return { projects, projectMeta, exceptions }
 }
 
-function writeGlobalTaskDoc(root, tasks, { writebackOptions = {} } = {}) {
+async function writeGlobalTaskDoc(root, tasks, { writebackOptions = {}, checkpoint } = {}) {
   const filePath = join(root, TASK_DOC_FILENAME)
   const lines = [
     '---',
@@ -287,10 +290,11 @@ function writeGlobalTaskDoc(root, tasks, { writebackOptions = {} } = {}) {
   return writeIfChanged(filePath, lines.join('\n'), {
     part: () => findExistingPart(root, TASK_DOC_GLOBAL_ID),
     writebackOptions,
+    checkpoint,
   })
 }
 
-function writeTaskDoc({ filePath, root, id, title, rows, heading, rowLimit = null, rowTotal = null, writebackOptions = {} }) {
+async function writeTaskDoc({ filePath, root, id, title, rows, heading, rowLimit = null, rowTotal = null, writebackOptions = {}, checkpoint }) {
   const boundedNote = Number.isFinite(rowLimit) && Number.isFinite(rowTotal) && rowTotal > rowLimit
     ? [`Showing the ${rowLimit} most recently delegated active tasks of ${rowTotal} total.`, '']
     : []
@@ -309,6 +313,7 @@ function writeTaskDoc({ filePath, root, id, title, rows, heading, rowLimit = nul
   return writeIfChanged(filePath, lines.join('\n'), {
     part: () => findExistingPart(root, id),
     writebackOptions,
+    checkpoint,
   })
 }
 
@@ -481,13 +486,13 @@ function findExistingPart(root, id) {
   return readProjectPartsManifest(root).parts.find(part => part.id === id) || null
 }
 
-function writeIfChanged(filePath, content, { part = null, writebackOptions = {}, maxRetries = 1 } = {}) {
+async function writeIfChanged(filePath, content, { part = null, writebackOptions = {}, maxRetries = 1, checkpoint = checkpointProjectPartWriteback } = {}) {
   let lastResult = null
   let attempts = 0
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     attempts = attempt + 1
     const currentPart = typeof part === 'function' ? part() : part
-    const result = checkpointProjectPartWriteback({ filePath, content, part: currentPart, ...writebackOptions })
+    const result = await checkpoint({ filePath, content, part: currentPart, ...writebackOptions })
     lastResult = result
     if (result.ok) {
       return { ok: true, filePath, attempts: attempt + 1, writeback: result.writeback }

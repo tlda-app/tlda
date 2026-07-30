@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
 import { parseMarkdownPart } from '../../shared/project-parts.mjs'
-import { readProject, listProjects, projectPartsRoot } from './project-store.mjs'
+import { checkpointProjectPartWritebackOffloop, readProject, listProjects, projectPartsRoot } from './project-store.mjs'
 
 const execFileP = promisify(execFile)
 import {
@@ -15,7 +15,6 @@ import {
   upsertProjectPartsManifest,
 } from './project-parts-scanner.mjs'
 import {
-  checkpointProjectPartWriteback,
   mergeWritebackMetadata,
 } from './project-part-writeback.mjs'
 import { resolveContainedPath } from './path-containment.mjs'
@@ -95,10 +94,10 @@ export async function realizeProjectMarkdownArtifact({
   const body = stripMarkdownFrontmatter(source.markdown).trimStart()
   const content = artifactMarkdown({ id, title: artifactTitle, body })
 
-  const writebackResult = checkpointProjectPartWriteback({
+  const writebackResult = await checkpointProjectPartWritebackOffloop({
     filePath: localPath,
     content,
-    now,
+    nowValue: now(),
     ...writebackOptions,
   })
   const manifest = upsertArtifactManifest(root, {
@@ -181,11 +180,11 @@ export async function writeProjectMarkdownArtifact({
   const nextTitle = title || parsed.title || existing.title || 'Untitled artifact'
   const body = stripMarkdownFrontmatter(String(markdown)).trimStart()
   const content = artifactMarkdown({ id: existing.id, title: nextTitle, body })
-  const writebackResult = checkpointProjectPartWriteback({
+  const writebackResult = await checkpointProjectPartWritebackOffloop({
     filePath: localPath,
     content,
     part: existing,
-    now,
+    nowValue: now(),
     ...writebackOptions,
   })
   const updatedAt = now()

@@ -58,6 +58,7 @@ export class ProjectFilesStoreClient {
   replace(project, paths) { return this._call('replace', { project, paths }) }
   searchContent(query, options = {}) { return this._call('searchContent', { query, options }) }
   documentAssociations(project, documents) { return this._call('documentAssociations', { project, documents }) }
+  checkpointProjectPart(payload) { return this._call('checkpoint-project-part', payload) }
 
   async close() {
     if (this._closed) return

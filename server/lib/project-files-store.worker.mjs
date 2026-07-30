@@ -9,6 +9,7 @@ import winkIts from 'wink-nlp/src/its.js'
 
 import { normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import { resolveContainedPath } from './path-containment.mjs'
+import { checkpointProjectPartWriteback } from './project-part-writeback.mjs'
 
 const projectsDir = workerData.projectsDir
 const dataDir = join(projectsDir, '..', 'data')
@@ -310,6 +311,15 @@ function updateProject(projectName, updates) {
 }
 
 migrateLegacyClientSourceManifests()
+
+function checkpointProjectPart(payload) {
+  const { nowValue, ...options } = payload || {}
+  return checkpointProjectPartWriteback({
+    ...options,
+    ...(nowValue ? { now: () => nowValue } : {}),
+  })
+}
+
 parentPort.postMessage({ kind: 'ready' })
 
 parentPort.on('message', (message) => {
@@ -333,8 +343,10 @@ parentPort.on('message', (message) => {
               ? (replace(message.project, message.paths), true)
               : message.method === 'searchContent'
                 ? searchContent(message.query, message.options)
-                : message.method === 'documentAssociations'
+              : message.method === 'documentAssociations'
                   ? documentAssociations(message.project, message.documents)
+                  : message.method === 'checkpoint-project-part'
+                    ? checkpointProjectPart(message.payload)
                 : (() => { throw new Error(`unknown project-files method: ${message.method}`) })()
     parentPort.postMessage({ id: message.id, result })
   } catch (error) {

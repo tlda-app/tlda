@@ -34,6 +34,7 @@ import {
   beginProjectSourceTransaction,
   updateClientSourceManifest,
   sourceLifecycleStore,
+  checkpointProjectPartWritebackOffloop,
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
@@ -411,6 +412,7 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
       useProjectPartsRoot: true,
       writeGlobal: false,
       changes: [{ type: 'refresh', description: `refresh task doc for ${req.params.name}` }],
+      checkpoint: checkpointProjectPartWritebackOffloop,
     })
     const touched = result.touchedDirs?.includes(projectPartsRoot(req.params.name)) || false
     if (project.format === 'markdown') {
