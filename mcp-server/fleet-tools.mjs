@@ -426,11 +426,10 @@ const TLDA_FLEET_SERVER = getFleetServerUrl();
 const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
 let _activeToolEnv = null;
-let _fleetTransportDb = null;
-let _fleetTransportOutbox = null;
-let _fleetTransportAgentId = null;
-let _fleetTransportFlushTimer = null;
-let _fleetTransportFlushInFlight = null;
+const _fleetTransportDbs = new Map();
+const _fleetTransportOutboxes = new Map();
+const _fleetTransportFlushTimers = new Map();
+const _fleetTransportFlushesInFlight = new Map();
 const _fleetTransportRecoveredAgents = new Set();
 const WS_REQUEST_IDLE_MS = 45_000;
 
@@ -538,17 +537,14 @@ function fleetTransportOutboxPath(agentId) {
 
 function getFleetTransportOutbox(agentId) {
   if (!agentId) throw new Error('fleet transport outbox requires agent identity');
-  if (_fleetTransportOutbox) {
-    if (_fleetTransportAgentId !== agentId) {
-      throw new Error(`fleet transport process is already bound to ${_fleetTransportAgentId}`);
-    }
-    return _fleetTransportOutbox;
-  }
+  const existing = _fleetTransportOutboxes.get(agentId);
+  if (existing) return existing;
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  _fleetTransportDb = new Database(fleetTransportOutboxPath(agentId));
-  _fleetTransportOutbox = new FleetTransportOutbox(_fleetTransportDb);
-  _fleetTransportAgentId = agentId;
-  return _fleetTransportOutbox;
+  const db = new Database(fleetTransportOutboxPath(agentId));
+  const outbox = new FleetTransportOutbox(db);
+  _fleetTransportDbs.set(agentId, db);
+  _fleetTransportOutboxes.set(agentId, outbox);
+  return outbox;
 }
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
@@ -4507,20 +4503,23 @@ function currentTransportSessionId() {
   return CLAUDE_SESSION || process.env.CLAUDE_SESSION || null;
 }
 
-function scheduleFleetTransportFlush(delayMs = 1000) {
-  if (_fleetTransportFlushTimer) return;
-  _fleetTransportFlushTimer = setTimeout(() => {
-    _fleetTransportFlushTimer = null;
-    flushFleetTransport({ limit: 50 }).catch(e => {
+function scheduleFleetTransportFlush(delayMs = 1000, agentId = AGENT_ID) {
+  if (!agentId || _fleetTransportFlushTimers.has(agentId)) return;
+  const timer = setTimeout(() => {
+    _fleetTransportFlushTimers.delete(agentId);
+    flushFleetTransport({ limit: 50, agentId }).catch(e => {
       process.stderr.write(`[fleet-transport] scheduled flush failed: ${e.message}\n`);
     });
   }, Math.max(0, delayMs));
+  _fleetTransportFlushTimers.set(agentId, timer);
 }
 
 async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = null, agentId = activeAgentId() } = {}) {
   if (!agentId) return null;
   if (_activeToolEnv) return null;
-  if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
+  if (_fleetTransportFlushesInFlight.has(agentId) && !operationId) {
+    return _fleetTransportFlushesInFlight.get(agentId);
+  }
 
   const run = async () => {
     const outbox = getFleetTransportOutbox(agentId);
@@ -4544,12 +4543,12 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
           if (!operationId || row.operationId === operationId) targetResult = result;
         } else {
           const updated = outbox.markFailure(row.operationId, new Error('fleet WS send returned no result'), { retryable: true });
-          if (updated?.status === 'retrying') scheduleFleetTransportFlush(1000);
+          if (updated?.status === 'retrying') scheduleFleetTransportFlush(1000, agentId);
         }
       } catch (e) {
         const retryable = isRetryableTransportError(e);
         const updated = outbox.markFailure(row.operationId, e, { retryable });
-        if (retryable && updated?.status === 'retrying') scheduleFleetTransportFlush(1000);
+        if (retryable && updated?.status === 'retrying') scheduleFleetTransportFlush(1000, agentId);
         if (!retryable && operationId && row.operationId === operationId) throw e;
       }
     }
@@ -4557,10 +4556,11 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
   };
 
   if (operationId) return run();
-  _fleetTransportFlushInFlight = run().finally(() => {
-    _fleetTransportFlushInFlight = null;
+  const inFlight = run().finally(() => {
+    _fleetTransportFlushesInFlight.delete(agentId);
   });
-  return _fleetTransportFlushInFlight;
+  _fleetTransportFlushesInFlight.set(agentId, inFlight);
+  return inFlight;
 }
 
 async function sendDurableFleet(type, params = {}, opts = {}) {
@@ -4592,7 +4592,7 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
   if (latest?.status === 'failed' || latest?.status === 'dead') {
     throw new Error(latest.lastError || `durable ${type} ${latest.status}`);
   }
-  scheduleFleetTransportFlush(1000);
+  scheduleFleetTransportFlush(1000, transportAgentId);
   return { ok: true, queued: true, operation_id: operationId };
 }
 
