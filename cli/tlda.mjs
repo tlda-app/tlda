@@ -68,7 +68,7 @@ import {
 } from '../agent-launch/permission-ledger.mjs'
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
-import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 import { exactTmuxTarget, exactTmuxWindowTarget } from '../shared/tmux-target.mjs'
@@ -4307,6 +4307,53 @@ async function moveLocalAgentAddress(agentId, {
   }
 }
 
+export async function waitForMovedAgentRuntime(agentId, {
+  machineId,
+  envName,
+  timeoutMs = 60_000,
+  pollMs = 250,
+  configDir = CONFIG_DIR,
+  openMintStore = () => new MintStore(resolve(configDir, 'daemon-mints.sqlite')),
+  inspectRuntime = sessionRuntimeState,
+  sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms)),
+} = {}) {
+  const expectedDaemonKey = `${machineId}:${envName}`
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    const mintStore = openMintStore()
+    let facts
+    try {
+      facts = mintStore.resolve(agentId)
+    } finally {
+      mintStore.close()
+    }
+    const tmuxSession = facts?.processState?.tmux_session || null
+    const runtime = tmuxSession ? await inspectRuntime(tmuxSession) : null
+    last = {
+      mintEnv: facts?.processState?.env_name || null,
+      mintDaemonKey: facts?.processState?.daemon_key || null,
+      tmuxSession,
+      runtime,
+    }
+    if (
+      last.mintEnv === envName
+      && last.mintDaemonKey === expectedDaemonKey
+      && runtime?.runtime
+      && runtime?.mcp
+      && runtime?.fleetId === agentId
+      && runtime?.envName === envName
+      && runtime?.daemonKey === expectedDaemonKey
+    ) {
+      return { ok: true, facts, tmuxSession, runtime }
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(
+    `target runtime readback failed for ${agentId} on ${expectedDaemonKey}: ${JSON.stringify(last)}`,
+  )
+}
+
 /**
  * Resolve an agent from this machine's daemon ledger, shaped like the server
  * roster rows the move path expects. No network: the ledger is the authority for
@@ -4337,7 +4384,7 @@ function resolveAgentFromDaemonLedger(agentQuery) {
   }
 }
 
-async function moveAgentToEnvironment({
+export async function moveAgentToEnvironment({
   agent,
   agentQuery = null,
   rawTarget = null,
@@ -4346,6 +4393,13 @@ async function moveAgentToEnvironment({
   dryRun = hasFlag('dry-run'),
   log = console,
   logPrefix = '',
+  hibernateImpl = hibernateLocalAgent,
+  moveAddressImpl = moveLocalAgentAddress,
+  reserveShellImpl = wsReserveShell,
+  lifecycleImpl = callLocalDaemonLifecycle,
+  readbackImpl = waitForMovedAgentRuntime,
+  terminateRuntimeImpl = terminateTmuxSession,
+  ensureWakeGrantImpl = ensureAgentWakeGrant,
 } = {}) {
   // Resolve the agent from the local daemon ledger, never the source server.
   // move exists so an agent can be brought to a working environment WHEN THE
@@ -4394,42 +4448,106 @@ async function moveAgentToEnvironment({
     return { ok: true, dryRun: true, agent, name }
   }
 
-  const wakeGrant = await ensureAgentWakeGrant(agent, meta)
-  if (!alreadyOnTarget) {
-    log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
-    const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
-    if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
-  } else {
-    log.log(`${logPrefix}Repairing ${name} (${agent.id}) on ${describeAgentAddress(targetMachine, targetEnv)}`)
+  const wakeGrant = await ensureWakeGrantImpl(agent, meta)
+  let sourceHibernated = false
+  let addressMoved = false
+  let targetRuntime = null
+  try {
+    if (!alreadyOnTarget) {
+      log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
+      const hibernate = await hibernateImpl(hibernateName, { allowMissing: true })
+      if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
+      sourceHibernated = true
+    } else {
+      log.log(`${logPrefix}Repairing ${name} (${agent.id}) on ${describeAgentAddress(targetMachine, targetEnv)}`)
+    }
+    await moveAddressImpl(agent.id, {
+      fromMachineId: sourceMachine,
+      fromEnvName: effectiveSourceEnv,
+      toMachineId: targetMachine,
+      toEnvName: targetEnv,
+    })
+    addressMoved = !alreadyOnTarget
+    // Environments are sealed databases: reserve the same fleet id and friendly
+    // name on the target before starting its runtime.
+    await reserveShellImpl({
+      fleetId: agent.id,
+      name,
+      cwd: meta.cwd || agent.cwd || null,
+      kind: meta.kind,
+      machineId: targetMachine,
+      envName: targetEnv,
+      api: targetServer,
+    })
+    const wake = await lifecycleImpl('wake', {
+      fleet_id: agent.id,
+      ...wakeGrant,
+      ...(alreadyOnTarget ? { takeover_existing: true } : {}),
+    }, { socketPath: targetSocket, timeoutMs: 120000 })
+    if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
+    targetRuntime = await readbackImpl(agent.id, {
+      machineId: targetMachine,
+      envName: targetEnv,
+    })
+    log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(targetMachine, targetEnv)}; runtime and identity read back.`)
+    return { ok: true, agent, name, wake, readback: targetRuntime }
+  } catch (moveError) {
+    if (alreadyOnTarget || (!sourceHibernated && !addressMoved)) throw moveError
+    const rollbackErrors = []
+    const targetSession = targetRuntime?.tmuxSession || (() => {
+      const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'))
+      try { return mintStore.resolve(agent.id)?.processState?.tmux_session || null } finally { mintStore.close() }
+    })()
+    if (targetSession) {
+      try {
+        if (!await terminateRuntimeImpl(targetSession)) {
+          rollbackErrors.push(new Error(`could not terminate target runtime ${targetSession}`))
+        }
+      } catch (error) {
+        rollbackErrors.push(error)
+      }
+    }
+    try {
+      await moveAddressImpl(agent.id, {
+        fromMachineId: targetMachine,
+        fromEnvName: targetEnv,
+        toMachineId: sourceMachine,
+        toEnvName: effectiveSourceEnv,
+      })
+    } catch (error) {
+      rollbackErrors.push(error)
+    }
+    if (!rollbackErrors.length) {
+      try {
+        const sourceWake = await lifecycleImpl('wake', {
+          fleet_id: agent.id,
+          ...wakeGrant,
+          takeover_existing: true,
+        }, {
+          socketPath: fleetDaemonSocketForConfig(effectiveSourceEnv),
+          timeoutMs: 120000,
+        })
+        if (!sourceWake?.ok) throw new Error(sourceWake?.error || `source wake failed for ${agent.id}`)
+        await readbackImpl(agent.id, {
+          machineId: sourceMachine,
+          envName: effectiveSourceEnv,
+        })
+      } catch (error) {
+        rollbackErrors.push(error)
+      }
+    }
+    if (!rollbackErrors.length) {
+      throw new Error(
+        `move to ${targetEnv} failed: ${moveError.message}. Rolled back to ${effectiveSourceEnv}; runtime and identity read back.`,
+        { cause: moveError },
+      )
+    }
+    throw new Error(
+      `move to ${targetEnv} failed: ${moveError.message}. Rollback incomplete: ${rollbackErrors.map(error => error.message).join('; ')}. `
+      + `Repair with: tlda agent move ${agent.id} ${effectiveSourceEnv}`,
+      { cause: moveError },
+    )
   }
-  await moveLocalAgentAddress(agent.id, {
-    fromMachineId: sourceMachine,
-    fromEnvName: effectiveSourceEnv,
-    toMachineId: targetMachine,
-    toEnvName: targetEnv,
-  })
-  // Environments are sealed databases: the agent's identity row lives on the
-  // SOURCE server and does not exist on the target. Without a shell there,
-  // login() is rejected ("No live shell for agent …") and the agent comes up
-  // nameless — visible only as a raw fleet id nobody can address. Reserve the
-  // shell under the SAME fleet id and friendly name before waking.
-  await wsReserveShell({
-    fleetId: agent.id,
-    name,
-    cwd: meta.cwd || agent.cwd || null,
-    kind: meta.kind,
-    machineId: targetMachine,
-    envName: targetEnv,
-    api: targetServer,
-  })
-  const wake = await callLocalDaemonLifecycle('wake', {
-    fleet_id: agent.id,
-    ...wakeGrant,
-    ...(alreadyOnTarget ? { takeover_existing: true } : {}),
-  }, { socketPath: targetSocket, timeoutMs: 120000 })
-  if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
-  log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(targetMachine, targetEnv)}.`)
-  return { ok: true, agent, name, wake }
 }
 
 async function cmdAgentSetSpawnMachine() {

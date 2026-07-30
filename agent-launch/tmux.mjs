@@ -70,12 +70,15 @@ export function runtimeStateFromProcessList(panePids, psText) {
     seen.add(pid)
     const args = argsByPid.get(pid) || ''
     if (/(?:^|\s|[/\\])(claude|codex|goose)(?:\.exe)?(?:\s|$)/.test(args)) {
-      const daemonKeyMatch = args.match(
-        /(?:^|\s)(?:mcp_servers\.tlda\.env\.)?FLEET_DAEMON_KEY=(?:"([^"]+)"|'([^']+)'|([^\s]+))/,
-      )
-      const daemonKey = daemonKeyMatch
-        ? (daemonKeyMatch[1] || daemonKeyMatch[2] || daemonKeyMatch[3] || null)
-        : null
+      const envValue = name => {
+        const match = args.match(
+          new RegExp(`(?:^|\\s)(?:mcp_servers\\.tlda\\.env\\.)?${name}=(?:"([^"]+)"|'([^']+)'|([^\\s]+))`),
+        )
+        return match ? (match[1] || match[2] || match[3] || null) : null
+      }
+      const daemonKey = envValue('FLEET_DAEMON_KEY')
+      const fleetId = envValue('FLEET_ID')
+      const envName = envValue('TLDA_ENV')
       const descendants = [...(children.get(pid) || [])]
       const descendantSeen = new Set()
       let mcp = false
@@ -87,24 +90,24 @@ export function runtimeStateFromProcessList(panePids, psText) {
         if (/mcp-server[/\\](?:index|fleet-server)\.mjs|(?:^|[/\\])tlda-mcp(?:\s|$)/.test(childArgs)) mcp = true
         descendants.push(...(children.get(child) || []))
       }
-      return { runtime: true, mcp, daemonKey }
+      return { runtime: true, mcp, daemonKey, fleetId, envName }
     }
     stack.push(...(children.get(pid) || []))
   }
-  return { runtime: false, mcp: false, daemonKey: null }
+  return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
 }
 
 export async function sessionRuntimeState(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   try {
     const panes = await tmux(tmuxSocket, 'list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}')
     const panePids = panes.stdout.trim().split(/\s+/).filter(Boolean)
-    if (!panePids.length) return { runtime: false, mcp: false, daemonKey: null }
+    if (!panePids.length) return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
     const ps = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' })
     return runtimeStateFromProcessList(panePids, ps.stdout)
   } catch {
     // Missing tmux sessions or ps failures mean no confirmed runtime.
   }
-  return { runtime: false, mcp: false, daemonKey: null }
+  return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
 }
 
 export async function sessionHasRuntime(session, options = {}) {
