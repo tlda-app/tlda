@@ -14,6 +14,9 @@ type SpatialDocumentShape = TLShape & {
     spatialWorldDocument?: boolean
     spatialWorldTitle?: string
     spatialWorldRoads?: SpatialWorldRoad[]
+    sharedDocPath?: string
+    materializedFile?: string
+    authorId?: string
   }
 }
 
@@ -28,6 +31,12 @@ export type SpatialDocumentNode = {
   bounds: { x: number; y: number; w: number; h: number }
   title: string
   shape?: SpatialDocumentShape
+  documentRef: {
+    id: string
+    kind: 'primary' | 'materialized' | 'shared'
+    path?: string
+    authorId?: string
+  }
 }
 
 export function spatialWorldBounds(nodes: SpatialDocumentNode[]) {
@@ -263,15 +272,27 @@ export function spatialWorldDocuments(editor: Editor, projectName = currentProje
       id: `spatial-primary:${projectName}`,
       bounds: { x, y, w: right - x, h: bottom - y },
       title: projectName,
+      documentRef: { id: `spatial-primary:${projectName}`, kind: 'primary' },
     })
   }
   for (const shape of pages) {
     if (!shape.meta?.spatialWorldDocument) continue
+    const materializedFile = typeof shape.meta.materializedFile === 'string' ? shape.meta.materializedFile : null
+    const sharedDocPath = typeof shape.meta.sharedDocPath === 'string' ? shape.meta.sharedDocPath : null
+    if (!materializedFile && !sharedDocPath) continue
     nodes.push({
       id: shape.id,
       bounds: shapeBounds(shape),
       title: typeof shape.meta.spatialWorldTitle === 'string' ? shape.meta.spatialWorldTitle : 'Shared document',
       shape,
+      documentRef: materializedFile
+        ? { id: shape.id, kind: 'materialized', path: materializedFile }
+        : {
+            id: shape.id,
+            kind: 'shared',
+            path: sharedDocPath || undefined,
+            authorId: typeof shape.meta.authorId === 'string' ? shape.meta.authorId : undefined,
+          },
     })
   }
   return nodes

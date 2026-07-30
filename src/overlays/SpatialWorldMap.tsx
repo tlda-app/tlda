@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useEditor, useValue } from 'tldraw'
 import {
   focusSpatialDocument,
@@ -17,11 +17,35 @@ import './SpatialWorldMap.css'
 export function SpatialWorldMap({ projectName }: { projectName: string }) {
   const editor = useEditor()
   const ui = useSyncExternalStore(subscribeSpatialWorldUi, getSpatialWorldUi)
+  const nodes = useValue(
+    'spatial-document-world-nodes',
+    () => spatialWorldDocuments(editor, projectName),
+    [editor, projectName],
+  )
+  const documentRefs = useMemo(
+    () => nodes.map(node => node.documentRef),
+    [nodes],
+  )
+  const [associations, setAssociations] = useState<Array<{ source: string; target: string; weight: number }>>([])
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch(`/api/projects/${encodeURIComponent(projectName)}/document-associations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ documents: documentRefs }),
+      signal: controller.signal,
+    })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(result => setAssociations(Array.isArray(result.associations) ? result.associations : []))
+      .catch(error => {
+        if (error.name !== 'AbortError') setAssociations([])
+      })
+    return () => controller.abort()
+  }, [documentRefs, projectName])
   const map = useValue('spatial-document-world-map', () => {
     const zoom = editor.getZoomLevel()
     const camera = editor.getCamera()
-    const nodes = spatialWorldDocuments(editor, projectName)
-    if (zoom > SPATIAL_MAP_ZOOM) return { zoom, camera, labels: [], roads: [] }
+    if (zoom > SPATIAL_MAP_ZOOM) return { zoom, camera, labels: [], roads: [], associations: [] }
     const byId = new Map(nodes.map(node => [node.id, node]))
     const labels = nodes
       .map((node) => {
@@ -78,13 +102,45 @@ export function SpatialWorldMap({ projectName }: { projectName: string }) {
         })
       }
     }
-    return { zoom, camera, labels, roads }
-  }, [editor, projectName])
+    const associationLines = associations.flatMap(edge => {
+      const source = byId.get(edge.source)
+      const target = byId.get(edge.target)
+      if (!source || !target) return []
+      const sourceCenter = editor.pageToScreen({
+        x: source.bounds.x + source.bounds.w / 2,
+        y: source.bounds.y + source.bounds.h / 2,
+      })
+      const targetCenter = editor.pageToScreen({
+        x: target.bounds.x + target.bounds.w / 2,
+        y: target.bounds.y + target.bounds.h / 2,
+      })
+      return [{
+        id: `${edge.source}-${edge.target}`,
+        x1: sourceCenter.x,
+        y1: sourceCenter.y,
+        x2: targetCenter.x,
+        y2: targetCenter.y,
+        weight: edge.weight,
+      }]
+    })
+    return { zoom, camera, labels, roads, associations: associationLines }
+  }, [associations, editor, nodes, projectName])
 
   if (map.zoom > SPATIAL_MAP_ZOOM) return null
   return (
     <div className="spatial-world-map">
       <svg className="spatial-world-roads">
+        {map.associations.map(edge => (
+          <line
+            className="spatial-world-association"
+            key={edge.id}
+            x1={edge.x1}
+            y1={edge.y1}
+            x2={edge.x2}
+            y2={edge.y2}
+            style={{ opacity: 0.08 + edge.weight * 0.2, strokeWidth: 0.75 + edge.weight }}
+          />
+        ))}
         {map.roads.map(road => {
           const activeNodeId = ui.hoveredNodeId || ui.selectedNodeId
           const active = activeNodeId === road.sourceId || activeNodeId === road.targetId

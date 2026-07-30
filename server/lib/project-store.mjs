@@ -443,6 +443,11 @@ export async function searchProjectContent(query, options = {}) {
   return projectFilesDb.searchContent(query, options)
 }
 
+export async function listDocumentAssociations(project, documents) {
+  if (!projectFilesDb) throw new Error('Project store is not initialized')
+  return projectFilesDb.documentAssociations(project, documents)
+}
+
 export async function updateClientSourceManifest(name, sourceManifest) {
   const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)

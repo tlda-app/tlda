@@ -4484,6 +4484,7 @@ app.use('/docs', (req, res, next) => {
 // ---------- API routes ----------
 
 app.locals.fleetStore = fleetStore
+app.locals.sendDaemonEphemeral = sendDaemonEphemeral
 app.use('/api/projects', projectRoutes)
 
 // Handwriting recognition (MyScript proxy)

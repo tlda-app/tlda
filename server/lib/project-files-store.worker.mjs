@@ -2,6 +2,10 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
+import winkNLP from 'wink-nlp'
+import model from 'wink-eng-lite-web-model'
+import BM25Vectorizer from 'wink-nlp/utilities/bm25-vectorizer.js'
+import winkIts from 'wink-nlp/src/its.js'
 
 import { normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import { resolveContainedPath } from './path-containment.mjs'
@@ -39,6 +43,7 @@ const replace = db.transaction((project, paths) => {
 const seed = db.transaction((project, paths) => {
   for (const filePath of paths) seedInsert.run(project, filePath)
 })
+const nlp = winkNLP(model)
 
 const normalizeSearchText = (value) => String(value || '').replace(/\s+/g, ' ').trim()
 
@@ -104,6 +109,92 @@ function readProjectSourceSearchEntries(project) {
       text,
     }
   })
+}
+
+function documentAssociationTokens(text) {
+  return nlp.readDoc(text)
+    .tokens()
+    .filter(token => token.out(nlp.its.type) === 'word' && !token.out(nlp.its.stopWordFlag))
+    .out(nlp.its.stem)
+}
+
+function materializedSourceFile(project, outputFile) {
+  const manifestPath = join(projectsDir, project, 'source', '.tlda', 'parts.json')
+  if (!existsSync(manifestPath)) return null
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const part = (manifest.parts || []).find(item => {
+      const source = String(item.path || item.storage?.path || '').replace(/\\/g, '/')
+      return source.replace(/\.(md|markdown)$/i, '.html') === outputFile
+    })
+    return part ? String(part.path || part.storage?.path || '') : null
+  } catch {
+    return null
+  }
+}
+
+function documentText(project, document) {
+  if (document.kind === 'shared') return String(document.text || '').slice(0, 240_000)
+  if (document.kind === 'materialized') {
+    const sourceFile = materializedSourceFile(project.name, String(document.path || ''))
+    if (!sourceFile) return ''
+    try {
+      const sourcePath = resolveContainedPath(resolve(projectsDir, project.name, 'source'), sourceFile)
+      return existsSync(sourcePath) ? readFileSync(sourcePath, 'utf8').slice(0, 240_000) : ''
+    } catch {
+      return ''
+    }
+  }
+  return readProjectSourceSearchEntries(project).map(entry => entry.text).join('\n')
+}
+
+function documentAssociations(projectName, requestedDocuments) {
+  const topK = 3
+  const threshold = 0.15
+  const project = readProject(projectName)
+  if (!project) throw new Error(`Project "${projectName}" not found`)
+  const documents = (Array.isArray(requestedDocuments) ? requestedDocuments : [])
+    .slice(0, 100)
+    .map(document => {
+      const id = String(document?.id || '')
+      const kind = ['primary', 'materialized', 'shared'].includes(document?.kind) ? document.kind : null
+      if (!id || !kind) return null
+      return { id, tokens: documentAssociationTokens(documentText(project, { ...document, kind })) }
+    })
+    .filter(document => document?.tokens.length > 0)
+  if (documents.length < 2) return []
+
+  const vectorizer = BM25Vectorizer({ norm: 'l2' })
+  for (const document of documents) vectorizer.learn(document.tokens)
+  const vectors = documents.map((_, index) => vectorizer.doc(index).out(winkIts.vector))
+  const selected = new Map()
+  for (let i = 0; i < documents.length; i++) {
+    const neighbors = []
+    for (let j = 0; j < documents.length; j++) {
+      if (i === j) continue
+      let weight = 0
+      for (let term = 0; term < vectors[i].length; term++) {
+        weight += vectors[i][term] * vectors[j][term]
+      }
+      if (weight >= threshold) neighbors.push({ index: j, weight })
+    }
+    neighbors
+      .sort((a, b) => (b.weight - a.weight) || documents[a.index].id.localeCompare(documents[b.index].id))
+      .slice(0, topK)
+      .forEach(({ index, weight }) => {
+        const source = documents[i].id
+        const target = documents[index].id
+        const [a, b] = source < target ? [source, target] : [target, source]
+        const key = `${a}\0${b}`
+        selected.set(key, Math.max(selected.get(key) || 0, weight))
+      })
+  }
+  return [...selected.entries()]
+    .map(([key, weight]) => {
+      const [source, target] = key.split('\0')
+      return { source, target, weight: Number(weight.toFixed(6)) }
+    })
+    .sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target))
 }
 
 function searchContent(query, options = {}) {
@@ -217,6 +308,8 @@ parentPort.on('message', (message) => {
               ? (replace(message.project, message.paths), true)
               : message.method === 'searchContent'
                 ? searchContent(message.query, message.options)
+                : message.method === 'documentAssociations'
+                  ? documentAssociations(message.project, message.documents)
                 : (() => { throw new Error(`unknown project-files method: ${message.method}`) })()
     parentPort.postMessage({ id: message.id, result })
   } catch (error) {

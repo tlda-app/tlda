@@ -10,6 +10,16 @@ import { processMessageText } from '../shared/message-processing.mjs'
 const execFileP = promisify(execFile)
 
 export function createLocalArtifacts({ getServerUrl, getFleetServerUrl, resolveAgentCwd }) {
+  async function readDocumentText({ path: filePath, agent_id }) {
+    const cwd = resolveAgentCwd?.(agent_id)
+    if (!cwd) throw new Error(`agent cwd unavailable for ${agent_id || 'unknown agent'}`)
+    const abs = resolveFilePath(filePath, cwd)
+    const stat = await fs.promises.stat(abs)
+    if (!stat.isFile()) throw new Error(`Document is not a file: ${abs}`)
+    if (stat.size > 1_000_000) throw new Error(`Document exceeds similarity index limit: ${stat.size}`)
+    return { text: (await fs.promises.readFile(abs, 'utf8')).slice(0, 240_000) }
+  }
+
   async function resolveFile({ path: filePath, cwd, server_url }) {
     const abs = resolveFilePath(filePath, cwd)
     if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`)
@@ -180,6 +190,7 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl, resolveA
   return {
     handlers: {
       'resolve-file': resolveFile,
+      'read-document-text': readDocumentText,
       'rechat': rechat,
       'materialize-attachment': materializeAttachment,
       'kill-orphan-chromium': killOrphanChromium,

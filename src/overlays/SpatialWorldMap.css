@@ -37,6 +37,11 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary, #2563eb) 20%, transparent);
 }
 
+.spatial-world-roads line.spatial-world-association {
+  stroke: currentColor;
+  stroke-dasharray: 5 8;
+}
+
 .spatial-world-label {
   position: absolute;
   left: 50%;

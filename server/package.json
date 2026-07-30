@@ -31,6 +31,8 @@
     "pino": "^10.3.1",
     "proper-lockfile": "^4.1.2",
     "tsx": "^4.22.4",
+    "wink-eng-lite-web-model": "^1.8.1",
+    "wink-nlp": "^2.4.0",
     "ws": "^8.18.0",
     "yaml": "^2.8.2"
   }

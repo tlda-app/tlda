@@ -27,6 +27,7 @@ import {
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
+  listDocumentAssociations,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
   updateClientSourceManifest,
@@ -51,6 +52,7 @@ import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
+import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 
 const router = Router()
@@ -152,6 +154,32 @@ router.use('/:name/history', historyRoutes)
 // List all projects
 router.get('/', requireRead, async (req, res) => {
   res.json({ projects: await listProjects() })
+})
+
+router.post('/:name/document-associations', requireRead, async (req, res) => {
+  const requested = Array.isArray(req.body?.documents) ? req.body.documents : []
+  const documents = []
+  for (const document of requested) {
+    if (document?.kind !== 'shared') {
+      documents.push(document)
+      continue
+    }
+    try {
+      const result = await readSharedDocumentThroughOwner({
+        fleetStore: req.app.locals.fleetStore,
+        sendDaemonEphemeral: req.app.locals.sendDaemonEphemeral,
+        document,
+      })
+      documents.push({ ...document, text: result.text })
+    } catch (error) {
+      return res.status(error.code === 'NO_ROUTE' ? 409 : error.code === 'NO_DAEMON' ? 503 : 502).json({ error: error.message })
+    }
+  }
+  try {
+    res.json({ associations: await listDocumentAssociations(req.params.name, documents) })
+  } catch (error) {
+    res.status(400).json({ error: error.message })
+  }
 })
 
 // Project timestamps — computed from disk, not stored in manifest

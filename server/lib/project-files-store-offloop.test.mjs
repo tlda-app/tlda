@@ -103,3 +103,40 @@ test('project metadata reads and updates run through the project files worker', 
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('document associations mix primary, materialized, and daemon-fed shared text', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'tlda-document-associations-'))
+  const root = join(tempRoot, 'projects')
+  const sourceDir = join(root, 'paper', 'source')
+  try {
+    mkdirSync(join(sourceDir, '.tlda'), { recursive: true })
+    mkdirSync(join(sourceDir, 'parts'), { recursive: true })
+    writeFileSync(join(root, 'paper', 'project.json'), JSON.stringify({ name: 'paper', title: 'Paper' }))
+    writeFileSync(join(sourceDir, 'main.tex'), 'spectral operator eigenvalue compact resolvent hilbert space')
+    writeFileSync(join(sourceDir, 'parts', 'note.md'), 'spectral operator eigenvalue perturbation resolvent hilbert space')
+    writeFileSync(join(sourceDir, '.tlda', 'parts.json'), JSON.stringify({
+      parts: [{ id: 'part-1', path: 'parts/note.md' }],
+    }))
+    const client = new ProjectFilesStoreClient(root)
+    try {
+      await client.ready()
+      await client.replace('paper', ['main.tex'])
+      const associations = await client.documentAssociations('paper', [
+        { id: 'primary', kind: 'primary' },
+        { id: 'materialized', kind: 'materialized', path: 'parts/note.html' },
+        { id: 'shared', kind: 'shared', text: 'spectral operator eigenvalue theorem resolvent hilbert space' },
+        { id: 'noise', kind: 'shared', text: 'tomato garden compost watering vegetable seedlings' },
+      ])
+      assert.ok(associations.length > 0)
+      assert.ok(associations.some(edge => [edge.source, edge.target].includes('primary')))
+      assert.ok(associations.some(edge => [edge.source, edge.target].includes('materialized')))
+      assert.ok(associations.some(edge => [edge.source, edge.target].includes('shared')))
+      assert.ok(associations.every(edge => edge.source !== 'noise' && edge.target !== 'noise'))
+      assert.ok(associations.every(edge => edge.weight >= 0.15 && edge.weight <= 1))
+    } finally {
+      await client.close()
+    }
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

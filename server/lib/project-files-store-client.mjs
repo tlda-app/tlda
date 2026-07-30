@@ -56,6 +56,7 @@ export class ProjectFilesStoreClient {
   read(project) { return this._call('read', { project }) }
   replace(project, paths) { return this._call('replace', { project, paths }) }
   searchContent(query, options = {}) { return this._call('searchContent', { query, options }) }
+  documentAssociations(project, documents) { return this._call('documentAssociations', { project, documents }) }
 
   async close() {
     if (this._closed) return
