@@ -35,6 +35,7 @@ import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
 import { formatDisplayTimestamp } from '../shared/display-time.mjs';
 import { stageNote, stageHighlight } from './lib/annotate.mjs';
+import { resolveMarkdownSelectorBody } from './lib/markdown-selector-body.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
   pdfToCanvas, canvasToPdf, htmlToCanvas, canvasToHtml, loadHtmlLayout,
@@ -2019,7 +2020,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           width: { type: 'number', description: 'Explicit width in pixels (overrides size preset).' },
           height: { type: 'number', description: 'Explicit height in pixels (overrides size preset).' },
           side: { type: 'string', description: 'Place note to "left" or "right" of page (default: right)' },
-          file: { type: 'string', description: 'Path to a file whose content becomes the note text. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
+          file: { type: 'string', description: 'Path to a file whose content becomes the note text. With `selector`, selects Markdown from this file as the note text and records source provenance. Also used as source file path for multi-file projects (e.g. "appendix.tex").' },
+          selector: { type: 'string', description: 'CSS selector within `file` selecting Markdown structure. Bare heading ids are accepted as shorthand, e.g. `the-plan` means `#the-plan`.' },
           choices: { type: 'array', items: { type: 'string' }, description: 'Multiple-choice options rendered as tappable buttons. User selection is readable via annotations. Mutually exclusive with `options_file`.' },
           options_file: { type: 'string', description: 'Path to a markdown file whose `## Label` H2 sections become the choices. Each section body (LaTeX, prose, $math$, $$display$$) becomes that option\'s preview content. Renders with the document preamble macros — what you see is what gets pasted. Supports absolute paths, ~/ expansion, and cwd-relative paths.' },
         },
@@ -2737,8 +2739,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { project: doc, line, page: pageNum, color, size, width, height, side, text_anchor, options_file: optionsFile } = args;
     let { text, choices, file } = args;
     let effectiveSize = size;
+    let markdownSelectorSource = null;
     if (!doc || (!line && !pageNum)) {
       return { content: [{ type: 'text', text: 'Missing required parameters: doc, (line or page)' }], isError: true };
+    }
+    const selectedMarkdown = resolveMarkdownSelectorBody(args, { extraBodyFields: ['choices', 'options_file'] });
+    if (selectedMarkdown.error) {
+      return { content: [{ type: 'text', text: selectedMarkdown.error }], isError: true };
+    }
+    if (!selectedMarkdown.skipped) {
+      text = selectedMarkdown.body;
+      markdownSelectorSource = selectedMarkdown.source;
+      file = undefined;
     }
     // If file param points to a readable file, use its content as note text
     if (file && !text && !optionsFile) {
@@ -2771,7 +2783,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: 'Missing required parameter: text (or options_file or file)' }], isError: true };
     }
     try {
-      const result = await addAnnotation(doc, line, text, { color, size: effectiveSize, width, height, side, file, choices, page: pageNum });
+      const result = await addAnnotation(doc, line, text, { color, size: effectiveSize, width, height, side, file, choices, page: pageNum, markdownSelectorSource });
       if (!result.ok) return { content: [{ type: 'text', text: result.error }], isError: true };
       const choicesNote = choices?.length ? `\n  choices: ${choices.join(' | ')}` : '';
       const refValidation = validateRefs(text, doc);
@@ -2879,7 +2891,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'note' && args.id) {
-    const { project: doc, id, text } = args;
+    const { project: doc, id } = args;
+    let { text } = args;
+    const selectedMarkdown = resolveMarkdownSelectorBody(args);
+    if (selectedMarkdown.error) {
+      return { content: [{ type: 'text', text: selectedMarkdown.error }], isError: true };
+    }
+    if (!selectedMarkdown.skipped) text = selectedMarkdown.body;
     if (!doc || !id || !text) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id, text' }], isError: true };
     try {
       const fullId = id.startsWith('shape:') ? id : `shape:${id}`;
@@ -2890,10 +2908,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const existing = shape.props?.text || '';
       const agentName = process.env.FLEET_NAME || process.env.FLEET_ID || 'agent';
       const newText = existing + '\n\n---\n\n' + text + ` — *${agentName}*`;
+      const markdownSelectorSources = [
+        ...((Array.isArray(shape.meta?.markdownSelectorSources) && shape.meta.markdownSelectorSources) || []),
+        ...(shape.meta?.markdownSelectorSource ? [shape.meta.markdownSelectorSource] : []),
+        ...(selectedMarkdown.source ? [selectedMarkdown.source] : []),
+      ];
       await updateShapeRest(doc, fullId, {
         props: { text: newText },
         opacity: 0.3,
-        meta: { addressed: true },
+        meta: {
+          ...(shape.meta || {}),
+          addressed: true,
+          ...(markdownSelectorSources.length ? { markdownSelectorSources } : {}),
+        },
       });
       return { content: [{ type: 'text', text: `Reply appended to ${fullId} (marked addressed)` }] };
     } catch (e) {

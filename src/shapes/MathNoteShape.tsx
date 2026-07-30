@@ -220,6 +220,31 @@ function annotationDropToken(shape: any) {
   return `«annotation:${displayName}#${shape.id}»`
 }
 
+type MarkdownSelectorSourceMeta = {
+  file?: unknown
+  selector?: unknown
+}
+
+function markdownSelectorSourceFromMeta(meta: unknown): MarkdownSelectorSourceMeta | null {
+  if (!meta || typeof meta !== 'object') return null
+  const record = meta as Record<string, unknown>
+  if (record.markdownSelectorSource && typeof record.markdownSelectorSource === 'object') {
+    return record.markdownSelectorSource as MarkdownSelectorSourceMeta
+  }
+  const sources = record.markdownSelectorSources
+  if (Array.isArray(sources) && sources[0] && typeof sources[0] === 'object') {
+    return sources[0] as MarkdownSelectorSourceMeta
+  }
+  return null
+}
+
+function markdownSelectorFooterLabel(meta: unknown) {
+  const source = markdownSelectorSourceFromMeta(meta)
+  if (typeof source?.file !== 'string' || typeof source?.selector !== 'string') return ''
+  const fileName = source.file.split('/').pop() || source.file
+  return `from ${fileName} ${source.selector}`
+}
+
 // CodeMirror theme: minimal, transparent, monospace
 const cmTheme = EditorView.theme({
   '&': {
@@ -1685,7 +1710,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               </svg>
             </div>
           )}
-          {shape.meta?.friendly_name && (
+          {(shape.meta?.friendly_name || markdownSelectorFooterLabel(shape.meta)) && (
             <div style={{
               fontSize: 9,
               lineHeight: '14px',
@@ -1695,8 +1720,20 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               fontFamily: 'Inter, system-ui, sans-serif',
               letterSpacing: '0.02em',
               userSelect: 'none',
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: 6,
             }}>
-              {shape.meta.friendly_name}
+              <span style={{
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                textAlign: 'left',
+              }}>
+                {markdownSelectorFooterLabel(shape.meta)}
+              </span>
+              <span style={{ flexShrink: 0 }}>{shape.meta?.friendly_name || ''}</span>
             </div>
           )}
           <div style={{
