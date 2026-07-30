@@ -46,7 +46,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
-import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
@@ -3965,6 +3965,15 @@ app.post('/api/prompt-respond', requireRead, async (req, res) => {
 // ---------- Doc asset serving ----------
 // Serves from server/projects/{name}/output/ at /docs/{name}/*
 
+async function docPathExists(path) {
+  try {
+    await fs.promises.access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
 app.get('/docs/manifest.json', requireRead, async (req, res) => {
   const manifest = generateManifest()
   res.json(manifest)
@@ -3972,7 +3981,7 @@ app.get('/docs/manifest.json', requireRead, async (req, res) => {
 
 // Serve sub-resources of html-format projects without auth (CSS, JS, fonts from site_libs)
 // These are Quarto framework files loaded by iframes that can't pass auth headers
-app.use('/docs', (req, res, next) => {
+app.use('/docs', async (req, res, next) => {
   const parts = req.path.slice(1).split('/')
   if (parts.length < 3) return next() // need at least /name/site_libs/...
   const name = parts[0]
@@ -3981,15 +3990,12 @@ app.use('/docs', (req, res, next) => {
   // (CSS, JS, fonts, figures — loaded by iframes that can't pass auth headers)
   if (!filePath.endsWith('.html')) {
     try {
-      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
-      if (existsSync(projectJsonPath)) {
-        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
-        if (project.format === 'html') {
-          const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
-          if (existsSync(assetPath)) {
-            res.set('Cache-Control', 'public, max-age=3600')
-            return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
-          }
+      const project = await readProject(name)
+      if (project?.format === 'html') {
+        const assetPath = join(PROJECTS_DIR, name, 'output', filePath)
+        if (await docPathExists(assetPath)) {
+          res.set('Cache-Control', 'public, max-age=3600')
+          return res.sendFile(resolve(assetPath), { dotfiles: 'allow' })
         }
       }
     } catch (e) { /* fall through to auth'd route */ }
@@ -4020,7 +4026,7 @@ app.use('/docs', (req, res, next) => {
     }
 
     const histPath = join(PROJECTS_DIR, name, filePath)
-    if (existsSync(histPath)) {
+    if (await docPathExists(histPath)) {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable
       return res.sendFile(resolve(histPath), { dotfiles: 'allow' })
     }
@@ -4048,25 +4054,24 @@ app.use('/docs', (req, res, next) => {
   // Combined HTML: concatenate all chapter bodies into one page
   if (filePath === '_combined.html') {
     try {
-      const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
       const outputDir = join(PROJECTS_DIR, name, 'output')
       const pageInfoPath = join(outputDir, 'page-info.json')
-      if (existsSync(projectJsonPath) && existsSync(pageInfoPath)) {
-        const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+      const project = await readProject(name)
+      if (project && await docPathExists(pageInfoPath)) {
         if (project.format === 'html') {
-          const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+          const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
           // Find chapter list: either from first entry's chapters field, or all entries
           const chapters = pageInfo[0]?.chapters || pageInfo.map(e => ({ file: e.file, title: e.title }))
           // Use head from first chapter
-          const firstHtml = readFileSync(join(outputDir, chapters[0].file), 'utf8')
+          const firstHtml = await fs.promises.readFile(join(outputDir, chapters[0].file), 'utf8')
           const headMatch = firstHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)
           const headContent = headMatch ? headMatch[1] : ''
           // Extract body from each chapter
           const bodies = []
           for (const ch of chapters) {
             const chapterPath = join(outputDir, ch.file)
-            if (!existsSync(chapterPath)) continue
-            const chapterHtml = readFileSync(chapterPath, 'utf8')
+            if (!await docPathExists(chapterPath)) continue
+            const chapterHtml = await fs.promises.readFile(chapterPath, 'utf8')
             const bodyMatch = chapterHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
             if (bodyMatch) {
               bodies.push(`<div class="tlda-chapter" id="chapter-${bodies.length + 1}">\n${bodyMatch[1]}\n</div>`)
@@ -4125,7 +4130,7 @@ app.use('/docs', (req, res, next) => {
   // the primary target's prefixed file. Shared with the MCP disk reader via
   // shared/doc-assets.mjs so the two resolution paths can't drift.
   if (BARE_METADATA.has(filePath)) {
-    const aliased = resolveAsset(PROJECTS_DIR, name, filePath)
+    const aliased = await resolveAssetAsync(PROJECTS_DIR, name, filePath)
     if (aliased) {
       res.set('Cache-Control', 'no-cache')
       return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
@@ -4147,7 +4152,7 @@ app.use('/docs', (req, res, next) => {
           : listProjectPartColumns(name, { srcDir: join(PROJECTS_DIR, name, 'source') })
         const column = columns.find(c => c.file === filePath)
         if (column) {
-          const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
+          const source = await fs.promises.readFile(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
           const agentNames = isTaskDoc ? await fleetStore.getAgentDisplayNames() : []
           const html = renderMarkdownColumnHtml({
@@ -4161,24 +4166,24 @@ app.use('/docs', (req, res, next) => {
           })
           const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
 
-          function memberTitle(memberName) {
+          async function memberTitle(memberName) {
             const tp = join(PROJECTS_DIR, memberName, 'output', 'toc.json')
-            if (!existsSync(tp)) return memberName
+            if (!await docPathExists(tp)) return memberName
             try {
-              const toc = JSON.parse(readFileSync(tp, 'utf8'))
+              const toc = JSON.parse(await fs.promises.readFile(tp, 'utf8'))
               return (toc.length > 0 && toc[0].level === 'section') ? toc[0].title : memberName
             } catch { return memberName }
           }
 
-          const chapterTitle = column.title || memberTitle(name)
+          const chapterTitle = column.title || await memberTitle(name)
           let prev = null, next = null
           for (const p of await listProjects()) {
             if (p.format !== 'book') continue
             const members = p.members || []
             const idx = members.indexOf(name)
             if (idx === -1) continue
-            if (idx > 0) prev = { name: members[idx - 1], title: memberTitle(members[idx - 1]) }
-            if (idx < members.length - 1) next = { name: members[idx + 1], title: memberTitle(members[idx + 1]) }
+            if (idx > 0) prev = { name: members[idx - 1], title: await memberTitle(members[idx - 1]) }
+            if (idx < members.length - 1) next = { name: members[idx + 1], title: await memberTitle(members[idx + 1]) }
             break
           }
 
@@ -4195,36 +4200,35 @@ app.use('/docs', (req, res, next) => {
 
   // Try project output first
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
-  if (existsSync(projectPath)) {
+  if (await docPathExists(projectPath)) {
     res.set('Cache-Control', 'no-cache')
     // For HTML files in html-format projects, inject the tlda bridge script
     if (filePath.endsWith('.html')) {
       try {
-        const projectJsonPath = join(PROJECTS_DIR, name, 'project.json')
-        if (existsSync(projectJsonPath)) {
-          const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
+        const project = await readProject(name)
+        if (project) {
           if (project.format === 'slides') {
             // Slides format: inject the reveal.js bridge script
-            const html = readFileSync(projectPath, 'utf8')
+            const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
             res.type('html').send(injected)
             return
           }
           if (project.format === 'markdown') {
             // Markdown: bridge already injected at build time; inject chapter title + prev/next at serve time.
-            const html = readFileSync(projectPath, 'utf8')
+            const html = await fs.promises.readFile(projectPath, 'utf8')
 
             // Resolve chapter title: promote h1 to chapter title if present (matches aggregateBookToc logic)
-            function memberTitle(memberName) {
+            async function memberTitle(memberName) {
               const tp = join(PROJECTS_DIR, memberName, 'output', 'toc.json')
-              if (!existsSync(tp)) return memberName
+              if (!await docPathExists(tp)) return memberName
               try {
-                const toc = JSON.parse(readFileSync(tp, 'utf8'))
+                const toc = JSON.parse(await fs.promises.readFile(tp, 'utf8'))
                 return (toc.length > 0 && toc[0].level === 'section') ? toc[0].title : memberName
               } catch { return memberName }
             }
 
-            const chapterTitle = memberTitle(name)
+            const chapterTitle = await memberTitle(name)
 
             // Find which book contains this member and compute prev/next
             let prev = null, next = null
@@ -4233,8 +4237,8 @@ app.use('/docs', (req, res, next) => {
               const members = p.members || []
               const idx = members.indexOf(name)
               if (idx === -1) continue
-              if (idx > 0) prev = { name: members[idx - 1], title: memberTitle(members[idx - 1]) }
-              if (idx < members.length - 1) next = { name: members[idx + 1], title: memberTitle(members[idx + 1]) }
+              if (idx > 0) prev = { name: members[idx - 1], title: await memberTitle(members[idx - 1]) }
+              if (idx < members.length - 1) next = { name: members[idx + 1], title: await memberTitle(members[idx + 1]) }
               break  // use first book found
             }
 
@@ -4243,7 +4247,7 @@ app.use('/docs', (req, res, next) => {
             return
           }
           if (project.format === 'html') {
-            const html = readFileSync(projectPath, 'utf8')
+            const html = await fs.promises.readFile(projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
             let chapterTitle = ''
             let isFirstPage = false
@@ -4251,7 +4255,7 @@ app.use('/docs', (req, res, next) => {
             let navNext = null
             try {
               const pageInfoPath = join(PROJECTS_DIR, name, 'output', 'page-info.json')
-              const pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
+              const pageInfo = JSON.parse(await fs.promises.readFile(pageInfoPath, 'utf8'))
               const idx = pageInfo.findIndex(p => p.file === filePath)
               isFirstPage = idx === 0
               // Compute prev/next chapter titles for navigation

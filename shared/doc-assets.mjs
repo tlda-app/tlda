@@ -12,6 +12,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs'
+import { access, readFile } from 'fs/promises'
 import { join } from 'path'
 
 /**
@@ -57,4 +58,30 @@ export function resolveAsset(projectsDir, name, logicalName) {
     }
   }
   return null
+}
+
+async function exists(path) {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function resolveAssetAsync(projectsDir, name, logicalName) {
+  const outDir = join(projectsDir, name, 'output')
+  const direct = join(outDir, logicalName)
+  if (await exists(direct)) return direct
+  if (!BARE_METADATA.has(logicalName)) return null
+  let base = null
+  try {
+    const project = JSON.parse(await readFile(join(projectsDir, name, 'project.json'), 'utf8'))
+    base = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
+  } catch {
+    return null
+  }
+  if (!base) return null
+  const aliased = join(outDir, `${base}-${logicalName}`)
+  return await exists(aliased) ? aliased : null
 }
