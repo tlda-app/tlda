@@ -23,8 +23,9 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from '
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
+import { createCommandRegistry } from './commands.mjs';
 
-function loadOrCreateFleetId(file) {
+function loadOrCreateFleetId(file, fallback = null, bestEffort = false) {
   try {
     const existing = readFileSync(file, 'utf8').trim();
     if (/^fleet:[a-zA-Z0-9_-]+$/.test(existing)) return existing;
@@ -32,9 +33,13 @@ function loadOrCreateFleetId(file) {
   } catch (e) {
     if (e?.code !== 'ENOENT') throw e;
   }
-  const id = `fleet:${randomUUID().slice(0, 8)}`;
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, id);
+  const id = fallback || `fleet:${randomUUID().slice(0, 8)}`;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, id);
+  } catch (error) {
+    if (!bestEffort) throw error;
+  }
   return id;
 }
 
@@ -50,20 +55,27 @@ async function confirmRegisteredFromRoster(server, id, timeoutMs = 10_000) {
   return agents.find(a => a?.id === id && !a?.dead) || null;
 }
 
-export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], human = false, allow = null, server } = {}) {
+export function createBot({
+  name = 'bot', pretty_name = null, labels = ['bot'], human = false, allow = null, server,
+  commands = [], cwd = process.cwd(), metadata = {}, fleetId = null, bestEffortIdentity = false,
+  pidFile = null, idFile = null, WebSocketClass = WebSocket, handshakeTimeoutMs = 10_000,
+  reconnectInitialMs = 500, reconnectMaxMs = 5000,
+} = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
   const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet';
-  const PID_FILE = process.env.TLDA_BOT_PIDFILE || join(homedir(), '.config', 'tlda', `${key}.pid`);
-  const ID_FILE = process.env.TLDA_BOT_IDFILE || join(dirname(PID_FILE), `${key}.fleet-id`);
+  const PID_FILE = process.env.TLDA_BOT_PIDFILE || pidFile || join(homedir(), '.config', 'tlda', `${key}.pid`);
+  const ID_FILE = process.env.TLDA_BOT_IDFILE || idFile || join(dirname(PID_FILE), `${key}.fleet-id`);
   const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null;
   const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null;
-  const id = loadOrCreateFleetId(ID_FILE);
+  const id = loadOrCreateFleetId(ID_FILE, fleetId, bestEffortIdentity);
   const allowSet = allow ? new Set(allow) : null;
+  const registry = createCommandRegistry(commands);
 
-  let ws = null, msgId = 1, reconnectTimer = null, reconnectDelay = 500;
+  let ws = null, msgId = 1, reconnectTimer = null, reconnectDelay = reconnectInitialMs, stopped = false;
   let assignedName = null;
   const pending = new Map();
+  const waiters = new Set();
   const cbs = { command: [], message: [], open: [], close: [] };
 
   const log = (...a) => console.log(`[${key}]`, ...a);
@@ -95,10 +107,10 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     // Bounded handshake: reconnection is driven only by 'close', so a peer that
     // accepts the TCP connection and never answers the upgrade would otherwise
     // leave this socket in CONNECTING forever with no event to reconnect on.
-    ws = new WebSocket(WS_URL, { rejectUnauthorized: false, handshakeTimeout: 10_000 });
+    ws = new WebSocketClass(WS_URL, { rejectUnauthorized: false, handshakeTimeout: handshakeTimeoutMs });
     ws.on('open', async () => {
       log(`connected to ${WS_URL}`);
-      reconnectDelay = 500;
+      reconnectDelay = reconnectInitialMs;
       try {
         const result = await loginFleet();
         fire('open', result);
@@ -118,26 +130,36 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
       if (msg.id && pending.has(msg.id)) {
         const { resolve, reject, timer } = pending.get(msg.id);
         pending.delete(msg.id); clearTimeout(timer);
-        if (msg.error) reject(new Error(msg.error)); else resolve(msg.result);
+        if (msg.error) reject(new Error(typeof msg.error === 'string' ? msg.error : (msg.error.message || JSON.stringify(msg.error))));
+        else resolve(msg.result);
         return;
       }
       dispatch(msg);
     });
-    ws.on('close', () => { log(`disconnected, reconnecting in ${reconnectDelay}ms`); fire('close'); scheduleReconnect(); });
+    ws.on('close', () => {
+      fire('close');
+      if (!stopped) {
+        log(`disconnected, reconnecting in ${reconnectDelay}ms`);
+        scheduleReconnect();
+      }
+    });
     ws.on('error', (e) => console.error(`[${key}] ws error:`, e.message));
   }
   function scheduleReconnect() {
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+    reconnectDelay = Math.min(reconnectDelay * 2, reconnectMaxMs);
   }
-  function sendRaw(msg) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg })); }
+  function sendRaw(msg) { if (ws?.readyState === WebSocketClass.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg })); }
   function send(msg) { if (isCanonical()) sendRaw(msg); }
   function requestRaw(msg, timeoutMs = 10_000) {
     return new Promise((resolve, reject) => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error('WS not connected'));
+      if (!ws || ws.readyState !== WebSocketClass.OPEN) return reject(new Error('WS not connected'));
       const rid = msgId++;
-      const timer = setTimeout(() => { pending.delete(rid); reject(new Error('timeout')); }, timeoutMs);
+      const timer = setTimeout(() => {
+        pending.delete(rid);
+        reject(new Error(`${msg?.type || 'ws request'} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       pending.set(rid, { resolve, reject, timer });
       ws.send(JSON.stringify({ id: rid, ...msg }));
     });
@@ -151,12 +173,12 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
       agent_id: id,
       name: key,
       pretty_name,
-      cwd: process.cwd(),
+      cwd,
       labels,
       human,
       machine_id: MACHINE_ID || undefined,
       tmux_session: TMUX_SESSION || undefined,
-      metadata: { bot: key, pid: process.pid },
+      metadata: { bot: key, pid: process.pid, ...metadata },
     };
     let result;
     try {
@@ -192,6 +214,13 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
   }
 
   function dispatch(msg) {
+    for (const waiter of [...waiters]) {
+      if (!waiter.predicate(msg)) continue;
+      waiters.delete(waiter);
+      clearTimeout(waiter.timer);
+      waiter.resolve(msg);
+      return;
+    }
     if (msg.agents && !msg.event) {
       updateAssignedNameFromAgent((msg.agents || []).find(a => a.id === id));
       return;
@@ -211,10 +240,15 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     const cmd = addressedText(data);
     if (cmd === null) return;
     if (allowSet && !allowSet.has(from)) return; // not authorized to command this bot
-    fire('command', { text: cmd, from, to: data.to_id, raw: msg, reply: (m) => chat(from, m) });
+    const context = { text: cmd, from, to: data.to_id, raw: msg, bot: api, reply: (m) => chat(from, m) };
+    fire('command', context);
+    if (registry.commands.length || /^help(?:\s|$)/i.test(cmd)) {
+      registry.dispatch(cmd, context).catch(error => log('command error:', error.message));
+    }
   }
 
   function start() {
+    stopped = false;
     // Singleton: if a live pidfile exists, bail (the supervisor runs exactly one).
     if (existsSync(PID_FILE)) {
       const existing = parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10);
@@ -230,14 +264,35 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     connect();
     return api;
   }
-  function stop() { ws?.close(); }
+  function waitFor(predicate, timeoutMs = 10_000) {
+    return new Promise((resolve, reject) => {
+      const waiter = { predicate, resolve, reject, timer: null };
+      waiter.timer = setTimeout(() => {
+        waiters.delete(waiter);
+        reject(new Error('timeout'));
+      }, timeoutMs);
+      waiters.add(waiter);
+    });
+  }
+  async function sendAndWait(message, predicate, timeoutMs = 10_000) {
+    if (!isCanonical()) throw new Error(`bot "${key}" is not canonical (assigned ${assignedName || 'none'})`);
+    const result = waitFor(predicate, timeoutMs);
+    sendRaw(message);
+    return result;
+  }
+  function stop() {
+    stopped = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    ws?.close();
+  }
 
   const api = {
     id, key, name: key, server: SERVER,
     get assignedName() { return assignedName; },
     get canonical() { return isCanonical(); },
-    isCanonical,
-    start, stop, send, request, chat, addressedText,
+    isCanonical, registry,
+    start, stop, send, request, waitFor, sendAndWait, chat, addressedText,
     onCommand: (cb) => { cbs.command.push(cb); return api; },
     onMessage: (cb) => { cbs.message.push(cb); return api; },
     onOpen: (cb) => { cbs.open.push(cb); return api; },
@@ -247,6 +302,10 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
 }
 
 export function runBot(opts) { return createBot(opts).start(); }
+
+export { createCommandRegistry, generateCommandMarkdown } from './commands.mjs';
+export { configTypes, defineConfig, generateConfigMarkdown, parseConfig } from './config.mjs';
+export { createTransportFixture } from './fixture.mjs';
 
 // ── App surface for out-of-repo bots ────────────────────────────────────────
 //
