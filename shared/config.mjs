@@ -123,6 +123,144 @@ export function saveCliConfig(value = {}) {
  */
 const STARTER_DAEMON_YAML = `# tlda daemon settings.
 #
+# Models tlda can launch through the installed Claude Code, Codex, and Goose
+# harnesses. The app checks which harnesses are installed and authenticated on
+# this machine before offering their models.
+models:
+  default: gpt
+  values:
+    opus:
+      id: claude-opus-5
+      harness:
+        kind: claude
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+          - "--dangerously-skip-permissions"
+        preferences: []
+        controls: true
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    sonnet:
+      id: sonnet
+      harness:
+        kind: claude
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+          - "--dangerously-skip-permissions"
+        preferences: []
+        controls: true
+    haiku:
+      id: haiku
+      harness:
+        kind: claude
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+          - "--dangerously-skip-permissions"
+        preferences: []
+        controls: true
+    fable:
+      id: fable
+      harness:
+        kind: claude
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+          - "--dangerously-skip-permissions"
+        preferences: []
+        controls: true
+    gpt:
+      id: gpt-5.5
+      harness:
+        kind: codex
+        required:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        preferences: []
+        controls: false
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    sol:
+      id: gpt-5.6-sol
+      harness:
+        kind: codex
+        required:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        preferences: []
+        controls: false
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    luna:
+      id: gpt-5.6-luna
+      harness:
+        kind: codex
+        required:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        preferences: []
+        controls: false
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    terra:
+      id: gpt-5.6-terra
+      harness:
+        kind: codex
+        required:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        preferences: []
+        controls: false
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
+    deepseek:
+      id: deepseek/deepseek-v4-pro
+      harness:
+        kind: goose
+        required: []
+        preferences: []
+        controls: true
+    minimax:
+      id: minimax/minimax-m3
+      harness:
+        kind: goose
+        required: []
+        preferences: []
+        controls: true
+    qwen:
+      id: qwen/qwen3.6-plus
+      harness:
+        kind: goose
+        required: []
+        preferences: []
+        controls: true
+    glm:
+      id: z-ai/glm-5.2
+      harness:
+        kind: goose
+        required: []
+        preferences: []
+        controls: true
+
 # An environment is a COMPLETE set of three fields — there are no fallbacks, and
 # a missing one fails at startup rather than being guessed:
 #
