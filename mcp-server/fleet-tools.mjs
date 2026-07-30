@@ -2053,10 +2053,6 @@ export async function handleFleetTool(name, args, context = {}) {
 
     const cwd = getAgentCwd() || process.env.PWD || null;
     const labels = [];
-    if (cwd) {
-      const project = path.basename(cwd);
-      if (project && project !== '~') labels.push(project);
-    }
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
     const envName = getActiveEnvName();
     const daemonKey = process.env.FLEET_DAEMON_KEY || (machineId && envName ? `${machineId}:${envName}` : null);

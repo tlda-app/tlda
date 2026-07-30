@@ -1796,29 +1796,46 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   padding-left: 14px;
 }
 .fleet-agents-shape .fleet-agents-row-detail {
-  padding: 3px 10px 7px 32px;
+  --detail-name-columns: 112px;
+  --detail-seen-column: 58px;
+  --detail-context-column: 36px;
+  display: grid;
+  padding: 3px 8px 7px;
   font-size: 10px;
   line-height: 1.5;
 }
-/* Meta line: machine · model · effort · cap · seen — labeled dim tokens. */
+.fleet-agents-shape .fleet-agents-row.native-child .fleet-agents-row-detail {
+  padding-left: 14px;
+}
+.fleet-agents-shape .fleet-agents-detail-top,
+.fleet-agents-shape .fleet-agents-detail-task-row {
+  display: grid;
+  grid-template-columns:
+    var(--detail-name-columns)
+    var(--detail-seen-column)
+    var(--detail-context-column)
+    minmax(0, 1fr)
+    auto;
+  align-items: baseline;
+  min-width: 0;
+}
 .fleet-agents-shape .fleet-agents-detail-meta {
+  grid-column: 1 / 4;
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: 5px;
-  margin-bottom: 3px;
+  min-width: 0;
 }
-/* Current task, shown in full (wraps) rather than truncated. */
-.fleet-agents-shape .fleet-agents-detail-current {
+.fleet-agents-shape .fleet-agents-detail-task-row {
+  min-height: 15px;
+}
+.fleet-agents-shape .fleet-agents-detail-task {
+  grid-column: 4;
+  min-width: 0;
   opacity: 0.72;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-.fleet-agents-shape .fleet-agents-detail-task {
-  opacity: 0.55;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .fleet-agents-shape .fleet-agents-detail-message {
   opacity: 0.4;
@@ -1827,38 +1844,6 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   overflow: hidden;
   text-overflow: ellipsis;
   margin-top: 2px;
-}
-.fleet-agents-shape .fleet-agents-detail-machine {
-  flex-shrink: 0;
-  opacity: 0.75;
-  background: rgba(150, 150, 150, 0.18);
-  border-radius: 2px;
-  padding: 0 4px;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fleet-agents-shape .fleet-agents-detail-model {
-  flex-shrink: 0;
-  opacity: 0.7;
-  background: rgba(122, 158, 200, 0.15);
-  border-radius: 2px;
-  padding: 0 4px;
-}
-.fleet-agents-shape .fleet-agents-detail-effort {
-  flex-shrink: 0;
-  opacity: 0.55;
-  background: rgba(147, 112, 219, 0.15);
-  border-radius: 2px;
-  padding: 0 4px;
-}
-.fleet-agents-shape .fleet-agents-detail-cap {
-  flex-shrink: 0;
-  opacity: 0.55;
-  background: rgba(129, 199, 132, 0.15);
-  border-radius: 2px;
-  padding: 0 4px;
 }
 .fleet-agents-shape .fleet-agents-detail-health,
 .fleet-agents-shape .fleet-agents-health {
@@ -1870,24 +1855,65 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   padding: 0 4px;
   white-space: nowrap;
 }
-.fleet-agents-shape .fleet-agents-detail-seen {
+.fleet-agents-shape .fleet-agents-detail-hibernate {
+  grid-column: 5;
   flex-shrink: 0;
-  opacity: 0.45;
-  margin-left: auto;
-}
-.fleet-agents-shape .fleet-agents-detail-action {
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 2px;
-  padding: 0 5px;
+  border: none;
+  padding: 0 4px;
   font: inherit;
+  font-size: 13px;
   line-height: 16px;
-  color: rgba(232, 136, 136, 0.9);
-  background: rgba(232, 136, 136, 0.12);
+  color: rgba(232, 136, 136, 0.72);
+  background: transparent;
   cursor: pointer;
+  opacity: 0.74;
 }
-.fleet-agents-shape .fleet-agents-detail-action:hover {
-  background: rgba(232, 136, 136, 0.2);
+.fleet-agents-shape .fleet-agents-detail-hibernate:hover {
+  color: rgba(255, 172, 172, 0.95);
+  opacity: 1;
+}
+.fleet-agents-shape .fleet-agents-metadata-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 160px;
+  padding: 0 5px 0 3px;
+  border-radius: 2px;
+  line-height: 16px;
+  color: rgba(226, 230, 240, 0.78);
+  background: rgba(120, 130, 145, 0.12);
+  border: 1px solid rgba(170, 180, 200, 0.14);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fleet-agents-shape .fleet-agents-metadata-chip.compact {
+  max-width: 70px;
+  line-height: 14px;
+  font-size: 8px;
+  opacity: 0.78;
+}
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="model"],
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="option"] {
+  background: rgba(122, 158, 200, 0.12);
+  border-color: rgba(122, 158, 200, 0.22);
+}
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="activity"] {
+  color: #d79a62;
+  background: rgba(215, 154, 98, 0.12);
+  border-color: rgba(215, 154, 98, 0.22);
+}
+.fleet-agents-shape .fleet-agents-metadata-glyph {
+  flex: 0 0 10px;
+  width: 10px;
+  text-align: center;
+  opacity: 0.72;
+}
+.fleet-agents-shape .fleet-agents-metadata-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .fleet-agents-shape .fleet-agents-detail-labels {
   display: flex;
@@ -1906,12 +1932,24 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   border-radius: 2px;
   line-height: 16px;
   color: rgba(255, 255, 255, 0.82);
-  background: rgba(122, 158, 200, 0.14);
+  background: rgba(122, 184, 160, 0.16);
+  border: 1px solid rgba(122, 184, 160, 0.18);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: grab;
   touch-action: none;
+}
+.fleet-agents-shape .fleet-agents-detail-label-chip.compact {
+  max-width: 96px;
+  line-height: 14px;
+  font-size: 8px;
+  opacity: 0.78;
+}
+.fleet-agents-shape .fleet-agents-detail-label-chip.is-folder-label {
+  color: rgba(255, 236, 210, 0.86);
+  background: rgba(196, 149, 106, 0.13);
+  border-color: rgba(196, 149, 106, 0.24);
 }
 .fleet-agents-shape .fleet-agents-detail-label-glyph {
   flex-shrink: 0;
@@ -1949,7 +1987,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   display: flex;
   align-items: center;
   gap: 3px;
-  max-width: 120px;
+  max-width: 110px;
   overflow: hidden;
 }
 
@@ -2031,8 +2069,7 @@ body.phone-mode .fleet-hud-wrap .tl-shape {
 body.phone-mode .fleet-agents-col-task { opacity: 0.85; }
 body.phone-mode .fleet-agents-col-seen { opacity: 0.8; }
 body.phone-mode .fleet-agents-col-ctx { opacity: 0.9; }
-body.phone-mode .fleet-agents-detail-cap,
-body.phone-mode .fleet-agents-detail-seen { opacity: 0.85; }
+body.phone-mode .fleet-agents-metadata-chip { opacity: 0.9; }
 body.phone-mode .fleet-agents-empty { opacity: 0.7; }
 body.phone-mode .fleet-agents-sort-toggle { opacity: 0.75; }
 
@@ -2131,17 +2168,18 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-agents-shape .fleet-agents-row-controls {
   display: flex;
-  width: 20px;
+  width: 24px;
   flex-shrink: 0;
   align-items: center;
 }
 .fleet-agents-shape .fleet-agents-fold-btn {
-  width: 18px;
-  height: 18px;
-  line-height: 18px;
-  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  font-size: 13px;
   cursor: grab;
-  opacity: 0.45;
+  opacity: 0.72;
+  border-radius: 3px;
 }
 .fleet-filter-replace-zone-disabled {
   opacity: 0.45;
@@ -2149,10 +2187,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
-  opacity: 0.5;
+  opacity: 0.78;
 }
 .fleet-agents-shape .fleet-agents-fold-btn:hover {
   opacity: 1 !important;
+  background: rgba(255, 255, 255, 0.08);
 }
 .fleet-agents-shape .fleet-agents-kill-btn:hover {
   opacity: 1 !important;
@@ -2164,12 +2203,12 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-kill-btn {
-  opacity: 0;
+  opacity: 0.34;
 }
 .fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed:hover .fleet-agents-kill-btn {
-  opacity: 0.4;
+  opacity: 0.62;
 }
 
 /* --- Optimistic spawn card --- */

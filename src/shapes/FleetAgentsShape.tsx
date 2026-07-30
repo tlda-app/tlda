@@ -18,10 +18,10 @@ import {
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
-import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
+import { agentDisplayLabel, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -385,56 +385,6 @@ export function usePillDrag() {
 }
 
 
-// Fetch last message per agent from search API (batched, cached)
-const lastMessageCache = new Map<string, { text: string; ts: number; fetched: number }>()
-
-async function fetchLastMessage(agentName: string): Promise<{ text: string; ts: number } | null> {
-  const cached = lastMessageCache.get(agentName)
-  if (cached && Date.now() - cached.fetched < 30_000) return cached
-  // /api/logs/search doesn't exist on the unified server yet — skip to avoid 404 spam
-  return null
-  try {
-    // Search for the agent name — the API does FTS, then we filter client-side
-    const results = await searchFleet(agentName, 20)
-    // Find messages actually from this agent
-    const fromAgent = results.filter((r: any) => {
-      const fromName = (r.from || '').replace('fleet:', '')
-      return fromName === agentName || fromName.includes(agentName)
-    })
-    const match = fromAgent[0] || results[0]
-    if (match) {
-      const text = (match.snippet || match.text || match.message || match.body || '').replace(/<[^>]*>/g, '').replace(/[⟨⟩]{2}/g, '').replace(/\s+/g, ' ').trim()
-      const ts = match.timestamp ? new Date(match.timestamp).getTime() : Date.now()
-      const entry = { text, ts, fetched: Date.now() }
-      lastMessageCache.set(agentName, entry)
-      return entry
-    }
-  } catch {}
-  return null
-}
-
-function useLastMessages(agents: any[]): Record<string, string> {
-  const [messages, setMessages] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    let mounted = true
-    const names = agents.map(a => agentExactName(a))
-    Promise.all(names.map(async (name) => {
-      const msg = await fetchLastMessage(name)
-      return [name, msg?.text || ''] as const
-    })).then(pairs => {
-      if (!mounted) return
-      const map: Record<string, string> = {}
-      for (const [name, text] of pairs) if (text) map[name] = text
-      setMessages(map)
-    })
-    return () => { mounted = false }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents.length])
-
-  return messages
-}
-
 function FleetAgentsInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
@@ -663,7 +613,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         const order: Record<string, number> = { awake: 0, hibernating: 1 }
         const ca = order[fleetAgentCategory(a)] ?? 2
         const cb = order[fleetAgentCategory(b)] ?? 2
-        return dir * (ca - cb) || b._ts - a._ts
+        return dir * (ca - cb) || agentDisplayLabel(a, agents).localeCompare(agentDisplayLabel(b, agents))
       }
       // "Active": stable sort keyed on the displayed time bucket. Different
       // buckets order by recency (the coarse continuum); within the SAME bucket,
@@ -701,13 +651,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       appendFamily(agent, family)
       families.push(family)
     }
-    if (sortKey === 'active') {
-      families.sort((a, b) => {
-        const aLatest = Math.max(...a.map(agent => agent._ts))
-        const bLatest = Math.max(...b.map(agent => agent._ts))
-        return dir * (aLatest - bLatest)
-      })
-    }
     return families.flat()
   }, [agents, sortKey, sortAsc])
 
@@ -725,9 +668,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     () => projectFleetAgentDirectoryFolding(sortedAgents, childFoldOverrides),
     [sortedAgents, childFoldOverrides],
   )
-
-  // Fetch last messages for visible agents
-  const lastMessages = useLastMessages(childFolding.visibleAgents)
 
   const contextPercent = useFleetContext(null, frameId)
   const rowItems = useMemo<AgentListItem[]>(
@@ -795,7 +735,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             onPointerUp={(e) => { e.stopPropagation(); if (sortKey === 'status') setSortAsc(p => !p); else { setSortKey('status'); setSortAsc(false) } }}
             style={{ cursor: 'pointer' }}
           >Task {sortKey === 'status' ? (sortAsc ? '▴' : '▾') : ''}</span>
-          <span className="fleet-agents-col-labels">Labels</span>
+          <span className="fleet-agents-col-labels">Label</span>
         </div>
 
         {/* Agent rows — scrollable flat list */}
@@ -860,11 +800,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       row={toFleetAgentDirectoryRow(item.agent, { spawnModels: spawnModelInfo.models })}
                       taskDesc={taskText}
                       taskTitle={taskText}
+                      tasks={agentTasks}
                       contextPct={contextPercent.get(item.agent.id)}
                       expanded={expandedId === item.agent.id}
-                      lastMessage={lastMessages[agentExactName(item.agent)] || ''}
                       childCount={childCount}
                       childrenFolded={childrenFolded}
+                      knownProjects={projectList}
                       onCycleState={cycleAgentState}
                       onControlPointerDown={childCount > 0 ? (e) => startDrag(
                         e,

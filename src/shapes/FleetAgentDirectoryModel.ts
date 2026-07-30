@@ -51,6 +51,13 @@ function readableToken(value: string): string {
   return value.replace(/[_-]+/g, ' ').trim()
 }
 
+function readablePath(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const parts = trimmed.split('/').filter(Boolean)
+  return parts[parts.length - 1] || trimmed
+}
+
 export function formatFleetAgentModel(model: string | null | undefined, options: FleetAgentDirectoryFormatOptions = {}): string {
   if (!model) return ''
   const catalog = options.spawnModels || []
@@ -157,6 +164,9 @@ export type FleetAgentDirectoryRowModel = {
   dimmed: boolean
   nameOpacity: number
   machine: string
+  project: string
+  cwd: string
+  cwdLabel: string
   model: string
   spawnOptions: string[]
   permission: string
@@ -172,13 +182,17 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
   const meta = agent?.metadata || {}
   const ago = formatFleetAgentRelativeTime(ts)
   const machine = agent?.machine_id || ''
+  const project = String(meta.project || meta.doc || agent?.project || '').trim()
+  const cwd = String(meta.cwd || agent?.cwd || '').trim()
+  const cwdLabel = readablePath(cwd)
   const model = formatFleetAgentModel(meta.model, options)
   const spawnOptions = formatFleetAgentSpawnOptions(meta)
   const permission = formatFleetAgentPermission(meta)
   const activityHealth = formatFleetAgentActivityHealthForAgent(agent)
   const secsAgo = ts ? (Date.now() - ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
-  const hoverTitle = [displayName, machine && `machine: ${machine}`, model && `model: ${model}`, spawnOptions.length && spawnOptions.join(' · '), activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
+  const folderTitle = project ? `project:${project}` : cwd ? `cwd:${cwd}` : ''
+  const hoverTitle = [displayName, machine && `machine: ${machine}`, folderTitle, model && `model: ${model}`, spawnOptions.length && spawnOptions.join(' · '), activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
     .filter(Boolean)
     .join('  ·  ')
   return {
@@ -194,6 +208,9 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
     dimmed: fleetAgentCategory(agent) === 'hibernating',
     nameOpacity,
     machine,
+    project,
+    cwd,
+    cwdLabel,
     model,
     spawnOptions,
     permission,
