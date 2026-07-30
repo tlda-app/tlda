@@ -15,11 +15,13 @@ import {
   type Editor,
   type TLShapeId,
 } from 'tldraw'
+import * as autocompleteCore from '@algolia/autocomplete-core'
 import { beginFleetDragWithoutSnap, createFleetShape, agentDisplayLabel, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
-import { searchFleet, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
+import { flushSync } from 'react-dom'
+import { searchFleet, useFleetAgents, useFleetProjects, useFleetTasks } from '../fleet-data-adapter'
 import { fleetSearchResultAgentChatFilter, fleetSearchResultParticipantLabel } from '../../shared/filter-semantics.mjs'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
@@ -34,6 +36,14 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { convertChatEvent } from '../fleet/fleet-data.mjs'
 import { appendToken } from '../authToken'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
+import {
+  SEARCH_AUTOCOMPLETE_INITIAL_VIEW_STATE,
+  applySearchAutocompleteSuggestion,
+  activeSearchAutocompleteToken,
+  searchAutocompleteViewState,
+  searchAutocompleteSuggestions,
+  type SearchAutocompleteSuggestion,
+} from '../fleet/search-autocomplete'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
@@ -377,10 +387,14 @@ function FleetSearchInner({ shape }: { shape: any }) {
   }, [editor])
 
   const agents = useFleetAgents()
+  const projects = useFleetProjects()
   const tasks = useFleetTasks()
   const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
   const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
+  const [autocomplete, setAutocomplete] = useState(SEARCH_AUTOCOMPLETE_INITIAL_VIEW_STATE)
+  const autocompleteRef = useRef(autocomplete)
+  const autocompleteApiRef = useRef<ReturnType<typeof autocompleteCore.createAutocomplete<SearchAutocompleteSuggestion, React.SyntheticEvent, React.MouseEvent, React.KeyboardEvent>> | null>(null)
   const [results, setResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
@@ -398,6 +412,15 @@ function FleetSearchInner({ shape }: { shape: any }) {
   }, [chatShapeId, chatShapeExists])
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const restoringAcceptedSuggestionRef = useRef(false)
+  const autocompleteId = useMemo(() => `fleet-search-autocomplete-${String(shape.id).replace(/[^A-Za-z0-9_-]/g, '_')}`, [shape.id])
+  const currentProject = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('project') || undefined
+    : undefined
+  const autocompleteContext = useMemo(() => ({ agents, projects, currentProject }), [agents, projects, currentProject])
+  useEffect(() => {
+    autocompleteRef.current = autocomplete
+  }, [autocomplete])
 
   const agentFilterName = useCallback((id: string) => {
     if (!id) return 'unknown'
@@ -488,16 +511,178 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setChatShapeId(newId)
   }, [agents, editor, shape.id])
 
+  const acceptAutocompleteSuggestion = useCallback((suggestion?: SearchAutocompleteSuggestion) => {
+    const current = autocompleteRef.current
+    const selected = suggestion || current.suggestions[current.highlightedIndex]
+    if (!selected || current.status !== 'open') return false
+    const applied = applySearchAutocompleteSuggestion(query, current.token, selected)
+    setQuery(applied.query)
+    const closed = { ...current, status: 'closed' as const, suggestions: [], highlightedIndex: -1 }
+    autocompleteRef.current = closed
+    autocompleteApiRef.current?.setIsOpen(false)
+    autocompleteApiRef.current?.setQuery(applied.query)
+    setAutocomplete(closed)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => doSearch(applied.query), 300)
+    restoringAcceptedSuggestionRef.current = true
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(applied.cursor, applied.cursor)
+      window.setTimeout(() => { restoringAcceptedSuggestionRef.current = false }, 0)
+    })
+    return true
+  }, [doSearch, query])
+
+  useEffect(() => {
+    const input = inputRef.current
+    if (!input) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      const current = autocompleteRef.current
+      if (current.status !== 'open') return
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const len = current.suggestions.length
+        if (len === 0) return
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        const next = e.key === 'ArrowDown'
+          ? (current.highlightedIndex < 0 ? 0 : (current.highlightedIndex + 1) % len)
+          : ((current.highlightedIndex < 0 ? 0 : current.highlightedIndex) - 1 + len) % len
+        const nextState = { ...current, highlightedIndex: next }
+        autocompleteRef.current = nextState
+        flushSync(() => setAutocomplete(nextState))
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        if (current.highlightedIndex < 0) return
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        acceptAutocompleteSuggestion()
+      }
+    }
+    input.addEventListener('keydown', onKeyDown, true)
+    return () => input.removeEventListener('keydown', onKeyDown, true)
+  }, [acceptAutocompleteSuggestion])
+
+  const handleAutocompleteKeyDownCapture = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    const current = autocompleteRef.current
+    if (current.status !== 'open') return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const len = current.suggestions.length
+      if (len === 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.nativeEvent.stopImmediatePropagation()
+      const next = e.key === 'ArrowDown'
+        ? (current.highlightedIndex < 0 ? 0 : (current.highlightedIndex + 1) % len)
+        : ((current.highlightedIndex < 0 ? 0 : current.highlightedIndex) - 1 + len) % len
+      const nextState = { ...current, highlightedIndex: next }
+      autocompleteRef.current = nextState
+      flushSync(() => setAutocomplete(nextState))
+      return
+    }
+    if (e.key === 'Tab' || e.key === 'Enter') {
+      if (current.highlightedIndex < 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.nativeEvent.stopImmediatePropagation()
+      acceptAutocompleteSuggestion()
+    }
+  }, [acceptAutocompleteSuggestion])
+
+  const autocompleteApi = useMemo(() => autocompleteCore.createAutocomplete<SearchAutocompleteSuggestion, React.SyntheticEvent, React.MouseEvent, React.KeyboardEvent>({
+    id: autocompleteId,
+    defaultActiveItemId: 0,
+    openOnFocus: true,
+    shouldPanelOpen: ({ state }) => state.collections.some((collection) => collection.items.length > 0),
+    onStateChange: ({ state }) => {
+      const cursor = inputRef.current?.selectionStart ?? state.query.length
+      const next = searchAutocompleteViewState(state, cursor)
+      autocompleteRef.current = next
+      setAutocomplete(next)
+    },
+    getSources({ query: currentQuery }) {
+      const cursor = inputRef.current?.selectionStart ?? currentQuery.length
+      return [
+        {
+          sourceId: 'fleet-search-suggestions',
+          getItems() {
+            return searchAutocompleteSuggestions(currentQuery, cursor, autocompleteContext)
+          },
+          getItemInputValue({ item }) {
+            const token = activeSearchAutocompleteToken(currentQuery, cursor)
+            return applySearchAutocompleteSuggestion(currentQuery, token, item).query
+          },
+          onSelect({ item }) {
+            acceptAutocompleteSuggestion(item)
+          },
+        },
+      ]
+    },
+  }), [acceptAutocompleteSuggestion, autocompleteContext, autocompleteId])
+  autocompleteApiRef.current = autocompleteApi
+
+  const syncAutocompleteInput = useCallback((value: string, cursor: number, open = true) => {
+    if (restoringAcceptedSuggestionRef.current) return
+    autocompleteApi.setQuery(value)
+    autocompleteApi.setIsOpen(open)
+    void autocompleteApi.refresh().then(() => {
+      const latestCursor = inputRef.current?.selectionStart ?? cursor
+      setAutocomplete((prev) => ({
+        ...prev,
+        query: value,
+        cursor: latestCursor,
+      }))
+    })
+  }, [autocompleteApi])
+
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value
+    const cursor = e.target.selectionStart ?? val.length
     setQuery(val)
+    syncAutocompleteInput(val, cursor)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => doSearch(val), 300)
-  }, [doSearch])
+  }, [doSearch, syncAutocompleteInput])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.stopPropagation()
     ;(e.nativeEvent as any).stopImmediatePropagation?.()
+    const currentAutocomplete = autocompleteRef.current
+    if (currentAutocomplete.status === 'open') {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        const current = autocompleteRef.current
+        const len = current.suggestions.length
+        if (len > 0) {
+          const next = current.highlightedIndex < 0 ? 0 : (current.highlightedIndex + 1) % len
+          setAutocomplete((prev) => ({ ...prev, highlightedIndex: next }))
+        }
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        const current = autocompleteRef.current
+        const len = current.suggestions.length
+        if (len > 0) {
+          const active = current.highlightedIndex < 0 ? 0 : current.highlightedIndex
+          const next = (active - 1 + len) % len
+          setAutocomplete((prev) => ({ ...prev, highlightedIndex: next }))
+        }
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        acceptAutocompleteSuggestion()
+        return
+      }
+      if (e.key === 'Enter' && currentAutocomplete.highlightedIndex >= 0) {
+        e.preventDefault()
+        acceptAutocompleteSuggestion()
+        return
+      }
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -505,13 +690,18 @@ function FleetSearchInner({ shape }: { shape: any }) {
     }
     if (e.key === 'Escape') {
       e.preventDefault()
-      if (chatShapeId) {
+      if (autocomplete.status === 'open') {
+        autocompleteApi.setIsOpen(false)
+        const closed = { ...autocompleteRef.current, status: 'closed' as const, suggestions: [], highlightedIndex: -1 }
+        autocompleteRef.current = closed
+        setAutocomplete(closed)
+      } else if (chatShapeId) {
         closeChat()
       } else {
         editor.setEditingShape(null)
       }
     }
-  }, [doSearch, query, editor, chatShapeId, closeChat])
+  }, [acceptAutocompleteSuggestion, autocomplete.status, autocompleteApi, doSearch, query, editor, chatShapeId, closeChat])
 
   // Parse current filters for display
   const activeFilters = useMemo<Record<string, any>>(() => {
@@ -586,17 +776,33 @@ function FleetSearchInner({ shape }: { shape: any }) {
             padding: 6,
             borderBottom: '1px solid rgba(128, 128, 128, 0.1)',
             flexShrink: 0,
+            position: 'relative',
           }}
         >
           <input
             ref={inputRef}
             type="text"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={autocomplete.status === 'open'}
+            aria-controls={autocompleteId}
+            aria-activedescendant={autocomplete.status === 'open' && autocomplete.highlightedIndex >= 0 ? `${autocompleteId}-${autocomplete.highlightedIndex}` : undefined}
             placeholder="Search... (agent:(skip | guidance) from:me)"
             value={query}
             onChange={handleInput}
+            onKeyDownCapture={handleAutocompleteKeyDownCapture}
             onKeyDown={handleKeyDown}
+            onClick={(e) => syncAutocompleteInput(query, e.currentTarget.selectionStart ?? query.length)}
+            onSelect={(e) => syncAutocompleteInput(query, e.currentTarget.selectionStart ?? query.length)}
             onPointerDown={(e) => { stopEventPropagation(e) }}
-            onFocus={(e) => { stopEventPropagation(e) }}
+            onFocus={(e) => { stopEventPropagation(e); syncAutocompleteInput(query, e.currentTarget.selectionStart ?? query.length) }}
+            onBlur={() => {
+              window.setTimeout(() => {
+                const closed = { ...autocompleteRef.current, status: 'closed' as const, suggestions: [], highlightedIndex: -1 }
+                autocompleteRef.current = closed
+                setAutocomplete(closed)
+              }, 120)
+            }}
             style={{
               width: '100%',
               background: 'rgba(128, 128, 128, 0.08)',
@@ -609,6 +815,37 @@ function FleetSearchInner({ shape }: { shape: any }) {
               fontFamily: 'inherit',
             }}
           />
+          {autocomplete.status === 'open' && (
+            <div
+              id={autocompleteId}
+              className="fleet-search-autocomplete"
+              role="listbox"
+              onPointerDown={(e) => stopEventPropagation(e)}
+            >
+              {autocomplete.suggestions.map((suggestion, index) => (
+                <div
+                  key={suggestion.id}
+                  id={`${autocompleteId}-${index}`}
+                  className={`fleet-search-autocomplete-option${index === autocomplete.highlightedIndex ? ' active' : ''}`}
+                  role="option"
+                  aria-selected={index === autocomplete.highlightedIndex}
+                  onPointerEnter={() => {
+                    const next = { ...autocompleteRef.current, highlightedIndex: index }
+                    autocompleteRef.current = next
+                    setAutocomplete(next)
+                  }}
+                  onPointerDown={(e) => {
+                    stopEventPropagation(e)
+                    e.preventDefault()
+                    acceptAutocompleteSuggestion(suggestion)
+                  }}
+                >
+                  <span className="fleet-search-autocomplete-label">{suggestion.label}</span>
+                  {suggestion.detail && <span className="fleet-search-autocomplete-detail">{suggestion.detail}</span>}
+                </div>
+              ))}
+            </div>
+          )}
           {queryReadout.length > 0 && (
             <div className="fleet-search-query-readout" aria-label="Parsed search query">
               {queryReadout.map((chip, i) => <span key={`${chip}-${i}`} className="fleet-search-query-chip">{chip}</span>)}
