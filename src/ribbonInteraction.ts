@@ -6,6 +6,7 @@ import type { RibbonSegment } from './shapes/UnderstandingLineShape'
 import type { LineStatus } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
 import { checkRibbonStale } from './historyStore'
+import { overlapsRibbonX } from './ribbonZone'
 
 const MARGIN_X = 0
 const BAR_WIDTH = 6
@@ -477,7 +478,11 @@ export async function remapRibbonSegments(
 export function isInRibbonZone(editor: Editor, shapeId: TLShapeId): boolean {
   const bounds = editor.getShapePageBounds(shapeId)
   if (!bounds) return false
-  return bounds.minX < 5
+  const ribbon = getRibbonShape(editor)
+  if (!ribbon) return false
+  const ribbonBounds = editor.getShapePageBounds(ribbon.id)
+  if (!ribbonBounds) return false
+  return overlapsRibbonX(bounds, ribbonBounds)
 }
 
 // Half-height (page-space px) of the band one eraser pass clears around the
