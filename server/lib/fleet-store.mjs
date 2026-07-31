@@ -3857,9 +3857,8 @@ export class FleetStore {
    * bulk close is auditable afterwards. It writes no report document, sends no
    * chat, and wakes nobody.
    *
-   * The unread delegate row is cleared too: `status='retracted'` already stops
-   * decideTaskRenudges (isRenudgeableTaskStatus excludes it), but leaving the
-   * unread behind would keep the item in the agent's inbox forever.
+   * The unread delegate row is cleared too: leaving it behind would keep the
+   * item in the agent's inbox forever.
    */
   retireTask(taskOrId, { reason, retiredBy = null, at = new Date().toISOString() } = {}) {
     if (!reason) throw new Error('retireTask requires a reason');

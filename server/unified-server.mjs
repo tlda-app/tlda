@@ -78,7 +78,6 @@ import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
-import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
@@ -791,21 +790,21 @@ setInterval(() => {
 
 const _subscriptionBatchWakes = new Map()
 
-const TASK_RENUDGE_SWEEP_MS = Number(process.env.TLDA_TASK_RENUDGE_SWEEP_MS || 60_000)
-const TASK_RENUDGE_INTERVAL_MS = Number(process.env.TLDA_TASK_RENUDGE_INTERVAL_MS || 5 * 60_000)
-const TASK_RENUDGE_SWEEP_LIMIT = 100
-const _taskRenudged = new Map()
-const _taskWakeQueue = new Map()
-let _taskRenudgeCursor = null
-
-// Per-agent wake circuit breaker. Consecutive terminal wake failures (a session
-// that can't be resolved → endless `launch-failed`) put an agent into exponential
-// backoff so runTaskRenudgeSweep stops respawning it every 5 min. Reset on real
-// recovery (markAgentAlive) or a successful wake. Keyed by agentId.
+// Per-agent wake circuit breaker. Consecutive terminal wake failures put an
+// agent into exponential backoff. Reset on real recovery (markAgentAlive) or a
+// successful wake. Keyed by agentId.
 const _wakeBreaker = new Map() // agentId -> { fails, nextTs, lastError }
-const WAKE_BREAKER_BASE_MS = TASK_RENUDGE_INTERVAL_MS // 5 min, first backoff step
+const WAKE_BREAKER_BASE_MS = 5 * 60_000
 const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
-let _taskWakeDraining = false
+
+function isWakeBreakerOpen(breaker, agentId, now) {
+  const b = breaker?.get?.(agentId)
+  return !!(b && b.nextTs > now)
+}
+
+function wakeBreakerBackoffMs(fails, baseMs, capMs) {
+  return Math.min(baseMs * 2 ** (Math.max(1, fails) - 1), capMs)
+}
 
 async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
   if (!shouldSendWakeNudge(agent, nudgeText)) return
@@ -969,76 +968,6 @@ async function reanimateAgent(agentQuery) {
   }
 }
 
-async function requestTaskWake(agentId, nudgeText = null, keys = []) {
-  const agent = await fleetStore.getAgent(agentId)
-  if (!agent || agent.dead || agent.human) return
-  const prev = _taskWakeQueue.get(agentId)
-  // Queue value carries the task keys riding this wake so the drain can refresh
-  // their renudge throttle on success (§5). Multiple tasks for one agent collapse
-  // to a single wake (dedup by agentId); their keys accumulate.
-  const mergedKeys = [...new Set([...(prev?.keys || []), ...keys])]
-  _taskWakeQueue.set(agentId, { nudgeText: nudgeText || prev?.nudgeText || null, keys: mergedKeys })
-  if (!_taskWakeDraining) drainTaskWakeQueue()
-}
-
-// A successful wake clears the agent's circuit breaker and refreshes the 5-min
-// renudge throttle for every task key that rode this wake (§4.1 + §5). Moving the
-// throttle stamp here — off the pre-attempt sweep — means a failing agent's
-// throttle never stays warm; it's gated by the breaker's backoff instead.
-function onTaskWakeSuccess(agentId, keys = []) {
-  _wakeBreaker.delete(agentId)
-  const now = Date.now()
-  for (const key of keys) _taskRenudged.set(key, { ts: now })
-}
-
-async function drainTaskWakeQueue() {
-  _taskWakeDraining = true
-  while (_taskWakeQueue.size > 0) {
-    const [agentId, entry] = _taskWakeQueue.entries().next().value
-    _taskWakeQueue.delete(agentId)
-    const nudgeText = entry?.nudgeText || null
-    const taskKeys = entry?.keys || []
-    const agent = await fleetStore?.getAgent?.(agentId)
-    if (!agent || agent.dead || agent.human) continue
-    const seat = await fleetStore?.getAgentDaemonRoute?.(agentId)
-    if (!seat) continue
-    const daemonKeys = [...daemonConnections.keys()]
-    if (daemonKeys.length === 0) continue
-    const daemonKey = seat.daemon_key
-    try {
-      const ownerDaemon = daemonConnections.get(daemonKey)
-      if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
-      const spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: agentId })
-      if (!spawnResult?.ok) {
-        // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
-        throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
-      }
-      const nextSeat = await fleetStore?.getAgentDaemonRoute?.(agentId)
-      if (!nextSeat) throw new Error(`respawn for ${agentId} did not create a daemon route`)
-      const deliveredNudge = spawnResult.already ? nudgeText : withAgentReturnNotice(agent, nudgeText)
-      await sendWakeNudge(nextSeat.daemon_key, agent, deliveredNudge, spawnResult.already ? 'already-awake' : 'post-respawn', 'task-renudge')
-      onTaskWakeSuccess(agentId, taskKeys)
-    } catch (e) {
-      // Record a terminal wake failure → open/extend the agent's circuit breaker
-      // (exponential backoff) so runTaskRenudgeSweep stops respawning it every
-      // 5 min (§2). Covers the `!spawnResult.ok` throw (launch-failed) and any
-      // RPC/transport error; a transient failure self-clears on the next success.
-      const b = _wakeBreaker.get(agentId) || { fails: 0 }
-      b.fails += 1
-      b.lastError = e.message
-      b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
-      _wakeBreaker.set(agentId, b)
-      console.warn(`[task-renudge] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
-      broadcastEvent('agent-wedged', {
-        agentId,
-        reason: `task re-nudge failed: ${e.message}`,
-        ts: new Date().toISOString(),
-      })
-    }
-  }
-  _taskWakeDraining = false
-}
-
 async function taskInboxStatusFor(agentId) {
   const status = (await fleetStore?.getAgent?.(agentId))?.metadata?.inboxStatus
   return normalizeInboxStatus(status)
@@ -1053,34 +982,6 @@ async function taskDelegateWakeText(description, agentId) {
   const status = await taskInboxStatusFor(agentId)
   const prefix = status[0].toUpperCase() + status.slice(1)
   return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
-}
-
-async function runTaskRenudgeSweep() {
-  if (!fleetStore) return
-  const page = await fleetStore.getActiveTasksPage?.({ limit: TASK_RENUDGE_SWEEP_LIMIT, cursor: _taskRenudgeCursor }) || { tasks: [], nextCursor: null }
-  const tasks = page.tasks || []
-  _taskRenudgeCursor = page.nextCursor || null
-  const taskStates = tasks.map(task => fleetStore.getTaskDeliveryState?.(task)).filter(Boolean)
-  const agentIds = taskStates.map(state => state?.task?.agent).filter(Boolean)
-  const nudges = decideTaskRenudges({
-    taskStates,
-    agents: await fleetStore.getAgentsByIds?.(agentIds) || [],
-    now: Date.now(),
-    lastRenudged: _taskRenudged,
-    renudgeIntervalMs: TASK_RENUDGE_INTERVAL_MS,
-    wakeBreaker: _wakeBreaker,
-  })
-  for (const nudge of nudges) {
-    // The renudge throttle is stamped on SUCCESSFUL wake (onTaskWakeSuccess), not
-    // here (§5) — so a failing agent's 5-min throttle never stays warm; its
-    // backoff is governed solely by the breaker. Pass the task key through so the
-    // drain can stamp it on delivery.
-    await requestTaskWake(nudge.task.agent, await taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
-  }
-}
-
-if (TASK_RENUDGE_SWEEP_MS > 0) {
-  setInterval(runTaskRenudgeSweep, TASK_RENUDGE_SWEEP_MS).unref?.()
 }
 
 // detectPlanApproval removed — plan detection is handled by the daemon
