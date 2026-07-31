@@ -7251,16 +7251,6 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- mark-dead ----
-  if (type === 'mark-dead') {
-    const { agent: agentId } = msg
-    if (!agentId) { error('missing agent'); return }
-    await fleetStore.markDead(agentId)
-    broadcastState()
-    reply({ ok: true })
-    return
-  }
-
   // ---- filter subscriptions ----
   //
   // A panel says "here is my filter and how much I can show". Subscribing gets
