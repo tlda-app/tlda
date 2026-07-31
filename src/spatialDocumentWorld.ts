@@ -64,6 +64,7 @@ export function spatialWorldBounds(nodes: SpatialDocumentNode[]) {
 export function zoomToSpatialWorld(
   editor: Editor,
   bounds: { x: number; y: number; w: number; h: number },
+  anchorNode?: SpatialDocumentNode | null,
 ) {
   const viewport = editor.getViewportScreenBounds()
   const availableW = Math.max(1, viewport.w - 80)
@@ -73,9 +74,13 @@ export function zoomToSpatialWorld(
     availableW / Math.max(1, bounds.w),
     availableH / Math.max(1, bounds.h),
   ))
+  // The world view frames the whole world, but it opens on the document you are
+  // at: "the map should go where the fucking document goes … certainly shouldn't
+  // be determined by where your fucking viewport is when you hit the button."
+  const anchor = anchorNode?.bounds || bounds
   editor.setCamera({
-    x: viewport.w / (2 * z) - (bounds.x + bounds.w / 2),
-    y: viewport.h / (2 * z) - (bounds.y + bounds.h / 2),
+    x: viewport.w / (2 * z) - (anchor.x + anchor.w / 2),
+    y: 48 / z - anchor.y,
     z,
   }, { animation: { duration: 300 } })
 }

@@ -43,7 +43,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     const bounds = spatialWorldBounds(nodes)
     if (!bounds) return
     savedMapCameras.set(editor, editor.getCamera())
-    zoomToSpatialWorld(editor, bounds)
+    zoomToSpatialWorld(editor, bounds, nodes.find(node => node.documentRef.kind === 'primary'))
   }, [editor, nodes, zoom])
 
   const activate = useCallback((nodeId: string) => {
