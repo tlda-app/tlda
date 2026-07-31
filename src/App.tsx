@@ -68,7 +68,7 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides' | 'markdown'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides' | 'markdown' | 'qmd'
   sourceDoc?: string
   members?: string[]
   buildStatus?: string
@@ -321,7 +321,7 @@ function App() {
       let document
       if (config.format === 'diff') {
         document = await loadDiffDocument(projectName, fullBasePath)
-      } else if (config.format === 'html' || config.format === 'markdown') {
+      } else if (config.format === 'html' || config.format === 'markdown' || config.format === 'qmd') {
         document = await loadHtmlDocument(config.name, fullBasePath)
       } else if (config.format === 'slides') {
         document = await loadSlidesDocument(config.name, fullBasePath)

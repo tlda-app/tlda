@@ -56,7 +56,12 @@ export function isSourceFilePath(path, context = {}) {
   const rel = normalizePath(path)
   if (!rel || isBuildJunkPath(rel)) return false
   const ctx = sourceManifestContext(context)
-  if (ctx.format === 'html' || ctx.format === 'slides') return true
+  // html and slides push a rendered tree; qmd pushes an unrendered one. All
+  // three share the same rule for the same reason: what the document needs is
+  // whatever sits beside it — site_libs, _quarto.yml, _extensions, data, images
+  // — and there is no reference graph that reveals the set. The push side
+  // already drops build output, so everything that arrives is source.
+  if (ctx.format === 'html' || ctx.format === 'slides' || ctx.format === 'qmd') return true
   const ext = extname(rel).toLowerCase()
   if (ctx.format === 'markdown') return MARKDOWN_DEPENDENCY_EXTENSIONS.has(ext)
   if (!SOURCE_EXTENSIONS.has(ext)) return false

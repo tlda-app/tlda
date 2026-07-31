@@ -4063,7 +4063,11 @@ app.use('/docs', (req, res, next) => {
             res.type('html').send(injected)
             return
           }
-          if (project.format === 'html') {
+          // qmd renders to a scrolling HTML page, so it wants exactly the html
+          // format's serve-time treatment: the same bridge, the same chapter
+          // title, the same prev/next. The difference between them is which
+          // machine ran quarto, and that is settled by build time.
+          if (project.format === 'html' || project.format === 'qmd') {
             const html = await fs.promises.readFile(projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
             let chapterTitle = ''

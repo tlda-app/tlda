@@ -41,7 +41,7 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
   }
 
   // Non-SVG formats always build eagerly on push
-  if (format === 'markdown' || format === 'html' || format === 'slides') {
+  if (format === 'markdown' || format === 'html' || format === 'slides' || format === 'qmd') {
     return { build: true, eager: true, reason: 'format-eager' }
   }
 
@@ -103,13 +103,14 @@ export function isSvgBuildStale(name) {
 /**
  * Get the builder function name for a format.
  * @param {string} format
- * @returns {'runBuild' | 'buildMarkdown' | 'buildHtml' | 'buildSlides'}
+ * @returns {'runBuild' | 'buildMarkdown' | 'buildHtml' | 'buildSlides' | 'buildQmd'}
  */
 export function builderForFormat(format) {
   const map = {
     markdown: 'buildMarkdown',
     html: 'buildHtml',
     slides: 'buildSlides',
+    qmd: 'buildQmd',
   }
   return map[format] || 'runBuild'
 }

@@ -5,7 +5,7 @@ import { unanchoredSourceLocation, type SourceLocationReason } from './sourceLoc
 
 export type AnchorDocument = {
   name: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown' | 'qmd'
   pages: Parameters<typeof canvasToPdf>[2]
 }
 

@@ -58,7 +58,7 @@ export interface SvgDocument {
   slideInfo?: SlideInfo[]
   macros?: Record<string, string>
   basePath?: string  // URL path prefix for files (e.g. "/docs/bregman/")
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown' | 'qmd'
   diffLayout?: DiffLayout
   targets?: TargetInfo[]  // present for multi-target projects
   // Markdown parts (notes/scratch) attached to a non-html/markdown project —

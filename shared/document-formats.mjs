@@ -18,4 +18,4 @@
  * again.
  */
 
-export const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides'])
+export const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides', 'qmd'])

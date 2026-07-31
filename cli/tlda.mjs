@@ -197,7 +197,7 @@ const command = args[0]
 const COMMAND_HELP = {
   scratch: 'tlda project scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda project book <name> --members project1,project2,project3,...\n\n  Create a book that groups existing projects together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
-  link:    'tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown]\n\n  Attach a source to a project. <source> is either a local file/repository path or a Git URL.\n  Local paths are bound only on this machine; Git URLs are cloned and polled by the server.\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper https://git.overleaf.com/project-id --main paper.tex --token "$OVERLEAF_TOKEN"\n\n  Remote options: --token TOKEN, --poll SECONDS (default 60; minimum 15).',
+  link:    'tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown|qmd]\n\n  Attach a source to a project. <source> is either a local file/repository path or a Git URL.\n  Local paths are bound only on this machine; Git URLs are cloned and polled by the server.\n  An existing different binding is refused until it is explicitly unlinked.\n\n  Examples:\n    tlda project link paper path/to/paper.tex\n    tlda project link talk path/to/talk.qmd --format slides\n    tlda project link paper https://git.overleaf.com/project-id --main paper.tex --token "$OVERLEAF_TOKEN"\n\n  Remote options: --token TOKEN, --poll SECONDS (default 60; minimum 15).',
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local path or Git URL currently linked to the project.\n  The source must match the existing binding.',
   init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
@@ -533,7 +533,7 @@ async function cmdScratch() {
 async function cmdCreate() {
   const name = getPositional(0)
   const source = getPositional(1)
-  if (!name || !source) { console.error('Usage: tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown]'); process.exit(1) }
+  if (!name || !source) { console.error('Usage: tlda project link <name> <source> [--main <file>] [--title "Title"] [--format slides|html|markdown|qmd]'); process.exit(1) }
 
   let format = getFlag('format') || null
   const sourcePath = resolve(source)
@@ -566,6 +566,7 @@ async function cmdCreate() {
     const ext = mainHint ? mainHint.toLowerCase().split('.').pop() : null
     if (ext === 'md') format = 'markdown'
     else if (ext === 'html' || ext === 'htm') format = 'html'
+    else if (ext === 'qmd') format = 'qmd'
     if (format) console.log(dim(`  Inferred format: ${format} (from --main ${mainHint})`))
   }
 
@@ -685,6 +686,68 @@ async function cmdCreate() {
       expectedRevision: await currentSourceRevision(name),
     })
     console.log(green('HTML project processed.'))
+
+    const server = getServer()
+    console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
+    return
+  }
+
+  // Quarto format: push the .qmd and everything it renders against; the SERVER
+  // runs quarto. Unlike --format slides, which takes an already-rendered deck
+  // from this machine, the source is what travels — so a bot can rebuild the
+  // document without a machine of its own.
+  if (format === 'qmd') {
+    if (await bindLocalSource()) return
+    const mainFile = mainArg || readdirSync(dir).find(f => f.toLowerCase().endsWith('.qmd'))
+    if (!mainFile) { console.error(`No .qmd file found in ${dir}`); process.exit(1) }
+
+    console.log(dim(`  Source: ${dir}`))
+    console.log(dim(`  Format: qmd`))
+    console.log(dim(`  Main file: ${mainFile}`))
+
+    try {
+      await api('POST', '/api/projects', { name, title, mainFile, format: 'qmd' })
+      console.log(green(`Created Quarto project "${name}".`))
+    } catch (e) {
+      if (e.message.includes('already exists')) {
+        console.log(`Project "${name}" exists, pushing files.`)
+      } else {
+        throw e
+      }
+    }
+    await activateLocalSource()
+
+    // A .qmd renders against its whole directory — _quarto.yml, _extensions/,
+    // data files, images — and there is no reference graph to walk before the
+    // render that would reveal which of them it touches. So the directory IS
+    // the closure, minus what a previous render produced: those are rebuilt
+    // server-side, and shipping them would push stale output into the version.
+    const SKIP_DIRS = new Set(['.git', '.quarto', '_site', '_book', 'node_modules'])
+    const qmdFiles = []
+    function collectQmdDir(base, prefix = '') {
+      for (const entry of readdirSync(join(base, prefix), { withFileTypes: true })) {
+        const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+        if (entry.isDirectory()) {
+          if (SKIP_DIRS.has(entry.name) || entry.name.endsWith('_files')) continue
+          collectQmdDir(base, relPath)
+        } else {
+          qmdFiles.push({
+            path: relPath,
+            content: readFileSync(join(base, relPath)).toString('base64'),
+            encoding: 'base64',
+          })
+        }
+      }
+    }
+    collectQmdDir(dir)
+
+    console.log(`Pushing ${qmdFiles.length} file(s)...`)
+    await api('POST', `/api/projects/${name}/push`, {
+      files: qmdFiles,
+      sourceManifest: sourceManifestForFiles(qmdFiles, { format: 'qmd', mainFile }),
+      expectedRevision: await currentSourceRevision(name),
+    })
+    console.log(green('Quarto project processed.'))
 
     const server = getServer()
     console.log(`\nViewer: ${cyan(`${server}/?project=${name}`)}`)
