@@ -298,72 +298,20 @@ body.tlda-pan-mode * {
   width: 100%;
 }
 
-.index-content-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 38vw);
-  gap: 22px;
-  align-items: start;
-}
-
-.picker-main {
-  min-width: 0;
-}
-
-.index-project-agent-columns {
-  position: sticky;
-  top: 2rem;
-  min-width: 0;
-  max-height: calc(100vh - 4rem);
-  overflow: auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-}
-
-.index-project-agent-column {
-  min-width: 0;
-  border-left: 1px solid #e2e8f0;
-  padding-left: 10px;
-}
-
-.index-project-agent-title {
-  overflow: hidden;
-  margin-bottom: 6px;
-  color: #64748b;
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.index-project-agent-list {
-  display: grid;
-  gap: 2px;
-}
-
-.index-project-agent-empty {
-  color: #94a3b8;
-  font-size: 0.74rem;
-}
-
-.index-agent-row {
-  cursor: pointer;
-}
-
-.index-agent-row.selected .fleet-agents-row-main {
-  background: #eff6ff;
-}
-
 .project-index {
+  /* The history cell's height. The agents cell beside it is exactly this tall
+     and clips on a whole line, so how many agents are visible is a consequence
+     of this number rather than a separate guess about it. Four lines at the
+     values below; change either and the count follows. */
+  --index-history-height: 64px;
+  --index-agent-line: 16px;
   width: 100%;
 }
 
 .project-index-axis,
 .project-index-row {
   display: grid;
-  grid-template-columns: minmax(160px, 200px) minmax(0, 1fr) 36px;
+  grid-template-columns: minmax(160px, 200px) 132px minmax(0, 1fr) 36px;
   column-gap: 14px;
 }
 
@@ -517,6 +465,29 @@ body.tlda-pan-mode * {
   font-size: 0.75rem;
 }
 
+.project-index-agents {
+  display: grid;
+  align-content: start;
+  grid-auto-rows: var(--index-agent-line);
+  align-self: center;
+  min-width: 0;
+  height: var(--index-history-height);
+  overflow: hidden;
+}
+
+.project-index-agent {
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 0.72rem;
+  line-height: var(--index-agent-line);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-index-agent.selected {
+  background: #eff6ff;
+}
+
 .project-index-history {
   position: relative;
   min-width: 0;
@@ -542,7 +513,7 @@ body.tlda-pan-mode * {
 }
 
 .project-index-spacetime.spacetime-panel {
-  height: 64px;
+  height: var(--index-history-height);
   margin: 0;
   opacity: 1;
   pointer-events: all;
@@ -627,26 +598,14 @@ body.tlda-pan-mode * {
     padding: 1rem;
   }
 
-  .index-content-layout {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
-  }
-
   .index-top-chat {
     height: 236px;
     margin-bottom: 14px;
   }
 
-  .index-project-agent-columns {
-    position: static;
-    max-height: none;
-    grid-template-columns: minmax(0, 1fr);
-    order: -1;
-  }
-
   .project-index-axis,
   .project-index-row {
-    grid-template-columns: minmax(0, 1fr) 76px;
+    grid-template-columns: minmax(0, 1fr) 104px 76px;
     column-gap: 8px;
   }
 
@@ -668,7 +627,7 @@ body.tlda-pan-mode * {
 
   .project-index-history {
     grid-column: 1 / -1;
-    min-height: 64px;
+    min-height: var(--index-history-height);
     padding: 0 8px 10px;
   }
 
@@ -682,7 +641,7 @@ body.tlda-pan-mode * {
   }
 
   .project-index-row .project-row-actions {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
   }
 
@@ -735,15 +694,12 @@ body.tlda-pan-mode * {
   color: var(--tl-color-text-3);
 }
 
-.tl-theme__dark .index-top-chat,
-.tl-theme__dark .index-project-agent-column {
+.tl-theme__dark .index-top-chat {
   border-color: var(--tl-color-divider);
 }
 
 .tl-theme__dark .index-top-chat-header,
-.tl-theme__dark .index-top-chat-empty,
-.tl-theme__dark .index-project-agent-title,
-.tl-theme__dark .index-project-agent-empty {
+.tl-theme__dark .index-top-chat-empty {
   color: var(--tl-color-text-3);
 }
 
@@ -754,7 +710,7 @@ body.tlda-pan-mode * {
   color: var(--tl-color-text-1);
 }
 
-.tl-theme__dark .index-agent-row.selected .fleet-agents-row-main {
+.tl-theme__dark .project-index-agent.selected {
   background: var(--tl-color-muted-1);
 }
 
