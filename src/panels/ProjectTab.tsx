@@ -14,6 +14,7 @@ import {
   selectSpatialWorldNode,
   subscribeSpatialWorldUi,
 } from '../spatialDocumentWorldUi'
+import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 
 const savedMapCameras = new WeakMap<Editor, TLCamera>()
 
@@ -50,6 +51,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     if (!node) return
     selectSpatialWorldNode(node.id)
     savedMapCameras.delete(editor)
+    suppressFleetHudCameraTracking()
     focusSpatialDocument(editor, node)
   }, [editor, nodes])
 

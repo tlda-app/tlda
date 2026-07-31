@@ -21,6 +21,7 @@ import type {
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
+import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { recordSpatialTraversalToShape } from '../spatialDocumentWorld'
 import './AnnotationViewer.css'
 
@@ -51,14 +52,6 @@ interface ViewerData {
   useFullBounds?: boolean
   pinned?: boolean
   bulletIdx?: number
-}
-
-function suppressFleetHudCameraTracking(durationMs = 700) {
-  const win = window as Window & { __tldaFleetHudSuppressCameraTrackingUntil?: number }
-  win.__tldaFleetHudSuppressCameraTrackingUntil = Math.max(
-    Number(win.__tldaFleetHudSuppressCameraTrackingUntil || 0),
-    Date.now() + durationMs,
-  )
 }
 
 function isPhoneViewportSurface(): boolean {
