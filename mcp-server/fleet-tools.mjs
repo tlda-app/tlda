@@ -2968,6 +2968,24 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       return { content: [{ type: 'text', text: 'Pass summary when reporting on a task_id.' }], isError: true };
     }
 
+    // Reporting on someone else's task is the fence, and it lives here in the MCP
+    // layer — same mechanism as delegate and chat, see the marker pattern in
+    // AGENTS.md. Resolving the task tells us whose it is; reporting on your own is
+    // never fenced.
+    if (targetTaskId) {
+      let owner = null;
+      try {
+        const found = await mcpFleetTransport.ephemeral('task-by-id', { task_id: targetTaskId });
+        owner = found?.task?.agent || null;
+      } catch (e) {
+        process.stderr.write(`[fleet] report task-owner lookup failed: ${e.message}\n`);
+      }
+      if (owner && owner !== activeAgentId()) {
+        const laneBlock = await requireInLaneAction(owner, { action: 'report' });
+        if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
+      }
+    }
+
     const cwd = getAgentCwd() || process.env.PWD || null;
     let summary = '';
     if (args.summary || (args.file && args.selector)) {

@@ -78,7 +78,7 @@ import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
-import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
@@ -6510,9 +6510,10 @@ async function handleFleetWsMessage(ws, msg) {
       ? await fleetStore.getTask?.(task_id)
       : await fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
-    if (task_id && !await canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
-      error('not authorized to report on this task; only its assignee, delegator, their management chains, or a human may do so'); return
-    }
+    // No authorization gate here. The fence on reporting against someone else's
+    // task lives in the MCP layer, which is where agents act — see the
+    // authorization gate section in AGENTS.md. The approval requirement below is
+    // the marker pattern, not a gate, and it stays.
     if (close && task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
       const evt = await fleetStore.getEventById(approval_id)
