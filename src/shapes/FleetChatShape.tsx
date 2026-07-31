@@ -109,6 +109,10 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
+// Quiet period after the last scroll event before a touch-driven scroll counts
+// as finished. A momentum glide emits scroll events continuously, so this only
+// has to outlast the gap between two of them.
+const TOUCH_SCROLL_SETTLE_MS = 150
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 type TerminalAgent = {
@@ -3670,6 +3674,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const isAtBottomRef = useRef(true)
   const userScrolledUpRef = useRef(false)
   const viewportAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  // True while a finger-driven scroll is in flight: from touchdown through the
+  // momentum glide that follows the release, until the scroller goes quiet.
+  const touchScrollActiveRef = useRef(false)
   const prevTailMessageKeyRef = useRef(tailMessageKey)
   const prevTotalHeightRef = useRef(0)
   const settleTailRunRef = useRef(0)
@@ -3729,6 +3736,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       captureViewportAnchor()
       return
     }
+    // Writing scrollTop cancels an in-flight momentum scroll, so correcting
+    // here kills the glide a flick just started. Hold off while the scroll is
+    // running — the scroll listener recaptures the anchor throughout, and the
+    // next list change after the scroller settles corrects from there.
+    if (touchScrollActiveRef.current) return
     const viewportTop = el.getBoundingClientRect().top
     const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
     const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
@@ -3925,9 +3937,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       el.scrollTop += e.deltaY
     }
+    // A touch-driven scroll runs past the release: the finger lifts and the
+    // scroller keeps gliding. Treat it as in flight until scroll events stop
+    // arriving, so nothing writes scrollTop and cancels the glide.
+    let fingerDown = false
+    let settleTimer = 0
+    const armSettle = () => {
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(() => {
+        settleTimer = 0
+        if (!fingerDown) touchScrollActiveRef.current = false
+      }, TOUCH_SCROLL_SETTLE_MS)
+    }
+    const onTouchStart = () => {
+      fingerDown = true
+      touchScrollActiveRef.current = true
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = 0 }
+    }
+    const onTouchEnd = () => {
+      fingerDown = false
+      armSettle()
+    }
     let lastTop = el.scrollTop
     let lastHeight = el.scrollHeight
     const handle = () => {
+      if (touchScrollActiveRef.current) armSettle()
       const top = el.scrollTop
       const height = el.scrollHeight
       const gap = el.scrollHeight - top - el.clientHeight
@@ -3981,9 +4015,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
     el.addEventListener('scroll', handle, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true })
     return () => {
       document.removeEventListener('wheel', handleWheelCapture, true)
       el.removeEventListener('scroll', handle)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('touchcancel', onTouchEnd)
+      if (settleTimer) clearTimeout(settleTimer)
+      touchScrollActiveRef.current = false
     }
   }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor])
 
