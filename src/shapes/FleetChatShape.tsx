@@ -3252,12 +3252,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
     // data-token, so we don't maintain a second hover handler.
     async function onChipOver(e: MouseEvent) {
+      if (dragCoordinator.isActive) return
       const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]') as HTMLElement | null
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
       // Delay to avoid accidental triggers
       await new Promise(r => setTimeout(r, 500))
+      if (dragCoordinator.isActive) return
       if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
@@ -3552,7 +3554,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     function onNickOver(e: MouseEvent) {
-      if (activeChatPillDragRef.current) return
+      // A hover never ends a drag, whoever owns the drag. The coordinator is the
+      // one place that knows a drag is in flight — a per-shape flag only ever
+      // covers drags that start in this chat log, and the pill drags that end up
+      // over a chat mostly start in the agents panel.
+      if (dragCoordinator.isActive) return
       const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
       if (!nick) return
       const agentId = nick.dataset.agentId
@@ -3561,7 +3567,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (skillShowTimerRef.current) clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = setTimeout(() => {
         skillShowTimerRef.current = null
-        if (activeChatPillDragRef.current) return
+        if (dragCoordinator.isActive) return
         if (!nick.matches(':hover')) return
         const r = nick.getBoundingClientRect()
         setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })
@@ -5179,10 +5185,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
     _onMain?: boolean
   } | null>(null)
-  const activeChatPillDragRef = useRef(false)
-
+  // Tears down any hover pane already showing when a drag starts here. Whether a
+  // drag is in flight is dragCoordinator.isActive, not a flag of our own.
   const suppressSkillHoverDuringChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = true
     if (skillShowTimerRef.current) {
       clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = null
@@ -5192,10 +5197,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       skillHideTimerRef.current = null
     }
     setSkillHover(null)
-  }, [])
-
-  const releaseSkillHoverAfterChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = false
   }, [])
 
   // Store agent name maps in refs so native listeners can access current values.
@@ -5524,7 +5525,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     function cancelDrag() {
       const drag = dragRef.current
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (drag?.pillId) {
         markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
@@ -5723,7 +5723,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
@@ -5773,7 +5772,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Delete any in-flight pill before releasing its coordinator handlers.
       if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
-  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
+  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
