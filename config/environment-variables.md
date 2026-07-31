@@ -5,6 +5,25 @@ Assembled by grepping the actual read sites — `process.env`, `import.meta.env`
 `env:` in workflows — not from memory and not from what happens to be set on one
 machine.
 
+**This list goes stale silently, and a stale inventory is worse than none —
+the next person will trust it.** Regenerate it by re-running the search that
+produced it, over the three trees that hold every read site:
+
+```sh
+# 1. server / shared / client
+grep -rn "process\.env\.\|import\.meta\.env\." server/ shared/ src/ packages/ \
+        foundation/ extensions/ telemetry/ vite.config.ts
+# 2. daemon / agents / MCP — note that these INJECT into spawned children
+#    as well as read, so check `env:` objects passed to spawn/execFile/fork
+grep -rn "process\.env\." daemon/ agent-launch/ agent-runtime/ mcp-server/
+# 3. CLI / scripts / deploy — shell and TOML, not just JS
+grep -rn "process\.env\.\|\${\?[A-Z_]\+\(:-\|}\)" cli/ bin/ scripts/ \
+        Dockerfile* fly*.toml .github/workflows/
+```
+
+Exclude `node_modules/` and `dist/`. Anything a run turns up that is not in this
+file is either a miss or a new exception, and both need a line here.
+
 It lives here, beside `server.yaml` and `daemon.yaml`, because this is the
 directory someone is in when they are changing one of these values. The keys
 that have a YAML home are documented on the keys themselves; this file exists
