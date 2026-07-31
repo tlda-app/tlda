@@ -21,6 +21,8 @@ import { FleetAgentDirectoryRow } from './shapes/FleetAgentDirectoryRow'
 import { renderChatLine, esc } from './fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
+// @ts-ignore — vanilla JS module
+import { toggleRecording, isRecording, onRecordingChange } from './voice.mjs'
 import './App.css'
 import './themes.css'
 import './shapes/fleet-chat.css'
@@ -722,6 +724,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const agentRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(agents)), [agents])
   const [meta, setMeta] = useState<ProjectMeta>({})
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
+  const [recording, setRecording] = useState(() => isRecording())
+  useEffect(() => onRecordingChange(setRecording), [])
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set(
     Object.entries(manifest).filter(([, config]) => config.starred).map(([key]) => key)
@@ -1124,6 +1128,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       <div className="index-top-chat fleet-chat-shape">
         <div className="index-top-chat-header">
           <span>{selectedAgent ? selectedAgent.displayName : 'Chat'}</span>
+          {/* Dictation is toggled by Right Shift on a keyboard; a phone has none. */}
+          <button type="button" onClick={() => toggleRecording()}>{recording ? 'Stop' : 'Voice'}</button>
           {selectedAgent && <button type="button" onClick={() => setSelectedAgentId(null)}>All</button>}
         </div>
         <div className="index-top-chat-log fleet-chat-log" aria-live="polite">
