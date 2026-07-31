@@ -1107,7 +1107,7 @@ function VoiceTargetFollowsSelection() {
   // setVoiceAccumulator's same-ref guard no-op on re-render (so it never resets
   // an in-progress dictation), while still re-registering after a chat focus
   // stole the sink, and switching notes registers the other note's callback.
-  const accumsRef = useRef<Map<string, { onUpdate: (t: string) => void; onStop: () => void }>>(new Map())
+  const accumsRef = useRef<Map<string, { applyEdit: (from: number, to: number, insert: string) => void; getCursor: () => number }>>(new Map())
   useEffect(() => {
     if (!_isTouchDevice) return
     if (selectedIds.length !== 1) return
@@ -1117,22 +1117,27 @@ function VoiceTargetFollowsSelection() {
     if (editingId === id) return // edit mode: CodeMirror owns the sink
     let a = accumsRef.current.get(id)
     if (!a) {
-      // `base` = the note's text at the start of each recording session; spoken
-      // text is appended after it. Snapshotted once per session (base===null),
-      // reset on stop so the next session appends after the committed text.
-      let base: string | null = null
-      const onUpdate = (text: string) => {
-        if (base === null) {
-          const cur = ((editor.getShape(id) as any)?.props?.text as string) || ''
-          base = cur ? cur + (/\s$/.test(cur) ? '' : ' ') : ''
-        }
-        editor.updateShape({ id, type: 'math-note' as any, props: { text: base + text } })
+      // One edit, computed by voice.mjs, spliced into the note's text.
+      //
+      // This used to hold a `base` — the note's text when the session started —
+      // and write `base + wholeSpokenText` on every update. `base` was frozen
+      // for the session, so anything the recognizer revised or re-partitioned
+      // rewrote every word dictated since. Measured: text already on his screen
+      // changing about twenty times a minute. There is no `base` now, because
+      // deciding what may be overwritten is not this sink's job.
+      const applyEdit = (from: number, to: number, insert: string) => {
+        const cur = ((editor.getShape(id) as any)?.props?.text as string) || ''
+        const f = Math.max(0, Math.min(from, cur.length))
+        const t = Math.max(f, Math.min(to, cur.length))
+        editor.updateShape({ id, type: 'math-note' as any, props: { text: cur.slice(0, f) + insert + cur.slice(t) } })
       }
-      const onStop = () => { base = null }
-      a = { onUpdate, onStop }
+      // No caret in a note that is selected rather than open, so dictation
+      // starts after whatever is already written.
+      const getCursor = () => (((editor.getShape(id) as any)?.props?.text as string) || '').length
+      a = { applyEdit, getCursor }
       accumsRef.current.set(id, a)
     }
-    setVoiceAccumulator(a.onUpdate, null, a.onStop, 'note')
+    setVoiceAccumulator({ applyEdit: a.applyEdit, getCursor: a.getCursor, label: 'note' })
   }, [editor, selectedIds, editingId])
   return null
 }

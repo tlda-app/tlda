@@ -512,28 +512,28 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const vimModeRef = useRef(vimMode)
   const laserSessionRef = useRef<string | null>(null)
   const cursorLaserSeqRef = useRef(0)
-  const voiceSessionRef = useRef<{ view: EditorView; from: number; to: number } | null>(null)
+  const voiceSessionRef = useRef<{ view: EditorView } | null>(null)
   const voiceApplyingRef = useRef(false)
-  const voiceUpdateRef = useRef<((text: string) => void) | null>(null)
+  const voiceUpdateRef = useRef<((from: number, to: number, text: string) => void) | null>(null)
   const voiceStopRef = useRef<(() => void) | null>(null)
   const queueWriteRef = useRef<((text: string) => void) | null>(null)
   const flushWriteRef = useRef<(() => void) | null>(null)
 
+  // One edit, computed by voice.mjs, applied here. This used to carry its own
+  // from/to session span and replace all of it with the entire spoken text on
+  // every update — the same shape that let finalized words be rewritten in a note.
   if (!voiceUpdateRef.current) {
-    voiceUpdateRef.current = (text: string) => {
+    voiceUpdateRef.current = (from: number, to: number, text: string) => {
       const session = voiceSessionRef.current
       if (!session) return
       const view = session.view
       const insert = String(text || '')
-      const from = Math.max(0, Math.min(session.from, view.state.doc.length))
-      const to = Math.max(from, Math.min(session.to, view.state.doc.length))
+      const len = view.state.doc.length
+      const f = Math.max(0, Math.min(from, len))
+      const t = Math.max(f, Math.min(to, len))
       voiceApplyingRef.current = true
       try {
-        view.dispatch({
-          changes: { from, to, insert },
-          selection: { anchor: from + insert.length },
-        })
-        voiceSessionRef.current = { view, from, to: from + insert.length }
+        view.dispatch({ changes: { from: f, to: t, insert }, selection: { anchor: f + insert.length } })
       } finally {
         requestAnimationFrame(() => { voiceApplyingRef.current = false })
       }
@@ -547,10 +547,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 
   const activateVoiceEditor = (view: EditorView | null, label = 'editor') => {
     if (!view) return
-    const head = view.state.selection.main.head
-    voiceSessionRef.current = { view, from: head, to: head }
+    voiceSessionRef.current = { view }
     view.focus()
-    setVoiceAccumulator(voiceUpdateRef.current!, null, voiceStopRef.current!, label)
+    setVoiceAccumulator({
+      applyEdit: voiceUpdateRef.current!,
+      getCursor: () => voiceSessionRef.current?.view.state.selection.main.head ?? 0,
+      onStop: voiceStopRef.current!,
+      label,
+    })
   }
 
   useEffect(() => {
@@ -1055,11 +1059,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 	              if (update.selectionSet) {
 	                updateCursorLaserFromView(update.view)
 	                if (!voiceApplyingRef.current && voiceSessionRef.current?.view === update.view) {
-	                  voiceSessionRef.current = {
-	                    view: update.view,
-	                    from: update.view.state.selection.main.head,
-	                    to: update.view.state.selection.main.head,
-	                  }
+	                  voiceSessionRef.current = { view: update.view }
 	                  notifyAccumulatorCursorMoved()
 	                }
 	              }
@@ -1284,11 +1284,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
             sourceEditorTheme,
             EditorView.updateListener.of((update) => {
               if (update.selectionSet && !voiceApplyingRef.current && voiceSessionRef.current?.view === update.view) {
-                voiceSessionRef.current = {
-                  view: update.view,
-                  from: update.view.state.selection.main.head,
-                  to: update.view.state.selection.main.head,
-                }
+                voiceSessionRef.current = { view: update.view }
                 notifyAccumulatorCursorMoved()
               }
               if (!update.docChanged) return

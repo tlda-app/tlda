@@ -128,17 +128,18 @@ export class VoiceNoteTool extends StateNode {
         .catch(e => console.warn('[voice-note] update shape failed:', e.message))
     }
 
-    let base = transcript
-    const onUpdate = (text: string) => {
-      const next = base + (base && text ? (/\s$/.test(base) ? '' : ' ') : '') + text
-      editor.updateShape({ id, type: 'math-note' as any, props: { text: next } })
+    // One edit, computed by voice.mjs, spliced into the note's text. This used
+    // to keep a frozen `base` and write `base + wholeSpokenText` every update,
+    // so any revision upstream rewrote everything dictated since the commit.
+    const applyEdit = (from: number, to: number, insert: string) => {
+      const cur = ((editor.getShape(id) as any)?.props?.text as string) || ''
+      const f = Math.max(0, Math.min(from, cur.length))
+      const t = Math.max(f, Math.min(to, cur.length))
+      editor.updateShape({ id, type: 'math-note' as any, props: { text: cur.slice(0, f) + insert + cur.slice(t) } })
     }
-    const onStop = () => {
-      const shape = editor.getShape(id) as any
-      base = shape?.props?.text || base
-    }
+    const getCursor = () => (((editor.getShape(id) as any)?.props?.text as string) || '').length
     resetTranscript(transcript)
-    setVoiceAccumulator(onUpdate, null, onStop, 'note')
+    setVoiceAccumulator({ applyEdit, getCursor, label: 'note' })
 
     log.debug('voice', 'VoiceNoteTool committed', { transcriptLen: transcript.length })
     this._shapeId = null
