@@ -1,0 +1,22 @@
+# Server settings for this deployment. Installed to ~/.config/tlda/server.yaml
+# by scripts/fly-entrypoint-live.sh. These were fly.*.toml [env] variables until
+# an unset one presented as a missing feature instead of an error.
+
+# How THIS SERVER reaches the one Deepgram bridge, on the tlda-voice box, over
+# Fly's private 6PN. REQUIRED — there is no second bridge and no fallback.
+# One box serves every site (see fly.voice.toml), so this address is the same
+# everywhere.
+deepgramBridgeUrl: ws://tlda-voice.internal:8180
+
+# The server is gated at the NETWORK layer by Tailscale — only tailnet devices
+# can reach it — so it runs open inside the tailnet. The tailnet IS the auth.
+authDisabled: true
+
+# Take tokens only from TLDA_TOKEN_READ/TLDA_TOKEN_RW (`fly secrets`), never
+# from a tokens.json on the box. Unreachable while authDisabled is true, and
+# recorded so turning auth back on does not silently start trusting a file.
+tokensFromEnvironmentOnly: true
+
+# Uploads must land on the persistent volume; the container wipes anything else
+# on restart, which once 404'd markdown chips out from under their viewers.
+uploadDir: /app/server/persist/uploads

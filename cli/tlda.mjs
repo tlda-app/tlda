@@ -18,7 +18,7 @@ import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles } 
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
+  loadCliConfig, saveCliConfig, loadServerRuntimeConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -5460,7 +5460,7 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     // so a missing config fails immediately with the error that names
     // `tlda config init`. This is the loader itself, not a copy of its rules.
     resolveConfig()
-    loadServerConfig()
+    loadServerRuntimeConfig()
 
     // Check if already running
     try {

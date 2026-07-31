@@ -23,6 +23,8 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'terminalInputAllowed',
 ])
 
+// Like DAEMON_CONFIG_TOP_LEVEL_KEYS, a CLOSED allow-list: the server refuses to
+// start on an unknown key, so a new setting is not usable until it is named here.
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
@@ -31,6 +33,32 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // in shared/display-time.mjs. Absent = render in the host machine's own zone.
   'timezone',
   'telemetryUrl',
+  // How THIS SERVER reaches the one Deepgram bridge on the tlda-voice box, over
+  // Fly's private 6PN (ws://tlda-voice.internal:8180). REQUIRED: when this was an
+  // environment variable, leaving it unset did not fail — /api/voice/backends fell
+  // through to "does this server hold a Deepgram key", so Deepgram silently
+  // vanished from Skip's picker with no error anywhere.
+  'deepgramBridgeUrl',
+  // How THE BROWSER reaches that same bridge (the tailnet name,
+  // wss://tlda-voice.<tailnet>.ts.net), handed to the client so its audio socket
+  // does not terminate on this machine and therefore does not die when this
+  // machine is deployed. Absent means the browser uses the same-origin proxy on
+  // this server, which is the route that ships today.
+  'deepgramDirectUrl',
+  // Where uploaded and copied chat attachments live. On Fly this must name the
+  // persistent volume; the container wipes anything else on restart, which once
+  // wiped markdown-chip files out from under their chips. Absent = this machine's
+  // ~/.config/tlda/uploads, which is correct where nothing is ephemeral.
+  'uploadDir',
+  // Turn token auth off entirely. True where the server is gated at the NETWORK
+  // layer instead — the Fly boxes sit behind Tailscale, and the tailnet IS the
+  // auth posture (Skip's chosen model).
+  'authDisabled',
+  // Take the read/RW tokens ONLY from the environment (`fly secrets`), never from
+  // this machine's tokens.json, and refuse to start if neither is present. True on
+  // a hosted deployment, where a token file on the box would be the wrong
+  // authority and an absent one must not quietly disable auth.
+  'tokensFromEnvironmentOnly',
 ])
 
 export const PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS = Object.freeze([
@@ -76,7 +104,37 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
   const config = validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
   if (config.timezone !== undefined) validateTimeZone(config.timezone, label)
   if (config.telemetryUrl !== undefined) validateTelemetryUrl(config.telemetryUrl, label)
+  if (config.deepgramBridgeUrl !== undefined) validateWebSocketUrl(config.deepgramBridgeUrl, 'deepgramBridgeUrl', label)
+  if (config.deepgramDirectUrl !== undefined) validateWebSocketUrl(config.deepgramDirectUrl, 'deepgramDirectUrl', label)
+  if (config.uploadDir !== undefined && (typeof config.uploadDir !== 'string' || !config.uploadDir.trim())) {
+    throw new Error(`${label}: "uploadDir" must be a nonempty path`)
+  }
+  for (const key of ['authDisabled', 'tokensFromEnvironmentOnly']) {
+    if (config[key] !== undefined && typeof config[key] !== 'boolean') {
+      throw new Error(`${label}: "${key}" must be a boolean`)
+    }
+  }
   return config
+}
+
+/**
+ * A bridge address that is a string but not a WebSocket URL fails at the first
+ * connect attempt, which is mid-sentence for whoever is dictating. Ask at load.
+ */
+export function validateWebSocketUrl(value, key, label = 'server config') {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}: "${key}" must be a nonempty ws(s) URL`)
+  }
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${label}: "${key}" must be a valid ws(s) URL (got ${value})`)
+  }
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+    throw new Error(`${label}: "${key}" must use ws or wss (got ${value})`)
+  }
+  return url.toString()
 }
 
 export function validateTelemetryUrl(value, label = 'server config') {
