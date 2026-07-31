@@ -15,7 +15,7 @@ import { randomBytes } from 'crypto'
 import { execFileSync, spawn as cpSpawn } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
-import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
+import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadCliConfig, saveCliConfig, loadServerRuntimeConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
@@ -744,15 +744,18 @@ async function cmdCreate() {
     // render that would reveal which of them it touches. So the directory IS
     // the closure, minus what a previous render produced: those are rebuilt
     // server-side, and shipping them would push stale output into the version.
-    const SKIP_DIRS = new Set(['.git', '.quarto', '_site', '_book', 'node_modules'])
+    // isQuartoRenderOutput is the one rule; the watcher that pushes his later
+    // saves asks the same function, so a file this drops does not come back
+    // through the other door.
     const qmdFiles = []
     function collectQmdDir(base, prefix = '') {
       for (const entry of readdirSync(join(base, prefix), { withFileTypes: true })) {
         const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
         if (entry.isDirectory()) {
-          if (SKIP_DIRS.has(entry.name) || entry.name.endsWith('_files')) continue
+          if (entry.name === '.git' || isIgnoredSourceDir(entry.name)) continue
           collectQmdDir(base, relPath)
         } else {
+          if (isQuartoRenderOutput(relPath, mainFile)) continue
           qmdFiles.push({
             path: relPath,
             content: readFileSync(join(base, relPath)).toString('base64'),
