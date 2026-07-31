@@ -1941,9 +1941,7 @@ async function performSpawnRelay(caller, msg) {
     // agent fails here with the same error shape rather than being applied.
     if (requestedLabels?.length) {
       const collisions = fleetStore.checkNameAvailable(requestedLabels, { excludeId: pendingAgentId })
-      if (collisions.length) {
-        throw new Error(`Label collision: ${collisions.map(c => `${c.name} (${c.kind})`).join(', ')}`)
-      }
+      if (collisions.length) throw new Error(fleetStore.labelCollisionMessage(collisions))
     }
     const now = new Date().toISOString()
     const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
