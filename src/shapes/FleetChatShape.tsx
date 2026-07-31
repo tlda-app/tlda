@@ -2058,7 +2058,11 @@ function ThreadChatOperationView({
         seen.add(key)
         return true
       })
-      setHtml(renderThreadRows(threadRowsFromEvents(deduped, renderCtx.agentLabel), renderCtx))
+      // An empty read says so. Rendering the empty wrapper instead leaves a
+      // blank box, which is the thing that reads as broken rather than empty.
+      setHtml(deduped.length
+        ? renderThreadRows(threadRowsFromEvents(deduped, renderCtx.agentLabel), renderCtx)
+        : '')
     } catch (err: any) {
       setError(err?.message || 'thread read failed')
     } finally {
