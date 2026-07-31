@@ -2226,6 +2226,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   const frameId = shape.parentId as string | undefined
   const agents = useFleetChatAgents(frameId)
   const agentById = useMemo(() => new Map(agents.map((agent: any) => [agent.id, agent])), [agents])
+  // Derive send targets: unique agents in "to" clauses only. Declared here, above
+  // the render memos, because the chat line renderer needs the panel's default
+  // target set to decide whether a message's recipients are worth printing.
+  const sendTargets = useMemo(() => {
+    return fleetFilterSendTargets(filter, { agents })
+  }, [filterKey, agents])
+  // Keep sendTargets accessible from native event listeners without re-registering
+  const sendTargetsRef = useRef<string[]>([])
+  sendTargetsRef.current = sendTargets
+  const sendTargetsKey = sendTargets.join(' ')
   const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
   // The chat owns its subscription-fed event buffer.
   const chatEventBufferKey = dnfFilter ? `chat:${shape.id}` : null
@@ -2293,8 +2303,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Track whether the user last clicked inside this fleet chat shape.
   // Voice/touch users don't focus the textarea, so activeElement-based checks fail.
   const chatActiveRef = useRef(false)
-  // Keep sendTargets accessible from native event listener without re-registering
-  const sendTargetsRef = useRef<string[]>([])
   // Per-agent escalation state: tracks Esc presses for thinking indicator display.
   // { [agentId]: { level, confirmed } } — level = optimistic (on keypress), confirmed = server ack'd
   const [escalationState, setEscalationState] = useState<Record<string, { level: number; confirmed: number }>>({})
@@ -2662,7 +2670,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const rawItems = useMemo(() => {
     const rawItemsT0 = probe.isEnabled('chat') ? performance.now() : 0
     // Extend ctx with thinking state so renderChatLine can apply queued styling
-    const renderCtx = { ...ctx, thinkingAgents }
+    // sendTargets goes in so a line can tell whether its recipients ARE this
+    // panel's default target — the set whose printing is omitted.
+    const renderCtx = { ...ctx, thinkingAgents, sendTargets }
     const thinkingKey = [...(thinkingAgents?.entries?.() ?? [])]
       .map(([id, since]: any[]) => `${id}:${since}`)
       .join('|')
@@ -2724,10 +2734,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     function isMessageQueued(m: any): boolean {
       const isFromUser = renderCtx.isHumanId?.(m.from)
       if (!isFromUser) return false
-      const targetThinkingSince = thinkingAgents?.get?.(m.to)
-      if (!targetThinkingSince) return false
       const msgTs = m.timestamp ? new Date(m.timestamp).getTime() : 0
-      if (msgTs < targetThinkingSince) return false
+      // One event, many recipients: it is queued while ANY recipient it was
+      // addressed to started thinking before it arrived.
+      const queuedBehind = (m.recipients || []).some((id: string) => {
+        const since = thinkingAgents?.get?.(id)
+        return since && msgTs >= since
+      })
+      if (!queuedBehind) return false
       if (unqueuedAt && msgTs <= unqueuedAt) return false
       return true
     }
@@ -2798,7 +2812,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
-        const targetId = m.to || ''
+        // A kill-session addresses exactly one agent.
+        const targetId = m.recipients?.[0] || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
@@ -2807,7 +2822,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
-        const targetId = m.to || ''
+        // An interrupt addresses exactly one agent.
+        const targetId = m.recipients?.[0] || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
@@ -2845,7 +2861,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           ? renderCtx
           : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
         const itemKey = m._dbId || m._tempId || `${m.timestamp}:${m.from}`
-        const participantRenderKey = [m.from, m.to, m.agent, m.agent_id]
+        const participantRenderKey = [m.from, ...(m.recipients || []), m.agent, m.agent_id]
           .filter(Boolean)
           .map((id: string) => {
             const agent = agentById.get(id)
@@ -2862,6 +2878,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const cacheKey = [
           contentRenderKey,
           thinkingKey,
+          sendTargetsKey,
           itemKey,
           participantRenderKey,
           renderM.text || '',
@@ -2934,7 +2951,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
+  }, [chatMessages, ctx, thinkingAgents, sendTargetsKey, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -4651,12 +4668,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [!!pillOver])
 
-  // Derive send targets: unique agents in "to" clauses only
-  const sendTargets = useMemo(() => {
-    return fleetFilterSendTargets(filter, { agents })
-  }, [filterKey, agents])
-  sendTargetsRef.current = sendTargets
-
   const humanFilterLabel = getHumanName() || getHumanId() || 'user'
   const composerAgentLabel = useMemo(
     () => activeComposerAgentLabel(filter, sendTargets, agents),
@@ -4701,7 +4712,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       type: 'chat',
       event_type: 'chat',
       from: getHumanId(),
-      to: targets[0],
+      // ONE event for the whole send. The optimistic row carries every target,
+      // so a group send is one line here and reconciles against the one real
+      // row the server writes for it.
+      recipients: targets,
       text,
       timestamp: new Date().toISOString(),
       read: false,
@@ -4757,11 +4771,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
       if (refAttachments.length > 0) sendOpts.attachments = refAttachments
       if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
+      // ONE send for the whole target set. `to` is a filter expression, so the
+      // union of the targets is the expression that ORs them — one message, one
+      // event, every recipient, instead of N independent sends nothing rejoins.
       const sendWithRetry = (attempt: number) => {
-        Promise.all(
-          targets.map(t => sendMessage(t, text, sendOpts))
-        ).then((results) => {
-          if (!results.every(r => r.ok)) throw new Error('send failed')
+        sendMessage(targets.join('|'), text, sendOpts).then((result) => {
+          if (!result.ok) throw new Error('send failed')
         }).catch(() => {
           if (attempt < 3) {
             setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)

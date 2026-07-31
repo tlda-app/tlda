@@ -506,7 +506,7 @@ export function maybeShowRadioSubtitleForIncomingChat(event, agents = [], humanI
   if (!getPref('radio-subtitles-enabled')) return false
   if (!isDocSurface()) return false
   if (!event || event.type !== 'chat') return false
-  if (!humanId || event.to !== humanId) return false
+  if (!humanId || !(event.recipients || []).includes(humanId)) return false
   if (!event.from || event.from === humanId) return false
   if (!radioAgentMatchesActiveTarget(event.from, agents)) return false
   return showRadioSubtitle(event, agents)

@@ -609,12 +609,16 @@ export function renderChatLine(m, ctx) {
   // resolve each to its agent id before comparing, since recipients are ids. A
   // label that does not uniquely resolve (a broadcast selector) stays as itself
   // and simply won't match, so the recipients are printed.
-  const defaultTargetIds = new Set(
-    (ctx.sendTargets || []).map(label => uniqueLiveAgentForLabel(label, getAgents())?.id || label)
-  )
-  const isDefaultTarget = recipients.length > 0 &&
-    recipients.length === defaultTargetIds.size &&
-    recipients.every(id => defaultTargetIds.has(id))
+  // Both sides go through the SAME resolver, so a recipient recorded as an id
+  // and a target written as a name compare equal — and an optimistic row, which
+  // carries the composer's labels until the server reply replaces them with ids,
+  // compares equal to itself either way.
+  const resolveTarget = (value) => uniqueLiveAgentForLabel(value, getAgents())?.id || value
+  const defaultTargetIds = new Set((ctx.sendTargets || []).map(resolveTarget))
+  const recipientKeys = new Set(recipients.map(resolveTarget))
+  const isDefaultTarget = recipientKeys.size > 0 &&
+    recipientKeys.size === defaultTargetIds.size &&
+    [...recipientKeys].every(id => defaultTargetIds.has(id))
   // The other half of the same rule, for messages addressed TO the reader: a
   // reply to the person reading is the expected target in their own panel, so it
   // reads like a play with no arrows — the two-party behaviour Skip keeps.
