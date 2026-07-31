@@ -95,6 +95,7 @@ import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-i
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
+import { peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
 import { getPref, subscribePref } from '../preferences'
 import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -3773,7 +3774,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     captureViewportAnchor()
   }, [allItems, shape.id, captureViewportAnchor])
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearedComposerDraftRef = useRef<string | null>(null)
+  // This panel's composer text, across unmounts. Filter mode unmounts the whole
+  // input area, and a filter pill hovering over the panel opens filter mode on
+  // its own — so the draft has to live outside the textarea. See
+  // stores/composerDraftStore.
+  const composerDraftKey = `chat:${shape.id}`
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
@@ -5039,10 +5044,10 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   void composerDraftVersion
   const composerHasText = !!((inputRef.current as HTMLTextAreaElement | null)?.value)
-  const canUnclearComposer = !composerHasText && !!clearedComposerDraftRef.current
+  const canUnclearComposer = !composerHasText && !!peekClearedComposerDraft(composerDraftKey)
 
   const expireClearedComposerDraft = () => {
-    clearedComposerDraftRef.current = null
+    dropClearedComposerDraft(composerDraftKey)
   }
 
   const resizeComposerTextarea = (ta: HTMLTextAreaElement) => {
@@ -5054,16 +5059,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
     if (ta.value !== '') {
-      clearedComposerDraftRef.current = ta.value
+      stashClearedComposerDraft(composerDraftKey, ta.value)
       ta.value = ''
       ta.style.height = ''
       ta.dispatchEvent(new Event('input', { bubbles: true }))
       ta.focus()
       return
     }
-    const draft = clearedComposerDraftRef.current
+    const draft = takeClearedComposerDraft(composerDraftKey)
     if (!draft) return
-    clearedComposerDraftRef.current = null
     ta.value = draft
     resizeComposerTextarea(ta)
     ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -6279,6 +6283,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               onDragOver={composerDragOver}
               inputRef={inputRef as any}
               isTouchDevice={_isTouchDevice}
+              draftKey={composerDraftKey}
               placeholder=""
               style={{
                 width: '100%',
