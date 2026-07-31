@@ -1521,6 +1521,7 @@ function broadcastEvent(type, data) {
 serverTimerScheduler = new ServerTimerScheduler({
   store: fleetStore,
   broadcast: broadcastEvent,
+  notify: (to, text, source) => requestWake(to, text, null, null, source || {}),
 })
 // Not awaited: this is module top level, where there is no async context to
 // await into. A failing first refresh is reported rather than becoming an
@@ -5051,6 +5052,200 @@ function sendFleetResponseFrame(ws, frame) {
   return true
 }
 
+// Interacting with a hibernating (non-dead, no live process) agent wakes.
+// Live non-Claude TUI agents also need a terminal nudge: their MCP channel can
+// record the event without submitting a new turn.
+// Idempotent waker: chat/delegate adds agent IDs to a Map.
+// A serial loop drains it — one spawn at a time, naturally deduped.
+const _wakeQueue = new Map()
+let _wakeDraining = false
+// Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
+const _wakeFailWarned = new Map() // agentId → last-warned ms
+const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
+const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
+const _pendingWakeAcks = new Map()
+function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
+  if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
+  const timer = setTimeout(async () => {
+    const pending = _pendingWakeAcks.get(traceId)
+    if (!pending) return
+    _pendingWakeAcks.delete(traceId)
+    broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
+    if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
+  }, WAKE_ACK_DEADLINE_MS)
+  timer.unref?.()
+  _pendingWakeAcks.set(traceId, { agentId, timer })
+}
+function acknowledgeWakeTrace(traceId, agentId) {
+  const pending = _pendingWakeAcks.get(traceId)
+  if (!pending || pending.agentId !== agentId) return false
+  clearTimeout(pending.timer)
+  _pendingWakeAcks.delete(traceId)
+  return true
+}
+async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
+  const agent = await fleetStore.getAgent(agentId)
+  if (!agent || agent.dead || agent.human) return
+  if (isReservedShellAgent(agent)) {
+    spawnLibrarian.observeLiveness({
+      type: 'agent-liveness',
+      agent_id: agentId,
+      state: 'spawning',
+      reason: 'reserved shell has not logged in yet',
+      ts: new Date().toISOString(),
+    })
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'wake.request',
+        status: 'pending-shell',
+        detail: { agent: agentId },
+      })
+    }
+    return
+  }
+  if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'wake.request',
+        status: 'breaker-open',
+        detail: { agent: agentId },
+      })
+    }
+    return
+  }
+  const prev = _wakeQueue.get(agentId)
+  _wakeQueue.set(agentId, {
+    nudgeText: nudgeText || prev?.nudgeText || null,
+    asker: asker || prev?.asker || null,
+    traceId: traceId || prev?.traceId || null,
+    source: Object.keys(source || {}).length ? source : (prev?.source || {}),
+  })
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'wake.request',
+      status: 'queued',
+      detail: { agent: agentId, asker },
+    })
+  }
+  if (!_wakeDraining) drainWakeQueue()
+}
+
+async function drainWakeQueue() {
+  _wakeDraining = true
+  while (_wakeQueue.size > 0) {
+    const [agentId, wakeEntry] = _wakeQueue.entries().next().value
+    _wakeQueue.delete(agentId)
+    const nudgeText = wakeEntry?.nudgeText || null
+    const asker = wakeEntry?.asker || null
+    const traceId = wakeEntry?.traceId || null
+    const source = wakeEntry?.source || {}
+    const agent = await fleetStore.getAgent?.(agentId)
+    if (!agent || agent.dead || agent.human) {
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.skip',
+          status: 'ignored',
+          detail: { agent: agentId, reason: !agent ? 'missing-agent' : agent.dead ? 'dead' : 'human' },
+        })
+      }
+      continue
+    }
+    const daemonKeys = [...daemonConnections.keys()]
+    if (daemonKeys.length === 0) {
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.defer',
+          status: 'no-daemon',
+          detail: { agent: agentId },
+        })
+      }
+      continue
+    }
+    const seat = await fleetStore?.getAgentDaemonRoute?.(agentId)
+    if (!seat) {
+      continue
+    }
+    const daemonKey = seat.daemon_key
+    try {
+      const result = await runWakeRouteLifecycle({
+        agentId,
+        agent,
+        daemonKey,
+        ownerDaemon: daemonConnections.get(daemonKey),
+        nudgeText,
+        returnNoticeText: withAgentReturnNotice(agent, nudgeText),
+        traceId,
+        sendDaemonDurable,
+        appendControlTrace: (event) => controlPlaneTraces.append(event),
+        sendWakeNudge,
+        getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
+        insertWakeLifecycleEvent: async () => {
+          const wakeTs = new Date().toISOString()
+          await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore.insertEventRecord({
+            type: 'lifecycle',
+            timestamp: wakeTs,
+            from: agentId,
+            to: agentId,
+            text: 'agent woken',
+            unread: false,
+          }, { notify: false }))
+        },
+      })
+      if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
+    } catch (e) {
+      const b = _wakeBreaker.get(agentId) || { fails: 0 }
+      b.fails += 1
+      b.lastError = e.message
+      b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
+      _wakeBreaker.set(agentId, b)
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.error',
+          status: 'failed',
+          detail: { agent: agentId },
+          error: e.message,
+        })
+      }
+      console.warn(`[respawn] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
+      // Convergent, visible signal on the roster (not just a chat) so a failed
+      // wake shows up in the UI, not invisibly.
+      broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
+      // Surface the failure to WHOEVER ASKED (Skip's rule) — the agent/human who
+      // chatted or delegated — falling back to the server owner for wakes with no
+      // identifiable asker (internal retries). Throttled per-agent so a stuck wake
+      // doesn't spam chat.
+      const _now = Date.now()
+      if (!_wakeFailWarned.has(agentId) || _now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
+        _wakeFailWarned.set(agentId, _now)
+        const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
+        try {
+          deliverTldaFeedbackChat({
+            from: 'fleet:tlda',
+            to: notify,
+            text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
+            metadata: { type: 'wake_failed', agentId },
+          })
+        } catch (notifyErr) {
+          console.warn(`[respawn] could not surface wake failure for ${agentId}: ${notifyErr.message}`)
+        }
+      }
+    }
+  }
+  _wakeDraining = false
+}
+
 async function handleFleetWsMessage(ws, msg) {
   const { id, type } = msg
   const operationEnvelope = msg.fleet_operation || null
@@ -5785,199 +5980,6 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Interacting with a hibernating (non-dead, no live process) agent wakes.
-  // Live non-Claude TUI agents also need a terminal nudge: their MCP channel can
-  // record the event without submitting a new turn.
-  // Idempotent waker: chat/delegate adds agent IDs to a Map.
-  // A serial loop drains it — one spawn at a time, naturally deduped.
-  const _wakeQueue = new Map()
-  let _wakeDraining = false
-  // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
-  const _wakeFailWarned = new Map() // agentId → last-warned ms
-  const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
-  const _pendingWakeAcks = new Map()
-  function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
-    if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
-    const timer = setTimeout(async () => {
-      const pending = _pendingWakeAcks.get(traceId)
-      if (!pending) return
-      _pendingWakeAcks.delete(traceId)
-      broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
-      if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
-    }, WAKE_ACK_DEADLINE_MS)
-    timer.unref?.()
-    _pendingWakeAcks.set(traceId, { agentId, timer })
-  }
-  function acknowledgeWakeTrace(traceId, agentId) {
-    const pending = _pendingWakeAcks.get(traceId)
-    if (!pending || pending.agentId !== agentId) return false
-    clearTimeout(pending.timer)
-    _pendingWakeAcks.delete(traceId)
-    return true
-  }
-  async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
-    const agent = await fleetStore.getAgent(agentId)
-    if (!agent || agent.dead || agent.human) return
-    if (isReservedShellAgent(agent)) {
-      spawnLibrarian.observeLiveness({
-        type: 'agent-liveness',
-        agent_id: agentId,
-        state: 'spawning',
-        reason: 'reserved shell has not logged in yet',
-        ts: new Date().toISOString(),
-      })
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.request',
-          status: 'pending-shell',
-          detail: { agent: agentId },
-        })
-      }
-      return
-    }
-    if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
-      if (traceId) {
-        controlPlaneTraces.append({
-          trace_id: traceId,
-          component: 'server',
-          operation: 'wake.request',
-          status: 'breaker-open',
-          detail: { agent: agentId },
-        })
-      }
-      return
-    }
-    const prev = _wakeQueue.get(agentId)
-    _wakeQueue.set(agentId, {
-      nudgeText: nudgeText || prev?.nudgeText || null,
-      asker: asker || prev?.asker || null,
-      traceId: traceId || prev?.traceId || null,
-      source: Object.keys(source || {}).length ? source : (prev?.source || {}),
-    })
-    if (traceId) {
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'server',
-        operation: 'wake.request',
-        status: 'queued',
-        detail: { agent: agentId, asker },
-      })
-    }
-    if (!_wakeDraining) drainWakeQueue()
-  }
-
-  async function drainWakeQueue() {
-    _wakeDraining = true
-    while (_wakeQueue.size > 0) {
-      const [agentId, wakeEntry] = _wakeQueue.entries().next().value
-      _wakeQueue.delete(agentId)
-      const nudgeText = wakeEntry?.nudgeText || null
-      const asker = wakeEntry?.asker || null
-      const traceId = wakeEntry?.traceId || null
-      const source = wakeEntry?.source || {}
-      const agent = await fleetStore.getAgent?.(agentId)
-      if (!agent || agent.dead || agent.human) {
-        if (traceId) {
-          controlPlaneTraces.append({
-            trace_id: traceId,
-            component: 'server',
-            operation: 'wake.skip',
-            status: 'ignored',
-            detail: { agent: agentId, reason: !agent ? 'missing-agent' : agent.dead ? 'dead' : 'human' },
-          })
-        }
-        continue
-      }
-      const daemonKeys = [...daemonConnections.keys()]
-      if (daemonKeys.length === 0) {
-        if (traceId) {
-          controlPlaneTraces.append({
-            trace_id: traceId,
-            component: 'server',
-            operation: 'wake.defer',
-            status: 'no-daemon',
-            detail: { agent: agentId },
-          })
-        }
-        continue
-      }
-      const seat = await fleetStore?.getAgentDaemonRoute?.(agentId)
-      if (!seat) {
-        continue
-      }
-      const daemonKey = seat.daemon_key
-      try {
-        const result = await runWakeRouteLifecycle({
-          agentId,
-          agent,
-          daemonKey,
-          ownerDaemon: daemonConnections.get(daemonKey),
-          nudgeText,
-          returnNoticeText: withAgentReturnNotice(agent, nudgeText),
-          traceId,
-          sendDaemonDurable,
-          appendControlTrace: (event) => controlPlaneTraces.append(event),
-          sendWakeNudge,
-          getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
-          insertWakeLifecycleEvent: async () => {
-            const wakeTs = new Date().toISOString()
-            await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore.insertEventRecord({
-              type: 'lifecycle',
-              timestamp: wakeTs,
-              from: agentId,
-              to: agentId,
-              text: 'agent woken',
-              unread: false,
-            }, { notify: false }))
-          },
-        })
-        if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
-      } catch (e) {
-        const b = _wakeBreaker.get(agentId) || { fails: 0 }
-        b.fails += 1
-        b.lastError = e.message
-        b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
-        _wakeBreaker.set(agentId, b)
-        if (traceId) {
-          controlPlaneTraces.append({
-            trace_id: traceId,
-            component: 'server',
-            operation: 'wake.error',
-            status: 'failed',
-            detail: { agent: agentId },
-            error: e.message,
-          })
-        }
-        console.warn(`[respawn] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
-        // Convergent, visible signal on the roster (not just a chat) so a failed
-        // wake shows up in the UI, not invisibly.
-        broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
-        // Surface the failure to WHOEVER ASKED (Skip's rule) — the agent/human who
-        // chatted or delegated — falling back to the server owner for wakes with no
-        // identifiable asker (internal retries). Throttled per-agent so a stuck wake
-        // doesn't spam chat.
-        const _now = Date.now()
-        if (!_wakeFailWarned.has(agentId) || _now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
-          _wakeFailWarned.set(agentId, _now)
-          const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
-          try {
-            deliverTldaFeedbackChat({
-              from: 'fleet:tlda',
-              to: notify,
-              text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
-              metadata: { type: 'wake_failed', agentId },
-            })
-          } catch (notifyErr) {
-            console.warn(`[respawn] could not surface wake failure for ${agentId}: ${notifyErr.message}`)
-          }
-        }
-      }
-    }
-    _wakeDraining = false
-  }
 
   const previewForWake = (raw, max = 120) => {
     const s = String(raw || '')
