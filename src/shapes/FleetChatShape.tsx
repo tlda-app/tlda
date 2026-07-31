@@ -5185,10 +5185,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
     _onMain?: boolean
   } | null>(null)
-  const activeChatPillDragRef = useRef(false)
-
+  // Tears down any hover pane already showing when a drag starts here. Whether a
+  // drag is in flight is dragCoordinator.isActive, not a flag of our own.
   const suppressSkillHoverDuringChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = true
     if (skillShowTimerRef.current) {
       clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = null
@@ -5198,10 +5197,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       skillHideTimerRef.current = null
     }
     setSkillHover(null)
-  }, [])
-
-  const releaseSkillHoverAfterChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = false
   }, [])
 
   // Store agent name maps in refs so native listeners can access current values.
@@ -5530,7 +5525,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     function cancelDrag() {
       const drag = dragRef.current
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (drag?.pillId) {
         markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
@@ -5729,7 +5723,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
@@ -5779,7 +5772,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Delete any in-flight pill before releasing its coordinator handlers.
       if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
-  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
+  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
