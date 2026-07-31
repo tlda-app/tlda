@@ -33,13 +33,13 @@ const SERVER_OWNER_HOST = os.hostname()
 // from unified-server.mjs). If no daemon is connected for an agent's
 // machine, the handler returns 503.
 
-const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
+const UPLOAD_DIR = loadServerConfig().uploadDir ||
   path.join(os.homedir(), '.config', 'tlda', 'uploads')
 // The single source of truth for where uploaded/copied attachments live. On Fly
-// this resolves to the persistent volume (TLDA_UPLOAD_DIR=/app/server/persist/uploads),
-// so files survive redeploys. Exported so the chat-send attachment-copy path in
-// unified-server.mjs writes to the SAME dir as /api/upload instead of an ephemeral
-// container path that Fly wipes on every deploy.
+// server.yaml's `uploadDir` names the persistent volume, so files survive
+// redeploys. Exported so the chat-send attachment-copy path in unified-server.mjs
+// writes to the SAME dir as /api/upload instead of an ephemeral container path
+// that Fly wipes on every deploy.
 export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_DELIVERY_LIMIT = 50

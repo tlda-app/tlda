@@ -44,7 +44,7 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
@@ -2889,20 +2889,23 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 // silently dropped Deepgram out of Skip's picker with no error anywhere.
 //
 // Two addresses remain, because two different processes reach the ONE bridge by two
-// different routes:
-//   TLDA_VOICE_BRIDGE_URL  — how THIS SERVER reaches it (Fly 6PN,
-//                            ws://tlda-voice.internal:8180), used by the proxy.
-//   TLDA_VOICE_DIRECT_URL  — how THE BROWSER reaches it (the tailnet name,
-//                            wss://tlda-voice.<tailnet>.ts.net), handed to the
-//                            client so its audio socket does not terminate on
-//                            this machine and therefore does not die when this
-//                            machine is deployed. Empty means the browser uses
-//                            the same-origin proxy, which is the shipped route.
-const DEEPGRAM_SDK_BRIDGE_URL = process.env.TLDA_VOICE_BRIDGE_URL
+// different routes. Both are server.yaml keys, not environment variables: an
+// address that decides where Skip's audio goes belongs in the file you look at
+// when you want to know where Skip's audio goes.
+//   deepgramBridgeUrl — how THIS SERVER reaches it (Fly 6PN,
+//                       ws://tlda-voice.internal:8180), used by the proxy.
+//                       REQUIRED; there is no second bridge to fall back to.
+//   deepgramDirectUrl — how THE BROWSER reaches it (the tailnet name,
+//                       wss://tlda-voice.<tailnet>.ts.net), handed to the client
+//                       so its audio socket does not terminate on this machine
+//                       and therefore does not die when this machine is
+//                       deployed. Absent means the browser uses the same-origin
+//                       proxy, which is the route that ships today.
+const DEEPGRAM_SDK_BRIDGE_URL = loadServerConfig().deepgramBridgeUrl
 if (!DEEPGRAM_SDK_BRIDGE_URL) {
-  throw new Error('TLDA_VOICE_BRIDGE_URL is not set — the Deepgram bridge has one address and no fallback')
+  throw new Error(`server.yaml: "deepgramBridgeUrl" is required — the Deepgram bridge has one address and no fallback (${CONFIG_DIR}/server.yaml)`)
 }
-const BROWSER_VOICE_BRIDGE_URL = process.env.TLDA_VOICE_DIRECT_URL || ''
+const BROWSER_VOICE_BRIDGE_URL = loadServerConfig().deepgramDirectUrl || ''
 const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
 
 async function isBridgeUp(bridgeUrl) {

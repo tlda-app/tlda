@@ -6,16 +6,27 @@
  *   - RW token (TLDA_TOKEN_RW / config.tokenRw): everything including POST/DELETE API routes
  *
  * When no tokens are configured, auth is disabled (backward-compatible local use).
+ *
+ * The tokens themselves stay in the environment — they are secrets, delivered by
+ * `fly secrets`, and a secret does not belong in a config file. The two POSTURE
+ * decisions do not: `authDisabled` and `tokensFromEnvironmentOnly` are server.yaml
+ * keys. `tokensFromEnvironmentOnly` used to be inferred from TLDA_FLEET_SERVER
+ * being set, which is a URL that says nothing about tokens — so the rule "a
+ * hosted box takes tokens only from its secrets" was carried by a variable named
+ * after something else, and would have silently changed meaning the moment that
+ * URL moved.
  */
 
-import { getReadToken, getRwToken, DEFAULT_PORT } from '../../shared/config.mjs'
+import { getReadToken, getRwToken, loadServerConfig, DEFAULT_PORT } from '../../shared/config.mjs'
 
 let tokenRead = null
 let tokenRw = null
 let authEnabled = false
 
 export function initAuth() {
-  if (process.env.TLDA_NO_AUTH === '1') {
+  const serverConfig = loadServerConfig()
+
+  if (serverConfig.authDisabled) {
     authEnabled = false
     return
   }
@@ -27,12 +38,12 @@ export function initAuth() {
     return
   }
 
-  const flySecretTokensOnly = !!process.env.TLDA_FLEET_SERVER
-  tokenRead = process.env.TLDA_TOKEN_READ || (flySecretTokensOnly ? null : getReadToken())
-  tokenRw = process.env.TLDA_TOKEN_RW || (flySecretTokensOnly ? null : getRwToken())
+  const envTokensOnly = !!serverConfig.tokensFromEnvironmentOnly
+  tokenRead = process.env.TLDA_TOKEN_READ || (envTokensOnly ? null : getReadToken())
+  tokenRw = process.env.TLDA_TOKEN_RW || (envTokensOnly ? null : getRwToken())
 
-  if (flySecretTokensOnly && !tokenRead && !tokenRw) {
-    throw new Error('[auth] TLDA_FLEET_SERVER is set but no TLDA_TOKEN_READ/TLDA_TOKEN_RW Fly secrets are configured')
+  if (envTokensOnly && !tokenRead && !tokenRw) {
+    throw new Error('[auth] server.yaml sets tokensFromEnvironmentOnly but no TLDA_TOKEN_READ/TLDA_TOKEN_RW secrets are configured')
   }
 
   authEnabled = !!(tokenRead || tokenRw)
