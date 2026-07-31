@@ -14,6 +14,7 @@ import {
   selectSpatialWorldNode,
   subscribeSpatialWorldUi,
 } from '../spatialDocumentWorldUi'
+import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 
 const savedMapCameras = new WeakMap<Editor, TLCamera>()
 
@@ -22,8 +23,8 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   const project = useContext(ProjectContext)
   const nodes = useValue(
     'project-tab-spatial-documents',
-    () => spatialWorldDocuments(editor, project?.projectName),
-    [editor, project?.projectName],
+    () => spatialWorldDocuments(editor, project?.projectName, project?.title),
+    [editor, project?.projectName, project?.title],
   )
   const zoom = useValue('project-tab-zoom', () => editor.getZoomLevel(), [editor])
   const ui = useSyncExternalStore(subscribeSpatialWorldUi, getSpatialWorldUi)
@@ -42,7 +43,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     const bounds = spatialWorldBounds(nodes)
     if (!bounds) return
     savedMapCameras.set(editor, editor.getCamera())
-    zoomToSpatialWorld(editor, bounds)
+    zoomToSpatialWorld(editor, bounds, nodes.find(node => node.documentRef.kind === 'primary'))
   }, [editor, nodes, zoom])
 
   const activate = useCallback((nodeId: string) => {
@@ -50,6 +51,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     if (!node) return
     selectSpatialWorldNode(node.id)
     savedMapCameras.delete(editor)
+    suppressFleetHudCameraTracking()
     focusSpatialDocument(editor, node)
   }, [editor, nodes])
 

@@ -350,6 +350,10 @@ function App() {
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
+      // The manifest's display name, which is a written title for some documents
+      // and the slug for others. The spatial world labelled its own place with
+      // the URL slug before this.
+      document = { ...document, title: config.name || projectName }
 
       // For non-diff docs, check if a matching diff doc exists (lazy manifest fetch — not on critical path)
       let diffConfig: DiffConfig | undefined
