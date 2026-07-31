@@ -86,12 +86,11 @@ COPY shared/ ./shared/
 # never generates → highlights don't resolve to source lines.
 COPY scripts/ ./scripts/
 
-# Voice transcription runtime: /voice/deepgram-sdk (unified-server) lazily spawns
-# the bridge entrypoint from this owned module unit, which forwards browser PCM audio to Deepgram cloud using the
-# Deepgram SDK with DEEPGRAM_API_KEY (set via `fly secrets`). It is a stateless
-# relay (no local audio access), so it runs fine on Fly. Voice is SDK-only
-# (Skip 6/19, one implementation); the old raw bin/deepgram-bridge.mjs is gone.
-COPY bin/deepgram-runtime/ ./bin/deepgram-runtime/
+# No Deepgram bridge in this image. The bridge runs on the tlda-voice box and is
+# built by Dockerfile.voice; this server only proxies to it over 6PN
+# (TLDA_VOICE_BRIDGE_URL). It used to be copied here too, because unified-server
+# could spawn a second, local copy when no bridge address was configured — that
+# spawn is gone, so the layer it fed is gone with it.
 
 # Agent/fleet runtime modules. These are real top-level modules on this branch:
 # unified-server imports agent-launch + agent-runtime, and fleet-daemon imports

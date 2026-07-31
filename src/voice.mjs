@@ -72,16 +72,13 @@ async function classifyMicFailure(err, source = 'capture') {
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
 
-// Deepgram bridge URL. On the server's own machine we reach the bridge directly
-// at 127.0.0.1:8179. From another device (the iPad over Tailscale/LAN) localhost
-// is the iPad itself — no bridge there — so relay through a same-origin WS proxy
-// on the tlda server (/voice/deepgram), reusing the page's TLS + token. This is
-// what keeps the iPad off iOS Web Speech, whose restart earcon causes the beeping.
-const _onServerHost = ['localhost', '127.0.0.1', '::1'].includes(location.hostname)
-// Deepgram is SDK-only — one implementation (Skip, 6/19: "we're going with the
-// SDK implementation, it is better"). The bridge is bin/deepgram-sdk-bridge.mjs
-// on port 8180; a device that can't reach 127.0.0.1 (the iPad) relays through the
-// same-origin /voice/deepgram-sdk WS proxy on the tlda server.
+// Deepgram bridge URL. Deepgram is SDK-only — one implementation (Skip, 6/19:
+// "we're going with the SDK implementation, it is better") — and there is ONE
+// bridge, on its own machine. Either we are told its address and connect to it
+// directly, or we relay through the same-origin /voice/deepgram-sdk WS proxy on
+// the tlda server, reusing the page's TLS + token. There is no third route: the
+// "we happen to be on the server's own host, so try 127.0.0.1:8180" branch is
+// gone with the local bridge it reached (Skip: "strip. simplify").
 // The voice box's own address, handed to us by the server (TLDA_VOICE_DIRECT_URL)
 // in the /api/voice/deepgram-sdk/start reply, which every connect path awaits
 // before opening this socket. Empty means no voice box is configured.
@@ -105,7 +102,6 @@ function deepgramBridgeUrl() {
   // the app cannot cut Skip off mid-sentence. Reachability is by tailnet
   // membership, which is the whole auth posture - no token is appended.
   if (_directBridgeUrl) return _directBridgeUrl
-  if (_onServerHost) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://127.0.0.1:8180`
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return appendToken(`${proto}://${location.host}/voice/deepgram-sdk`)
 }
@@ -3513,7 +3509,6 @@ export async function initVoice() {
     prefBackend,
     isTouch: _isTouchDevice,
     maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints : null,
-    onServerHost: _onServerHost,
     hostname: location.hostname,
   })
 
