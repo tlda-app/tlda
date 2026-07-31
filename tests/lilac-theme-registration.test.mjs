@@ -8,7 +8,9 @@ test('Lilac is registered as a selectable persistent theme family', () => {
   const hook = read('src/hooks/useFleetTheme.ts')
   const toc = read('src/panels/TocTab.tsx')
 
-  assert.match(hook, /export type ThemeFamily = 'fog' \| 'warm' \| 'lilac' \| null/)
+  // Assert lilac is a member of the union, not that the union is exactly four.
+  // Pinning the whole type made adding a theme fail a test about lilac.
+  assert.match(hook, /export type ThemeFamily =[^\n]*'lilac'/)
   assert.match(hook, /lilac:\s*\{\s*dark:\s*'lilac-dark-mode',\s*light:\s*'lilac-light-mode'\s*\}/)
   assert.match(hook, /ALL_BODY_CLASSES = \[[^\]]*'lilac-dark-mode'[^\]]*'lilac-light-mode'[^\]]*\]/s)
   assert.match(hook, /v === 'fog' \|\| v === 'warm' \|\| v === 'lilac'/)
