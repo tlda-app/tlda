@@ -112,8 +112,8 @@ export class FleetStoreClient {
       if (typeof this[method] === 'function' || method in FleetStoreClient.prototype) {
         throw new Error(
           `FLEET_STORE_METHODS lists '${method}', which FleetStoreClient implements itself. ` +
-          'Add it to NOT_PROXYABLE in the manifest generator with the reason a function ' +
-          'crosses its boundary, then regenerate.',
+          'Remove it from the list in server/lib/fleet-store-methods.mjs and note it under ' +
+          '"Deliberately NOT here" with the reason a function crosses its boundary.',
         )
       }
       const shape = AGENT_RESULT_SHAPE[method]
