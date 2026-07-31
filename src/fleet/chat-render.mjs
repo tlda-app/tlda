@@ -99,7 +99,7 @@ function recipientAttachmentRef(message, idx) {
 }
 
 function pendingAttachmentPlaceholder(ref = {}, att = null) {
-  const label = ref.placeholderPath || ref.localPath || ref.path || ref.projectPath || ref.name || ref.title || att?.name || att?.path || 'attachment'
+  const label = ref.localPath || ref.path || ref.projectPath || ref.name || ref.title || att?.name || att?.path || 'attachment'
   return `${label}*`
 }
 
