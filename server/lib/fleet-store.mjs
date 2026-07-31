@@ -1408,10 +1408,6 @@ export class FleetStore {
       ON CONFLICT(agent_id) DO UPDATE SET daemon_key = excluded.daemon_key
     `);
     this._deleteAgentDaemonRoute = this.db.prepare('DELETE FROM agent_daemon_routes WHERE agent_id = ?');
-    this._nameHistoryStmt = this.db.prepare(`
-      SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
-      ORDER BY from_ts ASC
-    `);
     // last_active is a maintained column on agents (bumped on every event
     // insert — see share()), so this is a plain indexed read that never touches
     // the events table. Earlier versions computed last_active inline (correlated
@@ -2520,13 +2516,6 @@ export class FleetStore {
       }
     }
     return out;
-  }
-
-  // Full span list for an agent, oldest first. Used for the thread-header
-  // provenance trail (e.g. "conc4 → concentration → (current)").
-  nameHistory(fleetId) {
-    if (!fleetId) return [];
-    return this._nameHistoryStmt.all(fleetId);
   }
 
   // One-time seed so existing agents (registered before the triggers existed)
