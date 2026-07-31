@@ -194,8 +194,11 @@ export function placeSpatialDocument(
       }
   const originCenter = { x: origin.x + origin.w / 2, y: origin.y + origin.h / 2 }
   const startAngle = stableHash(identity) / 0xffffffff * Math.PI * 2
-  const horizontalClearance = size.w / 2 + WORLD_GAP
-  const verticalClearance = size.h / 2 + WORLD_GAP
+  // Clearance is measured from the origin's centre, so it has to clear the
+  // origin's own half-extent as well as the new document's. Without the origin
+  // term a wide or tall document gets its neighbour placed inside its own bounds.
+  const horizontalClearance = origin.w / 2 + size.w / 2 + WORLD_GAP
+  const verticalClearance = origin.h / 2 + size.h / 2 + WORLD_GAP
   let best = { x: origin.x + origin.w + WORLD_GAP, y: originCenter.y - size.h / 2 }
   let bestScore = Number.POSITIVE_INFINITY
 
@@ -214,11 +217,15 @@ export function placeSpatialDocument(
       let score = ring * ring * 10
       for (const other of occupied) {
         const gap = rectGap(candidate, other)
-        if (gap === 0) score += 1_000_000
-        else {
-          const mass = Math.max(1, other.w * other.h / (DOCUMENT_W * DOCUMENT_H))
-          score += mass * 50_000 / (gap * gap)
+        // A full world gap is what makes these different places rather than
+        // neighbouring tiles, so anything closer is rejected outright instead of
+        // being weighed against the ring cost.
+        if (gap < WORLD_GAP) {
+          score = Number.POSITIVE_INFINITY
+          break
         }
+        const mass = Math.max(1, other.w * other.h / (DOCUMENT_W * DOCUMENT_H))
+        score += mass * 50_000 / (gap * gap)
       }
       if (score < bestScore) {
         bestScore = score
