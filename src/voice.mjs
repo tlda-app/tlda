@@ -388,6 +388,63 @@ function notifyBridgeOfSpeechEpoch() {
   }
 }
 
+// --- The one behaviour, for every sink ---
+//
+// Skip: "The particular text field you're writing into should not change the
+// fucking behavior of anything. There should be one fucking behavior."
+//
+// There is exactly one thing voice does to a piece of text: it APPENDS words
+// that have finalized, and it REPLACES the live interim tail. Finalized words
+// are his — they are never rewritten, whatever the recognizer or the buffers do
+// afterwards. Typing into a transcript is allowed; deleting finalized text is
+// not.
+//
+// This used to be four separate answers. Each accumulator sink got `_left +
+// _interim` as one opaque blob and re-derived for itself how much of its own
+// document that blob was allowed to overwrite — and every one of them concluded
+// "all of it". Measured on the real surface, dictating into a note: ~20 rewrites
+// per 45 seconds, ten of them clobbering more than 25 characters that were
+// already on his screen, "the boundless deep" coming back as "the boundless".
+//
+// So the sink is no longer told a blob and left to guess. voice.mjs owns the
+// span it has written and hands every sink the same primitive — replace
+// [from, to) with this string — computed here, once.
+//
+// `committed` is the finalized text we have already put in the sink; `anchor` is
+// where it starts in the sink's document; `interimLen` is the length of the
+// replaceable tail sitting just after it.
+let _span = null
+
+function beginVoiceSpan() {
+  // Called at speech entry, where `_left` is exactly what is already in the
+  // sink: for a textarea, the text before the cursor (the field is voice's to
+  // rewrite whole, so the span starts at 0); for an accumulator, empty, and the
+  // span starts wherever the caret is in a document voice does not own.
+  const anchor = _accumulator ? (_accumulator.getCursor?.() ?? 0) : 0
+  _span = { anchor, committed: _left || '', interimLen: 0 }
+}
+
+// The single edit. Pure: give it the span and the buffers, it says what to change.
+function voiceSpanEdit(span, left, interim) {
+  // If `left` no longer extends what we already wrote, the recognizer restarted
+  // its buffer — a new utterance, an epoch advance, a re-partition. Those are
+  // ordinary. What is NOT allowed is letting that walk back over words already
+  // on screen, so the span re-bases past them instead: what is written stays
+  // written, and the new buffer appends after it. This one branch is what makes
+  // finalized text append-only no matter what happens upstream.
+  if (!left.startsWith(span.committed)) {
+    span.anchor = span.anchor + span.committed.length + span.interimLen
+    span.committed = ''
+    span.interimLen = 0
+  }
+  const from = span.anchor + span.committed.length
+  const to = from + span.interimLen
+  const insert = left.slice(span.committed.length) + interim
+  span.committed = left
+  span.interimLen = interim.length
+  return { from, to, insert }
+}
+
 // Active chat target
 let _activeTextarea = null
 let _activeTargetHandle = null
@@ -398,6 +455,9 @@ let _sinkPrevTextarea = null
 let _sinkPrevAccumulator = null
 let _sinkPrevLeft = ''
 let _sinkPrevRight = ''
+// The span as it stood when voice was routed to <nowhere>, so the second click
+// can wipe just the interim tail of an accumulator sink rather than its document.
+let _sinkPrevSpan = null
 
 // Accumulator target — alternative to _activeTextarea for code editors etc.
 // When set, fillTextarea() calls onUpdate instead of writing to a DOM element.
@@ -1284,11 +1344,13 @@ function enterEdit(trigger = 'unknown') {
     setTextareaGlow(GLOW_AMBER)
     _state = 'edit'
     _left = _interim = _right = ''
+  _span = null
     return
   }
   _state = 'edit'
   advanceSpeechEpoch()
   _left = _interim = _right = ''
+  _span = null
   if (_recording && _recognition) {
     _editStopped = true
     try { _recognition.stop() } catch {}
@@ -1331,6 +1393,7 @@ export function setVoiceTarget(textarea, targetHandle) {
     _state = 'edit'
     advanceSpeechEpoch()
     _left = _interim = _right = ''
+  _span = null
     if (_backend === 'deepgram') {
       // The bridge was told the new epoch by advanceSpeechEpoch() above.
       resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
@@ -1372,15 +1435,25 @@ export function clearVoiceTarget(textarea) {
 }
 
 // --- Accumulator target ---
-// An alternative to setVoiceTarget for non-textarea editors (CodeMirror etc).
-// onUpdate(text) receives the post-processed spoken text so far.
-// onSend(text)   called when the "send" voice keyword is detected (optional).
-// onStop()       called when recording stops, so caller can reset cursor anchor (optional).
-// label          shown in HUD, e.g. 'note'.
-export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
-  // If same accumulator is already registered, no-op — avoids interrupting an
+// An alternative to setVoiceTarget for non-textarea editors (CodeMirror, a note's
+// text prop) — anything voice writes into but does not own.
+//
+// sink.applyEdit(from, to, insert)  replace [from, to) in the sink's document.
+//     This is the ONLY way text reaches a sink. It used to be `onUpdate(text)`,
+//     handing over the whole spoken text and leaving each sink to decide how much
+//     of its own document that was allowed to replace; all four decided "all of
+//     it", which is how finalized words got overwritten. Deciding is no longer
+//     the sink's job: voice.mjs computes the edit (see voiceSpanEdit) so that
+//     finalized text is only ever appended.
+// sink.getCursor()  where in the sink's document dictation should start.
+// sink.onSend(text) the "send" voice keyword was heard (optional).
+// sink.onStop()     recording stopped (optional).
+// sink.label        shown in the HUD, e.g. 'note'.
+export function setVoiceAccumulator(sink) {
+  const { applyEdit, label } = sink
+  // If the same sink is already registered, no-op — avoids interrupting an
   // active recording session when focus re-fires (e.g. clicking within CodeMirror).
-  if (_accumulator && _accumulator.onUpdate === onUpdate) return
+  if (_accumulator && _accumulator.applyEdit === applyEdit) return
   const wasRecording = _recording
   _voiceDumping = false
   // Sync teardown — no getUserMedia cycle needed (accumulator switch is cheap)
@@ -1406,13 +1479,20 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
   _state = 'edit'
   advanceSpeechEpoch()
   _left = _interim = _right = ''
-  _accumulator = { onUpdate, onSend: onSend || null, onStop: onStop || null, label: label || 'note' }
+  _span = null
+  _accumulator = {
+    applyEdit,
+    getCursor: sink.getCursor || null,
+    onSend: sink.onSend || null,
+    onStop: sink.onStop || null,
+    label: label || 'note',
+  }
   if (wasRecording) startRecording()
   emitVoiceTargetChange()
 }
 
-export function clearVoiceAccumulator(onUpdate) {
-  if (_accumulator && _accumulator.onUpdate === onUpdate) {
+export function clearVoiceAccumulator(applyEdit) {
+  if (_accumulator && _accumulator.applyEdit === applyEdit) {
     _voiceDumping = false
     _accumulator = null
     // Deselecting a note clears the target but never stops the recorder —
@@ -1567,12 +1647,19 @@ function clearCurrentSinkInterim() {
     try { _sinkPrevTextarea.setSelectionRange(cursor, cursor) } catch { /* cursor restore is best-effort (element may not support selection) */ }
     _sinkPrevTextarea.dispatchEvent(new Event('input', { bubbles: true }))
     _filling = false
-  } else if (_sinkPrevAccumulator) {
-    _sinkPrevAccumulator.onUpdate(_sinkPrevLeft + _sinkPrevRight)
+  } else if (_sinkPrevAccumulator && _sinkPrevSpan) {
+    // Wipe ONLY the interim tail. The old line here passed `_sinkPrevLeft +
+    // _sinkPrevRight`, which for an accumulator is '' + '' — it emptied the whole
+    // note. The span says exactly where the replaceable tail is, so say that.
+    const s = _sinkPrevSpan
+    const from = s.anchor + s.committed.length
+    _sinkPrevAccumulator.applyEdit(from, from + s.interimLen, '')
+    s.interimLen = 0
   }
   // Also reset the sink's own (nowhere) buffer so the next dictation starts fresh.
   _state = 'edit'
   _left = _interim = _right = ''
+  _span = null
   if (_backend === 'deepgram') resetDeepgramTextState()
   if (_backend === 'whisper-stream') flushWhisperBridge()
   showHud(hadField ? 'interim cleared' : '<nowhere> cleared', '#9370db')
@@ -1585,6 +1672,7 @@ export function clearLastInterim() {
     _sinkPrevAccumulator = _accumulator
     _sinkPrevLeft = _left
     _sinkPrevRight = _right
+    _sinkPrevSpan = _span
   }
   clearCurrentSinkInterim()
 }
@@ -1600,6 +1688,7 @@ export function enterVoiceSink() {
   _sinkPrevAccumulator = _accumulator
   _sinkPrevLeft = _left
   _sinkPrevRight = _right
+  _sinkPrevSpan = _span
   if (_inputListeners && _activeTextarea) {
     _activeTextarea.removeEventListener('input', _inputListeners.input)
     _activeTextarea.removeEventListener('click', _inputListeners.click)
@@ -1612,6 +1701,7 @@ export function enterVoiceSink() {
   _voiceDumping = true
   _state = 'edit'
   _left = _interim = _right = ''
+  _span = null
   if (_backend === 'deepgram') resetDeepgramTextState()
   if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording) showRecordingHud()
@@ -1643,16 +1733,26 @@ function maybeMarkFirstInterim(content) {
   })
 }
 
+// Apply one voice edit to a textarea. Voice owns the whole field here, so the
+// edit is a splice of its value; `_right` is simply whatever sits past the span
+// and is never inside [from, to).
+function applyEditToTextarea(ta, { from, to, insert }) {
+  const before = ta.value ?? ''
+  const next = before.slice(0, from) + insert + before.slice(to)
+  ta.value = next
+  ta.style.height = 'auto'
+  ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
+  const caret = from + insert.length
+  if (_state === 'speech' && caret <= next.length) ta.setSelectionRange(caret, caret)
+  ta.dispatchEvent(new Event('input', { bubbles: true }))
+  return { beforeLength: before.length, afterLength: next.length }
+}
+
 function fillTextarea(text) {
-  maybeMarkFirstInterim(_accumulator ? (_left + _interim) : text)
-  if (_accumulator) {
-    // _left has corrections applied at commit; _interim has corrections applied when set.
-    // Never re-run postProcessTranscript here — that would rewrite pre-speech text.
-    _accumulator.onUpdate(_left + _interim)
-    return
-  }
+  maybeMarkFirstInterim(_left + _interim)
+  const sinkIsAccumulator = !!_accumulator
   const ta = _activeTextarea
-  if (!ta) {
+  if (!sinkIsAccumulator && !ta) {
     // No accumulator and no textarea: the transcript has nowhere to land and is
     // dropped here with no trace. `_left` keeps growing but the next epoch advance
     // erases it, so these words are gone.
@@ -1661,30 +1761,17 @@ function fillTextarea(text) {
     })
     return
   }
-  _filling = true
-  const receipt = deliverVoiceComposition(ta, { left: _left, interim: _interim, right: _right }, (liveTextarea, nextText) => {
-    liveTextarea.value = nextText
-    liveTextarea.style.height = 'auto'
-    liveTextarea.style.height = Math.min(liveTextarea.scrollHeight, 200) + 'px'
-    // Restore cursor to end of voice portion (between interim and right)
-    if (_state === 'speech' && _right.length > 0) {
-      const cursorPos = nextText.length - _right.length
-      liveTextarea.setSelectionRange(cursorPos, cursorPos)
-    }
-    liveTextarea.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-  _filling = false
-  if (!receipt.written) vlog('transcript not written', { target: targetLabel(), ...receipt })
+  // A sink can be chosen mid-utterance (tap another note, focus a composer), and
+  // speech entry is where the span is normally established. If we arrive without
+  // one, start it here rather than writing blind.
+  if (!_span) beginVoiceSpan()
+  const edit = voiceSpanEdit(_span, _left || '', _interim || '')
 
-  // THE VANISHING. Skip: "I was just trying to talk, and it just kept vanishing on me."
-  // Nothing recorded the one thing that says literally: the composer got SHORTER. The
-  // receipt already carries the before/after lengths, so this costs a comparison.
-  //
-  // A shrinking DISPLAY is not automatically a fault — Deepgram revises an interim to
-  // something shorter routinely, and that is the trickle working. Committed text is
-  // different: once words are in `_left` they are his, and `_left` must only ever grow
-  // or be deliberately cleared. So the two are recorded separately, and only the second
-  // is a violation.
+  // Until now the accumulator sinks — every voice note — delivered with no trace
+  // at all: no record of what was handed over, and no COMMITTED TEXT LOST check,
+  // which is the one signal that says his words disappeared. A sink that cannot
+  // be observed is a sink whose failures get reported as "voice is broken" with
+  // nothing to read. Both sinks keep both records now.
   const prevLeft = _asmPrevLeft
   _asmPrevLeft = _left || ''
   // Deliberate clears (send, epoch advance, reset) empty _left and are recorded at their
@@ -1696,19 +1783,47 @@ function fillTextarea(text) {
   const committedLost = !!prevLeft && !!_left && !String(_left).startsWith(prevLeft.trimEnd())
   if (committedLost) {
     // Never throttled: committed text disappearing is the reported symptom itself.
+    // Note this is now a report about the BUFFER, not about his screen: the span
+    // re-bases rather than rewriting, so a buffer walking backwards no longer
+    // costs him words. It stays because it is the earliest sign of the upstream
+    // fault, and losing that signal is how this went unexplained for so long.
     vlog('COMMITTED TEXT LOST (left no longer extends its previous value)', {
       prevLeftLen: prevLeft.length, leftLen: _left.length,
       prevLeftTail: vtail(prevLeft), leftTail: vtail(_left),
       state: _state, target: targetLabel(),
     })
-  } else if (receipt.afterLength < receipt.beforeLength) {
+  }
+  vdiscard('voice-delivery', 'delivered voice edit', {
+    target: targetLabel(), from: edit.from, to: edit.to, insertLen: edit.insert.length,
+    leftLen: (_left || '').length, interimLen: (_interim || '').length,
+    state: _state, tail: vtail(edit.insert),
+  })
+
+  if (sinkIsAccumulator) {
+    _accumulator.applyEdit(edit.from, edit.to, edit.insert)
+    return
+  }
+  if (!ta.isConnected) {
+    vlog('transcript not written', { target: targetLabel(), reason: 'textarea disconnected' })
+    clearVoiceTarget(ta)
+    return
+  }
+  _filling = true
+  const receipt = applyEditToTextarea(ta, edit)
+  _filling = false
+
+  // THE VANISHING. Skip: "I was just trying to talk, and it just kept vanishing on me."
+  // A shrinking DISPLAY is not automatically a fault — Deepgram revises an interim to
+  // something shorter routinely, and that is the trickle working. The committed half is
+  // reported above, off the buffers, for both sinks.
+  if (receipt.afterLength < receipt.beforeLength) {
     vdiscard('composer-shrank', 'composer text got shorter', {
       before: receipt.beforeLength, after: receipt.afterLength,
       leftLen: (_left || '').length, interimLen: (_interim || '').length, state: _state,
     })
   }
 
-  if (!receipt.connectedBefore && _activeTextarea === ta) clearVoiceTarget(ta)
+  if (!ta.isConnected && _activeTextarea === ta) clearVoiceTarget(ta)
 }
 
 function formatMissingnessSeconds(ms) {
@@ -1733,6 +1848,7 @@ function insertChromeMissingnessMarker(dropStartedAt, restartedAt = Date.now()) 
     _left = _activeTextarea?.value?.slice(0, cursor) ?? ''
     _right = _activeTextarea?.value?.slice(cursor) ?? ''
     _interim = ''
+    beginVoiceSpan()
   }
 
   if (_interim) {
@@ -1826,6 +1942,7 @@ function _setupRecognition() {
       _left = _activeTextarea?.value?.slice(0, cursor) ?? ''
       _right = _activeTextarea?.value?.slice(cursor) ?? ''
       _interim = ''
+      beginVoiceSpan()
     }
 
     let interim = ''
@@ -1855,6 +1972,7 @@ function _setupRecognition() {
           _state = 'edit'
           advanceSpeechEpoch()
           _left = _interim = _right = ''
+  _span = null
           // Force a fresh session so cumulative results from the previous
           // chat can't leak into the new chat's textarea.
           if (_recording && _recognition) {
@@ -2086,6 +2204,7 @@ function onWhisperMessage(event) {
       _left = ta?.value?.slice(0, cursor) ?? ''
       _right = ta?.value?.slice(cursor) ?? ''
       _interim = ''
+      beginVoiceSpan()
     }
 
     // Append new transcription chunk to _left — once committed, text doesn't change
@@ -2109,6 +2228,7 @@ function onWhisperMessage(event) {
         _state = 'edit'
         advanceSpeechEpoch()
         _left = _interim = _right = ''
+  _span = null
         flushWhisperBridge()
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
         return
@@ -2678,6 +2798,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _left = partition.left
       _interim = partition.interim
       _right = partition.right
+      beginVoiceSpan()
       resetDeepgramTextState()
       // THE SUSPECTED DOUBLING ENGINE. _left is re-seeded from what is already on
       // screen — which includes the interim words just displayed — and a final carrying
@@ -2801,6 +2922,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         _state = 'edit'
         advanceSpeechEpoch()
         _left = _interim = _right = ''
+  _span = null
         resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
         return
@@ -3105,6 +3227,7 @@ function afterSend(submittedTextOverride) {
   advanceSpeechEpoch()
   _state = 'edit'
   _left = _interim = _right = ''
+  _span = null
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
     return
@@ -3284,6 +3407,7 @@ function startRecording() {
   _state = 'edit'
   advanceSpeechEpoch()
   _left = _interim = _right = ''
+  _span = null
   _lastResultTime = 0
   _lastWhisperMessageTime = 0
   _lastChromeMissingnessMarker = ''
@@ -3399,6 +3523,7 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   _state = 'edit'
   _accumulator = null
   _left = _interim = _right = ''
+  _span = null
   _editStopped = false
   _filling = false
   _audioCaptureRetries = 0
@@ -3758,6 +3883,7 @@ export function resetTranscript(submittedText = undefined) {
   _state = 'edit'
   advanceSpeechEpoch()
   _left = _interim = _right = ''
+  _span = null
   if (_backend === 'deepgram') {
     if (submittedText != null) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
     else resetDeepgramTextState({ preserveUtteranceGuard: true })

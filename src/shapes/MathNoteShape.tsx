@@ -702,9 +702,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
       // Voice accumulator state — declared here so the updateListener can
       // reference them by closure even though they're mutated later.
-      let voiceAnchorPos: number | null = null
-      let lastVoiceLen = 0
-      let voiceFilling = false  // true while onVoiceUpdate is dispatching
+      let voiceFilling = false  // true while a voice edit is dispatching
+      // Vim mode, read synchronously. The React state below is a render concern
+      // and is stale inside these callbacks.
+      let vimInInsert = false
 
       const startState = EditorState.create({
         doc: shape.props.text || '',
@@ -744,8 +745,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             // current speech session so the next one starts from the new position.
             // Mirrors the textarea onEdit → enterEdit() path in voice.mjs.
             if (!voiceFilling && (update.selectionSet || update.docChanged)) {
-              voiceAnchorPos = null
-              lastVoiceLen = 0
               notifyAccumulatorCursorMoved()
             }
             // Track cursor position for preview scroll
@@ -782,6 +781,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       if (cm) {
         CM5.on(cm, 'vim-mode-change', (e: any) => {
           const inInsert = e.mode === 'insert'
+          vimInInsert = inInsert
           setIsVimInsert(inInsert)
           setVimMode(e.mode || 'normal')
           modeJustChangedRef.current = true
@@ -823,33 +823,34 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       })
 
       // Wire voice accumulator: Right Shift → dictate into this note.
-      // voiceAnchorPos/lastVoiceLen/voiceFilling are declared above (before EditorState.create)
+      // voiceFilling is declared above (before EditorState.create)
       // so the updateListener closure can reference them.
-      const onVoiceUpdate = (text: string) => {
+      // One edit, computed by voice.mjs, applied here. This used to hold its own
+      // anchor and length and replace that whole span with the entire spoken text
+      // on every update — which is what let already-finalized words be rewritten.
+      // Where dictation starts is still this editor's business (getCursor); how
+      // much of it may be overwritten is not.
+      const onVoiceEdit = (from: number, to: number, insert: string) => {
         const v = cmViewRef.current
         if (!v) return
-        if (voiceAnchorPos === null) {
-          // First update of this recording session: snapshot cursor position
-          voiceAnchorPos = v.state.selection.main.head
-          lastVoiceLen = 0
-        }
-        const from = voiceAnchorPos
-        const to = voiceAnchorPos + lastVoiceLen
+        // Skip's ruling on the modal case: "once voice starts returning a
+        // transcript, it kicks into insertion mode. And it's fine for it to just
+        // stay in insertion mode." Normal mode is not a neutral place to receive
+        // dictation here — the effect that syncs shape.props.text back into this
+        // editor replaces the whole document, and it only runs when NOT in
+        // insert. So a transcript arriving in normal mode races a whole-document
+        // rewrite. Entering insert on the first spoken word settles both.
+        if (cm && !vimInInsert) Vim.handleKey(cm, 'i', 'user')
+        const len = v.state.doc.length
+        const f = Math.max(0, Math.min(from, len))
+        const t = Math.max(f, Math.min(to, len))
         voiceFilling = true
-        v.dispatch({
-          changes: { from, to, insert: text },
-          selection: { anchor: from + text.length },
-        })
+        v.dispatch({ changes: { from: f, to: t, insert }, selection: { anchor: f + insert.length } })
         voiceFilling = false
-        lastVoiceLen = text.length
         // EditorView.updateListener fires and saves to shape props
       }
-      const onVoiceStop = () => {
-        // Recording stopped — next session starts a fresh anchor
-        voiceAnchorPos = null
-        lastVoiceLen = 0
-      }
-      setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+      const onVoiceCursor = () => cmViewRef.current?.state.selection.main.head ?? 0
+      setVoiceAccumulator({ applyEdit: onVoiceEdit, getCursor: onVoiceCursor, label: 'note' })
 
       // Re-register accumulator whenever CodeMirror regains focus.
       // If a chat composer took the sink via setVoiceTarget (which clears
@@ -858,7 +859,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       // This comment used to say setVoiceTarget "calls hardResetVoice"; it never did,
       // and it did not clear _accumulator either. Believing it already enforced
       // one-target-at-a-time is what left dictation welded to a voice note.
-      const onCmFocus = () => setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
+      const onCmFocus = () => setVoiceAccumulator({ applyEdit: onVoiceEdit, getCursor: onVoiceCursor, label: 'note' })
       view.dom.addEventListener('focus', onCmFocus, true)
 
       // Dispatch pending entry mode (from 'i' or ':' key when note was selected)
@@ -875,7 +876,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       return () => {
         view.dom.removeEventListener('focus', onCmFocus, true)
         container.removeEventListener('keydown', captureTab, true)
-        clearVoiceAccumulator(onVoiceUpdate)
+        clearVoiceAccumulator(onVoiceEdit)
         view.destroy()
         cmViewRef.current = null
         setIsVimInsert(false)
