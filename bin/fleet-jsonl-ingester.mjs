@@ -23,6 +23,10 @@ import {
   createNativeTaskState,
   extractNativeTaskEvents,
 } from '../agent-runtime/native-task-events.mjs'
+import {
+  isHarnessAuthoredRecord,
+  isHarnessAuthoredText,
+} from '../agent-runtime/terminal-chat-authorship.mjs'
 
 const MAX_CONTEXT = 200_000
 const watchers = new Map()
@@ -202,16 +206,14 @@ function parseRecordForHarness(harnessKind, record) {
 
 export function terminalChatFromRecord(parsed) {
   if (parsed.type !== 'user') return null
-  if (parsed.isMeta) return null
+  if (isHarnessAuthoredRecord(parsed)) return null
   const content = parsed.message?.content
   let text = ''
   if (typeof content === 'string') text = content
   else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
   if (!text || text.length < 3) return null
   if (text.length > 2000) text = text.substring(0, 2000)
-  if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
-      text.startsWith('<channel') || text.startsWith('📬') ||
-      /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/.test(text)) return null
+  if (isHarnessAuthoredText(text)) return null
   const ts = parsed.timestamp || null
   if (!ts) return null
   return { text, ts }
