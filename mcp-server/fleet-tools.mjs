@@ -56,10 +56,7 @@ import {
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs';
 import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
-import {
-  applyNonClaudeRolePack,
-  crossLaneBlock,
-} from '../shared/task-role-routing.mjs';
+import { applyNonClaudeRolePack } from '../shared/task-role-routing.mjs';
 import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
@@ -2290,38 +2287,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     };
   }
 
-  async function recentDirectInbound(fromId, toId) {
-    try {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const data = await mcpFleetTransport.ephemeral('fleet-search', {
-        query: '',
-        filterExpression: `from:${toId} & to:${fromId}`,
-        since,
-        eventType: 'chat',
-        historyOnly: true,
-        eventOnly: true,
-        limit: 1,
-      });
-      return (data.results || []).some(e =>
-        e.type === 'chat' &&
-        e.from === toId &&
-        e.to === fromId
-      );
-    } catch (e) {
-      process.stderr.write(`[fleet] recent direct-reply check failed: ${e.message}\n`);
-      return false;
-    }
-  }
-
-  async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
-    const agents = await getRoster(targetAgentId);
-    const fromAgent = agents.find(a => a.id === activeAgentId()) || { id: activeAgentId(), cwd: getAgentCwd() };
-    const toAgent = agents.find(a => agentMatches(a, targetAgentId));
-    if (!toAgent) return null;
-    const block = crossLaneBlock({ fromAgent, toAgent, action, message, directReply });
-    return block?.text || null;
-  }
-
   // ==== Task Management ====
 
   // ---- delegate ----
@@ -2382,11 +2347,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
     async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
-      const laneBlock = await requireInLaneAction(targetAgent, {
-        action: 'delegate',
-        message,
-      });
-      if (laneBlock) throw new Error(laneBlock);
       const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.mint);
       const routedMessage = applyNonClaudeRolePack(message, {
         template: args.template,
@@ -2647,20 +2607,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
       return { content: [{ type: 'text', text: 'A `.suggest` item has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
     }
-    const laneBlocks = [];
-    for (const to of recipients) {
-      const directReply = await recentDirectInbound(activeAgentId(), to);
-      const laneBlock = await requireInLaneAction(to, {
-        action: 'chat',
-        message,
-        directReply,
-      });
-      if (laneBlock) laneBlocks.push(laneBlock);
-    }
-    if (laneBlocks.length) {
-      return { content: [{ type: 'text', text: `Message NOT sent.\n${laneBlocks.map(b => `- ${b}`).join('\n')}` }], isError: true };
-    }
-
     // Resolve the body's file references → uploads. Two modes:
     //  - file-share (source.file): the body is a markdown file's content; bundle
     //    its image includes (upload + rewrite refs inline) so they render for
@@ -3038,10 +2984,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         owner = found?.task?.agent || null;
       } catch (e) {
         process.stderr.write(`[fleet] report task-owner lookup failed: ${e.message}\n`);
-      }
-      if (owner && owner !== activeAgentId()) {
-        const laneBlock = await requireInLaneAction(owner, { action: 'report' });
-        if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
       }
     }
 
@@ -3546,12 +3488,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (args.channel != null) {
         const channel = validateDeliveryChannel(args.channel);
         if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args.channel}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
-        // The fence lives here, in the MCP layer. Same mechanism as delegate and
-        // chat — see the marker pattern in AGENTS.md.
-        if (agent !== activeAgentId()) {
-          const laneBlock = await requireInLaneAction(agent, { action: 'delivery-channel' });
-          if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
-        }
         const data = await mcpFleetTransport.durable('delivery-channel', { caller: activeAgentId(), agent, channel });
         if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
         changes.push(`channel=${channel}`);
@@ -4333,12 +4269,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const operation = args.operation || 'list';
       if (operation === 'create') {
         if (!args.query) return { content: [{ type: 'text', text: 'subscription create requires query.' }], isError: true };
-        // The fence lives here, in the MCP layer, because this is where agents act.
-        // Same mechanism as delegate and chat — see the marker pattern in AGENTS.md.
-        if (args.target && args.target !== activeAgentId()) {
-          const laneBlock = await requireInLaneAction(args.target, { action: 'subscribe', message: args.query });
-          if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
-        }
         const data = await mcpFleetTransport.durable('subscribe', {
           caller: activeAgentId(),
           target: args.target || activeAgentId(),
@@ -4350,10 +4280,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }
       if (operation === 'remove') {
         if (args.id == null) return { content: [{ type: 'text', text: 'subscription remove requires id.' }], isError: true };
-        if (args.target && args.target !== activeAgentId()) {
-          const laneBlock = await requireInLaneAction(args.target, { action: 'unsubscribe' });
-          if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
-        }
         const data = await mcpFleetTransport.durable('unsubscribe', { caller: activeAgentId(), subscription_id: args.id });
         if (data?.error) return { content: [{ type: 'text', text: `subscription remove failed: ${data.error}` }], isError: true };
         return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
