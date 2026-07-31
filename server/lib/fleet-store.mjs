@@ -2924,6 +2924,22 @@ export class FleetStore {
     }
     for (const name of names) {
       if (!name || typeof name !== 'string') continue;
+      // Friendly names and labels are ONE namespace; a friendly name is a label
+      // with a unique living occupant. So "unavailable to you" has one gate and
+      // one error shape, and this is another reason, not another path.
+      //
+      // The filter grammar's TOKEN is "a maximal run of characters that are not
+      // whitespace or & | ! ( )" (shared/fleet-labels.mjs). A name carrying one
+      // of those stores fine and is then unaddressable: roster, chat(to:),
+      // thread and search tokenize it into pieces and return zero matches with
+      // no error, while a panel filter still matches because it hands the leaf
+      // straight to the evaluator — correct in the one place you would look,
+      // silently broken everywhere else. Exactly the tokenizer's rule;
+      // deliberately not a stricter charset.
+      if (/[\s&|!()]/.test(name)) {
+        collisions.push({ name, kind: 'unaddressable' });
+        continue;
+      }
       if (PSEUDO_LABELS.includes(name)) {
         collisions.push({ name, kind: 'pseudo_label' });
         continue;
