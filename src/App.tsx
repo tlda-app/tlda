@@ -825,8 +825,10 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     return () => controller.abort()
   }, [indexProjectKey])
 
+  // Agent reports are artifacts, not projects. 560 of 626 manifest entries are
+  // `report-*`, so listing them turns the project index into a task list.
   const entries = Object.entries({ ...manifest, ...restoredProjects })
-    .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key))
+    .filter(([key]) => !bookMembers.has(key) && !hiddenKeys.has(key) && !key.startsWith('report-'))
     .filter(([key, config]) => matchesProjectSearchQuery(key, config, historyIndex?.projects[key], parsedSearch))
     .sort(([keyA, configA], [keyB, configB]) => {
       const starA = starredKeys.has(keyA) || !!configA.starred
