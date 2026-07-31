@@ -165,7 +165,17 @@ class HandDragging extends StateNode {
       const pointerSpeed = Math.abs(vy)
       if (pointerSpeed > 0.1) {
         const speed = Math.min(pointerSpeed, 1)
-        const direction = new Vec(0, Math.sign(vy) * (pointerSpeed / speed))
+        // z MUST be 0. `new Vec(x, y)` defaults z to 1, and slideCamera reads
+        // `direction.z ?? 0` as a ZOOM rate — `newCz = cz * (1 + dirZ * speed *
+        // elapsed)`. So every flick release was gliding the zoom as well as the
+        // scroll, which is the "scroll a little and suddenly you're zoomed way
+        // out" Skip hit on the phone. tldraw's own slideCamera calls pass
+        // `z: 0` explicitly for the same reason.
+        //
+        // Skip's diagnostic is what found it: "it doesn't happen with other
+        // tools up." This is the only tool that hands slideCamera a Vec it
+        // built itself.
+        const direction = new Vec(0, Math.sign(vy) * (pointerSpeed / speed), 0)
         editor.slideCamera({ speed, direction, friction: 0.04 })
       }
     }
