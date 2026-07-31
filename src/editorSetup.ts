@@ -29,6 +29,7 @@ import {
 } from './annotationVisibility'
 // getRole import removed (unused)
 import { cleanupHtmlShapeData } from './shapes/HtmlPageShape'
+import { SPATIAL_MAP_ZOOM_STEPS } from './spatialDocumentWorld'
 import { applyHtmlSelectionToHighlight } from './htmlSelection'
 
 export type ReloadResult = {
@@ -1001,6 +1002,18 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
         behavior: 'free',
       },
     })
+  })
+
+  // The zoom-out floor belongs to the spatial world, not to reading: the Map has
+  // to frame a world whose documents sit WORLD_GAP apart. Extending the ladder
+  // downward leaves every original adjacent pair intact, so zoomIn and zoomOut
+  // select the same steps as before at any zoom above the extension. Every later
+  // setCameraOptions call here merges over this one, so the constraints updates
+  // below preserve it.
+  const { zoomSteps } = editor.getCameraOptions()
+  const spatialFloorTop = SPATIAL_MAP_ZOOM_STEPS[SPATIAL_MAP_ZOOM_STEPS.length - 1]
+  editor.setCameraOptions({
+    zoomSteps: [...SPATIAL_MAP_ZOOM_STEPS, ...zoomSteps.filter(z => z > spatialFloorTop)],
   })
 
   applyCameraBounds()
