@@ -2,6 +2,7 @@ import type { Editor, TLShapeId } from 'tldraw'
 import { htmlSourceLineAnchorAtCanvasY, htmlSourceLineCanvasPosition, type HtmlSourceLineAnchor } from './htmlSourceAnchors'
 import { getSourceAnchor, canvasToPdf, pdfToCanvas, resolvAnchor, type SourceAnchor } from './synctexAnchor'
 import { unanchoredSourceLocation, type SourceLocationReason } from './sourceLocation'
+import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 
 export type AnchorDocument = {
   name: string
@@ -71,7 +72,7 @@ export async function annotationSourceAnchorAtCanvasPoint(
   x: number,
   y: number,
 ): Promise<AnnotationSourceAnchor | null> {
-  if (document.format === 'html' || document.format === 'markdown') {
+  if (HTML_PAGE_FORMATS.has(document.format || '')) {
     const page = htmlPageAtCanvasPoint(editor, x, y)
     return page ? htmlSourceLineAnchorAtCanvasY(page.shape, page.bounds, y) : null
   }
@@ -89,7 +90,7 @@ export async function resolveAnnotationSourceAnchor(
 ): Promise<ResolvedAnnotationAnchor | null> {
   if (anchor.anchored === false) return anchor
 
-  if (document.format === 'html' || document.format === 'markdown') {
+  if (HTML_PAGE_FORMATS.has(document.format || '')) {
     const htmlAnchor = anchor as Extract<HtmlSourceLineAnchor, { anchored: true }>
     const page = htmlPageForSource(editor, htmlAnchor)
     if (!page) return { anchored: false, reason: 'unresolved', file: htmlAnchor.file, page: 0, shapeId: htmlAnchor.shapeId || '' }

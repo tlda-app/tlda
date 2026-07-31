@@ -15,6 +15,7 @@ import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
 import { isPhoneViewport } from './phoneViewport'
 
 import './DocumentPanel.css'
+import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 
 // ======================
 // Ping button
@@ -102,7 +103,7 @@ function PanelSearch({
 
 export function DocumentPanel() {
   const doc = useContext(ProjectContext)
-  const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
+  const isHtml = HTML_PAGE_FORMATS.has(doc?.format || '')
   const [tab, setTab] = useState<Tab>('document')
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)

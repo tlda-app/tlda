@@ -21,7 +21,7 @@ import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from '
 import { getViewerId } from './useYjsSync'
 import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import { htmlIframeElements } from './htmlIframeRegistry'
-import { FORMATS_WITH_OWN_PAGE_INFO } from '../shared/document-formats.mjs'
+import { FORMATS_WITH_OWN_PAGE_INFO, HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
 import {
   getVisibilityMode, subscribeVisibility,
@@ -467,7 +467,7 @@ export async function reloadPages(
   document: SvgDocument,
   pageNumbers: number[] | null, // null = all pages
 ): Promise<ReloadResult> {
-  if (document.format === 'html' || document.format === 'markdown') return reloadHtmlPages(editor, document)
+  if (HTML_PAGE_FORMATS.has(document.format || '')) return reloadHtmlPages(editor, document)
 
   // Markdown parts attached to this project — independent of whatever this
   // document's own reload does below (own try/catch, never blocks it).
@@ -730,7 +730,7 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
   ensurePagesAtBottom: () => void
 } {
   // Create page shapes if they don't already exist (from Yjs sync)
-  if (document.format === 'html' || document.format === 'markdown') {
+  if (HTML_PAGE_FORMATS.has(document.format || '')) {
     createHtmlShapes(editor, document)
   } else if (document.format === 'slides') {
     createSlidesShapes(editor, document)

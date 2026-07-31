@@ -19,3 +19,22 @@
  */
 
 export const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides', 'qmd'])
+
+/**
+ * Formats whose pages are HTML documents in iframes, scrolled rather than paged.
+ *
+ * This is a DIFFERENT question from the one above, and conflating them is how
+ * `qmd` shipped with a document that rebuilt correctly on the server and never
+ * changed on screen: reloadPages routes these formats to the iframe reloader
+ * and everything else to the LaTeX page reloader, so a format missing from the
+ * set silently took the path that reloads SVG pages a .qmd does not have.
+ *
+ * `slides` is deliberately NOT here. Its pages are also iframes, but one deck
+ * addressed by slide coordinates rather than a scrolling document, so it takes
+ * its own reload path — which is why the sites below test for it separately.
+ *
+ * The same set answers "does this document have synctex/proof data" (it does
+ * not — those come from a LaTeX build) and "is the source a line-addressed
+ * text file the anchor code can resolve against."
+ */
+export const HTML_PAGE_FORMATS = new Set(['html', 'markdown', 'qmd'])
