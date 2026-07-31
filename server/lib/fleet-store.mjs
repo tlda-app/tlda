@@ -599,14 +599,14 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_tasks_agent_active_live ON tasks(agent, delegated_at DESC) WHERE status NOT IN ('done', 'retracted');
 
       -- Who an event went to. One row per recipient, so a single event addressed
-      -- to a group is one `events` row and N rows here — there is no primary
-      -- recipient and no scalar recipient column to imply one. `read` is that
+      -- to a group is one events row and N rows here — there is no primary
+      -- recipient and no scalar recipient column to imply one. read is that
       -- recipient's own mailbox state; nobody else's read touches it.
       --
       -- This table is authoritative for recipient identity, not a discardable
       -- projection: a row is marked read, never deleted, because deleting it
       -- would erase the fact that the message was addressed to that agent.
-      -- `timestamp` is a copy of the event's own timestamp, written once with the
+      -- timestamp is a copy of the event's own timestamp, written once with the
       -- row and never updated (an amend writes a NEW event, it does not restamp
       -- one). It exists so a recipient-scoped history read can walk
       -- (agent_id, timestamp DESC) in index order and stop at LIMIT, exactly as
@@ -821,7 +821,7 @@ export class FleetStore {
           SELECT id, MAX(ts) AS la FROM (
             SELECT from_id AS id, MAX(timestamp) AS ts FROM events WHERE from_id IS NOT NULL GROUP BY from_id
             UNION ALL
-            SELECT to_id AS id, MAX(timestamp) AS ts FROM events WHERE to_id IS NOT NULL GROUP BY to_id
+            SELECT agent_id AS id, MAX(timestamp) AS ts FROM recipients WHERE agent_id IS NOT NULL GROUP BY agent_id
           ) GROUP BY id
         ) AS la WHERE agents.id = la.id
       `);
@@ -2397,7 +2397,7 @@ export class FleetStore {
       type,
       timestamp,
       from_id: actorId || null,
-      to_id: null,
+      recipients: [],
       text: operation === 'register' ? 'initial labels' : `labels ${operation}`,
       metadata,
       task_id: null,
@@ -2423,7 +2423,7 @@ export class FleetStore {
       ...inserted,
       _filter_agents: this._filterAgentsCurrent([
         inserted.from_id,
-        inserted.to_id,
+        ...(inserted.recipients || []),
         inserted.agent_id,
       ]),
     };
@@ -3896,7 +3896,7 @@ export class FleetStore {
     const retractedAt = new Date().toISOString();
 
     if (!exposed) {
-      if (event && unreadPending) this._deleteUnreadForEvent.run(event.id, task.agent);
+      if (event && unreadPending) this._clearUnreadForEvent.run(event.id, task.agent);
       if (event) {
         this.updateEventMetadata(event.id, {
           retracted: true,
@@ -3967,7 +3967,7 @@ export class FleetStore {
     const state = this.getTaskDeliveryState(task);
     const event = state?.event || null;
     this.db.transaction(() => {
-      if (event && state.unread) this._deleteUnreadForEvent.run(event.id, task.agent);
+      if (event && state.unread) this._clearUnreadForEvent.run(event.id, task.agent);
       this.upsertTask({
         ...task,
         status: 'retracted',
@@ -4353,7 +4353,7 @@ export class FleetStore {
 
   markRead(agentId) {
     // Return event IDs that were marked read (for read-receipt broadcast)
-    const ids = this.db.prepare(`SELECT event_id FROM unread WHERE to_id = ? AND read = 0`).all(agentId).map(r => r.event_id);
+    const ids = this.db.prepare(`SELECT event_id FROM recipients WHERE agent_id = ? AND read = 0`).all(agentId).map(r => r.event_id);
     this._markRead.run(agentId);
     return ids;
   }
@@ -4384,8 +4384,9 @@ export class FleetStore {
   }
 
   markEventUnread(eventId, agentId) {
-    this._insertUnread.run(eventId, agentId);
-    const result = this.db.prepare('UPDATE unread SET read = 0 WHERE event_id = ? AND to_id = ?').run(eventId, agentId);
+    const ts = this.db.prepare('SELECT timestamp FROM events WHERE id = ?').get(eventId)?.timestamp || null;
+    this._insertRecipient.run(eventId, agentId, ts, 0);
+    const result = this.db.prepare('UPDATE recipients SET read = 0 WHERE event_id = ? AND agent_id = ?').run(eventId, agentId);
     return result.changes > 0;
   }
 
@@ -4400,8 +4401,9 @@ export class FleetStore {
       `).run(JSON.stringify(metadataPatch), eventId);
       if (result.changes === 0) return false;
       if (unread && to) {
-        this._insertUnread.run(eventId, to);
-        this.db.prepare('UPDATE unread SET read = 0 WHERE event_id = ? AND to_id = ?').run(eventId, to);
+        const ts = this.db.prepare('SELECT timestamp FROM events WHERE id = ?').get(eventId)?.timestamp || null;
+        this._insertRecipient.run(eventId, to, ts, 0);
+        this.db.prepare('UPDATE recipients SET read = 0 WHERE event_id = ? AND agent_id = ?').run(eventId, to);
       }
       return true;
     });
@@ -4511,8 +4513,8 @@ export class FleetStore {
   getEventById(eventId) {
     const row = this.db.prepare(`SELECT ${this._EVT} FROM events WHERE id = ?`).get(eventId);
     if (!row) return null;
-    const meta = row.metadata ? JSON.parse(row.metadata) : null;
-    return { ...row, from: row.from, to: row.to, metadata: meta };
+    const event = FleetStore.hydrateEvent(row);
+    return { ...event, metadata: event.metadata ? JSON.parse(event.metadata) : null };
   }
 
   listPendingTimerEvents() {
@@ -4523,10 +4525,10 @@ export class FleetStore {
         AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1
       ORDER BY json_extract(metadata, '$.fire_at') ASC, id ASC
     `).all();
-    return rows.map(row => {
-      const meta = row.metadata ? JSON.parse(row.metadata) : null;
-      return { ...row, from: row.from, to: row.to, metadata: meta };
-    });
+    return FleetStore.hydrateEvents(rows).map(row => ({
+      ...row,
+      metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    }));
   }
 
   // `agents` is the exact set of fleet ids the normal chat history is filtered to.
@@ -4666,7 +4668,7 @@ export class FleetStore {
   // shapes the callers need: timestamp range, afterId, beforeId, plain.
   // Returns rows in the same order/orientation the old inline query did.
   _queryAgentEventsForSearch({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
-    const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id';
+    const cols = `id, type, timestamp, from_id as "from", text, metadata, task_id, agent_id, ${FleetStore._TO_JSON('events')}`;
     const tail = [];
     const tailParams = [];
     if (types && types.length) { tail.push(`type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
@@ -4687,12 +4689,17 @@ export class FleetStore {
       order = 'timestamp ASC, id ASC';
     }
     const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
-    const branch = (col) => `SELECT * FROM (SELECT ${cols} FROM events WHERE ${col} = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
-    const sql = `SELECT * FROM (${branch('from_id')} UNION ${branch('to_id')}) ORDER BY ${order} LIMIT ?`;
+    const sentBranch = `SELECT * FROM (SELECT ${cols} FROM events WHERE from_id = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
+    // The received branch walks idx_recipients_agent_ts for this agent and joins
+    // events by primary key, which is what the old idx_events_to scan did.
+    const receivedBranch = `SELECT * FROM (SELECT ${cols} FROM events
+      WHERE events.id IN (SELECT event_id FROM recipients WHERE agent_id = ?)${tailSql}
+      ORDER BY ${order} LIMIT ?)`;
+    const sql = `SELECT * FROM (${sentBranch} UNION ${receivedBranch}) ORDER BY ${order} LIMIT ?`;
     const params = [agent, ...tailParams, limit, agent, ...tailParams, limit, limit];
     const rows = this.db.prepare(sql).all(...params);
     if (beforeId) rows.reverse();
-    return rows;
+    return FleetStore.hydrateEvents(rows);
   }
 
   // ---- Session entry indexing (JSONL text for unified search) ----
@@ -4859,17 +4866,24 @@ export class FleetStore {
     const includeSessions = !eventTypes || !!sessionRole;
     const candidateLimit = Math.min(Math.max(Number(limit || 50) * 100, 1000), 10000);
 
-    function agentClause(fromCol, toCol, agentCol) {
+    // `idCol` is the events alias's id column: recipient membership is a row in
+    // `recipients`, not a column on the event, so an agent matches as a
+    // recipient when it appears in that event's recipient set — for one
+    // recipient or for a whole group alike.
+    function agentClause(fromCol, idCol, agentCol) {
       // `from:` semantics — restrict to messages the agent SENT (from_id only).
       if (fromOnly) {
         if (agentIds.length === 1) return { clause: `${fromCol} = ?`, params: [agentIds[0]] };
         return { clause: `${fromCol} IN (${agentPlaceholders})`, params: [...agentIds] };
       }
       if (agentIds.length === 1) {
-        return { clause: `(${fromCol} = ? OR ${toCol} = ? OR ${agentCol} = ?)`, params: [agentIds[0], agentIds[0], agentIds[0]] };
+        return {
+          clause: `(${fromCol} = ? OR EXISTS (SELECT 1 FROM recipients rc WHERE rc.event_id = ${idCol} AND rc.agent_id = ?) OR ${agentCol} = ?)`,
+          params: [agentIds[0], agentIds[0], agentIds[0]],
+        };
       }
       return {
-        clause: `(${fromCol} IN (${agentPlaceholders}) OR ${toCol} IN (${agentPlaceholders}) OR ${agentCol} IN (${agentPlaceholders}))`,
+        clause: `(${fromCol} IN (${agentPlaceholders}) OR EXISTS (SELECT 1 FROM recipients rc WHERE rc.event_id = ${idCol} AND rc.agent_id IN (${agentPlaceholders})) OR ${agentCol} IN (${agentPlaceholders}))`,
         params: [...agentIds, ...agentIds, ...agentIds]
       };
     }
@@ -4880,7 +4894,9 @@ export class FleetStore {
       if (before && row.timestamp >= before) return false;
       if (hasAgent) {
         if (fromOnly) return agentIds.includes(row.from);
-        return agentIds.includes(row.from) || agentIds.includes(row.to) || agentIds.includes(row.agentId);
+        return agentIds.includes(row.from)
+          || (row.recipients || []).some(id => agentIds.includes(id))
+          || agentIds.includes(row.agentId);
       }
       return true;
     }
@@ -4910,7 +4926,7 @@ export class FleetStore {
           type: r.type,
           timestamp: r.timestamp,
           from: r.from,
-          to: r.to,
+          recipients: FleetStore.hydrateEvent(r).recipients,
           text: r.text,
           metadata: r.metadata ? JSON.parse(r.metadata) : null,
           snippet: r.text?.slice(0, 120),
@@ -4920,7 +4936,7 @@ export class FleetStore {
         const eClauses = [];
         const eParams = [];
         if (hasAgent) {
-          const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
+          const ac = agentClause('e.from_id', 'e.id', 'e.agent_id');
           eClauses.push(ac.clause);
           eParams.push(...ac.params);
         }
@@ -4939,13 +4955,15 @@ export class FleetStore {
         const snippetCol = effectiveHistoryMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
         const hasEventPreFilter = !effectiveHistoryMode && eClauses.length > 0;
         const eventSql = effectiveHistoryMode ? `
-        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
+               (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json",
                ${snippetCol}, 0 as fts_rank
         FROM events e
         ${eventWhere}
         ORDER BY e.timestamp DESC LIMIT ?
       ` : hasEventPreFilter ? `
-        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
+               (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json",
                ${snippetCol}, ${searchTable}.rank as fts_rank
         FROM ${searchTable}
         JOIN events e ON e.id = ${searchTable}.rowid
@@ -4953,7 +4971,8 @@ export class FleetStore {
         ORDER BY ${searchTable}.rank
         LIMIT ?
       ` : `
-        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.agent_id,
+               (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json",
                ${snippetCol}, f.fts_rank
         FROM (
           SELECT rowid, rank AS fts_rank
@@ -4978,7 +4997,7 @@ export class FleetStore {
           type: r.type,
           timestamp: r.timestamp,
           from: r.from,
-          to: r.to,
+          recipients: FleetStore.hydrateEvent(r).recipients,
           text: r.text,
           agentId: r.agent_id,
           metadata: r.metadata ? JSON.parse(r.metadata) : null,
@@ -5147,20 +5166,22 @@ export class FleetStore {
         if (m._timer) meta.timer = true;
         if (m._raw) meta.raw = true;
 
+        const ts = m.timestamp || new Date().toISOString();
         const result = this._insertEvent.run(
           type,
-          m.timestamp || new Date().toISOString(),
+          ts,
           m.from || null,
-          m.to || null,
           m.text || null,
           Object.keys(meta).length > 0 ? JSON.stringify(meta) : null,
           m._taskId || null,
           m._agent || null
         );
 
-        // Track unread
-        if (!m.read && m.to) {
-          this._insertUnread.run(result.lastInsertRowid, m.to);
+        // Recipient rows carry the read state the import declares. An imported
+        // event's recipients are its own; nothing here regroups history.
+        const imported = [...new Set((Array.isArray(m.to) ? m.to : [m.to]).filter(Boolean))];
+        for (const id of imported) {
+          this._insertRecipient.run(result.lastInsertRowid, id, ts, m.read ? 1 : 0);
         }
       }
     });
@@ -5183,7 +5204,7 @@ export class FleetStore {
    * Returns the number of unread entries transferred.
    */
   transferUnread(fromAgentId, toAgentId) {
-    return this.db.prepare("UPDATE unread SET to_id = ? WHERE to_id = ? AND read = 0")
+    return this.db.prepare("UPDATE OR IGNORE recipients SET agent_id = ? WHERE agent_id = ? AND read = 0")
       .run(toAgentId, fromAgentId).changes;
   }
 

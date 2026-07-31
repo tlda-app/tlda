@@ -1729,10 +1729,14 @@ function inboxTaskBlocks(tasks) {
   }).filter(Boolean);
 }
 
-function inboxMessageKind(message) {
+// `watch` is a property of the READER, not of the event: a message is a watch
+// only for someone who is tapping it. An event's direct recipients read it as a
+// message even when somebody else taps it.
+function inboxMessageKind(message, readerId) {
   if (message.from === 'fleet:skip') return 'user';
   if (message.type === 'delegate') return 'task';
-  if (message.metadata?.wiretap_cc?.length) return 'watch';
+  const tapping = (message.metadata?.wiretap_cc || []).includes(readerId);
+  if (tapping && !(message.recipients || []).includes(readerId)) return 'watch';
   return 'message';
 }
 
@@ -1741,10 +1745,14 @@ export async function resolveInboxMessage(message, resolvers) {
   const ctx = message.metadata?.context;
   const docHint = formatViewingHint(ctx);
   const { text: chipResolvedText, images: chipImages } = await resolvers.resolveChipTokens(message.text, message.metadata);
-  const recipientId = message.to || activeAgentId();
+  // The reader is whoever is calling inbox(), never "the recipient": an event
+  // has a recipient LIST, and a CC/wiretap reader is not in it at all. Resolving
+  // attachment refs and delivery against anyone else's id reads somebody else's
+  // materialized files and somebody else's delivery decision.
+  const readerId = activeAgentId();
   let renderedPendingPlaceholder = false;
   const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
-    const ref = recipientAttachmentRef(message.metadata, recipientId, idx);
+    const ref = recipientAttachmentRef(message.metadata, readerId, idx);
     const att = message.metadata?.inline_attachments?.[+idx];
     if (ref?.state === 'pending') {
       renderedPendingPlaceholder = true;
@@ -1759,23 +1767,27 @@ export async function resolveInboxMessage(message, resolvers) {
   const { text: imgResolvedText, images } = await resolvers.resolveImages(refResolvedText);
   images.push(...chipImages);
   const reminder = message.metadata?.chatReminder ? `\n⚠️ ${message.metadata.chatReminder}` : '';
-  const pendingFootnote = renderedPendingPlaceholder || hasPendingAttachmentPlaceholders(message.metadata, recipientId)
+  const pendingFootnote = renderedPendingPlaceholder || hasPendingAttachmentPlaceholders(message.metadata, readerId)
     ? `\n\n${PENDING_ATTACHMENT_FOOTNOTE}`
     : '';
   const subscriptionDelivery = (message.metadata?.subscription_deliveries || [])
-    .find(d => d?.recipient === recipientId) || null;
+    .find(d => d?.recipient === readerId) || null;
+  // Delivery is decided per recipient, so it is stored per recipient. Read this
+  // reader's own entry — there is no message-wide delivery to fall back to.
+  const recipientDelivery = (message.metadata?.recipient_delivery || [])
+    .find(d => d?.recipient === readerId) || null;
   const idHint = message.id ? `, id:${message.id}` : '';
   return {
     id: message.id,
     from: message.from,
     fromLabel,
-    kind: inboxMessageKind(message),
+    kind: inboxMessageKind(message, readerId),
     priority: message.metadata?.priority || 'normal',
-    inboxDelivery: subscriptionDelivery?.delivery || message.metadata?.inbox_delivery || 'notified',
-    inboxStatus: message.metadata?.inbox_status || null,
-    inboxStatusTag: message.metadata?.inbox_status_tag || null,
+    inboxDelivery: subscriptionDelivery?.delivery || recipientDelivery?.delivery || 'notified',
+    inboxStatus: recipientDelivery?.status || null,
+    inboxStatusTag: recipientDelivery?.statusTag || null,
     notificationPolicy: subscriptionDelivery?.notification_policy || null,
-    notifyBy: subscriptionDelivery?.notifyBy || message.metadata?.notify_by || null,
+    notifyBy: subscriptionDelivery?.notifyBy || recipientDelivery?.notifyBy || null,
     images,
     // Markdown-formatted so the inbox renders cleanly in Skip's chat (which
     // markdown-renders tool output) AND reads well as raw text for agents:
@@ -2244,7 +2256,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       return (data.results || []).some(e =>
         e.type === 'chat' &&
         e.from === toId &&
-        e.to === fromId
+        (e.recipients || []).includes(fromId)
       );
     } catch (e) {
       process.stderr.write(`[fleet] recent direct-reply check failed: ${e.message}\n`);
@@ -2664,43 +2676,49 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       preambleRef = { doc: preambleDoc, version: pv || null };
     }
 
-    // Single write: send to dashboard server via WS.
-    const sent = [];
-    const failed = [];
+    // Single write: send to dashboard server via WS. A send to a group is ONE
+    // event carrying the whole recipient list, so it is one call with one
+    // _tempId — the idempotency key belongs to the message, not to a recipient.
+    let sent = [];
+    let sendFailure = null;
     const receipts = [];
-    const queued = [];
-    let lastEventId = null;
+    let queuedOperationId = null;
+    let messageId = null;
     const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
-    for (const to of recipients) {
-      const chatBody = { message: resolvedMessage, to, from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
-      if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
-      if (refAttachments.length) chatBody.attachments = refAttachments;
-      if (docContext) chatBody.context = docContext;
-      if (preambleRef) chatBody.preambleRef = preambleRef;
-      if (source) chatBody.source = source;
-      try {
-        const data = await mcpFleetTransport.durable('chat', chatBody, { operationId: chatBody._tempId });
-        if (data?.queued) {
-          sent.push(to);
-          queued.push({ to, operationId: data.operation_id || chatBody._tempId });
-        } else if (data?.ok) {
-          sent.push(to);
-          if (data.event_ids?.length) lastEventId = data.event_ids[0];
-          if (Array.isArray(data.receipts)) receipts.push(...data.receipts);
-        }
-        else failed.push(to);
-      } catch (e) {
-        failed.push(`${to} (${e.message})`);
+    // `to` stays an agent-set EXPRESSION on the wire — the server is the one
+    // authority that resolves recipients. Sending the ids we already resolved,
+    // joined with `|`, is that same expression narrowed to exactly this set, so
+    // the gate above and the delivered set cannot drift apart and the server
+    // needs no second input shape.
+    const chatBody = { message: resolvedMessage, to: recipients.join(' | '), from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
+    if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
+    if (refAttachments.length) chatBody.attachments = refAttachments;
+    if (docContext) chatBody.context = docContext;
+    if (preambleRef) chatBody.preambleRef = preambleRef;
+    if (source) chatBody.source = source;
+    try {
+      const data = await mcpFleetTransport.durable('chat', chatBody, { operationId: chatBody._tempId });
+      if (data?.queued) {
+        sent = recipients;
+        queuedOperationId = data.operation_id || chatBody._tempId;
+      } else if (data?.ok) {
+        sent = recipients;
+        if (data.event_ids?.length) messageId = data.event_ids[0];
+        if (Array.isArray(data.receipts)) receipts.push(...data.receipts);
+      } else {
+        sendFailure = 'the server did not accept it';
       }
+    } catch (e) {
+      sendFailure = e.message;
     }
 
-    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — no recipient send was accepted or queued. Failed: ${failed.join(', ')}` }], isError: true };
+    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — not accepted or queued (${sendFailure}). Recipients: ${recipients.join(', ')}` }], isError: true };
 
     let warning = '';
     let suggestionNotice = '';
-    if (authoredSuggestions.length && lastEventId != null) {
+    if (authoredSuggestions.length && messageId != null) {
       try {
-        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent, { messageId: lastEventId });
+        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent, { messageId });
         suggestionNotice = ` Posted ${count} suggestion chip(s).`;
       } catch (e) {
         warning += `\n\n⚠ **Suggestion chips were not posted:** ${e.message}`;
@@ -2726,7 +2744,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     // Render-VALIDITY: prominent — Skip sees broken output unless the agent
     // amends. This is the "warn so they can amend their shit" check (Skip 6/19).
     if (renderIssues.length > 0) {
-      const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
+      const target = messageId != null ? `chat({ amend_id: ${messageId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
       warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
     }
     if (fileRenderIssues.length > 0) {
@@ -2738,20 +2756,20 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     }
     const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
     if (launderIssues.length > 0) {
-      warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, lastEventId)).join('\n')}`;
+      warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, messageId)).join('\n')}`;
     }
     // STYLE: quiet, optional — never a gate.
     if (styleHints.length > 0) {
       warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
-    if (queued.length) {
-      warning += `\n\nQueued for durable delivery; no server ACK yet:\n${queued.map(q => `- ${q.to}: ${q.operationId}`).join('\n')}`;
+    if (queuedOperationId) {
+      warning += `\n\nQueued for durable delivery; no server ACK yet: ${queuedOperationId}`;
       if (authoredSuggestions.length) {
         warning += '\nSuggestion chips were not posted yet because the chat message has not received a server id.';
       }
     }
 
-    const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
+    const amendHint = messageId != null ? ` (message id ${messageId} — chat({ amend_id: ${messageId} }) to edit it in place)` : '';
     const sentSummary = formatRecipientStatusSummary(sent, agents, receipts);
     const deliveryText = receipts.length
       ? `.\n${sentSummary.split(', ').join('\n')}`
@@ -3621,9 +3639,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return `${p.month}/${p.day} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
     };
 
+    // A send carries a recipient LIST, so the direction line renders every
+    // recipient. Only the sender gets a name-provenance tag: the row stamps a
+    // period name for `from`, and there is no per-recipient equivalent, so a
+    // recipient is rendered by its durable id rather than a name it may not
+    // have held.
+    const fmtRecipients = (recipients) => (recipients || []).join(', ');
+
     const fmtCtxMsg = (c) => {
       const cFrom = tag(c.from_id || c.from, c.fromName, c.fromNameNow);
-      const cTo = tag(c.to_id || c.to, c.toName, c.toNameNow);
+      const cTo = fmtRecipients(c.recipients);
       const cDir = cTo ? `${cFrom} → ${cTo}` : cFrom;
       const text = (c.text || '').length > 300 ? c.text.slice(0, 300) + '...' : (c.text || '');
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
@@ -3694,7 +3719,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           return { timestamp: r.timestamp, text: formatProjectAgentForSearch(r) };
         }
         const from = tag(r.from, r.fromName, r.fromNameNow);
-        const to = tag(r.to, r.toName, r.toNameNow);
+        const to = fmtRecipients(r.recipients);
         const direction = to ? `${from} → ${to}` : from;
         const display = r.type === 'activity' ? formatActivityForSearch(r, snippet) : snippet;
         let text;
@@ -3863,8 +3888,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           : e.text || e.message || '';
         filtered.push({
           id: e.id, type: e.type, metadata,
-          from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
-          fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
+          from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
+          fromName: e.fromName, fromNameNow: e.fromNameNow,
         });
       }
     };
@@ -3896,8 +3921,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           : e.text || e.message || '';
         filtered.push({
           id: e.id, type: e.type, metadata,
-          from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
-          fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
+          from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
+          fromName: e.fromName, fromNameNow: e.fromNameNow,
         });
       }
     };
@@ -3973,15 +3998,15 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     });
 
     for (const m of filtered) {
-      for (const id of [m.from, m.to]) {
+      for (const id of [m.from, ...m.recipients]) {
         if (!id || resolvedAgents.has(id)) continue;
         const agent = await resolveAgent(id).catch(() => null);
         if (agent) resolvedAgents.set(agent.id, agent);
       }
     }
     if (!primaryId && args.agent) {
-      const first = filtered.find(m => m.from || m.to);
-      primaryId = first?.from || first?.to || null;
+      const first = filtered.find(m => m.from || m.recipients.length);
+      primaryId = first?.from || first?.recipients[0] || null;
     }
 
     if (filtered.length === 0) {
@@ -4081,7 +4106,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     for (const m of filtered) {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
       const from = tag(m.from, m.fromName, m.fromNameNow);
-      const to = tag(m.to, m.toName, m.toNameNow);
+      // Every recipient of the send, comma-separated. `tag` with no period name
+      // falls back to the agent resolved above, so each one carries its name and
+      // its durable id.
+      const to = m.recipients.map(id => tag(id)).join(', ');
       const ver = args.project ? versionAt(m.timestamp) : null;
       const verStr = ver ? ` @${ver}` : '';
       const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
@@ -4605,9 +4633,8 @@ const mcpFleetTransport = createFleetOperationTransport({
     }),
   sendDurable: sendDurableFleet,
   resolveSender: () => activeAgentId(),
-  resolveDestination: ({ payload }) => (
-    payload.to || payload.agent || payload.agent_id || payload.target || payload.filter || null
-  ),
+  resolveDestination: ({ payload }) =>
+    payload.to || payload.agent || payload.agent_id || payload.target || payload.filter || null,
   observe: event => {
     if (event.stage === 'terminal' && !event.ok) {
       process.stderr.write(`[fleet-transport] ${event.mode} ${event.operation} failed: ${event.error}\n`);

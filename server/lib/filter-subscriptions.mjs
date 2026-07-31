@@ -79,7 +79,7 @@ class TemporalMembership {
 
   participantLabels(event, { live = false } = {}) {
     const ids = [...new Set([
-      event?.from, event?.from_id, event?.to, event?.to_id,
+      event?.from, event?.from_id, ...(event?.recipients || []),
       event?.agent, event?.agent_id,
     ].filter(Boolean))]
     const out = Object.create(null)
@@ -229,7 +229,7 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
       const agents = Array.isArray(event?._filter_agents)
         ? event._filter_agents
         : await getAgentsByIds([
-          event?.from, event?.from_id, event?.to, event?.to_id,
+          event?.from, event?.from_id, ...(event?.recipients || []),
           event?.agent, event?.agent_id,
         ].filter(Boolean)) || []
       temporal.observe(agents)
@@ -262,7 +262,7 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
         eventAgents = Array.isArray(event?._filter_agents)
           ? event._filter_agents
           : await getAgentsByIds([
-            event?.from, event?.from_id, event?.to, event?.to_id,
+            event?.from, event?.from_id, ...(event?.recipients || []),
             event?.agent, event?.agent_id,
           ].filter(Boolean)) || []
       }
@@ -344,7 +344,7 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
       if (rows.length === 0) { exhausted = true; break }
       const sourceExhausted = rows.length < want
       const participantIds = [...new Set(rows.flatMap(row => [
-        row?.from, row?.from_id, row?.to, row?.to_id, row?.agent, row?.agent_id,
+        row?.from, row?.from_id, ...(row?.recipients || []), row?.agent, row?.agent_id,
       ]).filter(Boolean))]
       temporal.observe(await getAgentsByIds(participantIds) || [])
       const oldest = rows[rows.length - 1]?.timestamp || cursor

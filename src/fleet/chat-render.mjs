@@ -15,9 +15,19 @@
 //   getTasks:       () => tasks[],
 //   tldaToken:      string | null,
 //   renderMarkdown: (escapedHtml) => html,
+//   sendTargets:    string[]   // the panel's default target labels
 // }
 
 import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_name.mjs'
+import { uniqueLiveAgentForLabel } from './send-target-binding.mjs'
+
+// The agents a message was addressed to. Group send made this a SET carried by
+// ONE event: a one-recipient message is an array of length 1, and there is no
+// primary recipient.
+function recipientIds(m) {
+  return Array.isArray(m?.recipients) ? m.recipients.filter(Boolean) : []
+}
+
 // --- Pure helpers (copied from utils.mjs) ---
 
 export function esc(s) {
@@ -70,10 +80,7 @@ function chipifyMarkdownApiFileLinks(html) {
 function linkifyCodeUrls(html) { return html }
 
 function recipientAttachmentProjectRef(message, idx) {
-  const recipientId = message?.to
-  const ref = recipientId
-    ? message?.metadata?.recipient_refs?.[recipientId]?.attachments?.[String(idx)]
-    : null
+  const ref = recipientAttachmentRef(message, idx)
   if (!ref || ref.state !== 'available' || !ref.projectArtifactId || !ref.projectArtifactVersion) return null
   const project = ref.project || ref.render?.project
   if (!project) return null
@@ -91,11 +98,16 @@ function recipientAttachmentProjectRef(message, idx) {
 
 const PENDING_ATTACHMENT_FOOTNOTE = '* reference has not materialized on this machine yet.'
 
+// `recipient_refs` is keyed by recipient. With several recipients the ref state
+// is per recipient; the line shows the first recipient that has an entry for
+// this attachment, which is the same entry as before for a one-recipient
+// message.
 function recipientAttachmentRef(message, idx) {
-  const recipientId = message?.to
-  return recipientId
-    ? message?.metadata?.recipient_refs?.[recipientId]?.attachments?.[String(idx)]
-    : null
+  for (const recipientId of recipientIds(message)) {
+    const ref = message?.metadata?.recipient_refs?.[recipientId]?.attachments?.[String(idx)]
+    if (ref) return ref
+  }
+  return null
 }
 
 function pendingAttachmentPlaceholder(ref = {}, att = null) {
@@ -268,8 +280,18 @@ export function agentNameHtml(pretty_name, friendlyName = '') {
     .join('')
 }
 
+// The recipient set, comma-separated, in the same agent-nick markup a single
+// recipient has always used.
+function recipientNicksHtml(recipients, { getNickClass, getAgents, agentLabel }) {
+  return recipients
+    .map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${leadingPrettyGlyphHtml(id, getAgents)}${esc(agentNameTextOnly(id, getAgents, agentLabel(id)))}</span>`)
+    .join('<span class="recipient-separator">,</span>')
+}
+
 export function renderChatLine(m, ctx) {
   const { agentLabel, getNickClass, isHumanId, getAgents, getTasks, tldaToken, renderMarkdown } = ctx
+
+  const recipients = recipientIds(m)
 
   // Name provenance: the nick a HISTORICAL message shows is the name its sender
   // held AT send time. The server stamps `fromName`/`toName` (the period name,
@@ -356,7 +378,7 @@ export function renderChatLine(m, ctx) {
   if (m._evType === 'terminal_user' || m._evType === 'terminal_assistant') {
     if ((m.text || '').includes('[Request interrupted by user')) return ''
     if (/^[\s📬]*$/.test(m.text || '')) return ''
-    if (m.from && m.from === m.to) return ''
+    if (m.from && recipients.length === 1 && recipients[0] === m.from) return ''
     const nick = periodNick(m.from, m.fromName)
     const fromCls = getNickClass(m.from)
     const ts = timeShort(m.timestamp)
@@ -365,14 +387,11 @@ export function renderChatLine(m, ctx) {
     const text = linkifyCodeUrls(renderMarkdown(esc(rawText)))
     const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
     const dimClass = msgAgo === null ? '' : msgAgo > 1800 ? 'chat-line-old' : msgAgo > 600 ? 'chat-line-mid' : 'chat-line-recent'
-    const toNick = periodNick(m.to, m.toName)
-    const toCls = getNickClass(m.to)
     const isFromUser = isHumanId(m.from)
     const fromPrettyGlyph = leadingPrettyGlyphHtml(m.from, getAgents)
-    const toPrettyGlyph = leadingPrettyGlyphHtml(m.to, getAgents)
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
-      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span><span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${toPrettyGlyph}${esc(toNick)}</span>:</span>`
+      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span>${recipientNicksHtml(recipients, ctx)}:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
@@ -434,9 +453,12 @@ export function renderChatLine(m, ctx) {
   if (m._evType === 'delegate') {
     const ts = timeShort(m.timestamp)
     const fromLabel = m._fromLabel || agentLabel(m.from)
-    const toLabel = m._toLabel || agentLabel(m.to)
+    // A delegation addresses exactly one agent, so its recipient set has one
+    // member — this is not a primary recipient of a group.
+    const toId = recipients[0] || ''
+    const toLabel = m._toLabel || agentLabel(toId)
     const fromCls = getNickClass(m.from)
-    const toCls = getNickClass(m.to)
+    const toCls = getNickClass(toId)
     const desc = esc(m._description || m.text || '')
     const taskId = m._taskId || ''
     const criteria = m._criteria || []
@@ -451,7 +473,7 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
         <div class="drag-handle" title="Drag"></div>
-        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toLabel)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
         ${messageHtml}
         ${criteriaHtml}
       </div></div>`
@@ -472,13 +494,15 @@ export function renderChatLine(m, ctx) {
   if (/^\*\*Task bounced back:\*\*/.test(m.text || '')) {
     const ts = timeShort(m.timestamp)
     const fromLabel = agentLabel(m.from)
-    const toLabel = agentLabel(m.to)
+    // A bounce goes back to the one delegator.
+    const toId = recipients[0] || ''
+    const toLabel = agentLabel(toId)
     const fromCls = getNickClass(m.from)
-    const toCls = getNickClass(m.to)
+    const toCls = getNickClass(toId)
     const feedback = (m.text || '').replace(/^\*\*Task bounced back:\*\*\s*/, '')
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-bounced" data-lc-type="bounced">
-        <div class="lc-header"><span class="lc-icon">\u21A9</span> <span class="lc-title">${esc(feedback)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}">${esc(toLabel)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u21A9</span> <span class="lc-title">${esc(feedback)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
       </div></div>`
   }
 
@@ -560,21 +584,43 @@ export function renderChatLine(m, ctx) {
   const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
   const dimClass = msgAgo === null ? '' : msgAgo > 1800 ? 'chat-line-old' : msgAgo > 600 ? 'chat-line-mid' : 'chat-line-recent'
   const isFromUser = isHumanId(m.from)
-  const isAmbient = !isFromUser && !isHumanId(m.to) && !isHumanId(m.from)
-  const receipt = isFromUser
-    ? (m.read
-        ? '<span class="chat-receipt chat-read" title="read">☑</span>'
-        : '<span class="chat-receipt chat-delivered" title="delivered">☐</span>')
-    : ''
-  // Multi-target: show all cc recipients
-  let toHtml
-  if (m.cc && m.cc.length > 1) {
-    toHtml = m.cc.map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${leadingPrettyGlyphHtml(id, getAgents)}${esc(agentNameTextOnly(id, getAgents, agentLabel(id)))}</span>`).join('<span class="cc-separator">,</span>')
-  } else {
-    const toNick = periodNick(m.to, m.toName)
-    const toCls = getNickClass(m.to)
-    toHtml = `<span class="agent-nick ${toCls}" data-agent-id="${esc(m.to)}"${nowTitle(m.to, m.toNameNow)}>${leadingPrettyGlyphHtml(m.to, getAgents)}${esc(toNick)}</span>`
+  const isAmbient = !isFromUser && !recipients.some(isHumanId)
+  // Read receipt. One recipient keeps the single glyph it always had. Several
+  // recipients get the same glyph filled to the fraction that have read it —
+  // a ☑ clipped to readBy/recipientCount over a ☐ ghost, continuous, not
+  // segmented.
+  const recipientCount = m.recipientCount != null ? m.recipientCount : recipients.length
+  let receipt = ''
+  if (isFromUser && recipientCount > 1) {
+    const readBy = Math.max(0, Math.min(recipientCount, m.readBy || 0))
+    const pct = Math.round((readBy / recipientCount) * 100)
+    const names = recipients.map(id => agentNameTextOnly(id, getAgents, agentLabel(id))).join(', ')
+    const title = `read by ${readBy} of ${recipientCount} — ${names}`
+    receipt = `<span class="chat-receipt chat-receipt-fraction" title="${esc(title)}"><span class="chat-receipt-ghost">☐</span><span class="chat-receipt-fill" style="width:${pct}%">☑</span></span>`
+  } else if (isFromUser) {
+    receipt = m.read
+      ? '<span class="chat-receipt chat-read" title="read">☑</span>'
+      : '<span class="chat-receipt chat-delivered" title="delivered">☐</span>'
   }
+  // Recipient display. Skip's rule: the recipient is printed only when it is NOT
+  // the set this panel would send to anyway — "if the target is just whoever I
+  // would speak to if I spoke, that's omitted". `sendTargets` are the panel's
+  // default target LABELS (the same ones the composer shows as its send hint);
+  // resolve each to its agent id before comparing, since recipients are ids. A
+  // label that does not uniquely resolve (a broadcast selector) stays as itself
+  // and simply won't match, so the recipients are printed.
+  const defaultTargetIds = new Set(
+    (ctx.sendTargets || []).map(label => uniqueLiveAgentForLabel(label, getAgents())?.id || label)
+  )
+  const isDefaultTarget = recipients.length > 0 &&
+    recipients.length === defaultTargetIds.size &&
+    recipients.every(id => defaultTargetIds.has(id))
+  // The other half of the same rule, for messages addressed TO the reader: a
+  // reply to the person reading is the expected target in their own panel, so it
+  // reads like a play with no arrows — the two-party behaviour Skip keeps.
+  const isAddressedToHumanOnly = recipients.length === 1 && isHumanId(recipients[0])
+  const showRecipients = recipients.length > 0 && !isDefaultTarget && !isAddressedToHumanOnly
+  const toHtml = recipientNicksHtml(recipients, ctx)
 
   // Render attachments as interactive refs
   function renderAttachChip(a) {
@@ -632,7 +678,7 @@ export function renderChatLine(m, ctx) {
   // Failed local messages
   if (m._failed) {
     const tempId = esc(m._tempId || '')
-    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(m.to || '')}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${tempId}" title="Resend">\u21BB</button><button class="chat-dismiss-failed-btn" data-dismiss-tempid="${tempId}" title="Dismiss failed message" aria-label="Dismiss failed message">&times;</button></div>`
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(recipients.join('|'))}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${tempId}" title="Resend">\u21BB</button><button class="chat-dismiss-failed-btn" data-dismiss-tempid="${tempId}" title="Dismiss failed message" aria-label="Dismiss failed message">&times;</button></div>`
   }
   // Voicemail
   if (m._voicemail) {
@@ -651,14 +697,16 @@ export function renderChatLine(m, ctx) {
     : ''
   // Queued: message from human to a currently-thinking agent, sent after thinking started
   const thinkingAgents = ctx.thinkingAgents
-  const targetThinkingSince = thinkingAgents?.get?.(m.to)
   const msgTs = m.timestamp ? new Date(m.timestamp).getTime() : 0
-  const isQueued = isFromUser && targetThinkingSince && msgTs >= targetThinkingSince
+  const isQueued = isFromUser && recipients.some(id => {
+    const since = thinkingAgents?.get?.(id)
+    return since && msgTs >= since
+  })
   const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}${isQueued ? ' chat-queued' : ''}`
   // Delegation arrows
   const activeTasks = getTasks().filter(t => t.status !== 'done')
-  const isDelegator = activeTasks.some(t => t.delegated_by === m.from && t.agent === m.to)
-  const isDelegatee = activeTasks.some(t => t.delegated_by === m.to && t.agent === m.from)
+  const isDelegator = activeTasks.some(t => t.delegated_by === m.from && recipients.includes(t.agent))
+  const isDelegatee = activeTasks.some(t => recipients.includes(t.delegated_by) && t.agent === m.from)
   const arrowHtml = isDelegator ? '&#8600;' : isDelegatee ? '&#8599;' : '&rarr;'
   const planMode = sender?.metadata?.inPlanMode || sender?.metadata?.permission_mode === 'plan'
   const planModeType = sender?.metadata?.planModeType
@@ -667,7 +715,11 @@ export function renderChatLine(m, ctx) {
   const planBadge = planMode ? `<span class="plan-mode-badge plan-badge-click" data-agent-id="${esc(m.from)}" title="Click to exit ${planTitle}">${planEmoji}</span>` : ''
   const fromPrettyGlyph = leadingPrettyGlyphHtml(m.from, getAgents)
   const fromTitle = nowTitle(m.from, m.fromNameNow)
-  const nickHtml = isAmbient
+  // The arrow + recipient list appear on ANY line whose target is not the
+  // panel's default, sender human or not — that is the whole rule. `isAmbient`
+  // keeps its separate job below (line class, and which trailing controls the
+  // line carries).
+  const nickHtml = showRecipients
     ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPrettyGlyph}${esc(nick)}</span>${planBadge}<span class="chat-arrow">${arrowHtml}</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${fromTitle}>${fromPrettyGlyph}${esc(nick)}</span>${planBadge}:</span>`
   // Long message: block display
