@@ -11,7 +11,8 @@ const TODD = { id: 'fleet:t0dd', friendly_name: 'todd', labels: [] };
 const SKIP = 'fleet:skip';
 
 const agents = () => [CHIEF, TODD];
-const chat = (from, to) => ({ type: 'chat', from, to, text: 'hi' });
+// Recipients are a set on the event; a one-recipient chat is a set of size one.
+const chat = (from, ...to) => ({ type: 'chat', from, recipients: to.filter(Boolean), text: 'hi' });
 const makeSubs = (roster = agents) => createFilterSubscriptions({
   getAgentsByIds: async (agentIds) => {
     const ids = new Set(agentIds);
