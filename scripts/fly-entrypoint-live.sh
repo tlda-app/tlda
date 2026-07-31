@@ -30,45 +30,40 @@ ln -sfn "$PERSIST/data" /app/server/data
 git config --global user.name "${TLDA_GIT_USER_NAME:-tlda-friend-box}"
 git config --global user.email "${TLDA_GIT_USER_EMAIL:-tlda-friend-box@local}"
 
-# Ensure the strict server authority exists. The server resolves its active
-# database/store pair from server.yaml at startup and fails loudly when it is
-# absent. The Fly server's authority is deterministic: it tells browsers to sync
-# against this machine. Friend boxes set TLDA_FLEET_SERVER to their own fly.dev
-# URL, so rewrite the persisted authority on startup for those boxes instead of
-# preserving a stale volume config from another app.
-# (A tldraw license key is a client-side value shipped in window.__TLDA_CONFIG__
-# to every browser — not a secret — so it lives here, not in `fly secrets`.)
-SERVER_YAML=/root/.config/tlda/server.yaml
-DAEMON_YAML=/root/.config/tlda/daemon.yaml
-CONFIG_ENDPOINT="${TLDA_FLEET_SERVER:-https://tlda-fly.cormorant-matrix.ts.net}"
-ENV_NAME="${TLDA_ENV:-testing}"
-# server.yaml is created empty if absent and then LEFT ALONE. It used to be
-# truncated on every boot whenever TLDA_FLEET_SERVER was set, to clear a stale
-# database/store authority carried over from another app — but that authority
-# moved to daemon.yaml (rewritten just below), so the truncation now only
-# destroys the operator settings server.yaml actually holds. `timezone:` is one
-# of them, and wiping it each deploy would silently put this box back on UTC.
-if [ ! -f "$SERVER_YAML" ]; then
-  echo "[entrypoint] creating empty hosting-only Fly server config"
-  : > "$SERVER_YAML"
+# Install this deployment's committed configuration.
+#
+# TLDA_DEPLOYMENT names a directory under config/deployments/, baked into the
+# image, holding this deployment's server.yaml and daemon.yaml. Both are copied
+# over whatever is on the volume, every boot, so the image is the authority and
+# what is running is what is in git.
+#
+# These files used to be ASSEMBLED HERE from environment variables, with shell
+# defaults filling in whatever was unset — `${TLDA_FLEET_SERVER:-https://...}`
+# and `${TLDA_ENV:-testing}`. That is the bug this replaces: an absent value did
+# not fail, it silently became someone else's default. The same shape one layer
+# up is how a live box ran an evening with no Deepgram bridge configured.
+#
+# A missing or misspelled TLDA_DEPLOYMENT stops the boot here, naming what it
+# looked for, instead of starting a server configured as something else.
+if [ -z "$TLDA_DEPLOYMENT" ]; then
+  echo "[entrypoint] FATAL: TLDA_DEPLOYMENT is not set — it names the directory under config/deployments/ holding this deployment's server.yaml and daemon.yaml" >&2
+  exit 1
 fi
-if [ ! -f "$DAEMON_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
-  echo "[entrypoint] writing canonical Fly daemon environment $ENV_NAME for $CONFIG_ENDPOINT"
-  cat > "$DAEMON_YAML" <<'EOF'
-machineId: fly
-environments:
-  default: __TLDA_ENV_NAME__
-  values:
-    __TLDA_ENV_NAME__:
-      database: __TLDA_CONFIG_ENDPOINT__
-      store: __TLDA_CONFIG_ENDPOINT__
-      licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
-taskDoc:
-  globalDir: /app/server/persist/fleet-task-doc
-EOF
-  sed -i "s|__TLDA_ENV_NAME__|$ENV_NAME|g" "$DAEMON_YAML"
-  sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$DAEMON_YAML"
+DEPLOYMENT_DIR="/app/config/deployments/$TLDA_DEPLOYMENT"
+if [ ! -d "$DEPLOYMENT_DIR" ]; then
+  echo "[entrypoint] FATAL: no deployment config at $DEPLOYMENT_DIR (TLDA_DEPLOYMENT=$TLDA_DEPLOYMENT). Available:" >&2
+  ls /app/config/deployments >&2 || true
+  exit 1
 fi
+for f in server.yaml daemon.yaml; do
+  if [ ! -f "$DEPLOYMENT_DIR/$f" ]; then
+    echo "[entrypoint] FATAL: $DEPLOYMENT_DIR/$f is missing" >&2
+    exit 1
+  fi
+done
+echo "[entrypoint] installing committed config for deployment '$TLDA_DEPLOYMENT'"
+cp "$DEPLOYMENT_DIR/server.yaml" /root/.config/tlda/server.yaml
+cp "$DEPLOYMENT_DIR/daemon.yaml" /root/.config/tlda/daemon.yaml
 
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---
 # When TS_AUTHKEY is set (via `fly secrets`), this Fly machine joins the tailnet

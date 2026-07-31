@@ -14,8 +14,10 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
-  # Browser/fleet origin = this app's own public URL.
-  TLDA_FLEET_SERVER = "https://tlda-overleaf-test.fly.dev"
+  # Everything else this server needs now lives in config/deployments/overleaf-test/,
+  # committed and baked into the image. TLDA_DEPLOYMENT names that directory and
+  # is the only pointer that must arrive from outside it.
+  TLDA_DEPLOYMENT = "overleaf-test"
 
 [http_service]
   internal_port = 5176

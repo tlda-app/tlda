@@ -1,0 +1,23 @@
+# Daemon/environment authority for the overleaf-test deployment. Installed to
+# ~/.config/tlda/daemon.yaml by scripts/fly-entrypoint-live.sh.
+machineId: fly
+
+# An environment is a COMPLETE set of three fields; a missing one fails at
+# startup rather than being guessed. `default` names the active one — this
+# used to come from the TLDA_ENV environment variable, and now lives with the
+# environments it selects between.
+environments:
+  default: testing
+  values:
+    testing:
+      # fleet, chat, registry, agents
+      database: https://tlda-overleaf-test.fly.dev
+      # document assets and shape sync
+      store: https://tlda-overleaf-test.fly.dev
+      # tldraw license. A client-side value shipped to every browser in
+      # window.__TLDA_CONFIG__ — not a secret, so it belongs here and not in
+      # `fly secrets`.
+      licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
+
+taskDoc:
+  globalDir: /app/server/persist/fleet-task-doc

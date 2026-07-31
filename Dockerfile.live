@@ -86,6 +86,13 @@ COPY shared/ ./shared/
 # never generates → highlights don't resolve to source lines.
 COPY scripts/ ./scripts/
 
+# Deployment configuration: one directory per hosted deployment, each holding
+# the server.yaml and daemon.yaml that deployment runs with. The entrypoint
+# installs the one named by TLDA_DEPLOYMENT and refuses to boot without it.
+# These were fly.*.toml [env] variables assembled by the entrypoint at boot;
+# committed here, a wrong value is a diff and a missing one is a startup error.
+COPY config/deployments/ ./config/deployments/
+
 # No Deepgram bridge in this image. The bridge runs on the tlda-voice box and is
 # built by Dockerfile.voice; this server only proxies to it over 6PN
 # (TLDA_VOICE_BRIDGE_URL). It used to be copied here too, because unified-server
