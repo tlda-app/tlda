@@ -1054,14 +1054,14 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
     };
   }
 
-  const notifyAtMs = task.metadata?.notify_at ? Date.parse(task.metadata.notify_at) : NaN;
-  const isDeferred = Number.isFinite(notifyAtMs) && notifyAtMs > nowMs;
+  const atMs = task.metadata?.at ? Date.parse(task.metadata.at) : NaN;
+  const isDeferred = Number.isFinite(atMs) && atMs > nowMs;
   if (task.status === 'pending' && !isDeferred) {
-    // A task with a notify_at is late against ITS notify time, not against
-    // delegation — delegation age is meaningless for a task that was designed
-    // to wait. A task with no notify_at falls back to delegation age.
-    const sinceNotify = Number.isFinite(notifyAtMs);
-    const sinceMs = sinceNotify ? Math.max(0, nowMs - notifyAtMs) : taskAgeMs;
+    // A task with an `at` is late against ITS at-time, not against delegation
+    // — delegation age is meaningless for a task that was designed to wait. A
+    // task with no `at` falls back to delegation age.
+    const sinceNotify = Number.isFinite(atMs);
+    const sinceMs = sinceNotify ? Math.max(0, nowMs - atMs) : taskAgeMs;
     if (sinceMs != null && sinceMs > pickupGraceMs) {
       const sinceMin = Math.round(sinceMs / 60000);
       return {
@@ -1133,7 +1133,7 @@ function formatTaskHealth(health, { includeOk = false, includeAction = false } =
  * shared/daemon-config-schema.mjs:105) but, unlike that helper, falls back to
  * UTC rather than this process's own machine zone: a task list is compared
  * across agents on different machines, so an unstated per-machine zone would
- * make the same notify_at print differently depending on who's reading it.
+ * make the same `at` print differently depending on who's reading it.
  */
 function taskNotifyZone() {
   try {
@@ -1146,16 +1146,16 @@ function taskNotifyZone() {
 }
 
 /**
- * Render a task's notify_at as "deferred — notify in 12m (7:44:19 PM EDT)" (or
+ * Render a task's `at` as "deferred — notify in 12m (7:44:19 PM EDT)" (or
  * "notify 12m ago (...)" once it has fired), in the server-configured zone
  * (UTC if none is set). One helper, shared by every task pretty-printer, so
  * inbox, tasks(), and the compact terminal-check line agree. `compact: true`
  * drops the absolute clock for call sites that are already packed onto one
  * line.
  */
-export function formatTaskNotify(notifyAt, { compact = false } = {}) {
-  if (!notifyAt) return null;
-  const date = new Date(notifyAt);
+export function formatTaskNotify(at, { compact = false } = {}) {
+  if (!at) return null;
+  const date = new Date(at);
   if (Number.isNaN(date.getTime())) return null;
   const deltaMs = date.getTime() - Date.now();
   const deferred = deltaMs > 0;
@@ -1762,7 +1762,7 @@ function inboxTaskSummary(task) {
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
   const nativeSystem = task.metadata?.native_system || task.metadata?.native?.system || null;
   const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
-  const notify = formatTaskNotify(task.metadata?.notify_at);
+  const notify = formatTaskNotify(task.metadata?.at);
   const lines = [
     `[${task.id}] ${task.description || '(untitled task)'}`,
     `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}${notify ? ` | ${notify}` : ''}`,
@@ -2961,7 +2961,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
-      const notify = formatTaskNotify(t.metadata?.notify_at);
+      const notify = formatTaskNotify(t.metadata?.at);
       if (notify) status += ` | ${notify}`;
       if (t.metadata?.notify_every) status += ` | every:${t.metadata.notify_every}s`;
       if (t.metadata?.expires_at) status += ` | expires:${t.metadata.expires_at}`;
@@ -3234,7 +3234,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       : ' [no recorded task]';
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
-      const notify = formatTaskNotify(task.metadata?.notify_at, { compact: true });
+      const notify = formatTaskNotify(task.metadata?.at, { compact: true });
       taskStr = ` [${task.id}: ${task.description} | ${age}m ago${notify ? ` | ${notify}` : ''}]`;
     }
 
