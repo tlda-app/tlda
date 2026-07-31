@@ -23,8 +23,8 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   const project = useContext(ProjectContext)
   const nodes = useValue(
     'project-tab-spatial-documents',
-    () => spatialWorldDocuments(editor, project?.projectName),
-    [editor, project?.projectName],
+    () => spatialWorldDocuments(editor, project?.projectName, project?.title),
+    [editor, project?.projectName, project?.title],
   )
   const zoom = useValue('project-tab-zoom', () => editor.getZoomLevel(), [editor])
   const ui = useSyncExternalStore(subscribeSpatialWorldUi, getSpatialWorldUi)

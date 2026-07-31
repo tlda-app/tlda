@@ -6,6 +6,7 @@ import type { BuildError, BuildWarning } from './useYjsSync'
 /** Stable project info — set once per project load, never changes during session. */
 export interface ProjectContextValue {
   projectName: string
+  title?: string
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
   targets?: Array<{ name: string; title: string; pages: number }>

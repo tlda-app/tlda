@@ -271,7 +271,11 @@ function currentProjectName() {
   return new URLSearchParams(window.location.search).get('project') || 'document'
 }
 
-export function spatialWorldDocuments(editor: Editor, projectName = currentProjectName()): SpatialDocumentNode[] {
+export function spatialWorldDocuments(
+  editor: Editor,
+  projectName = currentProjectName(),
+  primaryTitle = projectName,
+): SpatialDocumentNode[] {
   const pages = editor.getCurrentPageShapes().filter(rawDocumentPage)
   const primaryPages = pages.filter(shape => !shape.meta?.temporaryMarkdownColumn)
   const nodes: SpatialDocumentNode[] = []
@@ -284,7 +288,7 @@ export function spatialWorldDocuments(editor: Editor, projectName = currentProje
     nodes.push({
       id: `spatial-primary:${projectName}`,
       bounds: { x, y, w: right - x, h: bottom - y },
-      title: projectName,
+      title: primaryTitle || projectName,
       documentRef: { id: `spatial-primary:${projectName}`, kind: 'primary' },
     })
   }
