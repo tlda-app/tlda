@@ -98,6 +98,7 @@ import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerm
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
+  batchUnitMissing,
   decideSubscriptionDelivery,
   normalizeDeliveryChannel,
   normalizeInboxStatus,
@@ -7183,6 +7184,10 @@ async function handleFleetWsMessage(ws, msg) {
     // below are input validation, not authorization, and they stay.
     if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
       error('notification_policy must be immediate, hold, or batch(spec)'); return
+    }
+    const bareBatchNumber = batchUnitMissing(policy)
+    if (bareBatchNumber) {
+      error(`${bareBatchNumber} what? A batch window needs a unit — batch(${bareBatchNumber}s), batch(${bareBatchNumber}m), or batch(${bareBatchNumber}h).`); return
     }
     if (/^batch\(.+\)$/.test(policy) && !decideSubscriptionDelivery({ policy })) {
       error('unsupported batch notification_policy; use a duration like batch(5m), batch(30s), or batch(1h)'); return
