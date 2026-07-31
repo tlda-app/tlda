@@ -7184,14 +7184,15 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'subscriptions') {
+    // Reads are deliberately not gated. The authorization fence is a small
+    // coordination friction in the MCP layer, not a security boundary — see the
+    // authorization gate section in AGENTS.md. This read was previously limited to
+    // self-or-delegator, which made it unusable from Skip's own browser. Do not
+    // reintroduce a gate here.
     const { caller: callerQuery, target: targetQuery } = msg
     if (!callerQuery) { error('missing caller'); return }
-    const caller = await fleetStore.findAgent?.(callerQuery)
     const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
-    if (!caller || !target) { error('caller or target not found'); return }
-    if (caller.id !== target.id && !await fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
-      error('not authorized to inspect subscriptions for that target'); return
-    }
+    if (!target) { error('target not found'); return }
     reply(await fleetStore.getSubscriptionsByOwner(target.id))
     return
   }
