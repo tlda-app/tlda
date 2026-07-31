@@ -70,6 +70,32 @@ function titleFromRenderedHtml(html, fallback) {
 }
 
 /**
+ * Give every knitr figure a URL that changes when the figure does.
+ *
+ * knitr names figures after the chunk, so a re-render writes new bytes to the
+ * SAME path — `report_files/figure-html/unnamed-chunk-1-1.svg` every time. The
+ * viewer reloads a changed document by re-pointing the iframe at a
+ * cache-busted page URL, which reloads the DOCUMENT; the `<img>` inside it
+ * still names an unchanged URL, so the browser reuses the copy it already has
+ * and the plot on screen stays on the previous render.
+ *
+ * That is what "the R plot isn't updating as I change the file" was: the build
+ * was correct, the server was serving new bytes, a plain fetch of that exact
+ * URL returned new bytes, and the picture was old. Stamping the reference is
+ * what makes the reload reach the figure.
+ *
+ * Only figure directories are stamped. `site_libs` and the OJS runtime are
+ * byte-identical across renders, so busting them would re-download ~900KB on
+ * every build to fix nothing.
+ */
+function stampFigureUrls(html, stamp = Date.now()) {
+  return html.replace(
+    /(\ssrc=")([^"]*_files\/figure-[^"?]+)(")/g,
+    (_m, before, url, after) => `${before}${url}?v=${stamp}${after}`,
+  )
+}
+
+/**
  * Render in the OUTPUT tree, not the source tree.
  *
  * Quarto writes its sidecar `<doc>_files/` directory next to the input and
@@ -144,7 +170,9 @@ export async function buildQmdDocument(name, addLog = console.log) {
     return
   }
 
-  const rendered = readFileSync(renderedPath, 'utf8')
+  const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
+  writeFileSync(renderedPath, rendered)
+
   const pageInfo = [{
     file: outputFile,
     width: DEFAULT_WIDTH,
