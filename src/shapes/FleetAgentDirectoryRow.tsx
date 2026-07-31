@@ -43,6 +43,7 @@ type FleetAgentMetadataChip = {
   glyph: string
   value: string
   title: string
+  policy?: string
 }
 
 function fleetAgentMetadataChips(row: FleetAgentDirectoryRowModel): FleetAgentMetadataChip[] {
@@ -51,12 +52,14 @@ function fleetAgentMetadataChips(row: FleetAgentDirectoryRowModel): FleetAgentMe
     ...row.spawnOptions.map((option): FleetAgentMetadataChip => ({ kind: 'option', glyph: '+', value: option, title: `spawn option: ${option}` })),
     row.permission && { kind: 'permission' as const, glyph: '◇', value: row.permission, title: `permission: ${row.permission}` },
     // The query as written, which is the form the agent subscribed in and the
-    // form the server matches against. The policy qualifies it in the title.
+    // form the server matches against. The delivery policy is the chip's colour,
+    // and the title says which policy that colour is.
     ...row.subscriptions.map((subscription): FleetAgentMetadataChip => ({
       kind: 'subscription',
       glyph: '◈',
       value: subscription.query,
-      title: `subscription: ${subscription.query}${subscription.policy ? ` (${subscription.policy})` : ''}`,
+      title: `subscription: ${subscription.query}${subscription.policy ? ` — ${subscription.policy}` : ''}`,
+      policy: subscription.policyKind || undefined,
     })),
   ].filter(Boolean) as FleetAgentMetadataChip[]
 }
@@ -66,6 +69,7 @@ function FleetAgentMetadataChipView({ chip, compact = false }: { chip: FleetAgen
     <span
       className={`fleet-agents-metadata-chip${compact ? ' compact' : ''}`}
       data-kind={chip.kind}
+      data-policy={chip.policy}
       title={chip.title}
       aria-label={chip.title}
     >

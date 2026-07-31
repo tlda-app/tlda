@@ -179,6 +179,19 @@ export type FleetAgentSubscription = {
   id: number
   query: string
   policy: string
+  policyKind: FleetAgentSubscriptionPolicyKind
+}
+
+// The three delivery policies the server accepts — immediate, hold, and
+// batch(<duration>) — carried as the colour of the chip. A policy outside those
+// three has no colour rather than a fourth one.
+export type FleetAgentSubscriptionPolicyKind = 'immediate' | 'batch' | 'hold' | ''
+
+export function fleetAgentSubscriptionPolicyKind(policy: string): FleetAgentSubscriptionPolicyKind {
+  if (policy === 'immediate') return 'immediate'
+  if (policy === 'hold') return 'hold'
+  if (/^batch\(.+\)$/.test(policy)) return 'batch'
+  return ''
 }
 
 type FleetAgentSubscriptionRow = {
@@ -191,11 +204,15 @@ export function fleetAgentSubscriptions(agent: any): FleetAgentSubscription[] {
   if (!Array.isArray(agent?.subscriptions)) return []
   return (agent.subscriptions as FleetAgentSubscriptionRow[])
     .filter((row) => !!row?.query)
-    .map((row) => ({
-      id: Number(row.subscription_id),
-      query: String(row.query),
-      policy: String(row.notification_policy || ''),
-    }))
+    .map((row) => {
+      const policy = String(row.notification_policy || '')
+      return {
+        id: Number(row.subscription_id),
+        query: String(row.query),
+        policy,
+        policyKind: fleetAgentSubscriptionPolicyKind(policy),
+      }
+    })
 }
 
 export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel {
