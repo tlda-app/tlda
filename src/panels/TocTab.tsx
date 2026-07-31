@@ -679,6 +679,8 @@ const FAMILY_STEPS: { value: ThemeFamily; icon: string; label: string }[] = [
   { value: 'fog',  icon: '\u{1F30A}', label: 'Fog' },
   { value: 'lilac', icon: '◌',      label: 'Lilac' },
   { value: 'warm', icon: '☀︎',     label: 'Warm' },
+  { value: 'mono', icon: '◐',      label: 'Mono' },
+  { value: 'blue', icon: '●',      label: 'Blue' },
 ]
 
 export function SchemeToggle() {
