@@ -1117,7 +1117,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             shapeCount: editor.getCurrentPageShapes().length,
           })
 
-          editor.user.updateUserPreferences({ colorScheme: getStoredScheme() })
+          // Snapping is off, everywhere, always. Skip noticed a sticky jumping
+          // as he dragged it: "we should just disable snap to grid entirely."
+          // It is a tldraw user preference, so it persists per browser profile
+          // and would otherwise come back on a machine where it was ever on.
+          editor.user.updateUserPreferences({ colorScheme: getStoredScheme(), isSnapMode: false })
 
           // Patch isInAny NARROWLY for SelectionFg only.
           // tldraw's SelectionFg checks isInAny("select.idle","select.pointing_selection",

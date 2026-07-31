@@ -86,7 +86,6 @@ const _snapState = {
   lines: [] as Array<{ axis: 'x' | 'y'; pos: number }>,
   active: false, // true during drag
   expanded: false, // true when pill is expanded to chat dimensions (over empty canvas)
-  prevSnapMode: undefined as boolean | undefined,
 }
 
 /** Event bus for content drops (msg references, code) → target chat textarea */
@@ -722,13 +721,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     _snapState.active = true
     _snapState.expanded = false
 
-    // Fleet pills move freely even when native snap mode is enabled elsewhere.
-    // Save the user's previous state and restore it when the drag ends.
-    const pill = shape as any
-    if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label' || pill.props?.pillType === 'team') {
-      _snapState.prevSnapMode = this.editor.user.getIsSnapMode()
-      this.editor.user.updateUserPreferences({ isSnapMode: false })
-    }
+    // Snapping is off globally at editor mount, so pills need nothing here.
+    // This used to turn snap off for the duration of a pill drag and restore it
+    // afterwards (the restore lived in fleet-pill-lifecycle). With snap off
+    // everywhere there is nothing to suspend and nothing to put back.
   }
 
   // During drag: expand pill to chat dimensions when over empty canvas,

@@ -6,7 +6,6 @@ export type FleetPillSnapState = {
   lines: Array<{ axis: 'x' | 'y'; pos: number }>
   active: boolean
   expanded: boolean
-  prevSnapMode: boolean | undefined
 }
 
 type FleetPillLifecycleEditor = {
@@ -23,12 +22,8 @@ export function finishFleetPillTranslation(
   snapState: FleetPillSnapState,
   options: { deferDelete?: boolean } = {},
 ) {
-  if (snapState.prevSnapMode !== undefined) {
-    editor.user.updateUserPreferences({ isSnapMode: snapState.prevSnapMode })
-  }
   snapState.active = false
   snapState.expanded = false
-  snapState.prevSnapMode = undefined
   snapState.deltaX = 0
   snapState.deltaY = 0
   snapState.lines = []
