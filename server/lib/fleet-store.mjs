@@ -1760,7 +1760,6 @@ export class FleetStore {
     const startsUnread = event.unread !== false && (event.type === 'chat' || event.type === 'delegate');
     const recipientRows = new Map();
     for (const id of addressed) recipientRows.set(id, startsUnread ? 0 : 1);
-    for (const id of metadata?.cc || []) if (!recipientRows.has(id)) recipientRows.set(id, startsUnread ? 0 : 1);
     for (const id of metadata?.wiretap_cc || []) if (!recipientRows.has(id)) recipientRows.set(id, startsUnread ? 0 : 1);
     // Written before returning so callers that immediately retract can operate
     // on a real row.
@@ -4627,6 +4626,7 @@ export class FleetStore {
     }
 
     const readCounts = new Map();
+    const readersByEvent = new Map();
     const readByReader = new Set();
     const eventIds = rows.map(e => e.id).filter(id => id != null);
     if (eventIds.length) {
@@ -4636,7 +4636,13 @@ export class FleetStore {
           `SELECT event_id, agent_id, read FROM recipients WHERE event_id IN (${placeholders})`
         ).all(...eventIds);
         for (const r of states) {
-          if (r.read) readCounts.set(r.event_id, (readCounts.get(r.event_id) || 0) + 1);
+          if (r.read) {
+            readCounts.set(r.event_id, (readCounts.get(r.event_id) || 0) + 1);
+            // Who, not just how many: the sender's receipt names the recipients
+            // who have read it on hover, so a partly-read group says which part.
+            if (!readersByEvent.has(r.event_id)) readersByEvent.set(r.event_id, []);
+            readersByEvent.get(r.event_id).push(r.agent_id);
+          }
           if (readerId && r.agent_id === readerId && r.read) readByReader.add(r.event_id);
         }
       } catch (e) {
@@ -4653,6 +4659,7 @@ export class FleetStore {
         ? readByReader.has(e.id)
         : e.recipients.length > 0 && (readCounts.get(e.id) || 0) >= e.recipients.length,
       readBy: readCounts.get(e.id) || 0,
+      readers: readersByEvent.get(e.id) || [],
       recipientCount: e.recipients.length,
       fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
       toLabels: e.recipients.map(id => agentMap[id] || id.substring(0, 8)),

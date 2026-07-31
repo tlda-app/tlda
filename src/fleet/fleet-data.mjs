@@ -513,7 +513,6 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts._tempId) body._tempId = opts._tempId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
-  if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   // The human's preamble is the document they're viewing — stamp it so readers
   // render this message's math with that doc's macros (mirrors how agents stamp

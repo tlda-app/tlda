@@ -594,8 +594,17 @@ export function renderChatLine(m, ctx) {
   if (isFromUser && recipientCount > 1) {
     const readBy = Math.max(0, Math.min(recipientCount, m.readBy || 0))
     const pct = Math.round((readBy / recipientCount) * 100)
-    const names = recipients.map(id => agentNameTextOnly(id, getAgents, agentLabel(id))).join(', ')
-    const title = `read by ${readBy} of ${recipientCount} — ${names}`
+    // Name who has read it and who has not, not just how many — a partly-filled
+    // check mark is only useful if hovering says which part.
+    const nameOf = (id) => agentNameTextOnly(id, getAgents, agentLabel(id))
+    const readers = new Set(Array.isArray(m.readers) ? m.readers : [])
+    const haveRead = recipients.filter(id => readers.has(id)).map(nameOf)
+    const notYet = recipients.filter(id => !readers.has(id)).map(nameOf)
+    const title = [
+      `read by ${readBy} of ${recipientCount}`,
+      haveRead.length ? `read: ${haveRead.join(', ')}` : null,
+      notYet.length ? `unread: ${notYet.join(', ')}` : null,
+    ].filter(Boolean).join(' — ')
     receipt = `<span class="chat-receipt chat-receipt-fraction" title="${esc(title)}"><span class="chat-receipt-ghost">☐</span><span class="chat-receipt-fill" style="width:${pct}%">☑</span></span>`
   } else if (isFromUser) {
     receipt = m.read

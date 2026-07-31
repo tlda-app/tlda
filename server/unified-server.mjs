@@ -5946,7 +5946,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, preambleRef, source } = msg
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, context, preambleRef, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
     const traceId = metadata?.trace_id || msg.trace_id || (msg._tempId ? `chat:${msg._tempId}` : createTraceId('chat'))
     controlPlaneTraces.append({
@@ -6014,8 +6014,6 @@ async function handleFleetWsMessage(ws, msg) {
       touchActivity(from)
     }
     // Resolve CC (still single-string list)
-    let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
-    if (ccResolved && ccResolved.length === 0) ccResolved = null
     // Copy attachments into the persistent upload dir (once for all recipients),
     // the SAME dir /api/upload uses (RESOLVED_UPLOAD_DIR honors TLDA_UPLOAD_DIR).
     // Previously this wrote to an ephemeral container path that Fly wiped on every
@@ -6112,7 +6110,6 @@ async function handleFleetWsMessage(ws, msg) {
       priority: basePriority,
       trace_id: traceId,
       recipient_delivery: perRecipient.map(r => r.entry),
-      ...(ccResolved ? { cc: ccResolved } : {}),
       ...(processedAttachments ? { attachments: processedAttachments } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
       ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),

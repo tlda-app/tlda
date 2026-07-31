@@ -13,6 +13,7 @@ export function convertChatEvent(e) {
     // 1; there is no primary recipient.
     recipients: e.recipients || [],
     readBy: e.readBy || 0,
+    readers: Array.isArray(e.readers) ? e.readers : [],
     recipientCount: e.recipientCount != null
       ? e.recipientCount
       : (Array.isArray(e.recipients) ? e.recipients.length : 0),

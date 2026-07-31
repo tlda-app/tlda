@@ -1861,7 +1861,7 @@ function decodeSemanticOperation(el: HTMLElement): any | null {
 function eventFromSearchResult(result: any) {
   const text = result.text ?? result.snippet ?? ''
   return result.source === 'session'
-    ? { type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: result.agentId, to: null, text, timestamp: result.timestamp, id: result.id }
+    ? { type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: result.agentId, recipients: [], text, timestamp: result.timestamp, id: result.id }
     : { ...result, text, id: result.id }
 }
 
