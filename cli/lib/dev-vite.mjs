@@ -13,16 +13,30 @@ import { existsSync, openSync, symlinkSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
-export async function findFreePort(startPort) {
+/**
+ * A port is free only if it is free on BOTH families.
+ *
+ * `listen(port)` with no host binds IPv6 `::`, and a server already holding
+ * IPv4 `0.0.0.0:port` does not collide with it — so the probe reported free,
+ * this returned the port, and the server that then bound IPv4 died with
+ * EADDRINUSE. Two worktree previews were handed the same port that way, and
+ * because `serve status` only asks whether SOMETHING answers there, the loser
+ * reported itself up while pointing at the winner's server.
+ */
+async function portFreeOn(port, host) {
   const net = await import('net')
   return new Promise((resolve) => {
     const server = net.default.createServer()
-    server.listen(startPort, () => {
-      const { port } = server.address()
-      server.close(() => resolve(port))
-    })
-    server.on('error', () => resolve(findFreePort(startPort + 1)))
+    server.once('error', () => resolve(false))
+    server.listen(port, host, () => server.close(() => resolve(true)))
   })
+}
+
+export async function findFreePort(startPort) {
+  for (let port = startPort; port < startPort + 200; port++) {
+    if (await portFreeOn(port, '0.0.0.0') && await portFreeOn(port, '::')) return port
+  }
+  throw new Error(`no free port in ${startPort}–${startPort + 199}`)
 }
 
 // Main repo root, whether we're called from the main checkout or a worktree.

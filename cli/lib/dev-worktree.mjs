@@ -35,7 +35,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSyn
 import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
-import { hasTls, resolveConfig, CONFIG_DIR } from '../../shared/config.mjs'
+import { hasTls, resolveConfig, loadServerConfig, CONFIG_DIR } from '../../shared/config.mjs'
 import { daemonLifecycleSocketPath } from '../../shared/daemon-socket-path.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
@@ -256,7 +256,16 @@ function writePreviewConfig(branch, base, { realFleet = false } = {}) {
   // corrupt the real daemon's authority surface and violate the app-dev fence.
   const dir = previewConfigDir(branch)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'server.yaml'), '')
+  // A preview server runs the same startup path as a real one, so it needs the
+  // keys that path REQUIRES — an empty server.yaml stopped being valid the
+  // moment deployment config moved out of environment variables and
+  // loadServerRuntimeConfig began throwing on a missing deepgramBridgeUrl.
+  // There is one bridge and no fallback, so the preview reaches the same one
+  // this machine already reaches rather than declaring an address of its own.
+  const { deepgramBridgeUrl } = loadServerConfig()
+  writeFileSync(join(dir, 'server.yaml'), deepgramBridgeUrl
+    ? `deepgramBridgeUrl: ${JSON.stringify(deepgramBridgeUrl)}\n`
+    : '')
   writeFileSync(join(dir, 'daemon.yaml'), [
     'environments:',
     `  default: ${JSON.stringify(configName(branch))}`,
