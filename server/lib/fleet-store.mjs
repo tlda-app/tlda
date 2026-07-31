@@ -2936,6 +2936,16 @@ export class FleetStore {
       // straight to the evaluator — correct in the one place you would look,
       // silently broken everywhere else. Exactly the tokenizer's rule;
       // deliberately not a stricter charset.
+      // Today this is the enforcement. When the namespace table lands it becomes
+      // a PRE-CHECK whose job is the better error message, and a CHECK
+      // constraint on the token column becomes the enforcement — do not then
+      // delete this as duplicative, and do not harden the CHECK to match it.
+      // The CHECK covers ASCII (space, tab, newline, carriage return) plus the
+      // five operators; enumerating unicode whitespace in a GLOB class is ugly
+      // enough that it would be mis-edited later, and an ugly constraint that
+      // gets broken is worse than a plain one with a documented gap. The gap:
+      // NBSP (U+00A0) and U+2028 store fine and are unaddressable, because the
+      // tokenizer splits on JS /\s/ which matches them and GLOB does not.
       const badChar = /[\s&|!()]/.exec(name);
       if (badChar) {
         collisions.push({ name, kind: 'unaddressable', char: badChar[0] });
