@@ -5,6 +5,7 @@ import os from 'os'
 import path from 'path'
 
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
+import { isHarnessAuthoredRecord, isHarnessAuthoredText } from '../agent-runtime/terminal-chat-authorship.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -1574,16 +1575,14 @@ export function createJsonlIngestor({
 
   function sendTerminalChatFromRecord(agentId, sessionId, parsed) {
     if (parsed.type !== 'user') return true
-    if (parsed.isMeta) return true
+    if (isHarnessAuthoredRecord(parsed)) return true
     const content = parsed.message?.content
     let text = ''
     if (typeof content === 'string') text = content
     else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
     if (!text || text.length < 3) return true
     if (text.length > 2000) text = text.substring(0, 2000)
-    if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
-        text.startsWith('<channel') || text.startsWith('📬') ||
-        /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/.test(text)) return true
+    if (isHarnessAuthoredText(text)) return true
     const ts = parsed.timestamp || null
     if (!ts) return true
     return sendMsg({
