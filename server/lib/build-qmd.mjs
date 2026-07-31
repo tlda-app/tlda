@@ -20,6 +20,7 @@ import { promisify } from 'util'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
+import { generateSlidesPageInfo } from './slides-parser.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -60,6 +61,17 @@ export function qmdOutputFileForSource(sourceFile) {
     .replace(/\\/g, '/')
     .replace(/^\.?\/+/, '')
     .replace(/\.qmd$/i, '.html')
+}
+
+/**
+ * Did this render produce a reveal.js deck?
+ *
+ * The same test slides-parser uses to find the container it walks, so a file
+ * this says yes about is one it can enumerate slides from. Anything else — a
+ * scrolling document, a deck in some other slide framework — is one page.
+ */
+function isRevealDeck(html) {
+  return /<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*\bslides\b)[^>]*>/i.test(html)
 }
 
 function titleFromRenderedHtml(html, fallback) {
@@ -107,9 +119,14 @@ async function renderInOutput(quarto, outDir, mainFile, addLog) {
   addLog(`[qmd] quarto render ${mainFile}`)
   let result
   try {
+    // No `--to`. The document's own `format:` decides what it renders to, and
+    // quarto's default when it declares none is already html — so passing
+    // `--to html` changed nothing for a plain document and silently overrode a
+    // deck. That is what made a `format: revealjs` talk render as a scrolling
+    // page with no <div class="reveal"> in it at all.
     result = await execFileAsync(
       quarto,
-      ['render', mainFile, '--to', 'html'],
+      ['render', mainFile],
       { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
     )
   } catch (e) {
@@ -173,20 +190,30 @@ export async function buildQmdDocument(name, addLog = console.log) {
   const rendered = stampFigureUrls(readFileSync(renderedPath, 'utf8'))
   writeFileSync(renderedPath, rendered)
 
-  const pageInfo = [{
-    file: outputFile,
-    width: DEFAULT_WIDTH,
-    height: DEFAULT_HEIGHT,
-    title: titleFromRenderedHtml(rendered, mainFile.replace(/\.qmd$/i, '')),
-    format: 'qmd',
-    source: { type: 'project-source', format: 'qmd', file: mainFile },
-  }]
+  // A deck and a document are the same build with the same inputs and two
+  // different things on the far side: one page of prose to scroll, or N slides
+  // addressed by reveal coordinates. The rendered HTML is what says which, so
+  // it is read rather than guessed at from the source header — a deck can
+  // declare revealjs through _quarto.yml, a custom extension format, or a
+  // profile, and only the output settles all three.
+  const isDeck = isRevealDeck(rendered)
+  const pageInfo = isDeck
+    ? generateSlidesPageInfo(rendered, outputFile)
+    : [{
+      file: outputFile,
+      width: DEFAULT_WIDTH,
+      height: DEFAULT_HEIGHT,
+      title: titleFromRenderedHtml(rendered, mainFile.replace(/\.qmd$/i, '')),
+      format: 'qmd',
+      source: { type: 'project-source', format: 'qmd', file: mainFile },
+    }]
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
   await writeSourceScope(name, srcDir, outDir)
   await reporter.updateProject(name, {
     buildStatus: 'success',
     pages: pageInfo.length,
+    renderedFormat: isDeck ? 'slides' : 'html',
     lastBuild: new Date().toISOString(),
   })
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: Date.now() })

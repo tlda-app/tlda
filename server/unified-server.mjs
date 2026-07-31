@@ -47,6 +47,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerRuntimeConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
+import { viewFormat } from '../shared/document-formats.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
@@ -4072,14 +4073,17 @@ app.use('/docs', (req, res, next) => {
       try {
         const project = await readProject(name)
         if (project) {
-          if (project.format === 'slides') {
+          // A .qmd is served as whatever quarto rendered it to, which is the
+          // difference between the reveal bridge and the html one.
+          const shownAs = viewFormat(project)
+          if (shownAs === 'slides') {
             // Slides format: inject the reveal.js bridge script
             const html = await fs.promises.readFile(projectPath, 'utf8')
             const injected = injectSlidesBridge(html)
             res.type('html').send(injected)
             return
           }
-          if (project.format === 'markdown') {
+          if (shownAs === 'markdown') {
             // Markdown: bridge already injected at build time; inject chapter title + prev/next at serve time.
             const html = await fs.promises.readFile(projectPath, 'utf8')
 
@@ -4111,11 +4115,11 @@ app.use('/docs', (req, res, next) => {
             res.type('html').send(injected)
             return
           }
-          // qmd renders to a scrolling HTML page, so it wants exactly the html
+          // A .qmd that rendered to a scrolling page wants exactly the html
           // format's serve-time treatment: the same bridge, the same chapter
           // title, the same prev/next. The difference between them is which
           // machine ran quarto, and that is settled by build time.
-          if (project.format === 'html' || project.format === 'qmd') {
+          if (shownAs === 'html') {
             const html = await fs.promises.readFile(projectPath, 'utf8')
             // Look up chapter title and compute "Chapter N" numbering within parts
             let chapterTitle = ''

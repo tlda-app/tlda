@@ -38,3 +38,27 @@ export const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides',
  * text file the anchor code can resolve against."
  */
 export const HTML_PAGE_FORMATS = new Set(['html', 'markdown', 'qmd'])
+
+/**
+ * What a project's pages ARE, as against who rendered them.
+ *
+ * For every other format those are the same answer, which is why one `format`
+ * field carried both. `qmd` is the first one where they come apart: it names
+ * the fact that THIS server runs quarto, and quarto renders a .qmd to a
+ * scrolling document or to a reveal deck depending on the `format:` the author
+ * wrote. Both arrive as one .html file, and they want opposite treatment — an
+ * iframe per slide addressed by reveal coordinates and the slides bridge, or
+ * one scrolling page with the html bridge and chapter navigation.
+ *
+ * So the builder records which it produced and the viewing sites ask here.
+ * `format` stays the build-side fact: it is what routes the next rebuild back
+ * to quarto, which is why setting it to `slides` after a deck render would
+ * break the loop this exists to serve.
+ *
+ * The default is html because quarto's own default output format is html — an
+ * unbuilt project has no pages to view either way.
+ */
+export function viewFormat(project) {
+  if (project?.format !== 'qmd') return project?.format
+  return project?.renderedFormat || 'html'
+}
