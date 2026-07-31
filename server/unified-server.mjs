@@ -1871,6 +1871,7 @@ async function performSpawnRelay(caller, msg) {
     permissionRequest, enroll, routeAgent,
     iLikeToLiveDangerously, mailboxTarget, modelOptions,
     pretty_name: requestedPrettyName,
+    labels: requestedLabels,
   } = normalizeSpawnRelayInput(msg)
   if (refresh) {
     throw new Error('refresh is disabled through MCP spawn; recover the original resume handle before respawning')
@@ -1935,6 +1936,13 @@ async function performSpawnRelay(caller, msg) {
     : null
   let reservedFriendlyName = null
   if (pendingAgentId) {
+    // Same gate as label(): friendly names and labels are one namespace, so a
+    // label that is unaddressable, reserved, or already occupied by a living
+    // agent fails here with the same error shape rather than being applied.
+    if (requestedLabels?.length) {
+      const collisions = fleetStore.checkNameAvailable(requestedLabels, { excludeId: pendingAgentId })
+      if (collisions.length) throw new Error(fleetStore.labelCollisionMessage(collisions))
+    }
     const now = new Date().toISOString()
     const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
     reservedFriendlyName = assignedName
@@ -1942,7 +1950,12 @@ async function performSpawnRelay(caller, msg) {
       id: pendingAgentId,
       friendly_name: assignedName,
       pretty_name: requestedPrettyName ?? null,
-      labels: [],
+      // Labels applied here rather than by a follow-up label() call: this record
+      // is written before the agent's first tool call, so its label_history span
+      // opens at registered_at and a label-filtered panel shows the whole
+      // backlog. Labelling after mint is lexically correct but starts the span
+      // late, leaving the work in between invisible to that filter.
+      labels: requestedLabels ?? [],
       registered_at: now,
       last_seen: now,
       dead: false,

@@ -2424,7 +2424,7 @@ export class FleetStore {
       else labels = incoming;
       const collisions = this.checkNameAvailable(labels, { excludeId: id, asFriendlyName: false });
       if (labels.includes(id)) collisions.push({ name: id, kind: 'self_id', agent_id: id });
-      if (collisions.length) throw new Error(`Label collision: ${collisions.map(c => c.name).join(', ')}`);
+      if (collisions.length) throw new Error(this.labelCollisionMessage(collisions));
       this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?').run(JSON.stringify(labels), id);
       inserted = this._insertLabelStateEvent({
         type: 'label',
@@ -2924,6 +2924,33 @@ export class FleetStore {
     }
     for (const name of names) {
       if (!name || typeof name !== 'string') continue;
+      // Friendly names and labels are ONE namespace; a friendly name is a label
+      // with a unique living occupant. So "unavailable to you" has one gate and
+      // one error shape, and this is another reason, not another path.
+      //
+      // The filter grammar's TOKEN is "a maximal run of characters that are not
+      // whitespace or & | ! ( )" (shared/fleet-labels.mjs). A name carrying one
+      // of those stores fine and is then unaddressable: roster, chat(to:),
+      // thread and search tokenize it into pieces and return zero matches with
+      // no error, while a panel filter still matches because it hands the leaf
+      // straight to the evaluator — correct in the one place you would look,
+      // silently broken everywhere else. Exactly the tokenizer's rule;
+      // deliberately not a stricter charset.
+      // Today this is the enforcement. When the namespace table lands it becomes
+      // a PRE-CHECK whose job is the better error message, and a CHECK
+      // constraint on the token column becomes the enforcement — do not then
+      // delete this as duplicative, and do not harden the CHECK to match it.
+      // The CHECK covers ASCII (space, tab, newline, carriage return) plus the
+      // five operators; enumerating unicode whitespace in a GLOB class is ugly
+      // enough that it would be mis-edited later, and an ugly constraint that
+      // gets broken is worse than a plain one with a documented gap. The gap:
+      // NBSP (U+00A0) and U+2028 store fine and are unaddressable, because the
+      // tokenizer splits on JS /\s/ which matches them and GLOB does not.
+      const badChar = /[\s&|!()]/.exec(name);
+      if (badChar) {
+        collisions.push({ name, kind: 'unaddressable', char: badChar[0] });
+        continue;
+      }
       if (PSEUDO_LABELS.includes(name)) {
         collisions.push({ name, kind: 'pseudo_label' });
         continue;
@@ -2931,6 +2958,14 @@ export class FleetStore {
       if (ids.has(name)) {
         collisions.push({ name, kind: 'agent_id', agent_id: name });
       }
+      // This is the half the index cannot cover. idx_agents_live_name makes a
+      // second living holder of a NAME unrepresentable, but a label is a string
+      // inside the row's `labels` JSON array, not a row — so no index or CHECK
+      // can see it (SQLite CHECK is row-local; a unique index needs the tokens
+      // to be rows). Expressing this as a constraint means materialising the
+      // namespace as its own table, one row per name and per label, with a
+      // partial unique index over living name rows. Until then, label-against-
+      // living-name is enforced here and only here. Do not add a second copy.
       const owner = nameToId.get(name);
       if (owner) {
         collisions.push({ name, kind: 'friendly_name', agent_id: owner });
@@ -2943,6 +2978,34 @@ export class FleetStore {
       }
     }
     return collisions;
+  }
+
+  // One programmatic response, three distinguishable messages. The handling is
+  // identical — same error, same shape — but the text names which case it is,
+  // because the next action differs: hyphenate the string, pick a non-reserved
+  // word, or go talk to the agent currently holding the name.
+  labelCollisionMessage(collisions = []) {
+    const describe = (c) => {
+      switch (c.kind) {
+        case 'unaddressable':
+          return `"${c.name}" cannot be addressed by the filter grammar: ${
+            /\s/.test(c.char) ? 'whitespace' : `"${c.char}"`
+          } ends a token, so the label would store and then match nothing. Use - or _ instead.`;
+        case 'pseudo_label':
+          return `"${c.name}" is a reserved routing word (${PSEUDO_LABELS.join(', ')}).`;
+        case 'friendly_name':
+          return `"${c.name}" is the friendly name of a living agent (${c.agent_id}) — names and labels share one namespace, and a name frees up when its holder dies. To reach that agent, message it.`;
+        case 'agent_id':
+          return `"${c.name}" is an agent id.`;
+        case 'self_id':
+          return `"${c.name}" is this agent's own id.`;
+        case 'label':
+          return `"${c.name}" is already a label on agent ${c.agent_id}.`;
+        default:
+          return `"${c.name}" is unavailable.`;
+      }
+    };
+    return `Label rejected: ${collisions.map(describe).join(' ')}`;
   }
 
   _friendlyNameUnavailableLower({ excludeId = null, asFriendlyName = false } = {}) {
