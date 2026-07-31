@@ -267,9 +267,20 @@ export function AnnotationViewer({
       const cy = targetBounds.y + targetBounds.h / 2
       mainEditor.centerOnPoint({ x: cx, y: cy }, { animation: { duration: 300 } })
     } else {
-      const targetY = -(targetBounds.y - 100)
+      // 100 is a screen-pixel top inset, so it converts at the current zoom.
+      const targetY = 100 / cam.z - targetBounds.y
+      // Move x by the least amount that brings the target's horizontal extent
+      // into view. The reader is not necessarily over the target's document —
+      // spatial-world documents sit WORLD_GAP apart in page space — so holding
+      // cam.x lands the camera on empty canvas. When the target is already in
+      // view this clamp is the identity and x does not move.
+      const viewport = mainEditor.getViewportPageBounds()
+      const alignedLeft = targetBounds.x + targetBounds.w - viewport.w
+      const lo = Math.min(targetBounds.x, alignedLeft)
+      const hi = Math.max(targetBounds.x, alignedLeft)
+      const targetX = -Math.min(hi, Math.max(lo, -cam.x))
       mainEditor.setCamera(
-        { x: cam.x, y: targetY, z: cam.z },
+        { x: targetX, y: targetY, z: cam.z },
         { animation: { duration: 300 } }
       )
     }

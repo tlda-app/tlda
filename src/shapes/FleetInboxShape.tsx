@@ -1191,6 +1191,9 @@ function ConversationView({
   }, [thread.messages.length, scrollToBottom])
 
   const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
+  // The conversation's default target is its partner, so a line addressed to the
+  // partner prints no recipient — same rule as the chat panel.
+  const lineCtx = useMemo(() => ({ ...ctx, sendTargets }), [ctx, sendTargets])
   const agentNames = useMemo(() => {
     const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
     if (myId) map[myId] = myName || 'user'
@@ -1289,7 +1292,7 @@ function ConversationView({
       >
         {thread.messages.map((m, i) => {
           const key = m._dbId || m.id || String(i)
-          const lineHtml = renderChatLine(m, ctx)
+          const lineHtml = renderChatLine(m, lineCtx)
           if (!lineHtml) return null
           const mine = m.from === myId
           return (

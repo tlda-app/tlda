@@ -26,11 +26,14 @@ export function sanitizePathSegment(value) {
   return cleaned || 'unknown'
 }
 
-export function inboxRefsRoot(env = process.env) {
+// Not exported: the refs root is the running user's home directory, so it is
+// only meaningful in the process that writes the file — the recipient's own
+// daemon. Computing it anywhere else names a directory on the wrong machine.
+function inboxRefsRoot(env = process.env) {
   return env.TLDA_INBOX_REFS_DIR || path.join(os.homedir(), '.config', 'tlda', 'inbox-refs')
 }
 
-export function buildInboxRefPath({ root = inboxRefsRoot(), sourceAgent, date, eventId, name }) {
+function buildInboxRefPath({ root = inboxRefsRoot(), sourceAgent, date, eventId, name }) {
   const day = (date || new Date().toISOString()).slice(0, 10)
   return path.join(
     root,
@@ -42,7 +45,7 @@ export function buildInboxRefPath({ root = inboxRefsRoot(), sourceAgent, date, e
 }
 
 export function pendingAttachmentPlaceholder(ref = {}, attachment = null) {
-  const label = ref.placeholderPath || ref.localPath || ref.path || ref.projectPath || ref.name || ref.title || attachment?.name || attachment?.path || 'attachment'
+  const label = ref.localPath || ref.path || ref.projectPath || ref.name || ref.title || attachment?.name || attachment?.path || 'attachment'
   return `${label}*`
 }
 
@@ -115,7 +118,6 @@ export function initializeRecipientRefs(metadata = {}, recipientId, attachments 
       name: att.name || null,
       url: att.url || null,
       localPath: null,
-      placeholderPath: null,
       projectPath: null,
       projectArtifactId: null,
       contentType: att.mimeType || null,

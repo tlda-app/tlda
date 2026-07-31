@@ -1,0 +1,16 @@
+# Server settings for this deployment. Installed to ~/.config/tlda/server.yaml
+# by scripts/fly-entrypoint-live.sh. These were fly.*.toml [env] variables until
+# an unset one presented as a missing feature instead of an error.
+
+# How THIS SERVER reaches the one Deepgram bridge, on the tlda-voice box, over
+# Fly's private 6PN. REQUIRED — there is no second bridge and no fallback.
+# One box serves every site (see fly.voice.toml), so this address is the same
+# everywhere.
+deepgramBridgeUrl: ws://tlda-voice.internal:8180
+
+# Unlike the tailnet boxes this one is on the public internet, so token auth
+# stays ON and the tokens come only from `fly secrets`.
+tokensFromEnvironmentOnly: true
+
+# No uploadDir: the default ~/.config/tlda/uploads is already the persistent
+# volume here, because the entrypoint symlinks that whole directory onto it.

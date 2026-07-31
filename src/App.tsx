@@ -765,6 +765,19 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .catch(e => console.warn('[app] fleet-config fetch failed:', e.message))
   }, [])
 
+  // Archived projects are hidden on the server, so seed the hidden set from it.
+  // Without this the flag only survives the session that set it and the index
+  // fills back up on reload.
+  useEffect(() => {
+    fetch(`${ASSET_BASE}/api/projects/archived`)
+      .then(r => r.ok ? r.json() : { projects: [] })
+      .then(data => {
+        const keys = (data.projects || []).map((p: ArchivedProject) => p.name)
+        if (keys.length) setHiddenKeys(prev => new Set([...prev, ...keys]))
+      })
+      .catch(e => console.warn('[app] archived seed fetch failed:', e.message))
+  }, [])
+
   // Fetch archived list when search is non-empty
   useEffect(() => {
     const needsArchived = parsedSearch.clauses.some(clause => clause.text)

@@ -17,6 +17,7 @@ import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../flee
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
 import { isDocumentPageShape } from '../shapes/document-pages'
+import { getDocumentPageBounds } from '../shapes/fleet-layout-context'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
@@ -535,14 +536,8 @@ export function FleetHUD({
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
-    const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
-    if (docShapes.length === 0) return false
-    let minPageX = Infinity
-    for (const s of docShapes) {
-      const b = mainEditor.getShapePageBounds(s.id)
-      if (b && b.x < minPageX) minPageX = b.x
-    }
-    if (!isFinite(minPageX)) return false
+    const minPageX = getDocumentPageBounds(mainEditor)?.minLeft
+    if (minPageX === undefined || !isFinite(minPageX)) return false
     const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     const off = layoutOffset(getHumanId(), getDeviceId())
     const anchor = computeFleetHudDefaultAnchor({
@@ -1160,13 +1155,8 @@ export function FleetHUD({
     // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
     // placed fleet shapes in the middle of the document text.
     if (!docShapesReady) return null
-    const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
-    if (docShapes.length === 0) return null
-    let minPageX = Infinity
-    for (const s of docShapes) {
-      const b = mainEditor.getShapePageBounds(s.id)
-      if (b && b.x < minPageX) minPageX = b.x
-    }
+    const minPageX = getDocumentPageBounds(mainEditor)?.minLeft
+    if (minPageX === undefined) return null
     const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     // Compensate this (identity, device)'s horizontal layout offset so the
     // viewer's OWN shapes render in their canonical doc-relative position no
@@ -1210,13 +1200,8 @@ export function FleetHUD({
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
     const horizontallyVisible = projectedLeft >= 0 && projectedRight <= window.innerWidth
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
-      const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
-      let minPageX = Infinity
-      for (const s of docShapes) {
-        const b = mainEditor.getShapePageBounds(s.id)
-        if (b && b.x < minPageX) minPageX = b.x
-      }
-      if (isFinite(minPageX)) {
+      const minPageX = getDocumentPageBounds(mainEditor)?.minLeft
+      if (minPageX !== undefined && isFinite(minPageX)) {
         const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
         const off = layoutOffset(getHumanId(), getDeviceId())
         const anchor = computeFleetHudDefaultAnchor({

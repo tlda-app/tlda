@@ -9,10 +9,10 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
-  TLDA_ENV = "stable"
-  TLDA_FLEET_SERVER = "https://tlda-fly-stable.cormorant-matrix.ts.net"
-  TLDA_NO_AUTH = "1"
-  TLDA_UPLOAD_DIR = "/app/server/persist/uploads"
+  # Everything else this server needs now lives in config/deployments/stable/,
+  # committed and baked into the image. TLDA_DEPLOYMENT names that directory and
+  # is the only pointer that must arrive from outside it.
+  TLDA_DEPLOYMENT = "stable"
 
 [[vm]]
   size = "performance-2x"

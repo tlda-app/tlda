@@ -1,7 +1,20 @@
 import { createShapeId, type Editor, type TLShape, type TLShapeId } from 'tldraw'
 
 export const SPATIAL_MAP_ZOOM = 0.28
-const WORLD_GAP = 1400
+/** Distance between neighbouring documents. One screen at reading zoom is about
+ *  1500 page px, and a minute of sustained panning covers roughly sixty of them,
+ *  which is the separation Skip asked for. */
+const WORLD_GAP = 90_000
+/** Zoom-out steps below tldraw's own 0.05 floor. The Map has to frame a world
+ *  scaled by WORLD_GAP, and tldraw clamps z to zoomSteps[0] — but when it
+ *  clamps it DISCARDS the requested camera x/y for preserveFocalPoint, so a Map
+ *  zoom under the floor does not land small, it lands somewhere else.
+ *  The floor is the old 0.05 divided by the gap increase, 0.05 * 1400 / 90000,
+ *  so the Map frames the same ~15 document-spacings it framed before. The
+ *  intermediate steps continue tldraw's own 2-2.5x ladder, so reaching the world
+ *  view is a normal sequence of zoom-outs rather than one 50x jump. */
+export const SPATIAL_MAP_ZOOM_STEPS = [0.001, 0.002, 0.005, 0.01, 0.025]
+export const SPATIAL_MAP_MIN_ZOOM = SPATIAL_MAP_ZOOM_STEPS[0]
 const DOCUMENT_W = 800
 const DOCUMENT_H = 1200
 
@@ -55,7 +68,7 @@ export function zoomToSpatialWorld(
   const viewport = editor.getViewportScreenBounds()
   const availableW = Math.max(1, viewport.w - 80)
   const availableH = Math.max(1, viewport.h - 80)
-  const z = Math.max(0.01, Math.min(
+  const z = Math.max(SPATIAL_MAP_MIN_ZOOM, Math.min(
     SPATIAL_MAP_ZOOM * 0.9,
     availableW / Math.max(1, bounds.w),
     availableH / Math.max(1, bounds.h),

@@ -11,25 +11,10 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
-  TLDA_ENV = "testing"
-  # The canonical fleet server URL reported from /api/fleet-config. Now the private
-  # TAILNET name (the server is gated behind Tailscale): the SPA is served from this
-  # same origin, so clients resolve fleet/chat to the tailnet name = their own origin.
-  TLDA_FLEET_SERVER = "https://tlda-fly.cormorant-matrix.ts.net"
-  # Auth posture: the server is gated at the NETWORK layer by Tailscale (only tailnet
-  # devices can reach it), so the app runs open INSIDE the tailnet — no per-request
-  # token, terminal works tokenless. The tailnet IS the auth (Skip's chosen model).
-  TLDA_NO_AUTH = "1"
-  # The Deepgram bridge lives on its own Fly app. Unset, /api/voice/backends
-  # falls back to "does THIS server hold a Deepgram key" — which it no longer
-  # does, so Deepgram silently vanished from the picker with no other symptom.
-  # The comment above that check predicted exactly this. Named here so the
-  # reachability probe runs against the real bridge over Fly's private 6PN.
-  TLDA_VOICE_BRIDGE_URL = "ws://tlda-voice.internal:8180"
-  # Fleet chat uploads (markdown chips, attachments) must live on the persistent
-  # volume, not /tmp (which the container wipes on restart/redeploy — that wiped
-  # markdown-chip files out from under their chips, 404ing the annotation viewer).
-  TLDA_UPLOAD_DIR = "/app/server/persist/uploads"
+  # Everything else this server needs now lives in config/deployments/live/,
+  # committed and baked into the image. TLDA_DEPLOYMENT names that directory and
+  # is the only pointer that must arrive from outside it.
+  TLDA_DEPLOYMENT = "live"
 
 # No [http_service] — the server is NOT exposed on the public internet. Access is
 # tailnet-only via `tailscale serve` (see fly-entrypoint-live.sh). The machine stays

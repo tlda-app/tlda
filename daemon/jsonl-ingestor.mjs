@@ -5,6 +5,7 @@ import os from 'os'
 import path from 'path'
 
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
+import { isHarnessAuthoredRecord, isHarnessAuthoredText } from '../agent-runtime/terminal-chat-authorship.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -886,6 +887,17 @@ export function createJsonlIngestor({
     return null
   }
 
+  // A `user` record in a tailed transcript is the human typing into that
+  // agent's terminal, so it is mirrored into fleet chat authored by the local
+  // OS user. A native subagent has no terminal and no human: its `user` records
+  // are the parent's Task prompt and the tool results feeding it back. Mirroring
+  // those produced the parent's brief in Skip's chat, signed by Skip. The parent
+  // already publishes its own Task tool_use — prompt included — as a
+  // parent-attributed activity event, so the subagent tail owes chat nothing.
+  function terminalChatForTail(harness, nativeSubagent) {
+    return !!harness.terminalChat && !nativeSubagent
+  }
+
   function nativeSubagentDescriptorForPath(jsonlPath) {
     if (nativeSubagentDescriptors.has(jsonlPath)) return nativeSubagentDescriptors.get(jsonlPath)
     const first = readFirstJsonlRecord(jsonlPath)
@@ -1015,7 +1027,7 @@ export function createJsonlIngestor({
             continue jsonlLoop
           }
           pw.harnessKind = harness.kind
-          pw.terminalChat = !!harness.terminalChat
+          pw.terminalChat = terminalChatForTail(harness, nativeSubagent)
           pw.backfillSearch = !!harness.backfillSearch
           try {
             sendJsonlIngesterMessage({
@@ -1023,7 +1035,7 @@ export function createJsonlIngestor({
               watchId: pw.watchId,
               agentId: pw.primaryAgentId,
               harnessKind: harness.kind,
-              terminalChat: !!harness.terminalChat,
+              terminalChat: terminalChatForTail(harness, nativeSubagent),
               backfillSearch: !!harness.backfillSearch,
             })
             if (pw.ownershipState === 'mine' && pw.primaryAgentId) {
@@ -1242,7 +1254,7 @@ export function createJsonlIngestor({
       pendingFlushOffset: null,
       ownershipState,
       nativeSubagent,
-      terminalChat: !!harness.terminalChat,
+      terminalChat: terminalChatForTail(harness, nativeSubagent),
       backfillSearch: !!harness.backfillSearch,
       catchupUntilOffset,
       catchupSuppressed: {},
@@ -1260,7 +1272,7 @@ export function createJsonlIngestor({
         agentId: initialAgentId,
         harnessKind: harness.kind,
         startOffset,
-        terminalChat: !!harness.terminalChat,
+        terminalChat: terminalChatForTail(harness, nativeSubagent),
         backfillSearch: !!harness.backfillSearch,
       })
     } catch (e) {
@@ -1536,7 +1548,7 @@ export function createJsonlIngestor({
       processQualificationEvent(agentId, ev)
     }
 
-    if (harness.terminalChat && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
+    if (terminalChatForTail(harness, pw.nativeSubagent) && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
     if (harness.backfillSearch && !sendSearchIndexFromRecord(pw, agentId, pw.sessionId, record)) delivered = false
     return delivered
   }
@@ -1563,16 +1575,14 @@ export function createJsonlIngestor({
 
   function sendTerminalChatFromRecord(agentId, sessionId, parsed) {
     if (parsed.type !== 'user') return true
-    if (parsed.isMeta) return true
+    if (isHarnessAuthoredRecord(parsed)) return true
     const content = parsed.message?.content
     let text = ''
     if (typeof content === 'string') text = content
     else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
     if (!text || text.length < 3) return true
     if (text.length > 2000) text = text.substring(0, 2000)
-    if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
-        text.startsWith('<channel') || text.startsWith('📬') ||
-        /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/.test(text)) return true
+    if (isHarnessAuthoredText(text)) return true
     const ts = parsed.timestamp || null
     if (!ts) return true
     return sendMsg({

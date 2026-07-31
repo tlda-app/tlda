@@ -97,6 +97,25 @@ export function loadServerConfig() {
   }
 }
 
+/**
+ * The subset of server.yaml a SERVER cannot start without — as opposed to
+ * `loadServerConfig`, which the daemon, the CLI, and display-time also call and
+ * which must stay permissive for them.
+ *
+ * It lives here, next to the loader, because two processes need the same answer:
+ * unified-server itself, and `tlda server start`, which reads the authorities in
+ * the PARENT so a fresh install fails immediately with a usable error instead of
+ * surfacing 90 seconds later as "Server failed to start, check the log". Neither
+ * caller restates the rule.
+ */
+export function loadServerRuntimeConfig() {
+  const config = loadServerConfig()
+  if (!config.deepgramBridgeUrl) {
+    throw new Error(`${SERVER_FILE}: "deepgramBridgeUrl" is required — the Deepgram bridge has one address and no fallback`)
+  }
+  return config
+}
+
 export function loadCliConfig() {
   if (!existsSync(CLI_FILE)) return {}
   const value = parseYaml(readFileSync(CLI_FILE, 'utf8')) || {}
@@ -295,19 +314,68 @@ jsonlTailIdleSeconds: 600
 `
 
 /**
- * server.yaml has no required keys, but `loadServerConfig` throws when the file
- * is absent — so a fresh install needs the file to exist even though it has
- * nothing to say yet. Comments parse as empty, so this is that empty file with
- * the options written down where someone will find them.
+ * The starter server.yaml. `deepgramBridgeUrl` is the one key a SERVER cannot
+ * start without (see loadServerRuntimeConfig), so it is written out with the
+ * real address rather than left as a comment someone has to discover from a
+ * stack trace.
+ *
+ * The options are documented HERE, on the keys, rather than in a doc/ file:
+ * this is the file someone is looking at when they want to change one of these
+ * values, and a separate document describing it would rot unread.
  */
-const STARTER_SERVER_YAML = `# tlda server settings. Every key is optional; the file itself is not.
+const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required; see the note on each key
+# for whether its VALUE is.
 #
-#   timezone             IANA zone name (e.g. America/New_York) that
-#                        human-readable times render in. Display only —
-#                        stored timestamps stay UTC. Absent = this machine's zone.
-#   buildMaxConcurrency  how many document builds run at once
-#   buildPriority        build ordering across projects
-#   telemetryUrl         optional http(s) telemetry page shown on the project index
+# Everything the server needs at runtime is here or in daemon.yaml. The only
+# things still delivered as environment variables are the ones that cannot live
+# in a file: secrets (TLDA_TOKEN_READ, TLDA_TOKEN_RW, DEEPGRAM_API_KEY,
+# TS_AUTHKEY), values the platform sets before the app can read anything
+# (PORT, NODE_ENV), and the two that say WHERE the config is — TLDA_ENV picks
+# the environment, TLDA_CONFIG_DIR/TLDA_DAEMON_CONFIG_DIR pick the directory
+# these files live in.
+#
+# The complete list of every environment variable the system reads, with a
+# reason for each one that stays an environment variable, is in
+# config/environment-variables.md.
+
+# How THIS SERVER reaches the one Deepgram bridge, which runs on its own machine
+# (the tlda-voice box) over Fly's private network. REQUIRED — there is no second
+# bridge and no fallback. This was an environment variable until leaving it unset
+# silently removed Deepgram from the voice picker with no error anywhere.
+deepgramBridgeUrl: ws://tlda-voice.internal:8180
+
+# How THE BROWSER reaches that same bridge, if it can reach it directly (the
+# tailnet name, wss://tlda-voice.<tailnet>.ts.net). Connecting direct keeps the
+# audio socket off this machine, so deploying this machine cannot cut a sentence
+# in half. Absent = the browser relays through the same-origin proxy here.
+# deepgramDirectUrl: wss://tlda-voice.example.ts.net
+
+# Where uploaded and copied chat attachments live. On a hosted box this MUST name
+# the persistent volume — anywhere else is wiped on restart, which once 404'd
+# markdown chips out from under the annotation viewer.
+# Absent = ~/.config/tlda/uploads, which is right where nothing is ephemeral.
+# uploadDir: /app/server/persist/uploads
+
+# Turn token auth off entirely — true where the server is gated at the NETWORK
+# layer instead, e.g. behind Tailscale, where the tailnet is the auth posture.
+# authDisabled: false
+
+# Take the read/RW tokens ONLY from TLDA_TOKEN_READ/TLDA_TOKEN_RW in the
+# environment, never from this machine's tokens.json, and refuse to start if
+# neither is set. True on a hosted deployment, where a token file on the box
+# would be the wrong authority and an absent one must not quietly disable auth.
+# tokensFromEnvironmentOnly: false
+
+# IANA zone name (e.g. America/New_York) that human-readable times render in.
+# DISPLAY ONLY — stored timestamps stay UTC. Absent = this machine's own zone.
+# timezone: America/New_York
+
+# How many document builds run at once, and build ordering across projects.
+# buildMaxConcurrency: 2
+# buildPriority: []
+
+# Optional http(s) telemetry page linked from the project index.
+# telemetryUrl: https://example.ts.net:3031/d/tlda/overview
 `
 
 /**
