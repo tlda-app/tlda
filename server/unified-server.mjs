@@ -106,7 +106,6 @@ import {
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
 import {
-  buildInboxRefPath,
   initializeRecipientRefs,
   isMaterializableAttachment,
   pendingAttachmentPlaceholder,
@@ -2494,19 +2493,16 @@ async function patchRecipientAttachmentState(eventId, recipientId, attachmentId,
   ))
 }
 
-function finalizeRecipientPlaceholderPaths(metadata = {}, { recipientId, eventId, sourceAgent, timestamp, attachments }) {
+// The event id is only known after insert, so provenance is backfilled here.
+// The local path is not: only the recipient's daemon knows the recipient's
+// home directory, so it is recorded once, by that daemon, on materialization.
+function finalizeRecipientRefProvenance(metadata = {}, { recipientId, eventId, attachments }) {
   let next = metadata
   for (const attachment of attachments || []) {
     const ref = next?.recipient_refs?.[recipientId]?.attachments?.[String(attachment.id)]
     if (ref?.state !== 'pending') continue
     next = setRecipientAttachmentState(next, recipientId, attachment.id, {
       ...ref,
-      placeholderPath: buildInboxRefPath({
-        sourceAgent: sourceAgent || 'unknown',
-        date: timestamp,
-        eventId,
-        name: attachment.name,
-      }),
       provenance: {
         ...(ref.provenance || {}),
         eventId,
@@ -6194,11 +6190,9 @@ async function handleFleetWsMessage(ws, msg) {
         })
       }
       if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
-        combinedMetadata = finalizeRecipientPlaceholderPaths(combinedMetadata, {
+        combinedMetadata = finalizeRecipientRefProvenance(combinedMetadata, {
           recipientId: to,
           eventId,
-          sourceAgent: from,
-          timestamp: ts,
           attachments: materializableAttachments,
         })
         await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
