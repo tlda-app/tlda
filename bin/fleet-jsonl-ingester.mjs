@@ -25,7 +25,8 @@ import {
 } from '../agent-runtime/native-task-events.mjs'
 import {
   isHarnessAuthoredRecord,
-  isHarnessAuthoredText,
+  isMachineAuthoredText,
+  typedTextFrom,
 } from '../agent-runtime/terminal-chat-authorship.mjs'
 
 const MAX_CONTEXT = 200_000
@@ -212,8 +213,9 @@ export function terminalChatFromRecord(parsed) {
   if (typeof content === 'string') text = content
   else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
   if (!text || text.length < 3) return null
+  if (isMachineAuthoredText(text)) return null
+  text = typedTextFrom(text)
   if (text.length > 2000) text = text.substring(0, 2000)
-  if (isHarnessAuthoredText(text)) return null
   const ts = parsed.timestamp || null
   if (!ts) return null
   return { text, ts }
