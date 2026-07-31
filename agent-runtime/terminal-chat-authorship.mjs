@@ -54,6 +54,15 @@ const BASH_INPUT = /^<bash-input>([\s\S]*?)<\/bash-input>\s*$/
 // much cheaper failure than a lost message from the human.
 export function isHarnessAuthoredRecord(parsed) {
   if (!parsed || parsed.type !== 'user') return false
+  // A sidechain record belongs to a native subagent, which has no terminal and
+  // nobody at one: its `user` records are the parent's Task brief and the tool
+  // results feeding it back. The tail is already gated on the file being
+  // classified as a subagent, but that classification reads the file's first
+  // record, and a fork subagent's first record is a `fork-context-ref` — so the
+  // file reads as an ordinary session and its brief mirrors as the human. The
+  // record states the fact itself, so it is tested here, where authorship is
+  // decided, rather than left to depend on the file having been recognised.
+  if (parsed.isSidechain === true) return true
   if (parsed.isMeta) return true
   if (parsed.interruptedMessageId) return true
   if (parsed.isCompactSummary) return true
