@@ -345,7 +345,10 @@ export function renderChatLine(m, ctx) {
   }
 
   // Kick messages and channel notifications — infrastructure noise, filter from chat UI
-  if ((m.text || '').startsWith('📬')) return ''
+  // The return notice prepends "You were away as hibernating for N minutes."
+  // ahead of the 📬 line, so a startsWith test stopped matching and every wake
+  // notification started rendering in Skip's chat.
+  if (/^(You were away as [^\n]*\n+)?📬/.test(m.text || '')) return ''
   if ((m.text || '').startsWith('<channel')) return ''
   if ((m.text || '').includes('[Request interrupted by user')) return ''
 
