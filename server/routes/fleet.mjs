@@ -19,7 +19,7 @@ import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
-import { canReportTask, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
+import { transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 
 // Server owner — the human running this server process. Browser users
@@ -608,11 +608,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const existingTask = task_id ? await fleetStore?.getTask?.(task_id) : null
     if (task_id && !existingTask) { res.status(404).send(`Task not found: "${task_id}"`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { res.status(409).send(`Cannot delegate closed task: "${task_id}"`); return }
-    const caller = from ? (await fleetStore?.findAgent(from) || { id: from }) : null
-    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
-      res.status(403).send('not authorized to delegate this task')
-      return
-    }
+    // No authorization gate here. The fence against agents casually disturbing each
+    // other lives in the MCP layer, which is where agents act — see the
+    // authorization gate section in AGENTS.md. This route duplicated that gate, and
+    // a duplicate is not defence in depth, because this is not a security boundary.
     const taskId = task_id || `${agentId.slice(0, 10)}-${Date.now().toString(36)}`
     const task = {
       id: taskId, agent: agentId, description,
