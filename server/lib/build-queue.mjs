@@ -23,26 +23,26 @@ export function createBuildQueue({
   async function dispatchBuild(name, { priorityPages, kind = 'build' } = {}) {
     const key = jobKey(name, kind)
     if (_inFlight.has(key)) {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         const pending = _pending.get(key) || { name, priorityPages: null, kind, waiters: [] }
         pending.priorityPages = priorityPages || null
         pending.kind = kind
-        pending.waiters.push(resolve)
+        pending.waiters.push({ resolve, reject })
         _pending.set(key, pending)
       })
     }
 
     if (_queued.has(key)) {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         const queued = _queued.get(key)
         queued.priorityPages = priorityPages || null
         queued.kind = kind
-        queued.waiters.push(resolve)
+        queued.waiters.push({ resolve, reject })
       })
     }
 
-    return new Promise((resolve) => {
-      _enqueue({ name, priorityPages, kind, waiters: [resolve] })
+    return new Promise((resolve, reject) => {
+      _enqueue({ name, priorityPages, kind, waiters: [{ resolve, reject }] })
     })
   }
 
@@ -63,8 +63,18 @@ export function createBuildQueue({
   }
 
   function _resolveWaiters(waiters) {
-    for (const resolve of waiters || []) {
-      resolve()
+    for (const waiter of waiters || []) {
+      waiter.resolve()
+    }
+  }
+
+  // A build that failed must reach the caller that asked for it. Cancellation
+  // is not failure and still resolves — killBuild is somebody deliberately
+  // stopping a build, and turning that into a rejection nobody catches would
+  // take down the server on a routine action.
+  function _rejectWaiters(waiters, error) {
+    for (const waiter of waiters || []) {
+      waiter.reject(error)
     }
   }
 
@@ -72,7 +82,22 @@ export function createBuildQueue({
     const { name, priorityPages, kind } = job
     const key = jobKey(name, kind)
     let relays = Promise.resolve()
+    // The worker's own verdict on the build. It sends `{t: 'done', ok, error}`
+    // as its last act; nothing used to read it, so a build that threw resolved
+    // its waiters exactly like one that succeeded and dispatchBuild() never
+    // rejected for any failure at all. Every caller's .catch() was dead code —
+    // including the one in the push route that sets buildStatus: 'error'. A qmd
+    // render that died on a missing R package left buildStatus 'none', no
+    // build.log, and nothing in the server log.
+    let workerFailure = null
+    // Closure state, not a field on the _inFlight entry: killAllDispatchedBuilds
+    // clears that map before the workers have exited, so an entry read from it
+    // in onExit is already gone.
+    let cancelled = false
     function relay(msg, channel) {
+      if (msg?.t === 'done' && msg.ok === false) {
+        workerFailure = new Error(msg.error || `build worker for ${name} failed`)
+      }
       // IPC preserves message order; serialize server effects as well so a
       // sentinel write completes before the reload that follows it.
       relays = relays.then(async () => {
@@ -90,16 +115,30 @@ export function createBuildQueue({
     }
     function onError(e) { logError(name, e) }
 
-    async function onExit(_code) {
+    async function onExit(code) {
       await relays
       _activeCount = Math.max(0, _activeCount - 1)
       _inFlight.delete(key)
 
+      // A worker that dies without reporting — OOM, a segfault in a native
+      // module, an uncaught throw outside the handler — is a failed build too,
+      // and it is the case with the least evidence anywhere else. Killed
+      // workers exit on a signal with a null code, and a cancelled build is
+      // deliberate rather than failed, so neither becomes a rejection.
+      if (!workerFailure && !cancelled && code) {
+        workerFailure = new Error(`build worker for ${name} exited with code ${code}`)
+      }
+
       if (_pending.has(key)) {
+        // A rebuild is already queued behind this one, so these waiters are
+        // waiting on that build's outcome now, not this one's. Carry them
+        // forward whether or not this attempt failed.
         const pending = _pending.get(key)
         _pending.delete(key)
         pending.waiters = [...(job.waiters || []), ...(pending.waiters || [])]
         _queued.set(key, pending)
+      } else if (workerFailure) {
+        _rejectWaiters(job.waiters, workerFailure)
       } else {
         _resolveWaiters(job.waiters)
       }
@@ -112,7 +151,14 @@ export function createBuildQueue({
       { name, priorityPages, kind, projectsDir: getProjectsDir(), priority: buildPriority },
       { onMessage: relay, onError, onExit },
     )
-    _inFlight.set(key, { handle, waiters: job.waiters })
+    _inFlight.set(key, {
+      handle,
+      waiters: job.waiters,
+      // Cancelling goes through here so the worker's exit is known to be
+      // deliberate. Reaching past it to handle.cancel() makes a killed build
+      // look like a crashed one.
+      cancel() { cancelled = true; handle.cancel() },
+    })
   }
 
   function killBuild(name) {
@@ -127,14 +173,14 @@ export function createBuildQueue({
       _pending.delete(key)
     }
     for (const key of matchingKeys(_inFlight, name)) {
-      _inFlight.get(key)?.handle.cancel()
+      _inFlight.get(key)?.cancel()
     }
   }
 
   function killAllDispatchedBuilds() {
     for (const queued of _queued.values()) _resolveWaiters(queued.waiters)
     for (const pending of _pending.values()) _resolveWaiters(pending.waiters)
-    for (const running of _inFlight.values()) running.handle.cancel()
+    for (const running of _inFlight.values()) running.cancel()
     _inFlight.clear()
     _queued.clear()
     _pending.clear()
