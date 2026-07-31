@@ -14,13 +14,13 @@ import {
 } from '../spatialDocumentWorldUi'
 import './SpatialWorldMap.css'
 
-export function SpatialWorldMap({ projectName }: { projectName: string }) {
+export function SpatialWorldMap({ projectName, projectTitle }: { projectName: string; projectTitle?: string }) {
   const editor = useEditor()
   const ui = useSyncExternalStore(subscribeSpatialWorldUi, getSpatialWorldUi)
   const nodes = useValue(
     'spatial-document-world-nodes',
-    () => spatialWorldDocuments(editor, projectName),
-    [editor, projectName],
+    () => spatialWorldDocuments(editor, projectName, projectTitle),
+    [editor, projectName, projectTitle],
   )
   const documentRefs = useMemo(
     () => nodes.map(node => node.documentRef),

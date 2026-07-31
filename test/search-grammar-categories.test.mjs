@@ -19,20 +19,28 @@ function withStore(fn) {
   }
 }
 
+// `to` accepts one id or a list: recipients are rows now, not a column, so a
+// one-recipient event is simply a set of size one.
 function insertEvent(store, event) {
-  store.db.prepare(`
-    INSERT INTO events (type, timestamp, from_id, to_id, text, metadata, task_id, agent_id)
-    VALUES (@type, @timestamp, @from, @to, @text, @metadata, @taskId, @agentId)
+  const info = store.db.prepare(`
+    INSERT INTO events (type, timestamp, from_id, text, metadata, task_id, agent_id)
+    VALUES (@type, @timestamp, @from, @text, @metadata, @taskId, @agentId)
   `).run({
     type: event.type,
     timestamp: event.timestamp,
     from: event.from || null,
-    to: event.to || null,
     text: event.text || '',
     metadata: event.metadata ? JSON.stringify(event.metadata) : null,
     taskId: event.taskId || null,
     agentId: event.agentId || null,
   })
+  const recipients = (Array.isArray(event.to) ? event.to : [event.to]).filter(Boolean)
+  for (const agentId of recipients) {
+    store.db.prepare(`
+      INSERT OR IGNORE INTO recipients (event_id, agent_id, timestamp, read)
+      VALUES (?, ?, ?, 0)
+    `).run(info.lastInsertRowid, agentId, event.timestamp)
+  }
 }
 
 test('type category parses to an end-to-end event type filter', () => withStore(store => {

@@ -14,6 +14,9 @@ import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
 import { PcmBacklog, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
+import { agentKeytermNames } from './voice-keyterms.mjs'
+import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
+import { getHumanId } from './fleet/fleet-data.mjs'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -502,7 +505,7 @@ export function maybeShowRadioSubtitleForIncomingChat(event, agents = [], humanI
   if (!getPref('radio-subtitles-enabled')) return false
   if (!isDocSurface()) return false
   if (!event || event.type !== 'chat') return false
-  if (!humanId || event.to !== humanId) return false
+  if (!humanId || !(event.recipients || []).includes(humanId)) return false
   if (!event.from || event.from === humanId) return false
   if (!radioAgentMatchesActiveTarget(event.from, agents)) return false
   return showRadioSubtitle(event, agents)
@@ -837,6 +840,14 @@ function hideDontSpeak() {
 // The `start` message carries the user-tunable conservation params (Preferences →
 // fleet_prefs) so Skip can adjust the feel from the panel without a rebuild; the
 // bridge applies them per-connection (falling back to its own defaults).
+//
+// It also carries, as Deepgram keyterms, the handful of agents Skip is likely to
+// be talking about — the ones he has been chatting with, topped up from roster
+// recency. Read fresh on every `start`, and `start` is what makes the bridge
+// dial Deepgram, so each upstream connection is primed with the set as it stood
+// at that moment. An agent that appears mid-connection is boosted at the next
+// connect — the bridge redials on idle/resume, so the set refreshes on its own
+// without anyone restarting voice.
 function dgStartMsg() {
   return JSON.stringify({
     type: 'start',
@@ -846,6 +857,7 @@ function dgStartMsg() {
     // Deepgram recognition-window params (applied via the bridge's voiceParams hook).
     endpointing: getPref('voice-endpointing'),
     utterance_end_ms: getPref('voice-utterance-end-ms'),
+    keyterms: agentKeytermNames(getFleetAgents(), getFleetEvents(), getHumanId()),
   })
 }
 

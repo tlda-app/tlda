@@ -26,7 +26,7 @@ function timerStore(event, task = null) {
   }
 }
 
-test('recurring task timer reschedules the same durable event while task is open', () => {
+test('recurring task timer reschedules the same durable event while task is open', async () => {
   const now = Date.parse('2026-07-28T10:00:00.000Z')
   const event = {
     id: 41,
@@ -52,7 +52,7 @@ test('recurring task timer reschedules the same durable event while task is open
     clearTimeoutFn() {},
   })
 
-  const result = scheduler.fire(41)
+  const result = await scheduler.fire(41)
 
   assert.equal(result.recurring, true)
   assert.equal(store.event.metadata.pending, true)
@@ -61,7 +61,7 @@ test('recurring task timer reschedules the same durable event while task is open
   assert.equal(broadcasts[1].data.metadata.state, 'pending')
 })
 
-test('recurring task timer cancels instead of notifying after task closes', () => {
+test('recurring task timer cancels instead of notifying after task closes', async () => {
   const now = Date.parse('2026-07-28T10:00:00.000Z')
   const event = {
     id: 42,
@@ -84,14 +84,14 @@ test('recurring task timer cancels instead of notifying after task closes', () =
     clearTimeoutFn() {},
   })
 
-  const result = scheduler.fire(42)
+  const result = await scheduler.fire(42)
 
   assert.equal(result.notified, false)
   assert.equal(store.event.metadata.pending, false)
   assert.equal(store.event.metadata.state, 'cancelled')
 })
 
-test('task expiry retracts the task without notifying', () => {
+test('task expiry retracts the task without notifying', async () => {
   const now = Date.parse('2026-07-28T10:00:00.000Z')
   const event = {
     id: 43,
@@ -117,7 +117,7 @@ test('task expiry retracts the task without notifying', () => {
     clearTimeoutFn() {},
   })
 
-  const result = scheduler.fire(43)
+  const result = await scheduler.fire(43)
 
   assert.equal(result.notified, false)
   assert.deepEqual(retracted, { taskId: 'task-3', options: { retractedBy: 'timer' } })

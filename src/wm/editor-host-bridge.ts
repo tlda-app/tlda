@@ -2,9 +2,17 @@ import type { Editor } from 'tldraw'
 
 export const FLEET_HUD_RESET_EVENT = 'fleet-hud-reset'
 export const FLEET_HUD_TOGGLE_EVENT = 'fleet-hud-toggle'
+export const FLEET_HUD_WRAP_EVENT = 'fleet-hud-wrap'
 
 export type FleetHudResetDetail = {
   preserveAnchor?: boolean
+}
+
+/** How far the document's top-left corner moved when the layout was wrapped
+ *  around a new document. The panels have already been translated by it. */
+export type FleetHudWrapDetail = {
+  dx: number
+  dy: number
 }
 
 export type FleetHudToggleDetail = {
@@ -48,6 +56,11 @@ export function getFleetToolPlacementZoom(fallback: Editor): number {
 export function dispatchFleetHudReset(detail?: FleetHudResetDetail): void {
   if (!hasWindow()) return
   try { window.dispatchEvent(new CustomEvent(FLEET_HUD_RESET_EVENT, detail ? { detail } : undefined)) } catch {}
+}
+
+export function dispatchFleetHudWrap(detail: FleetHudWrapDetail): void {
+  if (!hasWindow()) return
+  window.dispatchEvent(new CustomEvent(FLEET_HUD_WRAP_EVENT, { detail }))
 }
 
 export function dispatchFleetHudToggle(detail?: FleetHudToggleDetail): void {

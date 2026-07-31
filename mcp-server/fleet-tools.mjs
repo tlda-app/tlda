@@ -18,6 +18,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { formatDisplayTimestamp, displayZoneOptions } from '../shared/display-time.mjs';
+import { loadServerConfig } from '../shared/config.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
@@ -55,10 +56,7 @@ import {
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs';
 import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
-import {
-  applyNonClaudeRolePack,
-  crossLaneBlock,
-} from '../shared/task-role-routing.mjs';
+import { applyNonClaudeRolePack } from '../shared/task-role-routing.mjs';
 import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
@@ -991,6 +989,10 @@ function now() {
   return new Date().toISOString();
 }
 
+// This is not an oversight. The authorization gate is a small friction so agents
+// don't casually disturb each other, not a permission system — see "The
+// authorization gate is a fence, not a wall" in AGENTS.md. All this checks is
+// that we know who is calling, so the outbound payload has a `from`.
 function requireManager() {
   if (!activeAgentId()) return 'Cannot identify caller — no session ID detected.';
   return null; // No permission gating — any agent can do anything
@@ -1003,7 +1005,6 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
   const pickupGraceMs = options.pickupGraceMs ?? 2 * 60 * 1000;
   const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
   const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
-  const ageMin = taskAgeMs == null ? null : Math.round(taskAgeMs / 60000);
 
   if (!agent) {
     return {
@@ -1054,13 +1055,23 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
     };
   }
 
-  if (task.status === 'pending' && taskAgeMs != null && taskAgeMs > pickupGraceMs) {
-    return {
-      level: 'warning',
-      code: 'pending-pickup',
-      text: `⚠ task still pending ${ageMin}m after delegation`,
-      managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
-    };
+  const atMs = task.metadata?.at ? Date.parse(task.metadata.at) : NaN;
+  const isDeferred = Number.isFinite(atMs) && atMs > nowMs;
+  if (task.status === 'pending' && !isDeferred) {
+    // A task with an `at` is late against ITS at-time, not against delegation
+    // — delegation age is meaningless for a task that was designed to wait. A
+    // task with no `at` falls back to delegation age.
+    const sinceNotify = Number.isFinite(atMs);
+    const sinceMs = sinceNotify ? Math.max(0, nowMs - atMs) : taskAgeMs;
+    if (sinceMs != null && sinceMs > pickupGraceMs) {
+      const sinceMin = Math.round(sinceMs / 60000);
+      return {
+        level: 'warning',
+        code: 'pending-pickup',
+        text: `⚠ task still pending ${sinceMin}m after ${sinceNotify ? 'notify' : 'delegation'}`,
+        managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
+      };
+    }
   }
 
   return {
@@ -1115,6 +1126,51 @@ function formatTaskHealth(health, { includeOk = false, includeAction = false } =
   let text = health.text;
   if (includeAction && health.managerAction) text += ` — ${health.managerAction}`;
   return text;
+}
+
+/**
+ * The IANA zone task notify times render in. Reads the same `timezone` key
+ * `getDisplayTimeZone()` reads (shared/config.mjs, validated at
+ * shared/daemon-config-schema.mjs:105) but, unlike that helper, falls back to
+ * UTC rather than this process's own machine zone: a task list is compared
+ * across agents on different machines, so an unstated per-machine zone would
+ * make the same `at` print differently depending on who's reading it.
+ */
+function taskNotifyZone() {
+  try {
+    const zone = loadServerConfig().timezone;
+    if (zone) return zone;
+  } catch {
+    // server.yaml absent/unreadable — fall back to UTC below.
+  }
+  return 'UTC';
+}
+
+/**
+ * Render a task's `at` as "deferred — notify in 12m (7:44:19 PM EDT)" (or
+ * "notify 12m ago (...)" once it has fired), in the server-configured zone
+ * (UTC if none is set). One helper, shared by every task pretty-printer, so
+ * inbox, tasks(), and the compact terminal-check line agree. `compact: true`
+ * drops the absolute clock for call sites that are already packed onto one
+ * line.
+ */
+export function formatTaskNotify(at, { compact = false } = {}) {
+  if (!at) return null;
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  const deltaMs = date.getTime() - Date.now();
+  const deferred = deltaMs > 0;
+  const minutes = Math.round(Math.abs(deltaMs) / 60000);
+  const relative = deferred ? `in ${minutes}m` : `${minutes}m ago`;
+  let text = `notify ${relative}`;
+  if (!compact) {
+    const zone = taskNotifyZone();
+    const absolute = new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short', timeZone: zone,
+    }).format(date);
+    text += ` (${absolute})`;
+  }
+  return deferred ? `deferred — ${text}` : text;
 }
 
 // ---- Task context helpers ----
@@ -1300,6 +1356,7 @@ export function getFleetTools() {
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
               model: { type: 'string', description: 'Configured daemon model alias.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
+              labels: { type: 'array', items: { type: 'string' }, description: 'Labels to apply at mint, before the agent\'s first tool call — so a label-filtered panel shows its whole backlog. Same labels as label(): a label may not be a live agent\'s name or a reserved routing label (here, away, awake, hibernating, dead, human), and the filter grammar cannot address a label containing whitespace or & | ! ( ).' },
               permissionRequest: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permissionRequest },
             },
 	          },
@@ -1628,14 +1685,14 @@ export function getFleetTools() {
     // ---- Report Gate ----
     {
       name: 'subscription',
-      description: 'List, create, or remove persisted server-side notification subscriptions.',
+      description: 'List, create, or remove persisted server-side notification subscriptions. Listing is not gated — you may list any agent\'s subscriptions. Creating and removing for another agent is a small coordination fence, not a security boundary.',
       inputSchema: {
         type: 'object',
         properties: {
           operation: { type: 'string', enum: ['list', 'create', 'remove'], description: 'Defaults to list when omitted.' },
           query: { type: 'string', description: 'For create: fleet label expression or "doc:<name>".' },
           policy: { type: 'string', description: 'For create: immediate, batch(spec), or hold. Defaults to immediate.' },
-          target: { type: 'string', description: 'Target agent to configure. Defaults to this agent; cross-target use requires delegator authority.' },
+          target: { type: 'string', description: 'Target agent. Defaults to this agent. Listing another agent is always allowed; creating or removing for one expects authority over it or contact with it.' },
           id: { type: 'number', description: 'For remove: persisted subscription id.' },
         },
       },
@@ -1707,9 +1764,10 @@ function inboxTaskSummary(task) {
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
   const nativeSystem = task.metadata?.native_system || task.metadata?.native?.system || null;
   const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
+  const notify = formatTaskNotify(task.metadata?.at);
   const lines = [
     `[${task.id}] ${task.description || '(untitled task)'}`,
-    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
+    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}${notify ? ` | ${notify}` : ''}`,
   ];
   if (task.metadata?.native) lines.push(`Native task in ${nativeLabel || 'native harness'}`);
   if (task.success_criteria?.length) lines.push(`Success criteria: ${task.success_criteria.length}`);
@@ -1729,10 +1787,14 @@ function inboxTaskBlocks(tasks) {
   }).filter(Boolean);
 }
 
-function inboxMessageKind(message) {
+// `watch` is a property of the READER, not of the event: a message is a watch
+// only for someone who is tapping it. An event's direct recipients read it as a
+// message even when somebody else taps it.
+function inboxMessageKind(message, readerId) {
   if (message.from === 'fleet:skip') return 'user';
   if (message.type === 'delegate') return 'task';
-  if (message.metadata?.wiretap_cc?.length) return 'watch';
+  const tapping = (message.metadata?.wiretap_cc || []).includes(readerId);
+  if (tapping && !(message.recipients || []).includes(readerId)) return 'watch';
   return 'message';
 }
 
@@ -1741,10 +1803,14 @@ export async function resolveInboxMessage(message, resolvers) {
   const ctx = message.metadata?.context;
   const docHint = formatViewingHint(ctx);
   const { text: chipResolvedText, images: chipImages } = await resolvers.resolveChipTokens(message.text, message.metadata);
-  const recipientId = message.to || activeAgentId();
+  // The reader is whoever is calling inbox(), never "the recipient": an event
+  // has a recipient LIST, and a CC/wiretap reader is not in it at all. Resolving
+  // attachment refs and delivery against anyone else's id reads somebody else's
+  // materialized files and somebody else's delivery decision.
+  const readerId = activeAgentId();
   let renderedPendingPlaceholder = false;
   const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
-    const ref = recipientAttachmentRef(message.metadata, recipientId, idx);
+    const ref = recipientAttachmentRef(message.metadata, readerId, idx);
     const att = message.metadata?.inline_attachments?.[+idx];
     if (ref?.state === 'pending') {
       renderedPendingPlaceholder = true;
@@ -1759,23 +1825,27 @@ export async function resolveInboxMessage(message, resolvers) {
   const { text: imgResolvedText, images } = await resolvers.resolveImages(refResolvedText);
   images.push(...chipImages);
   const reminder = message.metadata?.chatReminder ? `\n⚠️ ${message.metadata.chatReminder}` : '';
-  const pendingFootnote = renderedPendingPlaceholder || hasPendingAttachmentPlaceholders(message.metadata, recipientId)
+  const pendingFootnote = renderedPendingPlaceholder || hasPendingAttachmentPlaceholders(message.metadata, readerId)
     ? `\n\n${PENDING_ATTACHMENT_FOOTNOTE}`
     : '';
   const subscriptionDelivery = (message.metadata?.subscription_deliveries || [])
-    .find(d => d?.recipient === recipientId) || null;
+    .find(d => d?.recipient === readerId) || null;
+  // Delivery is decided per recipient, so it is stored per recipient. Read this
+  // reader's own entry — there is no message-wide delivery to fall back to.
+  const recipientDelivery = (message.metadata?.recipient_delivery || [])
+    .find(d => d?.recipient === readerId) || null;
   const idHint = message.id ? `, id:${message.id}` : '';
   return {
     id: message.id,
     from: message.from,
     fromLabel,
-    kind: inboxMessageKind(message),
+    kind: inboxMessageKind(message, readerId),
     priority: message.metadata?.priority || 'normal',
-    inboxDelivery: subscriptionDelivery?.delivery || message.metadata?.inbox_delivery || 'notified',
-    inboxStatus: message.metadata?.inbox_status || null,
-    inboxStatusTag: message.metadata?.inbox_status_tag || null,
+    inboxDelivery: subscriptionDelivery?.delivery || recipientDelivery?.delivery || 'notified',
+    inboxStatus: recipientDelivery?.status || null,
+    inboxStatusTag: recipientDelivery?.statusTag || null,
     notificationPolicy: subscriptionDelivery?.notification_policy || null,
-    notifyBy: subscriptionDelivery?.notifyBy || message.metadata?.notify_by || null,
+    notifyBy: subscriptionDelivery?.notifyBy || recipientDelivery?.notifyBy || null,
     images,
     // Markdown-formatted so the inbox renders cleanly in Skip's chat (which
     // markdown-renders tool output) AND reads well as raw text for agents:
@@ -2229,38 +2299,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     };
   }
 
-  async function recentDirectInbound(fromId, toId) {
-    try {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const data = await mcpFleetTransport.ephemeral('fleet-search', {
-        query: '',
-        filterExpression: `from:${toId} & to:${fromId}`,
-        since,
-        eventType: 'chat',
-        historyOnly: true,
-        eventOnly: true,
-        limit: 1,
-      });
-      return (data.results || []).some(e =>
-        e.type === 'chat' &&
-        e.from === toId &&
-        e.to === fromId
-      );
-    } catch (e) {
-      process.stderr.write(`[fleet] recent direct-reply check failed: ${e.message}\n`);
-      return false;
-    }
-  }
-
-  async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
-    const agents = await getRoster(targetAgentId);
-    const fromAgent = agents.find(a => a.id === activeAgentId()) || { id: activeAgentId(), cwd: getAgentCwd() };
-    const toAgent = agents.find(a => agentMatches(a, targetAgentId));
-    if (!toAgent) return null;
-    const block = crossLaneBlock({ fromAgent, toAgent, action, message, directReply });
-    return block?.text || null;
-  }
-
   // ==== Task Management ====
 
   // ---- delegate ----
@@ -2321,11 +2359,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
     async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
-      const laneBlock = await requireInLaneAction(targetAgent, {
-        action: 'delegate',
-        message,
-      });
-      if (laneBlock) throw new Error(laneBlock);
       const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.mint);
       const routedMessage = applyNonClaudeRolePack(message, {
         template: args.template,
@@ -2381,6 +2414,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
           modelOptions: spawnModelOptionsFromArgs(spawnOpts),
           effort: spawnOpts.effort,
           cwd: agentCwd,
+          labels: spawnOpts.labels,
           permissionRequest: spawnOpts.permissionRequest,
         });
         if (spawnResult?.ok === false || spawnResult?.error) {
@@ -2585,20 +2619,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
       return { content: [{ type: 'text', text: 'A `.suggest` item has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
     }
-    const laneBlocks = [];
-    for (const to of recipients) {
-      const directReply = await recentDirectInbound(activeAgentId(), to);
-      const laneBlock = await requireInLaneAction(to, {
-        action: 'chat',
-        message,
-        directReply,
-      });
-      if (laneBlock) laneBlocks.push(laneBlock);
-    }
-    if (laneBlocks.length) {
-      return { content: [{ type: 'text', text: `Message NOT sent.\n${laneBlocks.map(b => `- ${b}`).join('\n')}` }], isError: true };
-    }
-
     // Resolve the body's file references → uploads. Two modes:
     //  - file-share (source.file): the body is a markdown file's content; bundle
     //    its image includes (upload + rewrite refs inline) so they render for
@@ -2664,43 +2684,49 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       preambleRef = { doc: preambleDoc, version: pv || null };
     }
 
-    // Single write: send to dashboard server via WS.
-    const sent = [];
-    const failed = [];
+    // Single write: send to dashboard server via WS. A send to a group is ONE
+    // event carrying the whole recipient list, so it is one call with one
+    // _tempId — the idempotency key belongs to the message, not to a recipient.
+    let sent = [];
+    let sendFailure = null;
     const receipts = [];
-    const queued = [];
-    let lastEventId = null;
+    let queuedOperationId = null;
+    let messageId = null;
     const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
-    for (const to of recipients) {
-      const chatBody = { message: resolvedMessage, to, from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
-      if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
-      if (refAttachments.length) chatBody.attachments = refAttachments;
-      if (docContext) chatBody.context = docContext;
-      if (preambleRef) chatBody.preambleRef = preambleRef;
-      if (source) chatBody.source = source;
-      try {
-        const data = await mcpFleetTransport.durable('chat', chatBody, { operationId: chatBody._tempId });
-        if (data?.queued) {
-          sent.push(to);
-          queued.push({ to, operationId: data.operation_id || chatBody._tempId });
-        } else if (data?.ok) {
-          sent.push(to);
-          if (data.event_ids?.length) lastEventId = data.event_ids[0];
-          if (Array.isArray(data.receipts)) receipts.push(...data.receipts);
-        }
-        else failed.push(to);
-      } catch (e) {
-        failed.push(`${to} (${e.message})`);
+    // `to` stays an agent-set EXPRESSION on the wire — the server is the one
+    // authority that resolves recipients. Sending the ids we already resolved,
+    // joined with `|`, is that same expression narrowed to exactly this set, so
+    // the gate above and the delivered set cannot drift apart and the server
+    // needs no second input shape.
+    const chatBody = { message: resolvedMessage, to: recipients.join(' | '), from: activeAgentId(), metadata: { priority }, _tempId: `${activeAgentId()}:mcp-chat:${crypto.randomUUID()}` };
+    if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
+    if (refAttachments.length) chatBody.attachments = refAttachments;
+    if (docContext) chatBody.context = docContext;
+    if (preambleRef) chatBody.preambleRef = preambleRef;
+    if (source) chatBody.source = source;
+    try {
+      const data = await mcpFleetTransport.durable('chat', chatBody, { operationId: chatBody._tempId });
+      if (data?.queued) {
+        sent = recipients;
+        queuedOperationId = data.operation_id || chatBody._tempId;
+      } else if (data?.ok) {
+        sent = recipients;
+        if (data.event_ids?.length) messageId = data.event_ids[0];
+        if (Array.isArray(data.receipts)) receipts.push(...data.receipts);
+      } else {
+        sendFailure = 'the server did not accept it';
       }
+    } catch (e) {
+      sendFailure = e.message;
     }
 
-    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — no recipient send was accepted or queued. Failed: ${failed.join(', ')}` }], isError: true };
+    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — not accepted or queued (${sendFailure}). Recipients: ${recipients.join(', ')}` }], isError: true };
 
     let warning = '';
     let suggestionNotice = '';
-    if (authoredSuggestions.length && lastEventId != null) {
+    if (authoredSuggestions.length && messageId != null) {
       try {
-        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent, { messageId: lastEventId });
+        const count = await postChatAuthoredSuggestions(authoredSuggestions, sent, { messageId });
         suggestionNotice = ` Posted ${count} suggestion chip(s).`;
       } catch (e) {
         warning += `\n\n⚠ **Suggestion chips were not posted:** ${e.message}`;
@@ -2726,7 +2752,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     // Render-VALIDITY: prominent — Skip sees broken output unless the agent
     // amends. This is the "warn so they can amend their shit" check (Skip 6/19).
     if (renderIssues.length > 0) {
-      const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
+      const target = messageId != null ? `chat({ amend_id: ${messageId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
       warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
     }
     if (fileRenderIssues.length > 0) {
@@ -2738,20 +2764,20 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     }
     const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
     if (launderIssues.length > 0) {
-      warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, lastEventId)).join('\n')}`;
+      warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, messageId)).join('\n')}`;
     }
     // STYLE: quiet, optional — never a gate.
     if (styleHints.length > 0) {
       warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
-    if (queued.length) {
-      warning += `\n\nQueued for durable delivery; no server ACK yet:\n${queued.map(q => `- ${q.to}: ${q.operationId}`).join('\n')}`;
+    if (queuedOperationId) {
+      warning += `\n\nQueued for durable delivery; no server ACK yet: ${queuedOperationId}`;
       if (authoredSuggestions.length) {
         warning += '\nSuggestion chips were not posted yet because the chat message has not received a server id.';
       }
     }
 
-    const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
+    const amendHint = messageId != null ? ` (message id ${messageId} — chat({ amend_id: ${messageId} }) to edit it in place)` : '';
     const sentSummary = formatRecipientStatusSummary(sent, agents, receipts);
     const deliveryText = receipts.length
       ? `.\n${sentSummary.split(', ').join('\n')}`
@@ -2905,7 +2931,8 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
-      if (t.metadata?.notify_at) status += ` | notify:${t.metadata.notify_at}`;
+      const notify = formatTaskNotify(t.metadata?.at);
+      if (notify) status += ` | ${notify}`;
       if (t.metadata?.notify_every) status += ` | every:${t.metadata.notify_every}s`;
       if (t.metadata?.expires_at) status += ` | expires:${t.metadata.expires_at}`;
       if (t.metadata?.native) status += ` | Native task in ${nativeLabel || 'native harness'}`;
@@ -2962,6 +2989,20 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
     } else if (!args.summary && !(args.file && args.selector)) {
       return { content: [{ type: 'text', text: 'Pass summary when reporting on a task_id.' }], isError: true };
+    }
+
+    // Reporting on someone else's task is the fence, and it lives here in the MCP
+    // layer — same mechanism as delegate and chat, see the marker pattern in
+    // AGENTS.md. Resolving the task tells us whose it is; reporting on your own is
+    // never fenced.
+    if (targetTaskId) {
+      let owner = null;
+      try {
+        const found = await mcpFleetTransport.ephemeral('task-by-id', { task_id: targetTaskId });
+        owner = found?.task?.agent || null;
+      } catch (e) {
+        process.stderr.write(`[fleet] report task-owner lookup failed: ${e.message}\n`);
+      }
     }
 
     const cwd = getAgentCwd() || process.env.PWD || null;
@@ -3177,7 +3218,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       : ' [no recorded task]';
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
-      taskStr = ` [${task.id}: ${task.description} | ${age}m ago]`;
+      const notify = formatTaskNotify(task.metadata?.at, { compact: true });
+      taskStr = ` [${task.id}: ${task.description} | ${age}m ago${notify ? ` | ${notify}` : ''}]`;
     }
 
     return {
@@ -3621,9 +3663,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return `${p.month}/${p.day} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
     };
 
+    // A send carries a recipient LIST, so the direction line renders every
+    // recipient. Only the sender gets a name-provenance tag: the row stamps a
+    // period name for `from`, and there is no per-recipient equivalent, so a
+    // recipient is rendered by its durable id rather than a name it may not
+    // have held.
+    const fmtRecipients = (recipients) => (recipients || []).join(', ');
+
     const fmtCtxMsg = (c) => {
       const cFrom = tag(c.from_id || c.from, c.fromName, c.fromNameNow);
-      const cTo = tag(c.to_id || c.to, c.toName, c.toNameNow);
+      const cTo = fmtRecipients(c.recipients);
       const cDir = cTo ? `${cFrom} → ${cTo}` : cFrom;
       const text = (c.text || '').length > 300 ? c.text.slice(0, 300) + '...' : (c.text || '');
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
@@ -3694,7 +3743,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           return { timestamp: r.timestamp, text: formatProjectAgentForSearch(r) };
         }
         const from = tag(r.from, r.fromName, r.fromNameNow);
-        const to = tag(r.to, r.toName, r.toNameNow);
+        const to = fmtRecipients(r.recipients);
         const direction = to ? `${from} → ${to}` : from;
         const display = r.type === 'activity' ? formatActivityForSearch(r, snippet) : snippet;
         let text;
@@ -3863,8 +3912,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           : e.text || e.message || '';
         filtered.push({
           id: e.id, type: e.type, metadata,
-          from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
-          fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
+          from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
+          fromName: e.fromName, fromNameNow: e.fromNameNow,
         });
       }
     };
@@ -3896,8 +3945,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           : e.text || e.message || '';
         filtered.push({
           id: e.id, type: e.type, metadata,
-          from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
-          fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
+          from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
+          fromName: e.fromName, fromNameNow: e.fromNameNow,
         });
       }
     };
@@ -3973,15 +4022,15 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     });
 
     for (const m of filtered) {
-      for (const id of [m.from, m.to]) {
+      for (const id of [m.from, ...m.recipients]) {
         if (!id || resolvedAgents.has(id)) continue;
         const agent = await resolveAgent(id).catch(() => null);
         if (agent) resolvedAgents.set(agent.id, agent);
       }
     }
     if (!primaryId && args.agent) {
-      const first = filtered.find(m => m.from || m.to);
-      primaryId = first?.from || first?.to || null;
+      const first = filtered.find(m => m.from || m.recipients.length);
+      primaryId = first?.from || first?.recipients[0] || null;
     }
 
     if (filtered.length === 0) {
@@ -4081,7 +4130,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     for (const m of filtered) {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
       const from = tag(m.from, m.fromName, m.fromNameNow);
-      const to = tag(m.to, m.toName, m.toNameNow);
+      // Every recipient of the send, comma-separated. `tag` with no period name
+      // falls back to the agent resolved above, so each one carries its name and
+      // its durable id.
+      const to = m.recipients.map(id => tag(id)).join(', ');
       const ver = args.project ? versionAt(m.timestamp) : null;
       const verStr = ver ? ` @${ver}` : '';
       const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
@@ -4605,9 +4657,8 @@ const mcpFleetTransport = createFleetOperationTransport({
     }),
   sendDurable: sendDurableFleet,
   resolveSender: () => activeAgentId(),
-  resolveDestination: ({ payload }) => (
-    payload.to || payload.agent || payload.agent_id || payload.target || payload.filter || null
-  ),
+  resolveDestination: ({ payload }) =>
+    payload.to || payload.agent || payload.agent_id || payload.target || payload.filter || null,
   observe: event => {
     if (event.stage === 'terminal' && !event.ok) {
       process.stderr.write(`[fleet-transport] ${event.mode} ${event.operation} failed: ${event.error}\n`);

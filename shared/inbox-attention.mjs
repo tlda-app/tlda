@@ -46,17 +46,31 @@ export function parsePriorityPhrase(text) {
   return null
 }
 
+// A bare number is rejected rather than assumed. `batch(15)` used to mean
+// fifteen MINUTES, so an agent that meant seconds got a window sixty times too
+// long and nothing said so — and the failure is invisible, because a batch that
+// arrives late looks exactly like a batch that has not arrived yet. Skip asked
+// for a live transcript subscription at `batch(15s)` on 7/31 and named the
+// error himself: "15 what?"
+export function batchUnitMissing(policy) {
+  const match = String(policy || '').trim().match(/^batch\((.+)\)$/i)
+  if (!match) return null
+  const spec = match[1].trim().toLowerCase()
+  const bare = spec.match(/^(\d+(?:\.\d+)?)$/)
+  return bare ? bare[1] : null
+}
+
 export function parseBatchWindowMs(policy, { defaultMs = DEFAULT_SUBSCRIPTION_BATCH_MS } = {}) {
   const match = String(policy || '').trim().match(/^batch\((.+)\)$/i)
   if (!match) return null
   const spec = match[1].trim().toLowerCase()
   if (!spec) return null
   if (spec === 'default') return defaultMs
-  const duration = spec.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/)
+  const duration = spec.match(/^(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/)
   if (!duration) return null
   const value = Number(duration[1])
   if (!Number.isFinite(value) || value <= 0) return null
-  const unit = duration[2] || 'm'
+  const unit = duration[2]
   const scale = unit === 'ms' ? 1
     : ['s', 'sec', 'secs', 'second', 'seconds'].includes(unit) ? 1000
       : ['h', 'hr', 'hrs', 'hour', 'hours'].includes(unit) ? 60 * 60 * 1000

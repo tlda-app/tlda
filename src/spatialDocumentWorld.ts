@@ -1,4 +1,6 @@
 import { createShapeId, type Editor, type TLShape, type TLShapeId } from 'tldraw'
+import { wrapFleetLayoutAroundDocument } from './shapes/fleet-layout-wrap'
+import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
 
 export const SPATIAL_MAP_ZOOM = 0.28
 /** Distance between neighbouring documents. One screen at reading zoom is about
@@ -64,6 +66,7 @@ export function spatialWorldBounds(nodes: SpatialDocumentNode[]) {
 export function zoomToSpatialWorld(
   editor: Editor,
   bounds: { x: number; y: number; w: number; h: number },
+  anchorNode?: SpatialDocumentNode | null,
 ) {
   const viewport = editor.getViewportScreenBounds()
   const availableW = Math.max(1, viewport.w - 80)
@@ -73,11 +76,75 @@ export function zoomToSpatialWorld(
     availableW / Math.max(1, bounds.w),
     availableH / Math.max(1, bounds.h),
   ))
+  // The world view frames the whole world, but it opens on the document you are
+  // at: "the map should go where the fucking document goes … certainly shouldn't
+  // be determined by where your fucking viewport is when you hit the button."
+  const anchor = anchorNode?.bounds || bounds
   editor.setCamera({
-    x: viewport.w / (2 * z) - (bounds.x + bounds.w / 2),
-    y: viewport.h / (2 * z) - (bounds.y + bounds.h / 2),
+    x: viewport.w / (2 * z) - (anchor.x + anchor.w / 2),
+    y: 48 / z - anchor.y,
     z,
   }, { animation: { duration: 300 } })
+}
+
+function overlapArea(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+) {
+  return Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
+    * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
+}
+
+/** The document you are at: the one your viewport is over, or when the viewport
+ *  is over none of them (the world view), the nearest. */
+export function currentSpatialDocument(
+  editor: Editor,
+  nodes: SpatialDocumentNode[],
+): SpatialDocumentNode | null {
+  const viewport = editor.getViewportPageBounds()
+  let best: SpatialDocumentNode | null = null
+  let bestOverlap = 0
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const node of nodes) {
+    const overlap = overlapArea(viewport, node.bounds)
+    const distance = Math.hypot(
+      viewport.center.x - (node.bounds.x + node.bounds.w / 2),
+      viewport.center.y - (node.bounds.y + node.bounds.h / 2),
+    )
+    if (overlap > bestOverlap || (overlap === bestOverlap && distance < bestDistance)) {
+      best = node
+      bestOverlap = overlap
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+/**
+ * Go to a document. Documents stay where they are; the camera moves, and the
+ * layout you built is carried to the new document by the same rule — every
+ * panel keeps the distance it had from the document's edges.
+ *
+ * The camera translates by the document offset rather than fitting the target,
+ * so the new document arrives at the screen position the old one occupied and
+ * the zoom you were reading at is the zoom you keep. The three moves — panels,
+ * camera, HUD anchor — are one synchronous step; see the wrap handler in
+ * FleetHUD for why the anchor is the third of them.
+ *
+ * Activating the document you are already at makes every offset zero, so this
+ * does nothing. That is the rule applied, not a case it excludes.
+ */
+export function activateSpatialDocument(
+  editor: Editor,
+  source: SpatialDocumentNode,
+  target: SpatialDocumentNode,
+  camera: { x: number; y: number; z: number },
+) {
+  const plan = wrapFleetLayoutAroundDocument(editor, source.bounds, target.bounds)
+  editor.setCamera({ x: camera.x - plan.dx, y: camera.y - plan.dy, z: camera.z })
+  // The anchor compensation exists to hold moved panels in place. Nothing
+  // moved, nothing to compensate.
+  if (plan.moves.length > 0) dispatchFleetHudWrap({ dx: plan.dx, dy: plan.dy })
 }
 
 export function focusSpatialDocument(editor: Editor, node: SpatialDocumentNode) {
@@ -189,8 +256,11 @@ export function placeSpatialDocument(
       }
   const originCenter = { x: origin.x + origin.w / 2, y: origin.y + origin.h / 2 }
   const startAngle = stableHash(identity) / 0xffffffff * Math.PI * 2
-  const horizontalClearance = size.w / 2 + WORLD_GAP
-  const verticalClearance = size.h / 2 + WORLD_GAP
+  // Clearance is measured from the origin's centre, so it has to clear the
+  // origin's own half-extent as well as the new document's. Without the origin
+  // term a wide or tall document gets its neighbour placed inside its own bounds.
+  const horizontalClearance = origin.w / 2 + size.w / 2 + WORLD_GAP
+  const verticalClearance = origin.h / 2 + size.h / 2 + WORLD_GAP
   let best = { x: origin.x + origin.w + WORLD_GAP, y: originCenter.y - size.h / 2 }
   let bestScore = Number.POSITIVE_INFINITY
 
@@ -209,11 +279,15 @@ export function placeSpatialDocument(
       let score = ring * ring * 10
       for (const other of occupied) {
         const gap = rectGap(candidate, other)
-        if (gap === 0) score += 1_000_000
-        else {
-          const mass = Math.max(1, other.w * other.h / (DOCUMENT_W * DOCUMENT_H))
-          score += mass * 50_000 / (gap * gap)
+        // A full world gap is what makes these different places rather than
+        // neighbouring tiles, so anything closer is rejected outright instead of
+        // being weighed against the ring cost.
+        if (gap < WORLD_GAP) {
+          score = Number.POSITIVE_INFINITY
+          break
         }
+        const mass = Math.max(1, other.w * other.h / (DOCUMENT_W * DOCUMENT_H))
+        score += mass * 50_000 / (gap * gap)
       }
       if (score < bestScore) {
         bestScore = score
@@ -271,7 +345,11 @@ function currentProjectName() {
   return new URLSearchParams(window.location.search).get('project') || 'document'
 }
 
-export function spatialWorldDocuments(editor: Editor, projectName = currentProjectName()): SpatialDocumentNode[] {
+export function spatialWorldDocuments(
+  editor: Editor,
+  projectName = currentProjectName(),
+  primaryTitle = projectName,
+): SpatialDocumentNode[] {
   const pages = editor.getCurrentPageShapes().filter(rawDocumentPage)
   const primaryPages = pages.filter(shape => !shape.meta?.temporaryMarkdownColumn)
   const nodes: SpatialDocumentNode[] = []
@@ -284,7 +362,7 @@ export function spatialWorldDocuments(editor: Editor, projectName = currentProje
     nodes.push({
       id: `spatial-primary:${projectName}`,
       bounds: { x, y, w: right - x, h: bottom - y },
-      title: projectName,
+      title: primaryTitle || projectName,
       documentRef: { id: `spatial-primary:${projectName}`, kind: 'primary' },
     })
   }

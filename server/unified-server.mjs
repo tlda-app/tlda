@@ -78,7 +78,7 @@ import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
-import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
@@ -98,6 +98,7 @@ import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerm
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
+  batchUnitMissing,
   decideSubscriptionDelivery,
   normalizeDeliveryChannel,
   normalizeInboxStatus,
@@ -349,19 +350,28 @@ function logWsClose(kind, ws, code, reason) {
 async function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
   const names = await fleetStore.nameSpansFor(
-    rows.flatMap(r => [r.from, r.to, r.agentId]),
+    rows.flatMap(r => [r.from, ...(r.recipients || []), r.agentId]),
   )
+  const nameAt = (id, timestamp) => {
+    const entry = names.get(id)
+    const at = resolveNameAt(entry, timestamp)
+    const current = entry?.current ?? null
+    return { at, now: current !== at ? current : null }
+  }
   const stamp = (r, id, nameKey, nowKey) => {
     if (!id) return
-    const entry = names.get(id)
-    const at = resolveNameAt(entry, r.timestamp)
+    const { at, now } = nameAt(id, r.timestamp)
     r[nameKey] = at
-    const current = entry?.current ?? null
-    if (current !== at) r[nowKey] = current
+    if (now !== null) r[nowKey] = now
   }
   for (const r of rows) {
     stamp(r, r.from, 'fromName', 'fromNameNow')
-    stamp(r, r.to, 'toName', 'toNameNow')
+    // Every recipient keeps its own name-at-time, so a group send renders each
+    // member with the name that member actually held when it was sent — the
+    // same provenance the single recipient had, not a current-name lookup.
+    const recipients = r.recipients || []
+    r.toNames = recipients.map(id => nameAt(id, r.timestamp).at)
+    r.toNamesNow = recipients.map(id => nameAt(id, r.timestamp).now)
     stamp(r, r.agentId, 'agentName', 'agentNameNow')
   }
   return rows
@@ -388,6 +398,15 @@ function agentWithDaemonCapabilities(agent) {
     ...agent,
     terminalInputAllowed: daemonKey ? daemonTerminalInputAllowed(daemonKey) : false,
   }
+}
+
+// The agents panel renders an agent's subscriptions in its expanded row, so the
+// rows travel with the agent on both paths that carry one to the browser — the
+// page and the delta. A delta replaces the whole agent object client-side, so a
+// field present on only one path would disappear the moment an agent moved.
+function agentWithSubscriptions(agent, byOwner) {
+  if (!agent) return agent
+  return { ...agent, subscriptions: byOwner?.[agent.id] || [] }
 }
 
 // Gate 1 observability: correlates one daemon WS connection attempt across
@@ -498,8 +517,13 @@ function markAgentNotAlive(agentId, detail = {}) {
   if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
 }
 
-function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
-  const descendantIds = unroutedNativeDescendantIds(fleetStore.getAliveAgents(), parentAgentId)
+// `getAliveAgents` crosses the store worker, so it hands back a Promise. Passing
+// it unawaited made this throw `(agents || []) is not iterable` — after the
+// kill or hibernate had already succeeded, so the caller was told the action
+// failed when it had happened. todd announced seventy false corrections that way
+// on 7/31.
+async function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
+  const descendantIds = unroutedNativeDescendantIds(await fleetStore.getAliveAgents(), parentAgentId)
   for (const descendantId of descendantIds) {
     markAgentNotAlive(descendantId, {
       ...detail,
@@ -1407,7 +1431,7 @@ function broadcastEvent(type, data) {
         event_type: data?.type,
         event_id: data?.id || data?.event_id,
         from: data?.from_id || data?.from,
-        to: data?.to_id || data?.to,
+        to: data?.recipients,
       },
     })
   }
@@ -1659,9 +1683,9 @@ function _queueBroadcastAgents(agentUpdates = null) {
   }
 }
 
-function _agentWithEphemeralState(agent) {
+function _agentWithEphemeralState(agent, subscriptionsByOwner) {
   if (!agent) return null
-  const withCapabilities = agentWithDaemonCapabilities(agent)
+  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)
   if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
   if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
   return withCapabilities
@@ -1676,8 +1700,9 @@ async function _broadcastStateNow() {
 
   const changed = []
   const removed = []
+  const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pendingIds) || {}
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(await fleetStore.getAgent(id))
+    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner)
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
@@ -1861,6 +1886,7 @@ async function performSpawnRelay(caller, msg) {
     permissionRequest, enroll, routeAgent,
     iLikeToLiveDangerously, mailboxTarget, modelOptions,
     pretty_name: requestedPrettyName,
+    labels: requestedLabels,
   } = normalizeSpawnRelayInput(msg)
   if (refresh) {
     throw new Error('refresh is disabled through MCP spawn; recover the original resume handle before respawning')
@@ -1925,6 +1951,13 @@ async function performSpawnRelay(caller, msg) {
     : null
   let reservedFriendlyName = null
   if (pendingAgentId) {
+    // Same gate as label(): friendly names and labels are one namespace, so a
+    // label that is unaddressable, reserved, or already occupied by a living
+    // agent fails here with the same error shape rather than being applied.
+    if (requestedLabels?.length) {
+      const collisions = await fleetStore.checkNameAvailable(requestedLabels, { excludeId: pendingAgentId })
+      if (collisions.length) throw new Error(await fleetStore.labelCollisionMessage(collisions))
+    }
     const now = new Date().toISOString()
     const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
     reservedFriendlyName = assignedName
@@ -1932,7 +1965,12 @@ async function performSpawnRelay(caller, msg) {
       id: pendingAgentId,
       friendly_name: assignedName,
       pretty_name: requestedPrettyName ?? null,
-      labels: [],
+      // Labels applied here rather than by a follow-up label() call: this record
+      // is written before the agent's first tool call, so its label_history span
+      // opens at registered_at and a label-filtered panel shows the whole
+      // backlog. Labelling after mint is lexically correct but starts the span
+      // late, leaving the work in between invisible to that filter.
+      labels: requestedLabels ?? [],
       registered_at: now,
       last_seen: now,
       dead: false,
@@ -2550,7 +2588,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
     type: 'amend',
     timestamp: ts,
     from: original.from,
-    to: original.to,
+    to: original.recipients,
     text: original.text,
     metadata: meta,
     unread: false,
@@ -2561,7 +2599,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
     type: 'amend',
     timestamp: ts,
     from_id: original.from,
-    to_id: original.to,
+    recipients: original.recipients,
     text: original.text,
     metadata: meta,
   })
@@ -2922,9 +2960,19 @@ app.get('/api/voice/backends', async (req, res) => {
       { value: '', label: 'Off', available: true },
       { value: 'chrome', label: 'Browser', available: true },
     ]
-    // Offer Deepgram when the BRIDGE is actually reachable, the same way Whisper
-    // is decided one line below — one question, asked of the one bridge.
-    if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
+    // Deepgram is always offered. `deepgramBridgeUrl` is required and this
+    // process refuses to start without it, so the backend is configured by
+    // construction and there is nothing here to discover. Asking the bridge
+    // whether it is up *right now* answers a different question — liveness —
+    // and a miss on that question presented itself as "Deepgram does not
+    // exist", which is the same silent drop that requiring the address was
+    // meant to end. Observed on stable at 2026-07-31T07:44:10Z: one 800ms probe
+    // missed, the option vanished, and a minute later the same handshake
+    // measured 4ms. Liveness belongs at connect time, where
+    // /api/voice/deepgram-sdk/start already answers 503 with a message.
+    // Whisper below is a different question and keeps its probe: it is a local
+    // process that genuinely may not be running.
+    backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
     if (await isBridgeUp(WHISPER_BRIDGE_URL)) backends.push({ value: 'whisper', label: 'Whisper', available: true })
     res.json({ backends })
   } catch (err) {
@@ -5233,7 +5281,9 @@ async function handleFleetWsMessage(ws, msg) {
       limit: msg.limit,
       cursor: msg.cursor || null,
     })
-    reply({ ...page, agents: (page.agents || []).map(agentWithDaemonCapabilities), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
+    const pageAgents = page.agents || []
+    const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pageAgents.map(agent => agent.id)) || {}
+    reply({ ...page, agents: pageAgents.map(agent => agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
@@ -5913,11 +5963,14 @@ async function handleFleetWsMessage(ws, msg) {
       ...(source ? { source } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
     }
-    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${orig.to}`, () => fleetStore.insertEventRecord({
+    // One event per send means an amend now corrects the message every recipient
+    // is reading. Under the old fan-out it bound to the first recipient's copy
+    // and silently left the rest reading the unamended text.
+    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${(orig.recipients || []).join(',')}`, () => fleetStore.insertEventRecord({
       type: 'amend',
       timestamp: ts,
       from,
-      to: orig.to,
+      to: orig.recipients,
       text,
       metadata: meta,
       unread: false,
@@ -5930,7 +5983,7 @@ async function handleFleetWsMessage(ws, msg) {
       type: 'amend',
       timestamp: ts,
       from_id: from,
-      to_id: orig.to,
+      recipients: orig.recipients,
       text,
       metadata: meta,
     })
@@ -5938,7 +5991,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, preambleRef, source } = msg
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, context, preambleRef, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
     const traceId = metadata?.trace_id || msg.trace_id || (msg._tempId ? `chat:${msg._tempId}` : createTraceId('chat'))
     controlPlaneTraces.append({
@@ -6006,8 +6059,6 @@ async function handleFleetWsMessage(ws, msg) {
       touchActivity(from)
     }
     // Resolve CC (still single-string list)
-    let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
-    if (ccResolved && ccResolved.length === 0) ccResolved = null
     // Copy attachments into the persistent upload dir (once for all recipients),
     // the SAME dir /api/upload uses (RESOLVED_UPLOAD_DIR honors TLDA_UPLOAD_DIR).
     // Previously this wrote to an ephemeral container path that Fly wiped on every
@@ -6038,6 +6089,13 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'matched',
       detail: { from, to: rawTo, recipients },
     })
+    // One send is ONE event. Everything that is genuinely per-recipient —
+    // subscription and tap matching, inbox status, delivery decision, wake — is
+    // still decided per recipient here, but it is now recorded as per-recipient
+    // entries on that single event instead of being stamped onto N copies of it.
+    const perRecipient = []
+    const watchRecipients = new Set()
+    const subscriptionDeliveriesAll = []
     for (const to of recipients) {
       // Resolve subscriptions per recipient — tap labels are matched against this `to`.
       const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat') || []
@@ -6069,94 +6127,121 @@ async function handleFleetWsMessage(ws, msg) {
         subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
       }
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
-      const watchRecipients = [...new Set([...(wiretapRecipients || []), ...subscriptionRecipients])]
-      const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
-      let combinedMetadata = {
-        ...(metadata || {}),
-        priority: basePriority,
-        trace_id: traceId,
-        inbox_delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
-        inbox_status: inboxStatus,
-        delivery_channel: deliveryChannel,
-        ...(inboxStatusTag ? { inbox_status_tag: inboxStatusTag } : {}),
-        ...(deliveryDecision.notifyBy ? { notify_by: deliveryDecision.notifyBy } : {}),
-        ...(ccResolved ? { cc: ccResolved } : {}),
-        ...(processedAttachments ? { attachments: processedAttachments } : {}),
-        ...(inline_attachments ? { inline_attachments } : {}),
-        ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
-        ...(watchRecipients.length ? { wiretap_cc: watchRecipients } : {}),
-        ...(subscriptionDeliveries.length ? { subscription_deliveries: subscriptionDeliveries } : {}),
-        ...(outContext ? { context: outContext } : {}),
-        ...(preambleRef ? { preambleRef } : {}),
-        ...(chatReminder ? { chatReminder } : {}),
-        ...(source ? { source } : {}),
-      }
-      if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
+      for (const id of [...(wiretapRecipients || []), ...subscriptionRecipients]) watchRecipients.add(id)
+      subscriptionDeliveriesAll.push(...subscriptionDeliveries)
+      perRecipient.push({
+        to,
+        recipientAgent,
+        nativeNeedsParent,
+        nativeParentId,
+        subscriptionDeliveries,
+        // The delivery facts that used to be scalar metadata keys describing
+        // "the" recipient. One entry per recipient of this one event.
+        entry: {
+          recipient: to,
+          delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
+          status: inboxStatus,
+          statusTag: inboxStatusTag,
+          deliveryChannel,
+          ...(deliveryDecision.notifyBy ? { notifyBy: deliveryDecision.notifyBy } : {}),
+        },
+        deliveryDecision,
+      })
+    }
+
+    const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
+    let combinedMetadata = {
+      ...(metadata || {}),
+      priority: basePriority,
+      trace_id: traceId,
+      recipient_delivery: perRecipient.map(r => r.entry),
+      ...(processedAttachments ? { attachments: processedAttachments } : {}),
+      ...(inline_attachments ? { inline_attachments } : {}),
+      ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
+      ...(watchRecipients.size ? { wiretap_cc: [...watchRecipients] } : {}),
+      ...(subscriptionDeliveriesAll.length ? { subscription_deliveries: subscriptionDeliveriesAll } : {}),
+      ...(outContext ? { context: outContext } : {}),
+      ...(preambleRef ? { preambleRef } : {}),
+      ...(chatReminder ? { chatReminder } : {}),
+      ...(source ? { source } : {}),
+    }
+    // Attachment refs are already a per-recipient map; every non-human recipient
+    // of this one event gets its own entry.
+    const refRecipients = perRecipient.filter(r => r.recipientAgent && !r.recipientAgent.human).map(r => r.to)
+    if (materializableAttachments.length) {
+      for (const to of refRecipients) {
         combinedMetadata = initializeRecipientRefs(combinedMetadata, to, materializableAttachments, { sourceAgent: from })
       }
-      const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${to} bytes=${text.length}`, () => fleetStore.insertEventRecord({
-        type: 'chat',
-        timestamp: ts,
-        from,
-        to,
-        text,
-        metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
-        unread: true,
-      }, { notify: false }))
-      const eventId = Number(inserted.id)
-      if (nativeNeedsParent) {
-        await fleetStore.createNativeSubagentNotification?.({
-          eventId,
-          parentAgentId: nativeParentId,
-          childAgentId: to,
-          senderAgentId: from,
-          createdAt: ts,
-        })
-      }
-      if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
+    }
+    const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${recipients.join(',')} bytes=${text.length}`, () => fleetStore.insertEventRecord({
+      type: 'chat',
+      timestamp: ts,
+      from,
+      to: recipients,
+      text,
+      metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
+      unread: true,
+    }, { notify: false }))
+    const eventId = Number(inserted.id)
+    for (const r of perRecipient) {
+      if (!r.nativeNeedsParent) continue
+      await fleetStore.createNativeSubagentNotification?.({
+        eventId,
+        parentAgentId: r.nativeParentId,
+        childAgentId: r.to,
+        senderAgentId: from,
+        createdAt: ts,
+      })
+    }
+    if (materializableAttachments.length && refRecipients.length) {
+      for (const to of refRecipients) {
         combinedMetadata = finalizeRecipientRefProvenance(combinedMetadata, {
           recipientId: to,
           eventId,
           attachments: materializableAttachments,
         })
-        await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
       }
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'fleet-store',
-        operation: 'chat.insert',
-        status: 'stored',
-        detail: { event_id: eventId, from, to },
-      })
-      eventIds.push(eventId)
+      await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
+    }
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'fleet-store',
+      operation: 'chat.insert',
+      status: 'stored',
+      detail: { event_id: eventId, from, to: recipients },
+    })
+    eventIds.push(eventId)
+    for (const r of perRecipient) {
       receipts.push({
-        recipient: to,
-        status: inboxStatus,
-        tag: inboxStatusTag,
+        recipient: r.to,
+        status: r.entry.status,
+        tag: r.entry.statusTag,
         priority: basePriority,
-        delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
-        deliveryChannel,
-        wokeRecipient: nativeNeedsParent ? false : deliveryDecision.wokeRecipient,
-        notifyBy: deliveryDecision.notifyBy,
+        delivery: r.entry.delivery,
+        deliveryChannel: r.entry.deliveryChannel,
+        wokeRecipient: r.nativeNeedsParent ? false : r.deliveryDecision.wokeRecipient,
+        notifyBy: r.deliveryDecision.notifyBy,
       })
-      // Echo _tempId on the broadcast so a client whose WS reply was lost during
-      // a hiccup can still bind this echo to its orphaned optimistic entry
-      // (the reply, not the DB row, is what normally carries _tempId).
-      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
-      if (deliveryDecision.delivery === 'notified') {
-        if (nativeNeedsParent) {
+    }
+    // Echo _tempId on the broadcast so a client whose WS reply was lost during
+    // a hiccup can still bind this echo to its orphaned optimistic entry
+    // (the reply, not the DB row, is what normally carries _tempId).
+    insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, recipients, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
+    for (const r of perRecipient) {
+      if (r.deliveryDecision.delivery === 'notified') {
+        if (r.nativeNeedsParent) {
           wakeRequests.push({
-            to: nativeParentId,
-            text: `📬 Message queued for native subagent ${recipientAgent.friendly_name || to}.`,
+            to: r.nativeParentId,
+            text: `📬 Message queued for native subagent ${r.recipientAgent.friendly_name || r.to}.`,
             asker: from,
             traceId,
             source: { sourceEventId: eventId, priority: basePriority },
           })
         } else {
-          wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+          wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
       }
-      for (const subDelivery of subscriptionDeliveries) {
+      for (const subDelivery of r.subscriptionDeliveries) {
         if (subDelivery.delivery === 'notified') {
           const subscriptionStatus = await inboxStatusFor(subDelivery.recipient)
           wakeRequests.push({
@@ -6179,12 +6264,14 @@ async function handleFleetWsMessage(ws, msg) {
       const { materializableAttachments: _materializableAttachments, ...broadcastEv } = ev
       broadcastEvent('fleet-event', broadcastEv)
       if (_materializableAttachments?.length) {
-        queueRecipientMaterialization({
-          eventId: ev.id,
-          recipientId: ev.to_id,
-          sourceAgent: ev.from_id,
-          attachments: _materializableAttachments,
-        })
+        for (const recipientId of ev.recipients || []) {
+          queueRecipientMaterialization({
+            eventId: ev.id,
+            recipientId,
+            sourceAgent: ev.from_id,
+            attachments: _materializableAttachments,
+          })
+        }
       }
     }
     const deliveredAt = Date.parse(ts) || Date.now()
@@ -6311,10 +6398,13 @@ async function handleFleetWsMessage(ws, msg) {
     if (task_id && !existingTask) { error(`task not found: ${task_id}`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
     const fromAgent = from ? await fleetStore.findAgent(from) : null
-    const caller = fromAgent || (from ? { id: from } : null)
-    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
-      error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md. The HTTP twin at
+    // POST /api/tasks/delegate is ungated in the same way, so the two agree on who
+    // may re-delegate. They do NOT otherwise agree — the HTTP route sends no wake,
+    // has no operation_id idempotency, and drops notify_at/expires_at and
+    // requires_approval. That divergence is a known bug, not a licence to add a
+    // gate back here.
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
@@ -6499,9 +6589,10 @@ async function handleFleetWsMessage(ws, msg) {
       ? await fleetStore.getTask?.(task_id)
       : await fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
-    if (task_id && !await canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
-      error('not authorized to report on this task; only its assignee, delegator, their management chains, or a human may do so'); return
-    }
+    // No authorization gate here. The fence on reporting against someone else's
+    // task lives in the MCP layer, which is where agents act — see the
+    // authorization gate section in AGENTS.md. The approval requirement below is
+    // the marker pattern, not a gate, and it stays.
     if (close && task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
       const evt = await fleetStore.getEventById(approval_id)
@@ -6672,11 +6763,10 @@ async function handleFleetWsMessage(ws, msg) {
     const row = await fleetStore.findAgent?.(agentQuery || caller.id)
     if (!row) { error(`agent not found: ${agentQuery || caller.id}`); return }
     const targetLabel = row.friendly_name || row.id
+    // Reported back to the caller, not a gate — see below.
     const self = caller.id === row.id
-    if (!self && !await fleetStore.isDelegatorForAgent?.(caller.id, row.id)) {
-      error(`Cannot set delivery channel for ${targetLabel}: you are not that agent's manager. Delegate them a task first if you mean to take responsibility for their delivery channel, then retry.`)
-      return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md.
     if (channel === 'tmux') {
       const route = resolveRpc('resolve-agent-route', row)
       if (route.via === 'none') { error(route.error); return }
@@ -6904,7 +6994,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
-      markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
+      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
       broadcastState()
@@ -6923,7 +7013,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
-      markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
+      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -7139,11 +7229,15 @@ async function handleFleetWsMessage(ws, msg) {
     const caller = await fleetStore.findAgent?.(callerQuery)
     const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
     if (!caller || !target) { error('caller or target not found'); return }
-    if (caller.id !== target.id && !await fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
-      error('not authorized to configure subscriptions for that target'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md. The checks
+    // below are input validation, not authorization, and they stay.
     if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
       error('notification_policy must be immediate, hold, or batch(spec)'); return
+    }
+    const bareBatchNumber = batchUnitMissing(policy)
+    if (bareBatchNumber) {
+      error(`${bareBatchNumber} what? A batch window needs a unit — batch(${bareBatchNumber}s), batch(${bareBatchNumber}m), or batch(${bareBatchNumber}h).`); return
     }
     if (/^batch\(.+\)$/.test(policy) && !decideSubscriptionDelivery({ policy })) {
       error('unsupported batch notification_policy; use a duration like batch(5m), batch(30s), or batch(1h)'); return
@@ -7168,19 +7262,23 @@ async function handleFleetWsMessage(ws, msg) {
     const subscription = await fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
     // Arm after the row exists — the subscriber set is read from the table.
     if (docMatch) tldaFeedback.arm(docMatch[1])
+    // The owner's subscriptions are part of its agent row now, so the panel
+    // learns about this one the same way it learns about any other change.
+    broadcastState(target.id)
     reply(subscription)
     return
   }
 
   if (type === 'subscriptions') {
+    // Reads are deliberately not gated. The authorization fence is a small
+    // coordination friction in the MCP layer, not a security boundary — see the
+    // authorization gate section in AGENTS.md. This read was previously limited to
+    // self-or-delegator, which made it unusable from Skip's own browser. Do not
+    // reintroduce a gate here.
     const { caller: callerQuery, target: targetQuery } = msg
     if (!callerQuery) { error('missing caller'); return }
-    const caller = await fleetStore.findAgent?.(callerQuery)
     const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
-    if (!caller || !target) { error('caller or target not found'); return }
-    if (caller.id !== target.id && !await fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
-      error('not authorized to inspect subscriptions for that target'); return
-    }
+    if (!target) { error('target not found'); return }
     reply(await fleetStore.getSubscriptionsByOwner(target.id))
     return
   }
@@ -7191,9 +7289,8 @@ async function handleFleetWsMessage(ws, msg) {
     const caller = await fleetStore.findAgent?.(callerQuery)
     const subscription = await fleetStore.getSubscription(subscriptionId)
     if (!caller || !subscription) { error('caller or subscription not found'); return }
-    if (caller.id !== subscription.owner && !await fleetStore.isDelegatorForAgent?.(caller.id, subscription.owner)) {
-      error('not authorized to remove that subscription'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md.
     if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.removeWiretap(subscription.adapter_id)
     await fleetStore.removeSubscription(subscription.subscription_id)
     // Release after the row is gone — the remaining-subscriber check reads the table.
@@ -7201,6 +7298,7 @@ async function handleFleetWsMessage(ws, msg) {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
       if (docMatch) await tldaFeedback.releaseIfUnsubscribed(docMatch[1])
     }
+    broadcastState(subscription.owner)
     reply({ ok: true, subscription_id: subscription.subscription_id })
     return
   }
@@ -7233,16 +7331,6 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- shared-docs-get ----
   if (type === 'shared-docs-get') {
     reply(await fleetStore.getSharedDocs())
-    return
-  }
-
-  // ---- mark-dead ----
-  if (type === 'mark-dead') {
-    const { agent: agentId } = msg
-    if (!agentId) { error('missing agent'); return }
-    await fleetStore.markDead(agentId)
-    broadcastState()
-    reply({ ok: true })
     return
   }
 
@@ -7281,8 +7369,12 @@ async function handleFleetWsMessage(ws, msg) {
           // Chronological for the panel, which renders oldest at the top. This
           // is the one place the page is turned around, and it is turning around
           // a list the walker built, not undoing a sort the database did.
+          // Read state is per recipient, so history has to be resolved for the
+          // agent who is looking — otherwise a group message reads as "read" for
+          // everyone the moment a single recipient opens it.
           const events = await fleetStore.resolveChatRows(page.events.slice().reverse(), {
             serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
+            readerId: humanId || SERVER_OWNER_ID,
           })
           ws.send(JSON.stringify({ event: 'filter-events', data: {
             subId, events, reason: 'history',

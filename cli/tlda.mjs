@@ -319,6 +319,28 @@ async function apiAt(server, method, path, body = null, { timeoutMs = 30000, tok
   return tldaFetch(path, { method, body, timeoutMs, server, token })
 }
 
+// A project created through `tlda-dev` is a developer's fixture, so it is
+// archived on arrival. Agents make these constantly — proof sandboxes, format
+// probes, a scratch that turned out to target the live server — and every one
+// of them landed in Skip's index, which is a phone-sized list whose point is
+// the history view. He archived 48 by hand on 7/30 and asked for the source to
+// stop: "just make tlda-dev create archived projects."
+//
+// Archiving after create rather than passing a flag, deliberately: it needs no
+// server change, so it takes effect against an already-deployed server. A
+// failure here is not worth failing a create over — the project exists and the
+// clutter is the lesser problem — so it warns and carries on.
+async function createProjectApi(body) {
+  const project = await api('POST', '/api/projects', body)
+  if (!process.env.TLDA_DEV_CLI) return project
+  try {
+    await api('PATCH', `/api/projects/${body.name}/archive`, { archived: true })
+  } catch (e) {
+    console.warn(yellow(`  Warning: could not archive dev project "${body.name}" — ${e.message}`))
+  }
+  return project
+}
+
 // --- Source file collection ---
 
 /**
@@ -440,7 +462,7 @@ async function cmdBook() {
 
   // Create the book project
   try {
-    await api('POST', '/api/projects', { name, title, format: 'book', members })
+    await createProjectApi({ name, title, format: 'book', members })
     console.log(green(`Created book "${name}" with ${members.length} members.`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -496,7 +518,7 @@ async function cmdScratch() {
 
   // Create or update markdown project
   try {
-    await api('POST', '/api/projects', { name, title, mainFile: fileName, format: 'markdown' })
+    await createProjectApi({ name, title, mainFile: fileName, format: 'markdown' })
     console.log(green(`Created scratch project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -578,7 +600,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await api('POST', '/api/projects', { name, title, format: 'slides' })
+      await createProjectApi({ name, title, format: 'slides' })
       console.log(green(`Created slides project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -644,7 +666,7 @@ async function cmdCreate() {
 
     // Create or update project
     try {
-      await api('POST', '/api/projects', { name, title, format: 'html' })
+      await createProjectApi({ name, title, format: 'html' })
       console.log(green(`Created HTML project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -765,7 +787,7 @@ async function cmdCreate() {
     console.log(dim(`  Main file: ${mainFile}`))
 
     try {
-      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown' })
+      await createProjectApi({ name, title, mainFile, format: 'markdown' })
       console.log(green(`Created markdown project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -831,7 +853,7 @@ async function cmdCreate() {
 
   // Create or update project on server
   try {
-    await api('POST', '/api/projects', { name, title, mainFile })
+    await createProjectApi({ name, title, mainFile })
     console.log(green(`Created project "${name}".`))
   } catch (e) {
     if (e.message.includes('already exists')) {
@@ -1047,7 +1069,7 @@ async function cmdInit() {
   try {
     await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: targetDir })
     if (isMarkdown) {
-      await api('POST', '/api/projects', { name, title, mainFile, format: 'markdown' })
+      await createProjectApi({ name, title, mainFile, format: 'markdown' })
       console.log(green(`Created markdown project "${name}".`))
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
@@ -1065,7 +1087,7 @@ async function cmdInit() {
         expectedRevision: await currentSourceRevision(name),
       })
     } else if (isHtml) {
-      await api('POST', '/api/projects', { name, title, format: 'html' })
+      await createProjectApi({ name, title, format: 'html' })
       console.log(green(`Created HTML project "${name}".`))
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
@@ -1083,7 +1105,7 @@ async function cmdInit() {
         expectedRevision: await currentSourceRevision(name),
       })
     } else {
-      await api('POST', '/api/projects', { name, title, mainFile })
+      await createProjectApi({ name, title, mainFile })
       console.log(green(`Created project "${name}".`))
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,

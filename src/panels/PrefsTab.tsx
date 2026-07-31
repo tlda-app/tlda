@@ -85,16 +85,15 @@ function isRunningBot(agent: any): boolean {
   return !agent?.dead && labelsFor(agent).includes('bot') && status !== 'dead' && status !== 'hibernating'
 }
 
-function useVoiceBackends(): VoiceBackendOption[] {
-  const browserFallback = () => {
-    const speechWindow = typeof window !== 'undefined' ? window as SpeechRecognitionWindow : null
-    const hasBrowserSpeech = !!(speechWindow?.SpeechRecognition || speechWindow?.webkitSpeechRecognition)
-    return [
-      { value: '', label: 'Off', available: true },
-      ...(hasBrowserSpeech ? [{ value: 'chrome', label: 'Browser', available: true }] : []),
-    ]
-  }
-  const [backends, setBackends] = useState<VoiceBackendOption[]>(browserFallback)
+// The backend list is only known once the server has answered. Until then, and
+// when the request fails, the honest state is "not known yet" — NOT a short
+// hardcoded list. A guessed list is indistinguishable from the real answer, so
+// a backend that exists reads as a backend that does not exist: nothing to
+// click and nothing to read. That is the shape of the bug Skip hit with
+// Deepgram. `status` is what lets uncertainty say so instead of disappearing.
+function useVoiceBackends(): { backends: VoiceBackendOption[]; status: 'loading' | 'ready' | 'error' } {
+  const [backends, setBackends] = useState<VoiceBackendOption[]>([])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
 
   useEffect(() => {
     let cancelled = false
@@ -108,14 +107,17 @@ function useVoiceBackends(): VoiceBackendOption[] {
         next = next.filter((b: VoiceBackendOption) => b.value !== 'chrome' || hasBrowserSpeech)
         if (!next.some((b: VoiceBackendOption) => b.value === '')) next.unshift({ value: '', label: 'Off', available: true })
         setBackends(next)
+        setStatus('ready')
       })
       .catch(() => {
-        if (!cancelled) setBackends(browserFallback())
+        if (cancelled) return
+        setBackends([])
+        setStatus('error')
       })
     return () => { cancelled = true }
   }, [])
 
-  return backends
+  return { backends, status }
 }
 
 function formatLastSeen(value?: string): string {
@@ -323,7 +325,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
-  const voiceBackends = useVoiceBackends()
+  const { backends: voiceBackends, status: voiceBackendsStatus } = useVoiceBackends()
   const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
@@ -356,7 +358,30 @@ export function PrefsTab({ query = '' }: { query?: string }) {
 
   const sinkShapes = csvToSet(prefs.voiceSinkShapeTypes)
   const runningBots = agents.filter(isRunningBot)
-  const selectedVoiceBackend = voiceBackends.some(b => b.value === prefs.voiceBackend) ? prefs.voiceBackend : ''
+  // Only demote the stored backend to Off once a real list says it is not
+  // there. While the list is unknown, showing "Off" would report a setting he
+  // did not make, and one touch of the select would then write that lie back.
+  const selectedVoiceBackend = voiceBackendsStatus !== 'ready' || voiceBackends.some(b => b.value === prefs.voiceBackend)
+    ? prefs.voiceBackend
+    : ''
+  // Off and Browser need no server, so they are never gated on one. Skip:
+  // "browser + off should always be available… checking is like a state of a
+  // disabled option, not the whole feature — err, transiently disabled."
+  // A slow server used to put the whole picker into "checking…", which reads as
+  // voice being unavailable when two of its three backends were sitting right
+  // there working.
+  const LOCAL_VOICE_BACKENDS = [
+    { value: '', label: 'Off' },
+    { value: 'chrome', label: 'Browser' },
+  ]
+  const serverVoiceBackends = voiceBackendsStatus === 'ready'
+    ? voiceBackends.filter(b => !LOCAL_VOICE_BACKENDS.some(l => l.value === b.value))
+    : []
+  // Only the server-dependent backends carry the not-yet-known state, and they
+  // carry it as a disabled option rather than as the picker's whole identity.
+  const pendingVoiceBackendLabel = voiceBackendsStatus === 'loading'
+    ? 'Deepgram — checking…'
+    : 'Deepgram — server unreachable'
   const currentDeviceId = getCurrentReadabilityDeviceId()
   const knownReadabilityDevices = Object.entries(prefs.knownDevices as Record<string, DeviceRecord>)
     .sort((a, b) => new Date(b[1]?.lastSeen || 0).getTime() - new Date(a[1]?.lastSeen || 0).getTime())
@@ -569,15 +594,26 @@ export function PrefsTab({ query = '' }: { query?: string }) {
       {sectionVisible('voice') && <CollapsiblePrefsSection
         id="voice"
         title="Voice"
-        summary={voiceBackends.find(b => b.value === selectedVoiceBackend)?.label || 'Off'}
+        summary={(voiceBackendsStatus === 'ready' ? voiceBackends : LOCAL_VOICE_BACKENDS)
+          .find(b => b.value === selectedVoiceBackend)?.label || 'Off'}
         open={prefs.openSections.includes('voice')}
         onToggle={toggleSection}
       >
         <PrefSubsection title="Backend">
           <select value={selectedVoiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
-            {voiceBackends.map(backend => (
+            {/* Off and Browser are always here — they run in the page. The
+                server-dependent ones appear once the list is known, and until
+                then say which kind of not-knowing this is, disabled, without
+                taking the working backends down with them. */}
+            {LOCAL_VOICE_BACKENDS.map(backend => (
               <option key={backend.value || 'off'} value={backend.value}>{backend.label}</option>
             ))}
+            {serverVoiceBackends.map(backend => (
+              <option key={backend.value} value={backend.value}>{backend.label}</option>
+            ))}
+            {voiceBackendsStatus !== 'ready' && (
+              <option value="__pending" disabled>{pendingVoiceBackendLabel}</option>
+            )}
           </select>
         </PrefSubsection>
 

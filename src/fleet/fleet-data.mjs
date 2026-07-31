@@ -513,7 +513,6 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts._tempId) body._tempId = opts._tempId
   if (opts.raw) body._raw = true
   if (opts.attachments) body.attachments = opts.attachments
-  if (opts.cc) body.cc = opts.cc
   if (opts.context) body.context = opts.context
   // The human's preamble is the document they're viewing — stamp it so readers
   // render this message's math with that doc's macros (mirrors how agents stamp
@@ -583,13 +582,13 @@ export function updateEventById(dbId, updates) {
 }
 
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
-export function reconcileOptimistic(tempId, serverEventId, newTo) {
-  // For broadcasts, the optimistic event was injected with `to: <label>` (e.g. "awake").
-  // reconcile() rewrites it to the first concrete recipient so the line transitions
-  // from "Skip → awake" to "Skip → alice" — a delivery confirmation for the first agent.
-  // Broadcasts for the remaining recipients arrive as separate events with their own to_id.
+export function reconcileOptimistic(tempId, serverEventId, recipients) {
+  // The optimistic event was injected with the composer's target LABELS (e.g.
+  // "awake"). reconcile() rewrites them to the concrete recipients the server
+  // resolved, so the line transitions from "Skip → awake" to the agents it
+  // actually reached. One send is one event, so this is the whole recipient set.
   // Idempotent with the WS-echo path: whichever binds the tempId→dbId first wins.
-  const ev = _store.reconcile(tempId, serverEventId, newTo)
+  const ev = _store.reconcile(tempId, serverEventId, recipients)
   if (ev) upsertFleetEvent(ev)
   notify('messages', null)
 }
@@ -1118,12 +1117,14 @@ export function connect() {
           // the next WS message may be the echo, and _dbId must be set
           // before the echo's dedup check runs.
           if (msg.result && msg.result._tempId && Array.isArray(msg.result.event_ids) && msg.result.event_ids.length > 0) {
-            // Server fans out chats over recipients (DNF resolution). Reconcile the optimistic event
-            // with the first event_id; broadcasts for the other event_ids arrive as new events
-            // (dedup is keyed on _dbId, so the first echo is silently absorbed).
-            const firstRecipient = Array.isArray(msg.result.recipients) && msg.result.recipients.length > 0
-              ? msg.result.recipients[0] : null
-            reconcileOptimistic(msg.result._tempId, msg.result.event_ids[0], firstRecipient)
+            // A send is ONE event with the whole recipient set. Bind the
+            // optimistic row to that event id and to the recipients the server
+            // resolved (dedup is keyed on _dbId, so the echo is absorbed).
+            reconcileOptimistic(
+              msg.result._tempId,
+              msg.result.event_ids[0],
+              Array.isArray(msg.result.recipients) ? msg.result.recipients : null,
+            )
           }
           if (msg.error) {
             const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error }

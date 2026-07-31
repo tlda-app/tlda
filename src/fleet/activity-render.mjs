@@ -80,10 +80,6 @@ function semanticOperationKind(toolName) {
   return ''
 }
 
-function isThreadTool(toolName) {
-  return semanticOperationKind(toolName) === 'thread'
-}
-
 function semanticOperationDescriptor(toolName, input, arg, ts) {
   const kind = semanticOperationKind(toolName)
   if (!kind) return null
@@ -137,24 +133,9 @@ function mergeSemanticInspected(host, item) {
   host._semanticMergedCount = (host._semanticMergedCount || 1) + 1
 }
 
-function mergeThreadPrettyResults(current, next) {
-  const currentText = normalizePrettyResult(current).trim()
-  const nextText = normalizePrettyResult(next).trim()
-  if (!currentText) return nextText
-  if (!nextText) return currentText
-  const sep = '\n\n---\n\n'
-  const seen = new Set(currentText.split(sep).map(part => part.trim()).filter(Boolean))
-  const additions = nextText.split(sep).map(part => part.trim()).filter(Boolean).filter(part => !seen.has(part))
-  return additions.length ? `${currentText}${sep}${additions.join(sep)}` : currentText
-}
-
 function mergePrettyResultOntoHost(host, item) {
   if (!item._prettyResult) return
-  if (isThreadTool(host._toolName || item._toolName)) {
-    host._prettyResult = mergeThreadPrettyResults(host._prettyResult, item._prettyResult)
-  } else if (!host._prettyResult) {
-    host._prettyResult = item._prettyResult
-  }
+  if (!host._prettyResult) host._prettyResult = item._prettyResult
 }
 
 function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '') {
@@ -173,22 +154,25 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
     : ''
   const json = esc(JSON.stringify(descriptor))
   const key = esc(descriptor.semanticKey)
-  return `<div class="semantic-chat-operation" data-semantic-key="${key}">
-    <div class="pretty-expand-btn">Open ${kind === 'thread' ? 'thread' : 'search results'}</div>
+  // A thread renders open and has no card button: the read is the content, so
+  // there is nothing to click to see it. Its only control is the floating
+  // collapse the view puts in the left gutter.
+  if (kind === 'thread') {
+    return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
     ${inspectedHtml}
-    <div class="semantic-operation-body" data-semantic-operation="${json}" style="display:none"></div>
+    <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
+  </div>`
+  }
+  return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
+    <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>
+    ${inspectedHtml}
+    <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
   </div>`
 }
 
 function renderPrettyResult(toolName, text, ctx, input, ts, arg = '') {
   text = normalizePrettyResult(text)
   const tool = normalizedToolName(toolName)
-  if (tool.includes('thread')) {
-    return renderThreadResult(text, ctx)
-  }
-  if (tool.includes('search')) {
-    return renderSemanticOperationResult(toolName, text, ctx, input, ts, arg) || renderSearchResult(text, ctx)
-  }
   if (tool.includes('screenshot')) {
     return renderScreenshotResult(text)
   }
@@ -275,171 +259,65 @@ function renderScreenshotResult(text) {
   return `<div class="tool-pretty-result tool-pretty-screenshot"><div class="pretty-result-header" style="opacity:0.5">${esc(label)}</div></div>`
 }
 
-function renderThreadResult(text, ctx) {
-  // Format: "[timestamp] from → to\nmessage\n\n---\n\n[timestamp] from → to\n..."
-  // Parse the optional summary/provenance header before splitting messages.
-  // Leaving it in the first chunk makes the first message miss the row parser.
-  const firstMsg = /(?:^|\n)(\[[^\]\n]+\]\s+)/.exec(text)
-  const headerText = firstMsg && firstMsg.index > 0 ? text.slice(0, firstMsg.index).trim() : ''
-  const bodyText = firstMsg ? text.slice(firstMsg.index).replace(/^\n+/, '') : text
-  // Split on --- separators
-  const msgs = bodyText.split(/\n\n---\n\n/)
-  if (msgs.length <= 1) {
-    return `<div class="tool-pretty-result">${ctx.renderMarkdown ? ctx.renderMarkdown(bodyText || text) : esc(bodyText || text)}</div>`
+const THREAD_FRONT = 3
+const THREAD_TAIL = 5
+
+// One thread row. `msg` is an ordinary message ({ timestamp, from, to, body }),
+// a tool-activity event ({ timestamp, activity }) whose `activity` is a
+// renderActivityGroup item, or an unparsed blob ({ raw }).
+function renderThreadMsg(msg, ctx) {
+  if (msg.activity) {
+    return `<div class="pretty-thread-activity">${renderActivityGroup([msg.activity], ctx)}</div>`
   }
-  const THREAD_FRONT = 3
-  const THREAD_TAIL = 5
-  const THREAD_PREVIEW = THREAD_FRONT + THREAD_TAIL
-  const hasMoreMsgs = msgs.length > THREAD_PREVIEW
-  const parseThreadActivity = (body, from, ts) => {
-    const lines = body.trim().split('\n')
-    const first = lines[0] || ''
-    const m = first.match(/^\[activity(?: #([^\]]+))?\]\s+(.+?)(?:\s+—\s+(.+))?$/)
-    if (!m) return null
-    const [, dbId, rawTool, description] = m
-    let resultIdx = -1
-    for (let i = 1; i < lines.length; i++) {
-      if (/^\s*result:\s*$/.test(lines[i])) { resultIdx = i; break }
-    }
-    const argLines = (resultIdx === -1 ? lines.slice(1) : lines.slice(1, resultIdx))
-      .map(line => line.replace(/^  /, ''))
-    const arg = argLines.join('\n').trim()
-    const prettyResult = resultIdx === -1
-      ? ''
-      : lines.slice(resultIdx + 1).map(line => line.replace(/^    /, '')).join('\n').trim()
-    const toolInput = {}
-    if (arg) {
-      try { Object.assign(toolInput, JSON.parse(arg)) }
-      catch {
-        if (rawTool.toLowerCase() === 'bash') toolInput.command = arg
-        else toolInput.arg = arg
-      }
-    }
-    if (description && !toolInput.description) toolInput.description = description
-    const fleetId = String(from || '').match(/\bfleet:[A-Za-z0-9_-]+\b/)?.[0] || from
-    return {
-      from: fleetId,
-      timestamp: ts,
-      _dbId: dbId || '',
-      _toolName: rawTool,
-      _toolArg: arg.split('\n')[0] || '',
-      _toolInput: toolInput,
-      _toolDetail: description || '',
-      _prettyResult: prettyResult,
-    }
+  if (msg.raw != null) {
+    const rawText = String(msg.raw)
+    return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div></div>`
   }
-  const renderMsg = (msg) => {
-    const headerMatch = msg.match(/^\[([^\]]*)\]\s*(.+?)\s+→\s+(.+?)\n([\s\S]*)$/)
-    if (!headerMatch) return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(msg)) : esc(msg)}</div></div>`
-    const [, ts, from, to, body] = headerMatch
-    const activity = parseThreadActivity(body, from, ts)
-    if (activity) {
-      return `<div class="pretty-thread-activity">${renderActivityGroup([activity], ctx)}</div>`
-    }
-    const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
-    const toCls = ctx.getNickClass ? ctx.getNickClass(to) : 'chat-nick'
-    let shortTs = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')
-    // Extract shadow version hash if present (format: "time @hash")
-    let verHtml = ''
-    const verMatch = shortTs.match(/\s*@([a-f0-9]{7})$/)
-    if (verMatch) {
-      shortTs = shortTs.replace(/\s*@[a-f0-9]{7}$/, '')
-      verHtml = ` <span class="pretty-ver">@${verMatch[1]}</span>`
-    }
-    const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(esc(body.trim())) : esc(body.trim())
-    const isFromUser = from === 'skip' || from === 'Skip'
-    const userClass = isFromUser ? ' from-user' : ''
-    return `<div class="chat-line${userClass}" data-msg-from="${esc(from)}">
+  const from = String(msg.from ?? '')
+  const to = String(msg.to ?? '')
+  const fromCls = ctx.getNickClass ? ctx.getNickClass(from) : 'chat-nick'
+  const toCls = ctx.getNickClass ? ctx.getNickClass(to) : 'chat-nick'
+  let shortTs = String(msg.timestamp ?? '').replace(/^\d+\/\d+\/\d+,?\s*/, '')
+  // Extract shadow version hash if present (format: "time @hash")
+  let verHtml = ''
+  const verMatch = shortTs.match(/\s*@([a-f0-9]{7})$/)
+  if (verMatch) {
+    shortTs = shortTs.replace(/\s*@[a-f0-9]{7}$/, '')
+    verHtml = ` <span class="pretty-ver">@${verMatch[1]}</span>`
+  }
+  const body = String(msg.body ?? '').trim()
+  const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(esc(body)) : esc(body)
+  const isFromUser = from === 'skip' || from === 'Skip'
+  const userClass = isFromUser ? ' from-user' : ''
+  return `<div class="chat-line${userClass}" data-msg-from="${esc(from)}">
       <span class="chat-ts">${esc(shortTs)}${verHtml}</span>
       <span class="chat-nick ${fromCls}">${agentNameHtml(from)}</span>
       <span class="chat-arrow">→</span>
       <span class="chat-nick ${toCls}">${agentNameHtml(to)}</span>
       <div class="pretty-msg-body">${bodyHtml}</div>
     </div>`
-  }
-  // Show first FRONT + gap marker + last TAIL, so both ends are visible.
-  // This lets Skip see the time range of what was actually read.
-  // The gap marker doubles as the expand button — clicking it reveals the hidden middle rows in place.
-  let rows = ''
-  const moreHtml = ''
-  if (hasMoreMsgs) {
-    const frontMsgs = msgs.slice(0, THREAD_FRONT)
-    const tailMsgs = msgs.slice(-THREAD_TAIL)
-    const hiddenCount = msgs.length - THREAD_PREVIEW
-    const hiddenRows = msgs.slice(THREAD_FRONT, msgs.length - THREAD_TAIL).map(renderMsg).join('')
-    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
-      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
-    rows = frontMsgs.map(renderMsg).join('') + gapMarker + tailMsgs.map(renderMsg).join('')
-  } else {
-    rows = msgs.map(renderMsg).join('')
-  }
+}
+
+// The thread visualization: first FRONT + gap marker + last TAIL, so both ends
+// are visible and Skip can see the time range of what was actually read. The
+// gap marker doubles as the expand button, and every hidden row is already
+// here — the caller holds the messages the thread call returned, so expanding
+// reveals the middle instead of another ellipsis.
+export function renderThreadRows(msgs, ctx, headerText = '') {
+  const list = Array.isArray(msgs) ? msgs : []
   const header = headerText ? `<div class="pretty-result-header">${esc(headerText)}</div>` : ''
-  return `<div class="tool-pretty-result tool-pretty-thread">${header}${moreHtml}${rows}</div>`
-}
-
-// A search row's "source" field is "[tag] [tag] <names>" where <names> is either
-// a single agent name or "from → to". Keep the bracket tags verbatim, but run the
-// agent names through the HTML pretty_name primitive.
-function prettySearchSource(source) {
-  const m = source.match(/^((?:\[[^\]]*\]\s*)+)(.*)$/)
-  if (!m) return esc(source)
-  const rest = m[2].trim()
-  if (!rest) return esc(source)
-  const names = rest.split(/\s*→\s*/).map(n => agentNameHtml(n.trim()))
-    .join(' <span class="chat-arrow">→</span> ')
-  return esc(m[1]) + names
-}
-
-function renderSearchResult(text, ctx) {
-  // Format: "N results (X session, Y chat) — index: ...\n\nresult1\n\nresult2\n\n..."
-  // Each result: "timestamp | [source] [role] agent | snippet"
-  const parts = text.split('\n\n')
-  if (parts.length <= 1) {
-    return `<div class="tool-pretty-result">${esc(text)}</div>`
-  }
-  const header = parts[0]
-  const results = parts.slice(1)
-  const SEARCH_FRONT = 3
-  const SEARCH_TAIL = 3
-  const renderRow = (r, globalIdx) => {
-    const pipeMatch = r.match(/^([^|]+)\|([^|]+)\|(.+)$/s)
-    const stripe = globalIdx % 2 === 0 ? 'pretty-row-even' : 'pretty-row-odd'
-    if (pipeMatch) {
-      const ts = pipeMatch[1].trim()
-      const source = pipeMatch[2].trim()
-      const snippet = pipeMatch[3].trim()
-      const highlightedSnippet = esc(snippet).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
-      const tsShort = ts.replace(/^\d+\/\d+\/\d+,?\s*/, '')  // strip date, keep time
-      return `<div class="pretty-search-row ${stripe}" draggable="true" data-ts="${esc(ts)}">
-        <span class="pretty-search-ts" title="${esc(ts)}">${esc(tsShort)}</span>
-        <span class="pretty-search-source">${prettySearchSource(source)}</span>
-        <span class="pretty-search-snippet">${highlightedSnippet}</span>
-      </div>`
-    }
-    const highlighted = esc(r).replace(/\*\*([^*]+)\*\*/g, '<mark>$1</mark>')
-    return `<div class="pretty-search-row ${stripe}">${highlighted}</div>`
-  }
-  // Show first FRONT + gap marker + last TAIL so both ends are visible.
-  // Lets Skip see the timestamp the agent ended at — if the agent stopped early,
-  // the tail timestamps reveal the gap vs. the actual latest message.
-  const hasMore = results.length > SEARCH_FRONT + SEARCH_TAIL
-  let rows = ''
-  if (hasMore) {
-    const hiddenCount = results.length - SEARCH_FRONT - SEARCH_TAIL
-    const tailStart = results.length - SEARCH_TAIL
-    const hiddenRows = results.slice(SEARCH_FRONT, tailStart).map((r, i) => renderRow(r, i + SEARCH_FRONT)).join('')
-    const gapMarker = `<div class="pretty-expand-btn">… ${hiddenCount} more …</div>`
+  let rows
+  if (list.length > THREAD_FRONT + THREAD_TAIL) {
+    const hiddenCount = list.length - THREAD_FRONT - THREAD_TAIL
+    const hiddenRows = list.slice(THREAD_FRONT, list.length - THREAD_TAIL).map(m => renderThreadMsg(m, ctx)).join('')
+    rows = list.slice(0, THREAD_FRONT).map(m => renderThreadMsg(m, ctx)).join('')
+      + `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
       + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
-    rows = results.slice(0, SEARCH_FRONT).map((r, i) => renderRow(r, i)).join('')
-      + gapMarker
-      + results.slice(-SEARCH_TAIL).map((r, i) => renderRow(r, tailStart + i)).join('')
+      + list.slice(-THREAD_TAIL).map(m => renderThreadMsg(m, ctx)).join('')
   } else {
-    rows = results.map((r, i) => renderRow(r, i)).join('')
+    rows = list.map(m => renderThreadMsg(m, ctx)).join('')
   }
-  return `<div class="tool-pretty-result tool-pretty-search">
-    <div class="pretty-result-header">${esc(header)}</div>
-    ${rows}
-  </div>`
+  return `<div class="tool-pretty-result tool-pretty-thread">${header}${rows}</div>`
 }
 
 // --- Tool helpers ---
@@ -988,11 +866,13 @@ export function renderActivityGroup(group, ctx) {
       // For a propose_edit the diff card already shows the change; its result text
       // ("**Proposal proposal-N**…") is only consumed to extract the id above, so
       // don't also render it as a raw result block under the card.
+      // A semantic operation renders from the call, not from the transcript the
+      // agent was handed: the descriptor carries the arguments, so the view
+      // re-reads the messages out of the database and nothing is truncated in
+      // transit.
       const semanticKind = semanticOperationKind(t._toolName)
       const prettyHtml = semanticKind
-        ? (t._prettyResult
-          ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
-          : renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg))
+        ? renderSemanticOperationResult(t._toolName, '', ctx, t._toolInput, t.timestamp, t._toolArg)
         : (t._prettyResult && !isPropose)
           ? renderPrettyResult(t._toolName, t._prettyResult, ctx, t._toolInput, t.timestamp, t._toolArg)
           : ''

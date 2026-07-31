@@ -165,7 +165,7 @@ export function makeEventStore(opts = {}) {
    * to a send arrives). Idempotent with the echo path above: whichever runs
    * first binds, the other no-ops.
    */
-  function reconcile(tempId, dbId, newTo) {
+  function reconcile(tempId, dbId, recipients) {
     const opt = byKey.get('tmp:' + tempId)
     if (!opt) {
       // Reply lost-then-recovered, or echo already bound it. Nothing to do.
@@ -175,7 +175,7 @@ export function makeEventStore(opts = {}) {
     opt._dbId = dbId
     delete opt._tempId
     delete opt._failed
-    if (newTo) opt.to = newTo
+    if (Array.isArray(recipients) && recipients.length) opt.recipients = recipients
 
     // If the broadcast echo already created a db entry, fold into it (keep one).
     const exDb = byKey.get('db:' + dbId)

@@ -28,7 +28,7 @@ import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRender
 // @ts-ignore — vanilla JS module
 import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
+import { renderActivityGroup, renderThreadRows, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
@@ -60,6 +60,7 @@ import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
+import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -95,6 +96,7 @@ import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-i
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
+import { peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
 import { getPref, subscribePref } from '../preferences'
 import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -109,6 +111,10 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
+// Quiet period after the last scroll event before a touch-driven scroll counts
+// as finished. A momentum glide emits scroll events continuously, so this only
+// has to outlast the gap between two of them.
+const TOUCH_SCROLL_SETTLE_MS = 150
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 type TerminalAgent = {
@@ -1805,11 +1811,11 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 
 function addEventParticipantIds(ids: Set<string>, event: any) {
   if (!event) return
-  for (const id of [event.from, event.from_id, event.to, event.to_id, event.agent, event.agent_id]) {
+  for (const id of [event.from, event.from_id, event.agent, event.agent_id]) {
     if (typeof id === 'string' && id) ids.add(id)
   }
-  if (Array.isArray(event.cc)) {
-    for (const id of event.cc) {
+  if (Array.isArray(event.recipients)) {
+    for (const id of event.recipients) {
       if (typeof id === 'string' && id) ids.add(id)
     }
   }
@@ -1861,36 +1867,88 @@ function decodeSemanticOperation(el: HTMLElement): any | null {
 function eventFromSearchResult(result: any) {
   const text = result.text ?? result.snippet ?? ''
   return result.source === 'session'
-    ? { type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: result.agentId, to: null, text, timestamp: result.timestamp, id: result.id }
+    ? { type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: result.agentId, recipients: [], text, timestamp: result.timestamp, id: result.id }
     : { ...result, text, id: result.id }
+}
+
+// `since`/`until` are relative to when the thread call ran, not to now: "2h"
+// meant two hours before the agent read it. Anchor the shorthand on the
+// descriptor's own timestamp so re-reading reproduces the window it asked for.
+function threadWindowTimestamp(value: any, generatedAt: any): string | null {
+  if (value == null || value === '') return null
+  const s = String(value).trim().toLowerCase()
+  const anchorMs = generatedAt ? Date.parse(String(generatedAt)) : NaN
+  const anchor = Number.isFinite(anchorMs) ? anchorMs : Date.now()
+  if (s === 'now') return new Date(anchor).toISOString()
+  const m = s.match(/^-?(\d+(?:\.\d+)?)\s*(m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?)$/)
+  if (m) {
+    const ms = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2][0] as 'm' | 'h' | 'd']
+    return new Date(anchor - parseFloat(m[1]) * ms).toISOString()
+  }
+  const d = new Date(String(value))
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
+// The window a thread card covers. One card can stand for several paged thread
+// calls (mergeSemanticInspected collects their ranges), so it is their union:
+// earliest `since`, latest `until`.
+function threadWindow(descriptor: any) {
+  const merged = Array.isArray(descriptor?.view?._semanticInspectedPages) ? descriptor.view._semanticInspectedPages : []
+  let since: string | null = null
+  let until: string | null = null
+  let pageSize = 0
+  for (const page of [descriptor?.inspected || {}, ...merged]) {
+    const pageSince = threadWindowTimestamp(page?.since ?? page?.after, descriptor?.generatedAt)
+    const pageUntil = threadWindowTimestamp(page?.until ?? page?.before, descriptor?.generatedAt)
+    if (pageSince && (!since || pageSince < since)) since = pageSince
+    if (pageUntil && (!until || pageUntil > until)) until = pageUntil
+    const size = Number(page?.page_size ?? page?.pageSize)
+    if (Number.isFinite(size) && size > pageSize) pageSize = size
+  }
+  return { since, until, pageSize }
+}
+
+// Mirror what `thread` itself asks the server for, so the card renders the call
+// that was made: an agent read is `agent` plus the empty text query (which the
+// server serves agent-only), a filter read is the normalized message filter,
+// and event types stay unset unless the call named them.
+function threadSearchRequest(descriptor: any, agentId: string | null, currentProject?: string) {
+  const view = descriptor?.view || {}
+  const filters: any = { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
+  const requestedTypes = Array.isArray(view.types) ? view.types : []
+  if (requestedTypes.length === 1) filters.eventType = requestedTypes[0]
+  else if (requestedTypes.length > 1) filters.eventTypes = requestedTypes
+  const { since, until, pageSize } = threadWindow(descriptor)
+  if (since) filters.since = since
+  if (until) filters.before = until
+  if (agentId) {
+    filters.agent = agentId
+  } else {
+    const raw = String(view.filter || descriptor?.filterExpression || '')
+    let filterExpression = ''
+    try {
+      const parsed = parseSearchQuery(raw)
+      if (!parsed.query && parsed.filters?.filterExpression) filterExpression = String(parsed.filters.filterExpression)
+    } catch {
+      filterExpression = ''
+    }
+    if (!filterExpression) {
+      // Not a search-query expression — hand the raw filter to the message
+      // grammar, the same second chance `thread` gives it. Throws on a filter
+      // neither grammar accepts, which the view reports.
+      parseMessageFilter(raw)
+      filterExpression = raw
+    }
+    filters.filterExpression = filterExpression
+  }
+  // Both bounds set means the call committed to a finite range, so `thread`
+  // takes the whole window in one shot instead of a page.
+  const limit = since && until ? 10_000 : (pageSize || 200)
+  return { query: '', limit, filters }
 }
 
 function semanticSearchRequest(descriptor: any, limit: number, currentProject?: string, before?: string | null) {
   const view = descriptor?.view || {}
-  const kind = descriptor?.kind
-  if (kind === 'thread') {
-    const filters: any = {
-      eventOnly: true,
-      historyOnly: true,
-      currentProject,
-      throwOnError: true,
-    }
-    const requestedTypes = Array.isArray(view.types) ? view.types : []
-    if (requestedTypes.length) filters.eventTypes = requestedTypes
-    else filters.eventType = view.type || view.eventType || 'chat'
-    if (view.role) filters.role = view.role
-    if (before) filters.before = before
-    const filterExpression = descriptor.filterExpression || view.filterExpression || view.filter || ''
-    if (filterExpression) filters.filterExpression = filterExpression
-    else if (view.agent || view.from || view.to) {
-      const agent = view.agent || view.from || view.to
-      if (String(agent).startsWith('fleet:')) filters.agent = agent
-      else filters.agentQuery = agent
-      if (view.from && !view.agent) filters.fromOnly = true
-    }
-    return { query: '', limit, filters }
-  }
-
   const rawQuery = String(descriptor?.query || descriptor?.arg || view.query || '')
   let query = rawQuery
   let filters: any = {}
@@ -1915,6 +1973,163 @@ function semanticSearchRequest(descriptor: any, limit: number, currentProject?: 
   if (currentProject) filters.currentProject = currentProject
   if (before) filters.before = before
   return { query, limit, filters }
+}
+
+// The nick a thread row shows: the name its sender held at send time, plus the
+// durable fleet id, and `→now:X` when the agent has since rotated — the same
+// provenance tag the thread transcript carried.
+function threadNick(id: any, periodName: any, nowName: any, agentLabel: (id: any) => string) {
+  if (!id) return ''
+  const nm = periodName === undefined ? (agentLabel(id) || null) : periodName
+  let s = `${nm || '(nameless)'} ${id}`
+  if (nowName != null && nowName !== nm) s += ` →now:${nowName}`
+  return s
+}
+
+// Fleet events → the rows renderThreadRows draws. An activity event becomes the
+// item renderActivityGroup already knows how to draw; everything else is one
+// chat line.
+function threadRowsFromEvents(events: any[], agentLabel: (id: any) => string) {
+  return events.map((e: any) => {
+    const timestamp = e.timestamp ? new Date(e.timestamp).toLocaleString() : ''
+    if ((e.event_type || e.type) === 'activity') {
+      return { timestamp, activity: convertChatEvent({ ...e }) }
+    }
+    const body = e.type === 'delegate'
+      ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
+      : e.type === 'task_done'
+        ? `[DONE] ${e.description || ''}`
+        : (e.text || e.message || '')
+    return {
+      timestamp,
+      from: threadNick(e.from_id || e.from, e.fromName, e.fromNameNow, agentLabel),
+      to: threadNick(e.to_id || e.to, e.toName, e.toNameNow, agentLabel),
+      body,
+    }
+  })
+}
+
+// A chat row rebuilds its React roots whenever its own HTML changes, which on a
+// live stream is constantly -- measured at 15 rebuilds of one thread card during
+// a single page load. A thread call is a point-in-time read, so its drawn rows
+// are a function of its semanticKey and nothing else: keep them, and a rebuilt
+// card redraws instead of re-reading the database and re-rendering every
+// message. Bounded because a chat can scroll past many distinct threads.
+const THREAD_HTML_CACHE = new Map<string, string>()
+const THREAD_HTML_CACHE_MAX = 50
+
+function rememberThreadHtml(key: string, html: string) {
+  if (!key) return
+  THREAD_HTML_CACHE.delete(key)
+  THREAD_HTML_CACHE.set(key, html)
+  while (THREAD_HTML_CACHE.size > THREAD_HTML_CACHE_MAX) {
+    THREAD_HTML_CACHE.delete(THREAD_HTML_CACHE.keys().next().value as string)
+  }
+}
+
+// A thread renders open, drawn by the same visualization the transcript used to
+// feed. The messages come out of the database instead, so the gap marker in the
+// middle expands to the actual messages rather than to another ellipsis.
+function ThreadChatOperationView({
+  descriptor,
+  renderCtx,
+  currentProject,
+  host,
+  restoreExpansions,
+}: {
+  descriptor: any
+  renderCtx: any
+  currentProject?: string
+  host: HTMLElement
+  restoreExpansions: (root: HTMLElement) => void
+}) {
+  const semanticKey = String(descriptor?.semanticKey || '')
+  const cached = THREAD_HTML_CACHE.get(semanticKey)
+  const [html, setHtml] = useState(cached ?? '')
+  const [loading, setLoading] = useState(cached == null)
+  const [error, setError] = useState('')
+  const [collapsed, setCollapsed] = useState(false)
+  const [collapseTop, setCollapseTop] = useState('50%')
+  const viewRef = useRef<HTMLDivElement>(null)
+
+  const load = useCallback(async (force = false) => {
+    if (!force && THREAD_HTML_CACHE.has(semanticKey)) return
+    setLoading(true)
+    setError('')
+    try {
+      let agentId: string | null = null
+      const view = descriptor?.view || {}
+      const agentArg = view.agent || (view.task_id
+        ? (await fleetEphemeral('task-by-id', { task_id: view.task_id }))?.task?.agent
+        : null)
+      if (view.task_id && !view.agent && !agentArg) throw new Error(`Task ${view.task_id} not found`)
+      if (agentArg) {
+        const resolved = await fleetEphemeral('resolve-agent', { agent: agentArg })
+        agentId = resolved?.agent?.id || String(agentArg)
+      }
+      const request = threadSearchRequest(descriptor, agentId, currentProject)
+      const fetched = await searchFleet(request.query, request.limit, request.filters)
+      const events = fetched
+        .filter((r: any) => r.source === 'fleet')
+        .sort((a: any, b: any) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
+      const seen = new Set<string>()
+      const deduped = events.filter((e: any) => {
+        const key = e.id != null ? `id:${e.id}` : `${e.timestamp}|${e.from}|${e.type || ''}|${e.text ?? ''}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      // An empty read says so. Rendering the empty wrapper instead leaves a
+      // blank box, which is the thing that reads as broken rather than empty.
+      const drawn = deduped.length
+        ? renderThreadRows(threadRowsFromEvents(deduped, renderCtx.agentLabel), renderCtx)
+        : ''
+      rememberThreadHtml(semanticKey, drawn)
+      setHtml(drawn)
+    } catch (err: any) {
+      setError(err?.message || 'thread read failed')
+    } finally {
+      setLoading(false)
+    }
+  }, [currentProject, descriptor, renderCtx, semanticKey])
+
+  useEffect(() => { void load() }, [load])
+
+  useLayoutEffect(() => {
+    if (viewRef.current && html && !collapsed) restoreExpansions(viewRef.current)
+  }, [html, collapsed, restoreExpansions])
+
+  useLayoutEffect(() => {
+    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
+    if (!scroller) return
+    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [host])
+
+  // The one control on a thread card: it collapses what is already open, and
+  // stays put so the thread can be opened again. It never reads "open thread"
+  // on a thread that has not been collapsed.
+  const toggleCollapsed = useCallback((event: any) => {
+    stopEventPropagation(event)
+    setCollapsed(c => !c)
+  }, [])
+
+  return (
+    <div className="semantic-operation-expanded-shell">
+      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={toggleCollapsed}>{collapsed ? 'Expand' : 'Collapse'}</button>
+      {collapsed ? null : (
+        <div className="semantic-operation-view">
+          {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
+          {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
+          {loading ? <div className="semantic-operation-status">loading...</div> : null}
+          {html ? <div ref={viewRef} dangerouslySetInnerHTML={{ __html: html }} /> : null}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function SemanticChatOperationView({
@@ -1944,14 +2159,7 @@ function SemanticChatOperationView({
     setLoading(true)
     setError('')
     try {
-      let effectiveDescriptor = descriptor
-      const taskId = descriptor?.kind === 'thread' ? descriptor?.view?.task_id : null
-      if (taskId && !descriptor?.view?.agent && !descriptor?.filterExpression) {
-        const taskData = await fleetEphemeral('task-by-id', { task_id: taskId })
-        const taskAgent = taskData?.task?.agent
-        if (!taskAgent) throw new Error(`Task ${taskId} not found`)
-        effectiveDescriptor = { ...descriptor, view: { ...descriptor.view, agent: taskAgent } }
-      }
+      const effectiveDescriptor = descriptor
       const displayLimit = descriptor?.kind === 'search'
         ? (reset ? pageSize : searchVisibleLimitRef.current + pageSize)
         : pageSize
@@ -2118,17 +2326,27 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     const expanded = expandedRowsRef.current
-    el.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, i) => {
-      const key = `${itemKey}:pretty:${i}`
-      if (expanded.has(key) || expanded.has(itemKey)) {
-        moreRows.style.display = ''
-        const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-        if (btn) btn.textContent = 'collapse'
-      }
-    })
+    // A thread's rows arrive after its read resolves, so the same restore runs
+    // again once the view has drawn them.
+    const restorePrettyExpansions = (root: HTMLElement) => {
+      root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, i) => {
+        const key = `${itemKey}:pretty:${i}`
+        if (expanded.has(key) || expanded.has(itemKey)) {
+          moreRows.style.display = ''
+          const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
+          if (btn) btn.textContent = 'collapse'
+        }
+      })
+    }
+    restorePrettyExpansions(el)
     el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
-      const key = `${itemKey}:semantic:${body.closest('.semantic-chat-operation')?.getAttribute('data-semantic-key') || i}`
-      if (expanded.has(key)) {
+      const op = body.closest('.semantic-chat-operation')
+      const key = `${itemKey}:semantic:${op?.getAttribute('data-semantic-key') || i}`
+      // A thread renders open, so it is expanded unless this row was explicitly
+      // collapsed. Restoring only remembered keys would close every thread the
+      // moment its row re-rendered.
+      const startsOpen = op?.classList.contains('semantic-chat-operation-open')
+      if (expanded.has(key) || (startsOpen && body.style.display !== 'none')) {
         body.style.display = ''
         body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
         const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
@@ -2144,13 +2362,21 @@ const ChatMessageRow = memo(function ChatMessageRow({
       if (!descriptor) return
       const root = createRoot(body)
       root.render(
-        <SemanticChatOperationView
-          descriptor={descriptor}
-          renderCtx={semanticRenderCtx}
-          pageSize={semanticOperationPageSize}
-          currentProject={currentProject}
-          host={body}
-        />,
+        descriptor.kind === 'thread'
+          ? <ThreadChatOperationView
+            descriptor={descriptor}
+            renderCtx={semanticRenderCtx}
+            currentProject={currentProject}
+            host={body}
+            restoreExpansions={restorePrettyExpansions}
+          />
+          : <SemanticChatOperationView
+            descriptor={descriptor}
+            renderCtx={semanticRenderCtx}
+            pageSize={semanticOperationPageSize}
+            currentProject={currentProject}
+            host={body}
+          />,
       )
       semanticRoots.push(root)
     })
@@ -2226,6 +2452,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   const frameId = shape.parentId as string | undefined
   const agents = useFleetChatAgents(frameId)
   const agentById = useMemo(() => new Map(agents.map((agent: any) => [agent.id, agent])), [agents])
+  // Derive send targets: unique agents in "to" clauses only. Declared here, above
+  // the render memos, because the chat line renderer needs the panel's default
+  // target set to decide whether a message's recipients are worth printing.
+  const sendTargets = useMemo(() => {
+    return fleetFilterSendTargets(filter, { agents })
+  }, [filterKey, agents])
+  // Keep sendTargets accessible from native event listeners without re-registering
+  const sendTargetsRef = useRef<string[]>([])
+  sendTargetsRef.current = sendTargets
+  const sendTargetsKey = sendTargets.join(' ')
   const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
   // The chat owns its subscription-fed event buffer.
   const chatEventBufferKey = dnfFilter ? `chat:${shape.id}` : null
@@ -2285,7 +2521,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     setTermHoverPinned(false)
     setTermHoverVisible(false)
-    setTermHoverAgentId(null)
+    pickTerminalHover(null)
   }, [liveEvents])
 
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
@@ -2293,8 +2529,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Track whether the user last clicked inside this fleet chat shape.
   // Voice/touch users don't focus the textarea, so activeElement-based checks fail.
   const chatActiveRef = useRef(false)
-  // Keep sendTargets accessible from native event listener without re-registering
-  const sendTargetsRef = useRef<string[]>([])
   // Per-agent escalation state: tracks Esc presses for thinking indicator display.
   // { [agentId]: { level, confirmed } } — level = optimistic (on keypress), confirmed = server ack'd
   const [escalationState, setEscalationState] = useState<Record<string, { level: number; confirmed: number }>>({})
@@ -2662,7 +2896,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const rawItems = useMemo(() => {
     const rawItemsT0 = probe.isEnabled('chat') ? performance.now() : 0
     // Extend ctx with thinking state so renderChatLine can apply queued styling
-    const renderCtx = { ...ctx, thinkingAgents }
+    // sendTargets goes in so a line can tell whether its recipients ARE this
+    // panel's default target — the set whose printing is omitted.
+    const renderCtx = { ...ctx, thinkingAgents, sendTargets }
     const thinkingKey = [...(thinkingAgents?.entries?.() ?? [])]
       .map(([id, since]: any[]) => `${id}:${since}`)
       .join('|')
@@ -2724,10 +2960,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     function isMessageQueued(m: any): boolean {
       const isFromUser = renderCtx.isHumanId?.(m.from)
       if (!isFromUser) return false
-      const targetThinkingSince = thinkingAgents?.get?.(m.to)
-      if (!targetThinkingSince) return false
       const msgTs = m.timestamp ? new Date(m.timestamp).getTime() : 0
-      if (msgTs < targetThinkingSince) return false
+      // One event, many recipients: it is queued while ANY recipient it was
+      // addressed to started thinking before it arrived.
+      const queuedBehind = (m.recipients || []).some((id: string) => {
+        const since = thinkingAgents?.get?.(id)
+        return since && msgTs >= since
+      })
+      if (!queuedBehind) return false
       if (unqueuedAt && msgTs <= unqueuedAt) return false
       return true
     }
@@ -2798,7 +3038,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
-        const targetId = m.to || ''
+        // A kill-session addresses exactly one agent.
+        const targetId = m.recipients?.[0] || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⚡</span><span class="kill-session-text">Session killed: <strong>${esc(targetName)}</strong></span></div>`
@@ -2807,7 +3048,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         flushActivity()
         specialCount++
         const agentObjs: any[] = renderCtx.getAgents()
-        const targetId = m.to || ''
+        // An interrupt addresses exactly one agent.
+        const targetId = m.recipients?.[0] || ''
         const targetAgent = agentObjs.find((a: any) => a.id === targetId)
         const targetName = targetAgent?.friendly_name || targetId.replace('fleet:', '')
         const html = `<div class="kill-session-card"><span class="kill-session-icon">⏸</span><span class="kill-session-text">Interrupted: <strong>${esc(targetName)}</strong></span></div>`
@@ -2845,7 +3087,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           ? renderCtx
           : { ...renderCtx, renderMarkdown: (input: string) => tldaRenderMarkdown(input, lineMacros) }
         const itemKey = m._dbId || m._tempId || `${m.timestamp}:${m.from}`
-        const participantRenderKey = [m.from, m.to, m.agent, m.agent_id]
+        const participantRenderKey = [m.from, ...(m.recipients || []), m.agent, m.agent_id]
           .filter(Boolean)
           .map((id: string) => {
             const agent = agentById.get(id)
@@ -2862,6 +3104,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const cacheKey = [
           contentRenderKey,
           thinkingKey,
+          sendTargetsKey,
           itemKey,
           participantRenderKey,
           renderM.text || '',
@@ -2934,7 +3177,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return items
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, ctx, thinkingAgents, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
+  }, [chatMessages, ctx, thinkingAgents, sendTargetsKey, unqueuedAt, viewingVersion, doc, amendsByOrig, amendView, macrosByDoc, preambleMacros, msgLineCacheLimit, activityGroupCacheLimit, contentRenderKey, agentById])
 
   // Per-item post-processing: applies chip replacement, URL linkification, and
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
@@ -3248,12 +3491,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
     // data-token, so we don't maintain a second hover handler.
     async function onChipOver(e: MouseEvent) {
+      if (dragCoordinator.isActive) return
       const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]') as HTMLElement | null
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
       // Delay to avoid accidental triggers
       await new Promise(r => setTimeout(r, 500))
+      if (dragCoordinator.isActive) return
       if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
@@ -3548,7 +3793,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     function onNickOver(e: MouseEvent) {
-      if (activeChatPillDragRef.current) return
+      // A hover never ends a drag, whoever owns the drag. The coordinator is the
+      // one place that knows a drag is in flight — a per-shape flag only ever
+      // covers drags that start in this chat log, and the pill drags that end up
+      // over a chat mostly start in the agents panel.
+      if (dragCoordinator.isActive) return
       const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
       if (!nick) return
       const agentId = nick.dataset.agentId
@@ -3557,7 +3806,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (skillShowTimerRef.current) clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = setTimeout(() => {
         skillShowTimerRef.current = null
-        if (activeChatPillDragRef.current) return
+        if (dragCoordinator.isActive) return
         if (!nick.matches(':hover')) return
         const r = nick.getBoundingClientRect()
         setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })
@@ -3670,6 +3919,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const isAtBottomRef = useRef(true)
   const userScrolledUpRef = useRef(false)
   const viewportAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  // True while a finger-driven scroll is in flight: from touchdown through the
+  // momentum glide that follows the release, until the scroller goes quiet.
+  const touchScrollActiveRef = useRef(false)
   const prevTailMessageKeyRef = useRef(tailMessageKey)
   const prevTotalHeightRef = useRef(0)
   const settleTailRunRef = useRef(0)
@@ -3681,16 +3933,26 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [atBottom, setAtBottom] = useState(true)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
-  const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
+  // An explicit pick — an icon click or hover, a transcript terminal card, or
+  // /terminal — names an agent this panel's filter need not name, so it is
+  // recorded together with the filter it was made under. termHoverAgentId is
+  // derived from it further down and falls back to the filter's own terminal
+  // target, which is what makes the hover follow the filter instead of holding
+  // whoever happened to be picked first.
+  const [termHoverPick, setTermHoverPick] = useState<{ agentId: string; filterKey: string } | null>(null)
+  // The transcript listeners are attached once per chatLogEl, so they read the
+  // live filter key from a ref rather than a closure that would go stale.
+  const filterKeyRef = useRef(filterKey)
+  filterKeyRef.current = filterKey
+  const pickTerminalHover = useCallback((agentId: string | null) => {
+    setTermHoverPick(agentId ? { agentId, filterKey: filterKeyRef.current } : null)
+  }, [])
   // Which agent the hover is currently PINNED to, readable from the delegated
   // transcript click listener. That listener is attached once per chatLogEl, so
   // it cannot read termHoverPinned/termHoverAgentId from its closure without
   // going stale — the card code it replaces used a functional setState for the
   // same reason.
   const termHoverPinnedIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
-  }, [termHoverPinned, termHoverAgentId])
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
   const captureViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
@@ -3719,6 +3981,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       captureViewportAnchor()
       return
     }
+    // Writing scrollTop cancels an in-flight momentum scroll, so correcting
+    // here kills the glide a flick just started. Hold off while the scroll is
+    // running — the scroll listener recaptures the anchor throughout, and the
+    // next list change after the scroller settles corrects from there.
+    if (touchScrollActiveRef.current) return
     const viewportTop = el.getBoundingClientRect().top
     const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
     const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
@@ -3745,7 +4012,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     captureViewportAnchor()
   }, [allItems, shape.id, captureViewportAnchor])
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearedComposerDraftRef = useRef<string | null>(null)
+  // This panel's composer text, across unmounts. Filter mode unmounts the whole
+  // input area, and a filter pill hovering over the panel opens filter mode on
+  // its own — so the draft has to live outside the textarea. See
+  // stores/composerDraftStore.
+  const composerDraftKey = `chat:${shape.id}`
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
@@ -3915,9 +4186,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       el.scrollTop += e.deltaY
     }
+    // A touch-driven scroll runs past the release: the finger lifts and the
+    // scroller keeps gliding. Treat it as in flight until scroll events stop
+    // arriving, so nothing writes scrollTop and cancels the glide.
+    let fingerDown = false
+    let settleTimer = 0
+    const armSettle = () => {
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(() => {
+        settleTimer = 0
+        if (!fingerDown) touchScrollActiveRef.current = false
+      }, TOUCH_SCROLL_SETTLE_MS)
+    }
+    const onTouchStart = () => {
+      fingerDown = true
+      touchScrollActiveRef.current = true
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = 0 }
+    }
+    const onTouchEnd = () => {
+      fingerDown = false
+      armSettle()
+    }
     let lastTop = el.scrollTop
     let lastHeight = el.scrollHeight
     const handle = () => {
+      if (touchScrollActiveRef.current) armSettle()
       const top = el.scrollTop
       const height = el.scrollHeight
       const gap = el.scrollHeight - top - el.clientHeight
@@ -3971,9 +4264,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
     el.addEventListener('scroll', handle, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true })
     return () => {
       document.removeEventListener('wheel', handleWheelCapture, true)
       el.removeEventListener('scroll', handle)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('touchcancel', onTouchEnd)
+      if (settleTimer) clearTimeout(settleTimer)
+      touchScrollActiveRef.current = false
     }
   }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor])
 
@@ -4019,7 +4320,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         termCardShowTimerRef.current = null
         // Only open if the cursor is still resting on this same card.
         const overId = (document.querySelector('.lc-terminal-card:hover') as HTMLElement | null)?.dataset.agentId
-        if (overId === agentId) { setTermHoverAgentId(agentId); setTermHoverVisible(true) }
+        if (overId === agentId) { pickTerminalHover(agentId); setTermHoverVisible(true) }
       }, 600)
     }
     const onOut = (e: MouseEvent) => {
@@ -4238,9 +4539,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (termHoverPinnedIdRef.current === agentId) {
             setTermHoverPinned(false)
             setTermHoverVisible(false)
-            setTermHoverAgentId(null)
+            pickTerminalHover(null)
           } else {
-            setTermHoverAgentId(agentId)
+            pickTerminalHover(agentId)
             setTermHoverPinned(true)
           }
           return
@@ -4277,7 +4578,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
-        const semanticOp = expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
+        // A gap marker owns the rows next to it. Check that first: inside a
+        // thread card the marker sits within the semantic operation, and
+        // treating it as the card's own toggle would close the thread instead
+        // of revealing its middle.
+        const ownRows = expandBtn.nextElementSibling?.classList.contains('pretty-more-rows')
+          ? expandBtn.nextElementSibling as HTMLElement
+          : null
+        const semanticOp = ownRows ? null : expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
         const semanticBody = semanticOp?.querySelector('.semantic-operation-body') as HTMLElement | null
         if (semanticOp && semanticBody) {
           const wasExpanded = semanticBody.style.display !== 'none'
@@ -4651,12 +4959,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [!!pillOver])
 
-  // Derive send targets: unique agents in "to" clauses only
-  const sendTargets = useMemo(() => {
-    return fleetFilterSendTargets(filter, { agents })
-  }, [filterKey, agents])
-  sendTargetsRef.current = sendTargets
-
   const humanFilterLabel = getHumanName() || getHumanId() || 'user'
   const composerAgentLabel = useMemo(
     () => activeComposerAgentLabel(filter, sendTargets, agents),
@@ -4701,7 +5003,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       type: 'chat',
       event_type: 'chat',
       from: getHumanId(),
-      to: targets[0],
+      // ONE event for the whole send. The optimistic row carries every target,
+      // so a group send is one line here and reconciles against the one real
+      // row the server writes for it.
+      recipients: targets,
       text,
       timestamp: new Date().toISOString(),
       read: false,
@@ -4757,11 +5062,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
       if (refAttachments.length > 0) sendOpts.attachments = refAttachments
       if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
+      // ONE send for the whole target set. `to` is a filter expression, so the
+      // union of the targets is the expression that ORs them — one message, one
+      // event, every recipient, instead of N independent sends nothing rejoins.
       const sendWithRetry = (attempt: number) => {
-        Promise.all(
-          targets.map(t => sendMessage(t, text, sendOpts))
-        ).then((results) => {
-          if (!results.every(r => r.ok)) throw new Error('send failed')
+        sendMessage(targets.join('|'), text, sendOpts).then((result) => {
+          if (!result.ok) throw new Error('send failed')
         }).catch(() => {
           if (attempt < 3) {
             setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
@@ -4789,7 +5095,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     if (targetId) {
       expireClearedComposerDraft()
-      setTermHoverAgentId(targetId)
+      pickTerminalHover(targetId)
       setTermHoverPinned(true)
       ta.value = ''
       ta.style.height = ''
@@ -4967,12 +5273,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     return controls
   }, [sendTargets, agents, resolveTargetAgents, agentDisplayName])
 
+  // The hover's target is derived, not held: an explicit pick wins only while
+  // the filter it was made under is still in force, and otherwise the target is
+  // the filter's own terminal target. So re-filtering the chat re-aims the
+  // terminal hover, the same way it re-aims the composer's send targets.
+  const termHoverAgentId = useMemo(() => {
+    if (termHoverPick && termHoverPick.filterKey === filterKey) return termHoverPick.agentId
+    return terminalComposerControls.find(control => control.agent && !control.unavailableReason)?.agent?.id ?? null
+  }, [termHoverPick, filterKey, terminalComposerControls])
+  useEffect(() => {
+    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
+  }, [termHoverPinned, termHoverAgentId])
+
   void composerDraftVersion
   const composerHasText = !!((inputRef.current as HTMLTextAreaElement | null)?.value)
-  const canUnclearComposer = !composerHasText && !!clearedComposerDraftRef.current
+  const canUnclearComposer = !composerHasText && !!peekClearedComposerDraft(composerDraftKey)
 
   const expireClearedComposerDraft = () => {
-    clearedComposerDraftRef.current = null
+    dropClearedComposerDraft(composerDraftKey)
   }
 
   const resizeComposerTextarea = (ta: HTMLTextAreaElement) => {
@@ -4984,16 +5302,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
     if (ta.value !== '') {
-      clearedComposerDraftRef.current = ta.value
+      stashClearedComposerDraft(composerDraftKey, ta.value)
       ta.value = ''
       ta.style.height = ''
       ta.dispatchEvent(new Event('input', { bubbles: true }))
       ta.focus()
       return
     }
-    const draft = clearedComposerDraftRef.current
+    const draft = takeClearedComposerDraft(composerDraftKey)
     if (!draft) return
-    clearedComposerDraftRef.current = null
     ta.value = draft
     resizeComposerTextarea(ta)
     ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -5036,7 +5353,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the old scoped check existed, kept without the send-target coupling.
   useEffect(() => {
     if (!termHoverAgentId || selectedTerminalHoverAgent) return
-    setTermHoverAgentId(null)
+    pickTerminalHover(null)
     setTermHoverPinned(false)
     setTermHoverVisible(false)
   }, [termHoverAgentId, selectedTerminalHoverAgent])
@@ -5115,10 +5432,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
     _onMain?: boolean
   } | null>(null)
-  const activeChatPillDragRef = useRef(false)
-
+  // Tears down any hover pane already showing when a drag starts here. Whether a
+  // drag is in flight is dragCoordinator.isActive, not a flag of our own.
   const suppressSkillHoverDuringChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = true
     if (skillShowTimerRef.current) {
       clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = null
@@ -5128,10 +5444,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       skillHideTimerRef.current = null
     }
     setSkillHover(null)
-  }, [])
-
-  const releaseSkillHoverAfterChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = false
   }, [])
 
   // Store agent name maps in refs so native listeners can access current values.
@@ -5460,7 +5772,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     function cancelDrag() {
       const drag = dragRef.current
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (drag?.pillId) {
         markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
@@ -5659,7 +5970,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
@@ -5709,7 +6019,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Delete any in-flight pill before releasing its coordinator handlers.
       if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
-  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
+  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
@@ -6110,9 +6420,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (termHoverPinned && termHoverAgentId === agentId) {
                     setTermHoverPinned(false)
                     setTermHoverVisible(false)
-                    setTermHoverAgentId(null)
+                    pickTerminalHover(null)
                   } else {
-                    setTermHoverAgentId(agentId)
+                    pickTerminalHover(agentId)
                     setTermHoverPinned(true)
                     setTermHoverVisible(true)
                   }
@@ -6126,7 +6436,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   // it reads data-composer-rail-label off this button. The bespoke
                   // rail preview state this used to set no longer exists.
                   if (!agent?.id || unavailableReason) return
-                  setTermHoverAgentId(agent.id)
+                  pickTerminalHover(agent.id)
                   setTermHoverVisible(true)
                 }}
                 onMouseLeave={() => {
@@ -6216,6 +6526,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               onDragOver={composerDragOver}
               inputRef={inputRef as any}
               isTouchDevice={_isTouchDevice}
+              draftKey={composerDraftKey}
               placeholder=""
               style={{
                 width: '100%',
