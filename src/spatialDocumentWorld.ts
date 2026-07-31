@@ -1,4 +1,6 @@
 import { createShapeId, type Editor, type TLShape, type TLShapeId } from 'tldraw'
+import { wrapFleetLayoutAroundDocument } from './shapes/fleet-layout-wrap'
+import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
 
 export const SPATIAL_MAP_ZOOM = 0.28
 /** Distance between neighbouring documents. One screen at reading zoom is about
@@ -83,6 +85,66 @@ export function zoomToSpatialWorld(
     y: 48 / z - anchor.y,
     z,
   }, { animation: { duration: 300 } })
+}
+
+function overlapArea(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+) {
+  return Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
+    * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
+}
+
+/** The document you are at: the one your viewport is over, or when the viewport
+ *  is over none of them (the world view), the nearest. */
+export function currentSpatialDocument(
+  editor: Editor,
+  nodes: SpatialDocumentNode[],
+): SpatialDocumentNode | null {
+  const viewport = editor.getViewportPageBounds()
+  let best: SpatialDocumentNode | null = null
+  let bestOverlap = 0
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const node of nodes) {
+    const overlap = overlapArea(viewport, node.bounds)
+    const distance = Math.hypot(
+      viewport.center.x - (node.bounds.x + node.bounds.w / 2),
+      viewport.center.y - (node.bounds.y + node.bounds.h / 2),
+    )
+    if (overlap > bestOverlap || (overlap === bestOverlap && distance < bestDistance)) {
+      best = node
+      bestOverlap = overlap
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+/**
+ * Go to a document. Documents stay where they are; the camera moves, and the
+ * layout you built is carried to the new document by the same rule — every
+ * panel keeps the distance it had from the document's edges.
+ *
+ * The camera translates by the document offset rather than fitting the target,
+ * so the new document arrives at the screen position the old one occupied and
+ * the zoom you were reading at is the zoom you keep. The three moves — panels,
+ * camera, HUD anchor — are one synchronous step; see the wrap handler in
+ * FleetHUD for why the anchor is the third of them.
+ *
+ * Activating the document you are already at makes every offset zero, so this
+ * does nothing. That is the rule applied, not a case it excludes.
+ */
+export function activateSpatialDocument(
+  editor: Editor,
+  source: SpatialDocumentNode,
+  target: SpatialDocumentNode,
+  camera: { x: number; y: number; z: number },
+) {
+  const plan = wrapFleetLayoutAroundDocument(editor, source.bounds, target.bounds)
+  editor.setCamera({ x: camera.x - plan.dx, y: camera.y - plan.dy, z: camera.z })
+  // The anchor compensation exists to hold moved panels in place. Nothing
+  // moved, nothing to compensate.
+  if (plan.moves.length > 0) dispatchFleetHudWrap({ dx: plan.dx, dy: plan.dy })
 }
 
 export function focusSpatialDocument(editor: Editor, node: SpatialDocumentNode) {

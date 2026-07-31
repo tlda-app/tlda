@@ -3,7 +3,8 @@ import { useEditor, useValue, type Editor, type TLCamera } from 'tldraw'
 import { ProjectContext } from '../PanelContext'
 import {
   SPATIAL_MAP_ZOOM,
-  focusSpatialDocument,
+  activateSpatialDocument,
+  currentSpatialDocument,
   spatialWorldBounds,
   spatialWorldDocuments,
   zoomToSpatialWorld,
@@ -16,7 +17,11 @@ import {
 } from '../spatialDocumentWorldUi'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 
-const savedMapCameras = new WeakMap<Editor, TLCamera>()
+/** Where you were when you zoomed out to the map: the camera to come back to,
+ *  and the document your layout is currently wrapped around. Activating from
+ *  the map wraps that layout around the document you pick, so the source is the
+ *  document you left, not whatever the world-view camera happens to sit over. */
+const savedMapCameras = new WeakMap<Editor, { camera: TLCamera; sourceNodeId: string | null }>()
 
 export function ProjectTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
@@ -34,25 +39,32 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   )
 
   const toggleMap = useCallback(() => {
-    const savedCamera = savedMapCameras.get(editor)
-    if (zoom <= SPATIAL_MAP_ZOOM && savedCamera) {
-      editor.setCamera(savedCamera, { animation: { duration: 300 } })
+    const saved = savedMapCameras.get(editor)
+    if (zoom <= SPATIAL_MAP_ZOOM && saved) {
+      editor.setCamera(saved.camera, { animation: { duration: 300 } })
       savedMapCameras.delete(editor)
       return
     }
     const bounds = spatialWorldBounds(nodes)
     if (!bounds) return
-    savedMapCameras.set(editor, editor.getCamera())
+    savedMapCameras.set(editor, {
+      camera: editor.getCamera(),
+      sourceNodeId: currentSpatialDocument(editor, nodes)?.id ?? null,
+    })
     zoomToSpatialWorld(editor, bounds, nodes.find(node => node.documentRef.kind === 'primary'))
   }, [editor, nodes, zoom])
 
   const activate = useCallback((nodeId: string) => {
     const node = nodes.find(candidate => candidate.id === nodeId)
     if (!node) return
+    const saved = savedMapCameras.get(editor)
+    const source = (saved?.sourceNodeId && nodes.find(candidate => candidate.id === saved.sourceNodeId))
+      || currentSpatialDocument(editor, nodes)
+    if (!source) return
     selectSpatialWorldNode(node.id)
     savedMapCameras.delete(editor)
     suppressFleetHudCameraTracking()
-    focusSpatialDocument(editor, node)
+    activateSpatialDocument(editor, source, node, saved?.camera ?? editor.getCamera())
   }, [editor, nodes])
 
   return (

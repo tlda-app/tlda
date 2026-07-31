@@ -35,7 +35,7 @@ import {
 } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
 import { getEditorWMCore } from '../wm/editor-wm'
-import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../wm/editor-host-bridge'
+import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, FLEET_HUD_WRAP_EVENT, setHudEditor, type FleetHudWrapDetail } from '../wm/editor-host-bridge'
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
 import {
@@ -1104,13 +1104,47 @@ export function FleetHUD({
         return next
       })
     }
+    // Wrap: the layout was translated onto a new document and the camera was
+    // translated by the same document offset. Both are already done when this
+    // fires; the HUD's own anchor is the third move. The panels moved dx page
+    // units, which the HUD draws 1:1, while the camera move slides them dx*z
+    // the other way — the anchor absorbs the difference so the panels hold
+    // their screen position over the new document.
+    //
+    // This reads the anchor before the camera-tracking reaction runs: that one
+    // is rAF-deferred and the navigation path dispatches synchronously, so the
+    // value read here is the pre-move anchor and applyHudAnchor rebases the
+    // overlay onto the camera the navigation just set.
+    const onWrap = (e: Event) => {
+      const detail = (e as CustomEvent<FleetHudWrapDetail>)?.detail
+      if (!detail) return
+      // Before the HUD has ever been expanded the anchor exists only as the
+      // saved shape. It has to be shifted too, or opening the HUD after a
+      // navigation reads an anchor that belongs to the document you left.
+      const saved = mainEditor.getShape(getMyAnchorId() as TLShapeId)
+      const savedAnchor = saved?.meta as { panOffset?: number; cameraY?: number } | undefined
+      const base = readHudCameraAnchor()
+        ?? (savedAnchor?.panOffset !== undefined && savedAnchor.cameraY !== undefined
+          ? { panOffset: savedAnchor.panOffset, cameraY: savedAnchor.cameraY }
+          : null)
+      if (!base) return
+      const next = {
+        panOffset: base.panOffset - detail.dx,
+        cameraY: base.cameraY - detail.dy,
+      }
+      applyHudAnchor(next)
+      saveAnchorOffsets(mainEditor, next.panOffset, next.cameraY)
+      setFleetBounds(resetFleetBoundsTracker())
+    }
     window.addEventListener(FLEET_HUD_RESET_EVENT, onReset)
     window.addEventListener(FLEET_HUD_TOGGLE_EVENT, onToggle)
+    window.addEventListener(FLEET_HUD_WRAP_EVENT, onWrap)
     return () => {
       window.removeEventListener(FLEET_HUD_RESET_EVENT, onReset)
       window.removeEventListener(FLEET_HUD_TOGGLE_EVENT, onToggle)
+      window.removeEventListener(FLEET_HUD_WRAP_EVENT, onWrap)
     }
-  }, [mainEditor, recenterHudForBounds, resetFleetBoundsTracker])
+  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds, resetFleetBoundsTracker])
 
   const hudShapePredicate = useMemo(() => {
     const owner = {
