@@ -507,8 +507,13 @@ function markAgentNotAlive(agentId, detail = {}) {
   if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
 }
 
-function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
-  const descendantIds = unroutedNativeDescendantIds(fleetStore.getAliveAgents(), parentAgentId)
+// `getAliveAgents` crosses the store worker, so it hands back a Promise. Passing
+// it unawaited made this throw `(agents || []) is not iterable` — after the
+// kill or hibernate had already succeeded, so the caller was told the action
+// failed when it had happened. todd announced seventy false corrections that way
+// on 7/31.
+async function markUnroutedNativeDescendantsNotAlive(parentAgentId, detail = {}) {
+  const descendantIds = unroutedNativeDescendantIds(await fleetStore.getAliveAgents(), parentAgentId)
   for (const descendantId of descendantIds) {
     markAgentNotAlive(descendantId, {
       ...detail,
@@ -1940,8 +1945,8 @@ async function performSpawnRelay(caller, msg) {
     // label that is unaddressable, reserved, or already occupied by a living
     // agent fails here with the same error shape rather than being applied.
     if (requestedLabels?.length) {
-      const collisions = fleetStore.checkNameAvailable(requestedLabels, { excludeId: pendingAgentId })
-      if (collisions.length) throw new Error(fleetStore.labelCollisionMessage(collisions))
+      const collisions = await fleetStore.checkNameAvailable(requestedLabels, { excludeId: pendingAgentId })
+      if (collisions.length) throw new Error(await fleetStore.labelCollisionMessage(collisions))
     }
     const now = new Date().toISOString()
     const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
@@ -6938,7 +6943,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
-      markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
+      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
       broadcastState()
@@ -6957,7 +6962,7 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
-      markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
+      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'native parent session hibernated' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }

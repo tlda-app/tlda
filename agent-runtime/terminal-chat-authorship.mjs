@@ -29,6 +29,12 @@ const HARNESS_NOTICES = [
   '[Request interrupted by user for tool use]',
 ]
 
+// The wake nudge the server injects when an agent comes back. It is prepended
+// ahead of the 📬 line, so the `📬` prefix test does not see it and every wake
+// landed in Skip's chat authored as him. A prefix list cannot express "this,
+// then anything", so it gets a pattern.
+const RETURN_NOTICE = /^You were away as \S+ for [^\n]*\n/
+
 const LOGIN_PROMPT = /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/
 
 // The harness stores a typed command wrapped in markup. The markup is not what
@@ -69,6 +75,7 @@ export function isMachineAuthoredText(text) {
   if (HARNESS_NOTICES.includes(text)) return true
   if (INJECTED_TEXT_PREFIXES.some(prefix => text.startsWith(prefix))) return true
   if (MACHINE_OUTPUT_PREFIXES.some(prefix => text.startsWith(prefix))) return true
+  if (RETURN_NOTICE.test(text)) return true
   return LOGIN_PROMPT.test(text)
 }
 
