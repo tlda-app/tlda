@@ -7414,7 +7414,7 @@ async function handleFleetWsMessage(ws, msg) {
           // a list the walker built, not undoing a sort the database did.
           // Read state is per recipient, so history has to be resolved for the
           // agent who is looking — otherwise a group message reads as "read" for
-          // everyone as soon as any one recipient opens it.
+          // everyone the moment a single recipient opens it.
           const events = await fleetStore.resolveChatRows(page.events.slice().reverse(), {
             serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
             readerId: humanId || SERVER_OWNER_ID,

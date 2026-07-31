@@ -1805,11 +1805,11 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
 
 function addEventParticipantIds(ids: Set<string>, event: any) {
   if (!event) return
-  for (const id of [event.from, event.from_id, event.to, event.to_id, event.agent, event.agent_id]) {
+  for (const id of [event.from, event.from_id, event.agent, event.agent_id]) {
     if (typeof id === 'string' && id) ids.add(id)
   }
-  if (Array.isArray(event.cc)) {
-    for (const id of event.cc) {
+  if (Array.isArray(event.recipients)) {
+    for (const id of event.recipients) {
       if (typeof id === 'string' && id) ids.add(id)
     }
   }

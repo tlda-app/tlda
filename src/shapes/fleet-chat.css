@@ -654,9 +654,25 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim);
   opacity: calc(0.5 * var(--fleet-chrome-alpha, 1));
 }
+/* Fractional receipt: the ☑ clipped to the share of recipients who have read
+   the message, laid over a ☐ ghost. Same glyphs, same colour and opacity as the
+   single-recipient receipt — only the fill length carries the number. */
+.fleet-chat-shape .chat-receipt.chat-receipt-fraction {
+  position: relative;
+  display: inline-block;
+  color: var(--text-dim);
+  opacity: calc(0.5 * var(--fleet-chrome-alpha, 1));
+}
+.fleet-chat-shape .chat-receipt-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
 
-/* --- CC separator --- */
-.fleet-chat-shape .cc-separator { color: var(--text-dim); }
+/* --- Recipient separator --- */
+.fleet-chat-shape .recipient-separator { color: var(--text-dim); }
 
 /* --- Code in chat --- */
 .fleet-chat-shape .chat-line pre {
