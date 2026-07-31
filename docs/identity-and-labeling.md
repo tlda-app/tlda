@@ -54,20 +54,20 @@ fold over them. A table holding folded results is a cache.
 
 ### Labels: realized
 
-Every labeling action writes a real event. `_insertLabelStateEvent` (`:2285`)
+Every labeling action writes a real event. `_insertLabelStateEvent` (`:2281`)
 stores `metadata.label_state = { labels, operation }` with an actor and a
 timestamp. From that log:
 
-- `_currentLabelStateFromEvents` (`:2311`) computes the current set from the most
+- `_currentLabelStateFromEvents` (`:2307`) computes the current set from the most
   recent such event, reading no table.
-- `_rebuildLabelHistoryForAgent` (`:2340`) folds the whole log in timestamp order
+- `_rebuildLabelHistoryForAgent` (`:2336`) folds the whole log in timestamp order
   into `label_history` spans, and writes `agents.labels` from the last event
-  (`:2357`). **One fold refreshes both caches from one log.**
-- `rebuildLabelHistoryFromEvents` (`:2362`) regenerates the entire table.
+  (`:2353`). **One fold refreshes both caches from one log.**
+- `rebuildLabelHistoryFromEvents` (`:2358`) regenerates the entire table.
 
 **`label_history` and `agents.labels` are caches, and they cannot drift.** There
-are exactly two writers of the column — `mutateAgentLabels` (`:2410`) and
-`upsertAgent` (`:2204`) — and each writes the column, the event and the rebuild
+are exactly two writers of the column — `mutateAgentLabels` (`:2406`) and
+`upsertAgent` (`:2200`) — and each writes the column, the event and the rebuild
 **inside one transaction**. No path writes a label without writing an event.
 
 That this was a decision rather than an accident is recorded in the code itself.
@@ -79,7 +79,7 @@ Say this plainly when asked, because both an agent and a chief read these caches
 as the source in one night and designed a schema on top of that error.
 
 One structural note, not a live defect: `upsertAgent`'s change test compares
-`JSON.stringify(nextLabels)` against the stored **column** (`:2229-2230`), not the
+`JSON.stringify(nextLabels)` against the stored **column** (`:2225-2226`), not the
 last event — a cache consulted to decide whether to append to the log. No current
 path can make the column diverge first, so nothing is wrong today. It is simply
 the one comparison that would perpetuate a divergence rather than repair it.
@@ -93,25 +93,32 @@ closes the open span and opens a new one. Because they are triggers, no write
 path can skip them — the rename route, lineage rotation, the worker and external
 sweep scripts all pass through `agents`.
 
-It also has writers that bypass the column entirely: `_backfillNameHistory`
-(`:2535`), `scripts/merge-history.mjs:51`, `bin/seed-name-history-from-sweep.mjs:46`.
+It also has writers that bypass the column entirely: `_backfillNameHistory`,
+`scripts/merge-history.mjs:51`, `bin/seed-name-history-from-sweep.mjs:46`.
+
+**What the missing event costs, concretely.** A rename is recorded as a *state
+transition* — the span closes and a new one opens — with no actor and no reason.
+So "who renamed this agent, and when, and why" is not answerable today, and no
+amount of reading `name_history` will answer it. Labels have that, because a
+labeling event carries an actor. That is the difference between "names and labels
+ought to be symmetric" and a capability the system does not have.
 
 ### Runtime status: recorded, not folded
 
 `runtime_status_history` (`:1229`) is also not a fold. **Its primary writer is
-`recordRuntimeState` (`:2630-2672`)**, which writes spans directly — closing the
-open span at `:2663` and inserting the new one at `:2667`.
+`recordRuntimeState` (`:2619-2661`)**, which writes spans directly — closing the
+open span at `:2652` and inserting the new one at `:2656`.
 
 | writer | writes |
 | --- | --- |
 | trigger `runtime_status_history_ai` `:1249` | opens `awake` (AI) or `here` (human) at registration |
 | trigger `runtime_status_history_au` `:1263` | on `dead` changing, AI only: closes the span, opens `dead` or `awake` |
-| `recordRuntimeState` `:2630` | **all five statuses**, on every liveness and presence edge |
-| `_backfillRuntimeStatusHistory` `:2588` | startup: seeds missing agents; closes each human's `here` span and opens `away` (`:2619-2622`) |
+| `recordRuntimeState` `:2619` | **all five statuses**, on every liveness and presence edge |
+| `_backfillRuntimeStatusHistory` `:2577` | startup: seeds missing agents; closes each human's `here` span and opens `away` (`:2610-2613`) |
 
 `recordRuntimeState`'s call sites in `server/unified-server.mjs`: `:446` human
 presence edge (`status` passes through unchanged, so `away` is recorded —
-`durableStatus` at `:2644` does not rewrite it for humans); `:480`
+`durableStatus` at `:2633` does not rewrite it for humans); `:480`
 `markAgentAlive` → `awake`; `:500` `markAgentNotAlive` → **`hibernating`**;
 `:2151` startup, server owner → `away`.
 
@@ -189,27 +196,27 @@ grepping the call sites rather than reasoning from the name.
 **It is load-bearing, in three current places**, and the reason is the same
 lexical property as labels, applied to names:
 
-- **`stampNames`** (`server/unified-server.mjs:325-351`) → `nameSpansFor`
-  (`:2495`). Every events and thread reply stamps each row with the friendly name
+- **`stampNames`** (`server/unified-server.mjs:328-351`) → `nameSpansFor`
+  (`:2491`). Every events and thread reply stamps each row with the friendly name
   its sender and recipient **actually held at that row's timestamp**, plus the
   current name when it has since changed. Without the table, thread history would
   display everyone's present name on their old messages. The comment there notes
   the historical name must not be memoized on id alone, because that "would
   collapse an agent's distinct historical names into whichever resolved first and
   silently rewrite history in every thread view."
-- **`filterMembershipSpans`** (`:2696`, and `:2734` for parent names) unions name
+- **`filterMembershipSpans`** (`:2685`, and `:2723` for parent names) unions name
   spans into the flat historical label space, so a filter on a name an agent used
   to hold matches the messages from when it held it.
-- **Agent search** (`:4754`) — a `UNION ALL` branch over `name_history` so
+- **Agent search** (`:4743`) — a `UNION ALL` branch over `name_history` so
   searching an agent's former name still finds it.
 
 Plus `bin/feelings-export.mjs:58` (`nameAt`), and the migration/merge scripts.
 
-**One dead reader, worth deleting.** `nameHistory(fleetId)` (`:2527`, statement at
-`:1411-1413`) has **no caller anywhere** — it is only listed as an exposed method
-in `server/lib/fleet-store-methods.mjs:124`. That is a method and a prepared
-statement maintained for nobody. Deleting it is a small, good piece of work; the
-table itself stays.
+**There was one dead reader, now deleted.** `nameHistory(fleetId)` and its
+prepared statement had no caller anywhere — only an entry in the exposed-methods
+list. Its comment claimed a thread-header provenance trail, which is the trap:
+a comment describing a feature is not evidence the feature calls it. Removed in
+`dae9477ef`. The table itself stays, for the three readers above.
 
 ## The namespace already exists as a projection
 
@@ -221,7 +228,7 @@ no reader special-casing a computed label:
   labels, the status pseudo-label, `human`, `friendly_name` and `id`.
   `filterLabelsForAgent` (`shared/filter-semantics.mjs:33`) wraps it and adds the
   parent id, the parent's current name and the `descendant-of:` chain.
-- **Historical** — `filterMembershipSpans` (`:2683`) unions `name_history`,
+- **Historical** — `filterMembershipSpans` (`:2672`) unions `name_history`,
   `label_history`, `runtime_status_history`, ids, parent names, the
   `descendant-of:` closure and `human` into one span stream.
 
@@ -233,7 +240,7 @@ So a namespace table would not make the namespace exist. What it would add is
 Living-name uniqueness is **`idx_agents_live_name`** (`:900`), a partial unique
 index on `agents(friendly_name) WHERE dead = 0 AND friendly_name IS NOT NULL`. A
 second living holder of a name is unrepresentable. A name frees when its holder
-dies, which is why `findAgent` (`:2790`) resolves a living name with no
+dies, which is why `findAgent` (`:2779`) resolves a living name with no
 disambiguation and still falls back to a dead row for reanimate-by-name.
 
 **Never add a code check beside that index.** It is the enforcement; code looking
@@ -247,7 +254,7 @@ already ran on real rows.
 If a name cannot be rotated it is cleared — the index is partial on
 `friendly_name IS NOT NULL`, so a nameless agent satisfies it and stays alive.
 
-The rest of the rule is enforced in code by `checkNameAvailable` (`:2903`): one
+The rest of the rule is enforced in code by `checkNameAvailable` (`:2892`): one
 gate, one error shape, several reasons — unaddressable syntax, reserved routing
 word (`PSEUDO_LABELS`, `shared/fleet-labels.mjs:28`), agent id, living friendly
 name, and, only when assigning a name, another agent's label.
@@ -270,14 +277,14 @@ U+2028 still store and are unaddressable, because the tokenizer splits on JS
 
 One rule, two code paths, already drifted.
 
-`upsertAgent` (`:2213-2225`) **silently strips** labels colliding with a live
-friendly name — a `console.log`, no error — where `mutateAgentLabels` (`:2425`)
+`upsertAgent` (`:2209-2221`) **silently strips** labels colliding with a live
+friendly name — a `console.log`, no error — where `mutateAgentLabels` (`:2421`)
 throws through `checkNameAvailable`. The stripped set is what reaches the event,
 so the log stays self-consistent; the caller is simply never told.
 
 The strip is also **narrower than the gate it stands in for**. It checks only live
 friendly names — not `PSEUDO_LABELS`, not agent ids, not the addressability
-charset — and `_normalizeCompleteLabels` (`:2272`) only de-dupes and type-checks.
+charset — and `_normalizeCompleteLabels` (`:2268`) only de-dupes and type-checks.
 So these paths can write a label `awake`, or another agent's id, or `a&b`, each of
 which `label()` rejects.
 
@@ -292,7 +299,7 @@ call `upsertAgent` with labels and no gate:
 - WS `update-agent` — `:6736` (gates the *name* at `:6729`, not the labels)
 - `POST /api/set-metadata` — `server/routes/fleet.mjs:864` (re-upserts the whole
   agent, labels included)
-- `importFromStateJson` — `:5065`
+- `importFromStateJson` — `:5054`
 
 **This is a fourth enforcer of the label-vs-living-name rule, and it already
 exists.** Moving enforcement into the schema would not add a fourth mechanism to
@@ -328,9 +335,9 @@ enabling it starts enforcing every latent FK in the schema at once.
 
 **Case sensitivity is inconsistent, and the index is the strict one.** A partial
 unique index on `TEXT` uses `BINARY` collation, so `alpha` and `ALPHA` are two
-different living names to `idx_agents_live_name`. `checkNameAvailable` (`:2903`)
-also compares case-sensitively — but `allocateFreshFriendlyName` (`:3032`) and
-`_friendlyNameUnavailableLower` (`:3011`) compare case-**in**sensitively. The
+different living names to `idx_agents_live_name`. `checkNameAvailable` (`:2892`)
+also compares case-sensitively — but `allocateFreshFriendlyName` (`:3021`) and
+`_friendlyNameUnavailableLower` (`:3000`) compare case-**in**sensitively. The
 namer refuses to mint `ALPHA` beside `alpha`; the index and the gate would both
 permit it. Anything moving this rule must pick one, and picking case-insensitive
 means existing rows may already violate it.
