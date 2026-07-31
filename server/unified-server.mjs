@@ -6394,9 +6394,12 @@ async function handleFleetWsMessage(ws, msg) {
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
     const fromAgent = from ? await fleetStore.findAgent(from) : null
     // No authorization gate here. The fence lives in the MCP layer, which is where
-    // agents act — see the authorization gate section in AGENTS.md. The HTTP twin
-    // at POST /api/tasks/delegate behaves identically; a divergence between the two
-    // is a bug.
+    // agents act — see the authorization gate section in AGENTS.md. The HTTP twin at
+    // POST /api/tasks/delegate is ungated in the same way, so the two agree on who
+    // may re-delegate. They do NOT otherwise agree — the HTTP route sends no wake,
+    // has no operation_id idempotency, and drops notify_at/expires_at and
+    // requires_approval. That divergence is a known bug, not a licence to add a
+    // gate back here.
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
