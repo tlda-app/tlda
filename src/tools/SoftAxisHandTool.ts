@@ -156,10 +156,16 @@ class HandDragging extends StateNode {
     const editor = this.editor
 
     if (this.lockedAxis === 'y') {
-      const velocity = editor.inputs.getPointerVelocity()
-      const speed = Math.min(velocity.len(), 2)
-      if (speed > 0.1) {
-        const direction = new Vec(0, velocity.y).uni()
+      // slideCamera moves speed * direction per ms and clamps speed to 1 px/ms,
+      // so any flick faster than that has to carry the excess in the direction
+      // vector's length. A unit direction capped every release at 1 px/ms —
+      // well under the 3-6 px/ms of a thumb flick — so the glide started
+      // slower than the finger and read as the scroll stopping dead.
+      const vy = editor.inputs.getPointerVelocity().y
+      const pointerSpeed = Math.abs(vy)
+      if (pointerSpeed > 0.1) {
+        const speed = Math.min(pointerSpeed, 1)
+        const direction = new Vec(0, Math.sign(vy) * (pointerSpeed / speed))
         editor.slideCamera({ speed, direction, friction: 0.04 })
       }
     }
