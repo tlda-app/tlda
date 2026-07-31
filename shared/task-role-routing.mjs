@@ -1,3 +1,10 @@
+// The canonical marker pattern — see "The authorization gate is a fence, not a
+// wall" in AGENTS.md. An agent without standing authority over a target obtains
+// it by citing the authorization, here by putting this string in the message.
+// It is deliberately unverified. The friction IS the mechanism: it makes an
+// agent stop and say who authorized this, and that is the whole intent. Do not
+// "harden" it into a permission check, and do not add a second mechanism beside
+// it — extend this one.
 export const LANE_BLOCK_OVERRIDE = 'cross-lane-ok:';
 
 const LANE_PATTERNS = [

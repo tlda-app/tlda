@@ -6319,10 +6319,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (task_id && !existingTask) { error(`task not found: ${task_id}`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
     const fromAgent = from ? await fleetStore.findAgent(from) : null
-    const caller = fromAgent || (from ? { id: from } : null)
-    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
-      error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md. The HTTP twin
+    // at POST /api/tasks/delegate behaves identically; a divergence between the two
+    // is a bug.
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
@@ -6680,11 +6680,10 @@ async function handleFleetWsMessage(ws, msg) {
     const row = await fleetStore.findAgent?.(agentQuery || caller.id)
     if (!row) { error(`agent not found: ${agentQuery || caller.id}`); return }
     const targetLabel = row.friendly_name || row.id
+    // Reported back to the caller, not a gate — see below.
     const self = caller.id === row.id
-    if (!self && !await fleetStore.isDelegatorForAgent?.(caller.id, row.id)) {
-      error(`Cannot set delivery channel for ${targetLabel}: you are not that agent's manager. Delegate them a task first if you mean to take responsibility for their delivery channel, then retry.`)
-      return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md.
     if (channel === 'tmux') {
       const route = resolveRpc('resolve-agent-route', row)
       if (route.via === 'none') { error(route.error); return }
@@ -7147,9 +7146,9 @@ async function handleFleetWsMessage(ws, msg) {
     const caller = await fleetStore.findAgent?.(callerQuery)
     const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
     if (!caller || !target) { error('caller or target not found'); return }
-    if (caller.id !== target.id && !await fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
-      error('not authorized to configure subscriptions for that target'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md. The checks
+    // below are input validation, not authorization, and they stay.
     if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
       error('notification_policy must be immediate, hold, or batch(spec)'); return
     }
@@ -7203,9 +7202,8 @@ async function handleFleetWsMessage(ws, msg) {
     const caller = await fleetStore.findAgent?.(callerQuery)
     const subscription = await fleetStore.getSubscription(subscriptionId)
     if (!caller || !subscription) { error('caller or subscription not found'); return }
-    if (caller.id !== subscription.owner && !await fleetStore.isDelegatorForAgent?.(caller.id, subscription.owner)) {
-      error('not authorized to remove that subscription'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md.
     if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.removeWiretap(subscription.adapter_id)
     await fleetStore.removeSubscription(subscription.subscription_id)
     // Release after the row is gone — the remaining-subscriber check reads the table.

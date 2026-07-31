@@ -991,6 +991,10 @@ function now() {
   return new Date().toISOString();
 }
 
+// This is not an oversight. The authorization gate is a small friction so agents
+// don't casually disturb each other, not a permission system — see "The
+// authorization gate is a fence, not a wall" in AGENTS.md. All this checks is
+// that we know who is calling, so the outbound payload has a `from`.
 function requireManager() {
   if (!activeAgentId()) return 'Cannot identify caller — no session ID detected.';
   return null; // No permission gating — any agent can do anything
@@ -1628,14 +1632,14 @@ export function getFleetTools() {
     // ---- Report Gate ----
     {
       name: 'subscription',
-      description: 'List, create, or remove persisted server-side notification subscriptions.',
+      description: 'List, create, or remove persisted server-side notification subscriptions. Listing is not gated — you may list any agent\'s subscriptions. Creating and removing for another agent is a small coordination fence, not a security boundary.',
       inputSchema: {
         type: 'object',
         properties: {
           operation: { type: 'string', enum: ['list', 'create', 'remove'], description: 'Defaults to list when omitted.' },
           query: { type: 'string', description: 'For create: fleet label expression or "doc:<name>".' },
           policy: { type: 'string', description: 'For create: immediate, batch(spec), or hold. Defaults to immediate.' },
-          target: { type: 'string', description: 'Target agent to configure. Defaults to this agent; cross-target use requires delegator authority.' },
+          target: { type: 'string', description: 'Target agent. Defaults to this agent. Listing another agent is always allowed; creating or removing for one expects authority over it or contact with it.' },
           id: { type: 'number', description: 'For remove: persisted subscription id.' },
         },
       },
@@ -3464,6 +3468,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (args.channel != null) {
         const channel = validateDeliveryChannel(args.channel);
         if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args.channel}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
+        // The fence lives here, in the MCP layer. Same mechanism as delegate and
+        // chat — see the marker pattern in AGENTS.md.
+        if (agent !== activeAgentId()) {
+          const laneBlock = await requireInLaneAction(agent, { action: 'delivery-channel' });
+          if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
+        }
         const data = await mcpFleetTransport.durable('delivery-channel', { caller: activeAgentId(), agent, channel });
         if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
         changes.push(`channel=${channel}`);
@@ -4245,6 +4255,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const operation = args.operation || 'list';
       if (operation === 'create') {
         if (!args.query) return { content: [{ type: 'text', text: 'subscription create requires query.' }], isError: true };
+        // The fence lives here, in the MCP layer, because this is where agents act.
+        // Same mechanism as delegate and chat — see the marker pattern in AGENTS.md.
+        if (args.target && args.target !== activeAgentId()) {
+          const laneBlock = await requireInLaneAction(args.target, { action: 'subscribe', message: args.query });
+          if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
+        }
         const data = await mcpFleetTransport.durable('subscribe', {
           caller: activeAgentId(),
           target: args.target || activeAgentId(),
@@ -4256,6 +4272,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }
       if (operation === 'remove') {
         if (args.id == null) return { content: [{ type: 'text', text: 'subscription remove requires id.' }], isError: true };
+        if (args.target && args.target !== activeAgentId()) {
+          const laneBlock = await requireInLaneAction(args.target, { action: 'unsubscribe' });
+          if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
+        }
         const data = await mcpFleetTransport.durable('unsubscribe', { caller: activeAgentId(), subscription_id: args.id });
         if (data?.error) return { content: [{ type: 'text', text: `subscription remove failed: ${data.error}` }], isError: true };
         return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
