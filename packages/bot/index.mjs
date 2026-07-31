@@ -217,8 +217,18 @@ export function createBot({
     const t = text.trim();
     const addressed = new RegExp(`^${key}\\b[,:]?\\s*`, 'i');
     if (addressed.test(t)) return t.replace(addressed, '').trim();
-    if (data.to_id === id) return t;
+    if (recipientsOf(data).includes(id)) return t;
     return null;
+  }
+
+  // One event, many recipients. A chat addressed to this bot puts its id in the
+  // recipient SET; there is no scalar `to_id` on the envelope any more, so
+  // reading one would leave the bot deaf to every direct message that did not
+  // also open with its name.
+  function recipientsOf(data) {
+    const list = data?.recipients ?? data?.to;
+    if (Array.isArray(list)) return list.filter(Boolean);
+    return list ? [list] : [];
   }
 
   function dispatch(msg) {
@@ -238,7 +248,7 @@ export function createBot({
       return;
     }
     if (!isCanonical()) return;
-    // The server wraps chats in a fleet-event envelope: { event, data: { type, from_id, to_id, text } }.
+    // The server wraps chats in a fleet-event envelope: { event, data: { type, from_id, recipients, text } }.
     if (msg.event === 'filter-event') {
       msg = { event: 'fleet-event', data: msg.data?.event || {} };
     }
@@ -251,7 +261,7 @@ export function createBot({
     const cmd = addressedText(data);
     if (cmd === null) return;
     if (allowSet && !allowSet.has(from)) return; // not authorized to command this bot
-    const context = { text: cmd, from, to: data.to_id, raw: msg, bot: api, reply: (m) => chat(from, m) };
+    const context = { text: cmd, to: recipientsOf(data), from, raw: msg, bot: api, reply: (m) => chat(from, m) };
     fire('command', context);
     if (registry.commands.length || /^help(?:\s|$)/i.test(cmd)) {
       registry.dispatch(cmd, context).catch(error => log('command error:', error.message));

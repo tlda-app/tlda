@@ -51,7 +51,7 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
 
   await login(transport.sockets[0], 'fixture-2')
   transport.sockets[0].event({ event: 'fleet-event', data: {
-    type: 'chat', from_id: 'fleet:user', to_id: 'fleet:fixture', text: 'probe',
+    type: 'chat', from_id: 'fleet:user', recipients: ['fleet:fixture'], text: 'probe',
   } })
   await turn()
   assert.equal(handled, 0)
@@ -61,14 +61,14 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
     changed: [{ id: 'fleet:fixture', friendly_name: 'fixture' }],
   } })
   transport.sockets[0].event({ event: 'filter-event', data: { subId: 'bot-chat-fleet:fixture', event: {
-    type: 'chat', from_id: 'fleet:user', to_id: 'fleet:fixture', text: 'probe',
+    type: 'chat', from_id: 'fleet:user', recipients: ['fleet:fixture'], text: 'probe',
   } } })
   await turn()
   assert.equal(handled, 1)
   assert.equal(messages, 1)
   for (const text of ['help', 'missing']) {
     transport.sockets[0].event({ event: 'fleet-event', data: {
-      type: 'chat', from_id: 'fleet:user', to_id: 'fleet:fixture', text,
+      type: 'chat', from_id: 'fleet:user', recipients: ['fleet:fixture'], text,
     } })
     await turn()
   }
