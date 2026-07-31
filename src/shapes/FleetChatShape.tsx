@@ -2285,7 +2285,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     setTermHoverPinned(false)
     setTermHoverVisible(false)
-    setTermHoverAgentId(null)
+    pickTerminalHover(null)
   }, [liveEvents])
 
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
@@ -3681,16 +3681,26 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [atBottom, setAtBottom] = useState(true)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
-  const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
+  // An explicit pick — an icon click or hover, a transcript terminal card, or
+  // /terminal — names an agent this panel's filter need not name, so it is
+  // recorded together with the filter it was made under. termHoverAgentId is
+  // derived from it further down and falls back to the filter's own terminal
+  // target, which is what makes the hover follow the filter instead of holding
+  // whoever happened to be picked first.
+  const [termHoverPick, setTermHoverPick] = useState<{ agentId: string; filterKey: string } | null>(null)
+  // The transcript listeners are attached once per chatLogEl, so they read the
+  // live filter key from a ref rather than a closure that would go stale.
+  const filterKeyRef = useRef(filterKey)
+  filterKeyRef.current = filterKey
+  const pickTerminalHover = useCallback((agentId: string | null) => {
+    setTermHoverPick(agentId ? { agentId, filterKey: filterKeyRef.current } : null)
+  }, [])
   // Which agent the hover is currently PINNED to, readable from the delegated
   // transcript click listener. That listener is attached once per chatLogEl, so
   // it cannot read termHoverPinned/termHoverAgentId from its closure without
   // going stale — the card code it replaces used a functional setState for the
   // same reason.
   const termHoverPinnedIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
-  }, [termHoverPinned, termHoverAgentId])
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
   const captureViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
@@ -4019,7 +4029,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         termCardShowTimerRef.current = null
         // Only open if the cursor is still resting on this same card.
         const overId = (document.querySelector('.lc-terminal-card:hover') as HTMLElement | null)?.dataset.agentId
-        if (overId === agentId) { setTermHoverAgentId(agentId); setTermHoverVisible(true) }
+        if (overId === agentId) { pickTerminalHover(agentId); setTermHoverVisible(true) }
       }, 600)
     }
     const onOut = (e: MouseEvent) => {
@@ -4238,9 +4248,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (termHoverPinnedIdRef.current === agentId) {
             setTermHoverPinned(false)
             setTermHoverVisible(false)
-            setTermHoverAgentId(null)
+            pickTerminalHover(null)
           } else {
-            setTermHoverAgentId(agentId)
+            pickTerminalHover(agentId)
             setTermHoverPinned(true)
           }
           return
@@ -4789,7 +4799,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     if (targetId) {
       expireClearedComposerDraft()
-      setTermHoverAgentId(targetId)
+      pickTerminalHover(targetId)
       setTermHoverPinned(true)
       ta.value = ''
       ta.style.height = ''
@@ -4967,6 +4977,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     return controls
   }, [sendTargets, agents, resolveTargetAgents, agentDisplayName])
 
+  // The hover's target is derived, not held: an explicit pick wins only while
+  // the filter it was made under is still in force, and otherwise the target is
+  // the filter's own terminal target. So re-filtering the chat re-aims the
+  // terminal hover, the same way it re-aims the composer's send targets.
+  const termHoverAgentId = useMemo(() => {
+    if (termHoverPick && termHoverPick.filterKey === filterKey) return termHoverPick.agentId
+    return terminalComposerControls.find(control => control.agent && !control.unavailableReason)?.agent?.id ?? null
+  }, [termHoverPick, filterKey, terminalComposerControls])
+  useEffect(() => {
+    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
+  }, [termHoverPinned, termHoverAgentId])
+
   void composerDraftVersion
   const composerHasText = !!((inputRef.current as HTMLTextAreaElement | null)?.value)
   const canUnclearComposer = !composerHasText && !!clearedComposerDraftRef.current
@@ -5036,7 +5058,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the old scoped check existed, kept without the send-target coupling.
   useEffect(() => {
     if (!termHoverAgentId || selectedTerminalHoverAgent) return
-    setTermHoverAgentId(null)
+    pickTerminalHover(null)
     setTermHoverPinned(false)
     setTermHoverVisible(false)
   }, [termHoverAgentId, selectedTerminalHoverAgent])
@@ -6110,9 +6132,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (termHoverPinned && termHoverAgentId === agentId) {
                     setTermHoverPinned(false)
                     setTermHoverVisible(false)
-                    setTermHoverAgentId(null)
+                    pickTerminalHover(null)
                   } else {
-                    setTermHoverAgentId(agentId)
+                    pickTerminalHover(agentId)
                     setTermHoverPinned(true)
                     setTermHoverVisible(true)
                   }
@@ -6126,7 +6148,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   // it reads data-composer-rail-label off this button. The bespoke
                   // rail preview state this used to set no longer exists.
                   if (!agent?.id || unavailableReason) return
-                  setTermHoverAgentId(agent.id)
+                  pickTerminalHover(agent.id)
                   setTermHoverVisible(true)
                 }}
                 onMouseLeave={() => {
