@@ -20,6 +20,12 @@ primary_region = "sjc"
   # devices can reach it), so the app runs open INSIDE the tailnet — no per-request
   # token, terminal works tokenless. The tailnet IS the auth (Skip's chosen model).
   TLDA_NO_AUTH = "1"
+  # The Deepgram bridge lives on its own Fly app. Unset, /api/voice/backends
+  # falls back to "does THIS server hold a Deepgram key" — which it no longer
+  # does, so Deepgram silently vanished from the picker with no other symptom.
+  # The comment above that check predicted exactly this. Named here so the
+  # reachability probe runs against the real bridge over Fly's private 6PN.
+  TLDA_VOICE_BRIDGE_URL = "ws://tlda-voice.internal:8180"
   # Fleet chat uploads (markdown chips, attachments) must live on the persistent
   # volume, not /tmp (which the container wipes on restart/redeploy — that wiped
   # markdown-chip files out from under their chips, 404ing the annotation viewer).
