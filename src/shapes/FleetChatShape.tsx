@@ -28,7 +28,7 @@ import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRender
 // @ts-ignore — vanilla JS module
 import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
 // @ts-ignore — vanilla JS module
-import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
+import { renderActivityGroup, renderThreadRows, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
@@ -60,6 +60,7 @@ import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
+import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -1870,32 +1871,84 @@ function eventFromSearchResult(result: any) {
     : { ...result, text, id: result.id }
 }
 
+// `since`/`until` are relative to when the thread call ran, not to now: "2h"
+// meant two hours before the agent read it. Anchor the shorthand on the
+// descriptor's own timestamp so re-reading reproduces the window it asked for.
+function threadWindowTimestamp(value: any, generatedAt: any): string | null {
+  if (value == null || value === '') return null
+  const s = String(value).trim().toLowerCase()
+  const anchorMs = generatedAt ? Date.parse(String(generatedAt)) : NaN
+  const anchor = Number.isFinite(anchorMs) ? anchorMs : Date.now()
+  if (s === 'now') return new Date(anchor).toISOString()
+  const m = s.match(/^-?(\d+(?:\.\d+)?)\s*(m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?)$/)
+  if (m) {
+    const ms = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2][0] as 'm' | 'h' | 'd']
+    return new Date(anchor - parseFloat(m[1]) * ms).toISOString()
+  }
+  const d = new Date(String(value))
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
+// The window a thread card covers. One card can stand for several paged thread
+// calls (mergeSemanticInspected collects their ranges), so it is their union:
+// earliest `since`, latest `until`.
+function threadWindow(descriptor: any) {
+  const merged = Array.isArray(descriptor?.view?._semanticInspectedPages) ? descriptor.view._semanticInspectedPages : []
+  let since: string | null = null
+  let until: string | null = null
+  let pageSize = 0
+  for (const page of [descriptor?.inspected || {}, ...merged]) {
+    const pageSince = threadWindowTimestamp(page?.since ?? page?.after, descriptor?.generatedAt)
+    const pageUntil = threadWindowTimestamp(page?.until ?? page?.before, descriptor?.generatedAt)
+    if (pageSince && (!since || pageSince < since)) since = pageSince
+    if (pageUntil && (!until || pageUntil > until)) until = pageUntil
+    const size = Number(page?.page_size ?? page?.pageSize)
+    if (Number.isFinite(size) && size > pageSize) pageSize = size
+  }
+  return { since, until, pageSize }
+}
+
+// Mirror what `thread` itself asks the server for, so the card renders the call
+// that was made: an agent read is `agent` plus the empty text query (which the
+// server serves agent-only), a filter read is the normalized message filter,
+// and event types stay unset unless the call named them.
+function threadSearchRequest(descriptor: any, agentId: string | null, currentProject?: string) {
+  const view = descriptor?.view || {}
+  const filters: any = { eventOnly: true, historyOnly: true, currentProject, throwOnError: true }
+  const requestedTypes = Array.isArray(view.types) ? view.types : []
+  if (requestedTypes.length === 1) filters.eventType = requestedTypes[0]
+  else if (requestedTypes.length > 1) filters.eventTypes = requestedTypes
+  const { since, until, pageSize } = threadWindow(descriptor)
+  if (since) filters.since = since
+  if (until) filters.before = until
+  if (agentId) {
+    filters.agent = agentId
+  } else {
+    const raw = String(view.filter || descriptor?.filterExpression || '')
+    let filterExpression = ''
+    try {
+      const parsed = parseSearchQuery(raw)
+      if (!parsed.query && parsed.filters?.filterExpression) filterExpression = String(parsed.filters.filterExpression)
+    } catch {
+      filterExpression = ''
+    }
+    if (!filterExpression) {
+      // Not a search-query expression — hand the raw filter to the message
+      // grammar, the same second chance `thread` gives it. Throws on a filter
+      // neither grammar accepts, which the view reports.
+      parseMessageFilter(raw)
+      filterExpression = raw
+    }
+    filters.filterExpression = filterExpression
+  }
+  // Both bounds set means the call committed to a finite range, so `thread`
+  // takes the whole window in one shot instead of a page.
+  const limit = since && until ? 10_000 : (pageSize || 200)
+  return { query: '', limit, filters }
+}
+
 function semanticSearchRequest(descriptor: any, limit: number, currentProject?: string, before?: string | null) {
   const view = descriptor?.view || {}
-  const kind = descriptor?.kind
-  if (kind === 'thread') {
-    const filters: any = {
-      eventOnly: true,
-      historyOnly: true,
-      currentProject,
-      throwOnError: true,
-    }
-    const requestedTypes = Array.isArray(view.types) ? view.types : []
-    if (requestedTypes.length) filters.eventTypes = requestedTypes
-    else filters.eventType = view.type || view.eventType || 'chat'
-    if (view.role) filters.role = view.role
-    if (before) filters.before = before
-    const filterExpression = descriptor.filterExpression || view.filterExpression || view.filter || ''
-    if (filterExpression) filters.filterExpression = filterExpression
-    else if (view.agent || view.from || view.to) {
-      const agent = view.agent || view.from || view.to
-      if (String(agent).startsWith('fleet:')) filters.agent = agent
-      else filters.agentQuery = agent
-      if (view.from && !view.agent) filters.fromOnly = true
-    }
-    return { query: '', limit, filters }
-  }
-
   const rawQuery = String(descriptor?.query || descriptor?.arg || view.query || '')
   let query = rawQuery
   let filters: any = {}
@@ -1920,6 +1973,163 @@ function semanticSearchRequest(descriptor: any, limit: number, currentProject?: 
   if (currentProject) filters.currentProject = currentProject
   if (before) filters.before = before
   return { query, limit, filters }
+}
+
+// The nick a thread row shows: the name its sender held at send time, plus the
+// durable fleet id, and `→now:X` when the agent has since rotated — the same
+// provenance tag the thread transcript carried.
+function threadNick(id: any, periodName: any, nowName: any, agentLabel: (id: any) => string) {
+  if (!id) return ''
+  const nm = periodName === undefined ? (agentLabel(id) || null) : periodName
+  let s = `${nm || '(nameless)'} ${id}`
+  if (nowName != null && nowName !== nm) s += ` →now:${nowName}`
+  return s
+}
+
+// Fleet events → the rows renderThreadRows draws. An activity event becomes the
+// item renderActivityGroup already knows how to draw; everything else is one
+// chat line.
+function threadRowsFromEvents(events: any[], agentLabel: (id: any) => string) {
+  return events.map((e: any) => {
+    const timestamp = e.timestamp ? new Date(e.timestamp).toLocaleString() : ''
+    if ((e.event_type || e.type) === 'activity') {
+      return { timestamp, activity: convertChatEvent({ ...e }) }
+    }
+    const body = e.type === 'delegate'
+      ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
+      : e.type === 'task_done'
+        ? `[DONE] ${e.description || ''}`
+        : (e.text || e.message || '')
+    return {
+      timestamp,
+      from: threadNick(e.from_id || e.from, e.fromName, e.fromNameNow, agentLabel),
+      to: threadNick(e.to_id || e.to, e.toName, e.toNameNow, agentLabel),
+      body,
+    }
+  })
+}
+
+// A chat row rebuilds its React roots whenever its own HTML changes, which on a
+// live stream is constantly -- measured at 15 rebuilds of one thread card during
+// a single page load. A thread call is a point-in-time read, so its drawn rows
+// are a function of its semanticKey and nothing else: keep them, and a rebuilt
+// card redraws instead of re-reading the database and re-rendering every
+// message. Bounded because a chat can scroll past many distinct threads.
+const THREAD_HTML_CACHE = new Map<string, string>()
+const THREAD_HTML_CACHE_MAX = 50
+
+function rememberThreadHtml(key: string, html: string) {
+  if (!key) return
+  THREAD_HTML_CACHE.delete(key)
+  THREAD_HTML_CACHE.set(key, html)
+  while (THREAD_HTML_CACHE.size > THREAD_HTML_CACHE_MAX) {
+    THREAD_HTML_CACHE.delete(THREAD_HTML_CACHE.keys().next().value as string)
+  }
+}
+
+// A thread renders open, drawn by the same visualization the transcript used to
+// feed. The messages come out of the database instead, so the gap marker in the
+// middle expands to the actual messages rather than to another ellipsis.
+function ThreadChatOperationView({
+  descriptor,
+  renderCtx,
+  currentProject,
+  host,
+  restoreExpansions,
+}: {
+  descriptor: any
+  renderCtx: any
+  currentProject?: string
+  host: HTMLElement
+  restoreExpansions: (root: HTMLElement) => void
+}) {
+  const semanticKey = String(descriptor?.semanticKey || '')
+  const cached = THREAD_HTML_CACHE.get(semanticKey)
+  const [html, setHtml] = useState(cached ?? '')
+  const [loading, setLoading] = useState(cached == null)
+  const [error, setError] = useState('')
+  const [collapsed, setCollapsed] = useState(false)
+  const [collapseTop, setCollapseTop] = useState('50%')
+  const viewRef = useRef<HTMLDivElement>(null)
+
+  const load = useCallback(async (force = false) => {
+    if (!force && THREAD_HTML_CACHE.has(semanticKey)) return
+    setLoading(true)
+    setError('')
+    try {
+      let agentId: string | null = null
+      const view = descriptor?.view || {}
+      const agentArg = view.agent || (view.task_id
+        ? (await fleetEphemeral('task-by-id', { task_id: view.task_id }))?.task?.agent
+        : null)
+      if (view.task_id && !view.agent && !agentArg) throw new Error(`Task ${view.task_id} not found`)
+      if (agentArg) {
+        const resolved = await fleetEphemeral('resolve-agent', { agent: agentArg })
+        agentId = resolved?.agent?.id || String(agentArg)
+      }
+      const request = threadSearchRequest(descriptor, agentId, currentProject)
+      const fetched = await searchFleet(request.query, request.limit, request.filters)
+      const events = fetched
+        .filter((r: any) => r.source === 'fleet')
+        .sort((a: any, b: any) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
+      const seen = new Set<string>()
+      const deduped = events.filter((e: any) => {
+        const key = e.id != null ? `id:${e.id}` : `${e.timestamp}|${e.from}|${e.type || ''}|${e.text ?? ''}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      // An empty read says so. Rendering the empty wrapper instead leaves a
+      // blank box, which is the thing that reads as broken rather than empty.
+      const drawn = deduped.length
+        ? renderThreadRows(threadRowsFromEvents(deduped, renderCtx.agentLabel), renderCtx)
+        : ''
+      rememberThreadHtml(semanticKey, drawn)
+      setHtml(drawn)
+    } catch (err: any) {
+      setError(err?.message || 'thread read failed')
+    } finally {
+      setLoading(false)
+    }
+  }, [currentProject, descriptor, renderCtx, semanticKey])
+
+  useEffect(() => { void load() }, [load])
+
+  useLayoutEffect(() => {
+    if (viewRef.current && html && !collapsed) restoreExpansions(viewRef.current)
+  }, [html, collapsed, restoreExpansions])
+
+  useLayoutEffect(() => {
+    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
+    if (!scroller) return
+    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [host])
+
+  // The one control on a thread card: it collapses what is already open, and
+  // stays put so the thread can be opened again. It never reads "open thread"
+  // on a thread that has not been collapsed.
+  const toggleCollapsed = useCallback((event: any) => {
+    stopEventPropagation(event)
+    setCollapsed(c => !c)
+  }, [])
+
+  return (
+    <div className="semantic-operation-expanded-shell">
+      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={toggleCollapsed}>{collapsed ? 'Expand' : 'Collapse'}</button>
+      {collapsed ? null : (
+        <div className="semantic-operation-view">
+          {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
+          {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
+          {loading ? <div className="semantic-operation-status">loading...</div> : null}
+          {html ? <div ref={viewRef} dangerouslySetInnerHTML={{ __html: html }} /> : null}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function SemanticChatOperationView({
@@ -1949,14 +2159,7 @@ function SemanticChatOperationView({
     setLoading(true)
     setError('')
     try {
-      let effectiveDescriptor = descriptor
-      const taskId = descriptor?.kind === 'thread' ? descriptor?.view?.task_id : null
-      if (taskId && !descriptor?.view?.agent && !descriptor?.filterExpression) {
-        const taskData = await fleetEphemeral('task-by-id', { task_id: taskId })
-        const taskAgent = taskData?.task?.agent
-        if (!taskAgent) throw new Error(`Task ${taskId} not found`)
-        effectiveDescriptor = { ...descriptor, view: { ...descriptor.view, agent: taskAgent } }
-      }
+      const effectiveDescriptor = descriptor
       const displayLimit = descriptor?.kind === 'search'
         ? (reset ? pageSize : searchVisibleLimitRef.current + pageSize)
         : pageSize
@@ -2123,14 +2326,19 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     const expanded = expandedRowsRef.current
-    el.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, i) => {
-      const key = `${itemKey}:pretty:${i}`
-      if (expanded.has(key) || expanded.has(itemKey)) {
-        moreRows.style.display = ''
-        const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-        if (btn) btn.textContent = 'collapse'
-      }
-    })
+    // A thread's rows arrive after its read resolves, so the same restore runs
+    // again once the view has drawn them.
+    const restorePrettyExpansions = (root: HTMLElement) => {
+      root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, i) => {
+        const key = `${itemKey}:pretty:${i}`
+        if (expanded.has(key) || expanded.has(itemKey)) {
+          moreRows.style.display = ''
+          const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
+          if (btn) btn.textContent = 'collapse'
+        }
+      })
+    }
+    restorePrettyExpansions(el)
     el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
       const op = body.closest('.semantic-chat-operation')
       const key = `${itemKey}:semantic:${op?.getAttribute('data-semantic-key') || i}`
@@ -2154,13 +2362,21 @@ const ChatMessageRow = memo(function ChatMessageRow({
       if (!descriptor) return
       const root = createRoot(body)
       root.render(
-        <SemanticChatOperationView
-          descriptor={descriptor}
-          renderCtx={semanticRenderCtx}
-          pageSize={semanticOperationPageSize}
-          currentProject={currentProject}
-          host={body}
-        />,
+        descriptor.kind === 'thread'
+          ? <ThreadChatOperationView
+            descriptor={descriptor}
+            renderCtx={semanticRenderCtx}
+            currentProject={currentProject}
+            host={body}
+            restoreExpansions={restorePrettyExpansions}
+          />
+          : <SemanticChatOperationView
+            descriptor={descriptor}
+            renderCtx={semanticRenderCtx}
+            pageSize={semanticOperationPageSize}
+            currentProject={currentProject}
+            host={body}
+          />,
       )
       semanticRoots.push(root)
     })
@@ -4345,7 +4561,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
-        const semanticOp = expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
+        // A gap marker owns the rows next to it. Check that first: inside a
+        // thread card the marker sits within the semantic operation, and
+        // treating it as the card's own toggle would close the thread instead
+        // of revealing its middle.
+        const ownRows = expandBtn.nextElementSibling?.classList.contains('pretty-more-rows')
+          ? expandBtn.nextElementSibling as HTMLElement
+          : null
+        const semanticOp = ownRows ? null : expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
         const semanticBody = semanticOp?.querySelector('.semantic-operation-body') as HTMLElement | null
         if (semanticOp && semanticBody) {
           const wasExpanded = semanticBody.style.display !== 'none'
