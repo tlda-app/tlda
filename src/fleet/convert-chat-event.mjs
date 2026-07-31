@@ -9,7 +9,14 @@ export function convertChatEvent(e) {
   const msg = {
     type,
     from: e.from_id || e.from,
-    to: e.to_id || e.to,
+    // One event, many recipients. A one-recipient message is an array of length
+    // 1; there is no primary recipient.
+    recipients: e.recipients || [],
+    readBy: e.readBy || 0,
+    readers: Array.isArray(e.readers) ? e.readers : [],
+    recipientCount: e.recipientCount != null
+      ? e.recipientCount
+      : (Array.isArray(e.recipients) ? e.recipients.length : 0),
     text: e.text,
     timestamp: e.timestamp,
     read: e.read !== undefined ? e.read : false,

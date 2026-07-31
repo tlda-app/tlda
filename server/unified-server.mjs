@@ -350,19 +350,28 @@ function logWsClose(kind, ws, code, reason) {
 async function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
   const names = await fleetStore.nameSpansFor(
-    rows.flatMap(r => [r.from, r.to, r.agentId]),
+    rows.flatMap(r => [r.from, ...(r.recipients || []), r.agentId]),
   )
+  const nameAt = (id, timestamp) => {
+    const entry = names.get(id)
+    const at = resolveNameAt(entry, timestamp)
+    const current = entry?.current ?? null
+    return { at, now: current !== at ? current : null }
+  }
   const stamp = (r, id, nameKey, nowKey) => {
     if (!id) return
-    const entry = names.get(id)
-    const at = resolveNameAt(entry, r.timestamp)
+    const { at, now } = nameAt(id, r.timestamp)
     r[nameKey] = at
-    const current = entry?.current ?? null
-    if (current !== at) r[nowKey] = current
+    if (now !== null) r[nowKey] = now
   }
   for (const r of rows) {
     stamp(r, r.from, 'fromName', 'fromNameNow')
-    stamp(r, r.to, 'toName', 'toNameNow')
+    // Every recipient keeps its own name-at-time, so a group send renders each
+    // member with the name that member actually held when it was sent — the
+    // same provenance the single recipient had, not a current-name lookup.
+    const recipients = r.recipients || []
+    r.toNames = recipients.map(id => nameAt(id, r.timestamp).at)
+    r.toNamesNow = recipients.map(id => nameAt(id, r.timestamp).now)
     stamp(r, r.agentId, 'agentName', 'agentNameNow')
   }
   return rows
@@ -1422,7 +1431,7 @@ function broadcastEvent(type, data) {
         event_type: data?.type,
         event_id: data?.id || data?.event_id,
         from: data?.from_id || data?.from,
-        to: data?.to_id || data?.to,
+        to: data?.recipients,
       },
     })
   }
@@ -2579,7 +2588,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
     type: 'amend',
     timestamp: ts,
     from: original.from,
-    to: original.to,
+    to: original.recipients,
     text: original.text,
     metadata: meta,
     unread: false,
@@ -2590,7 +2599,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
     type: 'amend',
     timestamp: ts,
     from_id: original.from,
-    to_id: original.to,
+    recipients: original.recipients,
     text: original.text,
     metadata: meta,
   })
@@ -5950,11 +5959,14 @@ async function handleFleetWsMessage(ws, msg) {
       ...(source ? { source } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
     }
-    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${orig.to}`, () => fleetStore.insertEventRecord({
+    // One event per send means an amend now corrects the message every recipient
+    // is reading. Under the old fan-out it bound to the first recipient's copy
+    // and silently left the rest reading the unamended text.
+    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${(orig.recipients || []).join(',')}`, () => fleetStore.insertEventRecord({
       type: 'amend',
       timestamp: ts,
       from,
-      to: orig.to,
+      to: orig.recipients,
       text,
       metadata: meta,
       unread: false,
@@ -5967,7 +5979,7 @@ async function handleFleetWsMessage(ws, msg) {
       type: 'amend',
       timestamp: ts,
       from_id: from,
-      to_id: orig.to,
+      recipients: orig.recipients,
       text,
       metadata: meta,
     })
@@ -5975,7 +5987,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'chat') {
-    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, preambleRef, source } = msg
+    const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, context, preambleRef, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
     const traceId = metadata?.trace_id || msg.trace_id || (msg._tempId ? `chat:${msg._tempId}` : createTraceId('chat'))
     controlPlaneTraces.append({
@@ -6043,8 +6055,6 @@ async function handleFleetWsMessage(ws, msg) {
       touchActivity(from)
     }
     // Resolve CC (still single-string list)
-    let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
-    if (ccResolved && ccResolved.length === 0) ccResolved = null
     // Copy attachments into the persistent upload dir (once for all recipients),
     // the SAME dir /api/upload uses (RESOLVED_UPLOAD_DIR honors TLDA_UPLOAD_DIR).
     // Previously this wrote to an ephemeral container path that Fly wiped on every
@@ -6075,6 +6085,13 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'matched',
       detail: { from, to: rawTo, recipients },
     })
+    // One send is ONE event. Everything that is genuinely per-recipient —
+    // subscription and tap matching, inbox status, delivery decision, wake — is
+    // still decided per recipient here, but it is now recorded as per-recipient
+    // entries on that single event instead of being stamped onto N copies of it.
+    const perRecipient = []
+    const watchRecipients = new Set()
+    const subscriptionDeliveriesAll = []
     for (const to of recipients) {
       // Resolve subscriptions per recipient — tap labels are matched against this `to`.
       const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat') || []
@@ -6106,94 +6123,121 @@ async function handleFleetWsMessage(ws, msg) {
         subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
       }
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
-      const watchRecipients = [...new Set([...(wiretapRecipients || []), ...subscriptionRecipients])]
-      const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
-      let combinedMetadata = {
-        ...(metadata || {}),
-        priority: basePriority,
-        trace_id: traceId,
-        inbox_delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
-        inbox_status: inboxStatus,
-        delivery_channel: deliveryChannel,
-        ...(inboxStatusTag ? { inbox_status_tag: inboxStatusTag } : {}),
-        ...(deliveryDecision.notifyBy ? { notify_by: deliveryDecision.notifyBy } : {}),
-        ...(ccResolved ? { cc: ccResolved } : {}),
-        ...(processedAttachments ? { attachments: processedAttachments } : {}),
-        ...(inline_attachments ? { inline_attachments } : {}),
-        ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
-        ...(watchRecipients.length ? { wiretap_cc: watchRecipients } : {}),
-        ...(subscriptionDeliveries.length ? { subscription_deliveries: subscriptionDeliveries } : {}),
-        ...(outContext ? { context: outContext } : {}),
-        ...(preambleRef ? { preambleRef } : {}),
-        ...(chatReminder ? { chatReminder } : {}),
-        ...(source ? { source } : {}),
-      }
-      if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
+      for (const id of [...(wiretapRecipients || []), ...subscriptionRecipients]) watchRecipients.add(id)
+      subscriptionDeliveriesAll.push(...subscriptionDeliveries)
+      perRecipient.push({
+        to,
+        recipientAgent,
+        nativeNeedsParent,
+        nativeParentId,
+        subscriptionDeliveries,
+        // The delivery facts that used to be scalar metadata keys describing
+        // "the" recipient. One entry per recipient of this one event.
+        entry: {
+          recipient: to,
+          delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
+          status: inboxStatus,
+          statusTag: inboxStatusTag,
+          deliveryChannel,
+          ...(deliveryDecision.notifyBy ? { notifyBy: deliveryDecision.notifyBy } : {}),
+        },
+        deliveryDecision,
+      })
+    }
+
+    const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
+    let combinedMetadata = {
+      ...(metadata || {}),
+      priority: basePriority,
+      trace_id: traceId,
+      recipient_delivery: perRecipient.map(r => r.entry),
+      ...(processedAttachments ? { attachments: processedAttachments } : {}),
+      ...(inline_attachments ? { inline_attachments } : {}),
+      ...(msg._tempId ? { client_temp_id: msg._tempId } : {}),
+      ...(watchRecipients.size ? { wiretap_cc: [...watchRecipients] } : {}),
+      ...(subscriptionDeliveriesAll.length ? { subscription_deliveries: subscriptionDeliveriesAll } : {}),
+      ...(outContext ? { context: outContext } : {}),
+      ...(preambleRef ? { preambleRef } : {}),
+      ...(chatReminder ? { chatReminder } : {}),
+      ...(source ? { source } : {}),
+    }
+    // Attachment refs are already a per-recipient map; every non-human recipient
+    // of this one event gets its own entry.
+    const refRecipients = perRecipient.filter(r => r.recipientAgent && !r.recipientAgent.human).map(r => r.to)
+    if (materializableAttachments.length) {
+      for (const to of refRecipients) {
         combinedMetadata = initializeRecipientRefs(combinedMetadata, to, materializableAttachments, { sourceAgent: from })
       }
-      const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${to} bytes=${text.length}`, () => fleetStore.insertEventRecord({
-        type: 'chat',
-        timestamp: ts,
-        from,
-        to,
-        text,
-        metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
-        unread: true,
-      }, { notify: false }))
-      const eventId = Number(inserted.id)
-      if (nativeNeedsParent) {
-        await fleetStore.createNativeSubagentNotification?.({
-          eventId,
-          parentAgentId: nativeParentId,
-          childAgentId: to,
-          senderAgentId: from,
-          createdAt: ts,
-        })
-      }
-      if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
+    }
+    const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${recipients.join(',')} bytes=${text.length}`, () => fleetStore.insertEventRecord({
+      type: 'chat',
+      timestamp: ts,
+      from,
+      to: recipients,
+      text,
+      metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
+      unread: true,
+    }, { notify: false }))
+    const eventId = Number(inserted.id)
+    for (const r of perRecipient) {
+      if (!r.nativeNeedsParent) continue
+      await fleetStore.createNativeSubagentNotification?.({
+        eventId,
+        parentAgentId: r.nativeParentId,
+        childAgentId: r.to,
+        senderAgentId: from,
+        createdAt: ts,
+      })
+    }
+    if (materializableAttachments.length && refRecipients.length) {
+      for (const to of refRecipients) {
         combinedMetadata = finalizeRecipientRefProvenance(combinedMetadata, {
           recipientId: to,
           eventId,
           attachments: materializableAttachments,
         })
-        await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
       }
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'fleet-store',
-        operation: 'chat.insert',
-        status: 'stored',
-        detail: { event_id: eventId, from, to },
-      })
-      eventIds.push(eventId)
+      await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
+    }
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'fleet-store',
+      operation: 'chat.insert',
+      status: 'stored',
+      detail: { event_id: eventId, from, to: recipients },
+    })
+    eventIds.push(eventId)
+    for (const r of perRecipient) {
       receipts.push({
-        recipient: to,
-        status: inboxStatus,
-        tag: inboxStatusTag,
+        recipient: r.to,
+        status: r.entry.status,
+        tag: r.entry.statusTag,
         priority: basePriority,
-        delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
-        deliveryChannel,
-        wokeRecipient: nativeNeedsParent ? false : deliveryDecision.wokeRecipient,
-        notifyBy: deliveryDecision.notifyBy,
+        delivery: r.entry.delivery,
+        deliveryChannel: r.entry.deliveryChannel,
+        wokeRecipient: r.nativeNeedsParent ? false : r.deliveryDecision.wokeRecipient,
+        notifyBy: r.deliveryDecision.notifyBy,
       })
-      // Echo _tempId on the broadcast so a client whose WS reply was lost during
-      // a hiccup can still bind this echo to its orphaned optimistic entry
-      // (the reply, not the DB row, is what normally carries _tempId).
-      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
-      if (deliveryDecision.delivery === 'notified') {
-        if (nativeNeedsParent) {
+    }
+    // Echo _tempId on the broadcast so a client whose WS reply was lost during
+    // a hiccup can still bind this echo to its orphaned optimistic entry
+    // (the reply, not the DB row, is what normally carries _tempId).
+    insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, recipients, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
+    for (const r of perRecipient) {
+      if (r.deliveryDecision.delivery === 'notified') {
+        if (r.nativeNeedsParent) {
           wakeRequests.push({
-            to: nativeParentId,
-            text: `📬 Message queued for native subagent ${recipientAgent.friendly_name || to}.`,
+            to: r.nativeParentId,
+            text: `📬 Message queued for native subagent ${r.recipientAgent.friendly_name || r.to}.`,
             asker: from,
             traceId,
             source: { sourceEventId: eventId, priority: basePriority },
           })
         } else {
-          wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+          wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
       }
-      for (const subDelivery of subscriptionDeliveries) {
+      for (const subDelivery of r.subscriptionDeliveries) {
         if (subDelivery.delivery === 'notified') {
           const subscriptionStatus = await inboxStatusFor(subDelivery.recipient)
           wakeRequests.push({
@@ -6216,12 +6260,14 @@ async function handleFleetWsMessage(ws, msg) {
       const { materializableAttachments: _materializableAttachments, ...broadcastEv } = ev
       broadcastEvent('fleet-event', broadcastEv)
       if (_materializableAttachments?.length) {
-        queueRecipientMaterialization({
-          eventId: ev.id,
-          recipientId: ev.to_id,
-          sourceAgent: ev.from_id,
-          attachments: _materializableAttachments,
-        })
+        for (const recipientId of ev.recipients || []) {
+          queueRecipientMaterialization({
+            eventId: ev.id,
+            recipientId,
+            sourceAgent: ev.from_id,
+            attachments: _materializableAttachments,
+          })
+        }
       }
     }
     const deliveredAt = Date.parse(ts) || Date.now()
@@ -7319,8 +7365,12 @@ async function handleFleetWsMessage(ws, msg) {
           // Chronological for the panel, which renders oldest at the top. This
           // is the one place the page is turned around, and it is turning around
           // a list the walker built, not undoing a sort the database did.
+          // Read state is per recipient, so history has to be resolved for the
+          // agent who is looking — otherwise a group message reads as "read" for
+          // everyone the moment a single recipient opens it.
           const events = await fleetStore.resolveChatRows(page.events.slice().reverse(), {
             serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
+            readerId: humanId || SERVER_OWNER_ID,
           })
           ws.send(JSON.stringify({ event: 'filter-events', data: {
             subId, events, reason: 'history',

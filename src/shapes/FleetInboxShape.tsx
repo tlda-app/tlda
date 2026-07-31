@@ -436,15 +436,22 @@ function FleetInboxInner({ shape }: { shape: any }) {
     for (const ev of events) {
       if (ev.type !== 'chat') continue
       const from = canonicalFleetParticipantId(ev.from || ev.from_id || ev.agent, agents, myId, myName)
-      const to = canonicalFleetParticipantId(ev.to || ev.to_id, agents, myId, myName)
-      // Determine the non-me party.
-      let partner: string | null = null
-      if (to === myId) partner = from
-      else if (from === myId) partner = to
-      else continue // neither side is me (shouldn't happen given the filter)
-      if (!partner || partner === myId) continue
-      if (!byPartner.has(partner)) byPartner.set(partner, [])
-      byPartner.get(partner)!.push(ev)
+      // A recipient that resolves to no known agent is dropped, not threaded
+      // under a null partner.
+      const recipients = (Array.isArray(ev.recipients) ? ev.recipients : [])
+        .map((id: string) => canonicalFleetParticipantId(id, agents, myId, myName))
+        .filter((id: string | null): id is string => !!id)
+      // Determine the non-me parties. A group message has several, and belongs
+      // in the thread of each of them.
+      let partners: string[] = []
+      if (recipients.includes(myId)) partners = from ? [from] : []
+      else if (from === myId) partners = recipients
+      else continue // no side is me (shouldn't happen given the filter)
+      for (const partner of partners) {
+        if (!partner || partner === myId) continue
+        if (!byPartner.has(partner)) byPartner.set(partner, [])
+        byPartner.get(partner)!.push(ev)
+      }
     }
     const out: Thread[] = []
     for (const [partnerId, msgs] of byPartner) {
@@ -643,7 +650,9 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   const markThreadRead = useCallback((t: Thread) => {
     const unread = t.messages.filter(
-      (e: any) => canonicalFleetParticipantId(e.to || e.to_id, agents, myId, myName) === myId && e.read !== true && (e._dbId || e.id),
+      (e: any) => (Array.isArray(e.recipients) ? e.recipients : [])
+        .some((id: string) => canonicalFleetParticipantId(id, agents, myId, myName) === myId) &&
+        e.read !== true && (e._dbId || e.id),
     )
     for (const e of unread) {
       fleetDurable('mark-event-read', { event_id: e._dbId || e.id, agent: myId }).catch(() => {})
@@ -1182,6 +1191,9 @@ function ConversationView({
   }, [thread.messages.length, scrollToBottom])
 
   const sendTargets = useMemo(() => [thread.friendly], [thread.friendly])
+  // The conversation's default target is its partner, so a line addressed to the
+  // partner prints no recipient — same rule as the chat panel.
+  const lineCtx = useMemo(() => ({ ...ctx, sendTargets }), [ctx, sendTargets])
   const agentNames = useMemo(() => {
     const map: Record<string, string> = { [thread.partnerId]: thread.partnerName }
     if (myId) map[myId] = myName || 'user'
@@ -1280,7 +1292,7 @@ function ConversationView({
       >
         {thread.messages.map((m, i) => {
           const key = m._dbId || m.id || String(i)
-          const lineHtml = renderChatLine(m, ctx)
+          const lineHtml = renderChatLine(m, lineCtx)
           if (!lineHtml) return null
           const mine = m.from === myId
           return (

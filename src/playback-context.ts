@@ -103,7 +103,9 @@ export function getPlaybackChatEvents(
     .filter(e => e.t <= data.currentMs && e.type === 'chat')
     .map(e => ({
       from: e.data.from ?? '',
-      to: e.data.to ?? '',
+      // A recording stores one recipient per chat entry; the renderer takes the
+      // recipient SET, so it is a one-element array here.
+      recipients: e.data.to ? [e.data.to] : [],
       text: e.data.text ?? '',
       timestamp: baseTs + e.t,
       _dbId: `playback:${e.t}:${e.data.from}`,
@@ -116,7 +118,7 @@ export function getPlaybackChatEvents(
       return dnfFilter.some(conj =>
         conj.every(term => {
           const [role, label] = Array.isArray(term) ? term : ['from', term as unknown as string]
-          const target = role === 'from' ? e.from : role === 'to' ? e.to : null
+          const target = role === 'from' ? e.from : role === 'to' ? (e.recipients[0] ?? null) : null
           if (!target) return false
           const lbl = label.toLowerCase()
           return target.toLowerCase().includes(lbl)

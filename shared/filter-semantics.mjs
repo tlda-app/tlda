@@ -76,6 +76,18 @@ function isHumanParticipant(agentId, context) {
     (context.humanName ? agentMatchesLabel(agentId, context.humanName, context) : false)
 }
 
+// The agents an event was addressed to. Group send made this a SET: one event
+// carries every recipient, a one-recipient message is an array of length 1, and
+// there is no primary recipient. `agent`/`agent_id` remains the fallback for
+// events that carry an actor but no explicit recipient (activity), which is what
+// the old scalar `to` resolution did.
+function recipientIds(event) {
+  const ids = Array.isArray(event?.recipients) ? event.recipients.filter(Boolean) : []
+  if (ids.length) return ids
+  const actor = event?.agent || event?.agent_id || null
+  return actor ? [actor] : []
+}
+
 function isDmWithTarget(event, targetLabel, context) {
   if (!event || !targetLabel) return false
   if (event._activity || event.type === 'activity') {
@@ -88,16 +100,17 @@ function isDmWithTarget(event, targetLabel, context) {
     return agentMatchesLabel(actor, targetLabel, context)
   }
   const from = event.from || event.from_id || event.agent
-  const to = event.to || event.to_id || null
+  const recipients = Array.isArray(event.recipients) ? event.recipients.filter(Boolean) : []
   const agent = event.agent || event.agent_id || null
   const fromHuman = isHumanParticipant(from, context)
-  const toHuman = isHumanParticipant(to, context)
+  const toHuman = recipients.some(id => isHumanParticipant(id, context))
   const fromTarget = agentMatchesLabel(from, targetLabel, context)
-  const toTarget = agentMatchesLabel(to, targetLabel, context) || agentMatchesLabel(agent, targetLabel, context)
+  const toTarget = recipients.some(id => agentMatchesLabel(id, targetLabel, context)) ||
+    agentMatchesLabel(agent, targetLabel, context)
 
   if (fromHuman && toTarget) return true
   if (fromTarget && toHuman) return true
-  if (fromTarget && !to) return true
+  if (fromTarget && recipients.length === 0) return true
   return false
 }
 
@@ -115,15 +128,18 @@ function isDmWithTarget(event, targetLabel, context) {
 // counterpart, so it stays a local pre-check rather than a shared leaf.
 function leafNode(token) { return { t: 'lit', v: token } }
 
-function participantId(event, role) {
-  if (role === 'from') return event.from || event.from_id || event.agent || event.agent_id || null
-  return event.to || event.to_id || event.agent || event.agent_id || null
+function senderId(event) {
+  return event.from || event.from_id || event.agent || event.agent_id || null
 }
 
 export function matchesFleetFilter(filter, event, context = {}) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
-  if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
+  // Unaddressed system notice. Tests the explicit recipient set, not
+  // `recipientIds` — the actor fallback there must not make a system notice
+  // look addressed.
+  if ((event.from_id === 'system' || event.from === 'system') &&
+      !(Array.isArray(event.recipients) && event.recipients.length)) return true
   // Accept the store's field names as well as the normalised ones. Events
   // reaching the SERVER come straight off fleet-store (from_id/to_id); events
   // reaching the CLIENT have been through convertChatEvent, which renames them
@@ -133,7 +149,15 @@ export function matchesFleetFilter(filter, event, context = {}) {
   // isDmWithTarget below already read both; this path did not. One file, two
   // conventions.
   const fromLabels = labelSetForParticipant(event.from || event.from_id || event.agent, context)
-  const toLabels = labelSetForParticipant(event.to || event.to_id || event.agent, context)
+  // One event, many recipients: `to:` tests membership in the recipient SET, so
+  // the recipient side of the directional context is the UNION of every
+  // recipient's labels. Testing a single scalar here made a `to:` term match at
+  // most one recipient per event, which silently hid group messages from every
+  // filtered panel and every search.
+  const toLabels = new Set()
+  for (const id of recipientIds(event)) {
+    for (const label of labelSetForParticipant(id, context)) toLabels.add(label)
+  }
   const dirCtx = { fromLabels, toLabels }
   const matchTerm = (term) => {
     if (Array.isArray(term)) {
@@ -147,8 +171,10 @@ export function matchesFleetFilter(filter, event, context = {}) {
       const inTeam = (who) =>
         agentMatchesLabel(who, label, context) ||
         agentMatchesLabel(who, fleetDescendantLabel(label), context)
-      if (role === FLEET_TEAM_FROM_ROLE) return inTeam(participantId(event, 'from'))
-      if (role === FLEET_TEAM_TO_ROLE) return inTeam(participantId(event, 'to'))
+      if (role === FLEET_TEAM_FROM_ROLE) return inTeam(senderId(event))
+      // One event, many recipients: the team is on the recipient side when ANY
+      // recipient is in it.
+      if (role === FLEET_TEAM_TO_ROLE) return recipientIds(event).some(inTeam)
       // [from,x] -> "from:x", [to,x] -> "to:x" leaf for the shared evaluator.
       return evalExprDirectional(leafNode(`${role}:${label}`), dirCtx)
     }

@@ -33,8 +33,8 @@ const authoritative = { agents: [AGENT], ...HUMAN };
 // The same session after that agent hibernates or falls past the page boundary.
 const partial = { agents: [], ...HUMAN };
 
-const fromAgent = { type: 'chat', from: AGENT.id, to: HUMAN.humanId, text: 'hi' };
-const toAgent = { type: 'chat', from: HUMAN.humanId, to: AGENT.id, text: 'hi' };
+const fromAgent = { type: 'chat', from: AGENT.id, recipients: [HUMAN.humanId], text: 'hi' };
+const toAgent = { type: 'chat', from: HUMAN.humanId, recipients: [AGENT.id], text: 'hi' };
 
 test('a name filter matches on the authoritative roster', () => {
   for (const [label, filter, event] of [
@@ -85,17 +85,17 @@ test('history-fetch targets collapse to empty on a partial roster', () => {
 
 // --- store-shaped events, found on live traffic by the liveness counters ---
 
-test('an event carrying from_id/to_id matches the same as one carrying from/to', () => {
+test('an event carrying from_id matches the same as one carrying from', () => {
   // Events reaching the SERVER come straight off fleet-store, which emits
-  // { from_id, to_id }. Events reaching the CLIENT have been through
-  // convertChatEvent, which renames them to { from, to }. matchesFleetFilter
+  // { from_id }. Events reaching the CLIENT have been through
+  // convertChatEvent, which renames it to { from }. matchesFleetFilter
   // read only the normalised pair, so every server-side evaluation resolved an
   // undefined participant and no name term could match: eventsMatched stayed 0
   // across 1,620 live evaluations while the roster was complete.
   //
   // The 27 tests all fed normalised events, so none of them could see it.
-  const normalised = { type: 'chat', from: AGENT.id, to: HUMAN.humanId, text: 'hi' };
-  const storeShaped = { type: 'chat', from_id: AGENT.id, to_id: HUMAN.humanId, text: 'hi' };
+  const normalised = { type: 'chat', from: AGENT.id, recipients: [HUMAN.humanId], text: 'hi' };
+  const storeShaped = { type: 'chat', from_id: AGENT.id, recipients: [HUMAN.humanId], text: 'hi' };
 
   for (const [label, filter] of [
     ['from:', [[['from', 'chief2']]]],

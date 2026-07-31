@@ -17,20 +17,28 @@ function withStore(fn) {
   }
 }
 
+// `to` accepts one id or a list: recipients are rows now, not a column, so a
+// one-recipient event is simply a set of size one.
 function insertEvent(store, event) {
-  store.db.prepare(`
-    INSERT INTO events (type, timestamp, from_id, to_id, text, metadata, task_id, agent_id)
-    VALUES (@type, @timestamp, @from, @to, @text, @metadata, @taskId, @agentId)
+  const info = store.db.prepare(`
+    INSERT INTO events (type, timestamp, from_id, text, metadata, task_id, agent_id)
+    VALUES (@type, @timestamp, @from, @text, @metadata, @taskId, @agentId)
   `).run({
     type: event.type,
     timestamp: event.timestamp,
     from: event.from || null,
-    to: event.to || null,
     text: event.text || '',
     metadata: event.metadata ? JSON.stringify(event.metadata) : null,
     taskId: event.taskId || null,
     agentId: event.agentId || null,
   });
+  const recipients = (Array.isArray(event.to) ? event.to : [event.to]).filter(Boolean);
+  for (const agentId of recipients) {
+    store.db.prepare(`
+      INSERT OR IGNORE INTO recipients (event_id, agent_id, timestamp, read)
+      VALUES (?, ?, ?, 0)
+    `).run(info.lastInsertRowid, agentId, event.timestamp);
+  }
 }
 
 function insertSessionEntry(store, entry) {
@@ -189,7 +197,7 @@ test('filtered event search is a non-empty subset of unfiltered matching events'
   assert.equal(fromSkip.length, 2);
   assert.ok(fromSkip.every(row => row.from === 'fleet:skip' && unfilteredKeys.has(row.id)));
   assert.equal(involvingApps.length, 3);
-  assert.ok(involvingApps.every(row => (row.from === 'fleet:apps' || row.to === 'fleet:apps' || row.agentId === 'fleet:apps') && unfilteredKeys.has(row.id)));
+  assert.ok(involvingApps.every(row => (row.from === 'fleet:apps' || (row.recipients || []).includes('fleet:apps') || row.agentId === 'fleet:apps') && unfilteredKeys.has(row.id)));
 }));
 
 test('from-filtered event search finds a known sender even when global candidates are saturated', () => withStore(store => {
@@ -241,7 +249,7 @@ test('to-filtered and agent-filtered event search apply filters before the FTS c
   const agentFiltered = store.searchAll('timer', { agent: 'fleet:skip', limit: 10 });
 
   assert.equal(toFiltered.length, 1);
-  assert.equal(toFiltered[0].to, 'fleet:apps');
+  assert.deepEqual(toFiltered[0].recipients, ['fleet:apps']);
   assert.equal(agentFiltered.length, 1);
   assert.equal(agentFiltered[0].from, 'fleet:skip');
 }));
@@ -344,7 +352,7 @@ test('startup leaves obsolete notification cleanup off the blocking boot path', 
 
 test('search query plans do not sort the full matched event set', () => withStore(store => {
   const eventPlan = store.db.prepare(`EXPLAIN QUERY PLAN
-    SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+    SELECT e.id, e.type, e.timestamp, e.from_id as "from", (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json", e.text, e.metadata, e.agent_id,
            snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet, f.fts_rank
     FROM (
       SELECT rowid, rank AS fts_rank
@@ -359,7 +367,7 @@ test('search query plans do not sort the full matched event set', () => withStor
   `).all('"the" OR "daemon"', 5000, 50).map(row => row.detail);
 
   const activityPlan = store.db.prepare(`EXPLAIN QUERY PLAN
-    SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+    SELECT e.id, e.type, e.timestamp, e.from_id as "from", (SELECT json_group_array(agent_id) FROM recipients WHERE event_id = e.id) as "to_json", e.text, e.metadata, e.agent_id,
            snippet(activity_events_fts, 0, '<<', '>>', '...', 40) as snippet, f.fts_rank
     FROM (
       SELECT rowid, rank AS fts_rank

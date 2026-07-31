@@ -104,8 +104,8 @@ test('a deliberately slow FTS query does not block the server event loop', async
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
   const insert = store.db.prepare(`
-    INSERT INTO events (type, timestamp, from_id, to_id, text)
-    VALUES ('chat', ?, 'fleet:test', 'fleet:owner', ?)
+    INSERT INTO events (type, timestamp, from_id, text)
+    VALUES ('chat', ?, 'fleet:test', ?)
   `)
   const commonText = `needle ${'common search corpus '.repeat(20)}`
   store.db.transaction(() => {
