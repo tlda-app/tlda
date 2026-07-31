@@ -14,6 +14,8 @@ import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
 import { PcmBacklog, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
+import { agentKeytermNames } from './voice-keyterms.mjs'
+import { getFleetAgents } from './fleet/fleet-data.ts'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -837,6 +839,13 @@ function hideDontSpeak() {
 // The `start` message carries the user-tunable conservation params (Preferences →
 // fleet_prefs) so Skip can adjust the feel from the panel without a rebuild; the
 // bridge applies them per-connection (falling back to its own defaults).
+//
+// It also carries the current agent names as Deepgram keyterms. The roster is
+// read fresh on every `start`, and `start` is what makes the bridge dial
+// Deepgram, so each upstream connection is primed with the roster as it stood at
+// that moment. Agents minted mid-connection are not boosted until the next
+// connect — the bridge redials on idle/resume, so the set refreshes on its own
+// without anyone restarting voice.
 function dgStartMsg() {
   return JSON.stringify({
     type: 'start',
@@ -846,6 +855,7 @@ function dgStartMsg() {
     // Deepgram recognition-window params (applied via the bridge's voiceParams hook).
     endpointing: getPref('voice-endpointing'),
     utterance_end_ms: getPref('voice-utterance-end-ms'),
+    keyterms: agentKeytermNames(getFleetAgents()),
   })
 }
 
