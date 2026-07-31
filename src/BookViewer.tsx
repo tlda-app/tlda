@@ -12,6 +12,7 @@ import { createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import type { SvgDocument } from './loaders/types'
+import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 
 interface BookViewerProps {
   bookName: string
@@ -31,7 +32,7 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
 
     try {
       let doc: SvgDocument
-      if (member.format === 'html' || member.format === 'markdown') {
+      if (HTML_PAGE_FORMATS.has(member.format || '')) {
         doc = await loadHtmlDocument(member.key, member.basePath)
       } else {
         // SVG: create layout immediately, pages fetched async after editor mounts

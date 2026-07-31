@@ -7,6 +7,7 @@ import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
 import { STORE_HTTP } from './activeConfig'
+import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
@@ -68,7 +69,9 @@ interface DocConfig {
   name: string
   pages: number
   basePath: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides' | 'markdown'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'book' | 'slides' | 'markdown' | 'qmd'
+  // Set by the qmd builder only — see viewFormat() in shared/document-formats.mjs.
+  renderedFormat?: 'html' | 'slides'
   sourceDoc?: string
   members?: string[]
   buildStatus?: string
@@ -319,13 +322,17 @@ function App() {
         : `${import.meta.env.BASE_URL || '/'}${config.basePath.startsWith('/') ? config.basePath.slice(1) : config.basePath}`
 
       let document
-      if (config.format === 'diff') {
+      // A .qmd is the one project whose pages are not the format that built
+      // them: quarto renders it to a scrolling document or to a reveal deck.
+      // viewFormat() reads which the build produced.
+      const shownAs = viewFormat(config)
+      if (shownAs === 'diff') {
         document = await loadDiffDocument(projectName, fullBasePath)
-      } else if (config.format === 'html' || config.format === 'markdown') {
+      } else if (shownAs === 'html' || shownAs === 'markdown') {
         document = await loadHtmlDocument(config.name, fullBasePath)
-      } else if (config.format === 'slides') {
+      } else if (shownAs === 'slides') {
         document = await loadSlidesDocument(config.name, fullBasePath)
-      } else if (config.format === 'png') {
+      } else if (shownAs === 'png') {
         const makeUrl = (n: number) => `${fullBasePath}page-${n}.png`
         // Probe beyond manifest hint to discover extra pages (handles stale page counts)
         let pageCount = config.pages

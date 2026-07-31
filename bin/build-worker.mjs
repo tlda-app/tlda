@@ -9,7 +9,7 @@
 
 import { runBuild, recordBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject } from '../server/lib/project-store.mjs'
-import { buildMarkdown, buildHtml, buildSlides } from '../server/lib/format-builders.mjs'
+import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
 
@@ -72,7 +72,7 @@ process.on('message', async (msg) => {
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
     } else {
-      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[(await readProject(msg.name))?.format]
+      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[(await readProject(msg.name))?.format]
       if (builder) {
         await builder(msg.name)
         // A build happened, so it gets a version — same as LaTeX, which reaches

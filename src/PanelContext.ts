@@ -7,7 +7,7 @@ import type { BuildError, BuildWarning } from './useYjsSync'
 export interface ProjectContextValue {
   projectName: string
   title?: string
-  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
+  format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown' | 'qmd'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
   targets?: Array<{ name: string; title: string; pages: number }>
 }

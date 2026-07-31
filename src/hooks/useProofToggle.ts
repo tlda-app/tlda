@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { createShapeId } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
 import { loadProofData, type SvgDocument, type ProofData } from '../svgDocumentLoader'
+import { HTML_PAGE_FORMATS } from '../../shared/document-formats.mjs'
 
 function isInputFocused() {
   const tag = window.document.activeElement?.tagName
@@ -19,7 +20,7 @@ export function useProofToggle({
   editorRef, document,
   shapeIdSetRef, shapeIdsArrayRef,
 }: UseProofToggleParams) {
-  const hasProofInfo = !!document.basePath && !['html', 'markdown', 'png', 'slides'].includes(document.format || '')
+  const hasProofInfo = !!document.basePath && !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')
 
   const [proofMode, setProofMode] = useState(false)
   const proofDataRef = useRef<ProofData | null>(null)

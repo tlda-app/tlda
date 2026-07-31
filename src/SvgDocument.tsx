@@ -58,6 +58,7 @@ import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
 import { FleetChatTool } from './tools/FleetChatTool'
 import { FleetAgentsTool } from './tools/FleetAgentsTool'
+import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { FleetInboxTool } from './tools/FleetInboxTool'
 import { ClusterTool } from './tools/ClusterTool'
@@ -273,7 +274,7 @@ function VersionStamp({ document }: { document: SvgDocument }) {
   const lastReloadAtRef = useRef<number>(0)
   const lastHtmlReloadAtRef = useRef<number>(0)
   const prevHashRef = useRef<string | null>(null)
-  const usesHtmlPages = document.format === 'html' || document.format === 'markdown'
+  const usesHtmlPages = HTML_PAGE_FORMATS.has(document.format || '')
 
   // Watch the Yjs sentinel — updates exactly when the shadow git commit completes.
   // Yjs is convergent: reconnecting always delivers the latest state.
@@ -1146,7 +1147,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Load source map (labels index) for ref resolution.
           // For multi-target docs, pass targets so per-target source-maps are merged
           // with global page offsets — the bare alias only covers the primary target.
-          if (!['html', 'markdown', 'png', 'slides'].includes(document.format || '')) {
+          if (!HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')) {
             sourceMap.load(document.name, document.targets?.map(t => ({ name: t.name, pages: t.pages })))
           }
 

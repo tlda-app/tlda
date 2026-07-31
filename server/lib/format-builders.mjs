@@ -11,6 +11,7 @@ import { sourceDir as getSourceDir, outputDir as getOutputDir, listProjects, agg
 import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
+import { buildQmdDocument } from './build-qmd.mjs'
 
 function signalReload(name, pages) {
   getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
@@ -53,6 +54,11 @@ async function regenerateBookTocs(name) {
 
 export async function buildMarkdown(name) {
   await buildMarkdownDocument(name, (msg) => console.log(msg))
+  await regenerateBookTocs(name)
+}
+
+export async function buildQmd(name) {
+  await buildQmdDocument(name, (msg) => console.log(msg))
   await regenerateBookTocs(name)
 }
 

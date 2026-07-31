@@ -14,6 +14,7 @@ import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
+import { HTML_PAGE_FORMATS } from '../../shared/document-formats.mjs'
 
 type ProjectPartMarkdownShape = TLShape & {
   props: TLShape['props'] & { url?: string }
@@ -75,7 +76,7 @@ export function useYjsSignals({
   panelsLocalRef: _panelsLocalRef,
   onReloadResult, onReloadError, setScreenshotCapture,
 }: UseYjsSignalsParams) {
-  const hasSynctex = !['html', 'markdown', 'png', 'slides'].includes(document.format || '')
+  const hasSynctex = !HTML_PAGE_FORMATS.has(document.format || '') && !['png', 'slides'].includes(document.format || '')
   const slidesReloadingRef = useRef(false)
   const reloadSlidesViewer = useCallback((reason: string) => {
     if (slidesReloadingRef.current) return
