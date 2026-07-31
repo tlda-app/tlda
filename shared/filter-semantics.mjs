@@ -139,16 +139,16 @@ export function matchesFleetFilter(filter, event, context = {}) {
     if (Array.isArray(term)) {
       const [role, label] = term
       if (role === 'dm') return isDmWithTarget(event, label, context)
-      if (role === FLEET_TEAM_FROM_ROLE) {
-        const actor = participantId(event, 'from')
-        return actor === label ||
-          agentMatchesLabel(actor, fleetDescendantLabel(label), context)
-      }
-      if (role === FLEET_TEAM_TO_ROLE) {
-        const actor = participantId(event, 'from')
-        return participantId(event, 'to') === label ||
-          agentMatchesLabel(actor, fleetDescendantLabel(label), context)
-      }
+      // A team is an agent and its native subagents (parent_agent_id lineage).
+      // team-from tests the SENDER, team-to tests the RECIPIENT, so OR-ing the
+      // two means "messages between the world and members of the team". team-to
+      // used to test the sender as well, which made the pair asymmetric: a
+      // message from outside the team TO a subagent matched nothing.
+      const inTeam = (who) =>
+        agentMatchesLabel(who, label, context) ||
+        agentMatchesLabel(who, fleetDescendantLabel(label), context)
+      if (role === FLEET_TEAM_FROM_ROLE) return inTeam(participantId(event, 'from'))
+      if (role === FLEET_TEAM_TO_ROLE) return inTeam(participantId(event, 'to'))
       // [from,x] -> "from:x", [to,x] -> "to:x" leaf for the shared evaluator.
       return evalExprDirectional(leafNode(`${role}:${label}`), dirCtx)
     }
