@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
-import { isHarnessAuthoredRecord, isHarnessAuthoredText } from '../agent-runtime/terminal-chat-authorship.mjs'
+import { isHarnessAuthoredRecord, isMachineAuthoredText, typedTextFrom } from '../agent-runtime/terminal-chat-authorship.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -1581,8 +1581,9 @@ export function createJsonlIngestor({
     if (typeof content === 'string') text = content
     else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
     if (!text || text.length < 3) return true
+    if (isMachineAuthoredText(text)) return true
+    text = typedTextFrom(text)
     if (text.length > 2000) text = text.substring(0, 2000)
-    if (isHarnessAuthoredText(text)) return true
     const ts = parsed.timestamp || null
     if (!ts) return true
     return sendMsg({
