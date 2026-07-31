@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from 'react'
 // @ts-ignore — vanilla JS module
 import { setVoiceTarget, clearVoiceTarget, completeMessageSend } from '../voice.mjs'
 import { getPref, subscribePref } from '../preferences'
+import { getComposerDraft, saveComposerDraft, flushComposerDraft, clearComposerDraft } from '../stores/composerDraftStore'
 
 export type ComposerSend = (text: string, targets: string[]) => void
 type VoiceTargetHandle = {
@@ -48,6 +49,7 @@ export function ChatComposer({
   placeholder = '',
   isTouchDevice = false,
   style,
+  draftKey,
 }: {
   sendTargets: string[]
   agentNames: Record<string, string>
@@ -61,6 +63,9 @@ export function ChatComposer({
   placeholder?: string
   isTouchDevice?: boolean
   style?: React.CSSProperties
+  /** Identifies this composer's unsent text across unmounts — `chat:<shape.id>`,
+   *  `inbox:<partnerId>`. Omit and the draft is not preserved. */
+  draftKey?: string
 }) {
   const localRef = useRef<HTMLTextAreaElement>(null)
   const inputRef = externalRef ?? localRef
@@ -68,6 +73,23 @@ export function ChatComposer({
     const textarea = inputRef.current
     return () => { if (textarea) clearVoiceTarget(textarea) }
   }, [inputRef])
+  // Unsent text outlives the textarea. Anything that unmounts this component —
+  // filter mode opening on a chat panel, the viewport culling shell, an inbox
+  // thread switch — used to destroy the only copy. Restore on mount, write back
+  // on the way out. The field stays uncontrolled: we read and set `.value`, never
+  // feed it back through a `value` prop, so the typing path is unchanged.
+  useEffect(() => {
+    if (!draftKey) return
+    const ta = inputRef.current
+    if (ta && !ta.value) {
+      const saved = getComposerDraft(draftKey)
+      if (saved) {
+        ta.value = saved
+        ta.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+    }
+    return () => { flushComposerDraft(draftKey, ta?.value ?? '') }
+  }, [draftKey, inputRef])
   const [voiceBackend, setVoiceBackend] = useState(() => getPref('voice-backend') as string)
   useEffect(() => subscribePref(() => {
     setVoiceBackend(getPref('voice-backend') as string)
@@ -88,6 +110,12 @@ export function ChatComposer({
   voiceTargetRef.current.sendTargets = sendTargets
   voiceTargetRef.current.agentNames = agentNames
 
+  /** Persist what is in the field right now. Called from every path that changes
+   *  `.value`, including the ones that bypass the input event (Escape, history). */
+  const recordDraft = (ta: HTMLTextAreaElement) => {
+    if (draftKey) saveComposerDraft(draftKey, ta.value)
+  }
+
   const submitCurrent = () => {
     const ta = inputRef.current
     const text = ta?.value.trim() || ''
@@ -95,6 +123,7 @@ export function ChatComposer({
     if (onCommand?.(text, sendTargets, ta)) return true
     onSend(text, sendTargets)
     ta.value = ''
+    if (draftKey) clearComposerDraft(draftKey)
     ta.style.height = ''
     ta.dispatchEvent(new Event('input', { bubbles: true }))
     completeMessageSend(text)
@@ -123,6 +152,7 @@ export function ChatComposer({
           if (ta.value !== '') {
             ta.value = ''
             ta.style.height = ''
+            recordDraft(ta)
           }
           return
         }
@@ -137,6 +167,7 @@ export function ChatComposer({
             historyIndexRef.current = nextIdx
             ta.value = history[history.length - 1 - nextIdx]
             ta.setSelectionRange(ta.value.length, ta.value.length)
+            recordDraft(ta)
           }
           return
         }
@@ -153,6 +184,7 @@ export function ChatComposer({
             ta.value = history[history.length - 1 - nextIdx]
             ta.setSelectionRange(ta.value.length, ta.value.length)
           }
+          recordDraft(ta)
           return
         }
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -185,7 +217,7 @@ export function ChatComposer({
           }
         }
       }}
-      onInput={() => { onKeyActivity?.() }}
+      onInput={(e) => { recordDraft(e.currentTarget); onKeyActivity?.() }}
       onPointerDown={(e) => {
         stopEventPropagation(e)
         // Register this field as the voice target — dictated text appends here and
