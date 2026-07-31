@@ -18,6 +18,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { formatDisplayTimestamp, displayZoneOptions } from '../shared/display-time.mjs';
+import { loadServerConfig } from '../shared/config.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
@@ -1003,7 +1004,6 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
   const pickupGraceMs = options.pickupGraceMs ?? 2 * 60 * 1000;
   const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
   const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
-  const ageMin = taskAgeMs == null ? null : Math.round(taskAgeMs / 60000);
 
   if (!agent) {
     return {
@@ -1054,13 +1054,23 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
     };
   }
 
-  if (task.status === 'pending' && taskAgeMs != null && taskAgeMs > pickupGraceMs) {
-    return {
-      level: 'warning',
-      code: 'pending-pickup',
-      text: `⚠ task still pending ${ageMin}m after delegation`,
-      managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
-    };
+  const notifyAtMs = task.metadata?.notify_at ? Date.parse(task.metadata.notify_at) : NaN;
+  const isDeferred = Number.isFinite(notifyAtMs) && notifyAtMs > nowMs;
+  if (task.status === 'pending' && !isDeferred) {
+    // A task with a notify_at is late against ITS notify time, not against
+    // delegation — delegation age is meaningless for a task that was designed
+    // to wait. A task with no notify_at falls back to delegation age.
+    const sinceNotify = Number.isFinite(notifyAtMs);
+    const sinceMs = sinceNotify ? Math.max(0, nowMs - notifyAtMs) : taskAgeMs;
+    if (sinceMs != null && sinceMs > pickupGraceMs) {
+      const sinceMin = Math.round(sinceMs / 60000);
+      return {
+        level: 'warning',
+        code: 'pending-pickup',
+        text: `⚠ task still pending ${sinceMin}m after ${sinceNotify ? 'notify' : 'delegation'}`,
+        managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
+      };
+    }
   }
 
   return {
@@ -1115,6 +1125,51 @@ function formatTaskHealth(health, { includeOk = false, includeAction = false } =
   let text = health.text;
   if (includeAction && health.managerAction) text += ` — ${health.managerAction}`;
   return text;
+}
+
+/**
+ * The IANA zone task notify times render in. Reads the same `timezone` key
+ * `getDisplayTimeZone()` reads (shared/config.mjs, validated at
+ * shared/daemon-config-schema.mjs:105) but, unlike that helper, falls back to
+ * UTC rather than this process's own machine zone: a task list is compared
+ * across agents on different machines, so an unstated per-machine zone would
+ * make the same notify_at print differently depending on who's reading it.
+ */
+function taskNotifyZone() {
+  try {
+    const zone = loadServerConfig().timezone;
+    if (zone) return zone;
+  } catch {
+    // server.yaml absent/unreadable — fall back to UTC below.
+  }
+  return 'UTC';
+}
+
+/**
+ * Render a task's notify_at as "deferred — notify in 12m (7:44:19 PM EDT)" (or
+ * "notify 12m ago (...)" once it has fired), in the server-configured zone
+ * (UTC if none is set). One helper, shared by every task pretty-printer, so
+ * inbox, tasks(), and the compact terminal-check line agree. `compact: true`
+ * drops the absolute clock for call sites that are already packed onto one
+ * line.
+ */
+export function formatTaskNotify(notifyAt, { compact = false } = {}) {
+  if (!notifyAt) return null;
+  const date = new Date(notifyAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const deltaMs = date.getTime() - Date.now();
+  const deferred = deltaMs > 0;
+  const minutes = Math.round(Math.abs(deltaMs) / 60000);
+  const relative = deferred ? `in ${minutes}m` : `${minutes}m ago`;
+  let text = `notify ${relative}`;
+  if (!compact) {
+    const zone = taskNotifyZone();
+    const absolute = new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short', timeZone: zone,
+    }).format(date);
+    text += ` (${absolute})`;
+  }
+  return deferred ? `deferred — ${text}` : text;
 }
 
 // ---- Task context helpers ----
@@ -1707,9 +1762,10 @@ function inboxTaskSummary(task) {
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
   const nativeSystem = task.metadata?.native_system || task.metadata?.native?.system || null;
   const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
+  const notify = formatTaskNotify(task.metadata?.notify_at);
   const lines = [
     `[${task.id}] ${task.description || '(untitled task)'}`,
-    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
+    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}${notify ? ` | ${notify}` : ''}`,
   ];
   if (task.metadata?.native) lines.push(`Native task in ${nativeLabel || 'native harness'}`);
   if (task.success_criteria?.length) lines.push(`Success criteria: ${task.success_criteria.length}`);
@@ -2905,7 +2961,8 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
-      if (t.metadata?.notify_at) status += ` | notify:${t.metadata.notify_at}`;
+      const notify = formatTaskNotify(t.metadata?.notify_at);
+      if (notify) status += ` | ${notify}`;
       if (t.metadata?.notify_every) status += ` | every:${t.metadata.notify_every}s`;
       if (t.metadata?.expires_at) status += ` | expires:${t.metadata.expires_at}`;
       if (t.metadata?.native) status += ` | Native task in ${nativeLabel || 'native harness'}`;
@@ -3177,7 +3234,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       : ' [no recorded task]';
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
-      taskStr = ` [${task.id}: ${task.description} | ${age}m ago]`;
+      const notify = formatTaskNotify(task.metadata?.notify_at, { compact: true });
+      taskStr = ` [${task.id}: ${task.description} | ${age}m ago${notify ? ` | ${notify}` : ''}]`;
     }
 
     return {
