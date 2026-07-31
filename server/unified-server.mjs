@@ -6393,10 +6393,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (task_id && !existingTask) { error(`task not found: ${task_id}`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
     const fromAgent = from ? await fleetStore.findAgent(from) : null
-    const caller = fromAgent || (from ? { id: from } : null)
-    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
-      error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
-    }
+    // No authorization gate here. The fence lives in the MCP layer, which is where
+    // agents act — see the authorization gate section in AGENTS.md. The HTTP twin
+    // at POST /api/tasks/delegate behaves identically; a divergence between the two
+    // is a bug.
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
