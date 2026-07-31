@@ -1896,13 +1896,16 @@ function threadWindow(descriptor: any) {
   const merged = Array.isArray(descriptor?.view?._semanticInspectedPages) ? descriptor.view._semanticInspectedPages : []
   let since: string | null = null
   let until: string | null = null
+  let pageSize = 0
   for (const page of [descriptor?.inspected || {}, ...merged]) {
     const pageSince = threadWindowTimestamp(page?.since ?? page?.after, descriptor?.generatedAt)
     const pageUntil = threadWindowTimestamp(page?.until ?? page?.before, descriptor?.generatedAt)
     if (pageSince && (!since || pageSince < since)) since = pageSince
     if (pageUntil && (!until || pageUntil > until)) until = pageUntil
+    const size = Number(page?.page_size ?? page?.pageSize)
+    if (Number.isFinite(size) && size > pageSize) pageSize = size
   }
-  return { since, until }
+  return { since, until, pageSize }
 }
 
 // Mirror what `thread` itself asks the server for, so the card renders the call
@@ -1915,7 +1918,7 @@ function threadSearchRequest(descriptor: any, agentId: string | null, currentPro
   const requestedTypes = Array.isArray(view.types) ? view.types : []
   if (requestedTypes.length === 1) filters.eventType = requestedTypes[0]
   else if (requestedTypes.length > 1) filters.eventTypes = requestedTypes
-  const { since, until } = threadWindow(descriptor)
+  const { since, until, pageSize } = threadWindow(descriptor)
   if (since) filters.since = since
   if (until) filters.before = until
   if (agentId) {
@@ -1940,7 +1943,7 @@ function threadSearchRequest(descriptor: any, agentId: string | null, currentPro
   }
   // Both bounds set means the call committed to a finite range, so `thread`
   // takes the whole window in one shot instead of a page.
-  const limit = since && until ? 10_000 : (Number(view.page_size) || 200)
+  const limit = since && until ? 10_000 : (pageSize || 200)
   return { query: '', limit, filters }
 }
 
