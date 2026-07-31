@@ -2381,7 +2381,6 @@ export class FleetStore {
       type,
       timestamp,
       actorId || null,
-      null,
       operation === 'register' ? 'initial labels' : `labels ${operation}`,
       JSON.stringify(metadata),
       null,
