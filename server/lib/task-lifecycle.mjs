@@ -92,6 +92,10 @@ export async function transferTaskLifecycle({
 // Coordination guard, not a security boundary. Active temporary delegation
 // markers intentionally grant manager cleanup authority. Do not replace this
 // with immutable or pre-existing delegation-lineage semantics.
+//
+// The fence is deliberately low and deliberately easy to pass — see "The
+// authorization gate is a fence, not a wall" in AGENTS.md. Tightening it is a
+// product change, not a cleanup.
 export async function canReportTask({ caller, task, fleetStore }) {
   if (!caller?.id || !task?.id) return false
   if (caller.human || task.agent === caller.id || task.delegated_by === caller.id) return true
