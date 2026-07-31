@@ -109,6 +109,11 @@ type State =
 // Doc assets come from the active config's STORE (http), injected by the server.
 const ASSET_BASE = STORE_HTTP
 
+// Same expression FleetChatShape, FleetInboxShape and MathNoteShape each keep
+// locally. It gates the composer's inputMode, which is what keeps iOS from
+// raising the on-screen keyboard over a field voice is going to fill.
+const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+
 // Fetch a single document config from the API — fast path for ?project=X
 async function fetchDocConfig(projectName: string): Promise<DocConfig | null> {
   const controller = new AbortController()
@@ -1174,19 +1179,24 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           sendTargets={sendTargets}
           agentNames={composerAgentNames}
           onSend={sendChromeChat}
+          isTouchDevice={_isTouchDevice}
           placeholder={selectedAgent ? `Message ${selectedAgent.displayName}` : ''}
         />
         {chatSendError && <div className="index-top-chat-error">{chatSendError}</div>}
       </div>
 
       <div className="project-index-search-row">
+        {/* No autoFocus. Focus follows a deliberate action everywhere else in
+            the app — the search shape focuses on applying an autocomplete, the
+            agents panel on opening spawn — and never on mount. Focusing this on
+            arrival raised the on-screen keyboard over the index before Skip had
+            touched anything. */}
         <input
           className="picker-search"
           type="text"
           placeholder="Search projects..."
           value={search}
           onChange={e => setSearch(e.target.value)}
-          autoFocus
         />
       </div>
 
