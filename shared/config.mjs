@@ -333,6 +333,10 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 # (PORT, NODE_ENV), and the two that say WHERE the config is — TLDA_ENV picks
 # the environment, TLDA_CONFIG_DIR/TLDA_DAEMON_CONFIG_DIR pick the directory
 # these files live in.
+#
+# The complete list of every environment variable the system reads, with a
+# reason for each one that stays an environment variable, is in
+# config/environment-variables.md.
 
 # How THIS SERVER reaches the one Deepgram bridge, which runs on its own machine
 # (the tlda-voice box) over Fly's private network. REQUIRED — there is no second

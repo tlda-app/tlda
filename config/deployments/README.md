@@ -25,5 +25,8 @@ The `[env]` blocks now carry only what cannot live in a file:
 its own `environments.default`, which is the same value in the place that owns
 it. It remains a per-run override for local use (`tlda --env <name>`).
 
+The complete environment-variable inventory, including a reason for every
+variable that stays one, is in [../environment-variables.md](../environment-variables.md).
+
 The `tlda-fly friend up` flow writes a directory here for each friend's render
 box, so a friend deployment is as visible as the built-in ones.
