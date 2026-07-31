@@ -391,6 +391,15 @@ function agentWithDaemonCapabilities(agent) {
   }
 }
 
+// The agents panel renders an agent's subscriptions in its expanded row, so the
+// rows travel with the agent on both paths that carry one to the browser — the
+// page and the delta. A delta replaces the whole agent object client-side, so a
+// field present on only one path would disappear the moment an agent moved.
+function agentWithSubscriptions(agent, byOwner) {
+  if (!agent) return agent
+  return { ...agent, subscriptions: byOwner?.[agent.id] || [] }
+}
+
 // Gate 1 observability: correlates one daemon WS connection attempt across
 // server and client logs, keyed by client-minted `connection_attempt_id`
 // (echoed back in daemon-welcome alongside ws._wsSessionId). Observability
@@ -1660,9 +1669,9 @@ function _queueBroadcastAgents(agentUpdates = null) {
   }
 }
 
-function _agentWithEphemeralState(agent) {
+function _agentWithEphemeralState(agent, subscriptionsByOwner) {
   if (!agent) return null
-  const withCapabilities = agentWithDaemonCapabilities(agent)
+  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)
   if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
   if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
   return withCapabilities
@@ -1677,8 +1686,9 @@ async function _broadcastStateNow() {
 
   const changed = []
   const removed = []
+  const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pendingIds) || {}
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(await fleetStore.getAgent(id))
+    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner)
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
@@ -5313,7 +5323,9 @@ async function handleFleetWsMessage(ws, msg) {
       limit: msg.limit,
       cursor: msg.cursor || null,
     })
-    reply({ ...page, agents: (page.agents || []).map(agentWithDaemonCapabilities), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
+    const pageAgents = page.agents || []
+    const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pageAgents.map(agent => agent.id)) || {}
+    reply({ ...page, agents: pageAgents.map(agent => agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
@@ -7250,6 +7262,9 @@ async function handleFleetWsMessage(ws, msg) {
     const subscription = await fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
     // Arm after the row exists — the subscriber set is read from the table.
     if (docMatch) tldaFeedback.arm(docMatch[1])
+    // The owner's subscriptions are part of its agent row now, so the panel
+    // learns about this one the same way it learns about any other change.
+    broadcastState(target.id)
     reply(subscription)
     return
   }
@@ -7283,6 +7298,7 @@ async function handleFleetWsMessage(ws, msg) {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
       if (docMatch) await tldaFeedback.releaseIfUnsubscribed(docMatch[1])
     }
+    broadcastState(subscription.owner)
     reply({ ok: true, subscription_id: subscription.subscription_id })
     return
   }

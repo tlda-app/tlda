@@ -39,7 +39,7 @@ function prettyFleetAgentLabel(label: string): { value: string; title: string } 
 }
 
 type FleetAgentMetadataChip = {
-  kind: 'model' | 'option' | 'permission'
+  kind: 'model' | 'option' | 'permission' | 'subscription'
   glyph: string
   value: string
   title: string
@@ -50,6 +50,14 @@ function fleetAgentMetadataChips(row: FleetAgentDirectoryRowModel): FleetAgentMe
     row.model && { kind: 'model' as const, glyph: '◌', value: row.model, title: `model: ${row.model}` },
     ...row.spawnOptions.map((option): FleetAgentMetadataChip => ({ kind: 'option', glyph: '+', value: option, title: `spawn option: ${option}` })),
     row.permission && { kind: 'permission' as const, glyph: '◇', value: row.permission, title: `permission: ${row.permission}` },
+    // The query as written, which is the form the agent subscribed in and the
+    // form the server matches against. The policy qualifies it in the title.
+    ...row.subscriptions.map((subscription): FleetAgentMetadataChip => ({
+      kind: 'subscription',
+      glyph: '◈',
+      value: subscription.query,
+      title: `subscription: ${subscription.query}${subscription.policy ? ` (${subscription.policy})` : ''}`,
+    })),
   ].filter(Boolean) as FleetAgentMetadataChip[]
 }
 
@@ -260,7 +268,7 @@ export function FleetAgentDirectoryRow({
         <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
           <div className="fleet-agents-detail-top">
             <div className="fleet-agents-detail-meta">
-              {metadataChips.map((chip) => <FleetAgentMetadataChipView key={`${chip.kind}:${chip.value}`} chip={chip} />)}
+              {metadataChips.map((chip, index) => <FleetAgentMetadataChipView key={`${chip.kind}:${chip.value}:${index}`} chip={chip} />)}
             </div>
             {tasks[1] && (
               <FleetAgentTaskRow task={tasks[1]} index={1} />

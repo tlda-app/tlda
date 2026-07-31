@@ -170,8 +170,32 @@ export type FleetAgentDirectoryRowModel = {
   model: string
   spawnOptions: string[]
   permission: string
+  subscriptions: FleetAgentSubscription[]
   activityHealth: string
   hoverTitle: string
+}
+
+export type FleetAgentSubscription = {
+  id: number
+  query: string
+  policy: string
+}
+
+type FleetAgentSubscriptionRow = {
+  subscription_id?: number
+  query?: string
+  notification_policy?: string
+}
+
+export function fleetAgentSubscriptions(agent: any): FleetAgentSubscription[] {
+  if (!Array.isArray(agent?.subscriptions)) return []
+  return (agent.subscriptions as FleetAgentSubscriptionRow[])
+    .filter((row) => !!row?.query)
+    .map((row) => ({
+      id: Number(row.subscription_id),
+      query: String(row.query),
+      policy: String(row.notification_policy || ''),
+    }))
 }
 
 export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel {
@@ -214,6 +238,7 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
     model,
     spawnOptions,
     permission,
+    subscriptions: fleetAgentSubscriptions(agent),
     activityHealth,
     hoverTitle,
   }
