@@ -18,6 +18,7 @@ import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTrans
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
 import { formatDisplayTimestamp, displayZoneOptions } from '../shared/display-time.mjs';
+import { loadServerConfig } from '../shared/config.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
@@ -55,10 +56,7 @@ import {
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs';
 import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
-import {
-  applyNonClaudeRolePack,
-  crossLaneBlock,
-} from '../shared/task-role-routing.mjs';
+import { applyNonClaudeRolePack } from '../shared/task-role-routing.mjs';
 import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
@@ -991,6 +989,10 @@ function now() {
   return new Date().toISOString();
 }
 
+// This is not an oversight. The authorization gate is a small friction so agents
+// don't casually disturb each other, not a permission system — see "The
+// authorization gate is a fence, not a wall" in AGENTS.md. All this checks is
+// that we know who is calling, so the outbound payload has a `from`.
 function requireManager() {
   if (!activeAgentId()) return 'Cannot identify caller — no session ID detected.';
   return null; // No permission gating — any agent can do anything
@@ -1003,7 +1005,6 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
   const pickupGraceMs = options.pickupGraceMs ?? 2 * 60 * 1000;
   const delegatedMs = task.delegated_at ? Date.parse(task.delegated_at) : NaN;
   const taskAgeMs = Number.isFinite(delegatedMs) ? Math.max(0, nowMs - delegatedMs) : null;
-  const ageMin = taskAgeMs == null ? null : Math.round(taskAgeMs / 60000);
 
   if (!agent) {
     return {
@@ -1054,13 +1055,23 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
     };
   }
 
-  if (task.status === 'pending' && taskAgeMs != null && taskAgeMs > pickupGraceMs) {
-    return {
-      level: 'warning',
-      code: 'pending-pickup',
-      text: `⚠ task still pending ${ageMin}m after delegation`,
-      managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
-    };
+  const atMs = task.metadata?.at ? Date.parse(task.metadata.at) : NaN;
+  const isDeferred = Number.isFinite(atMs) && atMs > nowMs;
+  if (task.status === 'pending' && !isDeferred) {
+    // A task with an `at` is late against ITS at-time, not against delegation
+    // — delegation age is meaningless for a task that was designed to wait. A
+    // task with no `at` falls back to delegation age.
+    const sinceNotify = Number.isFinite(atMs);
+    const sinceMs = sinceNotify ? Math.max(0, nowMs - atMs) : taskAgeMs;
+    if (sinceMs != null && sinceMs > pickupGraceMs) {
+      const sinceMin = Math.round(sinceMs / 60000);
+      return {
+        level: 'warning',
+        code: 'pending-pickup',
+        text: `⚠ task still pending ${sinceMin}m after ${sinceNotify ? 'notify' : 'delegation'}`,
+        managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
+      };
+    }
   }
 
   return {
@@ -1115,6 +1126,51 @@ function formatTaskHealth(health, { includeOk = false, includeAction = false } =
   let text = health.text;
   if (includeAction && health.managerAction) text += ` — ${health.managerAction}`;
   return text;
+}
+
+/**
+ * The IANA zone task notify times render in. Reads the same `timezone` key
+ * `getDisplayTimeZone()` reads (shared/config.mjs, validated at
+ * shared/daemon-config-schema.mjs:105) but, unlike that helper, falls back to
+ * UTC rather than this process's own machine zone: a task list is compared
+ * across agents on different machines, so an unstated per-machine zone would
+ * make the same `at` print differently depending on who's reading it.
+ */
+function taskNotifyZone() {
+  try {
+    const zone = loadServerConfig().timezone;
+    if (zone) return zone;
+  } catch {
+    // server.yaml absent/unreadable — fall back to UTC below.
+  }
+  return 'UTC';
+}
+
+/**
+ * Render a task's `at` as "deferred — notify in 12m (7:44:19 PM EDT)" (or
+ * "notify 12m ago (...)" once it has fired), in the server-configured zone
+ * (UTC if none is set). One helper, shared by every task pretty-printer, so
+ * inbox, tasks(), and the compact terminal-check line agree. `compact: true`
+ * drops the absolute clock for call sites that are already packed onto one
+ * line.
+ */
+export function formatTaskNotify(at, { compact = false } = {}) {
+  if (!at) return null;
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  const deltaMs = date.getTime() - Date.now();
+  const deferred = deltaMs > 0;
+  const minutes = Math.round(Math.abs(deltaMs) / 60000);
+  const relative = deferred ? `in ${minutes}m` : `${minutes}m ago`;
+  let text = `notify ${relative}`;
+  if (!compact) {
+    const zone = taskNotifyZone();
+    const absolute = new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short', timeZone: zone,
+    }).format(date);
+    text += ` (${absolute})`;
+  }
+  return deferred ? `deferred — ${text}` : text;
 }
 
 // ---- Task context helpers ----
@@ -1300,6 +1356,7 @@ export function getFleetTools() {
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
               model: { type: 'string', description: 'Configured daemon model alias.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
+              labels: { type: 'array', items: { type: 'string' }, description: 'Labels to apply at mint, before the agent\'s first tool call — so a label-filtered panel shows its whole backlog. Same labels as label(): a label may not be a live agent\'s name or a reserved routing label (here, away, awake, hibernating, dead, human), and the filter grammar cannot address a label containing whitespace or & | ! ( ).' },
               permissionRequest: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permissionRequest },
             },
 	          },
@@ -1628,14 +1685,14 @@ export function getFleetTools() {
     // ---- Report Gate ----
     {
       name: 'subscription',
-      description: 'List, create, or remove persisted server-side notification subscriptions.',
+      description: 'List, create, or remove persisted server-side notification subscriptions. Listing is not gated — you may list any agent\'s subscriptions. Creating and removing for another agent is a small coordination fence, not a security boundary.',
       inputSchema: {
         type: 'object',
         properties: {
           operation: { type: 'string', enum: ['list', 'create', 'remove'], description: 'Defaults to list when omitted.' },
           query: { type: 'string', description: 'For create: fleet label expression or "doc:<name>".' },
           policy: { type: 'string', description: 'For create: immediate, batch(spec), or hold. Defaults to immediate.' },
-          target: { type: 'string', description: 'Target agent to configure. Defaults to this agent; cross-target use requires delegator authority.' },
+          target: { type: 'string', description: 'Target agent. Defaults to this agent. Listing another agent is always allowed; creating or removing for one expects authority over it or contact with it.' },
           id: { type: 'number', description: 'For remove: persisted subscription id.' },
         },
       },
@@ -1707,9 +1764,10 @@ function inboxTaskSummary(task) {
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
   const nativeSystem = task.metadata?.native_system || task.metadata?.native?.system || null;
   const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
+  const notify = formatTaskNotify(task.metadata?.at);
   const lines = [
     `[${task.id}] ${task.description || '(untitled task)'}`,
-    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
+    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}${notify ? ` | ${notify}` : ''}`,
   ];
   if (task.metadata?.native) lines.push(`Native task in ${nativeLabel || 'native harness'}`);
   if (task.success_criteria?.length) lines.push(`Success criteria: ${task.success_criteria.length}`);
@@ -2241,38 +2299,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     };
   }
 
-  async function recentDirectInbound(fromId, toId) {
-    try {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const data = await mcpFleetTransport.ephemeral('fleet-search', {
-        query: '',
-        filterExpression: `from:${toId} & to:${fromId}`,
-        since,
-        eventType: 'chat',
-        historyOnly: true,
-        eventOnly: true,
-        limit: 1,
-      });
-      return (data.results || []).some(e =>
-        e.type === 'chat' &&
-        e.from === toId &&
-        (e.recipients || []).includes(fromId)
-      );
-    } catch (e) {
-      process.stderr.write(`[fleet] recent direct-reply check failed: ${e.message}\n`);
-      return false;
-    }
-  }
-
-  async function requireInLaneAction(targetAgentId, { action, message, directReply = false } = {}) {
-    const agents = await getRoster(targetAgentId);
-    const fromAgent = agents.find(a => a.id === activeAgentId()) || { id: activeAgentId(), cwd: getAgentCwd() };
-    const toAgent = agents.find(a => agentMatches(a, targetAgentId));
-    if (!toAgent) return null;
-    const block = crossLaneBlock({ fromAgent, toAgent, action, message, directReply });
-    return block?.text || null;
-  }
-
   // ==== Task Management ====
 
   // ---- delegate ----
@@ -2333,11 +2359,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
     async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
-      const laneBlock = await requireInLaneAction(targetAgent, {
-        action: 'delegate',
-        message,
-      });
-      if (laneBlock) throw new Error(laneBlock);
       const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.mint);
       const routedMessage = applyNonClaudeRolePack(message, {
         template: args.template,
@@ -2393,6 +2414,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
           modelOptions: spawnModelOptionsFromArgs(spawnOpts),
           effort: spawnOpts.effort,
           cwd: agentCwd,
+          labels: spawnOpts.labels,
           permissionRequest: spawnOpts.permissionRequest,
         });
         if (spawnResult?.ok === false || spawnResult?.error) {
@@ -2597,20 +2619,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
       return { content: [{ type: 'text', text: 'A `.suggest` item has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
     }
-    const laneBlocks = [];
-    for (const to of recipients) {
-      const directReply = await recentDirectInbound(activeAgentId(), to);
-      const laneBlock = await requireInLaneAction(to, {
-        action: 'chat',
-        message,
-        directReply,
-      });
-      if (laneBlock) laneBlocks.push(laneBlock);
-    }
-    if (laneBlocks.length) {
-      return { content: [{ type: 'text', text: `Message NOT sent.\n${laneBlocks.map(b => `- ${b}`).join('\n')}` }], isError: true };
-    }
-
     // Resolve the body's file references → uploads. Two modes:
     //  - file-share (source.file): the body is a markdown file's content; bundle
     //    its image includes (upload + rewrite refs inline) so they render for
@@ -2923,7 +2931,8 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
-      if (t.metadata?.notify_at) status += ` | notify:${t.metadata.notify_at}`;
+      const notify = formatTaskNotify(t.metadata?.at);
+      if (notify) status += ` | ${notify}`;
       if (t.metadata?.notify_every) status += ` | every:${t.metadata.notify_every}s`;
       if (t.metadata?.expires_at) status += ` | expires:${t.metadata.expires_at}`;
       if (t.metadata?.native) status += ` | Native task in ${nativeLabel || 'native harness'}`;
@@ -2980,6 +2989,20 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
     } else if (!args.summary && !(args.file && args.selector)) {
       return { content: [{ type: 'text', text: 'Pass summary when reporting on a task_id.' }], isError: true };
+    }
+
+    // Reporting on someone else's task is the fence, and it lives here in the MCP
+    // layer — same mechanism as delegate and chat, see the marker pattern in
+    // AGENTS.md. Resolving the task tells us whose it is; reporting on your own is
+    // never fenced.
+    if (targetTaskId) {
+      let owner = null;
+      try {
+        const found = await mcpFleetTransport.ephemeral('task-by-id', { task_id: targetTaskId });
+        owner = found?.task?.agent || null;
+      } catch (e) {
+        process.stderr.write(`[fleet] report task-owner lookup failed: ${e.message}\n`);
+      }
     }
 
     const cwd = getAgentCwd() || process.env.PWD || null;
@@ -3195,7 +3218,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       : ' [no recorded task]';
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
-      taskStr = ` [${task.id}: ${task.description} | ${age}m ago]`;
+      const notify = formatTaskNotify(task.metadata?.at, { compact: true });
+      taskStr = ` [${task.id}: ${task.description} | ${age}m ago${notify ? ` | ${notify}` : ''}]`;
     }
 
     return {

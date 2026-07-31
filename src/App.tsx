@@ -16,7 +16,7 @@ import {
   sortFleetAgentDirectoryRowsByRecency,
   type FleetAgentDirectoryRowModel,
 } from './shapes/FleetAgentDirectoryModel'
-import { FleetAgentDirectoryRow } from './shapes/FleetAgentDirectoryRow'
+import { PrettyName } from './shapes/PrettyName'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from './fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
@@ -350,6 +350,10 @@ function App() {
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
+      // The manifest's display name, which is a written title for some documents
+      // and the slug for others. The spatial world labelled its own place with
+      // the URL slug before this.
+      document = { ...document, title: config.name || projectName }
 
       // For non-diff docs, check if a matching diff doc exists (lazy manifest fetch — not on critical path)
       let diffConfig: DiffConfig | undefined
@@ -681,35 +685,40 @@ function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: Retur
   }
 }
 
-function ProjectAgentColumn({
-  project,
-  title,
+// The document table's agents cell: the project's agents, most recently active
+// first. How many are visible is not decided here. The cell is as tall as the
+// history cell beside it and clips on a whole line, so the count is a
+// consequence of the history height rather than a number chosen against it.
+// AGENT_CELL_RENDER_CAP bounds render cost only, well above what fits.
+//
+// Nice-to-have, specified but not built: hovering a name here should highlight
+// that agent's edits in the history cell, when or if history carries edit
+// attribution.
+const AGENT_CELL_RENDER_CAP = 8
+
+function ProjectAgentCell({
   rows,
   selectedAgentId,
   onSelectAgent,
 }: {
-  project: string
-  title: string
   rows: FleetAgentDirectoryRowModel[]
   selectedAgentId: string | null
   onSelectAgent: (row: FleetAgentDirectoryRowModel) => void
 }) {
   return (
-    <section className="index-project-agent-column" aria-label={`${title} recent agents`}>
-      <div className="index-project-agent-title">{title}</div>
-      <div className="index-project-agent-list">
-        {rows.length === 0 && <div className="index-project-agent-empty">No recent agents</div>}
-        {rows.map(row => (
-          <div
-            key={row.id || row.exactName}
-            className={selectedAgentId === row.id || selectedAgentId === row.exactName ? 'index-agent-row selected' : 'index-agent-row'}
-            onClick={() => onSelectAgent(row)}
-          >
-            <FleetAgentDirectoryRow row={row} knownProjects={[project]} />
-          </div>
-        ))}
-      </div>
-    </section>
+    <div className="project-index-agents" onPointerDown={e => e.stopPropagation()}>
+      {rows.map(row => (
+        <span
+          key={row.id || row.exactName}
+          className={selectedAgentId === row.id || selectedAgentId === row.exactName ? 'project-index-agent selected' : 'project-index-agent'}
+          style={{ color: row.color, opacity: row.nameOpacity }}
+          title={row.hoverTitle}
+          onClick={e => { e.stopPropagation(); onSelectAgent(row) }}
+        >
+          <PrettyName prettyName={row.prettyName} />
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -858,14 +867,15 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const visibleEntries = entries
   const visibleProjectNames = visibleEntries.map(([key]) => key)
   const visibleProjectKey = visibleProjectNames.join('\n')
-  const projectAgentColumns = useMemo(() => (
-    visibleEntries
-      .map(([project, config]) => ({
-        project,
-        title: config.name || project,
-        rows: agentRows.filter(row => projectLabelMatches(row, project)).slice(0, 8),
-      }))
-  ), [agentRows, visibleEntries])
+  const projectAgents = useMemo(() => {
+    const byProject: Record<string, FleetAgentDirectoryRowModel[]> = {}
+    for (const [project] of visibleEntries) {
+      byProject[project] = agentRows
+        .filter(row => projectLabelMatches(row, project))
+        .slice(0, AGENT_CELL_RENDER_CAP)
+    }
+    return byProject
+  }, [agentRows, visibleEntries])
   const selectedAgent = useMemo(() => {
     if (!selectedAgentId) return null
     return agentRows.find(row => row.id === selectedAgentId || row.exactName === selectedAgentId) || null
@@ -1173,99 +1183,91 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         />
       </div>
 
-      <div className="index-content-layout">
-        <main className="picker-main">
-          <div className="project-index">
-            <div className="project-index-axis" aria-hidden="true">
-              <span className="project-index-axis-label">Project</span>
-              <div className="project-index-axis-ticks">
-                {dateTicks.map(tick => (
-                  <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
-                ))}
-              </div>
-              <span className="project-index-axis-spacer" />
+      <main>
+        <div className="project-index">
+          <div className="project-index-axis" aria-hidden="true">
+            <span className="project-index-axis-label">Project</span>
+            <span className="project-index-axis-label">Agents</span>
+            <div className="project-index-axis-ticks">
+              {dateTicks.map(tick => (
+                <span key={tick.timestamp} style={{ left: tick.left }}>{tick.label}</span>
+              ))}
             </div>
-            <div className="project-index-rows">
-              {visibleEntries.map(([key, config]) => {
-                const health = docHealth[key]
-                const isBroken = health && !health.ok
-                const isStarred = starredKeys.has(key) || !!config.starred
-                const preview = dragPreview?.key === key ? dragPreview : null
-                const changelog = changelogs[key]
-                const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
-                return (
-                  <div
-                    key={key}
-                    className={`project-index-row${isBroken ? ' picker-row-broken' : ''}${isStarred ? ' project-index-row-starred' : ''}${preview ? ` is-swiping is-swiping-${preview.action}` : ''}`}
-                    style={preview ? { transform: `translateX(${preview.dx}px)` } : undefined}
-                    onPointerDown={(e) => onRowPointerDown(key, false, e)}
-                    onPointerMove={(e) => onRowPointerMove(key, e)}
-                    onPointerUp={(e) => onRowPointerEnd(key, e)}
-                    onPointerCancel={() => { pointerStart.current = null; setDragPreview(null) }}
-                    onClick={() => onRowClick(key, config)}
-                  >
-                    <div className="project-index-name">
-                      {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
-                      <a href={`?project=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
-                      <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
-                      {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
-                    </div>
-                    <div className="project-index-history">
-                      {!changelog && !historyError && (
-                        <span className="project-index-history-loading">Loading history...</span>
-                      )}
-                      {changelog && !hasPageEdits && (
-                        <span className="project-index-history-loading">No page edits</span>
-                      )}
-                      {changelog && hasPageEdits && timeRange && (
-                        <SpaceTimeDots
-                          changelog={changelog}
-                          timeRange={timeRange}
-                          timeScale="log-age"
-                          showPageLabels={false}
-                          className="project-index-spacetime"
-                          onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
-                        />
-                      )}
-                      {(historyError || changelog?.error) && (
-                        <span className="project-index-history-status">
-                          {changelog?.error || historyError}
-                        </span>
-                      )}
-                    </div>
-                    <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
-                      <button
-                        className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
-                        title={isStarred ? 'Unstar' : 'Star'}
-                        aria-label={isStarred ? 'Unstar project' : 'Star project'}
-                        onClick={(e) => starProject(key, false, e)}
-                      >★</button>
-                      <button
-                        className="project-row-action project-row-archive"
-                        title="Archive"
-                        aria-label="Archive project"
-                        onClick={(e) => archiveProject(key, e)}
-                      >×</button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+            <span className="project-index-axis-spacer" />
           </div>
-        </main>
-        <aside className="index-project-agent-columns" aria-label="Recent agents by project">
-          {projectAgentColumns.map(column => (
-            <ProjectAgentColumn
-              key={column.project}
-              project={column.project}
-              title={column.title}
-              rows={column.rows}
-              selectedAgentId={selectedAgentId}
-              onSelectAgent={(row) => setSelectedAgentId(row.id || row.exactName)}
-            />
-          ))}
-        </aside>
-      </div>
+          <div className="project-index-rows">
+            {visibleEntries.map(([key, config]) => {
+              const health = docHealth[key]
+              const isBroken = health && !health.ok
+              const isStarred = starredKeys.has(key) || !!config.starred
+              const preview = dragPreview?.key === key ? dragPreview : null
+              const changelog = changelogs[key]
+              const hasPageEdits = changelog?.commits.some(commit => commit.changedPages.length > 0)
+              return (
+                <div
+                  key={key}
+                  className={`project-index-row${isBroken ? ' picker-row-broken' : ''}${isStarred ? ' project-index-row-starred' : ''}${preview ? ` is-swiping is-swiping-${preview.action}` : ''}`}
+                  style={preview ? { transform: `translateX(${preview.dx}px)` } : undefined}
+                  onPointerDown={(e) => onRowPointerDown(key, false, e)}
+                  onPointerMove={(e) => onRowPointerMove(key, e)}
+                  onPointerUp={(e) => onRowPointerEnd(key, e)}
+                  onPointerCancel={() => { pointerStart.current = null; setDragPreview(null) }}
+                  onClick={() => onRowClick(key, config)}
+                >
+                  <div className="project-index-name">
+                    {isBroken && <span className="picker-health-dot" title={health.error || 'Sync error'} />}
+                    <a href={`?project=${key}`} onClick={e => e.preventDefault()}>{config.name || key}</a>
+                    <span className="picker-date">{relativeTime(meta[key]?.lastBuild || config.lastBuild)}</span>
+                    {isBroken && <span className="picker-error-hint">{health.error?.substring(0, 60)}</span>}
+                  </div>
+                  <ProjectAgentCell
+                    rows={projectAgents[key] || []}
+                    selectedAgentId={selectedAgentId}
+                    onSelectAgent={(row) => setSelectedAgentId(row.id || row.exactName)}
+                  />
+                  <div className="project-index-history">
+                    {!changelog && !historyError && (
+                      <span className="project-index-history-loading">Loading history...</span>
+                    )}
+                    {changelog && !hasPageEdits && (
+                      <span className="project-index-history-loading">No page edits</span>
+                    )}
+                    {changelog && hasPageEdits && timeRange && (
+                      <SpaceTimeDots
+                        changelog={changelog}
+                        timeRange={timeRange}
+                        timeScale="log-age"
+                        showPageLabels={false}
+                        className="project-index-spacetime"
+                        onSelect={(commit, page) => openHistoryPoint(key, commit, page)}
+                      />
+                    )}
+                    {(historyError || changelog?.error) && (
+                      <span className="project-index-history-status">
+                        {changelog?.error || historyError}
+                      </span>
+                    )}
+                  </div>
+                  <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
+                    <button
+                      className={`project-row-action project-row-star${isStarred ? ' is-active' : ''}`}
+                      title={isStarred ? 'Unstar' : 'Star'}
+                      aria-label={isStarred ? 'Unstar project' : 'Star project'}
+                      onClick={(e) => starProject(key, false, e)}
+                    >★</button>
+                    <button
+                      className="project-row-action project-row-archive"
+                      title="Archive"
+                      aria-label="Archive project"
+                      onClick={(e) => archiveProject(key, e)}
+                    >×</button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </main>
       {(identity.name || telemetryUrl) && (
         <div className="project-index-tools">
           {identity.name && <span>Signed in as {identity.name}</span>}
@@ -1294,6 +1296,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
                       <span className="picker-archived-name">{p.title || p.name}</span>
                       <span className="picker-date">Archived</span>
                     </div>
+                    <div className="project-index-agents" />
                     <div className="project-index-history" />
                     <div className="project-row-actions" onPointerDown={e => e.stopPropagation()}>
                       <button

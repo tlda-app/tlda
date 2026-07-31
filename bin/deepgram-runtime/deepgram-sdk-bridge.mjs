@@ -8,6 +8,7 @@
 
 import { DeepgramClient } from '@deepgram/sdk'
 import { acceptsSpeechEpoch, createEpochTransition, enqueueEpochPcm, readyEpochTransition } from './deepgram-epoch-state.mjs'
+import { mergeKeyterms } from './keyterm-budget.mjs'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer as createHttpsServer } from 'https'
 import { readFileSync, existsSync } from 'fs'
@@ -131,7 +132,7 @@ function loadVoiceParamOverrides() {
   return {}
 }
 
-function listenOptions(clientOverrides = {}) {
+function listenOptions(clientOverrides = {}, rosterKeyterms = []) {
   // Precedence: docs-backed defaults < per-connection client params.
   const overrides = { ...loadVoiceParamOverrides(), ...clientOverrides }
   const recognition = { ...DEFAULT_LISTEN_OPTIONS, ...overrides }
@@ -139,9 +140,16 @@ function listenOptions(clientOverrides = {}) {
     console.log('[deepgram-sdk-bridge] voiceParams overrides applied:', JSON.stringify(overrides))
   }
   console.log('[deepgram-sdk-bridge] effective listen options:', JSON.stringify(recognition))
+  // The math vocabulary above is kept whole; roster names fill what is left of
+  // Deepgram's keyterm ceiling. Log the overflow — a silently shortened roster
+  // would look exactly like a roster that was never sent.
+  const { keyterms, dropped, estimatedTokens } = mergeKeyterms(KEYWORDS, rosterKeyterms)
+  if (dropped.length) {
+    console.log(`[deepgram-sdk-bridge] keyterm budget full at ~${estimatedTokens} tokens; dropped ${dropped.length} roster term(s): ${dropped.join(', ')}`)
+  }
   return {
     ...recognition,
-    queryParams: { keyterm: KEYWORDS },
+    queryParams: { keyterm: keyterms },
     Authorization: `Token ${API_KEY}`,
     reconnectAttempts: 30,
     connectionTimeoutInSeconds: 10,
@@ -208,6 +216,7 @@ wss.on('connection', (browserWs) => {
   let resumeRms = RESUME_RMS_THRESHOLD
   let prerollMaxBytes = PREROLL_MAX_BYTES
   let clientVoiceParams = {}    // per-connection Deepgram recognition overrides (endpointing, utterance_end_ms)
+  let clientKeyterms = []       // agent names from the browser roster, boosted alongside KEYWORDS
   let activeEpoch = null
   let epochTransition = null
   // Epoch belongs to the SESSION, not the socket. It used to be a closure parameter on
@@ -364,6 +373,12 @@ wss.on('connection', (browserWs) => {
   }
 
   function applyClientParams(msg) {
+    // Roster keyterms ride the same message. Only replace the set when the
+    // client actually sent one, so a client that never sends them keeps the
+    // math vocabulary alone rather than being downgraded to an empty roster.
+    if (Array.isArray(msg?.keyterms)) {
+      clientKeyterms = msg.keyterms.filter((t) => typeof t === 'string' && t.trim())
+    }
     if (Number.isFinite(msg?.idleMs) && msg.idleMs > 0) idleMs = msg.idleMs
     if (Number.isFinite(msg?.resumeRms) && msg.resumeRms >= 0) resumeRms = msg.resumeRms
     if (Number.isFinite(msg?.prerollMs) && msg.prerollMs >= 0) prerollMaxBytes = Math.round(16000 * 2 * (msg.prerollMs / 1000))
@@ -595,7 +610,7 @@ wss.on('connection', (browserWs) => {
     // re-arms auto-reconnect: clear the manual-close flag set by disconnectDeepgram().
     manuallyClosed = false
     connecting = (async () => {
-      const connection = await client.listen.v1.connect(listenOptions(clientVoiceParams))
+      const connection = await client.listen.v1.connect(listenOptions(clientVoiceParams, clientKeyterms))
       // Attempt id is the single staleness notion. Every path that moves the epoch while
       // a connect is in flight goes through retireEpoch(), which bumps the attempt id —
       // so this covers what the old epoch comparison covered, without a second concept

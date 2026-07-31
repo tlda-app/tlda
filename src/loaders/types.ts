@@ -54,6 +54,7 @@ export interface TargetInfo {
 
 export interface SvgDocument {
   name: string
+  title?: string
   pages: SvgPage[]
   slideInfo?: SlideInfo[]
   macros?: Record<string, string>

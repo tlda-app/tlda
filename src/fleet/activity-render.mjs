@@ -173,10 +173,13 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
     : ''
   const json = esc(JSON.stringify(descriptor))
   const key = esc(descriptor.semanticKey)
-  return `<div class="semantic-chat-operation" data-semantic-key="${key}">
-    <div class="pretty-expand-btn">Open ${kind === 'thread' ? 'thread' : 'search results'}</div>
+  // A thread is open. Skip: "it's not supposed to be closed" — the read is the
+  // content, so hiding it behind a button makes you click to see the thing the
+  // card is for. The button stays as the way to close it again.
+  return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
+    <div class="pretty-expand-btn" data-semantic-collapsed-label="Open ${kind === 'thread' ? 'thread' : 'search results'}">collapse</div>
     ${inspectedHtml}
-    <div class="semantic-operation-body" data-semantic-operation="${json}" style="display:none"></div>
+    <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
   </div>`
 }
 

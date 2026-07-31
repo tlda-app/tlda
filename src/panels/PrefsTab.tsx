@@ -85,16 +85,15 @@ function isRunningBot(agent: any): boolean {
   return !agent?.dead && labelsFor(agent).includes('bot') && status !== 'dead' && status !== 'hibernating'
 }
 
-function useVoiceBackends(): VoiceBackendOption[] {
-  const browserFallback = () => {
-    const speechWindow = typeof window !== 'undefined' ? window as SpeechRecognitionWindow : null
-    const hasBrowserSpeech = !!(speechWindow?.SpeechRecognition || speechWindow?.webkitSpeechRecognition)
-    return [
-      { value: '', label: 'Off', available: true },
-      ...(hasBrowserSpeech ? [{ value: 'chrome', label: 'Browser', available: true }] : []),
-    ]
-  }
-  const [backends, setBackends] = useState<VoiceBackendOption[]>(browserFallback)
+// The backend list is only known once the server has answered. Until then, and
+// when the request fails, the honest state is "not known yet" — NOT a short
+// hardcoded list. A guessed list is indistinguishable from the real answer, so
+// a backend that exists reads as a backend that does not exist: nothing to
+// click and nothing to read. That is the shape of the bug Skip hit with
+// Deepgram. `status` is what lets uncertainty say so instead of disappearing.
+function useVoiceBackends(): { backends: VoiceBackendOption[]; status: 'loading' | 'ready' | 'error' } {
+  const [backends, setBackends] = useState<VoiceBackendOption[]>([])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
 
   useEffect(() => {
     let cancelled = false
@@ -108,14 +107,17 @@ function useVoiceBackends(): VoiceBackendOption[] {
         next = next.filter((b: VoiceBackendOption) => b.value !== 'chrome' || hasBrowserSpeech)
         if (!next.some((b: VoiceBackendOption) => b.value === '')) next.unshift({ value: '', label: 'Off', available: true })
         setBackends(next)
+        setStatus('ready')
       })
       .catch(() => {
-        if (!cancelled) setBackends(browserFallback())
+        if (cancelled) return
+        setBackends([])
+        setStatus('error')
       })
     return () => { cancelled = true }
   }, [])
 
-  return backends
+  return { backends, status }
 }
 
 function formatLastSeen(value?: string): string {
@@ -323,7 +325,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
-  const voiceBackends = useVoiceBackends()
+  const { backends: voiceBackends, status: voiceBackendsStatus } = useVoiceBackends()
   const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
@@ -356,7 +358,13 @@ export function PrefsTab({ query = '' }: { query?: string }) {
 
   const sinkShapes = csvToSet(prefs.voiceSinkShapeTypes)
   const runningBots = agents.filter(isRunningBot)
-  const selectedVoiceBackend = voiceBackends.some(b => b.value === prefs.voiceBackend) ? prefs.voiceBackend : ''
+  // Only demote the stored backend to Off once a real list says it is not
+  // there. While the list is unknown, showing "Off" would report a setting he
+  // did not make, and one touch of the select would then write that lie back.
+  const selectedVoiceBackend = voiceBackendsStatus !== 'ready' || voiceBackends.some(b => b.value === prefs.voiceBackend)
+    ? prefs.voiceBackend
+    : ''
+  const voiceBackendsLabel = voiceBackendsStatus === 'loading' ? 'checking…' : 'backends unknown — server unreachable'
   const currentDeviceId = getCurrentReadabilityDeviceId()
   const knownReadabilityDevices = Object.entries(prefs.knownDevices as Record<string, DeviceRecord>)
     .sort((a, b) => new Date(b[1]?.lastSeen || 0).getTime() - new Date(a[1]?.lastSeen || 0).getTime())
@@ -569,15 +577,22 @@ export function PrefsTab({ query = '' }: { query?: string }) {
       {sectionVisible('voice') && <CollapsiblePrefsSection
         id="voice"
         title="Voice"
-        summary={voiceBackends.find(b => b.value === selectedVoiceBackend)?.label || 'Off'}
+        summary={voiceBackendsStatus === 'ready'
+          ? (voiceBackends.find(b => b.value === selectedVoiceBackend)?.label || 'Off')
+          : voiceBackendsLabel}
         open={prefs.openSections.includes('voice')}
         onToggle={toggleSection}
       >
         <PrefSubsection title="Backend">
           <select value={selectedVoiceBackend} onChange={e => { setPref('voice-backend', e.target.value); setVoiceBackend(e.target.value) }} className="prefs-select">
-            {voiceBackends.map(backend => (
-              <option key={backend.value || 'off'} value={backend.value}>{backend.label}</option>
-            ))}
+            {/* Until the server answers there is one option and it says which
+                kind of not-knowing this is. The list is never guessed, so a
+                backend can no longer go missing without saying anything. */}
+            {voiceBackendsStatus === 'ready'
+              ? voiceBackends.map(backend => (
+                <option key={backend.value || 'off'} value={backend.value}>{backend.label}</option>
+              ))
+              : <option value={selectedVoiceBackend}>{voiceBackendsLabel}</option>}
           </select>
         </PrefSubsection>
 

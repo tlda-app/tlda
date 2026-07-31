@@ -722,11 +722,18 @@ export class PermissionLedger {
     // 'claude-fable-5') bounced every wake of a healthy seat, and a worktree
     // cwd vs the repo root rejected legitimate worktree logins (both 7/17).
     // They still persist fill-null-only below; they just cannot conflict.
+    //
+    // The tmux session name is the same kind of thing. It is a readable default
+    // built from the friendly name, not a fact about who the agent is: a dead
+    // process has no session, and the next start gets whatever name it gets.
+    // Treating it as identity left todd's row bound to `fleet-todd` while the
+    // service asked for `fleet-bot-todd_testing`, so every retry threw and the
+    // bot stayed down for eight hours (7/31). It is overwritten below rather
+    // than filled null-only, because a stale name is what caused that.
     const incoming = {
       sessionId: normalizedSessionId,
       sessionKind,
       sessionPath,
-      tmuxSession,
     }
     for (const [field, value] of Object.entries(incoming)) {
       const normalized = value == null || value === '' ? null : String(value)
@@ -742,7 +749,7 @@ export class PermissionLedger {
         session_id = COALESCE(?, session_id),
         session_kind = COALESCE(session_kind, ?),
         session_path = COALESCE(session_path, ?),
-        tmux_session = COALESCE(tmux_session, ?),
+        tmux_session = COALESCE(?, tmux_session),
         model = COALESCE(model, ?),
         machine_id = COALESCE(machine_id, ?),
         env_name = COALESCE(env_name, ?),

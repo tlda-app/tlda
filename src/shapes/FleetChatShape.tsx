@@ -95,6 +95,7 @@ import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-i
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
+import { peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
 import { getPref, subscribePref } from '../preferences'
 import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -109,6 +110,10 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
+// Quiet period after the last scroll event before a touch-driven scroll counts
+// as finished. A momentum glide emits scroll events continuously, so this only
+// has to outlast the gap between two of them.
+const TOUCH_SCROLL_SETTLE_MS = 150
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 type TerminalAgent = {
@@ -2127,8 +2132,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
-      const key = `${itemKey}:semantic:${body.closest('.semantic-chat-operation')?.getAttribute('data-semantic-key') || i}`
-      if (expanded.has(key)) {
+      const op = body.closest('.semantic-chat-operation')
+      const key = `${itemKey}:semantic:${op?.getAttribute('data-semantic-key') || i}`
+      // A thread renders open, so it is expanded unless this row was explicitly
+      // collapsed. Restoring only remembered keys would close every thread the
+      // moment its row re-rendered.
+      const startsOpen = op?.classList.contains('semantic-chat-operation-open')
+      if (expanded.has(key) || (startsOpen && body.style.display !== 'none')) {
         body.style.display = ''
         body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
         const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
@@ -2295,7 +2305,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     setTermHoverPinned(false)
     setTermHoverVisible(false)
-    setTermHoverAgentId(null)
+    pickTerminalHover(null)
   }, [liveEvents])
 
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
@@ -3265,12 +3275,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
     // data-token, so we don't maintain a second hover handler.
     async function onChipOver(e: MouseEvent) {
+      if (dragCoordinator.isActive) return
       const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]') as HTMLElement | null
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
       // Delay to avoid accidental triggers
       await new Promise(r => setTimeout(r, 500))
+      if (dragCoordinator.isActive) return
       if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
@@ -3565,7 +3577,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     function onNickOver(e: MouseEvent) {
-      if (activeChatPillDragRef.current) return
+      // A hover never ends a drag, whoever owns the drag. The coordinator is the
+      // one place that knows a drag is in flight — a per-shape flag only ever
+      // covers drags that start in this chat log, and the pill drags that end up
+      // over a chat mostly start in the agents panel.
+      if (dragCoordinator.isActive) return
       const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
       if (!nick) return
       const agentId = nick.dataset.agentId
@@ -3574,7 +3590,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (skillShowTimerRef.current) clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = setTimeout(() => {
         skillShowTimerRef.current = null
-        if (activeChatPillDragRef.current) return
+        if (dragCoordinator.isActive) return
         if (!nick.matches(':hover')) return
         const r = nick.getBoundingClientRect()
         setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })
@@ -3687,6 +3703,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const isAtBottomRef = useRef(true)
   const userScrolledUpRef = useRef(false)
   const viewportAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  // True while a finger-driven scroll is in flight: from touchdown through the
+  // momentum glide that follows the release, until the scroller goes quiet.
+  const touchScrollActiveRef = useRef(false)
   const prevTailMessageKeyRef = useRef(tailMessageKey)
   const prevTotalHeightRef = useRef(0)
   const settleTailRunRef = useRef(0)
@@ -3698,16 +3717,26 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [atBottom, setAtBottom] = useState(true)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
-  const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
+  // An explicit pick — an icon click or hover, a transcript terminal card, or
+  // /terminal — names an agent this panel's filter need not name, so it is
+  // recorded together with the filter it was made under. termHoverAgentId is
+  // derived from it further down and falls back to the filter's own terminal
+  // target, which is what makes the hover follow the filter instead of holding
+  // whoever happened to be picked first.
+  const [termHoverPick, setTermHoverPick] = useState<{ agentId: string; filterKey: string } | null>(null)
+  // The transcript listeners are attached once per chatLogEl, so they read the
+  // live filter key from a ref rather than a closure that would go stale.
+  const filterKeyRef = useRef(filterKey)
+  filterKeyRef.current = filterKey
+  const pickTerminalHover = useCallback((agentId: string | null) => {
+    setTermHoverPick(agentId ? { agentId, filterKey: filterKeyRef.current } : null)
+  }, [])
   // Which agent the hover is currently PINNED to, readable from the delegated
   // transcript click listener. That listener is attached once per chatLogEl, so
   // it cannot read termHoverPinned/termHoverAgentId from its closure without
   // going stale — the card code it replaces used a functional setState for the
   // same reason.
   const termHoverPinnedIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
-  }, [termHoverPinned, termHoverAgentId])
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
   const captureViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
@@ -3736,6 +3765,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       captureViewportAnchor()
       return
     }
+    // Writing scrollTop cancels an in-flight momentum scroll, so correcting
+    // here kills the glide a flick just started. Hold off while the scroll is
+    // running — the scroll listener recaptures the anchor throughout, and the
+    // next list change after the scroller settles corrects from there.
+    if (touchScrollActiveRef.current) return
     const viewportTop = el.getBoundingClientRect().top
     const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
     const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
@@ -3762,7 +3796,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     captureViewportAnchor()
   }, [allItems, shape.id, captureViewportAnchor])
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearedComposerDraftRef = useRef<string | null>(null)
+  // This panel's composer text, across unmounts. Filter mode unmounts the whole
+  // input area, and a filter pill hovering over the panel opens filter mode on
+  // its own — so the draft has to live outside the textarea. See
+  // stores/composerDraftStore.
+  const composerDraftKey = `chat:${shape.id}`
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
@@ -3932,9 +3970,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.stopImmediatePropagation()
       el.scrollTop += e.deltaY
     }
+    // A touch-driven scroll runs past the release: the finger lifts and the
+    // scroller keeps gliding. Treat it as in flight until scroll events stop
+    // arriving, so nothing writes scrollTop and cancels the glide.
+    let fingerDown = false
+    let settleTimer = 0
+    const armSettle = () => {
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(() => {
+        settleTimer = 0
+        if (!fingerDown) touchScrollActiveRef.current = false
+      }, TOUCH_SCROLL_SETTLE_MS)
+    }
+    const onTouchStart = () => {
+      fingerDown = true
+      touchScrollActiveRef.current = true
+      if (settleTimer) { clearTimeout(settleTimer); settleTimer = 0 }
+    }
+    const onTouchEnd = () => {
+      fingerDown = false
+      armSettle()
+    }
     let lastTop = el.scrollTop
     let lastHeight = el.scrollHeight
     const handle = () => {
+      if (touchScrollActiveRef.current) armSettle()
       const top = el.scrollTop
       const height = el.scrollHeight
       const gap = el.scrollHeight - top - el.clientHeight
@@ -3988,9 +4048,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
     el.addEventListener('scroll', handle, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true })
     return () => {
       document.removeEventListener('wheel', handleWheelCapture, true)
       el.removeEventListener('scroll', handle)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('touchcancel', onTouchEnd)
+      if (settleTimer) clearTimeout(settleTimer)
+      touchScrollActiveRef.current = false
     }
   }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor])
 
@@ -4036,7 +4104,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         termCardShowTimerRef.current = null
         // Only open if the cursor is still resting on this same card.
         const overId = (document.querySelector('.lc-terminal-card:hover') as HTMLElement | null)?.dataset.agentId
-        if (overId === agentId) { setTermHoverAgentId(agentId); setTermHoverVisible(true) }
+        if (overId === agentId) { pickTerminalHover(agentId); setTermHoverVisible(true) }
       }, 600)
     }
     const onOut = (e: MouseEvent) => {
@@ -4255,9 +4323,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (termHoverPinnedIdRef.current === agentId) {
             setTermHoverPinned(false)
             setTermHoverVisible(false)
-            setTermHoverAgentId(null)
+            pickTerminalHover(null)
           } else {
-            setTermHoverAgentId(agentId)
+            pickTerminalHover(agentId)
             setTermHoverPinned(true)
           }
           return
@@ -4804,7 +4872,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     if (targetId) {
       expireClearedComposerDraft()
-      setTermHoverAgentId(targetId)
+      pickTerminalHover(targetId)
       setTermHoverPinned(true)
       ta.value = ''
       ta.style.height = ''
@@ -4982,12 +5050,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     return controls
   }, [sendTargets, agents, resolveTargetAgents, agentDisplayName])
 
+  // The hover's target is derived, not held: an explicit pick wins only while
+  // the filter it was made under is still in force, and otherwise the target is
+  // the filter's own terminal target. So re-filtering the chat re-aims the
+  // terminal hover, the same way it re-aims the composer's send targets.
+  const termHoverAgentId = useMemo(() => {
+    if (termHoverPick && termHoverPick.filterKey === filterKey) return termHoverPick.agentId
+    return terminalComposerControls.find(control => control.agent && !control.unavailableReason)?.agent?.id ?? null
+  }, [termHoverPick, filterKey, terminalComposerControls])
+  useEffect(() => {
+    termHoverPinnedIdRef.current = termHoverPinned ? termHoverAgentId : null
+  }, [termHoverPinned, termHoverAgentId])
+
   void composerDraftVersion
   const composerHasText = !!((inputRef.current as HTMLTextAreaElement | null)?.value)
-  const canUnclearComposer = !composerHasText && !!clearedComposerDraftRef.current
+  const canUnclearComposer = !composerHasText && !!peekClearedComposerDraft(composerDraftKey)
 
   const expireClearedComposerDraft = () => {
-    clearedComposerDraftRef.current = null
+    dropClearedComposerDraft(composerDraftKey)
   }
 
   const resizeComposerTextarea = (ta: HTMLTextAreaElement) => {
@@ -4999,16 +5079,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
     if (ta.value !== '') {
-      clearedComposerDraftRef.current = ta.value
+      stashClearedComposerDraft(composerDraftKey, ta.value)
       ta.value = ''
       ta.style.height = ''
       ta.dispatchEvent(new Event('input', { bubbles: true }))
       ta.focus()
       return
     }
-    const draft = clearedComposerDraftRef.current
+    const draft = takeClearedComposerDraft(composerDraftKey)
     if (!draft) return
-    clearedComposerDraftRef.current = null
     ta.value = draft
     resizeComposerTextarea(ta)
     ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -5051,7 +5130,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // the old scoped check existed, kept without the send-target coupling.
   useEffect(() => {
     if (!termHoverAgentId || selectedTerminalHoverAgent) return
-    setTermHoverAgentId(null)
+    pickTerminalHover(null)
     setTermHoverPinned(false)
     setTermHoverVisible(false)
   }, [termHoverAgentId, selectedTerminalHoverAgent])
@@ -5130,10 +5209,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
     _onMain?: boolean
   } | null>(null)
-  const activeChatPillDragRef = useRef(false)
-
+  // Tears down any hover pane already showing when a drag starts here. Whether a
+  // drag is in flight is dragCoordinator.isActive, not a flag of our own.
   const suppressSkillHoverDuringChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = true
     if (skillShowTimerRef.current) {
       clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = null
@@ -5143,10 +5221,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       skillHideTimerRef.current = null
     }
     setSkillHover(null)
-  }, [])
-
-  const releaseSkillHoverAfterChatDrag = useCallback(() => {
-    activeChatPillDragRef.current = false
   }, [])
 
   // Store agent name maps in refs so native listeners can access current values.
@@ -5475,7 +5549,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     function cancelDrag() {
       const drag = dragRef.current
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (drag?.pillId) {
         markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
@@ -5674,7 +5747,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
-      releaseSkillHoverAfterChatDrag()
       if (!drag.started) {
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
@@ -5724,7 +5796,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Delete any in-flight pill before releasing its coordinator handlers.
       if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
-  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, releaseSkillHoverAfterChatDrag, suppressSkillHoverDuringChatDrag])
+  }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
@@ -6125,9 +6197,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   if (termHoverPinned && termHoverAgentId === agentId) {
                     setTermHoverPinned(false)
                     setTermHoverVisible(false)
-                    setTermHoverAgentId(null)
+                    pickTerminalHover(null)
                   } else {
-                    setTermHoverAgentId(agentId)
+                    pickTerminalHover(agentId)
                     setTermHoverPinned(true)
                     setTermHoverVisible(true)
                   }
@@ -6141,7 +6213,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   // it reads data-composer-rail-label off this button. The bespoke
                   // rail preview state this used to set no longer exists.
                   if (!agent?.id || unavailableReason) return
-                  setTermHoverAgentId(agent.id)
+                  pickTerminalHover(agent.id)
                   setTermHoverVisible(true)
                 }}
                 onMouseLeave={() => {
@@ -6231,6 +6303,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               onDragOver={composerDragOver}
               inputRef={inputRef as any}
               isTouchDevice={_isTouchDevice}
+              draftKey={composerDraftKey}
               placeholder=""
               style={{
                 width: '100%',

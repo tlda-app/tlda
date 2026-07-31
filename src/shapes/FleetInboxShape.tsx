@@ -1308,6 +1308,7 @@ function ConversationView({
           agentNames={agentNames}
           onSend={send}
           isTouchDevice={_isTouchDevice}
+          draftKey={`inbox:${thread.partnerId}`}
           className="fleet-inbox-composer-textarea"
           style={COMPOSER_STYLE}
         />
