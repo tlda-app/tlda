@@ -378,6 +378,24 @@ export class FleetStore {
   }
 
   _createTables() {
+    // ---- unread → recipients (must precede CREATE TABLE recipients) ----
+    // The old `unread` table was already one row per recipient and already held
+    // several rows per event for CC and wiretap recipients. Group send promotes
+    // it to the authoritative recipient set rather than introducing a second
+    // table with the same shape, so this is a rename, not a data move.
+    const tableExists = (name) => !!this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+      .get(name);
+    if (tableExists('unread') && !tableExists('recipients')) {
+      this.db.exec(`
+        ALTER TABLE unread RENAME TO recipients;
+        ALTER TABLE recipients RENAME COLUMN to_id TO agent_id;
+        ALTER TABLE recipients ADD COLUMN timestamp TEXT;
+      `);
+      this.db.exec('DROP INDEX IF EXISTS idx_unread_to');
+      this.db.exec('DROP INDEX IF EXISTS idx_unread_unread');
+    }
+
     this.db.exec(`
       -- Core event table: every share() writes one row here
       CREATE TABLE IF NOT EXISTS events (
@@ -385,7 +403,6 @@ export class FleetStore {
         type TEXT NOT NULL,           -- chat, delegate, task_done, task_update, report, register, lifecycle
         timestamp TEXT NOT NULL,
         from_id TEXT,                 -- sender agent ID
-        to_id TEXT,                   -- recipient agent ID
         text TEXT,                    -- message text / description
         metadata TEXT,                -- JSON blob for type-specific data
         task_id TEXT,                 -- associated task ID (for delegate, task_done, task_update, report)
@@ -401,7 +418,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_type_id ON events(type, id);
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_from ON events(from_id, timestamp DESC);
-      CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
       CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_chat_client_temp_id
@@ -582,15 +598,33 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_tasks_active_live ON tasks(delegated_at DESC, id DESC) WHERE status NOT IN ('done', 'retracted');
       CREATE INDEX IF NOT EXISTS idx_tasks_agent_active_live ON tasks(agent, delegated_at DESC) WHERE status NOT IN ('done', 'retracted');
 
-      -- Unread message tracking (multiple entries per event for CC)
-      CREATE TABLE IF NOT EXISTS unread (
+      -- Who an event went to. One row per recipient, so a single event addressed
+      -- to a group is one `events` row and N rows here — there is no primary
+      -- recipient and no scalar recipient column to imply one. `read` is that
+      -- recipient's own mailbox state; nobody else's read touches it.
+      --
+      -- This table is authoritative for recipient identity, not a discardable
+      -- projection: a row is marked read, never deleted, because deleting it
+      -- would erase the fact that the message was addressed to that agent.
+      -- `timestamp` is a copy of the event's own timestamp, written once with the
+      -- row and never updated (an amend writes a NEW event, it does not restamp
+      -- one). It exists so a recipient-scoped history read can walk
+      -- (agent_id, timestamp DESC) in index order and stop at LIMIT, exactly as
+      -- idx_events_to allowed before. Without it the join has to materialize and
+      -- temp-sort every row an id ever received — the whole-history scan that
+      -- froze the event loop on high-volume ids and that idx_events_to existed
+      -- to prevent.
+      CREATE TABLE IF NOT EXISTS recipients (
         event_id INTEGER REFERENCES events(id),
-        to_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        timestamp TEXT,
         read INTEGER DEFAULT 0,
-        PRIMARY KEY (event_id, to_id)
+        PRIMARY KEY (event_id, agent_id)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_unread_to ON unread(to_id, read);
+      CREATE INDEX IF NOT EXISTS idx_recipients_agent ON recipients(agent_id, read);
+      CREATE INDEX IF NOT EXISTS idx_recipients_agent_ts ON recipients(agent_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_recipients_event ON recipients(event_id);
 
       -- Wiretaps: persistent message subscriptions
       CREATE TABLE IF NOT EXISTS wiretaps (
@@ -743,6 +777,26 @@ export class FleetStore {
         this.db.exec(`ALTER TABLE agents DROP COLUMN ${column}`);
       }
     }
+    // ---- events.to_id → recipients rows (one-time) ----
+    // Every historical event keeps exactly the one recipient it had, so nothing
+    // in history retroactively becomes a group. Rows already in `recipients`
+    // carry real read state and win (OR IGNORE); rows only reachable from
+    // `to_id` are backfilled as READ. Backfilling them unread would resurface
+    // the entire event history in every agent's inbox at once.
+    const eventCols = this.db.prepare("PRAGMA table_info(events)").all();
+    if (eventCols.some(c => c.name === 'to_id')) {
+      this.db.exec(`
+        INSERT OR IGNORE INTO recipients (event_id, agent_id, timestamp, read)
+        SELECT id, to_id, timestamp, 1 FROM events WHERE to_id IS NOT NULL;
+        -- Rows that predate the rename carry no sort key yet.
+        UPDATE recipients SET timestamp = (SELECT timestamp FROM events WHERE events.id = recipients.event_id)
+        WHERE timestamp IS NULL;
+      `);
+      // DROP COLUMN rewrites the table and refuses while an index references it.
+      this.db.exec('DROP INDEX IF EXISTS idx_events_to');
+      this.db.exec('ALTER TABLE events DROP COLUMN to_id');
+    }
+
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
     if (!taskCols.some(c => c.name === 'updated_at')) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN updated_at TEXT");
@@ -1160,7 +1214,7 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
-      CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
+      CREATE INDEX IF NOT EXISTS idx_recipients_unread ON recipients(event_id) WHERE read = 0;
     `);
 
     // ---- Name provenance (name-at-time) ----
@@ -1276,50 +1330,77 @@ export class FleetStore {
     `);
   }
 
-  // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
+  // Standard SELECT for events — aliases from_id so consumers always see `from`,
+  // and gathers the recipient set as a JSON array in `to_json`. There is no
+  // scalar recipient column: `to` is a list, produced by hydrateEvent() below,
+  // and it has one entry for an ordinary message and N for a group send.
   // Use _EVT for standalone queries, _EVTE for queries that join (prefixes with e.)
-  get _EVT() { return 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id' }
-  get _EVTE() { return 'e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.task_id, e.agent_id' }
+  static _TO_JSON(alias) {
+    return `(SELECT json_group_array(agent_id) FROM recipients WHERE event_id = ${alias}.id) as "to_json"`
+  }
+  get _EVT() { return `id, type, timestamp, from_id as "from", text, metadata, task_id, agent_id, ${FleetStore._TO_JSON('events')}` }
+  get _EVTE() { return `e.id, e.type, e.timestamp, e.from_id as "from", e.text, e.metadata, e.task_id, e.agent_id, ${FleetStore._TO_JSON('e')}` }
+
+  // Turn the `to_json` column into the event's recipient list. Every row that
+  // leaves this store passes through here, so `recipients` is always an array
+  // and there is nowhere left that reads a scalar recipient.
+  static hydrateEvent(row) {
+    if (!row) return row
+    const { to_json, ...event } = row
+    let recipients = []
+    if (to_json) {
+      try { recipients = JSON.parse(to_json).filter(Boolean) } catch { recipients = [] }
+    }
+    event.recipients = recipients
+    return event
+  }
+
+  static hydrateEvents(rows) {
+    return (rows || []).map(r => FleetStore.hydrateEvent(r))
+  }
 
   _prepareStatements() {
     this._insertEvent = this.db.prepare(`
-      INSERT INTO events (type, timestamp, from_id, to_id, text, metadata, task_id, agent_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO events (type, timestamp, from_id, text, metadata, task_id, agent_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
-    this._insertUnread = this.db.prepare(`
-      INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)
+    this._insertRecipient = this.db.prepare(`
+      INSERT OR IGNORE INTO recipients (event_id, agent_id, timestamp, read) VALUES (?, ?, ?, ?)
     `);
 
-    // `unread` is the durable inbox-delivery projection. Read through that
-    // projection only: callers cannot use this as a general event-history
-    // query, and the bounded join runs inside the store worker.
+    // `recipients` is both the recipient set and the durable inbox-delivery
+    // state. Read through that projection only: callers cannot use this as a
+    // general event-history query, and the bounded join runs inside the store
+    // worker.
     this._getInboxDeliveriesLimited = this.db.prepare(`
-      SELECT ${this._EVTE} FROM unread u
-      JOIN events e ON e.id = u.event_id
-      WHERE u.to_id = ? AND u.read = 0
+      SELECT ${this._EVTE} FROM recipients r
+      JOIN events e ON e.id = r.event_id
+      WHERE r.agent_id = ? AND r.read = 0
       ORDER BY e.timestamp ASC
       LIMIT ?
     `);
 
     this._getInboxDeliveryCount = this.db.prepare(`
-      SELECT COUNT(*) AS c FROM unread WHERE to_id = ? AND read = 0
+      SELECT COUNT(*) AS c FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
-    // Incrementally bump last_active for the event's sender + recipient. Both
-    // params are the event timestamp; MAX keeps the newest if events arrive out
-    // of order. id IN (?, ?) is an O(1) PK lookup; null from/to simply matches
-    // nothing. The server runs this store on the store worker, off the main loop.
+    // Incrementally bump last_active for the event's sender + every recipient.
+    // The first two params are the event timestamp; MAX keeps the newest if
+    // events arrive out of order. The third is a JSON array of participant ids,
+    // so a group send bumps all of them in one statement — the old form was
+    // `id IN (?, ?)`, which hardcoded exactly two participants per event.
     this._updateAgentLastActive = this.db.prepare(`
-      UPDATE agents SET last_active = MAX(COALESCE(last_active, ?), ?) WHERE id IN (?, ?)
+      UPDATE agents SET last_active = MAX(COALESCE(last_active, ?), ?)
+      WHERE id IN (SELECT value FROM json_each(?))
     `);
 
     this._markRead = this.db.prepare(`
-      UPDATE unread SET read = 1 WHERE to_id = ? AND read = 0
+      UPDATE recipients SET read = 1 WHERE agent_id = ? AND read = 0
     `);
 
     this._markEventRead = this.db.prepare(`
-      UPDATE unread SET read = 1 WHERE event_id = ? AND to_id = ?
+      UPDATE recipients SET read = 1 WHERE event_id = ? AND agent_id = ?
     `);
 
     this._updateEventMetadata = this.db.prepare(`
@@ -1340,15 +1421,16 @@ export class FleetStore {
     `);
 
     this._unreadPendingRow = this.db.prepare(`
-      SELECT read FROM unread WHERE event_id = ? AND to_id = ?
+      SELECT read FROM recipients WHERE event_id = ? AND agent_id = ?
     `);
 
     // Claude Code can write the same user message to its JSONL more than once
     // (compaction, in particular), and several daemons compound that. The
     // daemon dedups within its own offset; this is the authoritative check.
     this._terminalChatDuplicate = this.db.prepare(`
-      SELECT 1 FROM events
-      WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat'
+      SELECT 1 FROM events e
+      JOIN recipients r ON r.event_id = e.id
+      WHERE e.timestamp = ? AND e.from_id = ? AND r.agent_id = ? AND substr(e.text, 1, 500) = ? AND e.type = 'chat'
       LIMIT 1
     `);
 
@@ -1475,8 +1557,11 @@ export class FleetStore {
     this._getDelegateEventForTask = this.db.prepare(`
       SELECT ${this._EVT} FROM events WHERE task_id = ? AND type = 'delegate' ORDER BY id DESC LIMIT 1
     `);
-    this._getUnreadForEvent = this.db.prepare('SELECT event_id, to_id, read FROM unread WHERE event_id = ? AND to_id = ?');
-    this._deleteUnreadForEvent = this.db.prepare('DELETE FROM unread WHERE event_id = ? AND to_id = ? AND read = 0');
+    this._getUnreadForEvent = this.db.prepare('SELECT event_id, agent_id, read FROM recipients WHERE event_id = ? AND agent_id = ?');
+    // Retract/retire clears the obligation by marking it read. It must not
+    // delete the row: the row is the record that the message was addressed to
+    // that agent, and that fact survives the task being withdrawn.
+    this._clearUnreadForEvent = this.db.prepare('UPDATE recipients SET read = 1 WHERE event_id = ? AND agent_id = ? AND read = 0');
 
     // Shared doc queries
     // A null path/title/agent CLEARS the stored value; it does not preserve it.
@@ -1622,26 +1707,33 @@ export class FleetStore {
    * @param {Object} event
    * @param {string} event.type - Event type (chat, delegate, task_done, task_update, report, register, lifecycle)
    * @param {string} [event.from] - Sender agent ID
-   * @param {string} [event.to] - Recipient agent ID
+   * @param {string[]|string} [event.to] - Recipient agent IDs. A bare string is
+   *   the one-recipient case of the same list; there is no primary recipient.
    * @param {string} [event.text] - Message text or description
    * @param {Object} [event.metadata] - Type-specific data (JSON-serialized)
    * @param {string} [event.taskId] - Associated task ID
    * @param {string} [event.agentId] - Subject agent ID
-   * @param {boolean} [event.unread] - If true, creates an unread entry for the recipient
+   * @param {boolean} [event.unread] - If true, the recipients start unread
    * @returns {Object} The inserted event with its ID
    */
   async _insertEventRecord(event, { notify = true } = {}) {
     const ts = event.timestamp || new Date().toISOString();
     let metadata = event.metadata || null;
+    // One send is one event with a recipient list. A scalar `to` is accepted as
+    // the one-element case so non-message writers (lifecycle, activity, timer)
+    // read naturally; it is not a primary recipient.
+    const addressed = [...new Set((Array.isArray(event.to) ? event.to : [event.to]).filter(Boolean))];
 
     // Resolve wiretap recipients before writing the event so the persisted
-    // record, its unread mailbox rows, and the broadcast payload agree.
-    if (WIRETAP_EVENT_TYPES.has(event.type) && event.from && event.to) {
+    // record, its recipient rows, and the broadcast payload agree.
+    if (WIRETAP_EVENT_TYPES.has(event.type) && event.from && addressed.length) {
       if (typeof metadata === 'string') {
         try { metadata = JSON.parse(metadata) } catch { metadata = {} }
       }
       if (!metadata || typeof metadata !== 'object') metadata = {};
-      const resolved = this.resolveWiretaps(event.from, event.to, event.type);
+      // Taps are matched per addressee: a tap on any one member of a group
+      // still fires, and the union is what gets a durable inbox row.
+      const resolved = addressed.flatMap(to => this.resolveWiretaps(event.from, to, event.type));
       const wiretapCc = [...new Set([...(metadata.wiretap_cc || []), ...resolved])];
       if (wiretapCc.length) metadata = { ...metadata, wiretap_cc: wiretapCc };
     }
@@ -1654,7 +1746,6 @@ export class FleetStore {
       event.type,
       ts,
       event.from || null,
-      event.to || null,
       event.text || null,
       meta,
       event.taskId || null,
@@ -1663,23 +1754,27 @@ export class FleetStore {
 
     const eventId = result.lastInsertRowid;
 
-    // Maintain agents.last_active incrementally, ordered after the insert, so
-    // getAllAgents never scans events.
-    if (event.from || event.to) {
-      await this._wAwait(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
+    // Direct, explicit-CC, and wiretap recipients all get the same durable row;
+    // only the direct addressees are unread-by-default in the message case.
+    // Channel notifications are only previews.
+    const startsUnread = event.unread !== false && (event.type === 'chat' || event.type === 'delegate');
+    const recipientRows = new Map();
+    for (const id of addressed) recipientRows.set(id, startsUnread ? 0 : 1);
+    for (const id of metadata?.cc || []) if (!recipientRows.has(id)) recipientRows.set(id, startsUnread ? 0 : 1);
+    for (const id of metadata?.wiretap_cc || []) if (!recipientRows.has(id)) recipientRows.set(id, startsUnread ? 0 : 1);
+    // Written before returning so callers that immediately retract can operate
+    // on a real row.
+    for (const [id, read] of recipientRows) {
+      await this._wAwait(this._insertRecipient, [eventId, id, ts, read]);
     }
 
-    // Track unread before returning so callers that immediately retract can
-    // operate on a real mailbox row.
-    if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
-      // Direct, explicit-CC, and wiretap recipients must all have the same
-      // durable inbox path. Channel notifications are only previews.
-      const unreadRecipients = new Set([event.to]);
-      for (const recipient of metadata?.cc || []) unreadRecipients.add(recipient);
-      for (const recipient of metadata?.wiretap_cc || []) unreadRecipients.add(recipient);
-      for (const recipient of unreadRecipients) {
-        await this._wAwait(this._insertUnread, [eventId, recipient]);
-      }
+    const recipients = [...recipientRows.keys()];
+
+    // Maintain agents.last_active incrementally, ordered after the insert, so
+    // getAllAgents never scans events.
+    if (event.from || recipients.length) {
+      const participants = [...new Set([event.from, ...recipients].filter(Boolean))];
+      await this._wAwait(this._updateAgentLastActive, [ts, ts, JSON.stringify(participants)]);
     }
 
     const inserted = {
@@ -1687,7 +1782,7 @@ export class FleetStore {
       type: event.type,
       timestamp: ts,
       from_id: event.from || null,
-      to_id: event.to || null,
+      recipients,
       text: event.text || null,
       metadata,
       task_id: event.taskId || null,
@@ -1705,7 +1800,7 @@ export class FleetStore {
         ...inserted,
         _filter_agents: this._filterAgentsCurrent([
           event.from,
-          event.to,
+          ...recipients,
           event.agentId,
         ]),
       };
@@ -1721,19 +1816,22 @@ export class FleetStore {
     return this._insertEventRecord(event, options);
   }
 
+  // A retried send is now ONE event, so its recipients come from that event's
+  // recipient rows rather than from the several rows a fan-out used to leave.
   getChatTempIdResult(tempId) {
     if (!tempId) return null
     const rows = this.db.prepare(`
-      SELECT id, to_id
-      FROM events
-      WHERE type = 'chat'
-        AND json_extract(metadata, '$.client_temp_id') = ?
-      ORDER BY id
+      SELECT e.id, ${FleetStore._TO_JSON('e')}
+      FROM events e
+      WHERE e.type = 'chat'
+        AND json_extract(e.metadata, '$.client_temp_id') = ?
+      ORDER BY e.id
     `).all(tempId)
     if (!rows.length) return null
+    const hydrated = FleetStore.hydrateEvents(rows)
     return {
-      eventIds: rows.map(row => Number(row.id)),
-      recipients: rows.map(row => row.to_id).filter(Boolean),
+      eventIds: hydrated.map(row => Number(row.id)),
+      recipients: [...new Set(hydrated.flatMap(row => row.recipients))],
       receipts: [],
     }
   }
@@ -4449,34 +4547,46 @@ export class FleetStore {
       const ph = exactIds.map(() => '?').join(',');
       const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
       const E = this._EVT;
-      // OR-across-two-columns can't use an index's sort order, so the naive
-      // `WHERE from_id IN(…) OR to_id IN(…) ORDER BY ts DESC LIMIT n` makes SQLite
-      // materialize + temp-sort EVERY matching row before the limit (125k+ for a
-      // high-volume id like fleet:skip) — synchronously freezing the event loop on
-      // a hot path. Instead pull n from each column's own (col, timestamp DESC)
-      // index in sorted order, then merge: touches ~2n rows, not the whole history.
-      // The global top-n by timestamp of (from ∪ to) is always within (top-n of
-      // from) ∪ (top-n of to), so the result is identical. UNION (not UNION ALL)
-      // dedupes rows where the id is both sender and recipient.
+      // OR-across-two-sources can't use an index's sort order, so the naive
+      // single-pass form makes SQLite materialize + temp-sort EVERY matching row
+      // before the limit (125k+ for a high-volume id like fleet:skip) —
+      // synchronously freezing the event loop on a hot path. Instead pull n from
+      // each source's own (id, timestamp DESC) index in sorted order, then merge:
+      // touches ~2n rows, not the whole history. The global top-n by timestamp of
+      // (from ∪ received) is always within (top-n of from) ∪ (top-n of received),
+      // so the result is identical. UNION (not UNION ALL) dedupes rows where the
+      // id is both sender and recipient.
+      //
+      // The received branch now walks idx_recipients_agent_ts and joins events by
+      // primary key. That is why `recipients` carries the event timestamp: it is
+      // what keeps this branch index-ordered rather than a full sort.
+      const recvBranch = (withBefore) => `SELECT * FROM (
+            SELECT ${E} FROM events
+            WHERE events.id IN (
+              SELECT event_id FROM recipients
+              WHERE agent_id IN (${ph})${withBefore ? ' AND timestamp < ?' : ''}
+              ORDER BY timestamp DESC LIMIT ?
+            ) AND type IN (${typePh})
+            ORDER BY timestamp DESC LIMIT ?)`;
       if (before) {
         const sql = `SELECT * FROM (SELECT * FROM (
             SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${typePh}) AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
-            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${typePh}) AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            ${recvBranch(true)}
           ) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ${outer}`;
         rows = this._query(this.db.prepare(sql),
           before, ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
-          before, ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
+          ...exactIds, before, limit, ...CHAT_HISTORY_EVENT_TYPES, limit,
           limit);
       } else {
         const sql = `SELECT * FROM (SELECT * FROM (
             SELECT * FROM (SELECT ${E} FROM events WHERE type IN (${typePh}) AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
-            SELECT * FROM (SELECT ${E} FROM events WHERE type IN (${typePh}) AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            ${recvBranch(false)}
           ) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ${outer}`;
         rows = this._query(this.db.prepare(sql),
           ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
-          ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
+          ...exactIds, limit, ...CHAT_HISTORY_EVENT_TYPES, limit,
           limit);
       }
     } else if (before) {
@@ -4486,38 +4596,64 @@ export class FleetStore {
       rows = this._query(outer === 'DESC' ? this._queryEventsLatestDesc : this._queryEventsLatest,
         ...CHAT_HISTORY_EVENT_TYPES, limit);
     }
-    return rows;
+    return FleetStore.hydrateEvents(rows);
   }
 
   // Give raw `events` rows the display fields a chat line needs: the aliases the
   // renderer reads, the read flag, and the from/to labels.
   //
   // Subscription history rows use the same display shape as live delivery.
-  resolveChatRows(events, { serverOwnerId = null, serverOwnerName = null } = {}) {
-    const rows = events.map(e => ({ ...e, event_type: e.event_type ?? e.type, from: e.from, to: e.to, agent: e.agent ?? e.agent_id }));
+  // `readerId` is who is looking. Read state is per recipient, so an event with
+  // several recipients has no single answer: without a reader this used to ask
+  // "is this unread by ANYONE", which is correct only while every event has
+  // exactly one recipient and is wrong for everybody once one has several.
+  //
+  // `readBy` carries the full picture the sender needs — how many of the
+  // recipients have read it — which is what the fractional receipt renders.
+  resolveChatRows(events, { serverOwnerId = null, serverOwnerName = null, readerId = null } = {}) {
+    const rows = events.map(e => ({
+      ...e,
+      event_type: e.event_type ?? e.type,
+      from: e.from,
+      recipients: e.recipients || [],
+      agent: e.agent ?? e.agent_id,
+    }));
 
     const agentMap = { ...this.getAgentNameMap() };
     if (serverOwnerId || serverOwnerName) {
       agentMap.web = agentMap[serverOwnerId] || serverOwnerName || serverOwnerId || 'web';
     }
 
-    const unreadIds = new Set();
+    const readCounts = new Map();
+    const readByReader = new Set();
     const eventIds = rows.map(e => e.id).filter(id => id != null);
     if (eventIds.length) {
       const placeholders = eventIds.map(() => '?').join(',');
       try {
-        const unread = this.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${placeholders})`).all(...eventIds);
-        for (const r of unread) unreadIds.add(r.event_id);
+        const states = this.db.prepare(
+          `SELECT event_id, agent_id, read FROM recipients WHERE event_id IN (${placeholders})`
+        ).all(...eventIds);
+        for (const r of states) {
+          if (r.read) readCounts.set(r.event_id, (readCounts.get(r.event_id) || 0) + 1);
+          if (readerId && r.agent_id === readerId && r.read) readByReader.add(r.event_id);
+        }
       } catch (e) {
-        console.error('[fleet] unread query failed:', e.message);
+        console.error('[fleet] recipient read-state query failed:', e.message);
       }
     }
 
     return rows.map(e => ({
       ...e,
-      read: !unreadIds.has(e.id),
+      // With a reader, "read" is that reader's own state. With none (the sender's
+      // view), it is whether every recipient has read it — the full-bar case of
+      // the fractional receipt.
+      read: readerId
+        ? readByReader.has(e.id)
+        : e.recipients.length > 0 && (readCounts.get(e.id) || 0) >= e.recipients.length,
+      readBy: readCounts.get(e.id) || 0,
+      recipientCount: e.recipients.length,
       fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-      toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      toLabels: e.recipients.map(id => agentMap[id] || id.substring(0, 8)),
     }));
   }
 
