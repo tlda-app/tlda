@@ -357,6 +357,35 @@ function advanceSpeechEpoch() {
   // Captured PCM belongs to exactly one transcript/message epoch. Any boundary
   // (send, target switch, reset, restart) invalidates the old audio eagerly.
   _deepgramAudioBacklog.clear()
+  // The bridge gates audio on `_deepgramReadyEpoch === _speechEpoch`, so an
+  // advance the bridge is never told about closes that gate permanently: every
+  // frame goes to the backlog and no transcript comes back. This used to be
+  // done at three of the call sites (setVoiceTarget, afterSend, relay connect)
+  // and not at the others, so whether dictation worked depended on WHICH
+  // boundary you crossed. Measured on deployed main: entering a voice note
+  // advances the epoch three times via resetTranscript/setVoiceAccumulator with
+  // the bridge still acked at the old one — speechEpoch 6, readyEpoch 3,
+  // gateOpen false, 15777 frames dropped, not one word returned. The epoch is
+  // the client's own state; announcing it belongs with the bump, once.
+  notifyBridgeOfSpeechEpoch()
+}
+
+// Tell the Deepgram bridge which epoch the client is now on, and reopen the
+// audio gate for it. The bridge answers with `epoch_ready`, which is what sets
+// `_deepgramReadyEpoch` and flushes the backlog.
+function notifyBridgeOfSpeechEpoch() {
+  if (_backend !== 'deepgram' || _deepgramWs?.readyState !== WebSocket.OPEN) return
+  _deepgramPcmPaused = false
+  _deepgramReadyEpoch = null
+  _deepgramRecognizerStatus = null
+  try {
+    _deepgramWs.send(JSON.stringify({ type: 'speech_epoch', epoch: _speechEpoch }))
+  } catch (err) {
+    _deepgramPcmPaused = true
+    _deepgramRecoveringEpoch = _speechEpoch
+    console.warn('voice: speech epoch control failed', err)
+    showDontSpeak('recognizer unavailable; recovering')
+  }
 }
 
 // Active chat target
@@ -1303,20 +1332,8 @@ export function setVoiceTarget(textarea, targetHandle) {
     advanceSpeechEpoch()
     _left = _interim = _right = ''
     if (_backend === 'deepgram') {
+      // The bridge was told the new epoch by advanceSpeechEpoch() above.
       resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
-      if (wasRecording && _deepgramWs?.readyState === WebSocket.OPEN) {
-        _deepgramPcmPaused = false
-        _deepgramReadyEpoch = null
-        _deepgramRecognizerStatus = null
-        try {
-          _deepgramWs.send(JSON.stringify({ type: 'speech_epoch', epoch: _speechEpoch }))
-        } catch (err) {
-          _deepgramPcmPaused = true
-          _deepgramRecoveringEpoch = _speechEpoch
-          console.warn('voice: target-switch epoch control failed', err)
-          showDontSpeak('recognizer unavailable; recovering')
-        }
-      }
     }
     if (textarea) {
       const onEdit = (event) => { if (!_filling) enterEdit(event || 'unknown') }
@@ -3093,24 +3110,11 @@ function afterSend(submittedTextOverride) {
     return
   }
   if (_backend === 'deepgram') {
-    // No separate finalize here: the bridge's speech_epoch handler now sends Deepgram
-    // the Finalize itself, on a socket it keeps open long enough to receive the answer.
-    // Sending our own first raced it — the reply could arrive before the epoch bump
-    // opened the flush window — and two mechanisms flushing the same utterance is how
-    // this bug was built in the first place.
-    if (_deepgramWs?.readyState === WebSocket.OPEN) {
-      _deepgramPcmPaused = false
-      _deepgramReadyEpoch = null
-      _deepgramRecognizerStatus = null
-      try {
-        _deepgramWs.send(JSON.stringify({ type: 'speech_epoch', epoch: _speechEpoch }))
-      } catch (err) {
-        _deepgramPcmPaused = true
-        _deepgramRecoveringEpoch = _speechEpoch
-        console.warn('voice: speech epoch control failed', err)
-        showDontSpeak('recognizer unavailable; recovering')
-      }
-    }
+    // No separate finalize here: the bridge's speech_epoch handler — sent by
+    // advanceSpeechEpoch() above — sends Deepgram the Finalize itself, on a
+    // socket it keeps open long enough to receive the answer. Sending our own
+    // first raced it, and two mechanisms flushing the same utterance is how this
+    // bug was built in the first place.
     if (normalizeDeepgramText(submittedText)) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
     else resetDeepgramTextState({ preserveUtteranceGuard: true })
     return
