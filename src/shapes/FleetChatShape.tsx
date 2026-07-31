@@ -2009,6 +2009,24 @@ function threadRowsFromEvents(events: any[], agentLabel: (id: any) => string) {
   })
 }
 
+// A chat row rebuilds its React roots whenever its own HTML changes, which on a
+// live stream is constantly -- measured at 15 rebuilds of one thread card during
+// a single page load. A thread call is a point-in-time read, so its drawn rows
+// are a function of its semanticKey and nothing else: keep them, and a rebuilt
+// card redraws instead of re-reading the database and re-rendering every
+// message. Bounded because a chat can scroll past many distinct threads.
+const THREAD_HTML_CACHE = new Map<string, string>()
+const THREAD_HTML_CACHE_MAX = 50
+
+function rememberThreadHtml(key: string, html: string) {
+  if (!key) return
+  THREAD_HTML_CACHE.delete(key)
+  THREAD_HTML_CACHE.set(key, html)
+  while (THREAD_HTML_CACHE.size > THREAD_HTML_CACHE_MAX) {
+    THREAD_HTML_CACHE.delete(THREAD_HTML_CACHE.keys().next().value as string)
+  }
+}
+
 // A thread renders open, drawn by the same visualization the transcript used to
 // feed. The messages come out of the database instead, so the gap marker in the
 // middle expands to the actual messages rather than to another ellipsis.
@@ -2025,14 +2043,17 @@ function ThreadChatOperationView({
   host: HTMLElement
   restoreExpansions: (root: HTMLElement) => void
 }) {
-  const [html, setHtml] = useState('')
-  const [loading, setLoading] = useState(true)
+  const semanticKey = String(descriptor?.semanticKey || '')
+  const cached = THREAD_HTML_CACHE.get(semanticKey)
+  const [html, setHtml] = useState(cached ?? '')
+  const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
   const [collapsed, setCollapsed] = useState(false)
   const [collapseTop, setCollapseTop] = useState('50%')
   const viewRef = useRef<HTMLDivElement>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
+    if (!force && THREAD_HTML_CACHE.has(semanticKey)) return
     setLoading(true)
     setError('')
     try {
@@ -2060,15 +2081,17 @@ function ThreadChatOperationView({
       })
       // An empty read says so. Rendering the empty wrapper instead leaves a
       // blank box, which is the thing that reads as broken rather than empty.
-      setHtml(deduped.length
+      const drawn = deduped.length
         ? renderThreadRows(threadRowsFromEvents(deduped, renderCtx.agentLabel), renderCtx)
-        : '')
+        : ''
+      rememberThreadHtml(semanticKey, drawn)
+      setHtml(drawn)
     } catch (err: any) {
       setError(err?.message || 'thread read failed')
     } finally {
       setLoading(false)
     }
-  }, [currentProject, descriptor, renderCtx])
+  }, [currentProject, descriptor, renderCtx, semanticKey])
 
   useEffect(() => { void load() }, [load])
 
@@ -2099,7 +2122,7 @@ function ThreadChatOperationView({
       <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={toggleCollapsed}>{collapsed ? 'Expand' : 'Collapse'}</button>
       {collapsed ? null : (
         <div className="semantic-operation-view">
-          {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load() }}>Retry</button></div> : null}
+          {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
           {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
           {loading ? <div className="semantic-operation-status">loading...</div> : null}
           {html ? <div ref={viewRef} dangerouslySetInnerHTML={{ __html: html }} /> : null}
