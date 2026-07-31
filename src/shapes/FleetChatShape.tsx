@@ -2132,8 +2132,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
-      const key = `${itemKey}:semantic:${body.closest('.semantic-chat-operation')?.getAttribute('data-semantic-key') || i}`
-      if (expanded.has(key)) {
+      const op = body.closest('.semantic-chat-operation')
+      const key = `${itemKey}:semantic:${op?.getAttribute('data-semantic-key') || i}`
+      // A thread renders open, so it is expanded unless this row was explicitly
+      // collapsed. Restoring only remembered keys would close every thread the
+      // moment its row re-rendered.
+      const startsOpen = op?.classList.contains('semantic-chat-operation-open')
+      if (expanded.has(key) || (startsOpen && body.style.display !== 'none')) {
         body.style.display = ''
         body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
         const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
