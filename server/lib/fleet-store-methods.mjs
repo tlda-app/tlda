@@ -89,6 +89,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getSubscription',
   'getSubscriptionsByOwner',
   'getSubscriptionsByAdapter',
+  'getSubscriptionsByOwners',
   'getTask',
   'getTaskByAgent',
   'getTaskDeliveryState',

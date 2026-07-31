@@ -1903,6 +1903,36 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   background: rgba(122, 158, 200, 0.12);
   border-color: rgba(122, 158, 200, 0.22);
 }
+/* A subscription is not a label and not a metadata value — it is a standing
+   query — so it keeps the chip's geometry and takes a striped fill instead of a
+   solid one. The stripe says what kind of thing it is; the colour says how it
+   delivers: green immediate, amber batch, red hold, the same three tones the
+   context column already uses. A policy outside those three keeps the base chip
+   rather than inventing a fourth colour. */
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="subscription"] {
+  --subscription-tone: 170, 180, 200;
+  color: rgba(226, 230, 240, 0.86);
+  border-color: rgba(var(--subscription-tone), 0.42);
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(var(--subscription-tone), 0.20) 0 2px,
+    transparent 2px 5px
+  );
+}
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="subscription"][data-policy="immediate"] {
+  --subscription-tone: 129, 199, 132;
+}
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="subscription"][data-policy="batch"] {
+  --subscription-tone: 255, 183, 77;
+}
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="subscription"][data-policy="hold"] {
+  --subscription-tone: 229, 115, 115;
+}
+.fleet-agents-shape .fleet-agents-metadata-chip[data-kind="subscription"] .fleet-agents-metadata-glyph {
+  color: rgba(var(--subscription-tone), 0.9);
+  opacity: 1;
+}
 .fleet-agents-shape .fleet-agents-metadata-chip[data-kind="activity"] {
   color: #d79a62;
   background: rgba(215, 154, 98, 0.12);

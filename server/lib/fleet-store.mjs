@@ -4025,6 +4025,21 @@ export class FleetStore {
     return this._getSubscriptionsByAdapter.all(adapter);
   }
 
+  // Subscriptions for a set of agents, grouped by owner. The agents panel shows
+  // an agent's subscriptions in its expanded row and holds a page of agents at a
+  // time, so it reads them the way it already reads their tasks — one query for
+  // the agents in hand, not one per agent across the store worker boundary.
+  getSubscriptionsByOwners(owners) {
+    if (!owners?.length) return {};
+    const placeholders = owners.map(() => '?').join(',');
+    const rows = this.db.prepare(
+      `SELECT subscription_id, owner, query, notification_policy FROM subscriptions WHERE owner IN (${placeholders}) ORDER BY subscription_id`,
+    ).all(...owners);
+    const byOwner = {};
+    for (const row of rows) (byOwner[row.owner] ||= []).push(row);
+    return byOwner;
+  }
+
   removeSubscription(subscriptionId) {
     const removed = this._deleteSubscription.run(subscriptionId).changes > 0;
     if (removed) this._resolvableSubscriptionWiretapCache = null;
