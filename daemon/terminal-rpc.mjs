@@ -124,11 +124,19 @@ export function createTerminalRpc({
   }
 
   async function rpcSendText(args = {}) {
+    assertTerminalTextInputAllowed(terminalInputAllowed, 'send-text')
+    return writeTextToTerminal(args)
+  }
+
+  // The actual write. `rpcSendText` is the user-input door and is gated; this
+  // is not, because a server-originated notification is not terminal text
+  // input. Gating both meant the policy that stops the browser typing into a
+  // terminal also stopped agents being notified at all.
+  async function writeTextToTerminal(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
     const { text, enter, enter_delay_ms } = args
     checkSession(tmuxSession)
-    assertTerminalTextInputAllowed(terminalInputAllowed, 'send-text')
     onArmBySession(tmuxSession)
     // A live tmux can still be unable to consume task text. Clear only prompts
     // already classified as safe auto-accepts before injecting the queued text;
@@ -167,7 +175,7 @@ export function createTerminalRpc({
     const { agent_id: agentId, text, enter_delay_ms: enterDelayMs } = args
     if (!agentId) throw new Error('agent_id required')
     if (!text) throw new Error('notification text required')
-    return rpcSendText({
+    return writeTextToTerminal({
       agent_id: agentId,
       text,
       enter: true,
