@@ -2945,9 +2945,19 @@ app.get('/api/voice/backends', async (req, res) => {
       { value: '', label: 'Off', available: true },
       { value: 'chrome', label: 'Browser', available: true },
     ]
-    // Offer Deepgram when the BRIDGE is actually reachable, the same way Whisper
-    // is decided one line below — one question, asked of the one bridge.
-    if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
+    // Deepgram is always offered. `deepgramBridgeUrl` is required and this
+    // process refuses to start without it, so the backend is configured by
+    // construction and there is nothing here to discover. Asking the bridge
+    // whether it is up *right now* answers a different question — liveness —
+    // and a miss on that question presented itself as "Deepgram does not
+    // exist", which is the same silent drop that requiring the address was
+    // meant to end. Observed on stable at 2026-07-31T07:44:10Z: one 800ms probe
+    // missed, the option vanished, and a minute later the same handshake
+    // measured 4ms. Liveness belongs at connect time, where
+    // /api/voice/deepgram-sdk/start already answers 503 with a message.
+    // Whisper below is a different question and keeps its probe: it is a local
+    // process that genuinely may not be running.
+    backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
     if (await isBridgeUp(WHISPER_BRIDGE_URL)) backends.push({ value: 'whisper', label: 'Whisper', available: true })
     res.json({ backends })
   } catch (err) {
