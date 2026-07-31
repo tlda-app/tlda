@@ -7794,6 +7794,24 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  // The model an agent is running is agent metadata and the server keeps it,
+  // at metadata.model. The value is the id the daemon resolved and launched
+  // (claude-opus-5), not the alias the spawn asked for (opus) — the server
+  // never sees the resolution, so the daemon is the one sender and this is the
+  // one writer. Nothing is written when the stored value already matches: the
+  // daemon re-reports its whole ledger on every connect, and an unchanged
+  // model must not turn into a write and a broadcast per reconnect.
+  if (type === 'agent-model') {
+    const { agent_id, model } = msg
+    if (!agent_id || !model || !fleetStore) return
+    if (msg.daemon_key !== ws._daemonKey) return
+    const agent = await fleetStore.getAgent?.(agent_id)
+    if (!agent || agent.metadata?.model === model) return
+    await fleetStore.updateAgentMeta?.(agent_id, { model })
+    broadcastState(agent_id)
+    return
+  }
+
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
