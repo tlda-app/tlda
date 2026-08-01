@@ -1,0 +1,55 @@
+#!/bin/sh
+# Fail loudly when a worktree is created outside ~/worktrees.
+#
+# `git worktree add` runs post-checkout in the new worktree with a null previous
+# HEAD. A post hook cannot veto — the directory already exists by the time we run
+# — so this reports and hands over the exact move command rather than pretending
+# to block. That is the honest limit of the mechanism.
+#
+# Why it exists: /private/tmp is cleared by macOS and took an agent's
+# uncommitted work on 2026-08-01, and ~/work is Skip's own project directories,
+# which had 139 agent checkouts tangled into them. See AGENTS.md § Repository
+# workflow.
+
+prev_head="$1"
+is_branch_checkout="$3"
+
+# Only a fresh worktree/clone checkout has an all-zero previous HEAD.
+case "$prev_head" in
+  *[!0]*) exit 0 ;;
+esac
+[ "$is_branch_checkout" = "1" ] || exit 0
+
+here=$(pwd -P)
+want=$(cd "$HOME" 2>/dev/null && pwd -P)/worktrees
+
+# The primary working copy is not a worktree and is not subject to this.
+git rev-parse --git-dir 2>/dev/null | grep -q '/worktrees/' || exit 0
+
+case "$here" in
+  "$want"/*) exit 0 ;;
+esac
+
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+dest="$want/$(basename "$here")"
+
+cat >&2 <<EOF
+
+  ✗ worktree created outside ~/worktrees
+
+    at:     $here
+    branch: $branch
+
+    Every working copy lives in ~/worktrees/ — one place, and one that
+    survives. /private/tmp is cleared by macOS; ~/work is Skip's own
+    project directories.
+
+    Move it now, before you write anything:
+
+        git worktree move "$here" "$dest"
+
+    AGENTS.md § Repository workflow
+
+EOF
+
+exit 1
