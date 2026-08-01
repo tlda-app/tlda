@@ -352,6 +352,7 @@ export class FleetStore {
     this._resolvableWiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
     this._backfillDefaultSubscriptions();
+    this._backfillDefaultSubscriptionsV2();
     this._backfillNameHistory();
     this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
@@ -2653,6 +2654,22 @@ export class FleetStore {
     let seeded = 0;
     this.db.transaction(() => {
       for (const row of this.db.prepare('SELECT id FROM agents WHERE dead = 0').all()) {
+        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+      }
+      this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
+    })();
+    console.log(`[fleet-store] ${NAME}: ${seeded} agent(s) given the default subscription`);
+  }
+
+  // v1 ran before the servers wrote subscriptions at mint, so every agent
+  // created between the two has never held the default and, with the floor
+  // gone, receives nothing at all. Same one-shot rule as v1.
+  _backfillDefaultSubscriptionsV2() {
+    const NAME = 'default-subscriptions-v2';
+    if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
+    let seeded = 0;
+    this.db.transaction(() => {
+      for (const row of this.db.prepare('SELECT id FROM agents').all()) {
         if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
       }
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
