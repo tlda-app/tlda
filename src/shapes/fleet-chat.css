@@ -1837,6 +1837,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
     var(--detail-seen-column)
     var(--detail-context-column)
     minmax(0, 1fr)
+    auto
     auto;
   align-items: baseline;
   min-width: 0;
@@ -1877,8 +1878,8 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   padding: 0 4px;
   white-space: nowrap;
 }
+.fleet-agents-shape .fleet-agents-detail-restart-mcp,
 .fleet-agents-shape .fleet-agents-detail-hibernate {
-  grid-column: 5;
   flex-shrink: 0;
   border: none;
   padding: 0 2px;
@@ -1889,8 +1890,20 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
   background: transparent;
   cursor: pointer;
 }
+.fleet-agents-shape .fleet-agents-detail-restart-mcp { grid-column: 5; }
+.fleet-agents-shape .fleet-agents-detail-hibernate { grid-column: 6; }
+.fleet-agents-shape .fleet-agents-detail-restart-mcp:hover,
 .fleet-agents-shape .fleet-agents-detail-hibernate:hover {
   filter: brightness(1.15);
+}
+/* Both row controls are 9px glyphs, which is a fine pointer target and far
+   under a thumb. On a phone the hit area grows to the readability profile's
+   touch target while the glyph keeps its weight, so the pair still matches the
+   row it sits in. */
+body.phone-mode .fleet-agents-shape .fleet-agents-detail-restart-mcp,
+body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
+  min-width: var(--fleet-touch-target, 44px);
+  min-height: var(--fleet-touch-target, 44px);
 }
 .fleet-agents-shape .fleet-agents-metadata-chip {
   display: inline-flex;

@@ -622,6 +622,10 @@ export function hibernateSession(id) {
   return browserFleetTransport.durable('hibernate-session', { agent: id })
 }
 
+export function restartAgentMcp(id) {
+  return browserFleetTransport.durable('restart-agent-mcp', { agent: id })
+}
+
 export function sendKey(agent, key) {
   return browserFleetTransport.ephemeral('send-key', { agent, key })
 }

@@ -27,6 +27,7 @@ import {
   respawnAgent as _respawnAgent,
   killSession as _killSession,
   hibernateSession as _hibernateSession,
+  restartAgentMcp as _restartAgentMcp,
   spawnAgent as _spawnAgent,
   isConnected as _isConnected,
   injectOptimisticEvent as _injectOptimisticEvent,
@@ -1068,6 +1069,7 @@ export const sendMessage = _sendMessage
 export const respawnAgent = _respawnAgent
 export const killSession = _killSession
 export const hibernateSession = _hibernateSession
+export const restartAgentMcp = _restartAgentMcp
 export const spawnAgent = _spawnAgent
 export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
