@@ -162,6 +162,22 @@ subscriptions, per reader, at read time. An observer's subscription matching
 must never write that observer into the message's address, and a list that
 merges the two answers neither question.
 
+Because the two are orthogonal, the combinations that look strange are all
+representable, and the system does not forbid them:
+
+An agent may **unsubscribe from messages addressed to it** while subscribing to
+messages addressed to some other agent — to watch what is happening to that
+agent instead of to itself. It is still addressed by everything that names it;
+it simply hears none of it. That is a weird choice, and it puts the agent
+somewhere its behaviour cannot be corrected, because it will not hear the
+correction. It is not forbidden. Silence you chose is allowed.
+
+The more natural version of the same intent is not to unsubscribe at all, but
+to change the **notification policy** on the subscription to its own messages,
+and its inbox view: the messages are still received, just backgrounded. Whether
+something interrupts you is a property of the subscription, not of the
+addressing — which is why the two must stay separable.
+
 ## Configuration
 
 `~/.config/tlda/daemon.yaml` selects complete named environments and configures
