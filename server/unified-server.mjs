@@ -7173,6 +7173,63 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- restart-agent-mcp ----
+  // An agent whose MCP is dead cannot ask for it back, because asking is an MCP
+  // call. So the restart is driven from here, and it is one operation rather
+  // than a hibernate the operator has to follow with a wake: a half-finished
+  // sequence leaves the agent switched off, which is worse than the fault.
+  //
+  // The cycle is kill-session then wake. `wake` alone is not a restart — a live
+  // process short-circuits to alreadyAlive (daemon/wake-core.mjs:18), and
+  // takeover_existing is cross-daemon only (:23-25), so the session has to be
+  // gone before the wake. Identity survives: wake carries the fleet id, resumes
+  // the recorded session, and hibernating never sets `dead`, so the agent keeps
+  // its name.
+  if (type === 'restart-agent-mcp') {
+    const { agent: agentQuery } = msg
+    const agent = await fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (agent.human) { error('cannot restart a human'); return }
+    if (agent.dead) { error('agent is dead; reanimate it instead'); return }
+    const { seat, error: seatError } = await agentRouteOrError(agent)
+    if (!seat) { error(seatError); return }
+    const ownerDaemon = daemonConnections.get(seat.daemon_key)
+    if (!ownerDaemon || ownerDaemon.readyState !== 1) {
+      error(`No fleet-daemon connected for ${seat.daemon_key}`)
+      return
+    }
+    try {
+      await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
+      markAgentNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'operator restarted MCP' })
+      await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-restart-agent-mcp', reason: 'native parent MCP restarted' })
+      const result = await runWakeRouteLifecycle({
+        agentId: agent.id,
+        agent,
+        daemonKey: seat.daemon_key,
+        ownerDaemon,
+        nudgeText: null,
+        returnNoticeText: 'Your MCP was restarted. Call login(), then inbox().',
+        sendDaemonDurable,
+        appendControlTrace: (event) => controlPlaneTraces.append(event),
+        sendWakeNudge,
+        getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
+        insertWakeLifecycleEvent: async () => {
+          await fleetStore.insertEventRecord({
+            type: 'lifecycle',
+            timestamp: new Date().toISOString(),
+            from: agent.id,
+            to: agent.id,
+            text: 'MCP restarted',
+            unread: false,
+          }, { notify: false })
+        },
+      })
+      broadcastState()
+      reply({ ok: true, agent: agent.friendly_name || agent.id, action: result.action })
+    } catch (e) { error(e.message) }
+    return
+  }
+
   // ---- interrupt ----
   if (type === 'interrupt') {
     const { agent: agentQuery } = msg
