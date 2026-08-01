@@ -178,10 +178,10 @@ export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subsc
   const agentExpr = (n, labels) => {
     switch (n.t) {
       case 'lit': return n.v === 'my_labels'
-        ? (subscriber.size > 0 && [...subscriber].some(label => labels.has(label)))
+        ? (subscriber.size > 0 && [...subscriber].every(label => labels.has(label)))
         : labels.has(n.v)
       case 'me': return labels.has('me')
-      case 'my_labels': return subscriber.size > 0 && [...subscriber].some(label => labels.has(label))
+      case 'my_labels': return subscriber.size > 0 && [...subscriber].every(label => labels.has(label))
       case 'not': return !agentExpr(n.x, labels)
       case 'and': return agentExpr(n.l, labels) && agentExpr(n.r, labels)
       case 'or': return agentExpr(n.l, labels) || agentExpr(n.r, labels)

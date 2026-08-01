@@ -4364,10 +4364,7 @@ export class FleetStore {
       // re-evaluate the expression, and nothing new to plumb through. The
       // grammar is untouched: `my_labels` still means the subscriber's labels,
       // and a hand-written subscription using it means what it always meant.
-      const addressedAsSubscriber = tap.owner === recipientId;
-      const subscriberLabels = tap._needsSubscriberLabels && addressedAsSubscriber
-        ? this._agentLabelsById(tap.owner)
-        : [];
+      const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.owner) : [];
       if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels })) continue;
       // The recipient's own matching subscription IS its delivery. There is no
       // longer a floor beside it promising something different, so `direct` is

@@ -6240,7 +6240,7 @@ async function handleFleetWsMessage(ws, msg) {
     const subscriptionDeliveriesAll = []
     for (const to of recipients) {
       // Resolve subscriptions per recipient — tap labels are matched against this `to`.
-      const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat') || []
+      const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat', filterAst) || []
       const wiretapRecipients = await fleetStore.resolveWiretaps(from, to, 'chat')
       const recipientAgent = await fleetStore.getAgent?.(to)
       const nativeParentId = recipientAgent?.parent_agent_id || null
@@ -6272,16 +6272,13 @@ async function handleFleetWsMessage(ws, msg) {
           ...decision,
         })
       }
-      // The floor guarantees a direct entry for every living recipient, so its
-      // absence is a broken invariant rather than a quiet "no delivery" — fail
-      // loudly here instead of silently not notifying anyone.
-      if (!deliveryDecision) throw new Error(`no direct delivery resolved for recipient ${to}`)
       for (let i = 0; i < subscriptionDeliveries.length; i++) {
         subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
       }
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
       for (const id of [...(wiretapRecipients || []), ...subscriptionRecipients]) watchRecipients.add(id)
       subscriptionDeliveriesAll.push(...subscriptionDeliveries)
+      if (!deliveryDecision) continue
       perRecipient.push({
         to,
         recipientAgent,
