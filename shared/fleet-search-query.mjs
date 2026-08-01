@@ -1,9 +1,25 @@
-import { parseAgentSelector as parseUnifiedAgentSelector, parseUnifiedFilter } from './unified-filter-grammar.mjs'
+import { JuxtapositionError, parseAgentSelector as parseUnifiedAgentSelector, parseUnifiedFilter } from './unified-filter-grammar.mjs'
+
+/** The caller's own tokens with `&` written in at the junctions they left bare. */
+function withExplicitConjunctions(parts, junctions) {
+  const at = new Set(junctions)
+  return parts.map((token, i) => (at.has(i) ? `& ${token}` : token)).join(' ')
+}
 
 const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role'])
 const FILTER_OPERATORS = new Set(['&', '|', '!', '(', ')'])
 
-export function parseSearchQuery(raw) {
+// `agentSelector` is the search tool's `agent` parameter. It used to be spliced
+// into the query string as `agent:(X) <query>`, which under a grammar that
+// requires an operator is the caller's query with a juxtaposition prepended to
+// it by us. It is composed onto the parsed expression instead.
+// `autoConjoin` is the editor's affordance and nothing else's: with it, a bare
+// space between two filter terms becomes the `&` the grammar requires, and the
+// caller can render `explicitQuery` to show what its space produced. The API
+// leaves it off, so a query sent programmatically is rejected rather than
+// quietly rewritten — there is one language, and only the box is forgiving about
+// how you type it.
+export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = false } = {}) {
   const quotedAt = new Set()
   const parts = splitSearchTokens(raw, quotedAt)
   const filters = {}
@@ -16,6 +32,11 @@ export function parseSearchQuery(raw) {
   // dropped into the free-text side, where `from:a | from:b` died on
   // `filter parse error: unexpected "|"`.
   const hasFilterTerm = parts.some(part => filterKey(part))
+  // Junctions where the caller abutted two filter terms. Recorded against the
+  // token stream so the suggestion can be built from what they actually typed
+  // rather than from the expression assembled here.
+  const impliedConjunctionAt = []
+  let lastEmittedWasFilterTerm = false
 
   for (let i = 0; i < parts.length; i++) {
     const token = parts[i]
@@ -30,17 +51,36 @@ export function parseSearchQuery(raw) {
       filters.role = token.slice(5)
       continue
     }
-    if (key === 'before') filters.before = token.slice(7)
-    else if (key === 'after') filters.after = token.slice(6)
-    else if (key === 'since') filters.since = token.slice(6)
-    else if (key === 'type') filters.type = token.slice(5)
+    if (key === 'type') filters.type = token.slice(5)
 
     if (key && key !== 'role') {
-      if (key === 'since' || key === 'after' || key === 'before') continue
+      // `since:`/`before:` are terms in the expression like every other filter,
+      // not values lifted out of it. Lifting them out is what let
+      // `to:me since:30m` look like a single term and pass, and it is why the
+      // same word meant two different spans depending on which channel carried
+      // it. The value is resolved to an absolute timestamp here because the
+      // evaluator compares it against `row.timestamp` as a string.
+      if (key === 'since' || key === 'after' || key === 'before') {
+        if (lastEmittedWasFilterTerm) {
+        impliedConjunctionAt.push(i)
+        if (autoConjoin) filterParts.push('&')
+      }
+        const raw = token.slice(token.indexOf(':') + 1)
+        const resolved = resolveTimeFilter(raw)
+        if (!resolved) throw new Error(`"${token}" is not a time I can read. Use an ISO timestamp, "now", "today", "yesterday", or a relative span like 30m, 2h, 3d, 1w.`)
+        filterParts.push(`${key === 'after' ? 'since' : key}:${resolved}`)
+        lastEmittedWasFilterTerm = true
+        continue
+      }
+      if (lastEmittedWasFilterTerm) {
+        impliedConjunctionAt.push(i)
+        if (autoConjoin) filterParts.push('&')
+      }
       const collected = collectFilterValue(parts, i)
       i = collected.nextIndex
       const normalized = normalizeSearchFilterToken(key, collected.valueTokens)
       filterParts.push(...normalized.filterTokens)
+      lastEmittedWasFilterTerm = true
       if (key === 'from') filters.from = normalized.value
       else if (key === 'to') filters.to = normalized.value
       else if (key === 'agent') filters.agent = normalized.value
@@ -49,6 +89,9 @@ export function parseSearchQuery(raw) {
 
     if (hasFilterTerm && FILTER_OPERATORS.has(token)) {
       filterParts.push(token)
+      // `)` closes a term; every other operator joins or negates one, so what
+      // follows is not an abutting term.
+      lastEmittedWasFilterTerm = token === ')'
       continue
     }
     if (token === '&') continue
@@ -62,6 +105,18 @@ export function parseSearchQuery(raw) {
       continue
     }
     queryParts.push(token)
+  }
+
+  const explicitQuery = impliedConjunctionAt.length > 0
+    ? withExplicitConjunctions(parts, impliedConjunctionAt)
+    : raw
+  if (impliedConjunctionAt.length > 0 && !autoConjoin) {
+    throw new JuxtapositionError(raw, impliedConjunctionAt[0], explicitQuery)
+  }
+
+  if (agentSelector) {
+    filterParts.unshift('involving:', '(', agentSelector, ')', ...(filterParts.length ? ['&'] : []))
+    filters.agent = agentSelector
   }
 
   if (filterParts.length > 0) {
@@ -85,7 +140,7 @@ export function parseSearchQuery(raw) {
     filters.agentResolve = parseAgentSelector(selector, filters.from ? 'from' : filters.to ? 'to' : 'any')
   }
 
-  return { query: queryParts.join(' ').trim(), filters }
+  return { query: queryParts.join(' ').trim(), filters, explicitQuery }
 }
 
 export function parseAgentSelector(raw, scope = 'any') {
@@ -113,8 +168,6 @@ export function buildFleetSearchFilters(filters) {
     naturalTextQuery: filters.naturalTextQuery,
     fromOnly: !filters.agent && !!filters.from && !filters.filterExpression,
     role: filters.role,
-    since: (filters.since || filters.after) ? (resolveTimeFilter(filters.since || filters.after || '') || undefined) : undefined,
-    before: filters.before ? (resolveTimeFilter(filters.before) || undefined) : undefined,
     filterExpression: filters.filterExpression,
     eventType: filters.type,
   }
@@ -164,15 +217,21 @@ export function resolveTimeFilter(val) {
   if (lower === 'yesterday') {
     const d = new Date(now); d.setDate(d.getDate() - 1); d.setHours(0, 0, 0, 0); return d.toISOString()
   }
-  const relMatch = lower.match(/^(\d+)([hdwm])$/)
+  // `m` is MINUTES. It used to be months here while the `since` tool parameter
+  // read the identical string as minutes, so `since:30m` in a query searched
+  // thirty months and `since: "30m"` beside it searched thirty — the same word,
+  // two spans, nothing saying which you got. Minutes is what the parameter has
+  // always documented and what a duration means everywhere else; months are no
+  // longer expressible, which is no loss to a chat search.
+  const relMatch = lower.match(/^(\d+)\s*(m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?|w(?:eeks?)?)$/)
   if (relMatch) {
     const n = parseInt(relMatch[1])
-    const unit = relMatch[2]
+    const unit = relMatch[2][0]
     const d = new Date(now)
-    if (unit === 'h') d.setHours(d.getHours() - n)
+    if (unit === 'm') d.setMinutes(d.getMinutes() - n)
+    else if (unit === 'h') d.setHours(d.getHours() - n)
     else if (unit === 'd') d.setDate(d.getDate() - n)
     else if (unit === 'w') d.setDate(d.getDate() - n * 7)
-    else if (unit === 'm') d.setMonth(d.getMonth() - n)
     return d.toISOString()
   }
   const parsed = new Date(val)

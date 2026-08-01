@@ -308,7 +308,7 @@ const SEARCH_GROUP_INITIAL_LIMIT = 6
 function searchQueryReadout(query: string) {
   const trimmed = query.trim()
   if (!trimmed) return []
-  const parsed = parseSearchQuery(trimmed)
+  const parsed = parseSearchQuery(trimmed, { autoConjoin: true })
   const filters = parsed.filters
   const chips: string[] = []
   const structured: string[] = []
@@ -321,9 +321,6 @@ function searchQueryReadout(query: string) {
   }
   if (filters.type && !structured.includes(`type:${filters.type}`)) structured.push(`type:${filters.type}`)
   if (filters.role) structured.push(`role:${filters.role}`)
-  if (filters.since) structured.push(`since:${filters.since}`)
-  if (filters.after) structured.push(`after:${filters.after}`)
-  if (filters.before) structured.push(`before:${filters.before}`)
   if (!parsed.query && filters.naturalAgentQuery) structured.push(`agent:${filters.naturalAgentQuery}`)
   if (structured.length > 0) chips.push(`filters:${structured.join(' ')}`)
   return chips
@@ -481,7 +478,11 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
     let parsed: ReturnType<typeof parseSearchQuery>
     try {
-      parsed = parseSearchQuery(q)
+      // The box takes a bare space between terms; the language does not. The
+      // space is an input convenience, so the conjunction is written in here and
+      // the explicit form is what gets parsed and sent. The readout below shows
+      // the result, so you can see what your space became.
+      parsed = parseSearchQuery(q, { autoConjoin: true })
     } catch (e) {
       setResults([])
       setSearched(false)
@@ -727,7 +728,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
   // Parse current filters for display
   const activeFilters = useMemo<Record<string, any>>(() => {
     try {
-      return parseSearchQuery(query).filters
+      return parseSearchQuery(query, { autoConjoin: true }).filters
     } catch {
       return {}
     }

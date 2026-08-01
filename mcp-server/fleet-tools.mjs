@@ -3570,9 +3570,22 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let parsedSearch;
     let searchFilters;
     try {
-      parsedSearch = parseSearchQuery(args.agent ? `agent:(${args.agent}) ${rawQuery}` : rawQuery);
+      parsedSearch = parseSearchQuery(rawQuery, { agentSelector: args.agent || null });
       searchFilters = buildFleetSearchFilters(parsedSearch.filters);
     } catch (e) {
+      // Counted separately from other rejections. Every search API a model has
+      // met does tacit AND, so the rate of this one — and whether the same
+      // caller's next query carries the `&` — is the evidence for whether the
+      // strict grammar survives. A generic failure count cannot answer that.
+      if (e.reason === 'juxtaposition') {
+        logEvent({
+          type: 'search_rejected',
+          reason: 'juxtaposition',
+          from: activeAgentId() || 'unknown',
+          query: rawQuery,
+          suggestion: e.suggestion,
+        });
+      }
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }
     const query = parsedSearch.query;

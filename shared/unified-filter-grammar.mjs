@@ -1,5 +1,45 @@
 const OP_CHARS = new Set(['&', '|', '!', '(', ')'])
 
+/**
+ * Two terms with nothing between them. Its own type because it is the one
+ * rejection worth counting: every search API a model has seen does tacit AND, so
+ * the rate at which agents write it — and whether they self-correct on the next
+ * call — is what says whether the strict grammar can stay. A generic parse error
+ * cannot answer that question a week later.
+ *
+ * `suggestion` is the same query with the implied `&` written in, so one
+ * round-trip teaches the rule.
+ */
+export class JuxtapositionError extends Error {
+  constructor(input, tokenIndex, explicitSuggestion = null) {
+    const suggestion = explicitSuggestion ?? insertImpliedConjunctions(input)
+    super(`juxtaposition is not valid syntax in "${input}" — terms must be joined with an operator. Did you mean: ${suggestion}`)
+    this.name = 'JuxtapositionError'
+    this.reason = 'juxtaposition'
+    this.input = input
+    this.tokenIndex = tokenIndex
+    this.suggestion = suggestion
+  }
+}
+
+/** The same expression with `&` written in wherever two terms merely abut. */
+export function insertImpliedConjunctions(input) {
+  const toks = tokenizeFilterExpression(input)
+  const out = []
+  for (let i = 0; i < toks.length; i++) {
+    const prev = toks[i - 1]
+    const tok = toks[i]
+    const opensOperand = prev && prev.k === 'lit' && prev.v.endsWith(':')
+    const abuts = prev
+      && !opensOperand
+      && (prev.k === 'lit' || (prev.k === 'op' && prev.v === ')'))
+      && (tok.k === 'lit' || (tok.k === 'op' && (tok.v === '(' || tok.v === '!')))
+    if (abuts) out.push('&')
+    out.push(tok.v)
+  }
+  return out.join(' ')
+}
+
 export function tokenizeFilterExpression(input) {
   const toks = []
   const str = String(input || '')
@@ -49,6 +89,11 @@ export function parseUnifiedFilter(input, { sort = 'agent' } = {}) {
     return node
   }
 
+  // Conjunction is written, never implied. Juxtaposition used to mean AND here
+  // while the query splitter above threw `&` away, so the operator you typed was
+  // discarded and the space between terms was doing the work. One grammar, and
+  // `&` is the only way to say it: an editor may insert it for you, but what is
+  // parsed always carries it.
   function parseAnd() {
     let node = parseBetween()
     while (true) {
@@ -58,8 +103,7 @@ export function parseUnifiedFilter(input, { sort = 'agent' } = {}) {
         continue
       }
       if (sort === 'message' && atomStart(peek())) {
-        node = { t: 'and', l: node, r: parseBetween() }
-        continue
+        throw new JuxtapositionError(input, p)
       }
       return node
     }
