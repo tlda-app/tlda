@@ -11,7 +11,7 @@
 // Both tail implementations (the daemon's in-process tail and the forked
 // ingester child) ask this module, so the two cannot drift apart.
 
-import { isFullyMarked } from '../shared/terminal-system-markers.mjs'
+import { isFullyMarked, LEADING_CONTROL } from '../shared/terminal-system-markers.mjs'
 
 // Machine output and harness notices. These wrap what the terminal printed
 // back, or what the harness said about the session — never what was typed.
@@ -90,16 +90,23 @@ export function isHarnessAuthoredRecord(parsed) {
 // because a pasted absolute path is a real message that starts that way.
 export function isMachineAuthoredText(text) {
   if (!text) return false
+  // Every prefix below is anchored at the start, and injected text can arrive
+  // with the prompt-clear (Ctrl-U) or a carriage return still on the front. That
+  // is not a different kind of text, it is the same text with a control byte in
+  // front of it, so the byte comes off before the shape is read — 31 rows of
+  // machine output reached Skip's history through that gap.
+  const start = String(text).replace(LEADING_CONTROL, '')
+  if (!start) return false
   // The rule: every line tlda writes into a terminal is one line and starts with
   // 💻 or 📬, and Skip starts no line with either. Text whose lines are all
   // marked is the app talking, whatever it says.
-  if (isFullyMarked(text)) return true
-  if (HARNESS_NOTICES.includes(text)) return true
-  if (INJECTED_TEXT_PREFIXES.some(prefix => text.startsWith(prefix))) return true
-  if (MACHINE_OUTPUT_PREFIXES.some(prefix => text.startsWith(prefix))) return true
-  if (text.startsWith(NOTIFICATION_PREFIX)) return true
-  if (RETURN_NOTICE.test(text)) return true
-  return LOGIN_PROMPT.test(text)
+  if (isFullyMarked(start)) return true
+  if (HARNESS_NOTICES.includes(start)) return true
+  if (INJECTED_TEXT_PREFIXES.some(prefix => start.startsWith(prefix))) return true
+  if (MACHINE_OUTPUT_PREFIXES.some(prefix => start.startsWith(prefix))) return true
+  if (start.startsWith(NOTIFICATION_PREFIX)) return true
+  if (RETURN_NOTICE.test(start)) return true
+  return LOGIN_PROMPT.test(start)
 }
 
 // Recover the line as typed. Returns the text unchanged when it carries no

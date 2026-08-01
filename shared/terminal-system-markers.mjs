@@ -21,8 +21,16 @@ export const NOTIFICATION_MARKER = '📬'
 
 const MARKERS = [SYSTEM_MARKER, NOTIFICATION_MARKER]
 
+// Leading whitespace and C0 control characters. A line injected into a terminal
+// can arrive with the prompt-clear (Ctrl-U, U+0015) or a carriage return still on
+// the front, and a marker test anchored at position zero then reads the app's own
+// line as something the human typed. Nothing printable is skipped, so this cannot
+// pull a real message into a marker.
+export const LEADING_CONTROL = /^[\s\u0000-\u001f\u007f]+/
+
 export function isMarkedLine(line) {
-  return MARKERS.some(marker => line.startsWith(marker))
+  const start = String(line).replace(LEADING_CONTROL, '')
+  return MARKERS.some(marker => start.startsWith(marker))
 }
 
 // One system message per line. A notice with several sentences to deliver sends
