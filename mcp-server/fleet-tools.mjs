@@ -2133,6 +2133,14 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
   // ==== Registration & Identity ====
 
   // ---- login ----
+  // Identity in this block is SPECIFIED. Read scratch/daemon-mint-sift.md
+  // (Skip, 2026-07-24) before you change it. Three things it settles, which
+  // agents keep re-deciding from the code instead:
+  //   - a mint id and a fleet id are NOT two names for one thing;
+  //   - `fleet_id` is an OPTIONAL write-once fact that arrives from the server
+  //     asynchronously — it comes when it comes, and login does not require it;
+  //   - login-side identity repair is on that spec's delete list, and
+  //     "server binding arrival is daemon mint-state input, not login repair".
   if (name === 'login') {
     if (Object.keys(args || {}).length > 0) {
       return { content: [{ type: 'text', text: 'login() takes no arguments; this process must get its fleet identity from FLEET_ID.' }], isError: true };
