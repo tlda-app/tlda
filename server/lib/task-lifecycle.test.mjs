@@ -75,7 +75,7 @@ test('transfers a task by keeping its id and appending the delegation message', 
     status: 'working',
     metadata: {
       keep: 'unchanged',
-      notify_at: '2026-07-25T12:00:00.000Z',
+      at: '2026-07-25T12:00:00.000Z',
       notify_every: 300,
       expires_at: '2026-07-25T13:00:00.000Z',
     },
@@ -100,7 +100,7 @@ test('transfers a task by keeping its id and appending the delegation message', 
     eventMetadata: { transfer: true },
     eventOptions: { unread: true },
     taskMetadataPatch: {
-      notify_at: '2026-07-26T12:00:00.000Z',
+      at: '2026-07-26T12:00:00.000Z',
       notify_every: undefined,
       expires_at: undefined,
     },
@@ -114,7 +114,7 @@ test('transfers a task by keeping its id and appending the delegation message', 
   assert.equal(storedTask.delegated_at, '2026-07-20T12:00:00.000Z')
   assert.deepEqual(storedTask.metadata, {
     keep: 'unchanged',
-    notify_at: '2026-07-26T12:00:00.000Z',
+    at: '2026-07-26T12:00:00.000Z',
   })
   assert.match(storedTask.message, /Original assignment text\./)
   assert.match(storedTask.message, /Continue with the remaining verification\./)
