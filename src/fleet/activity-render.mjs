@@ -20,6 +20,7 @@
 import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
 import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
+import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -798,7 +799,7 @@ export function renderActivityGroup(group, ctx) {
       if (fullText.includes('[Request interrupted by user]')) {
         return `<div class="activity-status-badge interrupt-badge">⏸ interrupted</div>`
       }
-      if (fullText.startsWith('📬')) return ''
+      if (isFullyMarked(fullText)) return ''
       // Render what the agent actually SAID/thought as markdown (code fences,
       // lists, math) — same renderer as every other rich block in this file —
       // instead of raw escaped text. This is the agent-terminal rendering Skip

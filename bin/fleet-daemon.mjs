@@ -826,6 +826,23 @@ daemonMintCore = createDaemonMintCore({
 const wakeMint = createDaemonWakeCore({
   store: mintStore,
   targetDaemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  // Wake and tell are one call, so the injection happens here rather than the
+  // server following up on an answer it got back. A terminal that cannot take
+  // the text must not fail the wake: the agent is up either way, and the caller
+  // sees `notified` absent.
+  notifyAgent: async ({ agentId, text, enterDelayMs }) => {
+    if (!agentId) return null
+    try {
+      return await terminalRpc.handlers['notify-agent']({
+        agent_id: agentId,
+        text,
+        enter_delay_ms: enterDelayMs,
+      })
+    } catch (e) {
+      log.warn(`wake notify failed for ${agentId}: ${e.message}`)
+      return null
+    }
+  },
   processAlive: async facts => {
     const tmuxSession = facts.processState?.tmux_session
     if (!tmuxSession) return false

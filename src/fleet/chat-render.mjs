@@ -20,6 +20,7 @@
 
 import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { uniqueLiveAgentForLabel } from './send-target-binding.mjs'
+import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 
 // The agents a message was addressed to. Group send made this a SET carried by
 // ONE event: a one-recipient message is an array of length 1, and there is no
@@ -409,10 +410,14 @@ export function renderChatLine(m, ctx) {
     return `<div class="chat-line system-notice" data-msg-ts="${esc(m.timestamp || '')}"><span class="chat-ts">${ts}</span> ${esc(m.text || '')}</div>`
   }
 
-  // Kick messages and channel notifications — infrastructure noise, filter from chat UI
-  // The return notice prepends "You were away as hibernating for N minutes."
-  // ahead of the 📬 line, so a startsWith test stopped matching and every wake
-  // notification started rendering in Skip's chat.
+  // Kick messages and channel notifications — infrastructure noise, filter from chat UI.
+  // Everything tlda writes into a terminal now marks each of its lines with 💻
+  // or 📬, so this is one test rather than a phrasing to keep in step. The
+  // pattern beside it covers rows stored before the markers existed: the return
+  // notice prepended "You were away as hibernating for N minutes." ahead of the
+  // 📬 line, so a startsWith test stopped matching and every wake notification
+  // started rendering in Skip's chat.
+  if (isFullyMarked(m.text || '')) return ''
   if (/^(You were away as [^\n]*\n+)?📬/.test(m.text || '')) return ''
   if ((m.text || '').startsWith('<channel')) return ''
   if ((m.text || '').includes('[Request interrupted by user')) return ''

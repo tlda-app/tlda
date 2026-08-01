@@ -49,6 +49,7 @@ import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat } from '../shared/document-formats.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
+import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { grantedSubscriptionsFor } from '../shared/subscriptions.mjs'
@@ -81,7 +82,7 @@ import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
-import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
+import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
@@ -840,12 +841,21 @@ function wakeBreakerBackoffMs(fails, baseMs, capMs) {
   return Math.min(baseMs * 2 ** (Math.max(1, fails) - 1), capMs)
 }
 
+// Codex needs a beat between the text landing and Enter, or the line is sent
+// before it has been taken.
+function wakeEnterDelayMs(agent) {
+  return agent?.metadata?.kind === 'codex' ? 400 : 0
+}
+
+// Injecting text on its own, for a caller that already knows a process started —
+// `reanimate` is the one, and it asks unconditionally. The wake path does not
+// use this: waking and telling are one call there, made by the daemon.
 async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
-  if (!shouldSendWakeNudge(agent, nudgeText)) return
+  if (!nudgeText) return
   await sendDaemonDurable(daemonKey, 'notify-agent', {
     agent_id: agent.id,
     text: nudgeText,
-    enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
+    enter_delay_ms: wakeEnterDelayMs(agent),
   })
 }
 
@@ -882,12 +892,9 @@ function agentReturnNotice(agent, status = 'hibernating', { reanimated = false }
     lines.push('You were killed and reanimated.')
     lines.push('Your open tasks were retired when you were killed.')
   }
-  return lines.join('\n')
-}
-
-function withAgentReturnNotice(agent, nudgeText, status = 'hibernating', opts = {}) {
-  const notice = agentReturnNotice(agent, status, opts)
-  return nudgeText ? `${notice}\n\n${nudgeText}` : notice
+  // Each sentence is its own system message rather than one message with line
+  // breaks in it, so a transcript reader can strip them line by line.
+  return systemMessage(lines.join('\n'))
 }
 
 async function waitForAgentDaemonRoute(agentId, timeoutMs = 10_000) {
@@ -1007,15 +1014,18 @@ async function taskInboxStatusFor(agentId) {
   return normalizeInboxStatus(status)
 }
 
+// A notification is one line, so the message it previews cannot bring its own
+// line breaks along: a quoted second line arrives unmarked and reads back as
+// something Skip typed at the terminal.
 function taskWakePreview(raw, max = 120) {
-  const s = String(raw || '')
+  const s = String(raw || '').replace(/\s+/g, ' ').trim()
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
 async function taskDelegateWakeText(description, agentId) {
   const status = await taskInboxStatusFor(agentId)
   const prefix = status[0].toUpperCase() + status.slice(1)
-  return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
+  return `${NOTIFICATION_MARKER} ${prefix} new task assigned: ${taskWakePreview(description)} — call inbox() to see it.`
 }
 
 // detectPlanApproval removed — plan detection is handled by the daemon
@@ -5081,11 +5091,13 @@ async function drainWakeQueue() {
         daemonKey,
         ownerDaemon: daemonConnections.get(daemonKey),
         nudgeText,
-        returnNoticeText: withAgentReturnNotice(agent, nudgeText),
+        // Only the notice. The daemon composes it onto the message when it
+        // actually started something.
+        returnNoticeText: agentReturnNotice(agent),
+        enterDelayMs: wakeEnterDelayMs(agent),
         traceId,
         sendDaemonDurable,
         appendControlTrace: (event) => controlPlaneTraces.append(event),
-        sendWakeNudge,
         getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
         insertWakeLifecycleEvent: async () => {
           const wakeTs = new Date().toISOString()
@@ -5922,7 +5934,9 @@ async function handleFleetWsMessage(ws, msg) {
 
 
   const previewForWake = (raw, max = 120) => {
-    const s = String(raw || '')
+    // Collapsed for the same reason as taskWakePreview: the notification is one
+    // line, and a preview that carries newlines spills unmarked lines.
+    const s = String(raw || '').replace(/\s+/g, ' ').trim()
     return s.length > max ? `${s.slice(0, max)}…` : s
   }
   // Reads the agent, so async — and the read is immediately property-accessed,
@@ -5933,11 +5947,11 @@ async function handleFleetWsMessage(ws, msg) {
     return normalizeInboxStatus(status)
   }
   const unreadPendingFor = (eventId, agentId) => fleetStore.isUnreadPending(eventId, agentId)
-  const inboxCall = (action) => `Call inbox() to ${action}.`
+  const inboxCall = (action) => `call inbox() to ${action}.`
   const wakeText = ({ status, event, preview, action }) => {
     const label = normalizeInboxStatus(status)
     const prefix = label[0].toUpperCase() + label.slice(1)
-    return `📬 ${prefix} ${event}: ${preview}\n${inboxCall(action)}`
+    return `${NOTIFICATION_MARKER} ${prefix} ${event}: ${preview} — ${inboxCall(action)}`
   }
   const chatWakeText = async (text, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
   const delegateWakeText = async (description, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
@@ -6312,7 +6326,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (r.nativeNeedsParent) {
           wakeRequests.push({
             to: r.nativeParentId,
-            text: `📬 Message queued for native subagent ${r.recipientAgent.friendly_name || r.to}.`,
+            text: `${NOTIFICATION_MARKER} Message queued for native subagent ${r.recipientAgent.friendly_name || r.to}.`,
             asker: from,
             traceId,
             source: { sourceEventId: eventId, priority: basePriority },
@@ -6402,7 +6416,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (keyword === 'outline') {
           setTimeout(() => {
             sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
-              text: 'Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.',
+              text: systemMessage('Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.'),
               enter: true,
             })).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
           }, 2000)

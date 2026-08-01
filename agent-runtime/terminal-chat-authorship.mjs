@@ -11,6 +11,8 @@
 // Both tail implementations (the daemon's in-process tail and the forked
 // ingester child) ask this module, so the two cannot drift apart.
 
+import { isFullyMarked } from '../shared/terminal-system-markers.mjs'
+
 // Machine output and harness notices. These wrap what the terminal printed
 // back, or what the harness said about the session — never what was typed.
 const MACHINE_OUTPUT_PREFIXES = [
@@ -18,9 +20,10 @@ const MACHINE_OUTPUT_PREFIXES = [
   '<bash-stdout>', '<bash-stderr>',
 ]
 
-// Messages addressed *to* the agent rather than typed by the human.
+// Messages addressed *to* the agent rather than typed by the human. The harness
+// writes these wrappers itself, so tlda cannot mark them and they stay a list.
 const INJECTED_TEXT_PREFIXES = [
-  '<task-notification', '<system-reminder', '<channel', '📬',
+  '<task-notification', '<system-reminder', '<channel',
 ]
 
 // Notices the harness writes about the human, not words from them.
@@ -29,11 +32,17 @@ const HARNESS_NOTICES = [
   '[Request interrupted by user for tool use]',
 ]
 
-// The wake nudge the server injects when an agent comes back. It is prepended
-// ahead of the 📬 line, so the `📬` prefix test does not see it and every wake
-// landed in Skip's chat authored as him. A prefix list cannot express "this,
-// then anything", so it gets a pattern.
-const RETURN_NOTICE = /^You were away as \S+ for [^\n]*\n/
+// Shapes tlda emitted before it marked its own lines. Everything tlda writes now
+// carries 💻 or 📬 and is caught by isFullyMarked, so this list is closed: it
+// describes text already in the wild, and no new notice belongs in it. Adding an
+// entry here means an emitter skipped its marker — fix the emitter instead.
+//
+// RETURN_NOTICE needed a pattern rather than a prefix because the notice is
+// prepended ahead of the 📬 line. It also required the trailing newline, so a
+// bare notice with nothing after it never matched and landed in Skip's chat as
+// him — 769 rows of it.
+const RETURN_NOTICE = /^You were away as \S+ for [^\n]*(\n|$)/
+const NOTIFICATION_PREFIX = '📬'
 
 const LOGIN_PROMPT = /^Call (?:login|register)\([^)]*\) with the (?:tlda|fleet) MCP server\b/
 
@@ -81,9 +90,14 @@ export function isHarnessAuthoredRecord(parsed) {
 // because a pasted absolute path is a real message that starts that way.
 export function isMachineAuthoredText(text) {
   if (!text) return false
+  // The rule: every line tlda writes into a terminal is one line and starts with
+  // 💻 or 📬, and Skip starts no line with either. Text whose lines are all
+  // marked is the app talking, whatever it says.
+  if (isFullyMarked(text)) return true
   if (HARNESS_NOTICES.includes(text)) return true
   if (INJECTED_TEXT_PREFIXES.some(prefix => text.startsWith(prefix))) return true
   if (MACHINE_OUTPUT_PREFIXES.some(prefix => text.startsWith(prefix))) return true
+  if (text.startsWith(NOTIFICATION_PREFIX)) return true
   if (RETURN_NOTICE.test(text)) return true
   return LOGIN_PROMPT.test(text)
 }
