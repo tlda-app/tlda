@@ -40,12 +40,6 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
 
   for (let i = 0; i < parts.length; i++) {
     const token = parts[i]
-    if (!quotedAt.has(i)) {
-      const unknown = unknownFilterKey(token)
-      if (unknown) {
-        throw new Error(`unknown filter "${unknown}:" in "${raw}". Known filters: ${[...FILTER_KEYS].map(k => `${k}:`).join(', ')}. To search for this as text, quote it: "${token}"`)
-      }
-    }
     const key = filterKey(token)
     if (key === 'role') {
       filters.role = token.slice(5)
@@ -88,6 +82,19 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
     }
 
     if (hasFilterTerm && FILTER_OPERATORS.has(token)) {
+      // An operator belongs to the filter expression only when it actually joins
+      // filter terms. If either side is a bare word, the caller has written
+      // something the language cannot mean — most often a mistyped key, like
+      // `sinse:30m & to:me` — and saying so is the whole point. Dropping the
+      // operator instead would quietly turn their `|` into an `&`.
+      if (token !== ')' && token !== '(' && token !== '!') {
+        const orphan = !lastEmittedWasFilterTerm
+          ? queryParts[queryParts.length - 1]
+          : (nextFilterishToken(parts, i) ? null : parts[i + 1])
+        if (orphan != null) {
+          throw new Error(`"${orphan}" is not a filter term, so "${token}" has nothing to join in "${raw}". Filter keys are ${[...FILTER_KEYS].map(k => `${k}:`).join(', ')} — or quote the term to search it as text.`)
+        }
+      }
       filterParts.push(token)
       // `)` closes a term; every other operator joins or negates one, so what
       // follows is not an abutting term.
@@ -253,6 +260,15 @@ function splitSearchTokens(raw, quotedAt) {
   })
 }
 
+/** The next real operand after `i`, skipping `!` and `(` — or null if it is not a filter term. */
+function nextFilterishToken(parts, i) {
+  for (let j = i + 1; j < parts.length; j++) {
+    if (parts[j] === '!' || parts[j] === '(') continue
+    return filterKey(parts[j]) ? parts[j] : null
+  }
+  return null
+}
+
 function filterKey(token) {
   const idx = token.indexOf(':')
   if (idx <= 0) return null
@@ -260,21 +276,18 @@ function filterKey(token) {
   return FILTER_KEYS.has(key) ? key : null
 }
 
-// Prefixes that look like a filter key and are not one: an agent id, and the URL
-// schemes that turn up in ordinary message text.
-const NON_FILTER_PREFIXES = new Set(['fleet', 'http', 'https', 'ws', 'wss', 'file', 'mailto'])
-
-// A term shaped like a filter whose key nothing recognises — `sinse:30m`. It
-// used to fall through to free text and match nothing, which is indistinguishable
-// from a filter that legitimately found nothing, and that is what sends a caller
-// off guessing search words instead of fixing the term. Quote it to search for
-// the literal text.
-function unknownFilterKey(token) {
-  const match = /^([a-z][a-z0-9_]*):/i.exec(token)
-  if (!match) return null
+/**
+ * Whether a token that resolved to no agent looks like a mistyped filter key —
+ * `sinse:30m`, `cwd:/path`. It is only ever a HINT on the failure message, never
+ * a syntax rule: a name is an opaque atom here, so `chief:day` is one whole name
+ * and the grammar cannot tell it from a typo. Rejecting colon tokens outright
+ * would make that documented name unsearchable.
+ */
+export function looksLikeMistypedFilterKey(token) {
+  const match = /^([a-z][a-z0-9_]*):/i.exec(String(token || ''))
+  if (!match) return false
   const key = match[1].toLowerCase()
-  if (FILTER_KEYS.has(key) || NON_FILTER_PREFIXES.has(key)) return null
-  return key
+  return !FILTER_KEYS.has(key) && key !== 'fleet'
 }
 
 function collectFilterValue(parts, index) {
