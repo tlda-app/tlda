@@ -6410,7 +6410,7 @@ async function handleFleetWsMessage(ws, msg) {
       blocked_by,
       from,
       requires_approval,
-      notify_at,
+      at,
       notify_every,
       expires_at,
       allow_pending_agent,
@@ -6454,25 +6454,25 @@ async function handleFleetWsMessage(ws, msg) {
     // agents act — see the authorization gate section in AGENTS.md. The HTTP twin at
     // POST /api/tasks/delegate is ungated in the same way, so the two agree on who
     // may re-delegate. They do NOT otherwise agree — the HTTP route sends no wake,
-    // has no operation_id idempotency, and drops notify_at/expires_at and
+    // has no operation_id idempotency, and drops at/expires_at and
     // requires_approval. That divergence is a known bug, not a licence to add a
     // gate back here.
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const nowMs = Date.now()
     const now = new Date(nowMs).toISOString()
-    const notifyAtMs = notify_at ? Date.parse(notify_at) : nowMs
+    const atMs = at ? Date.parse(at) : nowMs
     const expiresAtMs = expires_at ? Date.parse(expires_at) : Infinity
-    if (notify_at && !Number.isFinite(notifyAtMs)) { error('notify_at must be an ISO timestamp'); return }
+    if (at && !Number.isFinite(atMs)) { error('at must be an ISO timestamp'); return }
     if (notify_every != null && (!Number.isFinite(Number(notify_every)) || Number(notify_every) <= 0)) { error('notify_every must be a positive number of seconds'); return }
     if (expires_at && !Number.isFinite(expiresAtMs)) { error('expires_at must be an ISO timestamp'); return }
-    if (Number.isFinite(expiresAtMs) && Number.isFinite(notifyAtMs) && expiresAtMs <= notifyAtMs) { error('expires_at must be later than notify_at'); return }
+    if (Number.isFinite(expiresAtMs) && Number.isFinite(atMs) && expiresAtMs <= atMs) { error('expires_at must be later than at'); return }
     const metadata = {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
       ...(requires_approval ? { requires_approval: true } : {}),
       ...(allow_pending_agent && !await fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
       ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
-      notify_at: new Date(notifyAtMs).toISOString(),
+      at: new Date(atMs).toISOString(),
       ...(notify_every != null ? { notify_every: Number(notify_every) } : {}),
       ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
     }
@@ -6495,9 +6495,9 @@ async function handleFleetWsMessage(ws, msg) {
         message: taskMsg,
         delegatedAt: now,
         eventMetadata: delegateMetadata,
-        eventOptions: { unread: notifyAtMs <= nowMs },
+        eventOptions: { unread: atMs <= nowMs },
         taskMetadataPatch: {
-          notify_at: new Date(notifyAtMs).toISOString(),
+          at: new Date(atMs).toISOString(),
           notify_every: notify_every != null ? Number(notify_every) : undefined,
           expires_at: expires_at ? new Date(expiresAtMs).toISOString() : undefined,
         },
@@ -6516,7 +6516,7 @@ async function handleFleetWsMessage(ws, msg) {
       }
       await fleetStore.upsertTask(task)
       delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata, {
-        unread: !Number.isFinite(notifyAtMs) || notifyAtMs <= Date.now(),
+        unread: !Number.isFinite(atMs) || atMs <= Date.now(),
       })
     }
     if (existingTask) {
@@ -6526,8 +6526,8 @@ async function handleFleetWsMessage(ws, msg) {
       }
     }
     const notifyEverySeconds = notify_every != null ? Number(notify_every) : null
-    const reminderAtMs = notifyAtMs > nowMs
-      ? notifyAtMs
+    const reminderAtMs = atMs > nowMs
+      ? atMs
       : notifyEverySeconds
         ? nowMs + notifyEverySeconds * 1000
         : NaN
@@ -6582,7 +6582,7 @@ async function handleFleetWsMessage(ws, msg) {
       operation_id: operation_id || null,
       trace_id: traceId,
     })
-    if (!Number.isFinite(notifyAtMs) || notifyAtMs <= Date.now()) {
+    if (!Number.isFinite(atMs) || atMs <= Date.now()) {
       await requestWake(resolved.id, await delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
     }
     return

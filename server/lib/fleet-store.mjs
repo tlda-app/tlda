@@ -803,6 +803,16 @@ export class FleetStore {
       this.db.exec("UPDATE tasks SET updated_at = COALESCE(completed_at, last_checked, delegated_at) WHERE updated_at IS NULL");
     }
 
+    // The deferral timestamp is metadata.at; rows written before the rename
+    // carry notify_at. No dual read anywhere, so a row that still holds the old
+    // key reads as "never deferred" — move it. The WHERE clause is the idempotency:
+    // once renamed, no row matches.
+    this.db.exec(`
+      UPDATE tasks
+      SET metadata = json_remove(json_set(metadata, '$.at', json_extract(metadata, '$.notify_at')), '$.notify_at')
+      WHERE json_valid(metadata) AND json_extract(metadata, '$.notify_at') IS NOT NULL
+    `);
+
     // Add lineage columns to agents if missing
     if (!agentCols.some(c => c.name === 'lineage_id')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN lineage_id TEXT");
