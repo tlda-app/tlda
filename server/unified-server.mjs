@@ -52,7 +52,7 @@ import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
-import { grantedSubscriptionsFor } from '../shared/subscriptions.mjs'
+import { defaultSubscription, DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
@@ -407,18 +407,35 @@ function agentWithDaemonCapabilities(agent) {
 // rows travel with the agent on both paths that carry one to the browser — the
 // page and the delta. A delta replaces the whole agent object client-side, so a
 // field present on only one path would disappear the moment an agent moved.
-// The granted set leads, because it is the one that answers "why is this agent
-// reachable at all". It is not a row in `subscriptions` — the floor is computed
-// per event and the config sets are declared in daemon.yaml — so listing only
-// stored rows would show an agent with no subscriptions while it is being
-// notified perfectly well, and the panel would be lying about the case that
-// matters most. Marked by origin so held and granted stay distinguishable.
-// `daemonConfig` is passed in rather than read here: this runs once per agent
-// on a page of them, and readDaemonConfig() parses YAML off disk every call.
-function agentWithSubscriptions(agent, byOwner, daemonConfig) {
+//
+// Every subscription is a row now, including the default the agent asked for at
+// login, so there is nothing to synthesise here and nothing that could disagree
+// with what the matcher does. That matters more than the saved code: the panel
+// is the instrument Skip uses to tell whether any of this works, and while the
+// floor existed it displayed `to:fleet:<id>` as though that were the rule that
+// delivered the message when nothing evaluated that string at all. What it shows
+// now is the row the matcher reads.
+// The subscriptions a mint asks for, as they arrive from the daemon.
+//
+// A daemon that sends none gets the default — not as a floor, but because a
+// mint with nothing at all is a daemon too old to know about this, and an agent
+// nobody can reach is worse than one holding a row it may delete. It is an
+// ordinary row either way: visible in the panel, evaluated by the matcher, and
+// removable, because "if someone wants to, like, have their agents be
+// completely unaddressable, that's their fucking choice."
+function normalizeMintSubscriptions(sent) {
+  if (!Array.isArray(sent)) return [defaultSubscription()]
+  const wanted = sent
+    .map(s => (typeof s === 'string'
+      ? { query: s, notification_policy: DEFAULT_SUBSCRIPTION_POLICY }
+      : { query: s?.query, notification_policy: s?.notification_policy || s?.policy || DEFAULT_SUBSCRIPTION_POLICY }))
+    .filter(s => typeof s.query === 'string' && s.query.length > 0)
+  return wanted.length ? wanted : [defaultSubscription()]
+}
+
+function agentWithSubscriptions(agent, byOwner) {
   if (!agent) return agent
-  const held = (byOwner?.[agent.id] || []).map(s => ({ ...s, origin: 'held' }))
-  return { ...agent, subscriptions: [...grantedSubscriptionsFor(agent.id, daemonConfig), ...held] }
+  return { ...agent, subscriptions: (byOwner?.[agent.id] || []).map(s => ({ ...s, origin: 'held' })) }
 }
 
 // Gate 1 observability: correlates one daemon WS connection attempt across
@@ -1704,9 +1721,9 @@ function _queueBroadcastAgents(agentUpdates = null) {
   }
 }
 
-function _agentWithEphemeralState(agent, subscriptionsByOwner, daemonConfig) {
+function _agentWithEphemeralState(agent, subscriptionsByOwner) {
   if (!agent) return null
-  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner, daemonConfig)
+  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)
   if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
   if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
   return withCapabilities
@@ -1722,14 +1739,8 @@ async function _broadcastStateNow() {
   const changed = []
   const removed = []
   const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pendingIds) || {}
-  // Read once for the whole delta, for the reason agentWithSubscriptions states:
-  // readDaemonConfig() stats, reads and YAML-parses daemon.yaml on every call,
-  // with no cache. Called inside this loop it was that work per changed agent per
-  // broadcast, synchronous, on the main loop — the cost this project already
-  // measured and removed twice on this exact path.
-  const daemonConfig = readDaemonConfig()
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner, daemonConfig)
+    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner)
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
@@ -2194,6 +2205,18 @@ if (fleetStore) {
     SERVER_OWNER_ID,
     { kind: RUNTIME_KIND.HUMAN, status: RUNTIME_STATUS.AWAY },
   )
+  // The server owner is created here rather than by a mint or a registration,
+  // so this is its mint and its subscription belongs here too. Caught on the
+  // preview: Skip's own row came back with an empty subscription list, which
+  // once delivery is subscriptions and nothing else means he receives no chat
+  // at all. He is the one recipient for whom silence is least survivable, and
+  // he arrives by the one creation path that neither the daemon nor the browser
+  // owns. Insert-if-absent like every other, so he can still unsubscribe.
+  await fleetStore.ensureSubscription?.({
+    owner: SERVER_OWNER_ID,
+    query: DEFAULT_SUBSCRIPTION_QUERY,
+    notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY,
+  })
   const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || readDaemonConfig().spawnMachineId
   if (configuredSpawnMachine && !await fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
     await fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
@@ -5344,8 +5367,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     const pageAgents = page.agents || []
     const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pageAgents.map(agent => agent.id)) || {}
-    const pageDaemonConfig = readDaemonConfig()
-    reply({ ...page, agents: pageAgents.map(agent => agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner, pageDaemonConfig)), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
+    reply({ ...page, agents: pageAgents.map(agent => agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
@@ -5442,7 +5464,17 @@ async function handleFleetWsMessage(ws, msg) {
       metadata: null,
     }
     await fleetStore.upsertAgent(child)
-    await fleetStore.ensureDefaultSubscription?.(child.id)
+    // A native subagent is minted here rather than through a shell reservation,
+    // so this is its mint and this is where its subscription is written. The
+    // call that used to be here named a method deleted on 7/28 and, being an
+    // optional call, had been silently doing nothing ever since — the code has
+    // been asking for a default subscription for four days with nothing
+    // answering.
+    await fleetStore.ensureSubscription?.({
+      owner: child.id,
+      query: DEFAULT_SUBSCRIPTION_QUERY,
+      notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY,
+    })
     const stored = await fleetStore.getAgent?.(child.id) || child
     broadcastState(stored)
     reply({ ok: true, agent: stored })
@@ -5563,6 +5595,33 @@ async function handleFleetWsMessage(ws, msg) {
         return
       }
       throw e
+    }
+    // "It's Mint writes it to the database." The subscription is declared in
+    // daemon.yaml, read by the daemon — the machine that has the file — and sent
+    // with the reservation. From here the row is live and mutable: "then you can
+    // fucking change it at will."
+    //
+    // Written when the ROW IS CREATED, which is what mint means — not only for
+    // spawn shells. A human registers through this same handler and never
+    // reserves a shell, so gating on the reservation left Skip's own row with no
+    // subscription and therefore no chat: caught on the preview, where his agent
+    // came back with an empty list.
+    //
+    // Creation-only is also what keeps it a mint rather than a reconcile. An
+    // agent that unsubscribes stays unsubscribed through every subsequent wake
+    // and every re-register, because the row survives the wake and nothing
+    // refreshes it.
+    //
+    // The server never reads daemon.yaml here. That is what makes this work on
+    // Fly, which has no daemon.yaml because it runs no daemon.
+    if (!existing) {
+      for (const wanted of normalizeMintSubscriptions(msg.subscriptions)) {
+        await fleetStore.ensureSubscription?.({
+          owner: agentId,
+          query: wanted.query,
+          notificationPolicy: wanted.notification_policy,
+        })
+      }
     }
     const lifecycleLabel = agent.friendly_name || requestedName || agentId
     const eventType = isShellReservation ? 'lifecycle' : 'register'
@@ -7379,7 +7438,7 @@ async function handleFleetWsMessage(ws, msg) {
     // which is the precise lie this feature exists to remove, just on the agent's
     // surface rather than Skip's. One question, one answer, both surfaces.
     const held = (await fleetStore.getSubscriptionsByOwner(target.id)) || []
-    reply(agentWithSubscriptions(target, { [target.id]: held }, readDaemonConfig()).subscriptions)
+    reply(agentWithSubscriptions(target, { [target.id]: held }).subscriptions)
     return
   }
 

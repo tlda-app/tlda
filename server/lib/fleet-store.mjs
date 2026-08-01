@@ -23,9 +23,10 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
+import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../../shared/subscriptions.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
-import { floorSubscription } from '../../shared/subscriptions.mjs';
+
 // isFleetRosterAgent only. fleetRosterCategory went with the count's move:
 // the store no longer categorises an agent, it is told which ids are alive and
 // joins that against its own roster.
@@ -350,6 +351,7 @@ export class FleetStore {
     this._wiretapCache = null;
     this._resolvableWiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
+    this._backfillDefaultSubscriptions();
     this._backfillNameHistory();
     this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
@@ -718,6 +720,14 @@ export class FleetStore {
       CREATE TABLE IF NOT EXISTS search_index_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+      -- One row per one-shot data migration that has already run. A migration
+      -- that reconciles state against an expectation must be able to tell
+      -- "never had this" from "had it and removed it", and only a record of
+      -- having run can tell those apart.
+      CREATE TABLE IF NOT EXISTS store_migrations (
+        name TEXT PRIMARY KEY,
+        ran_at TEXT NOT NULL
       );
     `);
 
@@ -2617,6 +2627,29 @@ export class FleetStore {
   // One-time seed so existing agents (registered before the triggers existed)
   // resolve correctly. The exact current friendly_name is copied verbatim.
   // Pre-history events (before from_ts) fall back to the earliest known name.
+  // One-shot: give the agents that already exist the default subscription that
+  // login now carries, so the change does not silence a live fleet on deploy.
+  //
+  // ONCE, and the bookkeeping row is the whole point. Delivery used to come from
+  // a floor computed in code, so no live agent has ever held a default row;
+  // without this they would all go quiet until their next wake. But a sweep that
+  // ran every start could not distinguish an agent that never had the default
+  // from one that deliberately unsubscribed, and would silently restore it —
+  // which is the floor again, wearing a migration's clothes. Recording that it
+  // ran is what keeps this a migration.
+  _backfillDefaultSubscriptions() {
+    const NAME = 'default-subscriptions-v1';
+    if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
+    let seeded = 0;
+    this.db.transaction(() => {
+      for (const row of this.db.prepare('SELECT id FROM agents WHERE dead = 0').all()) {
+        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+      }
+      this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
+    })();
+    console.log(`[fleet-store] ${NAME}: ${seeded} agent(s) given the default subscription`);
+  }
+
   _backfillNameHistory() {
     const has = this.db.prepare('SELECT 1 FROM name_history LIMIT 1').get();
     if (has) return;
@@ -4156,6 +4189,32 @@ export class FleetStore {
     return this.getSubscription(info.lastInsertRowid);
   }
 
+  // Subscribe an agent to a query it does not already hold. This is what login
+  // calls, and logging in twice must not accumulate duplicate rows — an agent
+  // logs in on every wake, so this runs constantly over the life of a seat.
+  //
+  // Idempotent on (owner, query) and nothing else. It deliberately does NOT
+  // reconcile: an agent that unsubscribed from its default and then logged in
+  // again gets it back, because asking to subscribe at login is exactly what a
+  // login is. What must never happen is a background sweep re-adding it, which
+  // would override a deliberate removal without anyone asking — "if someone
+  // wants to, like, have their agents be completely unaddressable, that's their
+  // fucking choice."
+  ensureSubscription({ owner, query, notificationPolicy = 'immediate', createdBy = null }) {
+    if (!owner || !query) return null;
+    const existing = this._getSubscriptionsByOwner.all(owner).find(row => row.query === query);
+    if (existing) return existing;
+    const tap = this.addWiretap(owner, query, null);
+    return this.addSubscription({
+      owner,
+      query,
+      notificationPolicy,
+      createdBy: createdBy || owner,
+      adapter: 'wiretap',
+      adapterId: tap.id,
+    });
+  }
+
   getSubscription(subscriptionId) {
     return this._getSubscription.get(subscriptionId) || null;
   }
@@ -4229,21 +4288,22 @@ export class FleetStore {
     return [...matched];
   }
 
-  // Every delivery for this (sender, recipient, event) — the recipient's own,
-  // and every observer's. The chat handler used to decide the recipient's half
-  // itself, with a hardcoded `immediate`; that was the special case, and this
-  // is where it went.
+  // Every delivery for this (sender, recipient, event) — the addressee's own,
+  // and every observer's. All of them are subscriptions; none of them is a
+  // special case decided here.
   //
-  // The recipient's entry comes from the floor: every living agent is
-  // subscribed to what is addressed to it. It is computed here, per event,
-  // from nothing but the recipient existing — not a row, not a config file.
-  // Rows can be missed and files can be absent (the Fly server has no
-  // daemon.yaml at all), and either one would express itself as an agent that
-  // is silently unreachable. That is the failure this whole change exists to
-  // remove, so the floor must not be storable or configurable away. You can
-  // add subscriptions; you cannot remove this one.
+  // There is deliberately no floor. An agent is notified because a subscription
+  // it holds matched, and it holds one because it subscribed at login. An agent
+  // with no subscriptions receives nothing, which is the property Skip asked
+  // for — "if no agent has any subscriptions, no agent would [get] any fucking
+  // message if this were implemented correctly" — and unsubscribing yourself
+  // into silence is allowed: "if someone wants to, like, have their agents be
+  // completely unaddressable, that's their fucking choice."
+  //
+  // What must never happen is silence nobody chose. That is guarded where it
+  // actually arises — a login that cannot read its config is loud — not by a
+  // floor here that would make the whole mechanism unfalsifiable.
   resolveSubscriptionDeliveries(senderId, recipientId, eventType) {
-    const floor = { recipient: recipientId, ...floorSubscription(recipientId), direct: true }
     if (!this._resolvableSubscriptionWiretapCache) {
       this._resolvableSubscriptionWiretapCache = this._getResolvableSubscriptionWiretaps.all().map(r => {
         const tap = this._hydrateWiretap(r)
@@ -4259,37 +4319,58 @@ export class FleetStore {
       });
     }
     const taps = this._resolvableSubscriptionWiretapCache;
-    const matched = [floor];
+    const matched = [];
     if (taps.length === 0) return matched;
     const senderLabels = this._agentLabelsById(senderId);
     const recipientLabels = this._agentLabelsById(recipientId);
 
     for (const tap of taps) {
-      // You are not notified about what you yourself sent. The recipient is no
-      // longer excluded here — its own subscriptions are allowed to match, and
-      // are folded into the floor below.
+      // You are not notified about what you yourself sent.
       if (tap.owner === senderId) continue;
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
       if (!tap._ast) continue;
-      const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.owner) : [];
+      // `my_labels` means "the labels of mine that THIS message was addressed
+      // to" — so it is empty unless the subscriber is in the addressed set.
+      //
+      // This is the any-vs-all bug, and it is the bottom of the whole chain.
+      // Binding `my_labels` to the subscriber's labels unconditionally made the
+      // test "does the addressee share a label with me", so any two awake agents
+      // matched each other and one default subscription per agent became a
+      // fleet-wide wiretap. Someone hit that, wrote it down as "status labels
+      // such as `awake` ... turned the old `to:my_labels` default into a wiretap
+      // for unrelated traffic", and abandoned the specified default on it. The
+      // diagnosis was wrong: `awake` was never the problem.
+      //
+      // Skip's correction states both halves. "Receive messages that go to
+      // fucking awake agents, that's reasonable. That doesn't mean receive
+      // messages that go to ANY awake agent. It means receive messages that go
+      // to ALL awake agents." Membership, not intersection: a message to `awake`
+      // addresses the set of awake agents and I am in it, so I get it; a message
+      // to one named agent does not address me, and sharing `awake` with that
+      // agent is irrelevant.
+      //
+      // This loop runs once per resolved recipient, and the recipient set IS the
+      // evaluation of the address expression. So the subscriber is in the
+      // addressed set exactly when it is this iteration's recipient — no need to
+      // re-evaluate the expression, and nothing new to plumb through. The
+      // grammar is untouched: `my_labels` still means the subscriber's labels,
+      // and a hand-written subscription using it means what it always meant.
+      const addressedAsSubscriber = tap.owner === recipientId;
+      const subscriberLabels = tap._needsSubscriberLabels && addressedAsSubscriber
+        ? this._agentLabelsById(tap.owner)
+        : [];
       if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels })) continue;
-      if (tap.owner === recipientId) {
-        // An agent's own subscription cannot quiet its direct mail: the floor
-        // already promised `immediate`, and a held or batched entry beside it
-        // would be a second answer to the same question. Record the query so
-        // the panel still shows what they subscribed to, and keep the floor's
-        // policy. Turning direct delivery down is a product decision about
-        // `dnd`, not a consequence of this refactor.
-        floor.subscription_id ??= tap.subscription_id;
-        continue;
-      }
+      // The recipient's own matching subscription IS its delivery. There is no
+      // longer a floor beside it promising something different, so `direct` is
+      // just "this match is the addressee's own", which is what decides the
+      // stored recipient_delivery and the sender's receipt.
       matched.push({
         recipient: tap.owner,
         subscription_id: tap.subscription_id,
         query: tap.query,
         notification_policy: tap.notification_policy,
         origin: 'held',
-        direct: false,
+        direct: tap.owner === recipientId,
       });
     }
     return matched;
@@ -4309,6 +4390,7 @@ export class FleetStore {
     if (!agent) return [agentId];
     return labelsForAgent(agent);
   }
+
 
   _hydrateWiretap(row) {
     const filter = JSON.parse(row.filter); // stored as a JSON-encoded string expression

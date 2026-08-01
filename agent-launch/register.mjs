@@ -7,7 +7,8 @@ import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, getMachineId } from '../shared/config.mjs'
 import { activeEnvName, sanitizeSessionName } from './identity.mjs'
-import { createPermissionLedger } from './permission-ledger.mjs'
+import { createPermissionLedger, readDaemonConfig } from './permission-ledger.mjs'
+import { loginSubscriptionsFor, defaultSubscription } from '../shared/subscriptions.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 
@@ -356,10 +357,30 @@ async function wsIdentityMessage(type, {
   return transport.durable(type, msg)
 }
 
+// The subscriptions declared in daemon.yaml, read here because here is the
+// machine that has the file. Mint carries them to the server, the server writes
+// the rows, and from then on the database is what is live. The server never
+// reads daemon.yaml to decide delivery — which is why none of this needs a file
+// to exist on Fly, a box that has no daemon.yaml because it runs no daemon.
+//
+// A config that cannot be parsed is LOUD and then proceeds without the named
+// sets, so a broken file cannot make an agent unreachable. That asymmetry is
+// deliberate: the eighteen-hour outage was a missing file reading as `{}` with
+// nobody choosing it, and silence must never be the way a config error presents.
+function mintSubscriptions() {
+  try {
+    return loginSubscriptionsFor(readDaemonConfig())
+  } catch (e) {
+    console.error(`[agent-launch] daemon config could not be read for subscriptions: ${e.message}`)
+    console.error('[agent-launch] minting with the default subscription only; named sets from daemon.yaml are NOT applied')
+    return [defaultSubscription()]
+  }
+}
+
 export async function wsReserveShell(options = {}) {
-  return wsIdentityMessage('reserve-shell', { ...options, shell: true })
+  return wsIdentityMessage('reserve-shell', { ...options, shell: true, subscriptions: mintSubscriptions() })
 }
 
 export async function wsMintShell(options = {}) {
-  return wsIdentityMessage('mint-shell', { ...options, shell: true })
+  return wsIdentityMessage('mint-shell', { ...options, shell: true, subscriptions: mintSubscriptions() })
 }
