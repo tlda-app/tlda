@@ -54,14 +54,19 @@ export async function runWakeRouteLifecycle({
   }
   const nextSeat = await getAgentDaemonRoute?.(agentId)
   if (!nextSeat?.daemon_key) throw new Error(`wake for ${agentId} did not retain a daemon route`)
-  const deliveredNudge = spawnResult.already
+  // The daemon owns the question this branches on: it is the only party that
+  // knows whether a process was started. It answers `alreadyAlive` (wake-core),
+  // not `already` — which is the terminal-watch RPC's field. Reading the wrong
+  // key made every wake take the respawned branch, so the return notice went
+  // out on every pause instead of on a restart.
+  const deliveredNudge = spawnResult.alreadyAlive
     ? nudgeText
     : (returnNoticeText || nudgeText)
   await sendWakeNudge(
     nextSeat.daemon_key,
     agent,
     deliveredNudge,
-    spawnResult.already ? 'already-awake' : 'post-respawn',
+    spawnResult.alreadyAlive ? 'already-awake' : 'post-respawn',
     'wake-route',
   )
   if (traceId) {
@@ -74,5 +79,5 @@ export async function runWakeRouteLifecycle({
     })
   }
   await insertWakeLifecycleEvent({ agentId })
-  return { action: spawnResult.already ? 'already-awake' : 'respawned', spawnResult }
+  return { action: spawnResult.alreadyAlive ? 'already-awake' : 'respawned', spawnResult }
 }

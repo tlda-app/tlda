@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { createDaemonWakeCore } from '../../daemon/wake-core.mjs'
 import { runWakeRouteLifecycle } from './wake-route-lifecycle.mjs'
 
-function harness({ already }) {
+// The daemon is the only party that knows whether a process was started, so
+// these build its reply with wake-core rather than writing the field by hand.
+// The hand-written version said `{ already: true }`, a key the daemon has never
+// sent — so the branch always read undefined, the return notice went out on
+// every pause, and this suite stayed green through all of it.
+function daemonWakeReply({ alive }) {
+  const facts = { mintId: 'mint-1', sessionId: 'session-1' }
+  const wake = createDaemonWakeCore({
+    store: { resolve: () => facts, updateProcessState: () => ({}) },
+    processAlive: async () => alive,
+    resumeSession: async () => ({ pid: 4242 }),
+  })
+  return wake({ fleet_id: 'fleet:test' })
+}
+
+function harness({ wakeReply }) {
   const nudges = []
   return {
     nudges,
@@ -14,7 +30,7 @@ function harness({ already }) {
       ownerDaemon: { readyState: 1 },
       nudgeText: 'New message.',
       returnNoticeText: 'You were away as hibernating for one minute.\n\nNew message.',
-      sendDaemonDurable: async () => ({ ok: true, already }),
+      sendDaemonDurable: async () => wakeReply,
       sendWakeNudge: async (...args) => nudges.push(args),
       getAgentDaemonRoute: async () => ({ daemon_key: 'mini' }),
     },
@@ -22,7 +38,7 @@ function harness({ already }) {
 }
 
 test('does not claim an already-running agent was away', async () => {
-  const { args, nudges } = harness({ already: true })
+  const { args, nudges } = harness({ wakeReply: await daemonWakeReply({ alive: true }) })
 
   const result = await runWakeRouteLifecycle(args)
 
@@ -32,7 +48,7 @@ test('does not claim an already-running agent was away', async () => {
 })
 
 test('adds the return notice after an actual respawn', async () => {
-  const { args, nudges } = harness({ already: false })
+  const { args, nudges } = harness({ wakeReply: await daemonWakeReply({ alive: false }) })
 
   const result = await runWakeRouteLifecycle(args)
 
