@@ -136,6 +136,32 @@ An agent's harness session and transcript persist independently of tlda's
 registry pointer to them. A missing resume handle means the registry lost that
 pointer; it does not mean the underlying session or transcript was deleted.
 
+## Addressing and subscribing are orthogonal
+
+Two independent questions, and conflating them corrupts the app's behaviour.
+
+**Addressing** is who a message is for. The sender writes an expression —
+`helm`, `awake`, `a & !b` — and that expression is a fact about the message.
+It is the same for every reader, it does not change afterwards, and it is what
+the interface means by "to".
+
+**Subscribing** is who hears it. Anyone can hear anything here; there is no
+permission attached to reading. Hearing is therefore a relation between a
+message and a reader, computed per reader, and it changes as labels and
+subscriptions change. It is not a property of the message and it must not be
+stored as one.
+
+That you hear what is addressed to you is a **convention**, not a necessity —
+it is the default subscription every agent is given, and an agent may remove
+it and go silent deliberately. Nothing about being addressed forces delivery;
+the addressing is the fact, the delivery is a consequence of a subscription
+that happens to match it.
+
+So an event records the address. Who heard it is answered by evaluating
+subscriptions, per reader, at read time. An observer's subscription matching
+must never write that observer into the message's address, and a list that
+merges the two answers neither question.
+
 ## Configuration
 
 `~/.config/tlda/daemon.yaml` selects complete named environments and configures

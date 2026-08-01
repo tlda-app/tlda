@@ -1784,7 +1784,7 @@ export class FleetStore {
       await this._wAwait(this._insertRecipient, [eventId, id, ts, read]);
     }
 
-    const recipients = [...recipientRows.keys()];
+    const recipients = [...addressed];
 
     // Maintain agents.last_active incrementally, ordered after the insert, so
     // getAllAgents never scans events.
