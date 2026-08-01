@@ -2,7 +2,14 @@
 # Differs from the published/snapshot image by adding a TeXLive layer so latexmk
 # and dvisvgm actually run. Heavy TeXLive layer is first so it stays cached across
 # frequent app-code redeploys.
-FROM node:24-slim
+# Trixie rather than bookworm for GDAL. `terra` — reached through leaflet, which
+# the deck uses via colorNumeric() — needs a newer GDAL than bookworm's 3.6.2 and
+# fails to compile against it with a signature mismatch in
+# GDALMDArray::AsClassicDataset. There is no bookworm backport; trixie carries
+# GDAL 3.10.3. Posit's package manager and CRAN's Debian repo both publish for
+# trixie, and every apt suite below reads the codename from /etc/os-release, so
+# this line is the only place the release is chosen.
+FROM node:24-trixie-slim
 WORKDIR /app
 
 # --- TeXLive layer (heavy, ~2-3 GB, cached — changes rarely) ---
@@ -24,6 +31,127 @@ RUN apt-get update && apt-get install -y \
 # NOTE: the SVG pipeline uses `dvisvgm --font-format=woff2` — verify this dvisvgm
 # supports woff2 on first real build (Debian bookworm texlive should).
 RUN latexmk --version && dvisvgm --version && biber --version && latexdiff --version && gs --version
+
+# --- R + Quarto layer (heavy, cached — changes rarely) ---
+# .qmd is the ONE format tlda renders itself (server/lib/build-qmd.mjs). Every
+# other format arrives already rendered — the author runs the renderer on their
+# own machine and pushes the output — so this is the only renderer that has to
+# exist in the image. Without it `resolveQuarto()` throws `quarto is not on
+# PATH` and a qmd project cannot build here at all.
+#
+# R comes from CRAN's own Debian repository rather than Debian's `r-base`, which
+# lags by several minor versions. The deck this was sized against records R
+# 4.6.1 in its renv.lock; renv restores against whatever R it finds, but the
+# closer the match, the fewer packages it must rebuild from source. The suite
+# codename is read out of the base image rather than hardcoded, so bumping the
+# `node:` base cannot silently point apt at the wrong Debian release — which is
+# a live risk here, since the Tailscale layer below still names bookworm.
+#
+# `r-recommended` is not optional padding. Debian splits R's recommended
+# packages out of `r-base-core`, and an renv project will not carry them in its
+# lockfile because on the author's machine they come with R itself. renv then
+# sandboxes the system library, so the render sees neither — this deck died at
+# chunk 4 of 77 on `there is no package called 'codetools'`.
+ARG QUARTO_VERSION=1.9.38
+# The CRAN suite name encodes the R series, not just the Debian release:
+# `bookworm-cran46` is R 4.6, which is the series renv.lock records (4.6.1).
+# Pinning it is deliberate. `bookworm-cran40` also resolves — it is an older
+# suite that still answers 200 — so a wrong value here does not fail the build,
+# it silently installs an R several minor versions off the lockfile and moves
+# the damage to render time.
+ARG R_CRAN_SUITE=cran46
+# The key comes from a keyserver by fingerprint because that is what CRAN's
+# Debian page documents, and because the file this previously fetched
+# (`debian/marutter_pubkey.asc`) is gone — it 404s. The Ubuntu file of the same
+# name still resolves and is a DIFFERENT signer, so copying that path would
+# fetch a key that does not sign these packages.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gnupg curl \
+    && gpg --keyserver keyserver.ubuntu.com \
+         --recv-key '95C0FAF38DB3CCAD0C080A7BDC78B2DDEABC47B7' \
+    && gpg --armor --export '95C0FAF38DB3CCAD0C080A7BDC78B2DDEABC47B7' \
+         > /etc/apt/trusted.gpg.d/cran_debian_key.asc \
+    && . /etc/os-release \
+    && echo "deb https://cloud.r-project.org/bin/linux/debian ${VERSION_CODENAME}-${R_CRAN_SUITE}/" \
+         > /etc/apt/sources.list.d/cran.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+         r-base-core r-base-dev r-recommended \
+    && rm -rf /var/lib/apt/lists/*
+
+# System libraries the lockfile's compiled packages link against. Enumerated
+# from the deck's own renv.lock rather than guessed: rgl needs OpenGL and X11,
+# sf/terra/units need GDAL, GEOS, PROJ and udunits2, and svglite/ragg/
+# textshaping need the font and image stack. Getting this list wrong does not
+# fail the image build — it fails the FIRST RENDER, as a package that will not
+# compile, which is the expensive place to find out.
+#
+# The second group is not guesswork either — it is what renv's own sysreqs check
+# and a real failed restore in this image named, which is a stricter source than
+# reading the lockfile. renv asked for cmake (fs), gdal-bin (sf, terra),
+# libabsl-dev (s2) and pandoc (knitr, rmarkdown); the restore then still died on
+# `libuv.so.1: cannot open shared object file` loading fs, which renv did not
+# predict. That last one is the tell for binary packages generally: a P3M binary
+# links against system libraries the source build would have found for itself,
+# so the runtime library has to be present even though nothing declares it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libcurl4-openssl-dev libssl-dev libxml2-dev libicu-dev zlib1g-dev \
+      libpng-dev libjpeg-dev libtiff-dev \
+      libfreetype6-dev libharfbuzz-dev libfribidi-dev libfontconfig1-dev \
+      libgdal-dev libgeos-dev libproj-dev libudunits2-dev \
+      libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxt-dev \
+      cmake gdal-bin libabsl-dev pandoc libuv1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Quarto is pinned rather than "latest" because a deck renders against the
+# version its author verified — 1.9.38 is the one named in the deck's README.
+RUN curl -fsSL -o /tmp/quarto.deb \
+      "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-amd64.deb" \
+    && dpkg -i /tmp/quarto.deb \
+    && rm /tmp/quarto.deb
+
+# Fail the build here rather than at first render, the same way the TeX layer
+# does. The R version is ASSERTED, not just printed: an apt suite that resolves
+# but carries the wrong R series is the failure mode this layer actually has,
+# and it is invisible until a render behaves oddly hours later.
+RUN quarto --version \
+    && Rscript -e 'v <- getRversion(); cat(R.version.string, "\n"); if (v < "4.6" || v >= "4.7") stop("expected R 4.6.x to match renv.lock, got ", v)'
+
+# Posit Package Manager serves the SAME package versions renv.lock names, built
+# as Debian binaries. This is a choice about where the bits come from, not about
+# which versions get installed: renv still installs exactly what the lockfile
+# records, so the project stays self-contained and reproducible. It pays off at
+# RENDER time rather than build time — sf, terra and rgl compiled from source are
+# tens of minutes, and a render is something a person is waiting on.
+#
+# Both halves are required. The repos override points renv at P3M; the user agent
+# is what makes P3M serve binaries instead of source, and it has to be an R option,
+# so it goes in the site profile where rocker puts it.
+#
+# Both go in R's own site files rather than in ENV, because the binary URL has
+# to name the Debian suite and a Dockerfile ENV cannot read /etc/os-release.
+# Renviron.site is the documented place for a site-wide R environment variable,
+# which keeps this on the same "read the codename, don't hardcode it" footing as
+# the apt suite above.
+#
+# `pkgType` is the third required piece and the least obvious. R on Linux
+# defaults to `source`, so even with P3M configured and a matching binary in the
+# index, a package can still be compiled locally — which is how `terra 1.9-34`
+# came to fail against bookworm's GDAL 3.6.2 while P3M was serving that exact
+# version as a binary. `both` rather than `binary`: prefer the binary, but fall
+# back to source for the packages P3M has no binary for, which a hard `binary`
+# would turn from a slow install into a failed one.
+RUN . /etc/os-release \
+    && printf '%s\n' \
+      'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version$platform, R.version$arch, R.version$os)))' \
+      'options(pkgType = "both")' \
+      >> "$(R RHOME)/etc/Rprofile.site" \
+    && echo "RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest" \
+      >> "$(R RHOME)/etc/Renviron.site"
+
+# Keep the restored packages on the persistent volume. Without this the renv
+# cache lives in the container filesystem and every machine replacement pays the
+# full restore again; with it, the first render on a new machine is the only slow
+# one. renv creates the directory itself, so the entrypoint needs no change.
+ENV RENV_PATHS_CACHE=/app/server/persist/renv-cache
 
 # Build tools for native npm modules (better-sqlite3 compiles via node-gyp when no
 # prebuilt binary is fetched). Separate layer so the TeXLive layer above stays cached.
@@ -54,9 +182,13 @@ RUN python3 -m venv /opt/venv \
 # TS_AUTHKEY) so the server is reachable privately over the tailnet rather than the
 # open internet. Installs tailscaled (/usr/sbin) + tailscale (/usr/bin), both on
 # the root PATH. Separate layer so it caches across app-code redeploys.
+# The suite is read from /etc/os-release rather than hardcoded, for the reason
+# the R layer does it: this line said `bookworm` while the base moved, which
+# would have installed a package built for the wrong Debian release.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
-    && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
+    && . /etc/os-release \
+    && curl -fsSL "https://pkgs.tailscale.com/stable/debian/${VERSION_CODENAME}.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+    && curl -fsSL "https://pkgs.tailscale.com/stable/debian/${VERSION_CODENAME}.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list \
     && apt-get update && apt-get install -y --no-install-recommends tailscale \
     && rm -rf /var/lib/apt/lists/*
 
