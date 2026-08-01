@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import { FleetStore } from './fleet-store.mjs'
 import { decideSubscriptionDelivery } from '../../shared/inbox-attention.mjs'
+import { DEFAULT_SUBSCRIPTION_QUERY } from '../../shared/subscriptions.mjs'
 
 async function withStore(testFn) {
   const dir = await mkdtemp(join(tmpdir(), 'tlda-subscription-restart-'))
@@ -77,8 +78,10 @@ test('subscription deliveries retain notification policy and bypass raw wiretap 
     await store.upsertAgent({ id: 'fleet:target', friendly_name: 'target', labels: ['reviewers'], registered_at: now, last_seen: now })
     await store.upsertAgent({ id: 'fleet:subscriber', friendly_name: 'subscriber', labels: [], registered_at: now, last_seen: now })
 
+    // Mint gives the addressee its default first; the observer subscribes after.
+    const target = store.ensureSubscription({ owner: 'fleet:target', query: DEFAULT_SUBSCRIPTION_QUERY })
     const tap = store.addWiretap('fleet:subscriber', 'to:reviewers', null)
-    store.addSubscription({
+    const observer = store.addSubscription({
       owner: 'fleet:subscriber',
       query: 'to:reviewers',
       notificationPolicy: 'batch(30s)',
@@ -88,18 +91,19 @@ test('subscription deliveries retain notification policy and bypass raw wiretap 
     })
 
     assert.deepEqual(store.resolveWiretaps('fleet:sender', 'fleet:target', 'chat'), [])
-    // The recipient's own delivery now comes from the same resolver as the
-    // observer's, so the floor entry leads and the observer follows.
+    // Both deliveries are rows now — the addressee's own default and the
+    // observer's `to:reviewers`. Neither is synthesised, and `direct` is simply
+    // which of them belongs to the agent the message was addressed to.
     assert.deepEqual(store.resolveSubscriptionDeliveries('fleet:sender', 'fleet:target', 'chat'), [{
       recipient: 'fleet:target',
-      subscription_id: null,
-      query: 'to:fleet:target',
+      subscription_id: target.subscription_id,
+      query: DEFAULT_SUBSCRIPTION_QUERY,
       notification_policy: 'immediate',
-      origin: 'floor',
+      origin: 'held',
       direct: true,
     }, {
       recipient: 'fleet:subscriber',
-      subscription_id: 1,
+      subscription_id: observer.subscription_id,
       query: 'to:reviewers',
       notification_policy: 'batch(30s)',
       origin: 'held',

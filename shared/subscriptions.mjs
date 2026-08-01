@@ -1,34 +1,44 @@
-// One definition of what an agent is subscribed to without having subscribed.
+// What an agent subscribes to when it logs in.
 //
-// Two consumers need it and they run in different processes: the store's
-// matching layer decides delivery from it, and the agents panel renders it. If
-// each had its own copy they would drift, and the drift would show up as an
-// agent the panel says is reachable that is not — which is the failure this
-// whole change is removing.
+// An agent declares this at login and the server stores it as an ordinary
+// subscription row. There is no floor in code, no default synthesised at match
+// time, and no delivery decided outside the matching layer: an agent is
+// notified because a subscription of its own matched, the same way every other
+// notification happens.
+//
+// That is Skip's specification, and it took four attempts to get here. The
+// default was implemented to spec on 7/12, rewritten to `to:<id>` because
+// `my_labels` had been bound to the wrong label set, deleted on 7/28 as
+// "inert", and finally hard-coded in JS on 8/1 — which is when he said
+// "conceptually subscriptions are being fucking hard coded. In the code. Not
+// cool." The binding was the defect; see `identityLabelsForAgent`.
 
-// The floor. Every living agent is subscribed to what is addressed to it.
+// The default subscription: everything addressed to any label I answer to.
 //
-// It is computed, never stored and never configured. A row can be missed by a
-// migration; a file can be absent, and the Fly server has no daemon.yaml at all
-// (`readYamlFile` returns `{}` for a missing file, silently). Either would
-// express itself as an agent that is quietly unreachable, with no error
-// anywhere — the exact eighteen-hour failure of 2026-08-01. So this is a
-// property of existing, not a grant that can be lost.
+// `my_labels` is subscriber-relative and evaluated at match time, never
+// expanded when the row is written — "Store the symbolic query. Do not expand
+// labels into a static list when the row is created; labels may change later."
+// A resolution stored at login would freeze the labels an agent held at that
+// moment, so a label gained afterwards would silently stop delivering.
 //
-// You can add subscriptions. You cannot remove this one.
-export function floorSubscription(agentId) {
-  return {
-    subscription_id: null,
-    query: `to:${agentId}`,
-    notification_policy: 'immediate',
-    origin: 'floor',
-  }
+// He raised `any(my_labels)` as the nicer spelling and then settled for this
+// one with a tech-debt note ("as long as the schema is in place and all the
+// stuff works, that's fine"), because the grammar has no fold operator and
+// inventing one for a single use was not worth it.
+export const DEFAULT_SUBSCRIPTION_QUERY = 'to:my_labels'
+export const DEFAULT_SUBSCRIPTION_POLICY = 'immediate'
+
+export function defaultSubscription() {
+  return { query: DEFAULT_SUBSCRIPTION_QUERY, notification_policy: DEFAULT_SUBSCRIPTION_POLICY }
 }
 
 // The named subscription sets declared in daemon.yaml, in the `{ default,
-// values }` form `models:` and `environments:` already use. Purely additive on
-// top of the floor: where there is no daemon.yaml, this is empty and every
-// agent is still reachable.
+// values }` form `models:` and `environments:` use — the one Skip settled.
+//
+// These are read on the machine that HAS the daemon config, by the agent, and
+// sent with its login. The server never reads daemon.yaml to decide delivery,
+// which is why none of this depends on a file existing next to the server —
+// "no shit phi has no demon dot YAML. It doesn't run a fucking daemon."
 export function subscriptionSetsFromDaemonConfig(daemonConfig) {
   const block = daemonConfig?.subscriptions
   if (!block || typeof block !== 'object') return { defaultSet: null, sets: {} }
@@ -45,21 +55,19 @@ export function subscriptionSetsFromDaemonConfig(daemonConfig) {
   return { defaultSet, sets }
 }
 
-// Everything an agent holds by virtue of existing: the floor, plus the
-// default set if daemon.yaml declares one. Marked by origin so the panel can
-// say which is which and neither looks like something the agent chose.
-export function grantedSubscriptionsFor(agentId, daemonConfig) {
-  const granted = [floorSubscription(agentId)]
+// Everything an agent asks to be subscribed to at login: the default, plus the
+// entries of whichever named set daemon.yaml makes default on this machine.
+//
+// Additive and ordinary. An agent may unsubscribe from any of it afterwards —
+// "if someone wants to, like, have their agents be completely unaddressable,
+// that's their fucking choice." Nothing here refuses to let that happen.
+export function loginSubscriptionsFor(daemonConfig) {
+  const wanted = [defaultSubscription()]
   const { defaultSet, sets } = subscriptionSetsFromDaemonConfig(daemonConfig)
-  if (!defaultSet) return granted
-  for (const entry of sets[defaultSet] || []) {
-    granted.push({
-      subscription_id: null,
-      query: entry.query,
-      notification_policy: entry.notification_policy,
-      origin: 'granted',
-      set: defaultSet,
-    })
+  if (defaultSet) {
+    for (const entry of sets[defaultSet] || []) {
+      wanted.push({ query: entry.query, notification_policy: entry.notification_policy, set: defaultSet })
+    }
   }
-  return granted
+  return wanted
 }
