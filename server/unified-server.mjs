@@ -904,14 +904,9 @@ function formatAwayDuration(ms) {
 function agentReturnNotice(agent, status = 'hibernating', { reanimated = false } = {}) {
   const sinceMs = agentAwaySinceMs(agent)
   const duration = sinceMs ? formatAwayDuration(Date.now() - sinceMs) : 'an unknown amount of time'
-  const lines = [`You were away as ${status} for ${duration}.`]
-  if (reanimated) {
-    lines.push('You were killed and reanimated.')
-    lines.push('Your open tasks were retired when you were killed.')
-  }
-  // Each sentence is its own system message rather than one message with line
-  // breaks in it, so a transcript reader can strip them line by line.
-  return systemMessage(lines.join('\n'))
+  return systemMessage(reanimated
+    ? `You were killed ${duration} ago and reanimated. Your open tasks were retired when you were killed.`
+    : `You were ${status} for ${duration}.`)
 }
 
 async function waitForAgentDaemonRoute(agentId, timeoutMs = 10_000) {
@@ -6461,31 +6456,6 @@ async function handleFleetWsMessage(ws, msg) {
           })).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
         }
       }
-    }
-    // "let's outline/plan" keyword: force plan mode on recipient agents
-    const planKeywordMatch = from === SERVER_OWNER_ID && text.match(/\blet'?s\s+(\w+\s+){0,2}(outline|plan)\b/i)
-    if (planKeywordMatch) {
-      const keyword = planKeywordMatch[2].toLowerCase()
-      for (const r of recipients) {
-        const agent = await fleetStore.findAgent(r)
-        const { seat } = await agentRouteOrError(agent)
-        if (!seat) continue
-        sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
-          text: '/plan',
-          enter: true,
-        })).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
-        if (keyword === 'outline') {
-          setTimeout(() => {
-            sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
-              text: systemMessage('Invoke the outline-before-writing skill, then share the plan file path in chat.'),
-              enter: true,
-            })).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
-          }, 2000)
-        }
-        await fleetStore.updateAgentMeta?.(agent.id, { inPlanMode: true, planModeType: keyword })
-        console.log(`[outline-keyword] forced plan mode on ${agent.friendly_name || r} (keyword: ${keyword})`)
-      }
-      broadcastState(recipients)
     }
     return
   }
