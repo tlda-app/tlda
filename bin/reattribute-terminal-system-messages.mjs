@@ -36,7 +36,7 @@ import path from 'path'
 import { createRequire } from 'module'
 
 import { isMachineAuthoredText } from '../agent-runtime/terminal-chat-authorship.mjs'
-import { isFullyMarked } from '../shared/terminal-system-markers.mjs'
+import { isFullyMarked, LEADING_CONTROL } from '../shared/terminal-system-markers.mjs'
 
 const HUMAN_ID = 'fleet:skip'
 const SYSTEM_ID = 'fleet:tlda'
@@ -70,8 +70,13 @@ const SHAPES = [
   ['system-reminder', t => t.startsWith('<system-reminder')],
 ]
 
+// Every shape is anchored at the start, so the prompt-clear (Ctrl-U) or a
+// carriage return still on the front of an injected line hides it. Only
+// whitespace and C0 controls come off; nothing printable is skipped, so a line of
+// his cannot be dragged into a shape by this.
 function shapeOf(text) {
-  for (const [name, test] of SHAPES) if (test(text)) return name
+  const start = String(text).replace(LEADING_CONTROL, '')
+  for (const [name, test] of SHAPES) if (test(start)) return name
   return null
 }
 
