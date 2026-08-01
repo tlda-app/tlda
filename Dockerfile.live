@@ -25,6 +25,83 @@ RUN apt-get update && apt-get install -y \
 # supports woff2 on first real build (Debian bookworm texlive should).
 RUN latexmk --version && dvisvgm --version && biber --version && latexdiff --version && gs --version
 
+# --- R + Quarto layer (heavy, cached — changes rarely) ---
+# .qmd is the ONE format tlda renders itself (server/lib/build-qmd.mjs). Every
+# other format arrives already rendered — the author runs the renderer on their
+# own machine and pushes the output — so this is the only renderer that has to
+# exist in the image. Without it `resolveQuarto()` throws `quarto is not on
+# PATH` and a qmd project cannot build here at all.
+#
+# R comes from CRAN's own Debian repository rather than Debian's `r-base`, which
+# lags by several minor versions. The deck this was sized against records R
+# 4.6.1 in its renv.lock; renv restores against whatever R it finds, but the
+# closer the match, the fewer packages it must rebuild from source. The suite
+# codename is read out of the base image rather than hardcoded, so bumping the
+# `node:` base cannot silently point apt at the wrong Debian release — which is
+# a live risk here, since the Tailscale layer below still names bookworm.
+ARG QUARTO_VERSION=1.9.38
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gnupg curl \
+    && curl -fsSL https://cloud.r-project.org/bin/linux/debian/marutter_pubkey.asc \
+         -o /etc/apt/trusted.gpg.d/cran.asc \
+    && . /etc/os-release \
+    && echo "deb https://cloud.r-project.org/bin/linux/debian ${VERSION_CODENAME}-cran40/" \
+         > /etc/apt/sources.list.d/cran.list \
+    && apt-get update && apt-get install -y --no-install-recommends r-base-core r-base-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# System libraries the lockfile's compiled packages link against. Enumerated
+# from the deck's own renv.lock rather than guessed: rgl needs OpenGL and X11,
+# sf/terra/units need GDAL, GEOS, PROJ and udunits2, and svglite/ragg/
+# textshaping need the font and image stack. Getting this list wrong does not
+# fail the image build — it fails the FIRST RENDER, as a package that will not
+# compile, which is the expensive place to find out.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libcurl4-openssl-dev libssl-dev libxml2-dev libicu-dev zlib1g-dev \
+      libpng-dev libjpeg-dev libtiff-dev \
+      libfreetype6-dev libharfbuzz-dev libfribidi-dev libfontconfig1-dev \
+      libgdal-dev libgeos-dev libproj-dev libudunits2-dev \
+      libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxt-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Quarto is pinned rather than "latest" because a deck renders against the
+# version its author verified — 1.9.38 is the one named in the deck's README.
+RUN curl -fsSL -o /tmp/quarto.deb \
+      "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-amd64.deb" \
+    && dpkg -i /tmp/quarto.deb \
+    && rm /tmp/quarto.deb
+
+# Fail the build here rather than at first render, the same way the TeX layer does.
+RUN quarto --version && Rscript -e 'cat(R.version.string, "\n")'
+
+# Posit Package Manager serves the SAME package versions renv.lock names, built
+# as Debian binaries. This is a choice about where the bits come from, not about
+# which versions get installed: renv still installs exactly what the lockfile
+# records, so the project stays self-contained and reproducible. It pays off at
+# RENDER time rather than build time — sf, terra and rgl compiled from source are
+# tens of minutes, and a render is something a person is waiting on.
+#
+# Both halves are required. The repos override points renv at P3M; the user agent
+# is what makes P3M serve binaries instead of source, and it has to be an R option,
+# so it goes in the site profile where rocker puts it.
+#
+# Both go in R's own site files rather than in ENV, because the binary URL has
+# to name the Debian suite and a Dockerfile ENV cannot read /etc/os-release.
+# Renviron.site is the documented place for a site-wide R environment variable,
+# which keeps this on the same "read the codename, don't hardcode it" footing as
+# the apt suite above.
+RUN . /etc/os-release \
+    && printf '%s\n' \
+      'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version$platform, R.version$arch, R.version$os)))' \
+      >> "$(R RHOME)/etc/Rprofile.site" \
+    && echo "RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest" \
+      >> "$(R RHOME)/etc/Renviron.site"
+
+# Keep the restored packages on the persistent volume. Without this the renv
+# cache lives in the container filesystem and every machine replacement pays the
+# full restore again; with it, the first render on a new machine is the only slow
+# one. renv creates the directory itself, so the entrypoint needs no change.
+ENV RENV_PATHS_CACHE=/app/server/persist/renv-cache
+
 # Build tools for native npm modules (better-sqlite3 compiles via node-gyp when no
 # prebuilt binary is fetched). Separate layer so the TeXLive layer above stays cached.
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -55,6 +55,78 @@ async function resolveQuarto() {
   )
 }
 
+/** Resolve Rscript the same way, for the same reason. */
+async function resolveRscript() {
+  const found = await execFileAsync('sh', ['-c', 'command -v Rscript'])
+    .then(({ stdout }) => stdout.trim())
+    .catch(() => '')
+  if (found) return found
+  throw new Error(
+    'Rscript is not on PATH — a .qmd project with an renv.lock cannot be built without R. Install it with `brew install r`.',
+  )
+}
+
+/**
+ * Restore the project's R library from its lockfile before rendering.
+ *
+ * An renv project pushes `renv.lock`, `.Rprofile` and `renv/activate.R`. It
+ * does NOT push `renv/library` — renv gitignores it, because the library is
+ * symlinks into a machine-global package cache and copying it somewhere else
+ * is meaningless. So every render on a server starts from metadata alone.
+ *
+ * What the author's `.Rprofile` does on the way in is the part that makes this
+ * mandatory rather than merely helpful: sourcing `renv/activate.R` repoints
+ * the R library paths at the project library and AWAY from the system library.
+ * The autoloader then bootstraps renv into that empty library and stops — it
+ * installs renv and nothing else. So a machine with knitr and rmarkdown
+ * installed system-wide renders with them out of reach and reports
+ *
+ *   The knitr package is not available in this R installation.
+ *
+ * which reads as a missing R installation and is not one. Installing packages
+ * system-wide does not fix it; only filling the project library does.
+ *
+ * `renv::restore()` is what fills it, and it is the documented answer on every
+ * side: quarto.org's Virtual Environments page ("To reproduce the environment
+ * on another machine use the renv::restore() function"), renv's own Dockerfile
+ * recipe — copy the metadata files, `R -s -e "renv::restore()"`, then copy the
+ * tree — and the `make setup` target in the deck this was measured against. It
+ * is transactional, and with a warm cache it links rather than reinstalls, so
+ * confirming an already-matching library costs ~10s.
+ *
+ * Restoring in outDir rather than the source mirror is the choice
+ * renderInOutput already makes, and renv's Docker recipe restores into a
+ * copied tree for the same reason. One consequence is worth knowing: when a
+ * project repoints `RENV_PATHS_LIBRARY_ROOT`, renv disambiguates libraries by
+ * a hash of the project's absolute path, so the build gets its own library and
+ * the author's interactive one is untouched. outDir is stable per project, so
+ * that library is filled once and warm on every later build.
+ */
+async function restoreRenv(outDir, addLog) {
+  if (!existsSync(join(outDir, 'renv.lock'))) return
+
+  const rscript = await resolveRscript()
+  addLog('[qmd] renv::restore() from renv.lock')
+  let result
+  try {
+    result = await execFileAsync(
+      rscript,
+      ['-e', 'renv::restore(prompt = FALSE)'],
+      { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
+    )
+  } catch (e) {
+    // Same reasoning as the render: renv names the package it could not get on
+    // stderr, and "Command failed" names nothing anyone can act on.
+    const detail = String(e.stderr || e.stdout || e.message || '').trim()
+    throw new Error(`renv::restore() failed in ${outDir}:\n${detail}`)
+  }
+  for (const stream of [result.stdout, result.stderr]) {
+    for (const line of String(stream || '').split('\n')) {
+      if (line.trim()) addLog(`[renv] ${line}`)
+    }
+  }
+}
+
 /** The .html a given .qmd renders to, as a project-relative path. */
 export function qmdOutputFileForSource(sourceFile) {
   return String(sourceFile || '')
@@ -175,6 +247,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
   // a render that cannot see them fails in a way that reads as bad source.
   cpSync(srcDir, outDir, { recursive: true })
 
+  await restoreRenv(outDir, addLog)
   await renderInOutput(quarto, outDir, mainFile, addLog)
 
   const outputFile = qmdOutputFileForSource(mainFile)
