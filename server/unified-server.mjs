@@ -7435,16 +7435,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (!docMatch) {
       try { parseFilter(query) } catch (e) { error(`bad subscription query: ${e.message}`); return }
     }
-    let adapter = 'wiretap'
-    let adapterId = null
-    try {
-      if (docMatch) {
-        adapter = 'document_monitor'
-      } else {
-        const tap = await fleetStore.addWiretap(target.id, query, null)
-        adapterId = tap.id
-      }
-    } catch (e) { error(`subscription adapter failed: ${e.message}`); return }
+    // No second row under the old name: the subscription's own `query` is the
+    // filter, and the resolver reads it directly.
+    const adapter = docMatch ? 'document_monitor' : 'subscription'
+    const adapterId = null
     const subscription = await fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
     // Arm after the row exists — the subscriber set is read from the table.
     if (docMatch) tldaFeedback.arm(docMatch[1])

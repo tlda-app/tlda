@@ -1617,6 +1617,8 @@ export class FleetStore {
           WHERE adapter = 'wiretap' AND adapter_id IS NOT NULL
         )
     `);
+    // A subscription is read from the subscriptions table. `query` is the filter;
+    // there is no second row holding a copy of it under an older name.
     this._getResolvableSubscriptionWiretaps = this.db.prepare(`
       SELECT
         s.subscription_id,
@@ -1627,14 +1629,12 @@ export class FleetStore {
         s.created_by,
         s.adapter,
         s.adapter_id,
-        w.id,
-        w.agent_id,
-        w.filter,
-        w.types,
-        w.created_at
+        s.subscription_id AS id,
+        s.owner AS agent_id,
+        json_quote(s.query) AS filter,
+        NULL AS types,
+        s.created_at
       FROM subscriptions s
-      JOIN wiretaps w ON s.adapter = 'wiretap' AND s.adapter_id = w.id
-      WHERE json_type(CASE WHEN json_valid(w.filter) THEN w.filter ELSE 'null' END) = 'text'
     `);
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
@@ -4242,14 +4242,13 @@ export class FleetStore {
     if (!owner || !query) return null;
     const existing = this._getSubscriptionsByOwner.all(owner).find(row => row.query === query);
     if (existing) return existing;
-    const tap = this.addWiretap(owner, query, null);
     return this.addSubscription({
       owner,
       query,
       notificationPolicy,
       createdBy: createdBy || owner,
-      adapter: 'wiretap',
-      adapterId: tap.id,
+      adapter: 'subscription',
+      adapterId: null,
     });
   }
 
