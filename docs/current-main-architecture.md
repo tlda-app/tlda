@@ -92,6 +92,36 @@ history. The workspace follows the reader to the destination. Side-by-side
 columns are explicit comparison space; ordinary documents are not laid out as
 one horizontally pannable sheet.
 
+**The map is the canvas, zoomed out. It is not a component.** Skip has specified
+this repeatedly and it has been reimplemented as a custom widget each time, which
+is why it keeps being wrong. His words:
+
+> the fucking map is just the fucking entire canvas or zo[omed out] … That's the
+> fucking map. The inset is just a fucking picture in picture view of the canvas
+> at that fucking Zoom level,
+
+> Not complicated,
+
+> Not a custom component. Just that,
+
+And when he first specified it, 7/29 21:44 → `chief13`, verified against the
+event record:
+
+> Oh, also, obviously, we don't want a map button. In the project tab. Come on,
+> guy. I mean, you know me better than that. What we want is a picture in picture
+> viewer. Of the fucking map.
+
+> Like, right now, we have this sort of go return notion So I guess go on the
+> picture in picture viewer that is the map … zooms the fuck out. … And then gives
+> you an arrow to return.
+
+> I thought the map was just gonna be the canvas zoomed out.
+
+So: the Project tab carries an always-present picture-in-picture of the canvas at
+a zoomed-out level. Go zooms the main canvas out to it; a return arrow restores
+the prior view. There is no separate map document, no boxes with titles, and
+nothing to build that renders a project some other way.
+
 ## Fleet and agent tools
 
 Fleet state lives on the server. `mcp-server/fleet-tools.mjs` exposes
