@@ -5686,6 +5686,11 @@ async function handleFleetWsMessage(ws, msg) {
         if (!me) throw new Error('fleet-search requires caller identity for `me`')
         return me
       }
+      // Names in the filter that match no agent at all. A query built on one can
+      // only ever return zero rows, and zero rows is indistinguishable from
+      // "nothing matched" — so the caller is told which name failed instead of
+      // being left to conclude the history is empty.
+      const unresolvedNames = new Set()
       const resolveAgentNode = async (node) => {
         if (!node) return new Set()
         switch (node.t) {
@@ -5694,6 +5699,7 @@ async function handleFleetWsMessage(ws, msg) {
             const ids = node.selector
               ? await fleetStore.resolveAgentSelector(node.selector)
               : await fleetStore.resolveAgentQuery(node.v)
+            if (!ids.length) unresolvedNames.add(node.v)
             return new Set(ids)
           }
           case 'me': return new Set([currentSearchActor()])
@@ -5741,14 +5747,26 @@ async function handleFleetWsMessage(ws, msg) {
           default: return false
         }
       }
-      const rowId = (row, key) => row[key] || (key === 'from' ? row.agentId : null)
+      const rowFrom = (row) => row.from || row.agentId
+      // The recipient side is a SET, not a field: group send made one event carry
+      // many recipients, so a `to:` leaf matches when ANY recipient satisfies it.
+      // This read used to be `row.to`, a column group send deleted — which made
+      // every `to:` leaf silently false, and with it `involving:` and a bare
+      // token (their received half) and `<>` entirely, since both of its
+      // disjuncts contain a `to:`.
+      const matchesRecipient = async (node, row) => {
+        for (const id of row.recipients || []) {
+          if (await matchesAgentNode(node, id)) return true
+        }
+        return false
+      }
       const matchesMessageNode = async (node, row) => {
         if (!node) return true
         switch (node.t) {
-          case 'from': return await matchesAgentNode(node.x, rowId(row, 'from'))
-          case 'to': return await matchesAgentNode(node.x, rowId(row, 'to'))
+          case 'from': return await matchesAgentNode(node.x, rowFrom(row))
+          case 'to': return await matchesRecipient(node.x, row)
           case 'lit':
-          case 'me': return await matchesAgentNode(node, rowId(row, 'from')) || await matchesAgentNode(node, rowId(row, 'to')) || await matchesAgentNode(node, row.agentId)
+          case 'me': return await matchesAgentNode(node, rowFrom(row)) || await matchesRecipient(node, row) || await matchesAgentNode(node, row.agentId)
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
@@ -5772,6 +5790,7 @@ async function handleFleetWsMessage(ws, msg) {
       // NOT an unfiltered search.
       if (msg.agentQuery) {
         const ids = await fleetStore.resolveAgentQuery(msg.agentQuery);
+        if (!ids.length) unresolvedNames.add(msg.agentQuery)
         searchAgent = ids.length ? ids : [noMatch];
       }
       const hasText = (msg.query || '').trim().length > 0;
@@ -5850,7 +5869,7 @@ async function handleFleetWsMessage(ws, msg) {
           context[ts] = ctx
         }
       }
-      reply({ results, context })
+      reply({ results, context, unresolvedNames: [...unresolvedNames] })
     } catch (e) { error(e.message) }
     return
   }
