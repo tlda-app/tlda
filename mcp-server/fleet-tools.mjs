@@ -4313,7 +4313,16 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         `\`thread(${nextPageArg}, since: "${lastShownTs}"${untilHint})\``;
     }
 
-    return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}` }] };
+    // The continuation goes after the messages as well as before them. A reader
+    // meets the header before it has read anything, and by the time it decides
+    // it is finished the warning is far behind it — which is how a 208-message
+    // window got summarised from the 107 that fit. The last thing in the buffer
+    // is the thing in mind at the moment the decision is made.
+    const tail = truncatedAt
+      ? `\n${SEP}⚠️ END OF PAGE, NOT END OF RANGE — ${filtered.length - lines.length}+ messages after this one are unread.\n` +
+        `\`thread(${nextPageArg}, since: "${filtered[lines.length - 1]?.timestamp}"${untilHint})\``
+      : '';
+    return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}${tail}` }] };
   }
 
   // ==== Labels & Interrupts ====
