@@ -2139,7 +2139,17 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     }
     const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
     const nativeBinding = activeNativeBinding();
-    const shellId = nativeBinding?.child_agent_id || process.env.FLEET_ID || null;
+    // A CLI or UI mint launches the process and asks for the seat at the same
+    // time, so the child starts with a mint id and no fleet id. The mint id is
+    // the daemon's, and the daemon's own store on this machine already holds
+    // what it maps to — read it here rather than sending it to a server that
+    // has no business resolving it.
+    const { resolveLoginFleetId } = await import('../daemon/mint-store.mjs');
+    const mintStoreFile = path.join(process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'), 'daemon-mints.sqlite');
+    const shellId = nativeBinding?.child_agent_id
+      || process.env.FLEET_ID
+      || resolveLoginFleetId({ mintId: localAgentId, storeFile: mintStoreFile })
+      || null;
     const boundFleetId = shellId;
     if (boundFleetId && shellId !== boundFleetId) {
       return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };
