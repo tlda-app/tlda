@@ -283,6 +283,7 @@ function activateHlSlot(editor: Editor, idx: number) {
 // ======================
 
 import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl, type HlSlot } from './highlighterSlots'
+import { chromeConditionClass, useChromeConditionSeverity } from './chrome/useChromeConditions'
 
 const PHONE_HL_SLOTS: HlSlot[] = [
   ...HL_SLOTS,
@@ -291,6 +292,7 @@ const PHONE_HL_SLOTS: HlSlot[] = [
 
 function PhoneHighlighterButton() {
   const editor = useEditor()
+  const inputConditionSeverity = useChromeConditionSeverity('input')
   // Derive mode and colorIdx reactively from editor state — shared source of truth with zone-slider
   const activeToolId = useValue('toolId', () => editor.getCurrentToolId(), [editor])
   const activeColorName = useValue('color', () =>
@@ -525,7 +527,7 @@ function PhoneHighlighterButton() {
           driven via the toolNameHud bus in the effect below. */}
       <button
         ref={btnRef}
-        className={`phone-hl-btn${isActive ? ' active' : ''}`}
+        className={`phone-hl-btn${isActive ? ' active' : ''}${chromeConditionClass(inputConditionSeverity)}`}
         style={{ '--hl-color': btnColor } as React.CSSProperties}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -935,6 +937,7 @@ function readVoiceButtonMode(): VoiceButtonMode {
 
 function VoiceNoteButtonInner() {
   const { recording, isPlacing, triggerFromElement } = useVoiceNoteController()
+  const voiceConditionSeverity = useChromeConditionSeverity('voice')
   const btnRef = useRef<HTMLButtonElement>(null)
   const suppressClickRef = useRef(false)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
@@ -1059,7 +1062,7 @@ function VoiceNoteButtonInner() {
     resetDrag()
   }, [resetDrag])
 
-  const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}`
+  const cls = `voice-note-btn${recording ? ' recording' : ''}${isPlacing ? ' placing' : ''}${chromeConditionClass(voiceConditionSeverity)}`
 
   return (
     <>

@@ -25,6 +25,7 @@ import { log } from '../logger'
 import { isUsableIdentityName, sanitizeIdentityName } from '../fleet/identity-persistence.mjs'
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
 import { isPhoneFleetDefaultViewport, selectAutoFleetDefaultLayout } from './fleet-phone-default'
+import { chromeConditionClass, useChromeConditionSeverity } from '../chrome/useChromeConditions'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -291,6 +292,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   const [sliderAnchor, setSliderAnchor] = useState<DOMRect | null>(null)
 
   const aliveCount = useAwakeFleetAgentCount()
+  const conditionSeverity = useChromeConditionSeverity('fleet')
 
   // Refs for closure-stable drag state (used inside window listeners)
   const justDraggedRef = useRef(false)
@@ -508,7 +510,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     >
       <span
         ref={badgeRef}
-        className="fleet-icon-pill-badge"
+        className={'fleet-icon-pill-badge' + chromeConditionClass(conditionSeverity)}
         onClick={handleClick}
         onPointerDown={handlePointerDown}
         onPointerUp={stopControlEvent}

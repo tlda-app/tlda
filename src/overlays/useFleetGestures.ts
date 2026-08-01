@@ -64,6 +64,8 @@ export const CORNER_CONTROL_SELECTORS = [
   '.fleet-icon-pill-badge',
   '.fleet-layout-slider',
   '.corner-button-slider',
+  '.chrome-condition-stack',
+  '.chrome-condition-detail',
   '.phone-toc-btn',
   '.fleet-composer-gutter',
 ] as const
