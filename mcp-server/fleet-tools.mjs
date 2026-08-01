@@ -1498,7 +1498,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Unified search query: literal text terms plus event filters such as from:, to:, agent:, cwd:, project:, type:, since:, before:. Agent filters use the fleet expression grammar: |, &, !, parens, labels/names/ids, and me. Use cwd:/path/to/project to list agents who worked in that directory by recency.' },
+          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. An unrecognised filter key is an error, not free text; quote a term to search it as text. cwd: and project: are NOT query filters — project is a separate parameter. Note since:/before: here take a relative unit where m means MONTHS, while the since/before PARAMETERS take m as minutes.' },
           project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },

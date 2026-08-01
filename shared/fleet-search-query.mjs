@@ -1,15 +1,30 @@
 import { parseAgentSelector as parseUnifiedAgentSelector, parseUnifiedFilter } from './unified-filter-grammar.mjs'
 
 const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role'])
+const FILTER_OPERATORS = new Set(['&', '|', '!', '(', ')'])
 
 export function parseSearchQuery(raw) {
-  const parts = splitSearchTokens(raw)
+  const quotedAt = new Set()
+  const parts = splitSearchTokens(raw, quotedAt)
   const filters = {}
   const filterParts = []
   const queryParts = []
+  // `& | ! ( )` are the filter language's operators, but the same characters
+  // occur in ordinary prose ("wow!"). They bind to the filter language only when
+  // there is one — so a query with no filter term keeps them as text, exactly as
+  // before, and a query with one gets working `|` and `!` instead of an operator
+  // dropped into the free-text side, where `from:a | from:b` died on
+  // `filter parse error: unexpected "|"`.
+  const hasFilterTerm = parts.some(part => filterKey(part))
 
   for (let i = 0; i < parts.length; i++) {
     const token = parts[i]
+    if (!quotedAt.has(i)) {
+      const unknown = unknownFilterKey(token)
+      if (unknown) {
+        throw new Error(`unknown filter "${unknown}:" in "${raw}". Known filters: ${[...FILTER_KEYS].map(k => `${k}:`).join(', ')}. To search for this as text, quote it: "${token}"`)
+      }
+    }
     const key = filterKey(token)
     if (key === 'role') {
       filters.role = token.slice(5)
@@ -32,6 +47,10 @@ export function parseSearchQuery(raw) {
       continue
     }
 
+    if (hasFilterTerm && FILTER_OPERATORS.has(token)) {
+      filterParts.push(token)
+      continue
+    }
     if (token === '&') continue
     if (token === '<>' && queryParts.length > 0 && parts[i + 1]) {
       const left = queryParts.pop()
@@ -161,9 +180,18 @@ export function resolveTimeFilter(val) {
   return null
 }
 
-function splitSearchTokens(raw) {
-  return String(raw || '').match(/"[^"]*"|<>|[()&|!]|[^\s()&|!]+/g)
-    ?.map(t => t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t) ?? []
+// Returns the tokens, plus the indices that arrived quoted — quoting is how you
+// say "this is text, not syntax", and the quotes are stripped here, so the fact
+// has to travel alongside.
+function splitSearchTokens(raw, quotedAt) {
+  const matched = String(raw || '').match(/"[^"]*"|<>|[()&|!]|[^\s()&|!]+/g) ?? []
+  return matched.map((t, i) => {
+    if (t.startsWith('"') && t.endsWith('"')) {
+      quotedAt?.add(i)
+      return t.slice(1, -1)
+    }
+    return t
+  })
 }
 
 function filterKey(token) {
@@ -171,6 +199,23 @@ function filterKey(token) {
   if (idx <= 0) return null
   const key = token.slice(0, idx).toLowerCase()
   return FILTER_KEYS.has(key) ? key : null
+}
+
+// Prefixes that look like a filter key and are not one: an agent id, and the URL
+// schemes that turn up in ordinary message text.
+const NON_FILTER_PREFIXES = new Set(['fleet', 'http', 'https', 'ws', 'wss', 'file', 'mailto'])
+
+// A term shaped like a filter whose key nothing recognises — `sinse:30m`. It
+// used to fall through to free text and match nothing, which is indistinguishable
+// from a filter that legitimately found nothing, and that is what sends a caller
+// off guessing search words instead of fixing the term. Quote it to search for
+// the literal text.
+function unknownFilterKey(token) {
+  const match = /^([a-z][a-z0-9_]*):/i.exec(token)
+  if (!match) return null
+  const key = match[1].toLowerCase()
+  if (FILTER_KEYS.has(key) || NON_FILTER_PREFIXES.has(key)) return null
+  return key
 }
 
 function collectFilterValue(parts, index) {
