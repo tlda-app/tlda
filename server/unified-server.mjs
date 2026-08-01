@@ -5653,6 +5653,11 @@ async function handleFleetWsMessage(ws, msg) {
   // - agents claim a server-created shell by `agent_id`
   // - humans attach by `name`
   // Neither form creates a new identity.
+  //
+  // Identity here is SPECIFIED — read scratch/daemon-mint-sift.md (Skip,
+  // 2026-07-24) before changing it. A mint id and a fleet id are different
+  // things, and `fleet_id` is an optional fact that arrives asynchronously,
+  // so "no fleet id yet" is a normal state and not an error to design around.
   if (type === 'login') {
     const { agent_id, name, labels, manager, metadata, kind } = msg
     let loginAgentId = agent_id || null

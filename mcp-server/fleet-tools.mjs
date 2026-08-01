@@ -2133,6 +2133,14 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
   // ==== Registration & Identity ====
 
   // ---- login ----
+  // Identity in this block is SPECIFIED. Read scratch/daemon-mint-sift.md
+  // (Skip, 2026-07-24) before you change it. Three things it settles, which
+  // agents keep re-deciding from the code instead:
+  //   - a mint id and a fleet id are NOT two names for one thing;
+  //   - `fleet_id` is an OPTIONAL write-once fact that arrives from the server
+  //     asynchronously — it comes when it comes, and login does not require it;
+  //   - login-side identity repair is on that spec's delete list, and
+  //     "server binding arrival is daemon mint-state input, not login repair".
   if (name === 'login') {
     if (Object.keys(args || {}).length > 0) {
       return { content: [{ type: 'text', text: 'login() takes no arguments; this process must get its fleet identity from FLEET_ID.' }], isError: true };
@@ -2140,10 +2148,9 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
     const nativeBinding = activeNativeBinding();
     // A CLI or UI mint launches the process and asks for the seat at the same
-    // time, so the child starts with a mint id and no fleet id. The mint id is
-    // the daemon's, and the daemon's own store on this machine already holds
-    // what it maps to — read it here rather than sending it to a server that
-    // has no business resolving it.
+    // time, so the child starts with a mint id and no fleet id. Whatever the
+    // daemon has recorded by now is worth having; not having it is a normal
+    // state and this call does not depend on it.
     const { resolveLoginFleetId } = await import('../daemon/mint-store.mjs');
     const mintStoreFile = path.join(process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'), 'daemon-mints.sqlite');
     const shellId = nativeBinding?.child_agent_id
@@ -2190,7 +2197,9 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const loginBody = {
       ...(shellId ? { agent_id: shellId } : {}),
       ...(localAgentId ? { local_agent_id: localAgentId } : {}),
-      session_id: CLAUDE_SESSION || undefined,
+      // No session_id. The server dropped session_id, session_ids and resume_id
+      // from `agents` in 11c018d6c and its login handler does not read one; the
+      // session lives in the mint record, joined there from the login marker.
       tmux_session: detectedTmux || undefined,
       cwd: cwd || undefined,
       labels,
@@ -2200,6 +2209,18 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     };
     if (!shellId && !localAgentId) {
       return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
+    }
+    if (!shellId) {
+      // No fleet id yet. That is what a fresh mint looks like — the seat is
+      // created by the server and recorded by the daemon on its own schedule.
+      // The marker is the work login does: it carries the mint id and the
+      // session id, and the daemon joins them from the log. Write it and return
+      // successfully; the seat binds when it arrives.
+      return { content: [{ type: 'text', text: [
+        localMarker({}),
+        `Logged in as mint ${localAgentId}. No fleet id yet — it is created by the server and recorded by the daemon.`,
+        'Call login() again once it lands to pick up your name and fleet id.',
+      ].join('\n') }] };
     }
 
     if (!nativeBinding && !_channelRWS?.connected) {
