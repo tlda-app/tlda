@@ -303,6 +303,7 @@ function readAll() {
     contentOpacity: getPref('fleet-content-opacity'),
     ageFade: getPref('fleet-age-fade'),
     foldBash: getPref('fold-bash-lines'),
+    foldThread: getPref('fold-thread-lines'),
     foldWrite: getPref('fold-write-lines'),
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
@@ -529,6 +530,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             ['File writes', 'fold-write-lines', prefs.foldWrite],
             ['Markdown writes', 'fold-md-lines', prefs.foldMd],
             ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
+            ['Threads', 'fold-thread-lines', prefs.foldThread],
           ] as const).map(([label, key, val]) => (
             <div className="prefs-num-row" key={key}>
               <span className="prefs-num-label">{label}</span>
