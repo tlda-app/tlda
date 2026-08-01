@@ -21,6 +21,18 @@ export function convertChatEvent(e) {
     timestamp: e.timestamp,
     read: e.read !== undefined ? e.read : false,
     _dbId: e.id,
+    // Name provenance, stamped by the server against name_history at this row's
+    // own timestamp. Carried through because this converter is an allowlist: a
+    // field it does not name does not reach the renderer, and `chat-render`
+    // reads all four. They were added in 9b18e400c and lost 17 minutes later in
+    // afdb19f0c, a wholesale revert of an unrelated filtering change — after
+    // which every historical line silently rendered its participants' CURRENT
+    // names. `toNames`/`toNamesNow` are the per-recipient form group send
+    // replaced the scalar `toName` with.
+    fromName: e.fromName ?? null,
+    fromNameNow: e.fromNameNow ?? null,
+    toNames: Array.isArray(e.toNames) ? e.toNames : null,
+    toNamesNow: Array.isArray(e.toNamesNow) ? e.toNamesNow : null,
   }
   const tempId = e._tempId || e.metadata?.client_temp_id
   if (tempId) msg._tempId = tempId
