@@ -2195,6 +2195,18 @@ if (fleetStore) {
     SERVER_OWNER_ID,
     { kind: RUNTIME_KIND.HUMAN, status: RUNTIME_STATUS.AWAY },
   )
+  // The server owner is created here rather than by a mint or a registration,
+  // so this is its mint and its subscription belongs here too. Caught on the
+  // preview: Skip's own row came back with an empty subscription list, which
+  // once delivery is subscriptions and nothing else means he receives no chat
+  // at all. He is the one recipient for whom silence is least survivable, and
+  // he arrives by the one creation path that neither the daemon nor the browser
+  // owns. Insert-if-absent like every other, so he can still unsubscribe.
+  await fleetStore.ensureSubscription?.({
+    owner: SERVER_OWNER_ID,
+    query: DEFAULT_SUBSCRIPTION_QUERY,
+    notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY,
+  })
   const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || readDaemonConfig().spawnMachineId
   if (configuredSpawnMachine && !await fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
     await fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
@@ -5574,17 +5586,23 @@ async function handleFleetWsMessage(ws, msg) {
     }
     // "It's Mint writes it to the database." The subscription is declared in
     // daemon.yaml, read by the daemon — the machine that has the file — and sent
-    // with the shell reservation. From here the row is live and mutable:
-    // "then you can fucking change it at will."
+    // with the reservation. From here the row is live and mutable: "then you can
+    // fucking change it at will."
     //
-    // Mint is the only moment that writes it, so there is no seed-versus-clobber
-    // question and nothing later overwrites a change. An agent that unsubscribes
-    // stays unsubscribed through every subsequent wake, because the row survives
-    // the wake and nothing refreshes it.
+    // Written when the ROW IS CREATED, which is what mint means — not only for
+    // spawn shells. A human registers through this same handler and never
+    // reserves a shell, so gating on the reservation left Skip's own row with no
+    // subscription and therefore no chat: caught on the preview, where his agent
+    // came back with an empty list.
+    //
+    // Creation-only is also what keeps it a mint rather than a reconcile. An
+    // agent that unsubscribes stays unsubscribed through every subsequent wake
+    // and every re-register, because the row survives the wake and nothing
+    // refreshes it.
     //
     // The server never reads daemon.yaml here. That is what makes this work on
     // Fly, which has no daemon.yaml because it runs no daemon.
-    if (isShellReservation) {
+    if (!existing) {
       for (const wanted of normalizeMintSubscriptions(msg.subscriptions)) {
         await fleetStore.ensureSubscription?.({
           owner: agentId,
