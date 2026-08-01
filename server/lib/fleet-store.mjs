@@ -1754,6 +1754,16 @@ export class FleetStore {
       const wiretapCc = [...new Set([...(metadata.wiretap_cc || []), ...resolved])];
       if (wiretapCc.length) metadata = { ...metadata, wiretap_cc: wiretapCc };
     }
+    // Who it was addressed to, kept apart from who ends up hearing it. The
+    // recipient rows below carry both, because a tap needs an inbox row; this
+    // is the only record of the address itself, and it is what the chat renders.
+    if (addressed.length) {
+      if (typeof metadata === 'string') {
+        try { metadata = JSON.parse(metadata) } catch { metadata = {} }
+      }
+      if (!metadata || typeof metadata !== 'object') metadata = {};
+      metadata = { ...metadata, addressed_to: [...addressed] };
+    }
     const meta = metadata ? JSON.stringify(metadata) : null;
 
     // The events INSERT runs inside fleet-store.worker.mjs: a slow FTS merge

@@ -26,6 +26,10 @@ import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 // ONE event: a one-recipient message is an array of length 1, and there is no
 // primary recipient.
 function recipientIds(m) {
+  // Who it was addressed to. `recipients` also carries everyone who merely
+  // heard it, so prefer the addressed list when the event has one.
+  if (Array.isArray(m?.addressed_to)) return m.addressed_to.filter(Boolean)
+  if (Array.isArray(m?.metadata?.addressed_to)) return m.metadata.addressed_to.filter(Boolean)
   return Array.isArray(m?.recipients) ? m.recipients.filter(Boolean) : []
 }
 
