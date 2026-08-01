@@ -8,7 +8,7 @@ import { WebSocket } from 'ws'
 import { getFleetServerUrl, getMachineId } from '../shared/config.mjs'
 import { activeEnvName, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger, readDaemonConfig } from './permission-ledger.mjs'
-import { loginSubscriptionsFor, defaultSubscription } from '../shared/subscriptions.mjs'
+import { mintSubscriptionsFor, defaultSubscription } from '../shared/subscriptions.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 
@@ -369,7 +369,7 @@ async function wsIdentityMessage(type, {
 // nobody choosing it, and silence must never be the way a config error presents.
 function mintSubscriptions() {
   try {
-    return loginSubscriptionsFor(readDaemonConfig())
+    return mintSubscriptionsFor(readDaemonConfig())
   } catch (e) {
     console.error(`[agent-launch] daemon config could not be read for subscriptions: ${e.message}`)
     console.error('[agent-launch] minting with the default subscription only; named sets from daemon.yaml are NOT applied')

@@ -22,7 +22,7 @@ import { FleetStore } from './fleet-store.mjs'
 import {
   DEFAULT_SUBSCRIPTION_QUERY,
   DEFAULT_SUBSCRIPTION_POLICY,
-  loginSubscriptionsFor,
+  mintSubscriptionsFor,
   subscriptionSetsFromDaemonConfig,
 } from '../../shared/subscriptions.mjs'
 import { decideSubscriptionDelivery } from '../../shared/inbox-attention.mjs'
@@ -164,7 +164,7 @@ test('the one-time migration does not resurrect a deleted subscription', async (
 })
 
 test('daemon.yaml sets are additive on top of the default, in { default, values } form', () => {
-  const wanted = loginSubscriptionsFor({
+  const wanted = mintSubscriptionsFor({
     subscriptions: {
       default: 'standard',
       values: {
@@ -179,7 +179,7 @@ test('daemon.yaml sets are additive on top of the default, in { default, values 
 })
 
 test('with no daemon config at all, an agent still asks for the default', () => {
-  assert.deepEqual(loginSubscriptionsFor({}).map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY])
-  assert.deepEqual(loginSubscriptionsFor(undefined).map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY])
+  assert.deepEqual(mintSubscriptionsFor({}).map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY])
+  assert.deepEqual(mintSubscriptionsFor(undefined).map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY])
   assert.deepEqual(subscriptionSetsFromDaemonConfig({}), { defaultSet: null, sets: {} })
 })

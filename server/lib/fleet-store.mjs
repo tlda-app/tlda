@@ -2638,7 +2638,7 @@ export class FleetStore {
   // resolve correctly. The exact current friendly_name is copied verbatim.
   // Pre-history events (before from_ts) fall back to the earliest known name.
   // One-shot: give the agents that already exist the default subscription that
-  // login now carries, so the change does not silence a live fleet on deploy.
+  // mint now writes, so the change does not silence a live fleet on deploy.
   //
   // ONCE, and the bookkeeping row is the whole point. Delivery used to come from
   // a floor computed in code, so no live agent has ever held a default row;
@@ -4199,17 +4199,16 @@ export class FleetStore {
     return this.getSubscription(info.lastInsertRowid);
   }
 
-  // Subscribe an agent to a query it does not already hold. This is what login
-  // calls, and logging in twice must not accumulate duplicate rows — an agent
-  // logs in on every wake, so this runs constantly over the life of a seat.
+  // Subscribe an agent to a query it does not already hold. Creation calls this,
+  // and it is idempotent on (owner, query) so a retried mint cannot accumulate
+  // duplicate rows.
   //
-  // Idempotent on (owner, query) and nothing else. It deliberately does NOT
-  // reconcile: an agent that unsubscribed from its default and then logged in
-  // again gets it back, because asking to subscribe at login is exactly what a
-  // login is. What must never happen is a background sweep re-adding it, which
-  // would override a deliberate removal without anyone asking — "if someone
-  // wants to, like, have their agents be completely unaddressable, that's their
-  // fucking choice."
+  // It deliberately does NOT reconcile. Only creation writes, so an agent that
+  // unsubscribes stays unsubscribed through every later wake and re-register.
+  // What must never happen is a background sweep re-adding it, which would
+  // override a deliberate removal without anyone asking. Skip, 8/1, relayed by
+  // chief-3: "if someone wants to, like, have their agents be completely
+  // unaddressable, that's their fucking choice."
   ensureSubscription({ owner, query, notificationPolicy = 'immediate', createdBy = null }) {
     if (!owner || !query) return null;
     const existing = this._getSubscriptionsByOwner.all(owner).find(row => row.query === query);
@@ -4303,10 +4302,10 @@ export class FleetStore {
   // special case decided here.
   //
   // There is deliberately no floor. An agent is notified because a subscription
-  // it holds matched, and it holds one because it subscribed at login. An agent
-  // with no subscriptions receives nothing, which is the property Skip asked
-  // for — "if no agent has any subscriptions, no agent would [get] any fucking
-  // message if this were implemented correctly" — and unsubscribing yourself
+  // it holds matched, and it holds one because it was given one at mint. An agent
+  // with no subscriptions receives nothing, which is the property Skip named on
+  // 7/31 at 05:38 EDT — "if no agent has any subscriptions, no agent would [get]
+  // any fucking message if this were implemented correctly" — and unsubscribing yourself
   // into silence is allowed: "if someone wants to, like, have their agents be
   // completely unaddressable, that's their fucking choice."
   //

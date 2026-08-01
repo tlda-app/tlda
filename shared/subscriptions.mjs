@@ -1,7 +1,7 @@
-// What an agent subscribes to when it logs in.
+// What an agent is subscribed to when it is created.
 //
-// An agent declares this at login and the server stores it as an ordinary
-// subscription row. There is no floor in code, no default synthesised at match
+// The daemon reads these at mint and sends them with the shell reservation; the
+// server stores them as ordinary subscription rows. There is no floor in code, no default synthesised at match
 // time, and no delivery decided outside the matching layer: an agent is
 // notified because a subscription of its own matched, the same way every other
 // notification happens.
@@ -18,7 +18,7 @@
 // `my_labels` is subscriber-relative and evaluated at match time, never
 // expanded when the row is written — "Store the symbolic query. Do not expand
 // labels into a static list when the row is created; labels may change later."
-// A resolution stored at login would freeze the labels an agent held at that
+// A resolution stored at mint would freeze the labels an agent held at that
 // moment, so a label gained afterwards would silently stop delivering.
 //
 // He raised `any(my_labels)` as the nicer spelling and then settled for this
@@ -33,10 +33,12 @@ export function defaultSubscription() {
 }
 
 // The named subscription sets declared in daemon.yaml, in the `{ default,
-// values }` form `models:` and `environments:` use — the one Skip settled.
+// values }` form `models:` and `environments:` use. Skip, 8/1 01:15 EDT, on
+// which of the two existing shapes this should take: "It's fucking default and
+// value."
 //
-// These are read on the machine that HAS the daemon config, by the agent, and
-// sent with its login. The server never reads daemon.yaml to decide delivery,
+// These are read on the machine that HAS the daemon config, by the daemon, and
+// sent with the mint. The server never reads daemon.yaml to decide delivery,
 // which is why none of this depends on a file existing next to the server —
 // "no shit phi has no demon dot YAML. It doesn't run a fucking daemon."
 export function subscriptionSetsFromDaemonConfig(daemonConfig) {
@@ -55,13 +57,13 @@ export function subscriptionSetsFromDaemonConfig(daemonConfig) {
   return { defaultSet, sets }
 }
 
-// Everything an agent asks to be subscribed to at login: the default, plus the
-// entries of whichever named set daemon.yaml makes default on this machine.
+// Everything an agent is given at mint: the default, plus the entries of
+// whichever named set daemon.yaml makes default on this machine.
 //
 // Additive and ordinary. An agent may unsubscribe from any of it afterwards —
 // "if someone wants to, like, have their agents be completely unaddressable,
 // that's their fucking choice." Nothing here refuses to let that happen.
-export function loginSubscriptionsFor(daemonConfig) {
+export function mintSubscriptionsFor(daemonConfig) {
   const wanted = [defaultSubscription()]
   const { defaultSet, sets } = subscriptionSetsFromDaemonConfig(daemonConfig)
   if (defaultSet) {
