@@ -2,6 +2,9 @@ import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
 import { newLocalAgentId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
+import { resolveMintFacts } from '../daemon/mint-store.mjs'
+import os from 'node:os'
+import path from 'node:path'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
@@ -679,35 +682,34 @@ async function spawnFresh(params) {
   }
 }
 
+function defaultMintStorePath() {
+  const configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')
+  return path.join(configDir, 'daemon-mints.sqlite')
+}
+
 async function spawnRespawn(params) {
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
   const name = params.name || params.agentId || params.agent_id
   const fleetId = params.agentId || params.agent_id || (String(name || '').startsWith('fleet:') ? name : null)
   if (!fleetId) throw new SpawnError('launch-failed', 'wake requires literal fleet_id', { name })
-  const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath)
-  const localAgentLedger = params.localAgentLedger || ownedLocalLedger
-  let localRecord
-  try {
-    localRecord = localAgentLedger.get(fleetId)
-  } finally {
-    ownedLocalLedger?.close()
+  const facts = resolveMintFacts(params.mintStorePath || defaultMintStorePath(), fleetId)
+  if (!facts) {
+    throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: no daemon mint facts`, { fleetId })
   }
-  if (!localRecord) {
-    throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: daemon-local ledger has no bound mint record`, { fleetId })
-  }
-  const localProcess = localRecord.process || {}
-  const localConversation = localRecord.conversation || {}
-  if (!localProcess.cwd) {
-    throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: daemon-local recipe has no cwd`, { fleetId, localAgentId: localRecord.localAgentId })
+  const localProcess = facts.processState || {}
+  const localConversation = { harness: localProcess.harness || facts.launchRecipe?.kind || null, model: localProcess.model || facts.launchRecipe?.model || null }
+  const recipeCwd = localProcess.cwd || facts.launchRecipe?.cwd || null
+  if (!recipeCwd) {
+    throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: mint facts have no cwd`, { fleetId, mintId: facts.mintId })
   }
   const permissionRow = params.permissionLedger?.get?.(fleetId) || null
-  const friendlyName = localRecord.friendlyName || fleetId
-  const cwd = resolveSpawnCwd(localProcess.cwd)
+  const friendlyName = facts.friendlyName || fleetId
+  const cwd = resolveSpawnCwd(recipeCwd)
   const meta = {
     kind: localConversation.harness || permissionRow?.sessionKind || null,
     model: localConversation.model || permissionRow?.model || null,
-    permissionGrant: params.permissionGrant || localProcess.permissionGrant || permissionRow?.permissionGrant || null,
+    permissionGrant: params.permissionGrant || localProcess.permission_grant || permissionRow?.permissionGrant || null,
     permissionSet: params.permissionSet || permissionRow?.permissionSet || null,
     effort: params.effort || null,
   }

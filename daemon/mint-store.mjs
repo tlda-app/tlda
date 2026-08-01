@@ -63,6 +63,21 @@ export function resolveLoginFleetId({ explicitFleetId = null, mintId = null, sto
   return explicitFleetId || readMintFacts(storeFile, mintId)?.fleetId || null
 }
 
+export function resolveMintFacts(file, identifier) {
+  if (!file || !identifier || !fs.existsSync(file)) return null
+  const db = new Database(file, { readonly: true, fileMustExist: true })
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_mints'").get()) return null
+    return mintRow(
+      db.prepare('SELECT * FROM daemon_mints WHERE mint_id = ?').get(identifier)
+      || db.prepare('SELECT * FROM daemon_mints WHERE fleet_id = ?').get(identifier)
+      || db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? ORDER BY created_at DESC LIMIT 1').get(identifier)
+    )
+  } finally {
+    db.close()
+  }
+}
+
 export class MintStore {
   constructor(file) {
     fs.mkdirSync(path.dirname(file), { recursive: true })
