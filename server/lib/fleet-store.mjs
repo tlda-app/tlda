@@ -25,6 +25,7 @@ import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
+import { floorSubscription } from '../../shared/subscriptions.mjs';
 // isFleetRosterAgent only. fleetRosterCategory went with the count's move:
 // the store no longer categorises an agent, it is told which ids are alive and
 // joins that against its own roster.
@@ -1612,7 +1613,6 @@ export class FleetStore {
       FROM subscriptions s
       JOIN wiretaps w ON s.adapter = 'wiretap' AND s.adapter_id = w.id
       WHERE json_type(CASE WHEN json_valid(w.filter) THEN w.filter ELSE 'null' END) = 'text'
-        AND json_extract(w.filter, '$') != 'to:' || s.owner
     `);
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
@@ -4229,7 +4229,21 @@ export class FleetStore {
     return [...matched];
   }
 
+  // Every delivery for this (sender, recipient, event) — the recipient's own,
+  // and every observer's. The chat handler used to decide the recipient's half
+  // itself, with a hardcoded `immediate`; that was the special case, and this
+  // is where it went.
+  //
+  // The recipient's entry comes from the floor: every living agent is
+  // subscribed to what is addressed to it. It is computed here, per event,
+  // from nothing but the recipient existing — not a row, not a config file.
+  // Rows can be missed and files can be absent (the Fly server has no
+  // daemon.yaml at all), and either one would express itself as an agent that
+  // is silently unreachable. That is the failure this whole change exists to
+  // remove, so the floor must not be storable or configurable away. You can
+  // add subscriptions; you cannot remove this one.
   resolveSubscriptionDeliveries(senderId, recipientId, eventType) {
+    const floor = { recipient: recipientId, ...floorSubscription(recipientId), direct: true }
     if (!this._resolvableSubscriptionWiretapCache) {
       this._resolvableSubscriptionWiretapCache = this._getResolvableSubscriptionWiretaps.all().map(r => {
         const tap = this._hydrateWiretap(r)
@@ -4245,22 +4259,37 @@ export class FleetStore {
       });
     }
     const taps = this._resolvableSubscriptionWiretapCache;
-    if (taps.length === 0) return [];
-    const matched = [];
+    const matched = [floor];
+    if (taps.length === 0) return matched;
     const senderLabels = this._agentLabelsById(senderId);
     const recipientLabels = this._agentLabelsById(recipientId);
 
     for (const tap of taps) {
-      if (tap.owner === senderId || tap.owner === recipientId) continue;
+      // You are not notified about what you yourself sent. The recipient is no
+      // longer excluded here — its own subscriptions are allowed to match, and
+      // are folded into the floor below.
+      if (tap.owner === senderId) continue;
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
       if (!tap._ast) continue;
       const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.owner) : [];
       if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels })) continue;
+      if (tap.owner === recipientId) {
+        // An agent's own subscription cannot quiet its direct mail: the floor
+        // already promised `immediate`, and a held or batched entry beside it
+        // would be a second answer to the same question. Record the query so
+        // the panel still shows what they subscribed to, and keep the floor's
+        // policy. Turning direct delivery down is a product decision about
+        // `dnd`, not a consequence of this refactor.
+        floor.subscription_id ??= tap.subscription_id;
+        continue;
+      }
       matched.push({
         recipient: tap.owner,
         subscription_id: tap.subscription_id,
         query: tap.query,
         notification_policy: tap.notification_policy,
+        origin: 'held',
+        direct: false,
       });
     }
     return matched;

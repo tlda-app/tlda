@@ -21,6 +21,12 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'statusScanSeconds',
   'jsonlTailIdleSeconds',
   'terminalInputAllowed',
+  // Named subscription sets, in the `{ default, values }` form `models:` and
+  // `environments:` use. Additive only — an agent's reachability comes from the
+  // floor in shared/subscriptions.mjs, not from here, so a machine without this
+  // key (or without a daemon.yaml at all, which is the Fly server) still
+  // notifies everyone.
+  'subscriptions',
 ])
 
 // Like DAEMON_CONFIG_TOP_LEVEL_KEYS, a CLOSED allow-list: the server refuses to
@@ -93,7 +99,38 @@ export function validateDaemonConfigTopLevel(root, label = 'daemon config') {
   if (config.terminalInputAllowed !== undefined && typeof config.terminalInputAllowed !== 'boolean') {
     throw new Error(`${label}: "terminalInputAllowed" must be a boolean`)
   }
+  validateDaemonSubscriptions(config.subscriptions, label)
   return config
+}
+
+// Same `{ default, values }` contract `models:` is held to, and the same errors,
+// because it is the same notation. A set named as default that does not exist is
+// rejected rather than ignored: a silently-dropped default is a delivery rule
+// nobody is applying, and this subsystem's whole failure mode is silence.
+export function validateDaemonSubscriptions(block, label = 'daemon config') {
+  if (block === undefined) return
+  if (!isRecord(block)) throw new Error(`${label}: "subscriptions" must be an object`)
+  const extra = Object.keys(block).filter(k => k !== 'default' && k !== 'values')
+  if (extra.length) throw new Error(`${label}: daemon subscriptions must use { default, values }; unknown key(s): ${extra.join(', ')}`)
+  if (block.values !== undefined && !isRecord(block.values)) {
+    throw new Error(`${label}: "subscriptions.values" must be an object`)
+  }
+  for (const [name, entries] of Object.entries(block.values || {})) {
+    if (!Array.isArray(entries)) throw new Error(`${label}: subscription set "${name}" must be a list`)
+    for (const entry of entries) {
+      const query = typeof entry === 'string' ? entry : entry?.query
+      if (typeof query !== 'string' || !query.length) {
+        throw new Error(`${label}: subscription set "${name}" has an entry with no query`)
+      }
+    }
+  }
+  if (block.default === undefined) {
+    if (block.values !== undefined) throw new Error(`${label}: "subscriptions.default" is required when subscriptions.values is configured`)
+    return
+  }
+  if (typeof block.default !== 'string' || !(block.default in (block.values || {}))) {
+    throw new Error(`${label}: subscriptions.default "${block.default}" is not in subscriptions.values`)
+  }
 }
 
 export function validateProjectDaemonOverrideTopLevel(root, label = 'project daemon override') {

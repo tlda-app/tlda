@@ -88,11 +88,22 @@ test('subscription deliveries retain notification policy and bypass raw wiretap 
     })
 
     assert.deepEqual(store.resolveWiretaps('fleet:sender', 'fleet:target', 'chat'), [])
+    // The recipient's own delivery now comes from the same resolver as the
+    // observer's, so the floor entry leads and the observer follows.
     assert.deepEqual(store.resolveSubscriptionDeliveries('fleet:sender', 'fleet:target', 'chat'), [{
+      recipient: 'fleet:target',
+      subscription_id: null,
+      query: 'to:fleet:target',
+      notification_policy: 'immediate',
+      origin: 'floor',
+      direct: true,
+    }, {
       recipient: 'fleet:subscriber',
       subscription_id: 1,
       query: 'to:reviewers',
       notification_policy: 'batch(30s)',
+      origin: 'held',
+      direct: false,
     }])
     store.close()
   })
