@@ -5432,6 +5432,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     pointerId: number
     _onMain?: boolean
   } | null>(null)
+  // Set by the drag effect below so the unmount-only cleanup can reach the
+  // current cancelDrag closure without taking the effect's deps.
+  const cancelDragRef = useRef<null | (() => void)>(null)
+
   // Tears down any hover pane already showing when a drag starts here. Whether a
   // drag is in flight is dragCoordinator.isActive, not a flag of our own.
   const suppressSkillHoverDuringChatDrag = useCallback(() => {
@@ -6013,13 +6017,23 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     document.addEventListener('pointerdown', onPointerDown, { capture: true })
+    cancelDragRef.current = cancelDrag
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-      // Delete any in-flight pill before releasing its coordinator handlers.
-      if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
   }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
+
+  // Deleting an in-flight pill belongs to unmount alone, so it is its own effect.
+  // It used to sit in the cleanup above, which re-runs on every dep change --
+  // and chatLogEl is a dep. Dragging a pill over a chat opens filter mode, filter
+  // mode unmounts the message list, the scroller's ref callback sets chatLogEl to
+  // null, and the cleanup fired mid-drag and deleted the pill the user was still
+  // holding. A drag is owned by the document-level dragCoordinator, so swapping
+  // the log element out from under it is not a reason to end it.
+  useEffect(() => () => {
+    if (dragRef.current) cancelDragBeforeRelease(() => cancelDragRef.current?.(), () => dragCoordinator.release())
+  }, [])
 
   // --- chatInsertBus listener: content drops insert into textarea ---
   useEffect(() => {
