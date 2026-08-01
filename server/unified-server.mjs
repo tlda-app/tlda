@@ -1694,9 +1694,9 @@ function _queueBroadcastAgents(agentUpdates = null) {
   }
 }
 
-function _agentWithEphemeralState(agent, subscriptionsByOwner) {
+function _agentWithEphemeralState(agent, subscriptionsByOwner, daemonConfig) {
   if (!agent) return null
-  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner, readDaemonConfig())
+  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner, daemonConfig)
   if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
   if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
   return withCapabilities
@@ -1712,8 +1712,14 @@ async function _broadcastStateNow() {
   const changed = []
   const removed = []
   const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pendingIds) || {}
+  // Read once for the whole delta, for the reason agentWithSubscriptions states:
+  // readDaemonConfig() stats, reads and YAML-parses daemon.yaml on every call,
+  // with no cache. Called inside this loop it was that work per changed agent per
+  // broadcast, synchronous, on the main loop — the cost this project already
+  // measured and removed twice on this exact path.
+  const daemonConfig = readDaemonConfig()
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner)
+    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner, daemonConfig)
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
@@ -7353,7 +7359,13 @@ async function handleFleetWsMessage(ws, msg) {
     if (!callerQuery) { error('missing caller'); return }
     const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
     if (!target) { error('target not found'); return }
-    reply(await fleetStore.getSubscriptionsByOwner(target.id))
+    // The same list the panel gets, from the same composition: floor and granted
+    // first, then held rows. Answering with stored rows alone told an agent it had
+    // "No subscriptions" while the floor was delivering to it perfectly well —
+    // which is the precise lie this feature exists to remove, just on the agent's
+    // surface rather than Skip's. One question, one answer, both surfaces.
+    const held = (await fleetStore.getSubscriptionsByOwner(target.id)) || []
+    reply(agentWithSubscriptions(target, { [target.id]: held }, readDaemonConfig()).subscriptions)
     return
   }
 
