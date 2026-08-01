@@ -5135,7 +5135,12 @@ async function drainWakeQueue() {
         reason: `wake queue drain aborted: ${e?.message || e}`,
         ts: new Date().toISOString(),
       })
-    } catch {}
+    } catch (broadcastErr) {
+      // Best effort: the broadcast is a courtesy on top of the console error
+      // above, and a failure here must not prevent the finally from re-arming
+      // the queue — that is the whole point of this change.
+      console.warn(`[wake] could not broadcast drain failure: ${broadcastErr?.message || broadcastErr}`)
+    }
   } finally {
     _wakeDraining = false
     // Anything queued while we were failing still needs servicing.
