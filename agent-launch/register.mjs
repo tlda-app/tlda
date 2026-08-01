@@ -358,29 +358,43 @@ async function wsIdentityMessage(type, {
 }
 
 // The subscriptions declared in daemon.yaml, read here because here is the
-// machine that has the file. Mint carries them to the server, the server writes
-// the rows, and from then on the database is what is live. The server never
-// reads daemon.yaml to decide delivery — which is why none of this needs a file
-// to exist on Fly, a box that has no daemon.yaml because it runs no daemon.
-//
-// A config that cannot be parsed is LOUD and then proceeds without the named
-// sets, so a broken file cannot make an agent unreachable. That asymmetry is
-// deliberate: the eighteen-hour outage was a missing file reading as `{}` with
-// nobody choosing it, and silence must never be the way a config error presents.
+// machine that has the file.
 function mintSubscriptions() {
-  try {
-    return mintSubscriptionsFor(readDaemonConfig())
-  } catch (e) {
-    console.error(`[agent-launch] daemon config could not be read for subscriptions: ${e.message}`)
-    console.error('[agent-launch] minting with the default subscription only; named sets from daemon.yaml are NOT applied')
-    return [defaultSubscription()]
+  return mintSubscriptionsFor(readDaemonConfig())
+}
+
+async function assignMintedSubscriptions(reserved, subscriptions, { api, timeoutMs }) {
+  const fleetId = reserved?.server_agent_id || reserved?.agent?.id
+  const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(fleetId)}`
+  for (const wanted of subscriptions) {
+    const requestId = `agent-launch-subscribe:${fleetId}:${wanted.query}`
+    try {
+      await wsIdentityAttempt('subscribe', requestId, fleetId, wsUrl, {
+        type: 'subscribe',
+        id: requestId,
+        caller: fleetId,
+        target: fleetId,
+        query: wanted.query,
+        notification_policy: wanted.notification_policy,
+      }, { api, timeoutMs, attempt: 1 })
+    } catch (e) {
+      // The reservation above already succeeded and `fleetId` is that identity.
+      // Throwing here would send the caller down the registration-deferred path
+      // and launch the agent with no fleet id at all.
+      console.error(`[agent-launch] ${fleetId} did not get subscription ${wanted.query}: ${e.message}`)
+    }
   }
+  return reserved
 }
 
 export async function wsReserveShell(options = {}) {
-  return wsIdentityMessage('reserve-shell', { ...options, shell: true, subscriptions: mintSubscriptions() })
+  const subscriptions = mintSubscriptions()
+  const reserved = await wsIdentityMessage('reserve-shell', { ...options, shell: true, subscriptions })
+  return assignMintedSubscriptions(reserved, subscriptions, { api: options.api || resolveApi(), timeoutMs: options.timeoutMs || 5000 })
 }
 
 export async function wsMintShell(options = {}) {
-  return wsIdentityMessage('mint-shell', { ...options, shell: true, subscriptions: mintSubscriptions() })
+  const subscriptions = mintSubscriptions()
+  const reserved = await wsIdentityMessage('mint-shell', { ...options, shell: true, subscriptions })
+  return assignMintedSubscriptions(reserved, subscriptions, { api: options.api || resolveApi(), timeoutMs: options.timeoutMs || 5000 })
 }

@@ -64,12 +64,10 @@ export function subscriptionSetsFromDaemonConfig(daemonConfig) {
 // "if someone wants to, like, have their agents be completely unaddressable,
 // that's their fucking choice." Nothing here refuses to let that happen.
 export function mintSubscriptionsFor(daemonConfig) {
-  const wanted = [defaultSubscription()]
   const { defaultSet, sets } = subscriptionSetsFromDaemonConfig(daemonConfig)
-  if (defaultSet) {
-    for (const entry of sets[defaultSet] || []) {
-      wanted.push({ query: entry.query, notification_policy: entry.notification_policy, set: defaultSet })
-    }
-  }
-  return wanted
+  return (sets[defaultSet] || []).map(entry => ({
+    query: entry.query,
+    notification_policy: entry.notification_policy,
+    set: defaultSet,
+  }))
 }

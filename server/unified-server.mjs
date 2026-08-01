@@ -1036,13 +1036,12 @@ async function taskInboxStatusFor(agentId) {
 // something Skip typed at the terminal.
 function taskWakePreview(raw, max = 120) {
   const s = String(raw || '').replace(/\s+/g, ' ').trim()
-  return s.length > max ? `${s.slice(0, max)}…` : s
+  return s.length > max ? `${s.slice(0, max)}… (${s.length - max} more characters)` : s
 }
 
-async function taskDelegateWakeText(description, agentId) {
-  const status = await taskInboxStatusFor(agentId)
-  const prefix = status[0].toUpperCase() + status.slice(1)
-  return `${NOTIFICATION_MARKER} ${prefix} new task assigned: ${taskWakePreview(description)} — call inbox() to see it.`
+async function taskDelegateWakeText(description, agentId, from) {
+  const name = from ? (await fleetStore.getAgent?.(from))?.friendly_name || from : 'someone'
+  return `${NOTIFICATION_MARKER} Check your inbox(). You have a task from ${name}: ${taskWakePreview(description)}`
 }
 
 // detectPlanApproval removed — plan detection is handled by the daemon
@@ -5040,8 +5039,13 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     return
   }
   const prev = _wakeQueue.get(agentId)
+  // Who is waiting, not just the first of them. A second message arriving
+  // before the drain replaces the preview with the list of senders.
+  const askers = new Set(prev?.askers || [])
+  if (asker) askers.add(asker)
   _wakeQueue.set(agentId, {
     nudgeText: nudgeText || prev?.nudgeText || null,
+    askers: [...askers],
     asker: asker || prev?.asker || null,
     traceId: traceId || prev?.traceId || null,
     source: Object.keys(source || {}).length ? source : (prev?.source || {}),
@@ -5072,7 +5076,14 @@ async function drainWakeQueue() {
   while (_wakeQueue.size > 0) {
     const [agentId, wakeEntry] = _wakeQueue.entries().next().value
     _wakeQueue.delete(agentId)
-    const nudgeText = wakeEntry?.nudgeText || null
+    let nudgeText = wakeEntry?.nudgeText || null
+    const waiting = wakeEntry?.askers || []
+    if (waiting.length > 1 && nudgeText?.startsWith(NOTIFICATION_MARKER)) {
+      const names = []
+      for (const id of waiting.slice(0, 2)) names.push((await fleetStore.getAgent?.(id))?.friendly_name || id)
+      const who = waiting.length > 2 ? `${names[0]}, ${names[1]} and others` : `${names[0]} and ${names[1]}`
+      nudgeText = `${NOTIFICATION_MARKER} Check your inbox(). You have messages from ${who}.`
+    }
     const asker = wakeEntry?.asker || null
     const traceId = wakeEntry?.traceId || null
     const source = wakeEntry?.source || {}
@@ -5996,7 +6007,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Collapsed for the same reason as taskWakePreview: the notification is one
     // line, and a preview that carries newlines spills unmarked lines.
     const s = String(raw || '').replace(/\s+/g, ' ').trim()
-    return s.length > max ? `${s.slice(0, max)}…` : s
+    return s.length > max ? `${s.slice(0, max)}… (${s.length - max} more characters)` : s
   }
   // Reads the agent, so async — and the read is immediately property-accessed,
   // which is the `(await …)?.x` shape that must not be written as
@@ -6006,14 +6017,10 @@ async function handleFleetWsMessage(ws, msg) {
     return normalizeInboxStatus(status)
   }
   const unreadPendingFor = (eventId, agentId) => fleetStore.isUnreadPending(eventId, agentId)
-  const inboxCall = (action) => `call inbox() to ${action}.`
-  const wakeText = ({ status, event, preview, action }) => {
-    const label = normalizeInboxStatus(status)
-    const prefix = label[0].toUpperCase() + label.slice(1)
-    return `${NOTIFICATION_MARKER} ${prefix} ${event}: ${preview} — ${inboxCall(action)}`
-  }
-  const chatWakeText = async (text, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
-  const delegateWakeText = async (description, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
+  const agentDisplayName = async (id) => (id ? (await fleetStore.getAgent?.(id))?.friendly_name || id : 'someone')
+  const wakeText = ({ what, preview }) => `${NOTIFICATION_MARKER} Check your inbox(). You have ${what}${preview ? `: ${preview}` : '.'}`
+  const chatWakeText = async (text, agentId, from) => wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) })
+  const delegateWakeText = async (description, agentId, from) => wakeText({ what: `a task from ${await agentDisplayName(from)}`, preview: previewForWake(description) })
   const subscriptionBatchKey = (delivery) => `${delivery.recipient}\u0000${delivery.subscription_id}\u0000${delivery.notification_policy}`
   const reserveSubscriptionBatch = (delivery) => {
     if (delivery.delivery !== 'batched' || !delivery.notifyBy) return delivery
@@ -6057,10 +6064,8 @@ async function handleFleetWsMessage(ws, msg) {
       if (!pending) return
       const latestStatus = await inboxStatusFor(state.recipient)
       await requestWake(state.recipient, wakeText({
-        status: latestStatus,
-        event: 'batched subscription matches ready',
+        what: `messages from ${await agentDisplayName(state.from)}`,
         preview: previewForWake(state.preview),
-        action: 'read and respond',
       }), state.from, state.traceId, { sourceEventIds: [...state.eventIds], priority: state.priority, subscriptionId: state.subscriptionId })
     })().catch(e => console.error(`[wake] subscription batch wake failed for ${state.recipient}: ${e?.message || e}`))
     }, delay)
@@ -6388,7 +6393,7 @@ async function handleFleetWsMessage(ws, msg) {
             source: { sourceEventId: eventId, priority: basePriority },
           })
         } else {
-          wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+          wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to, from), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
       }
       for (const subDelivery of r.subscriptionDeliveries) {
@@ -6396,7 +6401,7 @@ async function handleFleetWsMessage(ws, msg) {
           const subscriptionStatus = await inboxStatusFor(subDelivery.recipient)
           wakeRequests.push({
             to: subDelivery.recipient,
-            text: wakeText({ status: subscriptionStatus, event: 'subscription match', preview: previewForWake(text), action: 'read and respond' }),
+            text: wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) }),
             asker: from,
             traceId,
             source: { sourceEventId: eventId, priority: basePriority, subscriptionId: subDelivery.subscription_id },
@@ -6472,7 +6477,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (keyword === 'outline') {
           setTimeout(() => {
             sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
-              text: systemMessage('Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.'),
+              text: systemMessage('Invoke the outline-before-writing skill, then share the plan file path in chat.'),
               enter: true,
             })).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
           }, 2000)
@@ -6681,7 +6686,7 @@ async function handleFleetWsMessage(ws, msg) {
       trace_id: traceId,
     })
     if (!Number.isFinite(atMs) || atMs <= Date.now()) {
-      await requestWake(resolved.id, await delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+      await requestWake(resolved.id, await delegateWakeText(description, resolved.id, from), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
     }
     return
   }
