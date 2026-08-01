@@ -22,9 +22,12 @@
  * `metadata.reattributed_from`.
  *
  * Usage:
- *   node bin/reattribute-terminal-system-messages.mjs [--db PATH] [--journal PATH] [--apply]
+ *   node bin/reattribute-terminal-system-messages.mjs [--db PATH] [--journal PATH]
+ *                                                     [--sqlite MODULE] [--apply]
  *
- * Without --apply it reports and writes nothing.
+ * Without --apply it reports and writes nothing. `--sqlite` names the
+ * better-sqlite3 module when running outside a tree that resolves it, which is
+ * the case on the server container.
  */
 
 import { writeFileSync } from 'fs'
@@ -35,9 +38,6 @@ import { createRequire } from 'module'
 import { isMachineAuthoredText } from '../agent-runtime/terminal-chat-authorship.mjs'
 import { isFullyMarked } from '../shared/terminal-system-markers.mjs'
 
-const require = createRequire(import.meta.url)
-const Database = require('better-sqlite3')
-
 const HUMAN_ID = 'fleet:skip'
 const SYSTEM_ID = 'fleet:tlda'
 
@@ -45,6 +45,9 @@ function arg(name, fallback) {
   const i = process.argv.indexOf(name)
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback
 }
+
+const require = createRequire(import.meta.url)
+const Database = require(arg('--sqlite', 'better-sqlite3'))
 const APPLY = process.argv.includes('--apply')
 const DB_PATH = arg('--db', path.join(homedir(), '.config', 'tlda', 'fleet.db'))
 const JOURNAL = arg('--journal', path.join(homedir(), '.config', 'tlda',
@@ -73,6 +76,10 @@ function shapeOf(text) {
 }
 
 const db = new Database(DB_PATH, { readonly: !APPLY })
+// The server holds this database open. Wait for its writes rather than failing
+// the repair on a moment's contention; the update is one transaction, so a
+// genuine timeout leaves the history exactly as it was.
+db.pragma('busy_timeout = 15000')
 
 const candidates = db.prepare(`
   SELECT id, timestamp, from_id, text, metadata
