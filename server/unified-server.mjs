@@ -7380,6 +7380,20 @@ async function handleFleetWsMessage(ws, msg) {
             serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
             readerId: humanId || SERVER_OWNER_ID,
           })
+          // Name-at-send for every participant. HISTORY only: a live push's
+          // name-at-send IS the current name, so the renderer's fallback is
+          // already right there, and stamping it would be work per event for no
+          // difference. Without this the panel had no stamps at all and every
+          // historical line resolved its participants against the CURRENT
+          // roster — dynamic scope, so the same line read differently depending
+          // on when it was opened, and a participant since gone from the roster
+          // rendered as a bare `fleet:` address.
+          //
+          // Cost is per DISTINCT PARTICIPANT in the page, not per row and not
+          // per agent in the fleet: `nameSpansFor` chunks the ids and runs two
+          // index-driven queries — `idx_name_history_fleet` on
+          // (fleet_id, from_ts), and the `agents` primary key.
+          await stampNames(events)
           ws.send(JSON.stringify({ event: 'filter-events', data: {
             subId, events, reason: 'history',
             requestBefore: msg.before || null,

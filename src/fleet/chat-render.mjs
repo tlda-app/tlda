@@ -280,11 +280,54 @@ export function agentNameHtml(pretty_name, friendlyName = '') {
     .join('')
 }
 
+// Each recipient's name AT SEND TIME, keyed by id. The server stamps `toNames`
+// / `toNamesNow` in `stampNames`, resolved through `resolveNameAt` against
+// name_history at the row's own timestamp — the same provenance `fromName`
+// carries for the sender. Keyed by id rather than read positionally because
+// `recipientIds` drops falsy entries, which would shift the index.
+function recipientNamesAtSend(m) {
+  const byId = new Map()
+  const ids = Array.isArray(m?.recipients) ? m.recipients : []
+  const at = Array.isArray(m?.toNames) ? m.toNames : null
+  if (!at) return byId
+  const now = Array.isArray(m?.toNamesNow) ? m.toNamesNow : []
+  ids.forEach((id, i) => {
+    if (id) byId.set(id, { at: at[i] ?? null, now: now[i] ?? null })
+  })
+  return byId
+}
+
 // The recipient set, comma-separated, in the same agent-nick markup a single
 // recipient has always used.
-function recipientNicksHtml(recipients, { getNickClass, getAgents, agentLabel }) {
+//
+// Name provenance is the recipient's, not the reader's clock. This asked the
+// LIVE roster (`agentNameTextOnly` → `agentLabel` → the raw id), which made a
+// recipient's name dynamic: the same historical line renders differently
+// depending on when it is opened, and a recipient no longer in the roster falls
+// through to printing its bare `fleet:` address. Group send (ed96a97bc) added
+// the per-recipient stamps on the server and left this reading the roster; the
+// sender half of the same line kept using `periodNick`, which is why one line
+// could show a name for its sender and an address for its recipient.
+function recipientNicksHtml(recipients, ctx, m) {
+  const { getNickClass, getAgents, agentLabel } = ctx
+  const stamped = recipientNamesAtSend(m)
   return recipients
-    .map(id => `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}">${leadingPrettyGlyphHtml(id, getAgents)}${esc(agentNameTextOnly(id, getAgents, agentLabel(id)))}</span>`)
+    .map(id => {
+      const period = stamped.get(id)
+      // A stamped `at` of null is not "no answer" — it means the recipient was
+      // NAMELESS at that timestamp, which is a fact about the message. Rendering
+      // its current name there invents a name it did not have; rendering nothing
+      // is a blank. Both are what Skip ruled out, and the form that says so is
+      // still an open notation decision, so this keeps the existing fallback and
+      // does not invent one. Absent stamp (a live row the server has not
+      // stamped) legitimately falls back — "now" is the right answer there.
+      const nick = period && period.at != null
+        ? period.at
+        : agentNameTextOnly(id, getAgents, agentLabel(id))
+      const now = period?.now ?? null
+      const title = now != null ? ` title="now: ${esc(now)} · ${esc(id || '')}"` : ''
+      return `<span class="agent-nick ${getNickClass(id)}" data-agent-id="${esc(id)}"${title}>${leadingPrettyGlyphHtml(id, getAgents)}${esc(nick)}</span>`
+    })
     .join('<span class="recipient-separator">,</span>')
 }
 
@@ -391,7 +434,7 @@ export function renderChatLine(m, ctx) {
     const fromPrettyGlyph = leadingPrettyGlyphHtml(m.from, getAgents)
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
-      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span>${recipientNicksHtml(recipients, ctx)}:</span>`
+      : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span>${recipientNicksHtml(recipients, ctx, m)}:</span>`
     return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
@@ -633,7 +676,7 @@ export function renderChatLine(m, ctx) {
   // reads like a play with no arrows — the two-party behaviour Skip keeps.
   const isAddressedToHumanOnly = recipients.length === 1 && isHumanId(recipients[0])
   const showRecipients = recipients.length > 0 && !isDefaultTarget && !isAddressedToHumanOnly
-  const toHtml = recipientNicksHtml(recipients, ctx)
+  const toHtml = recipientNicksHtml(recipients, ctx, m)
 
   // Render attachments as interactive refs
   function renderAttachChip(a) {
