@@ -51,6 +51,7 @@ import { viewFormat } from '../shared/document-formats.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
+import { grantedSubscriptionsFor } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
@@ -405,9 +406,18 @@ function agentWithDaemonCapabilities(agent) {
 // rows travel with the agent on both paths that carry one to the browser — the
 // page and the delta. A delta replaces the whole agent object client-side, so a
 // field present on only one path would disappear the moment an agent moved.
-function agentWithSubscriptions(agent, byOwner) {
+// The granted set leads, because it is the one that answers "why is this agent
+// reachable at all". It is not a row in `subscriptions` — the floor is computed
+// per event and the config sets are declared in daemon.yaml — so listing only
+// stored rows would show an agent with no subscriptions while it is being
+// notified perfectly well, and the panel would be lying about the case that
+// matters most. Marked by origin so held and granted stay distinguishable.
+// `daemonConfig` is passed in rather than read here: this runs once per agent
+// on a page of them, and readDaemonConfig() parses YAML off disk every call.
+function agentWithSubscriptions(agent, byOwner, daemonConfig) {
   if (!agent) return agent
-  return { ...agent, subscriptions: byOwner?.[agent.id] || [] }
+  const held = (byOwner?.[agent.id] || []).map(s => ({ ...s, origin: 'held' }))
+  return { ...agent, subscriptions: [...grantedSubscriptionsFor(agent.id, daemonConfig), ...held] }
 }
 
 // Gate 1 observability: correlates one daemon WS connection attempt across
@@ -1686,7 +1696,7 @@ function _queueBroadcastAgents(agentUpdates = null) {
 
 function _agentWithEphemeralState(agent, subscriptionsByOwner) {
   if (!agent) return null
-  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)
+  const withCapabilities = agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner, readDaemonConfig())
   if (_thinkingState.has(agent.id)) return { ...withCapabilities, status: 'thinking' }
   if (_compactingState.has(agent.id)) return { ...withCapabilities, status: 'compacting' }
   return withCapabilities
@@ -5316,7 +5326,8 @@ async function handleFleetWsMessage(ws, msg) {
     })
     const pageAgents = page.agents || []
     const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pageAgents.map(agent => agent.id)) || {}
-    reply({ ...page, agents: pageAgents.map(agent => agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner)), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
+    const pageDaemonConfig = readDaemonConfig()
+    reply({ ...page, agents: pageAgents.map(agent => agentWithSubscriptions(agentWithDaemonCapabilities(agent), subscriptionsByOwner, pageDaemonConfig)), totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
@@ -6162,11 +6173,18 @@ async function handleFleetWsMessage(ws, msg) {
       const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
       const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
       const nowMs = Date.parse(ts) || Date.now()
-      const deliveryDecision = decideSubscriptionDelivery({ policy: 'immediate', priority: basePriority, now: nowMs })
+      // The handler no longer decides anything about delivery. Every entry —
+      // the recipient's own and every observer's — arrives from the matching
+      // layer already carrying a policy, and is classified here by the one
+      // function that classifies policies. `direct` marks the recipient's own,
+      // which is the entry that feeds the stored `recipient_delivery`, the
+      // sender's receipt, and the wake.
       const subscriptionDeliveries = []
+      let deliveryDecision = null
       for (const match of subscriptionMatches) {
         const decision = decideSubscriptionDelivery({ policy: match.notification_policy, priority: basePriority, now: nowMs })
         if (!decision) continue
+        if (match.direct) { deliveryDecision = decision; continue }
         subscriptionDeliveries.push({
           recipient: match.recipient,
           subscription_id: match.subscription_id,
@@ -6175,6 +6193,10 @@ async function handleFleetWsMessage(ws, msg) {
           ...decision,
         })
       }
+      // The floor guarantees a direct entry for every living recipient, so its
+      // absence is a broken invariant rather than a quiet "no delivery" — fail
+      // loudly here instead of silently not notifying anyone.
+      if (!deliveryDecision) throw new Error(`no direct delivery resolved for recipient ${to}`)
       for (let i = 0; i < subscriptionDeliveries.length; i++) {
         subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
       }

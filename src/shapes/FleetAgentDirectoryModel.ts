@@ -180,7 +180,16 @@ export type FleetAgentSubscription = {
   query: string
   policy: string
   policyKind: FleetAgentSubscriptionPolicyKind
+  origin: FleetAgentSubscriptionOrigin
 }
+
+// Where a subscription came from, which is the difference between one the agent
+// chose and one it cannot lose. `floor` is delivery to itself — computed per
+// event from the agent existing, never stored; `granted` comes from a named set
+// in daemon.yaml; `held` is a row the agent (or someone) created. Only `held`
+// can be unsubscribed, and an agent showing no subscriptions at all would be a
+// lie about why it is reachable.
+export type FleetAgentSubscriptionOrigin = 'floor' | 'granted' | 'held'
 
 // The three delivery policies the server accepts — immediate, hold, and
 // batch(<duration>) — carried as the colour of the chip. A policy outside those
@@ -195,9 +204,14 @@ export function fleetAgentSubscriptionPolicyKind(policy: string): FleetAgentSubs
 }
 
 type FleetAgentSubscriptionRow = {
-  subscription_id?: number
+  subscription_id?: number | null
   query?: string
   notification_policy?: string
+  origin?: string
+}
+
+function fleetAgentSubscriptionOrigin(origin: string | undefined): FleetAgentSubscriptionOrigin {
+  return origin === 'floor' || origin === 'granted' ? origin : 'held'
 }
 
 export function fleetAgentSubscriptions(agent: any): FleetAgentSubscription[] {
@@ -207,10 +221,13 @@ export function fleetAgentSubscriptions(agent: any): FleetAgentSubscription[] {
     .map((row) => {
       const policy = String(row.notification_policy || '')
       return {
-        id: Number(row.subscription_id),
+        // Floor and granted subscriptions are not rows and have no id. `id` is
+        // only ever used to unsubscribe, which is exactly what they don't allow.
+        id: Number(row.subscription_id ?? -1),
         query: String(row.query),
         policy,
         policyKind: fleetAgentSubscriptionPolicyKind(policy),
+        origin: fleetAgentSubscriptionOrigin(row.origin),
       }
     })
 }
