@@ -155,14 +155,15 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
     : ''
   const json = esc(JSON.stringify(descriptor))
   const key = esc(descriptor.semanticKey)
-  // A thread renders open and has no card button: the read is the content, so
-  // there is nothing to click to see it. Its only control is the floating
-  // collapse the view puts in the left gutter.
+  // A thread is drawn as the thread visualization and nothing else. Skip: "they
+  // were supposed to render literally the same thing out of the database... so
+  // they're not supposed to fucking have changed the UI." The search card's
+  // shell -- its open/collapse button and its "inspected" line -- was never part
+  // of that picture, so the mount point is bare and renderThreadRows draws the
+  // card. The one control the picture lacked is the floating collapse the view
+  // puts in the left gutter.
   if (kind === 'thread') {
-    return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
-    ${inspectedHtml}
-    <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
-  </div>`
+    return `<div class="semantic-operation-body" data-semantic-operation="${json}"></div>`
   }
   return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
     <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>
@@ -318,7 +319,18 @@ export function renderThreadRows(msgs, ctx, headerText = '') {
   } else {
     rows = list.map(m => renderThreadMsg(m, ctx)).join('')
   }
-  return `<div class="tool-pretty-result tool-pretty-thread">${header}${rows}</div>`
+  // Skip: "it's supposed to fucking render threads at ... my setting is fucking
+  // 16 lines tall. With a fucking expand button, but it's rendering them like
+  // arbitrarily fucking tall." The rows above are the picture and do not move --
+  // the height is what his setting bounds. Bounding it by scrolling rather than
+  // clipping is what keeps the gap marker where the picture puts it and still
+  // reachable; clipping would put the one expand control below the fold.
+  // 0 = never fold, the same as the other fold prefs. Line-height 1.5 matches
+  // .chat-line, which is what a thread row is.
+  const h = ctx?.foldHeights?.thread ?? 0
+  const foldCls = h > 0 ? ' pretty-thread-bounded' : ''
+  const foldStyle = h > 0 ? ` style="max-height:${(h * 1.5).toFixed(1)}em"` : ''
+  return `<div class="tool-pretty-result tool-pretty-thread${foldCls}"${foldStyle}>${header}${rows}</div>`
 }
 
 // --- Tool helpers ---

@@ -1805,6 +1805,7 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
       write: getPref('fold-write-lines'),
       md: getPref('fold-md-lines'),
       diff: getPref('fold-diff-lines'),
+      thread: getPref('fold-thread-lines'),
     },
   }
 }
@@ -1939,6 +1940,12 @@ function threadSearchRequest(descriptor: any, agentId: string | null, currentPro
       parseMessageFilter(raw)
       filterExpression = raw
     }
+    // An empty filter is not a thread read. searchFleet drops a falsy
+    // filterExpression, so letting one through asks the server for the newest
+    // events in the whole corpus and draws somebody else's conversation on this
+    // card. Fail closed and let the view say so, the same way an unmatched name
+    // in fleet-search yields an impossible id rather than everything.
+    if (!filterExpression) throw new Error('thread call names no agent, task, or filter')
     filters.filterExpression = filterExpression
   }
   // Both bounds set means the call committed to a finite range, so `thread`
@@ -2011,10 +2018,17 @@ function threadRowsFromEvents(events: any[], agentLabel: (id: any) => string) {
 
 // A chat row rebuilds its React roots whenever its own HTML changes, which on a
 // live stream is constantly -- measured at 15 rebuilds of one thread card during
-// a single page load. A thread call is a point-in-time read, so its drawn rows
-// are a function of its semanticKey and nothing else: keep them, and a rebuilt
-// card redraws instead of re-reading the database and re-rendering every
-// message. Bounded because a chat can scroll past many distinct threads.
+// a single page load. A thread call is a point-in-time read, so keeping its
+// drawn rows lets a rebuilt card redraw instead of re-reading the database and
+// re-rendering every message. Bounded because a chat can scroll past many
+// distinct threads.
+//
+// Keyed by the read, not by the semanticKey. semanticKey deliberately drops the
+// range keys so paginated calls merge onto one card, and it never saw
+// currentProject at all -- but both shape the request threadSearchRequest
+// builds. Keyed on semanticKey alone, `thread(agent:"x", since:"1h")` and
+// `thread(agent:"x")` over all history share one slot, and the first render
+// wins for the life of the page. That is a card showing another call's thread.
 const THREAD_HTML_CACHE = new Map<string, string>()
 const THREAD_HTML_CACHE_MAX = 50
 
@@ -2044,7 +2058,9 @@ function ThreadChatOperationView({
   restoreExpansions: (root: HTMLElement) => void
 }) {
   const semanticKey = String(descriptor?.semanticKey || '')
-  const cached = THREAD_HTML_CACHE.get(semanticKey)
+  const { since: windowSince, until: windowUntil, pageSize: windowPageSize } = threadWindow(descriptor)
+  const cacheKey = `${semanticKey}|${currentProject || ''}|${windowSince}|${windowUntil}|${windowPageSize}`
+  const cached = THREAD_HTML_CACHE.get(cacheKey)
   const [html, setHtml] = useState(cached ?? '')
   const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
@@ -2053,7 +2069,7 @@ function ThreadChatOperationView({
   const viewRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async (force = false) => {
-    if (!force && THREAD_HTML_CACHE.has(semanticKey)) return
+    if (!force && THREAD_HTML_CACHE.has(cacheKey)) return
     setLoading(true)
     setError('')
     try {
@@ -2084,14 +2100,14 @@ function ThreadChatOperationView({
       const drawn = deduped.length
         ? renderThreadRows(threadRowsFromEvents(deduped, renderCtx.agentLabel), renderCtx)
         : ''
-      rememberThreadHtml(semanticKey, drawn)
+      rememberThreadHtml(cacheKey, drawn)
       setHtml(drawn)
     } catch (err: any) {
       setError(err?.message || 'thread read failed')
     } finally {
       setLoading(false)
     }
-  }, [currentProject, descriptor, renderCtx, semanticKey])
+  }, [currentProject, descriptor, renderCtx, cacheKey])
 
   useEffect(() => { void load() }, [load])
 

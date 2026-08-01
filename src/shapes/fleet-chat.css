@@ -1305,6 +1305,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-pretty-thread .chat-line {
   /* Thread messages inherit normal chat-line styling */
 }
+/* Bounded to the fold-thread-lines height so a long thread is not arbitrarily
+   tall. It scrolls rather than clips, which is what keeps the gap marker where
+   the picture puts it and still reachable. */
+.fleet-chat-shape .tool-pretty-thread.pretty-thread-bounded {
+  overflow-y: auto;
+}
 .fleet-chat-shape .pretty-msg-body {
   font-size: 11px;
   margin-top: 1px;
