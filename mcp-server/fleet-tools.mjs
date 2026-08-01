@@ -1502,7 +1502,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Unified search query: literal text terms plus event filters such as from:, to:, agent:, cwd:, project:, type:, since:, before:. Agent filters use the fleet expression grammar: |, &, !, parens, labels/names/ids, and me. Use cwd:/path/to/project to list agents who worked in that directory by recency.' },
+          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. An unrecognised filter key is an error, not free text; quote a term to search it as text. cwd: and project: are NOT query filters — project is a separate parameter. Note since:/before: here take a relative unit where m means MONTHS, while the since/before PARAMETERS take m as minutes.' },
           project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
@@ -3680,6 +3680,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // Query the server's unified search (fleet events + session JSONL text)
     let results = [];
     let contextMap = {};
+    let unresolvedNames = [];
     try {
       const contextTimestamps = [];
       const searchParams = {
@@ -3698,6 +3699,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       };
       const data = await mcpFleetTransport.ephemeral('fleet-search', searchParams);
       results = data?.results || [];
+      unresolvedNames = data?.unresolvedNames || [];
 
       // Fetch context for chat results if requested
       if (contextWindow > 0) {
@@ -3714,7 +3716,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }
 
+    // A name that matches no agent can only ever return zero rows, and zero rows
+    // reads as "nothing was said" rather than "nobody is called that". Say which
+    // name failed, whether or not the rest of the query found anything.
+    const unresolvedNote = unresolvedNames.length
+      ? `${unresolvedNames.map(n => `"${n}"`).join(', ')} ${unresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.`
+      : '';
+
     if (results.length === 0) {
+      if (unresolvedNote) {
+        return { content: [{ type: 'text', text: `No results for "${rawQuery}". ${unresolvedNote}` }] };
+      }
       const selector = args.agent || searchFilters.agent || searchFilters.agentResolve?.fragment || null;
       if (selector) {
         let agent = null;
@@ -3905,6 +3917,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     if (sinceTs) header += ` — since ${sinceTs}`;
     if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;
+    if (unresolvedNote) header += `\n⚠️ ${unresolvedNote}`;
 
     // Apply byte budget so Claude Code never truncates to a JSON file
     const SEARCH_MAX_BYTES = 25_000;
@@ -3935,6 +3948,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     const resolvedAgents = new Map();
     let filtered = [];
     let overflow = false;
+    let threadUnresolvedNames = [];
 
     const resolvedSince = parseTimestamp(args.since);
     const resolvedUntil = parseTimestamp(args.until);
@@ -3984,6 +3998,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = {
         query: '',
+        me: activeAgentId(),
         agent: agentId,
         agentOnly: true,
         historyOnly: true,
@@ -4017,6 +4032,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = {
         query: '',
+        // `me` in a filter resolves to the caller, so the caller has to say who
+        // it is. Without this a `to:me` thread made the server throw for want of
+        // an identity, and the throw was swallowed into "No messages found".
+        me: activeAgentId(),
         limit: pageSize + 1,
         filterExpression,
         historyOnly: true,
@@ -4028,6 +4047,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       else if (args.types?.length > 1) params.eventTypes = args.types;
       const data = await mcpFleetTransport.ephemeral('fleet-search', params);
       if (!data) return;
+      threadUnresolvedNames = data.unresolvedNames || [];
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
         if (args.types?.length > 1 && !args.types.includes(e.type)) continue;
         const metadata = parseEventMetadata(e.metadata);
@@ -4100,7 +4120,11 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           await fetchEventsForFilter(filterExpression);
         }
       } catch (e) {
+        // A failed fetch is not an empty history. Logging it to stderr and
+        // falling through printed "No messages found", which is how a server
+        // error reached the caller disguised as an answer.
         process.stderr.write(`[fleet] thread fetch failed: ${e.message}\n`);
+        return { content: [{ type: 'text', text: `Thread read failed: ${e.message}` }], isError: true };
       }
     } else {
       return { content: [{ type: 'text', text: 'Provide agent, filter, or task_id.' }], isError: true };
@@ -4129,6 +4153,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     }
 
     if (filtered.length === 0) {
+      // Same rule as search: a name nothing answers to must not read as an
+      // empty history.
+      if (threadUnresolvedNames.length) {
+        const names = threadUnresolvedNames.map(n => `"${n}"`).join(', ');
+        return { content: [{ type: 'text', text: `No messages found. ${names} ${threadUnresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.` }] };
+      }
       if (args.agent && primaryId) {
         return { content: [{ type: 'text', text: `No messages found for the given criteria. Selector "${args.agent}" resolves to ${primaryId}, but no indexed fleet messages were found in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };
       }

@@ -4854,19 +4854,27 @@ export class FleetStore {
     return this.resolveAgentSelector({ fragment });
   }
 
+  _lineageStackIds(lineageId) {
+    return this.db.prepare(`
+      SELECT fleet_id, MIN(stack_index) AS stack_index, MAX(entered_at) AS entered_at
+      FROM lineage_stack_entries WHERE lineage_id = ?
+      GROUP BY fleet_id
+      ORDER BY CASE WHEN MAX(active) = 1 THEN 0 ELSE 1 END, stack_index, entered_at DESC
+    `).all(lineageId).map(row => row.fleet_id);
+  }
+
   resolveAgentSelector(selector) {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
     if (!baseFragment) return [];
+    // An exact match against a lineage name takes precedence, but only while
+    // that lineage still has occupants. An emptied lineage used to swallow the
+    // name and return [], so `from:skip` resolved to nothing while `from:ski`
+    // found him through the substring branch below — an exact name was the one
+    // input that failed.
     const lineage = this.getLineage(selector.fragment)
-    if (lineage) {
-      const stackRows = this.db.prepare(`
-        SELECT fleet_id, MIN(stack_index) AS stack_index, MAX(entered_at) AS entered_at
-        FROM lineage_stack_entries WHERE lineage_id = ?
-        GROUP BY fleet_id
-        ORDER BY CASE WHEN MAX(active) = 1 THEN 0 ELSE 1 END, stack_index, entered_at DESC
-      `).all(lineage.id)
-      const stackIds = stackRows.map(row => row.fleet_id)
+    const stackIds = lineage ? this._lineageStackIds(lineage.id) : [];
+    if (stackIds.length) {
       if (selector.position != null) {
         const idx = Math.max(0, Number(selector.position) - 1)
         return stackIds[idx] ? [stackIds[idx]] : []
@@ -4922,7 +4930,11 @@ export class FleetStore {
     const agentPlaceholders = agentIds.map(() => '?').join(',');
     const historyMode = historyOnly ?? agentOnly ?? false;
     const textExpressionOnly = !!textExpression && positiveTextTerms.length === 0;
-    const effectiveHistoryMode = historyMode || textExpressionOnly;
+    // No text to match on means this is a history listing, not a text search.
+    // The FTS branch would build `MATCH ''` and SQLite raises `fts5: syntax
+    // error near ""` straight at the caller — which is what a filter-only query
+    // did whenever its agent names resolved to nothing.
+    const effectiveHistoryMode = historyMode || textExpressionOnly || !ftsQuery;
     let eventTypes = Array.isArray(types) && types.length ? types : type ? [type] : null;
     const sessionRole = role === 'user' || role === 'assistant' ? role : null;
     if (role && !sessionRole) eventTypes = eventTypes || [role];
@@ -4994,7 +5006,12 @@ export class FleetStore {
           type: r.type,
           timestamp: r.timestamp,
           from: r.from,
-          recipients: FleetStore.hydrateEvent(r).recipients,
+          // `_queryAgentEventsForSearch` already hydrated these rows, so the
+          // recipients are here and `to_json` is gone. Hydrating a second time
+          // found no `to_json` and overwrote them with [] — which blanked the
+          // recipient list on thread()'s main path and left `to:` nothing to
+          // match even once it was reading the right field.
+          recipients: r.recipients,
           text: r.text,
           metadata: r.metadata ? JSON.parse(r.metadata) : null,
           snippet: r.text?.slice(0, 120),
