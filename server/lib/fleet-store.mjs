@@ -1742,22 +1742,8 @@ export class FleetStore {
     // read naturally; it is not a primary recipient.
     const addressed = [...new Set((Array.isArray(event.to) ? event.to : [event.to]).filter(Boolean))];
 
-    // Resolve wiretap recipients before writing the event so the persisted
-    // record, its recipient rows, and the broadcast payload agree.
-    if (WIRETAP_EVENT_TYPES.has(event.type) && event.from && addressed.length) {
-      if (typeof metadata === 'string') {
-        try { metadata = JSON.parse(metadata) } catch { metadata = {} }
-      }
-      if (!metadata || typeof metadata !== 'object') metadata = {};
-      // Taps are matched per addressee: a tap on any one member of a group
-      // still fires, and the union is what gets a durable inbox row.
-      const resolved = addressed.flatMap(to => this.resolveWiretaps(event.from, to, event.type));
-      const wiretapCc = [...new Set([...(metadata.wiretap_cc || []), ...resolved])];
-      if (wiretapCc.length) metadata = { ...metadata, wiretap_cc: wiretapCc };
-    }
-    // Who it was addressed to, kept apart from who ends up hearing it. The
-    // recipient rows below carry both, because a tap needs an inbox row; this
-    // is the only record of the address itself, and it is what the chat renders.
+    // Who it was addressed to. Kept as its own field because the recipient rows
+    // are what an inbox reads and are not, on their own, a record of the address.
     if (addressed.length) {
       if (typeof metadata === 'string') {
         try { metadata = JSON.parse(metadata) } catch { metadata = {} }
@@ -1782,13 +1768,11 @@ export class FleetStore {
 
     const eventId = result.lastInsertRowid;
 
-    // Direct, explicit-CC, and wiretap recipients all get the same durable row;
-    // only the direct addressees are unread-by-default in the message case.
+    // Only the direct addressees are unread-by-default in the message case.
     // Channel notifications are only previews.
     const startsUnread = event.unread !== false && (event.type === 'chat' || event.type === 'delegate');
     const recipientRows = new Map();
     for (const id of addressed) recipientRows.set(id, startsUnread ? 0 : 1);
-    for (const id of metadata?.wiretap_cc || []) if (!recipientRows.has(id)) recipientRows.set(id, startsUnread ? 0 : 1);
     // Written before returning so callers that immediately retract can operate
     // on a real row.
     for (const [id, read] of recipientRows) {

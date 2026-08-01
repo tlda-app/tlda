@@ -6246,7 +6246,6 @@ async function handleFleetWsMessage(ws, msg) {
     for (const to of recipients) {
       // Resolve subscriptions per recipient — tap labels are matched against this `to`.
       const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat', filterAst) || []
-      const wiretapRecipients = await fleetStore.resolveWiretaps(from, to, 'chat')
       const recipientAgent = await fleetStore.getAgent?.(to)
       const nativeParentId = recipientAgent?.parent_agent_id || null
       const nativeChildHasDirectChannel = nativeParentId
@@ -6281,7 +6280,7 @@ async function handleFleetWsMessage(ws, msg) {
         subscriptionDeliveries[i] = reserveSubscriptionBatch(subscriptionDeliveries[i])
       }
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
-      for (const id of [...(wiretapRecipients || []), ...subscriptionRecipients]) watchRecipients.add(id)
+      for (const id of subscriptionRecipients) watchRecipients.add(id)
       subscriptionDeliveriesAll.push(...subscriptionDeliveries)
       if (!deliveryDecision) continue
       perRecipient.push({
