@@ -422,21 +422,6 @@ function registerHostedAgentRoutes() {
         agent_id: row.id,
         daemon_key: daemonKey,
       })
-      // The daemon resolves a configured alias to the model id it launches, so
-      // it is the only party that knows an agent is running claude-opus-5 and
-      // not "opus". Reported from this loop rather than from the mint so there
-      // is one sender: this runs on daemon-welcome and again on every
-      // process-binding change, which is what a mint, a wake and a respawn each
-      // produce. A binding whose ledger row predates the report is filled on the
-      // next connect instead of staying blank for the life of the agent.
-      if (row.model) {
-        sendMsg({
-          type: 'agent-model',
-          agent_id: row.id,
-          daemon_key: daemonKey,
-          model: row.model,
-        })
-      }
     } catch (e) {
       log.warn(`agent route registration failed for ${row.id}: ${e.message}`)
     }
