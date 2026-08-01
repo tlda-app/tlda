@@ -5615,12 +5615,24 @@ async function handleFleetWsMessage(ws, msg) {
     //
     // Creation-only is also what keeps it a mint rather than a reconcile. An
     // agent that unsubscribes stays unsubscribed through every subsequent wake
-    // and every re-register, because the row survives the wake and nothing
-    // refreshes it.
+    // and every re-register, because nothing refreshes the row.
     //
     // The server never reads daemon.yaml here. That is what makes this work on
     // Fly, which has no daemon.yaml because it runs no daemon.
-    if (!existing) {
+    //
+    // Once-per-agent is recorded on the agent rather than inferred from the row
+    // being new. `!existing` was the wrong test for it: a spawn allocates the
+    // fleet id and upserts the agent before any shell exists, so by the time the
+    // reservation arrives the row it is testing for is one the spawn already
+    // wrote. The condition was false for every agent minted that way, the write
+    // was skipped, and there was no later chance — delivery has no floor, so
+    // those agents heard nothing at all. Three keyed one-shot backfills in one
+    // day were all repairs of this, each fixing the past and leaving the next
+    // mint broken.
+    //
+    // The mark says the thing directly, so it does not depend on what order the
+    // row happened to be created in, and it still only ever fires once.
+    if (!existing?.metadata?.mintSubscriptionsWrittenAt) {
       for (const wanted of normalizeMintSubscriptions(msg.subscriptions)) {
         await fleetStore.ensureSubscription?.({
           owner: agentId,
@@ -5628,6 +5640,10 @@ async function handleFleetWsMessage(ws, msg) {
           notificationPolicy: wanted.notification_policy,
         })
       }
+      await fleetStore.upsertAgent({
+        id: agentId,
+        metadata: { ...(agent.metadata || {}), mintSubscriptionsWrittenAt: now },
+      })
     }
     const lifecycleLabel = agent.friendly_name || requestedName || agentId
     const eventType = isShellReservation ? 'lifecycle' : 'register'
