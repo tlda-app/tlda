@@ -5010,7 +5010,16 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
 }
 
 async function drainWakeQueue() {
+  // The flag must be cleared in a `finally`. It guards the only path that
+  // services the wake queue, and the caller is `if (!_wakeDraining)
+  // drainWakeQueue()` — unawaited, unhandled. So a rejection anywhere below,
+  // including from the two store reads that sit outside the loop's own try,
+  // would leave this true forever and stop every wake for the whole fleet,
+  // silently: nothing throws inside the guarded region, so the loud failure
+  // path never fires. That happened on 2026-08-01 at 01:44Z and went unnoticed
+  // for eighteen hours until Skip could not reach his chief of staff.
   _wakeDraining = true
+  try {
   while (_wakeQueue.size > 0) {
     const [agentId, wakeEntry] = _wakeQueue.entries().next().value
     _wakeQueue.delete(agentId)
@@ -5116,7 +5125,22 @@ async function drainWakeQueue() {
       }
     }
   }
-  _wakeDraining = false
+  } catch (e) {
+    // Loud, and rethrow nothing: this runs unawaited, so a rejection here has
+    // nowhere to land. Report it and let the finally re-arm the queue.
+    console.error(`[wake] drain aborted: ${e?.stack || e?.message || e}`)
+    try {
+      broadcastEvent('agent-wedged', {
+        agentId: null,
+        reason: `wake queue drain aborted: ${e?.message || e}`,
+        ts: new Date().toISOString(),
+      })
+    } catch {}
+  } finally {
+    _wakeDraining = false
+    // Anything queued while we were failing still needs servicing.
+    if (_wakeQueue.size > 0) setTimeout(() => { if (!_wakeDraining) drainWakeQueue() }, 1000).unref?.()
+  }
 }
 
 async function handleFleetWsMessage(ws, msg) {
