@@ -111,10 +111,17 @@ test('a queued parts job does not suppress the initial normal SVG build', () => 
 
 test('a page-zero SVG can retry after its initial build completes or fails', async () => {
   const { queue, starts } = makeQueue()
-  queue.dispatchBuild('new-svg-project')
+  // A worker that exits non-zero failed, and dispatchBuild now says so instead
+  // of resolving as if the build had succeeded. The caller has to hold the
+  // rejection; this test used to drop the promise on the floor.
+  const dispatched = assert.rejects(
+    queue.dispatchBuild('new-svg-project'),
+    /exited with code 1/,
+  )
   assert.equal(initialSvgDecision(queue).build, false)
 
   await starts[0].handlers.onExit(1)
+  await dispatched
   assert.deepEqual(initialSvgDecision(queue, 'failed'), {
     build: true,
     eager: true,

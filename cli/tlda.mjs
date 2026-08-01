@@ -598,9 +598,25 @@ async function cmdCreate() {
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: slides`))
 
+    // Resolve the deck BEFORE creating the project, so the record names the file
+    // it actually renders. Creating first meant passing no mainFile at all, and
+    // createProject's default stamped `main.tex` on a deck that has no TeX in it
+    // — which is how both imagined-randomization projects have declared a main
+    // file that does not exist since the day they were made.
+    const slidesMain = htmlArtifactMainForSource(mainArg)
+    const artifact = collectHtmlArtifactFiles(dir, { mainFile: slidesMain })
+    const allFiles = artifact.files
+    const deckHtml = artifact.paths.filter(f => /\.(?:html|htm)$/i.test(f))
+
+    if (deckHtml.length === 0) {
+      const hint = slidesMain ? ` (${slidesMain})` : ''
+      console.error(`No .html files found in ${dir}${hint}`)
+      process.exit(1)
+    }
+
     // Create or update project
     try {
-      await createProjectApi({ name, title, format: 'slides' })
+      await createProjectApi({ name, title, mainFile: slidesMain || deckHtml[0], format: 'slides' })
       console.log(green(`Created slides project "${name}".`))
     } catch (e) {
       if (e.message.includes('already exists')) {
@@ -610,16 +626,6 @@ async function cmdCreate() {
       }
     }
     await activateLocalSource()
-
-    const slidesMain = htmlArtifactMainForSource(mainArg)
-    const artifact = collectHtmlArtifactFiles(dir, { mainFile: slidesMain })
-    const allFiles = artifact.files
-
-    if (artifact.paths.filter(f => /\.(?:html|htm)$/i.test(f)).length === 0) {
-      const hint = slidesMain ? ` (${slidesMain})` : ''
-      console.error(`No .html files found in ${dir}${hint}`)
-      process.exit(1)
-    }
 
     if (artifact.missing.length > 0) {
       console.warn(yellow(`  Warning: ${artifact.missing.length} referenced local asset(s) were not found.`))

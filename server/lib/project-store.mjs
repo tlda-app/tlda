@@ -62,7 +62,13 @@ export async function readProject(name) {
   return sharedProject
 }
 
-export function createProject({ name, title, mainFile = 'main.tex', format = 'svg', members }) {
+// No default for mainFile. A caller that does not name one does not know one,
+// and stamping `main.tex` on it invents a fact: `project link --format slides`
+// created every deck with a declared TeX main it has never had, which is how
+// both imagined-randomization projects got a mainFile that does not exist.
+// Undeclared is a state the build tolerates; declared-and-absent is an error.
+// Readers that need a LaTeX name still fall back to `main.tex` at read time.
+export function createProject({ name, title, mainFile, format = 'svg', members }) {
   const dir = join(projectsDir, name)
   if (existsSync(join(dir, 'project.json'))) {
     throw new Error(`Project "${name}" already exists`)
@@ -75,7 +81,7 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
   const project = {
     name,
     title: title || name,
-    ...(!isBook && { mainFile }),
+    ...(!isBook && mainFile && { mainFile }),
     format,
     ...(isBook && members && { members }),
     pages: 0,

@@ -8,10 +8,13 @@
 // server process where the live rooms actually are. See setBuildReporter.
 
 import { runBuild, recordBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
-import { initProjectStore, readProject } from '../server/lib/project-store.mjs'
+import { initProjectStore, readProject, projectDir } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
+import { missingDeclaredMainFile, missingMainFileMessage } from '../server/lib/build-decision.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const BUILD_PRIORITY = Number(process.env.TLDA_BUILD_PRIORITY ?? 10)
 if (Number.isFinite(BUILD_PRIORITY)) {
@@ -72,7 +75,27 @@ process.on('message', async (msg) => {
     if (msg.kind === 'parts') {
       await buildProjectPartsView(msg.name)
     } else {
-      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[(await readProject(msg.name))?.format]
+      const project = await readProject(msg.name)
+
+      // Before any format is chosen and before anything renders. A project that
+      // declares a main file which is not there has no document to build, and
+      // every builder below would otherwise go looking for something else to
+      // render: buildSlides takes the first .html it finds, runBuild derives a
+      // texBase from a path that does not exist. That is how a Quarto talk
+      // declaring `main.tex` built "successfully" for four days.
+      const missingMain = missingDeclaredMainFile(project, msg.name)
+      if (missingMain) {
+        const message = missingMainFileMessage(msg.name, missingMain)
+        // build.log before the throw, and synchronously: it is the only copy of
+        // this that outlives the worker. `t: 'done', ok: false` is not relayed
+        // to any sink, and the report below is fire-and-forget IPC racing
+        // process.exit. The file is what `tlda project status` prints.
+        writeFileSync(join(projectDir(msg.name), 'build.log'), `[build] ${message}\n`)
+        sendReport('updateProject', [msg.name, { buildStatus: 'error' }])
+        throw new Error(message)
+      }
+
+      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides, qmd: buildQmd }[project?.format]
       if (builder) {
         await builder(msg.name)
         // A build happened, so it gets a version — same as LaTeX, which reaches

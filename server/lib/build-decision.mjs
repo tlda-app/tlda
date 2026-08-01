@@ -8,7 +8,35 @@
 
 import { existsSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
-import { outputDir } from './project-store.mjs'
+import { outputDir, sourceDir } from './project-store.mjs'
+
+/**
+ * The project's declared main file, when the source tree does not contain it.
+ *
+ * Declared-but-absent is the error. Undeclared is not: a project created before
+ * its first push has no mainFile at all, and a `book` is an aggregate of member
+ * projects that never has one. Those still build.
+ *
+ * The test is the filesystem, deliberately, not the client source manifest.
+ * `listSourceFiles` intersects the on-disk walk with that manifest, and a project
+ * pushed before the manifest existed reports zero files while its main file sits
+ * on disk and compiles — `synth-combined`, 99 pages, built today, is exactly
+ * that. Asking the manifest would refuse the projects that work.
+ *
+ * @returns {string|null} the declared path, project-relative, or null
+ */
+export function missingDeclaredMainFile(project, name) {
+  const declared = String(project?.mainFile || '').replace(/\\/g, '/').replace(/^\.?\/+/, '')
+  if (!declared) return null
+  return existsSync(join(sourceDir(name), declared)) ? null : declared
+}
+
+/** The message a build refuses with. It names the file, because that is the fix. */
+export function missingMainFileMessage(name, declared) {
+  return `${declared} does not exist in the source of project "${name}". ` +
+    `project.json declares it as mainFile, so the build stops here rather than ` +
+    `rendering whatever else is lying around and calling it this project.`
+}
 
 /**
  * Decide whether a file push should trigger a build.
