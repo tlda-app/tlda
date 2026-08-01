@@ -4440,7 +4440,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const rows = await mcpFleetTransport.ephemeral('subscriptions', { caller: activeAgentId(), target: args.target || activeAgentId() });
       if (rows?.error) return { content: [{ type: 'text', text: `subscription list failed: ${rows.error}` }], isError: true };
       if (!rows.length) return { content: [{ type: 'text', text: 'No subscriptions.' }] };
-      return { content: [{ type: 'text', text: rows.map(r => `#${r.subscription_id} ${r.owner}: ${r.query} (${r.notification_policy})`).join('\n') }] };
+      // Name where each one came from, because that is what says whether you can
+      // remove it. A held row has an id and `remove` takes that id; floor and
+      // granted rows have no id precisely because there is nothing to unsubscribe
+      // from — the floor is a property of existing, and a granted set comes from
+      // daemon.yaml.
+      const describe = (r) => {
+        if (r.origin === 'floor') return `floor      ${r.query} (${r.notification_policy}) — always on, cannot be removed`;
+        if (r.origin === 'granted') return `granted    ${r.query} (${r.notification_policy}) — from daemon.yaml set "${r.set}"`;
+        return `#${r.subscription_id}${' '.repeat(Math.max(1, 10 - String(r.subscription_id).length))}${r.query} (${r.notification_policy})`;
+      };
+      return { content: [{ type: 'text', text: rows.map(describe).join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `subscription failed: ${e.message}` }], isError: true };
     }
