@@ -1,7 +1,3 @@
-export function shouldSendWakeNudge(agent, nudgeText) {
-  return Boolean(nudgeText)
-}
-
 export function livenessFromCheckAliveResult(agentId, result) {
   if (result?.state) return { ...result, agent_id: result.agent_id || agentId }
   if (typeof result?.alive === 'boolean') {
@@ -29,10 +25,10 @@ export async function runWakeRouteLifecycle({
   ownerDaemon,
   nudgeText = null,
   returnNoticeText = null,
+  enterDelayMs = 0,
   traceId = null,
   sendDaemonDurable,
   appendControlTrace = () => {},
-  sendWakeNudge,
   getAgentDaemonRoute,
   insertWakeLifecycleEvent = async () => {},
 }) {
@@ -48,27 +44,23 @@ export async function runWakeRouteLifecycle({
 
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
-  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: agentId })
+  // One call: wake this agent if it is sleeping, and tell it this. The daemon is
+  // the only party that knows whether it started a process, so it is the one
+  // that decides whether the return notice goes on the front — the server never
+  // asks. The previous shape asked, and read the answer under a name the daemon
+  // does not send, which put "You were away as hibernating" in front of every
+  // message to a paused agent for a month.
+  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', {
+    fleet_id: agentId,
+    notify_text: nudgeText,
+    return_notice: returnNoticeText,
+    enter_delay_ms: enterDelayMs,
+  })
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
   const nextSeat = await getAgentDaemonRoute?.(agentId)
   if (!nextSeat?.daemon_key) throw new Error(`wake for ${agentId} did not retain a daemon route`)
-  // The daemon owns the question this branches on: it is the only party that
-  // knows whether a process was started. It answers `alreadyAlive` (wake-core),
-  // not `already` — which is the terminal-watch RPC's field. Reading the wrong
-  // key made every wake take the respawned branch, so the return notice went
-  // out on every pause instead of on a restart.
-  const deliveredNudge = spawnResult.alreadyAlive
-    ? nudgeText
-    : (returnNoticeText || nudgeText)
-  await sendWakeNudge(
-    nextSeat.daemon_key,
-    agent,
-    deliveredNudge,
-    spawnResult.alreadyAlive ? 'already-awake' : 'post-respawn',
-    'wake-route',
-  )
   if (traceId) {
     appendControlTrace({
       trace_id: traceId,

@@ -11,8 +11,12 @@ import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 import { claudeJsonlPath } from '../resume.mjs'
 import { exactTmuxWindowTarget } from '../../shared/tmux-target.mjs'
+import { SYSTEM_MARKER } from '../../shared/terminal-system-markers.mjs'
 
-const LOGIN_PROMPT = 'Call login() with the tlda MCP server. Then call inbox() to check for a pending task.'
+// Marked as a system message: the daemon types this into the terminal at spawn,
+// and an unmarked line there reads back as something Skip typed — 328 rows of
+// this prompt are stored in his history as him.
+const LOGIN_PROMPT = `${SYSTEM_MARKER} Call login() with the tlda MCP server. Then call inbox() to check for a pending task.`
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 const execFileP = promisify(execFile)
 
