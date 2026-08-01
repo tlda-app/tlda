@@ -1441,6 +1441,10 @@ export function getFleetTools() {
             type: 'boolean',
             description: 'Preview without marking included unread messages seen. Default false.',
           },
+          drain: {
+            type: 'boolean',
+            description: 'Read EVERY page instead of one, acknowledging as it goes, and write the whole thing to a markdown file. Returns the file path and a count. Use when the inbox is deep enough that one page is useless — paging is oldest-first, so a large backlog otherwise hides everything recent. Ignored with peek.',
+          },
         },
       },
     },
@@ -3448,6 +3452,97 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   if (name === 'inbox') {
     if (!activeAgentId()) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const view = inboxViewForArgs(args);
+
+    // drain: page through the whole backlog rather than the first page.
+    //
+    // Paging is oldest-first, so an agent a thousand messages behind is shown a
+    // window from days ago and nothing recent — the fuller the inbox, the more
+    // useless the read. One page is also the only unit an agent can acknowledge,
+    // so a deep inbox is not clearable by the agent that owns it. This walks
+    // every page, acknowledges each, and writes the lot to a markdown file so
+    // the result is readable without returning megabytes through the tool.
+    if (args?.drain && !args?.peek) {
+      const agentId = activeAgentId();
+      const sections = [];
+      const seen = new Set();
+      let drained = 0;
+      let pages = 0;
+      let stopped = null;
+      // Bounded so a server that keeps handing back the same page cannot spin
+      // forever; 500 pages is far past any real backlog.
+      while (pages < 500) {
+        let page;
+        try {
+          page = await mcpFleetTransport.ephemeral('my-task', { agent: agentId, peek: false });
+        } catch (e) {
+          stopped = `transport failed on page ${pages + 1}: ${e.message}`;
+          break;
+        }
+        const pageMessages = page.messages || [];
+        if (!pageMessages.length) break;
+        // A page whose ids we have all seen means acknowledgement is not
+        // advancing. Stop and say so rather than looping on it.
+        const fresh = pageMessages.filter(m => !seen.has(m.id));
+        if (!fresh.length) {
+          stopped = `page ${pages + 1} repeated ${pageMessages.length} already-seen message(s); acknowledgement is not advancing`;
+          break;
+        }
+        for (const m of pageMessages) seen.add(m.id);
+        pages += 1;
+
+        const resolved = await Promise.all(pageMessages.map(m => resolveInboxMessage(m, {
+          resolveChipTokens: resolveInboxChipTokens,
+          resolveTheoremRefs,
+          resolveImages: resolveInboxImages,
+        })));
+        sections.push(formatInboxText({
+          mode: view,
+          task: page.task || null,
+          tasks: page.tasks || null,
+          messages: resolved,
+          counts: page.counts || null,
+        }));
+
+        try {
+          await mcpFleetTransport.ephemeral('ack-inbox', {
+            agent: agentId,
+            event_ids: pageMessages.map(m => m.id),
+          });
+        } catch (e) {
+          stopped = `acknowledgement failed on page ${pages}: ${e.message}`;
+          break;
+        }
+        drained += pageMessages.length;
+      }
+      if (pages >= 500 && !stopped) stopped = 'page limit (500) reached; run drain again to continue';
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const outPath = path.join(os.tmpdir(), `inbox-drain-${String(agentId).replace(/[^\w-]/g, '_')}-${stamp}.md`);
+      const header = [
+        `# Inbox drain — ${agentId}`,
+        '',
+        `Drained **${drained}** message(s) across **${pages}** page(s).`,
+        stopped ? `\n**Stopped early:** ${stopped}` : '',
+        '',
+        '---',
+        '',
+      ].join('\n');
+      let wrote = null;
+      try {
+        fs.writeFileSync(outPath, header + sections.join('\n\n---\n\n'), 'utf8');
+        wrote = outPath;
+      } catch (e) {
+        stopped = `${stopped ? stopped + '; ' : ''}could not write ${outPath}: ${e.message}`;
+      }
+
+      const lines = [
+        `Drained ${drained} message(s) across ${pages} page(s).`,
+        wrote ? `Written to ${wrote}` : 'NOT written to a file — see below.',
+      ];
+      if (stopped) lines.push(`⚠️ ${stopped}`);
+      if (!drained) lines.push('Inbox was already empty.');
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
 
     let data;
     try {
