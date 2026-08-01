@@ -17,7 +17,13 @@ models:
       group: claude
       level: 4
       description: Claude Opus
-      options: {}
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
     gpt:
       id: gpt-5.5
       harness:
@@ -28,7 +34,13 @@ models:
       group: codex
       level: 1
       description: Codex GPT
-      options: {}
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
     sol:
       id: gpt-5.6-sol
       harness:
@@ -39,7 +51,13 @@ models:
       group: codex
       level: 2
       description: Codex Sol
-      options: {}
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
     luna:
       id: gpt-5.6-luna
       harness:
@@ -50,7 +68,13 @@ models:
       group: codex
       level: 3
       description: Codex Luna
-      options: {}
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
     terra:
       id: gpt-5.6-terra
       harness:
@@ -61,7 +85,13 @@ models:
       group: codex
       level: 4
       description: Codex Terra
-      options: {}
+      options:
+        effort:
+          default: medium
+          values:
+            low: {}
+            medium: {}
+            high: {}
 
 regions: {}
 profiles: {}
