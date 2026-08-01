@@ -698,7 +698,14 @@ async function spawnRespawn(params) {
     throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: no daemon mint facts`, { fleetId })
   }
   const localProcess = facts.processState || {}
-  const localConversation = { harness: localProcess.harness || facts.launchRecipe?.kind || null, model: localProcess.model || facts.launchRecipe?.model || null }
+  const localConversation = {
+    harness: localProcess.harness || facts.launchRecipe?.kind || null,
+    model: localProcess.model || facts.launchRecipe?.model || null,
+    // The session id is the mint record's, written from the login marker. It was
+    // read off this object before it was ever put on it, so wake fell through to
+    // the permission ledger and resumed whatever that happened to hold.
+    sessionId: facts.sessionId || null,
+  }
   const recipeCwd = localProcess.cwd || facts.launchRecipe?.cwd || null
   if (!recipeCwd) {
     throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: mint facts have no cwd`, { fleetId, mintId: facts.mintId })
