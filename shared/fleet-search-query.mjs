@@ -1,9 +1,22 @@
 import { JuxtapositionError, parseAgentSelector as parseUnifiedAgentSelector, parseUnifiedFilter } from './unified-filter-grammar.mjs'
 
-/** The caller's own tokens with `&` written in at the junctions they left bare. */
-function withExplicitConjunctions(parts, junctions) {
+/**
+ * The caller's own tokens with `&` written in at the junctions they left bare,
+ * as segments that say which operators the editor supplied. The UI renders the
+ * supplied ones ghosted, so the parse is legible without having been typed.
+ */
+function explicitConjunctionSegments(parts, junctions) {
   const at = new Set(junctions)
-  return parts.map((token, i) => (at.has(i) ? `& ${token}` : token)).join(' ')
+  const segments = []
+  parts.forEach((token, i) => {
+    if (at.has(i)) segments.push({ text: '&', implied: true })
+    segments.push({ text: token, implied: false })
+  })
+  return segments
+}
+
+function withExplicitConjunctions(parts, junctions) {
+  return explicitConjunctionSegments(parts, junctions).map(s => s.text).join(' ')
 }
 
 const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role'])
@@ -61,7 +74,7 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
       }
         const raw = token.slice(token.indexOf(':') + 1)
         const resolved = resolveTimeFilter(raw)
-        if (!resolved) throw new Error(`"${token}" is not a time I can read. Use an ISO timestamp, "now", "today", "yesterday", or a relative span like 30m, 2h, 3d, 1w.`)
+        if (!resolved) throw new Error(`"${token}" is not a time I can read. Use an ISO timestamp, "now", "today", "yesterday", or a relative span like 30m, 2h, 3d, 1w, 3mo.`)
         filterParts.push(`${key === 'after' ? 'since' : key}:${resolved}`)
         lastEmittedWasFilterTerm = true
         continue
@@ -147,7 +160,12 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
     filters.agentResolve = parseAgentSelector(selector, filters.from ? 'from' : filters.to ? 'to' : 'any')
   }
 
-  return { query: queryParts.join(' ').trim(), filters, explicitQuery }
+  return {
+    query: queryParts.join(' ').trim(),
+    filters,
+    explicitQuery,
+    explicitSegments: explicitConjunctionSegments(parts, impliedConjunctionAt),
+  }
 }
 
 export function parseAgentSelector(raw, scope = 'any') {
@@ -230,12 +248,15 @@ export function resolveTimeFilter(val) {
   // two spans, nothing saying which you got. Minutes is what the parameter has
   // always documented and what a duration means everywhere else; months are no
   // longer expressible, which is no loss to a chat search.
-  const relMatch = lower.match(/^(\d+)\s*(m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?|w(?:eeks?)?)$/)
+  // `mo` is months and must be tried before `m`, which is minutes. Months keep a
+  // spelling of their own so that fixing the units costs nobody their meaning.
+  const relMatch = lower.match(/^(\d+)\s*(mo(?:nths?)?|m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?|w(?:eeks?)?)$/)
   if (relMatch) {
     const n = parseInt(relMatch[1])
-    const unit = relMatch[2][0]
+    const unit = relMatch[2].startsWith('mo') ? 'mo' : relMatch[2][0]
     const d = new Date(now)
-    if (unit === 'm') d.setMinutes(d.getMinutes() - n)
+    if (unit === 'mo') d.setMonth(d.getMonth() - n)
+    else if (unit === 'm') d.setMinutes(d.getMinutes() - n)
     else if (unit === 'h') d.setHours(d.getHours() - n)
     else if (unit === 'd') d.setDate(d.getDate() - n)
     else if (unit === 'w') d.setDate(d.getDate() - n * 7)
