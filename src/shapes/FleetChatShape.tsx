@@ -2153,7 +2153,10 @@ function ThreadChatOperationView({
     root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach(moreRows => {
       moreRows.style.display = 'none'
       const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-      if (btn && btn.dataset.collapsedLabel) btn.textContent = btn.dataset.collapsedLabel
+      if (btn) {
+        if (btn.dataset.collapsedLabel) btn.textContent = btn.dataset.collapsedLabel
+        btn.classList.remove('thread-fold-open')
+      }
     })
     root.closest('.thread-shell')?.classList.remove('thread-middle-open')
   }, [])
@@ -2373,7 +2376,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
         if (expanded.has(key) || expanded.has(itemKey)) {
           moreRows.style.display = ''
           const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-          if (btn) btn.textContent = 'collapse'
+          if (btn) {
+            if (!btn.dataset.collapsedLabel) btn.dataset.collapsedLabel = btn.textContent || 'Expand'
+            btn.textContent = ''
+            btn.classList.add('thread-fold-open')
+          }
           moreRows.closest('.thread-shell')?.classList.add('thread-middle-open')
         }
       })
@@ -4652,7 +4659,12 @@ function FleetChatInner({ shape }: { shape: any }) {
             expandBtn.dataset.collapsedLabel = expandBtn.textContent || 'Expand'
           }
           moreRows.style.display = wasExpanded ? 'none' : ''
-          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.collapsedLabel || 'Expand') : 'collapse'
+          // Open, the marker stops being a control and becomes the fold line --
+          // Skip: "the expand doesn't flip to collapse when expanded but almost
+          // vanishes. perhaps just a faint line running from spine across the
+          // card like a fold line." Collapsing is the spine's job from here.
+          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.collapsedLabel || 'Expand') : ''
+          expandBtn.classList.toggle('thread-fold-open', !wasExpanded)
           // The floating collapse only exists while there is something to
           // collapse; see ThreadChatOperationView.
           expandBtn.closest('.thread-shell')?.classList.toggle('thread-middle-open', !wasExpanded)

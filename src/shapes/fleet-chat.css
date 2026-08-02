@@ -1379,6 +1379,20 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.7;
 }
 .fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+/* Open, the marker is not a control any more -- it is the fold line, marking
+   where the card was folded. Skip: "the expand doesn't flip to collapse when
+   expanded but almost vanishes. perhaps just a faint line running from spine
+   [where collapse sits] across the card like a fold line." It reaches left into
+   the gutter so it starts at the spine, and it takes no clicks: collapsing is
+   the spine control's job once the middle is open. */
+.fleet-chat-shape .pretty-expand-btn.thread-fold-open {
+  margin-left: -20px;
+  padding: 0;
+  height: 0;
+  border-top: 1px solid var(--accent, #7a9ec8);
+  opacity: 0.22;
+  pointer-events: none;
+}
 .fleet-chat-shape .semantic-operation-inspected {
   color: var(--text-dim, #666);
   font-size: 9px;
