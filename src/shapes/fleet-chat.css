@@ -1306,10 +1306,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   /* Thread messages inherit normal chat-line styling */
 }
 /* Bounded to the fold-thread-lines height so a long thread is not arbitrarily
-   tall. It scrolls rather than clips, which is what keeps the gap marker where
-   the picture puts it and still reachable. */
+   tall. Clipped, not scrolled — the card is click-to-expand, click-to-collapse. */
 .fleet-chat-shape .tool-pretty-thread.pretty-thread-bounded {
-  overflow-y: auto;
+  overflow: hidden;
+}
+.fleet-chat-shape .tool-pretty-thread[onclick] {
+  cursor: pointer;
 }
 .fleet-chat-shape .pretty-msg-body {
   font-size: 11px;

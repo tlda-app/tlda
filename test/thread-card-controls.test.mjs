@@ -49,10 +49,15 @@ test('the card is bounded by the fold setting, and 0 means never fold', () => {
   const bounded = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread: 16 } })
   assert.match(bounded, /pretty-thread-bounded/)
   assert.match(bounded, /max-height:24\.0em/)
+  // The card itself is the toggle -- click to expand, click to collapse -- and
+  // it leaves the gap marker's click alone.
+  assert.match(bounded, /onclick=/)
+  assert.match(bounded, /pretty-expand-btn'\)\)/)
 
   const unbounded = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread: 0 } })
   assert.doesNotMatch(unbounded, /pretty-thread-bounded/)
   assert.doesNotMatch(unbounded, /max-height/)
+  assert.doesNotMatch(unbounded, /onclick=/)
 })
 
 // The search card's shell -- its open/collapse button and its "inspected" line

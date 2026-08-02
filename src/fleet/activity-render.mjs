@@ -319,18 +319,22 @@ export function renderThreadRows(msgs, ctx, headerText = '') {
   } else {
     rows = list.map(m => renderThreadMsg(m, ctx)).join('')
   }
-  // Skip: "it's supposed to fucking render threads at ... my setting is fucking
-  // 16 lines tall. With a fucking expand button, but it's rendering them like
-  // arbitrarily fucking tall." The rows above are the picture and do not move --
-  // the height is what his setting bounds. Bounding it by scrolling rather than
-  // clipping is what keeps the gap marker where the picture puts it and still
-  // reachable; clipping would put the one expand control below the fold.
+  // Skip: "shapes in chat, like threads, ought to be click to expand, click to
+  // collapse, not scrollable." The card clips at his fold height and the whole
+  // card toggles; a scroll box inside a canvas shape is the thing he does not
+  // want -- "some agent made it fixed height fucking scrolling." The rows above
+  // are the picture and do not move, so the gap marker still expands the middle
+  // of the thread and is the one click the card does not take for itself.
   // 0 = never fold, the same as the other fold prefs. Line-height 1.5 matches
   // .chat-line, which is what a thread row is.
   const h = ctx?.foldHeights?.thread ?? 0
+  const maxH = (h * 1.5).toFixed(1)
   const foldCls = h > 0 ? ' pretty-thread-bounded' : ''
-  const foldStyle = h > 0 ? ` style="max-height:${(h * 1.5).toFixed(1)}em"` : ''
-  return `<div class="tool-pretty-result tool-pretty-thread${foldCls}"${foldStyle}>${header}${rows}</div>`
+  const foldStyle = h > 0 ? ` style="max-height:${maxH}em"` : ''
+  const toggle = h > 0
+    ? ` onclick="if(!event.target.closest('.pretty-expand-btn'))(function(c){if(c.classList.contains('pretty-thread-bounded')){c.classList.remove('pretty-thread-bounded');c.style.maxHeight=''}else{c.classList.add('pretty-thread-bounded');c.style.maxHeight='${maxH}em'}})(this)"`
+    : ''
+  return `<div class="tool-pretty-result tool-pretty-thread${foldCls}"${foldStyle}${toggle}>${header}${rows}</div>`
 }
 
 // --- Tool helpers ---

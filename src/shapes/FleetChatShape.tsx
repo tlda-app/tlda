@@ -4692,7 +4692,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
       if (t.closest('button')) return
       const hit = t.closest(
-        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
+        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .tool-pretty-thread[onclick], .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
       ) as HTMLElement | null
       if (hit) hit.click()
     }
