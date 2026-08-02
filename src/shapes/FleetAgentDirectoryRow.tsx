@@ -164,7 +164,6 @@ export function FleetAgentDirectoryRow({
   onCycleState,
   onControlPointerDown,
   onHibernate,
-  onRestartMcp,
   onAgentPointerDown,
   onAgentPointerUp,
   onLabelPointerDown,
@@ -183,7 +182,6 @@ export function FleetAgentDirectoryRow({
   onCycleState?: (e: React.PointerEvent | PointerEvent) => void
   onControlPointerDown?: (e: React.PointerEvent) => void
   onHibernate?: (e: React.SyntheticEvent) => void
-  onRestartMcp?: (e: React.SyntheticEvent) => void
   onAgentPointerDown?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onAgentPointerUp?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onLabelPointerDown?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
@@ -195,7 +193,6 @@ export function FleetAgentDirectoryRow({
   const nextLabel = expanded ? 'collapse' : hasChildren && childrenFolded ? 'show subagents' : 'show details'
   const controlGlyph = expanded ? '▴' : hasChildren && childrenFolded ? '▸' : hasChildren ? '▾›' : '›'
   const canHibernate = !!onHibernate && !isNativeChild && !row.dimmed
-  const canRestartMcp = !!onRestartMcp && !isNativeChild && !row.dimmed
   const folderLabel = fleetAgentFolderLabel(row, knownProjects)
   const folderAliases = new Set(
     [folderLabel?.label, folderLabel?.value, row.project, row.cwdLabel, row.cwd].filter(Boolean),
@@ -279,18 +276,6 @@ export function FleetAgentDirectoryRow({
             </div>
             {tasks[1] && (
               <FleetAgentTaskRow task={tasks[1]} index={1} />
-            )}
-            {canRestartMcp && (
-              <button
-                className="fleet-agents-detail-restart-mcp"
-                style={{ color: row.color, opacity: row.nameOpacity }}
-                onPointerDown={(e) => { e.stopPropagation(); e.preventDefault() }}
-                onClick={(e) => { e.stopPropagation(); onRestartMcp?.(e) }}
-                aria-label="Restart agent MCP"
-                title="Restart agent MCP"
-              >
-                ↻
-              </button>
             )}
             {canHibernate && (
               <button

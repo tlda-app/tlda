@@ -18,7 +18,7 @@ import {
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, restartAgentMcp, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget, fleetTaskDropBus } from './FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { agentDisplayLabel, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
@@ -832,7 +832,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                         cycleAgentState,
                       ) : undefined}
                       onHibernate={() => hibernateSession(item.agent.id)}
-                      onRestartMcp={() => restartAgentMcp(item.agent.id)}
                       onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color) }}
                       onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label))}
                     />
