@@ -1,4 +1,5 @@
 import type { Editor, TLShapeId } from 'tldraw'
+import { noteFleetPillDeleted } from './fleet-pill-forensics'
 import {
   FLEET_PILL_LEGACY_GRACE_MS,
   FLEET_PILL_STALE_MS,
@@ -42,7 +43,15 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
     if (disposed) return
     const shape = editor.getShape(id) as Pill | undefined
     if (shape && shouldReclaimFleetPill(shape, now(), options.getIdentity())) editor.run(() => {
-      if (editor.getShape(id)) editor.deleteShapes([id])
+      if (!editor.getShape(id)) return
+      const props = shape.props || {}
+      noteFleetPillDeleted(String(id), 'stale-reclaim', {
+        createdAt: props.createdAt,
+        ageMs: typeof props.createdAt === 'number' ? now() - props.createdAt : undefined,
+        ephemeral: props.ephemeral,
+        ownerless: !props.userId && !props.deviceId,
+      })
+      editor.deleteShapes([id])
     }, { history: 'ignore' })
   }
   const schedule = (shape: Pill) => {
@@ -66,7 +75,7 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
       forgetFleetPill(id)
     }
   }, { source: 'all', scope: 'document' })
-  const terminateActivePills = () => {
+  const terminateActivePills = (trigger: 'blur' | 'pagehide' | 'visibility-hidden' | 'escape' | 'dispose') => {
     const identity = options.getIdentity()
     for (const rawId of getActiveFleetPillIds()) {
       const id = rawId as TLShapeId
@@ -76,26 +85,35 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
       const ownerless = !props.userId && !props.deviceId
       const local = !!identity.userId && !!identity.deviceId && props.userId === identity.userId && props.deviceId === identity.deviceId
       if (!ownerless && !local) continue
+      noteFleetPillDeleted(rawId, 'terminate-active', {
+        trigger,
+        createdAt: props.createdAt,
+        ageMs: typeof props.createdAt === 'number' ? now() - props.createdAt : undefined,
+        ephemeral: props.ephemeral,
+        ownerless,
+      })
       markFleetPillInactive(rawId)
       cancelTimer(rawId)
       editor.run(() => { if (editor.getShape(id)) editor.deleteShapes([id]) }, { history: 'ignore' })
     }
   }
-  const onVisibilityChange = () => documentTarget.hidden ? terminateActivePills() : scan()
-  const onEscape = (event: Event) => { if ((event as KeyboardEvent).key === 'Escape') terminateActivePills() }
+  const onVisibilityChange = () => documentTarget.hidden ? terminateActivePills('visibility-hidden') : scan()
+  const onEscape = (event: Event) => { if ((event as KeyboardEvent).key === 'Escape') terminateActivePills('escape') }
+  const onBlur = () => terminateActivePills('blur')
+  const onPageHide = () => terminateActivePills('pagehide')
   windowTarget.addEventListener('online', scan)
-  windowTarget.addEventListener('blur', terminateActivePills)
-  windowTarget.addEventListener('pagehide', terminateActivePills)
+  windowTarget.addEventListener('blur', onBlur)
+  windowTarget.addEventListener('pagehide', onPageHide)
   documentTarget.addEventListener('keydown', onEscape)
   documentTarget.addEventListener('visibilitychange', onVisibilityChange)
   return () => {
-    terminateActivePills()
+    terminateActivePills('dispose')
     disposed = true
     installedEditors.delete(editor)
     unlisten()
     windowTarget.removeEventListener('online', scan)
-    windowTarget.removeEventListener('blur', terminateActivePills)
-    windowTarget.removeEventListener('pagehide', terminateActivePills)
+    windowTarget.removeEventListener('blur', onBlur)
+    windowTarget.removeEventListener('pagehide', onPageHide)
     documentTarget.removeEventListener('keydown', onEscape)
     documentTarget.removeEventListener('visibilitychange', onVisibilityChange)
     timers.forEach(clearTimer)

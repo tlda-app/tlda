@@ -36,6 +36,7 @@ import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filt
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
 import { finishFleetPillTranslation } from './fleet-pill-lifecycle'
+import { noteFleetPillCreated, noteFleetPillDeleted } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive } from './fleet-pill-transient'
 import {
   findSpatialSourceShape,
@@ -775,8 +776,15 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   onCreate = (shape: TLShape) => {
     // Auto-delete after 5s if never dragged (accidental grab)
     if (!(this as any).__autoDeleteTimers) (this as any).__autoDeleteTimers = new Map()
+    noteFleetPillCreated(String(shape.id), 'pill-shape-oncreate')
     const timer = setTimeout(() => {
       if (this.editor.getShape(shape.id)) {
+        // Deliberately unconditional, as it has been since April. Only
+        // onTranslateStart clears this, and a pill dragged by a panel's own
+        // pointer handlers never starts a tldraw translate — so for those it
+        // never gets cleared. Recording it rather than changing it: which
+        // deleter actually fires is the open question.
+        noteFleetPillDeleted(String(shape.id), 'create-timer', { ageMs: 5000 })
         this.editor.deleteShapes([shape.id])
       }
     }, 5000)
