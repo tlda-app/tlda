@@ -17,7 +17,16 @@ export async function loadSlidesDocument(
 
   console.log(`Found ${pageInfos.length} slides`)
 
-  const bounds = layoutPageBounds(pageInfos, 'horizontal', PAGE_GAP)
+  // Skip: "make the slides be spaced out a bit more so they're kind of more in
+  // different places. Because right now, I can often see one... so maybe the
+  // slides should be half a slide. Apart." At a fixed 32 the neighbouring slide
+  // bleeds into the one you are reading.
+  //
+  // PAGE_GAP is the gap between STACKED pages, and it was being reused here as a
+  // horizontal one. A deck's gap is a fraction of a slide rather than a constant
+  // — it has to scale with the slide, because what it separates is slides.
+  const slideWidth = pageInfos[0]?.width ?? 0
+  const bounds = layoutPageBounds(pageInfos, 'horizontal', Math.round(slideWidth / 2) || PAGE_GAP)
   const pages: SvgPage[] = pageInfos.map((info, index) => {
     const pageId = `${name}-slide-${index}`
     const indexh = info.indexh ?? info.slideIndex
