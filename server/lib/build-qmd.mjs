@@ -20,7 +20,7 @@ import { promisify } from 'util'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
-import { generateSlidesPageInfo } from './slides-parser.mjs'
+import { buildPerSlideDocuments } from './slides-parser.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -270,9 +270,22 @@ export async function buildQmdDocument(name, addLog = console.log) {
   // declare revealjs through _quarto.yml, a custom extension format, or a
   // profile, and only the output settles all three.
   const isDeck = isRevealDeck(rendered)
-  const pageInfo = isDeck
-    ? generateSlidesPageInfo(rendered, outputFile)
-    : [{
+  let pageInfo
+  if (isDeck) {
+    // Skip chose the surgery over "25 copies of the same fucking thing": each
+    // slide is one shape holding one slide, not an iframe of the whole deck
+    // scrolled to slide k. So the deck is cut into one self-contained document
+    // per slide here, after the build, and page-info points each slide at its
+    // own file. The .qmd source is untouched — quarto emits one deck and the
+    // split happens on the rendered output.
+    const perSlide = buildPerSlideDocuments(rendered, outputFile)
+    for (const slide of perSlide) {
+      writeFileSync(join(outDir, slide.filename), slide.html)
+    }
+    pageInfo = perSlide.map((slide) => slide.pageInfo)
+    addLog(`[qmd] split deck into ${perSlide.length} single-slide documents`)
+  } else {
+    pageInfo = [{
       file: outputFile,
       width: DEFAULT_WIDTH,
       height: DEFAULT_HEIGHT,
@@ -280,6 +293,7 @@ export async function buildQmdDocument(name, addLog = console.log) {
       format: 'qmd',
       source: { type: 'project-source', format: 'qmd', file: mainFile },
     }]
+  }
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
 
   await writeSourceScope(name, srcDir, outDir)
