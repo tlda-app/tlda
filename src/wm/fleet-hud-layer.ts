@@ -110,24 +110,29 @@ export function configureFleetHudOverlayLayer(
 		pagesFlowAcross?: boolean
 	},
 ): void {
-	// The HUD rides this layer, so whichever axis follows the main camera is the
-	// axis the HUD travels on. Skip: "a HUD working in the opposite orientation,
-	// because the talk is in the opposite orientation."
-	//
-	// A paper is portrait and you move DOWN it, so x follows the camera (the HUD
-	// keeps its place beside the document) and the vertical offset holds it near
-	// the top of the screen. A talk is landscape and you move ACROSS it —
-	// navigateToSlide sets the camera, and x changes per slide — so following x
-	// anchors the HUD to slide one and every slide after that leaves it behind.
-	//
-	// So for a talk the horizontal axis stops following and the HUD stays with
-	// you as you move sideways. Same rule read off the page layout rather than a
-	// check for "is this a talk": pages that flow across get one, pages that flow
-	// down get the other.
 	wm.setCamera(FLEET_HUD_MAIN_CAMERA_LAYER_ID, {
-		x: pagesFlowAcross ? 0 : mainCamera.x - baseCamera.x,
+		x: mainCamera.x - baseCamera.x,
 		y: mainCamera.y - baseCamera.y,
 		z: mainCamera.z,
+	})
+	// Both axes of the main camera reach this layer; its policy decides which one
+	// it rides. Skip: "a HUD working in the opposite orientation, because the talk
+	// is in the opposite orientation."
+	//
+	// A paper is portrait and you move DOWN it, so the HUD pans with x — keeping
+	// its place beside the document — and pins y, staying at a fixed height on
+	// screen. A talk is landscape and you move ACROSS it, so it is the other way
+	// round: pin x so the HUD stays with you from slide to slide, pan y so it
+	// rides above the slide.
+	//
+	// Read off the page layout rather than a check for "is this a talk": pages
+	// that flow across get one, pages that flow down get the other. This is the
+	// only place the axis choice lives — the anchor's default and the off-screen
+	// test in FleetHUD read the same predicate for their own transposition.
+	ensureLayer(wm, FLEET_HUD_OVERLAY_LAYER_ID, {
+		policy: pagesFlowAcross
+			? { x: 'pin', y: 'pan', zoom: 'lock' }
+			: { x: 'pan', y: 'pin', zoom: 'lock' },
 	})
 	wm.setTransform(FLEET_HUD_OVERLAY_LAYER_ID, { x: panOffset, y: cameraY, scale: 1 })
 	wm.setCamera(FLEET_HUD_OVERLAY_LAYER_ID, { x: 0, y: 0, z: 1 })
