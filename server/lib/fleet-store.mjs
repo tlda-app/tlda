@@ -35,6 +35,7 @@ import {
   RUNTIME_STATUS,
   assertRuntimeState,
   isFleetRosterAgent,
+  runtimeState,
 } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
@@ -1514,6 +1515,24 @@ export class FleetStore {
       'lineages.friendly_name AS lineage_name',
       'route.agent_id IS NOT NULL AS route_present',
       'route.daemon_key AS route_daemon_key',
+      // The open runtime span. Without it every agent hydrated in here reads as
+      // HIBERNATING, because that is runtimeStatusForAgent's fallback when
+      // `runtime_status` is absent — and it was absent, always, since the rich
+      // status object is assembled on the main thread after these rows are
+      // handed back. Anything deriving labels in this thread therefore had
+      // `awake` matching nobody and `hibernating` matching the whole fleet.
+      // Proven live: `awake & little-ui` was refused while `hibernating &
+      // little-ui` delivered, to an agent that had been awake all night.
+      // Correlated subqueries, not a join: an agent with more than one open span
+      // would multiply its row through a LEFT JOIN, and these rows feed the
+      // registry, so one bad span would duplicate an agent everywhere. The
+      // partial index on (fleet_id) WHERE to_ts IS NULL serves these the same.
+      `(SELECT r.status FROM runtime_status_history r
+         WHERE r.fleet_id = agents.id AND r.to_ts IS NULL
+         ORDER BY r.from_ts DESC LIMIT 1) AS runtime_open_status`,
+      `(SELECT r.kind FROM runtime_status_history r
+         WHERE r.fleet_id = agents.id AND r.to_ts IS NULL
+         ORDER BY r.from_ts DESC LIMIT 1) AS runtime_open_kind`,
     ].join(', ');
     const AGENT_JOIN = `FROM agents
       LEFT JOIN lineages ON lineages.id = agents.lineage_id
@@ -2883,7 +2902,7 @@ export class FleetStore {
         ? RUNTIME_STATUS.DEAD
         : metadata?.shell ? RUNTIME_STATUS.HIBERNATING : state.status;
     const at = timestamp || new Date().toISOString();
-    return this.db.transaction(() => {
+    const changed = this.db.transaction(() => {
       const open = this.db.prepare(`
         SELECT id, kind, status, from_ts
         FROM runtime_status_history
@@ -3912,6 +3931,23 @@ export class FleetStore {
       // authority says; the main thread applies the daemon check.
       route_present: !!row.route_present,
       route_daemon_key: row.route_daemon_key || null,
+      // Built from the open span, so labelsForAgent() gets a real status in this
+      // thread instead of falling through to HIBERNATING for everyone. The
+      // columns are dropped afterwards so the projected object has one shape.
+      //
+      // This is NOT the main thread's runtime_status: that one also folds in
+      // daemon liveness, which this thread cannot see, so the two can disagree
+      // for an agent whose daemon just dropped. That disagreement is worth
+      // knowing about and is much smaller than the one it replaces, which was
+      // total and inverted.
+      runtime_status: row.runtime_open_status
+        ? runtimeState(
+            row.runtime_open_kind || (row.human ? RUNTIME_KIND.HUMAN : RUNTIME_KIND.AI),
+            row.runtime_open_status,
+          )
+        : null,
+      runtime_open_status: undefined,
+      runtime_open_kind: undefined,
     }
     // No runtime_status here. Liveness is a projection over things this thread
     // cannot see — live WebSocket handles, daemon connections, heartbeat
