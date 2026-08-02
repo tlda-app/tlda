@@ -2264,6 +2264,7 @@ body.phone-mode .phone-hl-btn {
 
 body.touch-toc-mode:not(.phone-mode) .phone-hl-btn,
 body.touch-toc-mode:not(.phone-mode) .voice-note-btn,
+body.touch-toc-mode:not(.phone-mode) .mic-toggle-btn,
 body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-badge {
   width: 44px;
   height: 44px;
@@ -2286,6 +2287,11 @@ body.touch-toc-mode:not(.phone-mode) .voice-note-btn {
 
 body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
   bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+}
+
+body.touch-toc-mode:not(.phone-mode) .mic-toggle-btn {
+  bottom: calc(180px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
 }
 
@@ -2557,8 +2563,14 @@ html[data-theme="dark"] .voice-note-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
-/* Mic controls — bottom-right stack above the voice-note button
-   (highlighter 16px → voice-note 49px → mic 82px). */
+/* Mic controls — bottom-right stack above the fleet pill
+   (highlighter 16px → voice-note 49px → pill 82px → mic 115px).
+   Mic used to sit at 82px, the pill's own slot, so the two were drawn on top of
+   each other in every mode: 82/82 here, 128/128 in phone mode, and in slides
+   mode the pill moved to 128 while mic stayed at 82 and landed inside the
+   enlarged voice-note button. Skip saw that last one: "the voice note button and
+   the mic toggle are overlaid in my slide mode." Mic never had a slot of its
+   own; this gives it the one above the pill in every mode. */
 .mic-toggle-btn {
   display: flex;
   position: fixed;
@@ -2579,11 +2591,11 @@ html[data-theme="dark"] .voice-note-btn {
   touch-action: none;
   opacity: 0.15;
 }
-.mic-toggle-btn { bottom: 82px; }
+.mic-toggle-btn { bottom: 115px; }
 .mic-toggle-btn:hover { opacity: 0.5; }
 
 body.phone-mode .mic-toggle-btn {
-  bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  bottom: calc(180px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
@@ -2614,7 +2626,7 @@ html[data-theme="dark"] .mic-toggle-btn {
     right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
   .mic-toggle-btn {
-    bottom: calc(82px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    bottom: calc(115px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
     right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
 }
