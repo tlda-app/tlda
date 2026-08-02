@@ -6799,8 +6799,9 @@ async function handleFleetWsMessage(ws, msg) {
     // mutated — fully immutable, an accountability trail. The client folds
     // amend events into their original message and renders the version (V{n})
     // stepper. Each version (original + each amend) carries its OWN
-    // metadata.source, so the file-section provenance chip reflects whichever
-    // version is being viewed (a string-form amend has no source → no chip).
+    // metadata.source — the { file, section, url } location a body was baked
+    // from — so the file-section provenance chip reflects whichever version is
+    // being viewed (an amend sent as a plain string has no source → no chip).
     const { from: rawFrom, event_id, message: text, inline_attachments, source } = msg
     if (!text) { error('missing message'); return }
     const resolveSingle = async (id) => {
@@ -9132,7 +9133,7 @@ async function handleDaemonWsMessage(ws, msg) {
         from: from || SERVER_OWNER_ID,
         to: agent_id,
         text,
-        metadata: { source: 'terminal' },
+        metadata: { via: 'terminal' },
         unread: false,
         timestamp: ts,
       })

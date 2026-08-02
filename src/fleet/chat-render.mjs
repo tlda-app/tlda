@@ -856,23 +856,18 @@ export function renderChatLine(m, ctx) {
   // file+section) carries metadata.source = { file, section }. Show a subtle
   // "from <file> §<section>" chip so the reader can see/open the source. Reuses
   // the existing ref-chip styling — no new visual language.
-  // `metadata.source` carries two unrelated provenances written by two writers:
-  // the string 'terminal' (unified-server's terminal-chat handler, for a message
-  // typed into an agent's terminal) and the object { file, section, url } (a body
-  // baked from a file section). One field, two shapes — so the discrimination
-  // happens here, once, by shape, rather than each reader guessing.
   const _src = m.metadata?.source
-  const _fromTerminal = _src === 'terminal'
-  const _fileSrc = _src && typeof _src === 'object' && _src.file ? _src : null
 
-  // A message that came from a terminal wears the terminal mark, the same one the
-  // composer's terminal button and the voice HUD draw.
-  const terminalMarkHtml = _fromTerminal
+  // A message typed into an agent's terminal carries metadata.via = 'terminal'
+  // and wears the terminal mark, the same one the composer's terminal button and
+  // the voice HUD draw. `via` is how the message was typed; `source` above is
+  // where its body came from. Two questions, two fields.
+  const terminalMarkHtml = m.metadata?.via === 'terminal'
     ? `<span class="terminal-source-mark" title="from a terminal">${terminalGlyphHtml()}</span> `
     : ''
 
   let sourceChipHtml = ''
-  if (_fileSrc) {
+  if (_src?.file) {
     const _fileName = esc(String(_src.file).split('/').pop() || _src.file)
     const _section = _src.section ? esc(String(_src.section)) : ''
     const _sectionHtml = _section ? `<span class="src-chip-section">§${_section}</span>` : ''

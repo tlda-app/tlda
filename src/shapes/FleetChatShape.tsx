@@ -3456,6 +3456,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
           previousChatLineTimestamp || '',
           JSON.stringify(renderM.metadata?.source || null),
+          renderM.metadata?.via || '',
           chatLineAttachmentRenderSignature(renderM),
         ].join('::')
         let html = msgLineCache.current.get(cacheKey)

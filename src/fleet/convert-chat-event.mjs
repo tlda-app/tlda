@@ -120,6 +120,9 @@ export function convertChatEvent(e) {
   if (e.metadata?.source) {
     msg.metadata = { ...(msg.metadata || {}), source: e.metadata.source }
   }
+  if (e.metadata?.via) {
+    msg.metadata = { ...(msg.metadata || {}), via: e.metadata.via }
+  }
   if (e.metadata?.amends != null) {
     msg.metadata = { ...(msg.metadata || {}), amends: e.metadata.amends }
   }
