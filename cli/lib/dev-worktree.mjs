@@ -452,6 +452,25 @@ export async function cmdServeWorktree(args) {
   }
   if (!up) { console.error(`server didn't answer on ${base} within 30s — see ${logFile(branch)}`); process.exit(1) }
 
+  // No --project: seed a scratch document so the preview opens on something.
+  //
+  // Skip: "it just does what agents are doing now automatically." What agents do
+  // now is hand-create a throwaway project so their preview isn't a blank
+  // canvas — which is why ~/work/tlda/server/projects has accumulated
+  // inbox-test, inbox-test2, chat-scroll-proof-341d, hud-perf-ec59 and fifty
+  // more. The junk is the workaround for the empty preview, so automating it is
+  // what stops it: this one is created through the preview's own API, lands in
+  // the preview's own projects dir, and goes when the preview goes.
+  //
+  // Not fabricated on disk — created and built the same way an agent would, so
+  // it cannot drift from what a real build produces.
+  let previewProject = project
+  if (!project) {
+    previewProject = await seedScratchProject(base, branch)
+    if (previewProject) console.log(`seeded scratch project: ${previewProject}`)
+    else console.log('scratch project not seeded — preview will open on an empty canvas')
+  }
+
   // --sandbox: also bring up a fleet-daemon wired ONLY to this sandbox server.
   // TLDA_DEV_DAEMON names the authorized base; the sandbox config must resolve
   // to that base on a non-:5176 port, so this daemon can never join the real
@@ -518,9 +537,9 @@ export async function cmdServeWorktree(args) {
     console.log(`sandbox daemon started (pid ${daemonPid}) → ${base} (sandbox-locked, cannot reach prod)`)
   }
 
-  const url = viewerUrl(base, project)
+  const url = viewerUrl(base, previewProject)
   const manifest = {
-    branch, worktreeDir, base, project, port, host: reach.host, kind: reach.kind,
+    branch, worktreeDir, base, project: previewProject, port, host: reach.host, kind: reach.kind,
     url, pid, daemonPid, sandbox: flags.has('sandbox'), realFleet, tokenless: true, config: configName(branch),
     projectsDir: projectsDir(branch), fleetDb: fleetDb(branch),
   }
@@ -765,4 +784,66 @@ function reapOrphanPreviews(json) {
     console.log(`left listener pid ${o.pid} ${o.command} on :${o.port} (not a node preview process)`)
   }
   for (const b of dirs.swept) console.log(`swept orphaned preview dir: ${b}`)
+}
+
+/** Create and build a small markdown project through the preview's own API. */
+async function seedScratchProject(base, branch) {
+  const name = `scratch-${sanitize(branch)}`.slice(0, 48).replace(/-+$/, '')
+  const post = async (path, body) => {
+    try {
+      const r = await fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (r.ok || r.status === 409) return r
+      console.error(`  scratch project: ${path} → HTTP ${r.status} ${(await r.text()).slice(0, 160)}`)
+      return null
+    } catch (e) { console.error(`  scratch project: ${path} threw ${e?.message || e}`); return null }
+  }
+  const created = await post('/api/projects', {
+    name, title: `Scratch (${branch})`, mainFile: 'main.md', format: 'markdown',
+  })
+  if (!created) return null
+  const pushed = await post(`/api/projects/${name}/push`, {
+    // The source push is a revision-checked transaction: the manifest is the
+    // complete file list the snapshot should consist of, and a bootstrap push
+    // has to carry it or the server rejects the snapshot as incomplete.
+    sourceManifest: ['main.md'],
+    // null, not omitted: the check is `=== undefined`, and on a fresh project the
+    // authority is uninitialized with currentRevision null, so null is the
+    // honest "I expect there to be nothing here yet".
+    expectedRevision: null,
+    files: [{
+      path: 'main.md',
+      content: [
+        `# Scratch (${branch})`,
+        '',
+        'A preview needs a document to render, so `tlda-dev serve` made this one.',
+        'It belongs to this preview and disappears with it — edit it freely.',
+        '',
+        '## Second heading',
+        '',
+        'Here so the table of contents has more than one entry.',
+        '',
+      ].join('\n'),
+    }],
+    editedBy: 'tlda-dev serve',
+  })
+  if (!pushed) return null
+  // Archived by construction. Skip: "they should definitely just be archived by
+  // construction." A preview's scratch document is real enough to render and
+  // build, but it is not one of his projects and should never appear beside
+  // them. Archiving at birth is what keeps the index clean without anything
+  // having to remember to clean up later — the alternative, deleting on
+  // teardown, only works if teardown runs, and a preview outlives the agent
+  // that started it often enough that it would not.
+  try {
+    await fetch(`${base}/api/projects/${name}/archive`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: true }),
+    })
+  } catch { /* the project is usable either way; archiving is tidiness */ }
+  return name
 }
