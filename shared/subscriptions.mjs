@@ -85,9 +85,18 @@ export function subscriptionSetsFromDaemonConfig(daemonConfig) {
 // that's their fucking choice." Nothing here refuses to let that happen.
 export function mintSubscriptionsFor(daemonConfig) {
   const { defaultSet, sets } = subscriptionSetsFromDaemonConfig(daemonConfig)
-  return (sets[defaultSet] || []).map(entry => ({
-    query: entry.query,
-    notification_policy: entry.notification_policy,
-    set: defaultSet,
-  }))
+  // Additive on top of the default, which is what the sentence above says and
+  // what the code did not do: it returned the named set alone, so a machine
+  // whose daemon.yaml declared any set at all minted agents *without*
+  // `to:my_labels` — unable to receive their own mail — and a machine with no
+  // subscriptions block minted them with nothing whatsoever.
+  //
+  // It went unnoticed because the set on this machine happens to be exactly the
+  // default, so the two agree here and nowhere else.
+  const out = [{ query: DEFAULT_SUBSCRIPTION_QUERY, notification_policy: DEFAULT_SUBSCRIPTION_POLICY, set: null }]
+  for (const entry of sets[defaultSet] || []) {
+    if (out.some(existing => existing.query === entry.query)) continue
+    out.push({ query: entry.query, notification_policy: entry.notification_policy, set: defaultSet })
+  }
+  return out
 }
