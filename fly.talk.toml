@@ -1,0 +1,40 @@
+# fly.talk.toml — the PUBLIC talk box. Serves one project, `talk-opening`, to a
+# presenter who is not on the tailnet.
+#
+# Deploy with:  npm run deploy:live -- --fly-config fly.talk.toml
+#
+# Why a funnel rather than a public [http_service] on *.fly.dev: the tldraw
+# license key is bound to *.cormorant-matrix.ts.net. Off that domain the canvas
+# does not license, and the canvas IS the annotation layer Skip presents with.
+# So the box joins the tailnet for its hostname and `tailscale funnel` makes
+# that same hostname public.
+app = "tlda-talk"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  TLDA_DEPLOYMENT = "talk"
+  # Its own tailnet node — NOT tlda-fly, which is `testing` and must not be
+  # disturbed. This name is also the public hostname.
+  TS_HOSTNAME = "tlda-talk"
+  # Expose with `tailscale funnel` instead of `tailscale serve`. Unset on every
+  # other deployment, which stay tailnet-only.
+  TS_FUNNEL = "1"
+
+# No [http_service] — nothing is served on *.fly.dev. Public reach is the funnel
+# on the .ts.net name. No public service also means no autostop, so the machine
+# stays up on its CMD + volume mount.
+[[vm]]
+  size = "performance-1x"
+  memory = "2048"
+
+# Its own volume. Deliberately NOT `sync_data`: this box starts with an empty
+# store and gets only the talk project copied in. No fleet database, no chat
+# history, no other projects.
+[mounts]
+  source = "talk_data"
+  destination = "/app/server/persist"

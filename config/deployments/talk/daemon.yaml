@@ -1,0 +1,23 @@
+# Daemon/environment authority for the TALK deployment. Installed to
+# ~/.config/tlda/daemon.yaml by scripts/fly-entrypoint-live.sh.
+machineId: fly-talk
+
+# An environment is a COMPLETE set of three fields; a missing one fails at
+# startup rather than being guessed.
+environments:
+  default: talk
+  values:
+    talk:
+      # fleet, chat, registry, agents — this box's own, empty, and not shared
+      # with testing or stable. Nothing here reaches the fleet database.
+      database: https://tlda-talk.cormorant-matrix.ts.net
+      # document assets and shape sync
+      store: https://tlda-talk.cormorant-matrix.ts.net
+      # tldraw license. Bound to *.cormorant-matrix.ts.net through 2031-06-29,
+      # which is why this box is exposed with `tailscale funnel` on its .ts.net
+      # name rather than a public *.fly.dev hostname: off that domain the
+      # canvas does not license, and the canvas is the annotation layer.
+      licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
+
+taskDoc:
+  globalDir: /app/server/persist/fleet-task-doc

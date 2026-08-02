@@ -1,0 +1,23 @@
+# Server settings for the TALK deployment. Installed to ~/.config/tlda/server.yaml
+# by scripts/fly-entrypoint-live.sh.
+#
+# This box is on the PUBLIC internet via Tailscale Funnel. Every difference from
+# config/deployments/live/server.yaml below follows from that one fact.
+
+# How THIS SERVER reaches the one Deepgram bridge, on the tlda-voice box, over
+# Fly's private 6PN. Required by shared/config.mjs; the address is the same
+# everywhere because one box serves every site.
+deepgramBridgeUrl: ws://tlda-voice.internal:8180
+
+# NOT disabled here. live/stable run open because the tailnet is the network
+# boundary and only tailnet devices can reach them. A funnel removes exactly
+# that boundary, so the token is the only thing left in front of this server.
+authDisabled: false
+
+# Take tokens only from TLDA_TOKEN_READ/TLDA_TOKEN_RW (`fly secrets`), never
+# from a tokens.json on the box.
+tokensFromEnvironmentOnly: true
+
+# Uploads must land on the persistent volume; the container wipes anything else
+# on restart.
+uploadDir: /app/server/persist/uploads

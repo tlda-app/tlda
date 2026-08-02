@@ -82,8 +82,15 @@ if [ -n "$TS_AUTHKEY" ]; then
     --authkey="$TS_AUTHKEY" --hostname="${TS_HOSTNAME:-tlda-fly}" --accept-dns=false \
     || echo "[entrypoint] tailscale up failed — continuing (public stays up)"
   # Proxy the tailnet HTTPS to the local server (valid cert on the .ts.net name).
-  tailscale --socket=/var/run/tailscale/tailscaled.sock serve --bg --https=443 http://127.0.0.1:5176 \
-    || echo "[entrypoint] tailscale serve failed — continuing"
+  # `serve` keeps that name tailnet-only and is the default for every
+  # deployment. `funnel` publishes the same name to the public internet, and is
+  # opted into by TS_FUNNEL in one fly.*.toml. The hostname stays inside
+  # *.cormorant-matrix.ts.net either way — the tldraw license is bound to that
+  # domain, so a public *.fly.dev name would lose the canvas.
+  TS_EXPOSE=serve
+  [ -n "$TS_FUNNEL" ] && TS_EXPOSE=funnel
+  tailscale --socket=/var/run/tailscale/tailscaled.sock "$TS_EXPOSE" --bg --https=443 http://127.0.0.1:5176 \
+    || echo "[entrypoint] tailscale $TS_EXPOSE failed — continuing"
 fi
 
 # --- Run-once: merge pre-cutover chat history into fleet.db ---
