@@ -24,15 +24,22 @@ export function decideFollowTransition(sample, state) {
   const { top, height, clientHeight, lastTop, lastHeight } = sample
   const gap = height - top - clientHeight
   const shrank = height < lastHeight - 2
-  const grew = height > lastHeight + 2
 
   // up-scroll: top fell past the jitter eps AND content didn't shrink (a shrink
   // clamps scrollTop down without the user moving — not a real scroll-up).
   const movedUp = top < lastTop - UP_JITTER_EPS && !shrank
   // down-to-bottom: top rose past the jitter eps to within EPS of the true
-  // bottom AND content didn't grow. (Gap<=EPS alone wrongly re-engaged follow
-  // when a window shrink collapsed the gap — content, not the user, returning.)
-  const movedDownToBottom = top > lastTop + UP_JITTER_EPS && !grew && gap <= FOLLOW_BOTTOM_EPS
+  // bottom. The shrink case this once guarded — a window shrink collapsing the
+  // gap, content rather than the user returning — cannot reach here: a shrink
+  // clamps scrollTop DOWN, so top < lastTop and this is already false. Growth
+  // can only push the bottom further away, so arriving within EPS during growth
+  // still took a real user move. And nothing else scrolls this list down while
+  // scrolledUp is true, which is the only state that consults this: followOutput
+  // returns false and settleToTail bails. Requiring !grew therefore excluded
+  // nothing and dropped the ordinary case — a message landing while the reader
+  // was on their way back down, which left follow off while they sat at the
+  // bottom watching the next message not arrive.
+  const movedDownToBottom = top > lastTop + UP_JITTER_EPS && gap <= FOLLOW_BOTTOM_EPS
 
   if (state.hardLocked) return { scrolledUp: state.scrolledUp, action: 'none' }
 
