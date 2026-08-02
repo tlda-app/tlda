@@ -2115,6 +2115,21 @@ function ThreadChatOperationView({
     if (viewRef.current && html && !collapsed) restoreExpansions(viewRef.current)
   }, [html, collapsed, restoreExpansions])
 
+  // A thread that already fits its fold height is not folded: the renderer
+  // cannot know how tall the rows lay out, so the clip and the expand control
+  // come off here. One shot per render -- once the reader expands, the body no
+  // longer overflows and re-measuring would take the control away.
+  useLayoutEffect(() => {
+    const root = viewRef.current
+    if (!root || !html || collapsed) return
+    const body = root.querySelector('.pretty-thread-body.pretty-thread-clipped') as HTMLElement | null
+    if (!body || body.scrollHeight > body.clientHeight + 1) return
+    body.classList.remove('pretty-thread-clipped')
+    body.style.maxHeight = ''
+    const toggle = body.nextElementSibling as HTMLElement | null
+    if (toggle?.classList.contains('pretty-thread-expand')) toggle.remove()
+  }, [html, collapsed])
+
   useLayoutEffect(() => {
     const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
     if (!scroller) return
@@ -4692,7 +4707,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return
       if (t.closest('button')) return
       const hit = t.closest(
-        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
+        '.code-block-toggle, .build-result-header, .pretty-expand-btn, .pretty-thread-expand, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
       ) as HTMLElement | null
       if (hit) hit.click()
     }

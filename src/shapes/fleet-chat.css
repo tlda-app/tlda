@@ -1306,10 +1306,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   /* Thread messages inherit normal chat-line styling */
 }
 /* Bounded to the fold-thread-lines height so a long thread is not arbitrarily
-   tall. It scrolls rather than clips, which is what keeps the gap marker where
-   the picture puts it and still reachable. */
-.fleet-chat-shape .tool-pretty-thread.pretty-thread-bounded {
-  overflow-y: auto;
+   tall. It clips behind the expand control below it — the same fold every other
+   card in chat uses — rather than scrolling. */
+.fleet-chat-shape .tool-pretty-thread .pretty-thread-body.pretty-thread-clipped {
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
 }
 .fleet-chat-shape .pretty-msg-body {
   font-size: 11px;
@@ -1367,7 +1369,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 2px;
   padding: 0 1px;
 }
-.fleet-chat-shape .pretty-expand-btn {
+.fleet-chat-shape .pretty-expand-btn,
+.fleet-chat-shape .pretty-thread-expand {
   text-align: center;
   font-size: 9px;
   color: var(--accent, #7a9ec8);
@@ -1375,7 +1378,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   opacity: 0.7;
 }
-.fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+.fleet-chat-shape .pretty-expand-btn:hover,
+.fleet-chat-shape .pretty-thread-expand:hover { opacity: 1; }
 .fleet-chat-shape .semantic-operation-inspected {
   color: var(--text-dim, #666);
   font-size: 9px;

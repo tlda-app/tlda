@@ -322,15 +322,20 @@ export function renderThreadRows(msgs, ctx, headerText = '') {
   // Skip: "it's supposed to fucking render threads at ... my setting is fucking
   // 16 lines tall. With a fucking expand button, but it's rendering them like
   // arbitrarily fucking tall." The rows above are the picture and do not move --
-  // the height is what his setting bounds. Bounding it by scrolling rather than
-  // clipping is what keeps the gap marker where the picture puts it and still
-  // reachable; clipping would put the one expand control below the fold.
-  // 0 = never fold, the same as the other fold prefs. Line-height 1.5 matches
-  // .chat-line, which is what a thread row is.
+  // the height is what his setting bounds, and it clips behind an expand
+  // control the way every other fold in chat does. Bounding it by scrolling put
+  // a scrollbar where the expand button belongs: "some agent made it fixed
+  // height fucking scrolling. Can I just, like, get the fucking thing from
+  // before back?" 0 = never fold, the same as the other fold prefs.
+  // Line-height 1.5 matches .chat-line, which is what a thread row is.
   const h = ctx?.foldHeights?.thread ?? 0
-  const foldCls = h > 0 ? ' pretty-thread-bounded' : ''
-  const foldStyle = h > 0 ? ` style="max-height:${(h * 1.5).toFixed(1)}em"` : ''
-  return `<div class="tool-pretty-result tool-pretty-thread${foldCls}"${foldStyle}>${header}${rows}</div>`
+  if (h <= 0) return `<div class="tool-pretty-result tool-pretty-thread">${header}${rows}</div>`
+  const maxH = `${(h * 1.5).toFixed(1)}em`
+  const toggle = `<div class="pretty-thread-expand" onclick="(function(e){var b=e.previousElementSibling;if(b.classList.contains('pretty-thread-clipped')){b.classList.remove('pretty-thread-clipped');b.style.maxHeight='';e.textContent='collapse'}else{b.classList.add('pretty-thread-clipped');b.style.maxHeight='${maxH}';e.textContent='show all'}})(this)">show all</div>`
+  return `<div class="tool-pretty-result tool-pretty-thread pretty-thread-bounded">`
+    + `<div class="pretty-thread-body pretty-thread-clipped" style="max-height:${maxH}">${header}${rows}</div>`
+    + toggle
+    + `</div>`
 }
 
 // --- Tool helpers ---
