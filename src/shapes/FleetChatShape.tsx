@@ -6604,7 +6604,12 @@ function FleetChatInner({ shape }: { shape: any }) {
                 background: 'transparent',
                 border: '1px solid rgba(128, 128, 128, 0.15)',
                 borderRadius: 4,
-                padding: '4px 58px 4px 8px',
+                // No right gutter reserved for the send hint. Skip: "the shit on
+                // the right side takes up space. That's not supposed to take up
+                // space. It should be a background, like the stuff on the left."
+                // The hint overlays at background level instead of pushing the
+                // text in.
+                padding: '4px 8px',
                 fontSize: _isPhone ? 16 : 11,
                 color: 'inherit',
                 outline: 'none',

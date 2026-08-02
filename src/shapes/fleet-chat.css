@@ -72,8 +72,14 @@
 .fleet-chat-send-hint {
   position: absolute;
   right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+  /* On the top line, on the same line as the left rail, rather than floating to
+     the middle of a growing composer — Skip: "the slider and the target thing on
+     the right should stick to the top line instead of being in the middle."
+     Mirrors .fleet-composer-gutter's box so the two ends line up. */
+  top: -5px;
+  height: 42px;
+  display: flex;
+  align-items: center;
   font-size: 9px;
   opacity: calc(0.25 * var(--fleet-chrome-alpha, 1));
   pointer-events: none;
@@ -3608,7 +3614,13 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   position: absolute;
   left: 6px;
   top: -5px;
-  bottom: -5px;
+  /* Height of one line, not the whole composer. It used to stretch with
+     `bottom: -5px`, so on a multiline message the rail covered the entire left
+     edge and swallowed every click meant for the text -- Skip: "the whole left
+     side of the message can't click into, which is kinda bad because you can't
+     edit your message. I feel like this should stick to the top line of the
+     composer." Below the first line the text is now reachable. */
+  height: 42px;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -3620,6 +3632,23 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+/* The rail says so when you are on it. Without this the only feedback was the
+   one tool under the cursor, so the dead zone read as a broken text field --
+   Skip: "why can't I click in here... it should have a hover that highlights
+   the whole slider a bit in addition to the currently selected tool. To
+   indicate you're on a thing. That's why you can't click in." */
+html.mousemove .fleet-chat-shape .fleet-composer-gutter:hover {
+  background: rgba(122, 158, 200, 0.10);
+  box-shadow: inset 0 0 0 1px rgba(122, 158, 200, 0.18);
+}
+/* Skip: "they're like half height. Can we make them like one and a half times
+   their current size without messing with size of the composer." Scaling rather
+   than resizing keeps them out of layout, so the composer is untouched. */
+.fleet-chat-shape .fleet-composer-gutter svg {
+  transform: scale(1.5);
+  transform-origin: center;
 }
 .fleet-chat-shape .corner-button-slider-preview {
   position: absolute;
@@ -3729,7 +3758,8 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   justify-content: center;
   line-height: 1;
   font: inherit;
-  font-size: 9px;
+  /* 1.5x, with the icons — see .fleet-composer-gutter svg. */
+  font-size: 13.5px;
   white-space: nowrap;
   /* Touch hygiene for a tap target whose content is text: don't let a tap or
      long-press select the "DM"/"All" label, and remove the tap delay. (The
@@ -3756,7 +3786,8 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   justify-content: center;
   line-height: 1;
   font: inherit;
-  font-size: 13px;
+  /* 1.5x, with the icons — see .fleet-composer-gutter svg. */
+  font-size: 19.5px;
 }
 .fleet-chat-shape .fleet-composer-clear-toggle:hover,
 .fleet-chat-shape .fleet-composer-clear-toggle:focus-visible,
