@@ -82,12 +82,29 @@
   align-items: center;
   font-size: 9px;
   opacity: calc(0.25 * var(--fleet-chrome-alpha, 1));
-  pointer-events: none;
+  /* Takes pointers because it is the interrupt slider: drag up a line for soft,
+     two for hard, three for kill. It is a small target at the right end of the
+     top line, so the text it overlays is only unreachable there. */
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
   white-space: nowrap;
   z-index: 2;
   transition: opacity 0.15s;
   font-family: inherit;
 }
+/* Armed: the hint says which tier will fire on release, so letting go is never
+   a guess. Escalating weight, and the kill tier is the only loud one. */
+.fleet-chat-send-hint.send-hint-arming {
+  opacity: 1;
+  cursor: grabbing;
+  font-weight: 600;
+}
+.fleet-chat-send-hint.send-hint-arming-1 { color: var(--accent, #7a9ec8); }
+.fleet-chat-send-hint.send-hint-arming-2 { color: var(--yellow, #c8b060); }
+.fleet-chat-send-hint.send-hint-arming-3 { color: #d06a6a; }
 
 /* --- Button group (close, layout, filter) --- */
 .fleet-shape .fleet-btn-group {

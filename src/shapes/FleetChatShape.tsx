@@ -2573,6 +2573,10 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Esc interrupt: track last Esc timestamp for soft/hard distinction
   const escCountRef = useRef<number>(0)
+  const interruptTempCounterRef = useRef<number>(0)
+  // Set below, so the document-level Escape listener (deps []) always calls the
+  // current function without re-binding.
+  const runInterruptTierRef = useRef<(count: number, source: 'esc' | 'rail') => void>(() => {})
   // Track whether the user last clicked inside this fleet chat shape.
   // Voice/touch users don't focus the textarea, so activeElement-based checks fail.
   const chatActiveRef = useRef(false)
@@ -4876,8 +4880,58 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Three tiers: 1×Esc = soft (promote a queued message above the spinner; the
   // daemon no-ops if nothing is queued, so a single Esc never hard-interrupts),
   // 2×Esc = hard (one Escape that stops the agent), 3×Esc = kill session.
+  // The three tiers, as one function, so the keyboard and the composer rail's
+  // upward slider drive the same thing rather than two implementations that
+  // drift. Skip: "we already have a keyboard version of the same control. And
+  // drive it the same way exactly." `count` is the tier, not a keypress tally --
+  // the keyboard derives it by counting Escapes, the slider by how far you drag.
+  const runInterruptTier = useCallback((count: number, source: 'esc' | 'rail') => {
+    const targets = sendTargetsRef.current
+    if (targets.length === 0) return
+    const now = Date.now()
+    setUnqueuedAt(now)
+    const agent = resolveToFleetIdRef.current(targets[0])
+    const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
+    log.info('esc', 'interrupt', { count, agent, agentLabel, source })
+    const tempId = `esc-${++interruptTempCounterRef.current}-${now}`
+    const ts = new Date().toISOString()
+    setEscLevel(agent, count >= 3 ? 3 : count)
+    if (count >= 3) {
+      escCountRef.current = 0
+      injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
+      fleetDurable('kill-session', { agent })
+        .then((d: { error?: string }) => {
+          updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` })
+          if (!d.error) confirmEscLevel(agent, 3)
+          setTimeout(() => clearEscState(agent), 2000)
+        })
+        .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
+    } else if (count === 2) {
+      fleetEphemeral('interrupt', { agent })
+        .then((d: { error?: string }) => {
+          if (d.error) injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed: ${d.error}`, timestamp: ts })
+          else confirmEscLevel(agent, 2)
+        })
+        .catch(() => { injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed (server unreachable)`, timestamp: ts }) })
+    } else {
+      // Soft interrupt: promote a queued message above the spinner without
+      // stopping the agent. The daemon no-ops when nothing is queued — a single
+      // Esc must never hard-interrupt. Confirm the card off the real result
+      // (promoted / nothing-queued), not optimistically.
+      injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Soft interrupt → ${agentLabel}…`, timestamp: ts })
+      fleetEphemeral('soft-interrupt', { agent })
+        .then((d: { error?: string; promoted?: boolean; reason?: string }) => {
+          if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed: ${d.error}` }) }
+          else if (d.promoted) { updateOptimisticEvent(tempId, { text: `⏸ Promoted queued message → ${agentLabel}` }); confirmEscLevel(agent, 1) }
+          else if (d.reason === 'nothing-queued') { updateOptimisticEvent(tempId, { text: `· nothing queued for ${agentLabel} — no-op` }) }
+          else { updateOptimisticEvent(tempId, { text: `⏸ Soft interrupt → ${agentLabel} (unconfirmed)` }) }
+        })
+        .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed (server unreachable)` }) })
+    }
+  }, [])
+  runInterruptTierRef.current = runInterruptTier
+
   useEffect(() => {
-    let escTempCounter = 0
     function onEscKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
       if (!chatActiveRef.current) return
@@ -4887,50 +4941,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (targets.length === 0) return
       e.preventDefault()
       e.stopPropagation()
-      const now = Date.now()
-      setUnqueuedAt(now)
-      const agent = resolveToFleetIdRef.current(targets[0])
       // Escalation is action-based: each Esc increments; any non-Esc action
       // (keydown, pointer, message send) resets. No timing window.
       escCountRef.current++
-      const count = escCountRef.current
-      const agentLabel = agentNamesRef.current[agent] || agent.replace('fleet:', '')
-      log.info('esc', 'interrupt', { count, agent, agentLabel })
-      const tempId = `esc-${++escTempCounter}-${now}`
-      const ts = new Date().toISOString()
-      setEscLevel(agent, count >= 3 ? 3 : count)
-      if (count >= 3) {
-        escCountRef.current = 0
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
-        fleetDurable('kill-session', { agent })
-          .then((d: { error?: string }) => {
-            updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` })
-            if (!d.error) confirmEscLevel(agent, 3)
-            setTimeout(() => clearEscState(agent), 2000)
-          })
-          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
-      } else if (count === 2) {
-        fleetEphemeral('interrupt', { agent })
-          .then((d: { error?: string }) => {
-            if (d.error) injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed: ${d.error}`, timestamp: ts })
-            else confirmEscLevel(agent, 2)
-          })
-          .catch(() => { injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed (server unreachable)`, timestamp: ts }) })
-      } else {
-        // Soft interrupt: promote a queued message above the spinner without
-        // stopping the agent. The daemon no-ops when nothing is queued — a single
-        // Esc must never hard-interrupt. Confirm the card off the real result
-        // (promoted / nothing-queued), not optimistically.
-        injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Soft interrupt → ${agentLabel}…`, timestamp: ts })
-        fleetEphemeral('soft-interrupt', { agent })
-          .then((d: { error?: string; promoted?: boolean; reason?: string }) => {
-            if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed: ${d.error}` }) }
-            else if (d.promoted) { updateOptimisticEvent(tempId, { text: `⏸ Promoted queued message → ${agentLabel}` }); confirmEscLevel(agent, 1) }
-            else if (d.reason === 'nothing-queued') { updateOptimisticEvent(tempId, { text: `· nothing queued for ${agentLabel} — no-op` }) }
-            else { updateOptimisticEvent(tempId, { text: `⏸ Soft interrupt → ${agentLabel} (unconfirmed)` }) }
-          })
-          .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed (server unreachable)` }) })
-      }
+      runInterruptTierRef.current(escCountRef.current, 'esc')
     }
     function resetEscState() {
       if (escCountRef.current === 0) return
@@ -6368,6 +6382,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             filter={filter}
             sendTargets={sendTargets}
             inputRef={inputRef}
+            onInterruptTier={(tier) => runInterruptTierRef.current(tier, 'rail')}
           />
           {deadTargetAgent && (
             <div
@@ -6705,19 +6720,68 @@ const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: 
 }, (prev, next) => prev.shape.props === next.shape.props)
 
 
+const INTERRUPT_TIER_LABEL = ['', '⏸ soft interrupt', '⏹ interrupt', '💀 kill'] as const
+
 function SendHint({
   filter: _filter,
   sendTargets,
   inputRef,
+  onInterruptTier,
 }: {
   filter: [string, string][][]
   sendTargets: string[]
   inputRef: React.RefObject<HTMLInputElement | null>
+  onInterruptTier: (tier: number) => void
 }) {
   // kind: '' (hidden) | 'empty' (no text, show target) | 'newline' | 'enter'
   const [kind, setKind] = useState<'' | 'empty' | 'newline' | 'enter'>('')
+  // Tier under the finger while dragging up; 0 = not dragging or below the
+  // first detent.
+  const [dragTier, setDragTier] = useState(0)
+  const dragRef = useRef<{ startY: number; step: number; tier: number } | null>(null)
 
   const hasTargets = sendTargets.length > 0
+
+  // Drag up on the hint to interrupt, one detent per line: soft, hard, kill.
+  // Skip: "it should be a slider itself, an upward slider. If you slide up a
+  // full line it would be soft interrupt, another line hard interrupt, another
+  // line kill. So we sort of have our interrupt controls available on touch
+  // devices without keyboards." One detent is one composer line, measured off
+  // the textarea so it tracks the font rather than a guessed constant.
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if (!hasTargets) return
+    stopEventPropagation(e)
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    const lh = ta ? parseFloat(getComputedStyle(ta).lineHeight) : NaN
+    const step = Number.isFinite(lh) && lh > 0 ? lh : 16
+    dragRef.current = { startY: e.clientY, step, tier: 0 }
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }, [hasTargets, inputRef])
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d) return
+    stopEventPropagation(e)
+    const tier = Math.max(0, Math.min(3, Math.floor((d.startY - e.clientY) / d.step)))
+    if (tier !== d.tier) { d.tier = tier; setDragTier(tier) }
+  }, [])
+
+  const endDrag = useCallback((e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d) return
+    stopEventPropagation(e)
+    dragRef.current = null
+    setDragTier(0)
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch { /* pointer already gone */ }
+    if (d.tier >= 1) onInterruptTier(d.tier)
+  }, [onInterruptTier])
+
+  const dragProps = hasTargets ? {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp: endDrag,
+    onPointerCancel: endDrag,
+  } : {}
 
   const update = useCallback(() => {
     const el = inputRef.current as HTMLTextAreaElement | null
@@ -6752,8 +6816,20 @@ function SendHint({
     }
   }, [inputRef, update])
 
+  // Mid-drag the hint says which tier is armed, so releasing is never a guess.
+  if (dragTier > 0) {
+    return (
+      <span
+        className={`fleet-chat-send-hint send-hint-arming send-hint-arming-${dragTier}`}
+        {...dragProps}
+      >
+        {INTERRUPT_TIER_LABEL[dragTier]}
+      </span>
+    )
+  }
+
   if (kind === '') return null
-  if (kind === 'newline') return <span className="fleet-chat-send-hint">↵ newline</span>
+  if (kind === 'newline') return <span className="fleet-chat-send-hint" {...dragProps}>↵ newline</span>
 
   // 'empty' and 'enter' both show the target list. 'enter' prefixes the ↵ glyph; with no targets
   // it's just ↵.
@@ -6768,7 +6844,11 @@ function SendHint({
   ))
 
   return (
-    <span className="fleet-chat-send-hint" style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+    <span
+      className="fleet-chat-send-hint"
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}
+      {...dragProps}
+    >
       {enterPrefix}→&nbsp;{targets}
     </span>
   )
