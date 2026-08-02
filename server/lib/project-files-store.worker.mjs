@@ -146,7 +146,10 @@ function documentText(project, document) {
       return ''
     }
   }
-  return readProjectSourceSearchEntries(project).map(entry => entry.text).join('\n')
+  // Capped like the two branches above. Without this it returned the WHOLE project
+  // source — up to 80 files x 80 KB — and documentAssociations then tokenized that
+  // per document, so N doc views cost N x 6.4 MB of wink-NLP work.
+  return readProjectSourceSearchEntries(project).map(entry => entry.text).join('\n').slice(0, 240_000)
 }
 
 function documentAssociations(projectName, requestedDocuments) {
@@ -154,13 +157,27 @@ function documentAssociations(projectName, requestedDocuments) {
   const threshold = 0.15
   const project = readProject(projectName)
   if (!project) throw new Error(`Project "${projectName}" not found`)
+  // Every `primary` document in a project resolves to the SAME text, and `materialized`
+  // ones repeat whenever two views share a part — so tokenizing per document did the
+  // identical wink-NLP pass up to 100 times. Key by what actually determines the text.
+  const tokensBySource = new Map()
   const documents = (Array.isArray(requestedDocuments) ? requestedDocuments : [])
     .slice(0, 100)
     .map(document => {
       const id = String(document?.id || '')
       const kind = ['primary', 'materialized', 'shared'].includes(document?.kind) ? document.kind : null
       if (!id || !kind) return null
-      return { id, tokens: documentAssociationTokens(documentText(project, { ...document, kind })) }
+      // `shared` carries its text on the request, so it is per-document and not shared here.
+      const key = kind === 'primary' ? 'primary'
+        : kind === 'materialized' ? `materialized:${String(document.path || '')}`
+        : null
+      if (key === null) return { id, tokens: documentAssociationTokens(documentText(project, { ...document, kind })) }
+      let tokens = tokensBySource.get(key)
+      if (!tokens) {
+        tokens = documentAssociationTokens(documentText(project, { ...document, kind }))
+        tokensBySource.set(key, tokens)
+      }
+      return { id, tokens }
     })
     .filter(document => document?.tokens.length > 0)
   if (documents.length < 2) return []
