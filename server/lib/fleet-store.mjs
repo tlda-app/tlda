@@ -354,6 +354,7 @@ export class FleetStore {
     this._backfillDefaultSubscriptions();
     this._backfillDefaultSubscriptionsV2();
     this._backfillDefaultSubscriptionsV3();
+    this._backfillSelfSubscriptions();
     this._backfillNameHistory();
     this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
@@ -2674,6 +2675,37 @@ export class FleetStore {
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
     console.log(`[fleet-store] ${NAME}: ${seeded} agent(s) given the default subscription`);
+  }
+
+  // The second slot, for every agent that predates it.
+  //
+  // Mint now writes two — `to:me` for mail addressed to you, `to:my_labels` for
+  // mail addressed to a set you are in — and everyone created before that holds
+  // only the second. Leaving them there would mean new agents and old agents are
+  // configured differently, which is the exact split that made today: one mint
+  // path wrote subscriptions, the other did not, and the difference was invisible
+  // until Skip could not reach half his fleet.
+  //
+  // It is tempting to skip this, because an old agent still gets its own mail —
+  // its name is one of its labels, so `to:my_labels` catches a message addressed
+  // to it. That reasoning is why the two slots exist at all: it is one fader for
+  // two things. An old agent that turns its group traffic down would silence its
+  // own mail with it, and would have no way to tell that is what it did.
+  //
+  // One-shot and recorded, like the others: a sweep that ran every start could
+  // not tell an agent that never had the slot from one that deliberately dropped
+  // it, and restoring it would be a floor wearing a migration's clothes.
+  _backfillSelfSubscriptions() {
+    const NAME = 'self-subscriptions-v1';
+    if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
+    let seeded = 0;
+    this.db.transaction(() => {
+      for (const row of this.db.prepare('SELECT id FROM agents').all()) {
+        if (this.ensureSubscription({ owner: row.id, query: 'to:me', notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+      }
+      this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
+    })();
+    console.log(`[fleet-store] ${NAME}: ${seeded} agent(s) given the self subscription`);
   }
 
   _backfillDefaultSubscriptionsV2() {
