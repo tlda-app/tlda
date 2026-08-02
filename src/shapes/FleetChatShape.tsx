@@ -2050,11 +2050,13 @@ function ThreadChatOperationView({
   descriptor,
   renderCtx,
   currentProject,
+  host,
   restoreExpansions,
 }: {
   descriptor: any
   renderCtx: any
   currentProject?: string
+  host: HTMLElement
   restoreExpansions: (root: HTMLElement) => void
 }) {
   const semanticKey = String(descriptor?.semanticKey || '')
@@ -2064,6 +2066,7 @@ function ThreadChatOperationView({
   const [html, setHtml] = useState(cached ?? '')
   const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
+  const [collapseTop, setCollapseTop] = useState('50%')
   const viewRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async (force = false) => {
@@ -2113,12 +2116,40 @@ function ThreadChatOperationView({
     if (viewRef.current && html) restoreExpansions(viewRef.current)
   }, [html, restoreExpansions])
 
-  // The card has one control and it is the gap marker the renderer puts in the
-  // middle. There is no card-level collapse: the top-and-bottom view IS the
-  // collapsed state, and a button that blanked the card destroyed the only
-  // thing the card is for -- seeing the range an agent read.
+  useLayoutEffect(() => {
+    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
+    if (!scroller) return
+    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [host])
+
+  // Two controls, which is what "1 expand and one collapsed" meant: the gap
+  // marker in the middle expands, and this floats at the left edge to collapse.
+  // It floats because the thing it undoes is what pushes it off screen -- Skip:
+  // "a floating collapse control on the left edge", "collapse it back to the top
+  // and bottom view easily from wherever you are."
+  //
+  // It collapses to the range view, not to nothing. Blanking the card destroyed
+  // the only thing the card is for -- seeing the range an agent read -- which is
+  // what "the collapse isn't to a pretty expanded state, it's just a fucking
+  // nothing" was about.
+  const collapseToRange = useCallback((event: any) => {
+    stopEventPropagation(event)
+    const root = viewRef.current
+    if (!root) return
+    root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach(moreRows => {
+      moreRows.style.display = 'none'
+      const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
+      if (btn && btn.dataset.collapsedLabel) btn.textContent = btn.dataset.collapsedLabel
+    })
+  }, [])
+
   return (
     <div className="semantic-operation-expanded-shell">
+      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapseToRange}>Collapse</button>
       <div className="semantic-operation-view">
         {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
         {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
@@ -2331,10 +2362,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
         if (expanded.has(key) || expanded.has(itemKey)) {
           moreRows.style.display = ''
           const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-          if (btn) {
-            btn.textContent = 'collapse'
-            btn.classList.add('pretty-expand-open')
-          }
+          if (btn) btn.textContent = 'collapse'
         }
       })
     }
@@ -2367,6 +2395,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             descriptor={descriptor}
             renderCtx={semanticRenderCtx}
             currentProject={currentProject}
+            host={body}
             restoreExpansions={restorePrettyExpansions}
           />
           : <SemanticChatOperationView
@@ -4612,11 +4641,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           }
           moreRows.style.display = wasExpanded ? 'none' : ''
           expandBtn.textContent = wasExpanded ? (expandBtn.dataset.collapsedLabel || 'Expand') : 'collapse'
-          // Open, the marker is the way back to the top-and-bottom view, and the
-          // middle it just revealed is what pushes it off screen. Skip: "be able
-          // to collapse it back to the top and bottom view easily from wherever
-          // you are." So it sticks while the thread it belongs to is in view.
-          expandBtn.classList.toggle('pretty-expand-open', !wasExpanded)
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
             const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])
