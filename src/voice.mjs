@@ -17,6 +17,7 @@ import { PcmBacklog, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, 
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
+import { terminalGlyphNode } from './fleet/terminal-glyph.mjs'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -1384,22 +1385,8 @@ function activeTargetKind() {
   return _activeTargetHandle?.getTargetKind?.() || null
 }
 
-const SVG_NS = 'http://www.w3.org/2000/svg'
-
 function terminalMark() {
-  const svg = document.createElementNS(SVG_NS, 'svg')
-  for (const [k, v] of Object.entries({
-    width: '10', height: '10', viewBox: '0 0 10 10', fill: 'none',
-    stroke: 'currentColor', 'stroke-width': '1.5',
-    'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
-  })) svg.setAttribute(k, v)
-  const box = document.createElementNS(SVG_NS, 'rect')
-  for (const [k, v] of Object.entries({ x: '1', y: '1', width: '8', height: '8', rx: '1.5' })) box.setAttribute(k, v)
-  const caret = document.createElementNS(SVG_NS, 'polyline')
-  caret.setAttribute('points', '2.5,4 4.5,6 2.5,8')
-  const rule = document.createElementNS(SVG_NS, 'line')
-  for (const [k, v] of Object.entries({ x1: '5.5', y1: '8', x2: '7.5', y2: '8' })) rule.setAttribute(k, v)
-  svg.append(box, caret, rule)
+  const svg = terminalGlyphNode()
   Object.assign(svg.style, { marginRight: '4px', verticalAlign: '-1px' })
   return svg
 }
