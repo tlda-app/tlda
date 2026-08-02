@@ -2906,6 +2906,15 @@ export class FleetStore {
       `).run(id, state.kind, durableStatus, at);
       return true;
     })();
+    // A status change is a labelling event, so the label index has to hear about
+    // it. `_aliveAgentByLabel` is built from `labelsForAgent`, which derives
+    // `awake`/`hibernating`/`here`/`away` from runtime status — but the index only
+    // refreshes when `_syncAgentRegistry` runs, and every other labelling path
+    // calls it while this one did not. So chat resolution matched whoever had
+    // been awake the last time their record was synced for some other reason,
+    // which is why `awake & <name>` found nobody and roster found sixteen.
+    if (changed) this._syncAgentRegistry(id);
+    return changed;
   }
 
   /**
