@@ -121,14 +121,3 @@ html[data-theme="dark"] .fleet-icon-pill-fan-item {
 html[data-theme="dark"] .fleet-icon-pill-fan-item.hovered {
   opacity: 0.8;
 }
-
-/* A talk forces a LIGHT slide canvas whatever the app theme is, so the dark-mode
-   rule above painted this white on a near-white slide. The slide is what sits
-   behind the control, so it wins over the theme.
-   Lives here rather than with its two neighbours in DocumentPanel.css because
-   this stylesheet loads after that one — an override there is correct and still
-   loses to the rule twelve lines above. */
-body.slides-mode .fleet-icon-pill-badge {
-  color: rgba(0, 0, 0, 0.85);
-}
-
