@@ -34,7 +34,13 @@ const MUST_CATCH = {
   'bare statement — looks like fire-and-forget': 'fleetStore.share(e)',
   'optional call — the form a grep misses': 'fleetStore?.share?.(e)',
   'passed as an argument': 'console.log(fleetStore.share(e))',
-  'truthiness test': 'if (fleetStore.acknowledgeInboxRead(id)) return 2',
+  // Was `fleetStore.acknowledgeInboxRead(id)`. That method was deleted in
+  // 4bb91cdee (2026-07-28, "Remove direct inbox event reads") and the fixture
+  // was left behind. The rule only flags methods on the manifest, so a fixture
+  // naming one that no longer exists can never be caught — which failed this
+  // guard, and `npm run lint` with it, from that commit onward. Same drift the
+  // MUST_ALLOW note below describes, in the opposite direction.
+  'truthiness test': 'if (fleetStore.markRead(id)) return 2',
   'reached through a property': 'const s = { fleetStore }; s.fleetStore.share(e)',
 }
 
