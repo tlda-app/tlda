@@ -1982,13 +1982,36 @@ async function performSpawnRelay(caller, msg) {
     ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
   let reservedFriendlyName = null
+  // What the mint asked for, and what of it could not be used. Both reported
+  // back rather than raised: the caller gets the agent and is told what was
+  // dropped, instead of an exception and no agent.
+  let mintLabels = requestedLabels ?? []
+  let droppedLabels = []
   if (pendingAgentId) {
-    // Same gate as label(): friendly names and labels are one namespace, so a
-    // label that is unaddressable, reserved, or already occupied by a living
-    // agent fails here with the same error shape rather than being applied.
+    // A mint does not fail. A label that is unaddressable, reserved, or already
+    // held by a living agent is not applied — the agent is still minted, with
+    // the labels that are usable.
+    //
+    // This is the shape allocateFreshFriendlyName already uses two lines down: a
+    // name collision resolves to a fresh name rather than refusing to spawn. The
+    // same request should not be fatal for a label and survivable for a name.
+    //
+    // It used to throw here, borrowing label()'s gate. label() is an explicit
+    // request to apply a specific label, so refusing it is an answer. A mint is
+    // a request for an agent, and the labels are a detail of it — refusing the
+    // whole agent because one of them was unusable answers a question nobody
+    // asked, and leaves the caller with nothing.
     if (requestedLabels?.length) {
       const collisions = await fleetStore.checkNameAvailable(requestedLabels, { excludeId: pendingAgentId })
-      if (collisions.length) throw new Error(await fleetStore.labelCollisionMessage(collisions))
+      if (collisions.length) {
+        const unusable = new Set(collisions.map((collision) => collision.name))
+        droppedLabels = collisions
+        mintLabels = mintLabels.filter((label) => !unusable.has(label))
+        console.warn(
+          `[spawn] minting ${spawnName} without ${collisions.length} unusable label(s): ` +
+          collisions.map((c) => `${c.name} (${c.kind})`).join(', '),
+        )
+      }
     }
     const now = new Date().toISOString()
     const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
@@ -2002,12 +2025,23 @@ async function performSpawnRelay(caller, msg) {
       // opens at registered_at and a label-filtered panel shows the whole
       // backlog. Labelling after mint is lexically correct but starts the span
       // late, leaving the work in between invisible to that filter.
-      labels: requestedLabels ?? [],
+      labels: mintLabels,
       registered_at: now,
       last_seen: now,
       dead: false,
       human: false,
-      metadata: { shell: true },
+      // The spawn already knows all three — `doc`, `cwd` and `model` come in on
+      // the request and are handed to the daemon — but none of them were written
+      // to the row, so the agent directory had nothing to group by. Every living
+      // agent read as project-less, and the index's per-project cells could only
+      // ever show the handful of agents someone had labelled by hand, which is
+      // why the names in them were old.
+      metadata: {
+        shell: true,
+        ...(doc ? { project: doc } : {}),
+        ...(cwd ? { cwd } : {}),
+        ...(model ? { model } : {}),
+      },
     })
     // Both slots, written where the row is made, because this is the mint.
     //
@@ -2210,6 +2244,11 @@ async function performSpawnRelay(caller, msg) {
     name: spawnName,
     machine_id: machineId,
     env_name: route.env_name,
+    labels: mintLabels,
+    // Empty on the ordinary path. Present so a caller that asked for a label it
+    // did not get is told, rather than discovering it by filtering later and
+    // matching nothing.
+    dropped_labels: droppedLabels.map((collision) => ({ name: collision.name, reason: collision.kind })),
   }
 }
 
