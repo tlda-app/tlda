@@ -319,22 +319,14 @@ export function renderThreadRows(msgs, ctx, headerText = '') {
   } else {
     rows = list.map(m => renderThreadMsg(m, ctx)).join('')
   }
-  // Skip: "shapes in chat, like threads, ought to be click to expand, click to
-  // collapse, not scrollable." The card clips at his fold height and the whole
-  // card toggles; a scroll box inside a canvas shape is the thing he does not
-  // want -- "some agent made it fixed height fucking scrolling." The rows above
-  // are the picture and do not move, so the gap marker still expands the middle
-  // of the thread and is the one click the card does not take for itself.
-  // 0 = never fold, the same as the other fold prefs. Line-height 1.5 matches
-  // .chat-line, which is what a thread row is.
-  const h = ctx?.foldHeights?.thread ?? 0
-  const maxH = (h * 1.5).toFixed(1)
-  const foldCls = h > 0 ? ' pretty-thread-bounded' : ''
-  const foldStyle = h > 0 ? ` style="max-height:${maxH}em"` : ''
-  const toggle = h > 0
-    ? ` onclick="if(!event.target.closest('.pretty-expand-btn'))(function(c){if(c.classList.contains('pretty-thread-bounded')){c.classList.remove('pretty-thread-bounded');c.style.maxHeight=''}else{c.classList.add('pretty-thread-bounded');c.style.maxHeight='${maxH}em'}})(this)"`
-    : ''
-  return `<div class="tool-pretty-result tool-pretty-thread${foldCls}"${foldStyle}${toggle}>${header}${rows}</div>`
+  // The card has no height bound of its own. Skip, after seeing one: "there's no
+  // fucking expand button, and you click it and just, like, I don't know what
+  // the fuck. It's literally click to expand to something you can expand. And
+  // the fucking first expand is invisible... just let me see the fucking
+  // [thread]." So the card is the picture and nothing else: front rows, the gap
+  // marker, tail rows. The marker is the one expand and it is visible where the
+  // picture puts it, in the middle.
+  return `<div class="tool-pretty-result tool-pretty-thread">${header}${rows}</div>`
 }
 
 // --- Tool helpers ---
