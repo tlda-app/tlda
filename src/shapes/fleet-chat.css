@@ -3672,7 +3672,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   left: 3px;
   right: 3px;
   top: 50%;
-  height: 3px;
+  height: 5px;
   transform: translateY(-50%);
   border-radius: 999px;
   background: rgba(122, 158, 200, 0.30);
@@ -3680,7 +3680,13 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   transition: opacity 0.15s;
   pointer-events: none;
 }
-html.mousemove .fleet-chat-shape .fleet-composer-gutter:hover::before,
+/* `@media (hover: hover)`, not the `html.mousemove` class the rest of the file
+   uses for hover chrome: that class is removed 1500ms after the pointer stops
+   moving (main.tsx), so a rail you hovered and held still on went dark under
+   your own cursor. Pointer capability is the actual question here. */
+@media (hover: hover) {
+  .fleet-chat-shape .fleet-composer-gutter:hover::before { opacity: 1; }
+}
 .fleet-chat-shape .fleet-composer-gutter.rail-dragging::before {
   opacity: 1;
 }
@@ -3688,22 +3694,25 @@ html.mousemove .fleet-chat-shape .fleet-composer-gutter:hover::before,
    And the current one would just be highlighted more." The tools sit at 0.05–0.22
    at rest so they stay out of the way; touching the rail brings the whole set up
    together, which is what says they are one control. */
-html.mousemove .fleet-chat-shape .fleet-composer-gutter:hover [data-composer-rail-action],
+@media (hover: hover) {
+  .fleet-chat-shape .fleet-composer-gutter:hover [data-composer-rail-action] { opacity: 0.5; }
+  .fleet-chat-shape .fleet-composer-gutter [data-composer-rail-action]:hover { opacity: 1; }
+}
 .fleet-chat-shape .fleet-composer-gutter.rail-dragging [data-composer-rail-action] {
   opacity: 0.5;
 }
-html.mousemove .fleet-chat-shape .fleet-composer-gutter [data-composer-rail-action]:hover {
-  opacity: 1;
-}
-/* Skip: "they're like half height. Can we make them like one and a half times
-   their current size" — then, seeing 1.5x on screen: "shrink them back down to
-   like halfway between where it was and where it is now, and make sure they feel
-   inside the composer." Halfway is 1.25. Scaling rather than resizing keeps them
-   out of layout, so the composer's height is untouched either way. */
-.fleet-chat-shape .fleet-composer-gutter svg {
-  transform: scale(1.25);
+/* Bigger marks are a phone want, not a desktop one. Skip, after seeing 1.5x and
+   then 1.25x on a desktop: "honestly, regarding making them bigger, I don't
+   really want them to be bigger. I just want them to be bigger on the phone. So
+   maybe that's a thing where we special case that." So the desktop rail is back
+   to its original size and only phone mode scales. Scaling rather than resizing
+   keeps them out of layout, so the composer's height is untouched either way. */
+body.phone-mode .fleet-chat-shape .fleet-composer-gutter svg {
+  transform: scale(1.5);
   transform-origin: center;
 }
+body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: 13.5px; }
+body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: 19.5px; }
 .fleet-chat-shape .corner-button-slider-preview {
   position: absolute;
   top: -20px;
@@ -3812,8 +3821,7 @@ html.mousemove .fleet-chat-shape .fleet-composer-gutter [data-composer-rail-acti
   justify-content: center;
   line-height: 1;
   font: inherit;
-  /* 1.25x, with the icons — see .fleet-composer-gutter svg. */
-  font-size: 11.25px;
+  font-size: 9px;
   white-space: nowrap;
   /* Touch hygiene for a tap target whose content is text: don't let a tap or
      long-press select the "DM"/"All" label, and remove the tap delay. (The
@@ -3840,8 +3848,7 @@ html.mousemove .fleet-chat-shape .fleet-composer-gutter [data-composer-rail-acti
   justify-content: center;
   line-height: 1;
   font: inherit;
-  /* 1.25x, with the icons — see .fleet-composer-gutter svg. */
-  font-size: 16.25px;
+  font-size: 13px;
 }
 .fleet-chat-shape .fleet-composer-clear-toggle:hover,
 .fleet-chat-shape .fleet-composer-clear-toggle:focus-visible,
