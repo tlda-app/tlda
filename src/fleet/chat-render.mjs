@@ -445,7 +445,7 @@ export function renderChatLine(m, ctx) {
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
       : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span>${recipientNicksHtml(recipients, ctx, m)}:</span>`
-    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">${terminalGlyphHtml()}</span> ${nickHtml} ${text}</div>`
+    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
   }
 
   // --- Plan mode approval card ---
@@ -796,9 +796,23 @@ export function renderChatLine(m, ctx) {
   // file+section) carries metadata.source = { file, section }. Show a subtle
   // "from <file> §<section>" chip so the reader can see/open the source. Reuses
   // the existing ref-chip styling — no new visual language.
-  let sourceChipHtml = ''
+  // `metadata.source` carries two unrelated provenances written by two writers:
+  // the string 'terminal' (unified-server's terminal-chat handler, for a message
+  // typed into an agent's terminal) and the object { file, section, url } (a body
+  // baked from a file section). One field, two shapes — so the discrimination
+  // happens here, once, by shape, rather than each reader guessing.
   const _src = m.metadata?.source
-  if (_src && _src.file) {
+  const _fromTerminal = _src === 'terminal'
+  const _fileSrc = _src && typeof _src === 'object' && _src.file ? _src : null
+
+  // A message that came from a terminal wears the terminal mark, the same one the
+  // composer's terminal button and the voice HUD draw.
+  const terminalMarkHtml = _fromTerminal
+    ? `<span class="terminal-source-mark" title="from a terminal">${terminalGlyphHtml()}</span> `
+    : ''
+
+  let sourceChipHtml = ''
+  if (_fileSrc) {
     const _fileName = esc(String(_src.file).split('/').pop() || _src.file)
     const _section = _src.section ? esc(String(_src.section)) : ''
     const _sectionHtml = _section ? `<span class="src-chip-section">§${_section}</span>` : ''
@@ -816,9 +830,9 @@ export function renderChatLine(m, ctx) {
   const amendStepper = m._amendStepper || ''
   let line
   if (isAmbient) {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${amendStepper}${attachHtml}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${terminalMarkHtml}${nickHtml} ${bodyText}${sourceChipHtml}${amendStepper}${attachHtml}</div>`
   } else {
-    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${sourceChipHtml}${amendStepper}${receipt}${attachHtml}${retractBtn}</div>`
+    line = `<div class="${lineClass} ${dimClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> ${terminalMarkHtml}${nickHtml} ${bodyText}${sourceChipHtml}${amendStepper}${receipt}${attachHtml}${retractBtn}</div>`
   }
   if (m._interrupt) {
     const age = Date.now() - new Date(m.timestamp).getTime()
