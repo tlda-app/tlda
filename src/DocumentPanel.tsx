@@ -658,13 +658,24 @@ export function PhoneOverlay() {
         {menuOpen ? '✕' : '☰'}
       </button>
 
-      {isPhone && (
+      {/* The bottom-right controls follow the control SCHEME, not the viewport
+          width. showButtonToc is already the condition for "this surface is
+          driven by buttons rather than a toolbar" — slides, phone, or any touch
+          device — and the menu toggle above uses it. These two were gated on
+          isPhone alone, so a talk on a desktop or an iPad rendered neither, and
+          the highlighter and the mic are exactly the primary controls that have
+          to work without a keyboard. Measured on the deployed talk: at 390px
+          both are present at the bottom right, at 1920px neither exists. */}
+      {showButtonToc && (
         <>
           {/* Highlighter toggle — bottom right, drag for color slider */}
           <PhoneHighlighterButton />
-          {/* Voice note button — bottom right, left of highlighter */}
+          {/* Voice note button — bottom right, above the highlighter */}
           <VoiceNoteButtonInner />
-
+        </>
+      )}
+      {isPhone && (
+        <>
           {/* Page number indicator — shows during scroll, fades out */}
           <PhonePageIndicator />
         </>
