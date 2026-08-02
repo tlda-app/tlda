@@ -332,20 +332,19 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
         .slides-navigator button:hover {
           opacity: 0.6 !important;
         }
+        /* Skip: "just text plz--no background. and place lower so it's under
+           the voicehud---we no bg it should fit". #voice-hud is fixed at
+           bottom: 20px and is 19px tall, so 3px clears it with the counter in
+           the strip underneath. Same offset at every width — the voice HUD it
+           sits under has one too. */
         .slides-nav-counter {
           position: fixed;
           left: 50%;
-          bottom: max(10px, env(safe-area-inset-bottom));
+          bottom: 3px;
           transform: translateX(-50%);
-          min-width: 72px;
-          min-height: 30px;
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 4px 10px;
-          border-radius: 999px;
-          background: rgba(255,255,255,0.86);
-          box-shadow: 0 2px 10px rgba(0,0,0,0.12);
           color: var(--color-text, #333);
           pointer-events: none;
           opacity: 0.82;
@@ -361,16 +360,12 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
           background: transparent !important;
         }
         .tl-theme__dark .slides-nav-counter {
-          background: rgba(30,30,30,0.82) !important;
           color: #e0e0e0 !important;
         }
         @media (max-width: 900px), (pointer: coarse) {
           .slides-nav-button {
             width: 44px !important;
             height: 84px !important;
-          }
-          .slides-nav-counter {
-            bottom: max(8px, env(safe-area-inset-bottom));
           }
         }
         body.slides-mode .tl-background,
