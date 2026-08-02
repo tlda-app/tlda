@@ -25,6 +25,11 @@ import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 import { attachRglFigureSync } from '../rglFigureSync'
 
+/** How many pages either side of the viewport keep their iframe mounted, on
+ *  each axis. Measured in pages rather than viewports so it means the same
+ *  thing however far apart a document sets them. */
+const PREFETCH_PAGES = 3
+
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 
@@ -286,6 +291,30 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
   override canBind = () => false
 
+  /**
+   * Keep the pages near the viewport out of the cull, so their iframes are
+   * already loaded when you reach them.
+   *
+   * Skip: "right now, I change to a slide, and it's just not there." tldraw
+   * culls strictly to the viewport, which unmounts the neighbouring pages —
+   * and an unmounted shape has no component, so the near-viewport check inside
+   * it never runs. That check could not have prefetched anything; this is the
+   * gate above it, and `canCull` is where tldraw asks.
+   *
+   * Same rule as the component's, and for the same reason: a margin of whole
+   * pages on each axis. It does not care which way the document runs, and it
+   * does not shift when the pages move further apart — a margin in viewports
+   * would have, and did when slides went to half a slide apart.
+   */
+  override canCull = (shape: any) => {
+    const viewport = this.editor.getViewportPageBounds()
+    const marginX = shape.props.w * PREFETCH_PAGES
+    const marginY = shape.props.h * PREFETCH_PAGES
+    const nearX = shape.x + shape.props.w > viewport.minX - marginX && shape.x < viewport.maxX + marginX
+    const nearY = shape.y + shape.props.h > viewport.minY - marginY && shape.y < viewport.maxY + marginY
+    return !(nearX && nearY)
+  }
+
   component(shape: any) {
     return <SpatialLodHtmlPage shape={shape} />
   }
@@ -346,7 +375,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   // injected bridge reroutes canvas-navigation gestures by event type.
   const [isInteracting, setIsInteracting] = useState(false)
 
-  // Detect slides format from URL (single deck iframe or legacy per-slide iframe)
+  // A deck genuinely has fragments and a wheel-capture overlay — that is a real
+  // feature of reveal.js decks, not an assumption about how pages are laid out,
+  // so it stays a property of the document. It is deliberately NOT used by the
+  // prefetch predicate below, which is pure geometry.
   const isSlide = shape.props.url?.includes('_tldaDeck=1') || shape.props.url?.includes('_tldaH=')
   const isInActiveViewport = useIsInViewport(shape.id)
   const isTemporaryMarkdownColumn = shape.meta?.temporaryMarkdownColumn === true
@@ -357,25 +389,33 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
   const iframePointerActive = iframeActive
 
-  // Viewport gating: only render iframe when near viewport.
-  // Slides are laid out horizontally, so check both X and Y axes.
-  // Keep a generous margin for slides (prev/next slides should stay mounted).
+  // Viewport gating: render the iframe when the page is near the viewport, on
+  // both axes, with the margin measured in PAGES.
+  //
+  // Skip: "I think you need to change the prefetch window or maybe prefetch
+  // doesn't run because of the direction. Because, like, right now, I change to
+  // a slide, and it's just not there."
+  //
+  // Both of his candidates were the same mistake. This used to sniff `isSlide`
+  // out of the URL and then branch: a vertical gate that ran FIRST and returned
+  // early, plus a horizontal one only decks reached — so the axis a document
+  // runs along decided whether prefetch happened at all. And the margin was
+  // measured in viewport multiples, which means it silently shrinks when pages
+  // move further apart. Slides had just gone from 32 apart to half a slide, so
+  // the same multiple covered a third fewer of them.
+  //
+  // A page's own size is the unit that makes both go away: PREFETCH_PAGES pages
+  // either side, on each axis, whichever way the document runs and however far
+  // apart its pages sit. No document type, no early return, nothing to retune
+  // when the spacing changes.
   const isNearMainViewport = useValue('near-viewport-' + shape.id, () => {
     const viewport = editor.getViewportPageBounds()
-    const marginY = viewport.height * (isSlide ? 6 : 2)
-    const shapeTop = shape.y
-    const shapeBottom = shape.y + shape.props.h
-    const inY = shapeBottom > viewport.minY - marginY && shapeTop < viewport.maxY + marginY
-    if (!inY) return false
-    if (isSlide) {
-      // Horizontal check: keep ±2 slides worth of margin
-      const marginX = viewport.width * 3
-      const shapeLeft = shape.x
-      const shapeRight = shape.x + shape.props.w
-      return shapeRight > viewport.minX - marginX && shapeLeft < viewport.maxX + marginX
-    }
-    return true
-  }, [editor, shape.id, shape.x, shape.y, shape.props.w, shape.props.h, isSlide])
+    const marginX = shape.props.w * PREFETCH_PAGES
+    const marginY = shape.props.h * PREFETCH_PAGES
+    const inX = shape.x + shape.props.w > viewport.minX - marginX && shape.x < viewport.maxX + marginX
+    const inY = shape.y + shape.props.h > viewport.minY - marginY && shape.y < viewport.maxY + marginY
+    return inX && inY
+  }, [editor, shape.id, shape.x, shape.y, shape.props.w, shape.props.h])
   const isNearViewport = isTemporaryMarkdownColumn || isInActiveViewport || isNearMainViewport
 
   // When entering local interaction mode, listen for clicks or wheel outside to exit
