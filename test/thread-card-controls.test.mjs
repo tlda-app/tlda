@@ -20,7 +20,7 @@ function threadRows(start, count) {
   }))
 }
 
-// The rows are the picture: first 3, the gap marker, the last 5, and one
+// The rows are the picture: first 5, the gap marker, the last 3, and one
 // control. Skip: "they were supposed to render literally the same thing out of
 // the database... so they're not supposed to fucking have changed the UI."
 test('a long thread draws the picture: front, gap marker, tail, one control', () => {
@@ -34,13 +34,33 @@ test('a long thread draws the picture: front, gap marker, tail, one control', ()
   assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
 })
 
+// Skip: "five lines up top expand thing three lines below." The split was 3 and
+// 5 -- the right shape with the ends swapped, which reads wrong on a card you
+// scan top-down. Pin the sizes, not just their sum: 16 messages hides 8 either
+// way, so the count alone cannot tell the two apart.
+test('the range shows five on top and three below', () => {
+  const html = renderThreadRows(threadRows(1, 16), ctx)
+  const head = html.slice(0, html.indexOf('pretty-expand-btn'))
+  const hidden = html.slice(html.indexOf('pretty-more-rows'))
+  // The hidden middle ends at the last message it holds; the tail is what the
+  // card still draws after it.
+  const tail = hidden.slice(hidden.indexOf('message 13'))
+
+  assert.equal((head.match(/class="chat-line/g) || []).length, 5)
+  for (const n of [1, 2, 3, 4, 5]) assert.match(head, new RegExp(`message ${n}\\b`))
+  assert.doesNotMatch(head, /message 6\b/)
+
+  assert.equal((tail.match(/class="chat-line/g) || []).length, 3)
+  for (const n of [14, 15, 16]) assert.match(tail, new RegExp(`message ${n}\\b`))
+})
+
 // Expand reveals the middle out of the rows already drawn, so every message the
 // read returned is present -- no second ellipsis, and no bound from whatever a
 // pretty result happened to carry.
 test('the hidden middle is present, not another ellipsis', () => {
   const html = renderThreadRows(threadRows(1, 16), ctx)
   const middle = html.slice(html.indexOf('pretty-more-rows'))
-  for (const n of [4, 5, 6, 7, 8, 9, 10, 11]) assert.match(middle, new RegExp(`message ${n}\\b`))
+  for (const n of [6, 7, 8, 9, 10, 11, 12, 13]) assert.match(middle, new RegExp(`message ${n}\\b`))
 })
 
 // Skip: "it's supposed to fucking render threads at ... 16 lines tall. With a

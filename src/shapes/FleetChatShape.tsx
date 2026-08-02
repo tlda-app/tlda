@@ -2050,13 +2050,11 @@ function ThreadChatOperationView({
   descriptor,
   renderCtx,
   currentProject,
-  host,
   restoreExpansions,
 }: {
   descriptor: any
   renderCtx: any
   currentProject?: string
-  host: HTMLElement
   restoreExpansions: (root: HTMLElement) => void
 }) {
   const semanticKey = String(descriptor?.semanticKey || '')
@@ -2066,8 +2064,6 @@ function ThreadChatOperationView({
   const [html, setHtml] = useState(cached ?? '')
   const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
-  const [collapsed, setCollapsed] = useState(false)
-  const [collapseTop, setCollapseTop] = useState('50%')
   const viewRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async (force = false) => {
@@ -2114,38 +2110,21 @@ function ThreadChatOperationView({
   useEffect(() => { void load() }, [load])
 
   useLayoutEffect(() => {
-    if (viewRef.current && html && !collapsed) restoreExpansions(viewRef.current)
-  }, [html, collapsed, restoreExpansions])
+    if (viewRef.current && html) restoreExpansions(viewRef.current)
+  }, [html, restoreExpansions])
 
-  useLayoutEffect(() => {
-    const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
-    if (!scroller) return
-    const update = () => setCollapseTop(`${Math.max(8, Math.round(scroller.clientHeight / 2))}px`)
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(scroller)
-    return () => observer.disconnect()
-  }, [host])
-
-  // The one control on a thread card: it collapses what is already open, and
-  // stays put so the thread can be opened again. It never reads "open thread"
-  // on a thread that has not been collapsed.
-  const toggleCollapsed = useCallback((event: any) => {
-    stopEventPropagation(event)
-    setCollapsed(c => !c)
-  }, [])
-
+  // The card has one control and it is the gap marker the renderer puts in the
+  // middle. There is no card-level collapse: the top-and-bottom view IS the
+  // collapsed state, and a button that blanked the card destroyed the only
+  // thing the card is for -- seeing the range an agent read.
   return (
     <div className="semantic-operation-expanded-shell">
-      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={toggleCollapsed}>{collapsed ? 'Expand' : 'Collapse'}</button>
-      {collapsed ? null : (
-        <div className="semantic-operation-view">
-          {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
-          {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
-          {loading ? <div className="semantic-operation-status">loading...</div> : null}
-          {html ? <div ref={viewRef} dangerouslySetInnerHTML={{ __html: html }} /> : null}
-        </div>
-      )}
+      <div className="semantic-operation-view">
+        {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
+        {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
+        {loading ? <div className="semantic-operation-status">loading...</div> : null}
+        {html ? <div ref={viewRef} dangerouslySetInnerHTML={{ __html: html }} /> : null}
+      </div>
     </div>
   )
 }
@@ -2352,7 +2331,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
         if (expanded.has(key) || expanded.has(itemKey)) {
           moreRows.style.display = ''
           const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-          if (btn) btn.textContent = 'collapse'
+          if (btn) {
+            btn.textContent = 'collapse'
+            btn.classList.add('pretty-expand-open')
+          }
         }
       })
     }
@@ -2385,7 +2367,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
             descriptor={descriptor}
             renderCtx={semanticRenderCtx}
             currentProject={currentProject}
-            host={body}
             restoreExpansions={restorePrettyExpansions}
           />
           : <SemanticChatOperationView
@@ -4631,6 +4612,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           }
           moreRows.style.display = wasExpanded ? 'none' : ''
           expandBtn.textContent = wasExpanded ? (expandBtn.dataset.collapsedLabel || 'Expand') : 'collapse'
+          // Open, the marker is the way back to the top-and-bottom view, and the
+          // middle it just revealed is what pushes it off screen. Skip: "be able
+          // to collapse it back to the top and bottom view easily from wherever
+          // you are." So it sticks while the thread it belongs to is in view.
+          expandBtn.classList.toggle('pretty-expand-open', !wasExpanded)
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
             const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])

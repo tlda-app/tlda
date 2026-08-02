@@ -261,8 +261,10 @@ function renderScreenshotResult(text) {
   return `<div class="tool-pretty-result tool-pretty-screenshot"><div class="pretty-result-header" style="opacity:0.5">${esc(label)}</div></div>`
 }
 
-const THREAD_FRONT = 3
-const THREAD_TAIL = 5
+// Skip: "five lines up top expand thing three lines below." The card is read
+// top-down, so the head of the range gets the room.
+const THREAD_FRONT = 5
+const THREAD_TAIL = 3
 
 // One thread row. `msg` is an ordinary message ({ timestamp, from, to, body }),
 // a tool-activity event ({ timestamp, activity }) whose `activity` is a
