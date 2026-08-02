@@ -15,7 +15,8 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
-import { FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
+import { currentVisibleViewportSize, FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
+import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { documentPagesFlowAcross, getDocumentPageBounds } from '../shapes/fleet-layout-context'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
@@ -23,7 +24,7 @@ import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
-import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
+import { computeFleetHudDefaultAnchor, type FleetHudDefaultAnchor } from './fleet-hud-anchor'
 import {
   configureFleetHudOverlayLayer,
   ensureFleetHudLayers,
@@ -31,6 +32,7 @@ import {
   FLEET_HUD_VIEWPORT_ID,
   installFleetHudResizeCursor,
   projectFleetHudDocumentLeftWithWM,
+  projectFleetHudDocumentTopWithWM,
   readFleetHudOverlayLayer,
 } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
@@ -535,23 +537,34 @@ export function FleetHUD({
   }
   const activeTopPad = TOP_PAD
 
-  const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
-    if (!bounds || !docShapesReady) return false
-    const minPageX = getDocumentPageBounds(mainEditor)?.minLeft
-    if (minPageX === undefined || !isFinite(minPageX)) return false
-    const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
+  // Assemble the default anchor's inputs in one place: three call sites need the
+  // same projection of the document's edges, and the transposed branch reads the
+  // top edge as well as the left.
+  const defaultAnchorForBounds = useCallback((bounds: ClipBounds): FleetHudDefaultAnchor | null => {
+    const docBounds = getDocumentPageBounds(mainEditor)
+    if (!docBounds || !isFinite(docBounds.minLeft) || !isFinite(docBounds.minTop)) return null
+    const vp = currentVisibleViewportSize() ?? mainEditor.getViewportScreenBounds()
     const off = layoutOffset(getHumanId(), getDeviceId())
-    const anchor = computeFleetHudDefaultAnchor({
+    return computeFleetHudDefaultAnchor({
       bounds,
-      docPageLeft: minPageX,
-      docLeftScreen,
+      docPageLeft: docBounds.minLeft,
+      docLeftScreen: projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, docBounds.minLeft),
+      docTopScreen: projectFleetHudDocumentTopWithWM(hudWm, mainEditor, docBounds.minTop),
       layoutDx: off.dx,
       topPad: activeTopPad,
+      marginGap: getLayoutReadabilityTokens(vp).marginGap,
+      pagesFlowAcross: documentPagesFlowAcross(mainEditor),
     })
+  }, [activeTopPad, hudWm, mainEditor])
+
+  const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
+    if (!bounds || !docShapesReady) return false
+    const anchor = defaultAnchorForBounds(bounds)
+    if (!anchor) return false
     applyHudAnchor(anchor, { syncViewport: false })
     userPannedRef.current = false
     return true
-  }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
+  }, [applyHudAnchor, defaultAnchorForBounds, docShapesReady])
 
   useEffect(() => {
     if (!identityId || !deviceReady || !docShapesReady || fleetBounds) return
@@ -742,10 +755,17 @@ export function FleetHUD({
       latestBounds.w !== fleetBounds.w ||
       latestBounds.h !== fleetBounds.h
     if (hasFreshBounds) setFleetBounds(latestBounds)
+    // Same transposition as the render-path check below: on a talk the HUD is
+    // anchored above the slide and is legitimately off the top of the screen, so
+    // reachability is measured on the horizontal axis instead.
     const projectedTop = latestBounds.y + hudCameraAnchor.cameraY
     const projectedBottom = projectedTop + latestBounds.h
-    const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    if (verticallyVisible) return
+    const projectedLeft = latestBounds.x + hudCameraAnchor.panOffset
+    const projectedRight = projectedLeft + latestBounds.w
+    const stillReachable = documentPagesFlowAcross(mainEditor)
+      ? projectedRight > 0 && projectedLeft < window.innerWidth
+      : projectedBottom > 0 && projectedTop < window.innerHeight
+    if (stillReachable) return
     if (userPannedRef.current) return
     ignoreSavedAnchorRef.current = true
     recenterHudForBounds(latestBounds)
@@ -773,9 +793,20 @@ export function FleetHUD({
 
   // Track main camera through the WM parent layer. Same-zoom main camera pans
   // enter the core as page-unit deltas; the main-camera layer converts them to
-  // screen-pixel motion and the overlay layer inherits only X.
+  // screen-pixel motion and the overlay layer inherits only the axis the layout
+  // travels on — X on a paper, Y on a talk.
   useEffect(() => {
     if (!expanded) return
+    // The axis the HUD follows. A paper's HUD rides the document sideways, so a
+    // pure vertical scroll is not its business; a talk's rides it up and down,
+    // so a pure sideways pan is not. Read once per subscription rather than per
+    // camera tick — documentPagesFlowAcross walks every page shape, and the
+    // effect re-runs when the pages arrive (docShapesReady).
+    const travelsVertically = documentPagesFlowAcross(mainEditor)
+    const travelAxisMoved = (
+      cam: { x: number; y: number },
+      last: { x: number; y: number },
+    ) => (travelsVertically ? cam.y !== last.y : cam.x !== last.x)
     const initialCamera = mainEditor.getCamera()
     let lastCam: { x: number; y: number; z: number } = {
       x: initialCamera.x,
@@ -800,7 +831,7 @@ export function FleetHUD({
     }
 
     const updateFromCamera = (cam: { x: number; y: number; z: number }) => {
-      if (cam.x === lastCam.x && cam.z === lastCam.z) return
+      if (!travelAxisMoved(cam, lastCam) && cam.z === lastCam.z) return
 
       const suppressCameraTrackingUntil = Number(readinessWindow.__tldaFleetHudSuppressCameraTrackingUntil || 0)
       const suppressCameraTracking = suppressCameraTrackingUntil > Date.now()
@@ -845,7 +876,7 @@ export function FleetHUD({
 
     const stop = react('fleet-hud-main-camera', () => {
       const cam = mainEditor.getCamera()
-      if (cam.x === lastCam.x && cam.z === lastCam.z) return
+      if (!travelAxisMoved(cam, lastCam) && cam.z === lastCam.z) return
       pendingCam = { x: cam.x, y: cam.y, z: cam.z }
       if (frame === null) frame = requestAnimationFrame(flushCamera)
     })
@@ -856,7 +887,7 @@ export function FleetHUD({
       window.removeEventListener('camera-restored', onCameraRestored)
       clearTimeout(fallbackTimer)
     }
-  }, [activeTopPad, fleetBounds, mainEditor, expanded, hudWm, readHudCameraAnchor, readMaintainedFleetBounds, viewportId])
+  }, [activeTopPad, docShapesReady, fleetBounds, mainEditor, expanded, hudWm, readHudCameraAnchor, readMaintainedFleetBounds, viewportId])
 
   // Adopt the saved anchor when it arrives in the store — even if the WM anchor
   // is already set to a provisional recomputed default. In large multi-machine
@@ -1191,23 +1222,14 @@ export function FleetHUD({
     // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
     // placed fleet shapes in the middle of the document text.
     if (!docShapesReady) return null
-    const minPageX = getDocumentPageBounds(mainEditor)?.minLeft
-    if (minPageX === undefined) return null
-    const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     // Compensate this (identity, device)'s horizontal layout offset so the
     // viewer's OWN shapes render in their canonical doc-relative position no
     // matter which horizontal zone they physically occupy. The VERTICAL offset
     // (the disjoint lane that keeps owners from overlapping) needs no
-    // compensation here — cameraY below derives from fleetBounds.y (this layout's
-    // actual top), so the HUD pins my layout to TOP_PAD regardless of its lane.
-    const off = layoutOffset(getHumanId(), getDeviceId())
-    const anchor = computeFleetHudDefaultAnchor({
-      bounds: activeFleetBounds,
-      docPageLeft: minPageX,
-      docLeftScreen,
-      layoutDx: off.dx,
-      topPad: activeTopPad,
-    })
+    // compensation here — cameraY derives from this layout's own bounds either
+    // way, so the HUD pins my layout regardless of its lane.
+    const anchor = defaultAnchorForBounds(activeFleetBounds)
+    if (!anchor) return null
     applyHudAnchor(anchor, { syncViewport: false })
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
@@ -1234,20 +1256,19 @@ export function FleetHUD({
     const projectedBottom = projectedTop + activeFleetBounds.h
     const projectedLeft = activeFleetBounds.x + renderHudCameraAnchor.panOffset
     const projectedRight = projectedLeft + activeFleetBounds.w
-    const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    const horizontallyVisible = projectedLeft >= 0 && projectedRight <= window.innerWidth
-    if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
-      const minPageX = getDocumentPageBounds(mainEditor)?.minLeft
-      if (minPageX !== undefined && isFinite(minPageX)) {
-        const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
-        const off = layoutOffset(getHumanId(), getDeviceId())
-        const anchor = computeFleetHudDefaultAnchor({
-          bounds: activeFleetBounds,
-          docPageLeft: minPageX,
-          docLeftScreen,
-          layoutDx: off.dx,
-          topPad: activeTopPad,
-        })
+    // Which axis "off screen" is measured on transposes with the layout. On a
+    // paper the HUD is pinned to a screen height, so losing it vertically means
+    // the anchor is stale. On a talk the HUD is anchored above the slide, so it
+    // is off the top of the screen whenever you are zoomed into a slide — that
+    // is the layout being right, not lost, and re-deriving there would wipe a
+    // position he set. The screen-pinned axis is the horizontal one.
+    const stillReachable = documentPagesFlowAcross(mainEditor)
+      ? projectedRight > 0 && projectedLeft < window.innerWidth
+      : (projectedBottom > 0 && projectedTop < window.innerHeight)
+        && (projectedLeft >= 0 && projectedRight <= window.innerWidth)
+    if (!userPannedRef.current && !stillReachable) {
+      const anchor = defaultAnchorForBounds(activeFleetBounds)
+      if (anchor) {
         applyHudAnchor(anchor, { syncViewport: false })
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false

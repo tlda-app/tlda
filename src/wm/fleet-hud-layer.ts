@@ -181,6 +181,27 @@ export function projectFleetHudDocumentLeftWithWM(
 	return wm.translate({ x: docPageLeft, y: 0 }, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID).x
 }
 
+/** The transposed twin of the projection above: where the document's TOP edge
+ *  sits on screen. A talk anchors its layout to that the way a paper anchors
+ *  its layout to the document's left. */
+export function projectFleetHudDocumentTopWithWM(
+	wm: WMCore,
+	editor: FleetHudProjectionEditor,
+	docPageTop: number,
+): number {
+	ensureLayer(wm, FLEET_HUD_DOCUMENT_LAYER_ID, {
+		parent: FLEET_HUD_ROOT_LAYER_ID,
+		backing: {
+			kind: 'page',
+			editor: {
+				pageToScreen: (point: Point) => editor.pageToScreen(point),
+				screenToPage: (point: Point) => editor.screenToPage(point),
+			},
+		},
+	})
+	return wm.translate({ x: 0, y: docPageTop }, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID).y
+}
+
 export function translateFleetHudDropPoint(
 	overlayEditor: FleetHudDropEditor,
 	documentEditor: FleetHudDropEditor,
