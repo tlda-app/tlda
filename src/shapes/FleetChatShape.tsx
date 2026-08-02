@@ -55,6 +55,7 @@ import {
   quietTrafficSuppressesActivity,
 } from '../../shared/filter-semantics.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
+import { TERMINAL_GLYPH_PATHS, TERMINAL_GLYPH_UNAVAILABLE_PATH, TERMINAL_GLYPH_VIEWBOX } from '../fleet/terminal-glyph.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
@@ -781,7 +782,8 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   const registerVoice = (el: HTMLTextAreaElement) => {
     setVoiceTarget(el, {
       getSendTargets: () => [agentId],
-      getAgentNames: () => ({ [agentId]: shortId }),
+      getAgentNames: () => ({ [agentId]: agentName || shortId }),
+      getTargetKind: () => 'terminal',
       sendVoice: async (_targets: string[], text: string) => {
         submitInput(text)
         el.value = ''
@@ -6477,12 +6479,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                 title={unavailableReason || `${control.label} terminal`}
                 aria-label={unavailableReason || `${control.label} terminal`}
               >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="1" y="1" width="8" height="8" rx="1.5"/>
-                  <polyline points="2.5,4 4.5,6 2.5,8"/>
-                  <line x1="5.5" y1="8" x2="7.5" y2="8"/>
-                  {isUnavailable && <line x1="1.3" y1="8.7" x2="8.7" y2="1.3" strokeWidth="1.7"/>}
-                </svg>
+                <svg
+                  width="10" height="10" viewBox={TERMINAL_GLYPH_VIEWBOX}
+                  fill="none" stroke="currentColor" strokeWidth="1.5"
+                  strokeLinecap="round" strokeLinejoin="round"
+                  dangerouslySetInnerHTML={{
+                    __html: TERMINAL_GLYPH_PATHS + (isUnavailable ? TERMINAL_GLYPH_UNAVAILABLE_PATH : ''),
+                  }}
+                />
               </button>
               )
             })}

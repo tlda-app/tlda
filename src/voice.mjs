@@ -17,6 +17,7 @@ import { PcmBacklog, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, 
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
+import { terminalGlyphNode } from './fleet/terminal-glyph.mjs'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -1011,6 +1012,8 @@ function flushDeepgramAudioBacklog() {
   return drained
 }
 
+// `text` is a string, or a list of strings and DOM nodes when the line carries a
+// mark (a terminal target's glyph) as well as words.
 function showHud(text, stateColor) {
   const hud = ensureHud()
   positionHud(hud)
@@ -1038,7 +1041,8 @@ function showHud(text, stateColor) {
   statusRow.dataset.voiceState = voiceIndicatorState(_recording, _voiceHealthLabel)
   statusRow.setAttribute('aria-label', `Voice ${statusRow.dataset.voiceState}`)
   const span = document.createElement('span')
-  span.textContent = text
+  if (Array.isArray(text)) span.append(...text)
+  else span.textContent = text
   Object.assign(span.style, {
     minWidth: '0',
     overflow: 'hidden',
@@ -1237,8 +1241,9 @@ function voiceStatusLabel() {
 function showRecordingHud() {
   const who = targetLabel() || 'nowhere'
   const mode = _mathMode ? ' [math]' : ''
-  const text = `${voiceStatusLabel()} -> ${who}${mode}`
-  showHud(text, '#c87070')
+  const lead = `${voiceStatusLabel()} -> `
+  const mark = activeTargetKind() === 'terminal' ? terminalMark() : null
+  showHud(mark ? [lead, mark, `${who}${mode}`] : `${lead}${who}${mode}`, '#c87070')
 }
 
 function hideHud() {
@@ -1367,6 +1372,23 @@ function activeAgentNames() {
 
 function activeAgentColor() {
   return _activeTargetHandle?.getAgentColor?.() || null
+}
+
+// A target that is a terminal pane rather than a chat says so, and the HUD marks
+// it with the same glyph the composer's terminal button draws — the control you
+// clicked and the target you are speaking into read as one thing.
+// Precedence matches targetLabel(): a dump or an accumulator owns the line, and
+// the handle underneath it may be a stale terminal that is not what you're
+// speaking into. Only mark the kind when the handle is what the label names.
+function activeTargetKind() {
+  if (_voiceDumping || _accumulator) return null
+  return _activeTargetHandle?.getTargetKind?.() || null
+}
+
+function terminalMark() {
+  const svg = terminalGlyphNode()
+  Object.assign(svg.style, { marginRight: '4px', verticalAlign: '-1px' })
+  return svg
 }
 
 export function setVoiceTarget(textarea, targetHandle) {
