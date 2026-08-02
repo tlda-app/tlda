@@ -2988,7 +2988,16 @@ function scheduleDeepgramReconnect(generation) {
 
 function connectDeepgramBridge(generation) {
   if (!deepgramRelayAuthorityIsCurrent(generation)) return
-  if (_deepgramWs && _deepgramWs.readyState === WebSocket.OPEN) return
+  // CONNECTING counts as in-progress, not as absent. This used to test OPEN only, so a
+  // second caller arriving during the handshake fell through to the teardown below and
+  // closed the socket mid-connect; its onopen then lost the `_deepgramWs !== relay` check
+  // and closed again. That is the connect/disconnect/connect pair in the bridge log —
+  // every voice session started by burning one dead connection, and when the two callers
+  // kept racing it churned. Three callers can land here while a connect is in flight:
+  // startRecording, the 1s reconnect timer, and visibilitychange (which tests
+  // _deepgramRelayConnected — set only in onopen, so an in-flight socket reads as absent).
+  if (_deepgramWs && (_deepgramWs.readyState === WebSocket.CONNECTING ||
+                      _deepgramWs.readyState === WebSocket.OPEN)) return
   if (_deepgramWs) {
     _deepgramWs.onclose = null
     try { _deepgramWs.close() } catch {}
