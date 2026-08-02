@@ -11,6 +11,9 @@ export type DocumentPageBounds = {
   minLeft: number
   minTop: number
   maxRight: number
+  /** Needed by the transposed layout: when pages flow across, the second margin
+   *  is BELOW the document, the way it is to the right of a stacked one. */
+  maxBottom: number
 }
 
 export type FleetLayoutViewportBounds = { x: number; y: number; w: number; h: number }
@@ -72,8 +75,25 @@ export function buildFleetLayoutPlanInput({
     : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
     : leftW + gap + rightW
 
-  let anchorX = docBounds.minLeft - marginGap - leftContentW
-  let anchorY = docBounds.minTop - 1200
+  // Skip: "the default positions should be the current behavior transposed. So
+  // the bottom of these shapes should be in default layouts computed relative to
+  // the top of the slide."
+  //
+  // Stacked pages: the content's RIGHT edge sits marginGap to the LEFT of the
+  // document, and the rest stacks further left — a portrait document leaves its
+  // margins beside it.
+  //
+  // Pages side by side: transpose it. The content's BOTTOM edge sits marginGap
+  // ABOVE the top of the slide, and it aligns with the slide horizontally rather
+  // than hanging off one end. A landscape document has no side margin to live
+  // in; the room is above it.
+  const flowsAcross = documentPagesFlowAcross(editor)
+  let anchorX = flowsAcross
+    ? docBounds.minLeft
+    : docBounds.minLeft - marginGap - leftContentW
+  let anchorY = flowsAcross
+    ? docBounds.minTop - marginGap - totalH
+    : docBounds.minTop - 1200
 
   // Push this (identity, device)'s whole layout into its own guaranteed-free
   // vertical lane so two owners' shapes can never overlap. dy bands owners
@@ -94,6 +114,8 @@ export function buildFleetLayoutPlanInput({
     anchorX,
     anchorY,
     docMaxRight: docBounds.maxRight,
+    docMaxBottom: docBounds.maxBottom,
+    pagesFlowAcross: flowsAcross,
     dx,
     gap,
     leftW,
@@ -119,7 +141,7 @@ export function getDocumentPageBounds(editor: Editor): DocumentPageBounds | null
 }
 
 function boundsForPageShapes(editor: Editor, pageShapes: any[]): DocumentPageBounds | null {
-  let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
+  let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity, maxBottom = -Infinity
   const pagesWithBounds: any[] = []
   for (const ps of pageShapes) {
     const b = editor.getShapePageBounds(ps.id)
@@ -128,9 +150,10 @@ function boundsForPageShapes(editor: Editor, pageShapes: any[]): DocumentPageBou
     if (b.x < minLeft) minLeft = b.x
     if (b.y < minTop) minTop = b.y
     if (b.x + b.w > maxRight) maxRight = b.x + b.w
+    if (b.y + b.h > maxBottom) maxBottom = b.y + b.h
   }
   if (pagesWithBounds.length === 0 || !isFinite(minLeft) || !isFinite(minTop) || !isFinite(maxRight)) return null
-  return { pageShapes: pagesWithBounds, minLeft, minTop, maxRight }
+  return { pageShapes: pagesWithBounds, minLeft, minTop, maxRight, maxBottom }
 }
 
 function getCurrentVisibleDocumentPlaceBounds(editor: Editor): DocumentPageBounds | null {
@@ -153,6 +176,7 @@ function getCurrentVisibleDocumentPlaceBounds(editor: Editor): DocumentPageBound
     minLeft: bounds.x,
     minTop: bounds.y,
     maxRight: bounds.x + bounds.w,
+    maxBottom: bounds.y + bounds.h,
   }
 }
 

@@ -25,6 +25,8 @@ export type FleetLayoutPlanInput = {
   anchorX: number
   anchorY: number
   docMaxRight: number
+  docMaxBottom: number
+  pagesFlowAcross: boolean
   dx: number
   gap: number
   leftW: number
@@ -66,6 +68,8 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     anchorX,
     anchorY,
     docMaxRight,
+    docMaxBottom,
+    pagesFlowAcross,
     dx,
     gap,
     leftW,
@@ -193,7 +197,13 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     // of the document — both in page coords, so the HUD maps them 1:1. Add the
     // same dx so the WHOLE layout translates as one rigid unit (the HUD then
     // compensates that dx, rendering every shape in its canonical position).
-    const rightChatX = docMaxRight + marginGap + dx
+    // The second margin, transposed with everything else. Skip: "for these sort
+    // of two margin layouts, you could do the same top and bottom." Stacked
+    // pages put it in the right margin; pages side by side have no right margin
+    // to use, so it goes in the one below. Same rule either way — the gap is
+    // between the document's edge and the layout's nearest edge.
+    const rightChatX = pagesFlowAcross ? anchorX : docMaxRight + marginGap + dx
+    const rightChatY = pagesFlowAcross ? docMaxBottom + marginGap : anchorY
 
     shapes.push(
       panelShape('fleet-chat', {
@@ -211,7 +221,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
       // Two-margin layout: the right margin holds the source editor sheet.
       panelShape('fleet-source-editor', {
         id: makeSlotId('source-editor'),
-        x: rightChatX, y: anchorY,
+        x: rightChatX, y: rightChatY,
         isLocked: false,
         props: { w: chatWide, h: totalH, file: '', line: 1, title: 'Source' },
       }, myId, myDevice),
