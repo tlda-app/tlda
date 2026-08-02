@@ -78,6 +78,24 @@ declare global {
   }
 }
 
+/**
+ * The placement rule a stored anchor was written under.
+ *
+ * An anchor is two numbers whose meaning comes entirely from the rule that
+ * computed them. When that rule changes, the numbers do not become wrong-looking
+ * — they stay perfectly readable and mean something else, which is worse. That is
+ * how a layout ends up below the slide it should sit above.
+ *
+ * So the anchor says which rule wrote it, and one written under any other rule is
+ * not a position and is ignored. Bump this whenever the placement rule changes.
+ */
+const ANCHOR_RULE = 'flow-axis-1'
+
+function anchorMeta(meta: any): { panOffset: number; cameraY: number } | null {
+  if (!meta || meta.panOffset === undefined || meta.rule !== ANCHOR_RULE) return null
+  return { panOffset: meta.panOffset, cameraY: meta.cameraY }
+}
+
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   const t0 = probe.isEnabled('hud') ? performance.now() : 0
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
@@ -96,7 +114,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
       editor.updateShape({
         id: anchorId as any,
         type: 'geo',
-        meta: { ...existing.meta, panOffset, cameraY },
+        meta: { ...existing.meta, panOffset, cameraY, rule: ANCHOR_RULE },
         isLocked: true,
       })
     } else {
@@ -107,7 +125,7 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
         opacity: 0,
         isLocked: true,
         props: { w: 1, h: 1, geo: 'rectangle' as const },
-        meta: { panOffset, cameraY },
+        meta: { panOffset, cameraY, rule: ANCHOR_RULE },
       })
     }
   }, { history: 'ignore' })
@@ -582,9 +600,8 @@ export function FleetHUD({
   const userPannedRef = useRef(false)
   if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
     const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
-    if (anchor?.meta?.panOffset !== undefined) {
-      applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
-    }
+    const saved = anchorMeta(anchor?.meta)
+    if (saved) applyHudAnchor(saved, { syncViewport: false })
   }
   const activeTopPad = TOP_PAD
 
@@ -742,7 +759,7 @@ export function FleetHUD({
         setDocShapesReady(true)
         // Only force recompute if we don't have a saved position
         const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
-        if (anchor?.meta?.panOffset === undefined) {
+        if (!anchorMeta(anchor?.meta)) {
           hudAnchorRef.current = null
           hudBaseCameraRef.current = mainEditor.getCamera()
         }
@@ -929,10 +946,12 @@ export function FleetHUD({
         ...Object.values(changes.updated).map((pair: any) => pair[1]),
       ]
       for (const r of arrivals as any[]) {
-        if (isMyAnchor(r) && r.meta?.panOffset !== undefined) {
+        if (isMyAnchor(r)) {
+          const saved = anchorMeta(r.meta)
+          if (!saved) break
           const hudCameraAnchor = readHudCameraAnchor()
-          if (hudCameraAnchor?.panOffset !== r.meta.panOffset || hudCameraAnchor?.cameraY !== r.meta.cameraY) {
-            applyHudAnchor({ panOffset: r.meta.panOffset, cameraY: r.meta.cameraY })
+          if (hudCameraAnchor?.panOffset !== saved.panOffset || hudCameraAnchor?.cameraY !== saved.cameraY) {
+            applyHudAnchor(saved)
           }
           break
         }
