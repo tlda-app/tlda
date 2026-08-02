@@ -1241,8 +1241,11 @@ export function FleetHUD({
 
   const baseAnchor = hudAnchorRef.current
   if (!baseAnchor) return null
+  // Read once for the render pass — it walks every page shape, and this render
+  // path needs the same answer twice.
+  const renderPagesFlowAcross = documentPagesFlowAcross(mainEditor)
   configureFleetHudOverlayLayer(hudWm, {
-    pagesFlowAcross: documentPagesFlowAcross(mainEditor),
+    pagesFlowAcross: renderPagesFlowAcross,
     panOffset: baseAnchor.panOffset,
     cameraY: baseAnchor.cameraY,
     mainCamera: mainEditor.getCamera(),
@@ -1262,7 +1265,7 @@ export function FleetHUD({
     // is off the top of the screen whenever you are zoomed into a slide — that
     // is the layout being right, not lost, and re-deriving there would wipe a
     // position he set. The screen-pinned axis is the horizontal one.
-    const stillReachable = documentPagesFlowAcross(mainEditor)
+    const stillReachable = renderPagesFlowAcross
       ? projectedRight > 0 && projectedLeft < window.innerWidth
       : (projectedBottom > 0 && projectedTop < window.innerHeight)
         && (projectedLeft >= 0 && projectedRight <= window.innerWidth)
