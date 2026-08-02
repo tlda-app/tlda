@@ -2,6 +2,8 @@ import type { Editor, TLShapeId } from 'tldraw'
 import {
   FLEET_PILL_LEGACY_GRACE_MS,
   FLEET_PILL_STALE_MS,
+  fleetPillStaleFrom,
+  forgetFleetPill,
   getActiveFleetPillIds,
   isFleetPillActive,
   markFleetPillInactive,
@@ -48,7 +50,8 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
     cancelTimer(String(shape.id))
     const props = shape.props || {}
     const legacy = !props.userId && !props.deviceId && props.createdAt == null && props.ephemeral == null
-    const delay = legacy ? FLEET_PILL_LEGACY_GRACE_MS : Math.max(0, FLEET_PILL_STALE_MS - (now() - (props.createdAt || 0)))
+    const staleFrom = fleetPillStaleFrom(String(shape.id), props.createdAt)
+    const delay = legacy ? FLEET_PILL_LEGACY_GRACE_MS : Math.max(0, FLEET_PILL_STALE_MS - (now() - staleFrom))
     timers.set(String(shape.id), setTimer(() => deleteIfEligible(shape.id), delay))
   }
   const scan = () => editor.getCurrentPageShapes().forEach(shape => schedule(shape as Pill))
@@ -57,7 +60,11 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
   const unlisten = editor.store.listen(({ changes }: { changes: Changes }) => {
     for (const record of Object.values(changes.added || {})) schedule(record as Pill)
     for (const pair of Object.values(changes.updated || {})) schedule(pair[1] as Pill)
-    for (const record of Object.values(changes.removed || {})) cancelTimer(String((record as Pill).id))
+    for (const record of Object.values(changes.removed || {})) {
+      const id = String((record as Pill).id)
+      cancelTimer(id)
+      forgetFleetPill(id)
+    }
   }, { source: 'all', scope: 'document' })
   const terminateActivePills = () => {
     const identity = options.getIdentity()
