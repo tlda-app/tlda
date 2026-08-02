@@ -177,7 +177,10 @@ export function PersistentCornerButtonSlider({
 
   return <div
     ref={railRef}
-    className={`persistent-corner-button-slider ${className}`}
+    // `dragging` while a pointer is down on the rail, because :hover stops
+    // matching the moment a drag takes pointer capture — Skip: "it goes away
+    // once you click, which is not great. In a drag, the background goes away."
+    className={`persistent-corner-button-slider ${className}${active ? ' rail-dragging' : ''}`}
     onPointerDownCapture={(e) => {
       stopEventPropagation(e)
       e.preventDefault()
