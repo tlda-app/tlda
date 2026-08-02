@@ -1011,6 +1011,8 @@ function flushDeepgramAudioBacklog() {
   return drained
 }
 
+// `text` is a string, or a list of strings and DOM nodes when the line carries a
+// mark (a terminal target's glyph) as well as words.
 function showHud(text, stateColor) {
   const hud = ensureHud()
   positionHud(hud)
@@ -1038,7 +1040,8 @@ function showHud(text, stateColor) {
   statusRow.dataset.voiceState = voiceIndicatorState(_recording, _voiceHealthLabel)
   statusRow.setAttribute('aria-label', `Voice ${statusRow.dataset.voiceState}`)
   const span = document.createElement('span')
-  span.textContent = text
+  if (Array.isArray(text)) span.append(...text)
+  else span.textContent = text
   Object.assign(span.style, {
     minWidth: '0',
     overflow: 'hidden',
@@ -1237,8 +1240,9 @@ function voiceStatusLabel() {
 function showRecordingHud() {
   const who = targetLabel() || 'nowhere'
   const mode = _mathMode ? ' [math]' : ''
-  const text = `${voiceStatusLabel()} -> ${who}${mode}`
-  showHud(text, '#c87070')
+  const lead = `${voiceStatusLabel()} -> `
+  const mark = activeTargetKind() === 'terminal' ? terminalMark() : null
+  showHud(mark ? [lead, mark, `${who}${mode}`] : `${lead}${who}${mode}`, '#c87070')
 }
 
 function hideHud() {
@@ -1367,6 +1371,37 @@ function activeAgentNames() {
 
 function activeAgentColor() {
   return _activeTargetHandle?.getAgentColor?.() || null
+}
+
+// A target that is a terminal pane rather than a chat says so, and the HUD marks
+// it with the same glyph the composer's terminal button draws — the control you
+// clicked and the target you are speaking into read as one thing.
+// Precedence matches targetLabel(): a dump or an accumulator owns the line, and
+// the handle underneath it may be a stale terminal that is not what you're
+// speaking into. Only mark the kind when the handle is what the label names.
+function activeTargetKind() {
+  if (_voiceDumping || _accumulator) return null
+  return _activeTargetHandle?.getTargetKind?.() || null
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+function terminalMark() {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  for (const [k, v] of Object.entries({
+    width: '10', height: '10', viewBox: '0 0 10 10', fill: 'none',
+    stroke: 'currentColor', 'stroke-width': '1.5',
+    'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
+  })) svg.setAttribute(k, v)
+  const box = document.createElementNS(SVG_NS, 'rect')
+  for (const [k, v] of Object.entries({ x: '1', y: '1', width: '8', height: '8', rx: '1.5' })) box.setAttribute(k, v)
+  const caret = document.createElementNS(SVG_NS, 'polyline')
+  caret.setAttribute('points', '2.5,4 4.5,6 2.5,8')
+  const rule = document.createElementNS(SVG_NS, 'line')
+  for (const [k, v] of Object.entries({ x1: '5.5', y1: '8', x2: '7.5', y2: '8' })) rule.setAttribute(k, v)
+  svg.append(box, caret, rule)
+  Object.assign(svg.style, { marginRight: '4px', verticalAlign: '-1px' })
+  return svg
 }
 
 export function setVoiceTarget(textarea, targetHandle) {

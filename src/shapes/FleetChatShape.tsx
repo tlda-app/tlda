@@ -781,7 +781,8 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   const registerVoice = (el: HTMLTextAreaElement) => {
     setVoiceTarget(el, {
       getSendTargets: () => [agentId],
-      getAgentNames: () => ({ [agentId]: shortId }),
+      getAgentNames: () => ({ [agentId]: agentName || shortId }),
+      getTargetKind: () => 'terminal',
       sendVoice: async (_targets: string[], text: string) => {
         submitInput(text)
         el.value = ''
