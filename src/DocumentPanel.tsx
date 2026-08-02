@@ -666,14 +666,13 @@ export function PhoneOverlay() {
           the highlighter and the mic are exactly the primary controls that have
           to work without a keyboard. Measured on the deployed talk: at 390px
           both are present at the bottom right, at 1920px neither exists. */}
-      {showButtonToc && (
-        <>
-          {/* Highlighter toggle — bottom right, drag for color slider */}
-          <PhoneHighlighterButton />
-          {/* Voice note button — bottom right, above the highlighter */}
-          <VoiceNoteButtonInner />
-        </>
-      )}
+      {/* No gate. Skip: "I don't think we need any gating for this thing."
+          The highlighter and the mic are primary controls that have to work
+          without a keyboard, so there is no surface where the right answer is
+          to hide them. They were gated on a phone-SIZED viewport, which is why
+          a talk on an iPad had neither. */}
+      <PhoneHighlighterButton />
+      <VoiceNoteButtonInner />
       {isPhone && (
         <>
           {/* Page number indicator — shows during scroll, fades out */}

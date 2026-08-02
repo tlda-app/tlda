@@ -2267,6 +2267,11 @@ body.touch-toc-mode:not(.phone-mode) .voice-note-btn,
 body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-badge {
   width: 44px;
   height: 44px;
+  /* Same opacity phone mode gives them. The base rule is 0.15 and lifts to 0.5
+     on :hover — which no touch device ever fires, so on an iPad these sat at
+     15% on white and were invisible in practice. Rendered and unfindable is
+     not better than absent. */
+  opacity: 0.5;
 }
 
 body.touch-toc-mode:not(.phone-mode) .phone-hl-btn {
