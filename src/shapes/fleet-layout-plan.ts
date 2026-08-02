@@ -1,6 +1,7 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
 import { singleChatViewportPanelSize } from './fleet-layout-sizing'
+import type { Axis } from './document-flow-axis'
 
 export type FleetLayoutVariant = 'single-chat' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
 
@@ -26,7 +27,7 @@ export type FleetLayoutPlanInput = {
   anchorY: number
   docMaxRight: number
   docMaxBottom: number
-  pagesFlowAcross: boolean
+  flowAxis: Axis
   dx: number
   gap: number
   leftW: number
@@ -69,7 +70,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     anchorY,
     docMaxRight,
     docMaxBottom,
-    pagesFlowAcross,
+    flowAxis,
     dx,
     gap,
     leftW,
@@ -192,18 +193,21 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     )
   } else {
     const chatWide = Math.round(chatW3 * 1.5)
-    // Left group's right edge already sits marginGap left of the document
-    // (via anchorX). The right-margin chat's left edge sits marginGap right
-    // of the document — both in page coords, so the HUD maps them 1:1. Add the
-    // same dx so the WHOLE layout translates as one rigid unit (the HUD then
-    // compensates that dx, rendering every shape in its canonical position).
-    // The second margin, transposed with everything else. Skip: "for these sort
-    // of two margin layouts, you could do the same top and bottom." Stacked
-    // pages put it in the right margin; pages side by side have no right margin
-    // to use, so it goes in the one below. Same rule either way — the gap is
-    // between the document's edge and the layout's nearest edge.
-    const rightChatX = pagesFlowAcross ? anchorX : docMaxRight + marginGap + dx
-    const rightChatY = pagesFlowAcross ? docMaxBottom + marginGap : anchorY
+    // A document has two margins across its flow, and this variant uses both:
+    // the first group sits before the document's near edge (via the anchor), the
+    // source editor after its far edge, each one marginGap away. Skip: "for these
+    // sort of two margin layouts, you could do the same top and bottom." Which
+    // pair of margins that is falls out of the flow axis rather than being
+    // chosen — a document running down leaves left and right, one running across
+    // leaves above and below.
+    //
+    // The dx is a cosmetic spread along the margin axis that the HUD compensates,
+    // so it is added wherever that axis is, and only there — the whole layout has
+    // to translate as one rigid unit or the HUD's single compensation tears it.
+    const docFar = flowAxis === 'x' ? docMaxBottom : docMaxRight
+    const secondMarginStart = docFar + marginGap + (flowAxis === 'x' ? 0 : dx)
+    const rightChatX = flowAxis === 'x' ? anchorX : secondMarginStart
+    const rightChatY = flowAxis === 'x' ? secondMarginStart : anchorY
 
     shapes.push(
       panelShape('fleet-chat', {

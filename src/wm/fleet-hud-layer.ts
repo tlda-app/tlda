@@ -8,10 +8,12 @@ import {
 	type LayerLayout,
 	type LayerMembership,
 	type LayerOwner,
+	type AxisTrackPolicy,
 	type Point,
 	type WMCore,
 } from './wm-core.ts'
 import { ensureLayer } from './editor-wm.ts'
+import { crossAxis, type Axis } from '../shapes/document-flow-axis'
 
 export const FLEET_HUD_ROOT_LAYER_ID = 'screen'
 export const FLEET_HUD_MAIN_CAMERA_LAYER_ID = 'main-camera'
@@ -99,15 +101,14 @@ export function configureFleetHudOverlayLayer(
 		cameraY,
 		mainCamera = { x: 0, y: 0, z: 1 },
 		baseCamera = mainCamera,
-		pagesFlowAcross = false,
+		flowAxis = 'y',
 	}: {
 		panOffset: number
 		cameraY: number
 		mainCamera?: Camera
 		baseCamera?: Camera
-		/** True when the document's pages are laid out side by side rather than
-		 *  stacked — a talk. See the axis note below. */
-		pagesFlowAcross?: boolean
+		/** The axis this document's pages run along. See the note below. */
+		flowAxis?: Axis
 	},
 ): void {
 	wm.setCamera(FLEET_HUD_MAIN_CAMERA_LAYER_ID, {
@@ -115,24 +116,20 @@ export function configureFleetHudOverlayLayer(
 		y: mainCamera.y - baseCamera.y,
 		z: mainCamera.z,
 	})
-	// Both axes of the main camera reach this layer; its policy decides which one
-	// it rides. Skip: "a HUD working in the opposite orientation, because the talk
-	// is in the opposite orientation."
+	// Both axes of the main camera reach this layer; its policy says which one it
+	// rides. Skip's rule: "the shapes on the HUD are in a fixed position relative
+	// to the fucking screen in one direction and the slides in the other."
 	//
-	// A paper is portrait and you move DOWN it, so the HUD pans with x — keeping
-	// its place beside the document — and pins y, staying at a fixed height on
-	// screen. A talk is landscape and you move ACROSS it, so it is the other way
-	// round: pin x so the HUD stays with you from slide to slide, pan y so it
-	// rides above the slide.
-	//
-	// Read off the page layout rather than a check for "is this a talk": pages
-	// that flow across get one, pages that flow down get the other. This is the
-	// only place the axis choice lives — the anchor's default and the off-screen
-	// test in FleetHUD read the same predicate for their own transposition.
+	// 'pin' is screen-fixed, 'pan' is document-fixed, so the rule is one line:
+	// pin the axis the pages flow along, pan the one across it. A paper flows
+	// down and so holds a height on screen while riding sideways with the
+	// document; a deck flows across and does the transpose. Neither is a case.
 	ensureLayer(wm, FLEET_HUD_OVERLAY_LAYER_ID, {
-		policy: pagesFlowAcross
-			? { x: 'pin', y: 'pan', zoom: 'lock' }
-			: { x: 'pan', y: 'pin', zoom: 'lock' },
+		policy: {
+			[flowAxis]: 'pin',
+			[crossAxis(flowAxis)]: 'pan',
+			zoom: 'lock',
+		} as { x: AxisTrackPolicy; y: AxisTrackPolicy; zoom: 'lock' },
 	})
 	wm.setTransform(FLEET_HUD_OVERLAY_LAYER_ID, { x: panOffset, y: cameraY, scale: 1 })
 	wm.setCamera(FLEET_HUD_OVERLAY_LAYER_ID, { x: 0, y: 0, z: 1 })
@@ -183,16 +180,17 @@ export function projectFleetHudDocumentLeftWithWM(
 			},
 		},
 	})
-	return wm.translate({ x: docPageLeft, y: 0 }, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID).x
+	return projectFleetHudDocumentNearEdgeWithWM(wm, editor, docPageLeft, 'x')
 }
 
-/** The transposed twin of the projection above: where the document's TOP edge
- *  sits on screen. A talk anchors its layout to that the way a paper anchors
- *  its layout to the document's left. */
-export function projectFleetHudDocumentTopWithWM(
+/** Where the document's near edge on `axis` sits on screen. One projection for
+ *  either axis — which edge a layout anchors to is the caller's question, not a
+ *  different piece of geometry. */
+export function projectFleetHudDocumentNearEdgeWithWM(
 	wm: WMCore,
 	editor: FleetHudProjectionEditor,
-	docPageTop: number,
+	docPageNear: number,
+	axis: Axis,
 ): number {
 	ensureLayer(wm, FLEET_HUD_DOCUMENT_LAYER_ID, {
 		parent: FLEET_HUD_ROOT_LAYER_ID,
@@ -204,7 +202,8 @@ export function projectFleetHudDocumentTopWithWM(
 			},
 		},
 	})
-	return wm.translate({ x: 0, y: docPageTop }, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID).y
+	const point = axis === 'x' ? { x: docPageNear, y: 0 } : { x: 0, y: docPageNear }
+	return wm.translate(point, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID)[axis]
 }
 
 export function translateFleetHudDropPoint(

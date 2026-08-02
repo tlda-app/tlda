@@ -20,6 +20,12 @@ export function layoutOffset(userId: string, deviceId: string): { dx: number; dy
 /** Vertical spacing between two owners' fleet layouts. */
 const LANE_STEP = 20000
 
+/** How far ahead of the document's near edge a layout starts along the axis the
+ *  pages flow. Not observable — the HUD pins that axis to the screen, so this
+ *  cancels out of anything anyone sees. It is the stable base the lane
+ *  arithmetic below counts from. */
+export const CANONICAL_FLOW_LEAD = 1200
+
 function canonicalBaseY(editor: Editor): number {
   const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
   let minTop = Infinity
@@ -27,7 +33,7 @@ function canonicalBaseY(editor: Editor): number {
     const b = editor.getShapePageBounds(p.id)
     if (b && b.y < minTop) minTop = b.y
   }
-  return isFinite(minTop) ? minTop - 1200 : 0
+  return isFinite(minTop) ? minTop - CANONICAL_FLOW_LEAD : 0
 }
 
 function occupiedLanes(editor: Editor, myId: string, myDevice: string): { base: number; occupied: Set<number> } {

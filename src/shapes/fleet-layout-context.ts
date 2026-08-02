@@ -1,7 +1,8 @@
 import type { Editor } from 'tldraw'
 import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
-import { laneDy, layoutOffset } from './fleet-layout-geometry'
+import { CANONICAL_FLOW_LEAD, laneDy, layoutOffset } from './fleet-layout-geometry'
+import { crossAxis, documentFlowAxis, type Axis } from './document-flow-axis'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
 import { defaultFleetLayoutChatFilters } from './fleet-layout-seeding'
 import { currentVisibleViewportSize, singleChatViewportPanelSize } from './fleet-layout-sizing'
@@ -75,25 +76,30 @@ export function buildFleetLayoutPlanInput({
     : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
     : leftW + gap + rightW
 
-  // Skip: "the default positions should be the current behavior transposed. So
-  // the bottom of these shapes should be in default layouts computed relative to
-  // the top of the slide."
+  // The layout lives in the margin the document leaves, which is the margin
+  // ACROSS its flow: a document that runs down the canvas leaves room beside it,
+  // one that runs across leaves room above. Its far edge sits marginGap before
+  // the document's near edge; along the flow axis it simply aligns with the
+  // document. Skip: "the default computation is based on the distance between
+  // nearest lines — the margin for the document and the near edge for the
+  // layout."
   //
-  // Stacked pages: the content's RIGHT edge sits marginGap to the LEFT of the
-  // document, and the rest stacks further left — a portrait document leaves its
-  // margins beside it.
-  //
-  // Pages side by side: transpose it. The content's BOTTOM edge sits marginGap
-  // ABOVE the top of the slide, and it aligns with the slide horizontally rather
-  // than hanging off one end. A landscape document has no side margin to live
-  // in; the room is above it.
-  const flowsAcross = documentPagesFlowAcross(editor)
-  let anchorX = flowsAcross
-    ? docBounds.minLeft
-    : docBounds.minLeft - marginGap - leftContentW
-  let anchorY = flowsAcross
-    ? docBounds.minTop - marginGap - totalH
-    : docBounds.minTop - 1200
+  // One rule, stated on an axis. There is no paper case and no talk case here.
+  const flowAxis = documentFlowAxis(editor, getDocumentPageBounds)
+  const marginAxis = crossAxis(flowAxis)
+  const contentAcross = marginAxis === 'x' ? leftContentW : totalH
+  const docNear = marginAxis === 'x' ? docBounds.minLeft : docBounds.minTop
+  const acrossOrigin = docNear - marginGap - contentAcross
+
+  // Along the flow axis the layout just tracks the document's near edge. Note
+  // this coordinate is not observable: the HUD pins the flow axis to a position
+  // on screen, so whatever we choose here cancels out of what anyone sees. It
+  // exists so the canvas shapes sit somewhere sane and so the lane arithmetic
+  // below has a stable base — CANONICAL_FLOW_LEAD is that base, unchanged.
+  const alongOrigin = (flowAxis === 'x' ? docBounds.minLeft : docBounds.minTop) - CANONICAL_FLOW_LEAD
+
+  let anchorX = marginAxis === 'x' ? acrossOrigin : alongOrigin
+  let anchorY = marginAxis === 'y' ? acrossOrigin : alongOrigin
 
   // Push this (identity, device)'s whole layout into its own guaranteed-free
   // vertical lane so two owners' shapes can never overlap. dy bands owners
@@ -115,7 +121,7 @@ export function buildFleetLayoutPlanInput({
     anchorY,
     docMaxRight: docBounds.maxRight,
     docMaxBottom: docBounds.maxBottom,
-    pagesFlowAcross: flowsAcross,
+    flowAxis,
     dx,
     gap,
     leftW,
@@ -180,27 +186,8 @@ function getCurrentVisibleDocumentPlaceBounds(editor: Editor): DocumentPageBound
   }
 }
 
-/**
- * Do this document's pages sit side by side rather than stacked?
- *
- * Read from the pages themselves rather than from a format string: a deck lays
- * its slides out across the canvas, a paper stacks them down it, and anything
- * that arranges pages the same way should behave the same way without being
- * named. Undecidable with fewer than two pages, which correctly returns false —
- * a single page has no flow and the stacked default is the existing behaviour.
- */
-export function documentPagesFlowAcross(editor: Editor): boolean {
-  const bounds = getDocumentPageBounds(editor)
-  if (!bounds || bounds.pageShapes.length < 2) return false
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-  for (const ps of bounds.pageShapes) {
-    const b = editor.getShapePageBounds(ps.id)
-    if (!b) continue
-    if (b.x < minX) minX = b.x
-    if (b.x > maxX) maxX = b.x
-    if (b.y < minY) minY = b.y
-    if (b.y > maxY) maxY = b.y
-  }
-  if (!isFinite(minX) || !isFinite(minY)) return false
-  return (maxX - minX) > (maxY - minY)
+/** The axis this document's pages run along. See document-flow-axis.ts for the
+ *  rule everything about HUD placement is stated in. */
+export function documentPageFlowAxis(editor: Editor): Axis {
+  return documentFlowAxis(editor, getDocumentPageBounds)
 }

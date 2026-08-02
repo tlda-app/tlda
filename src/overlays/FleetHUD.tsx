@@ -14,25 +14,47 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } f
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { currentVisibleViewportSize, FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
 import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { documentPagesFlowAcross, getDocumentPageBounds } from '../shapes/fleet-layout-context'
+import { documentPageFlowAxis, getDocumentPageBounds } from '../shapes/fleet-layout-context'
+import { crossAxis, type Axis } from '../shapes/document-flow-axis'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor, type FleetHudDefaultAnchor } from './fleet-hud-anchor'
+
+/**
+ * Is the HUD still reachable on the axis it is pinned to?
+ *
+ * The pinned axis is the flow axis: the HUD holds a position on screen there
+ * while you move through the document, so losing it on that axis means the
+ * anchor no longer describes anything and should be re-derived. Across the flow
+ * it rides the document, so being off screen is just the document being scrolled
+ * away and must NOT trigger a re-derive.
+ */
+function hudStillReachable(
+  bounds: { x: number; y: number; w: number; h: number },
+  anchor: { panOffset: number; cameraY: number },
+  flowAxis: Axis,
+): boolean {
+  const near = flowAxis === 'x'
+    ? bounds.x + anchor.panOffset
+    : bounds.y + anchor.cameraY
+  const far = near + (flowAxis === 'x' ? bounds.w : bounds.h)
+  const screen = flowAxis === 'x' ? window.innerWidth : window.innerHeight
+  return far > 0 && near < screen
+}
 import {
   configureFleetHudOverlayLayer,
   ensureFleetHudLayers,
   FLEET_HUD_OVERLAY_LAYER_ID,
   FLEET_HUD_VIEWPORT_ID,
   installFleetHudResizeCursor,
-  projectFleetHudDocumentLeftWithWM,
-  projectFleetHudDocumentTopWithWM,
+  projectFleetHudDocumentNearEdgeWithWM,
   readFleetHudOverlayLayer,
 } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
@@ -389,7 +411,7 @@ export function FleetHUD({
     hudAnchorRef.current = anchor
     if (options.resetBaseCamera !== false) hudBaseCameraRef.current = mainEditor.getCamera()
     configureFleetHudOverlayLayer(hudWm, {
-      pagesFlowAcross: documentPagesFlowAcross(mainEditor),
+      flowAxis: documentPageFlowAxis(mainEditor),
       panOffset: anchor.panOffset,
       cameraY: anchor.cameraY,
       mainCamera: mainEditor.getCamera(),
@@ -425,49 +447,33 @@ export function FleetHUD({
   }, [resetFleetBoundsTracker])
 
   // Assemble the default anchor's inputs in one place: several call sites need
-  // the same projection of the document's edges, and the transposed branch reads
-  // the top edge as well as the left.
+  // the same projection of the document's near edge.
   const defaultAnchorForBounds = useCallback((bounds: ClipBounds): FleetHudDefaultAnchor | null => {
     const docBounds = getDocumentPageBounds(mainEditor)
     if (!docBounds || !isFinite(docBounds.minLeft) || !isFinite(docBounds.minTop)) return null
     const vp = currentVisibleViewportSize() ?? mainEditor.getViewportScreenBounds()
-    const off = layoutOffset(getHumanId(), getDeviceId())
+    const flowAxis = documentPageFlowAxis(mainEditor)
+    const marginAxis = crossAxis(flowAxis)
+    const docNear = marginAxis === 'x' ? docBounds.minLeft : docBounds.minTop
     return computeFleetHudDefaultAnchor({
       bounds,
-      docPageLeft: docBounds.minLeft,
-      docLeftScreen: projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, docBounds.minLeft),
-      docTopScreen: projectFleetHudDocumentTopWithWM(hudWm, mainEditor, docBounds.minTop),
-      layoutDx: off.dx,
-      topPad: FLEET_HUD_DEFAULT_TOP_PAD_PX,
+      docNearScreen: projectFleetHudDocumentNearEdgeWithWM(hudWm, mainEditor, docNear, marginAxis),
+      flowAxis,
+      screenPad: FLEET_HUD_DEFAULT_TOP_PAD_PX,
       marginGap: getLayoutReadabilityTokens(vp).marginGap,
-      pagesFlowAcross: documentPagesFlowAcross(mainEditor),
     })
   }, [hudWm, mainEditor])
 
-  // A stored anchor is only a position on the axis that is PINNED to the screen.
-  // The other axis is derived from the document, and a number stored for it is
-  // not a position at all -- it is last session's arithmetic.
+  // A stored anchor is a position the user chose, and it is restored as-is.
   //
-  // On a paper the pinned axis is y, which is what has always been stored, so a
-  // saved anchor is taken whole. On a talk the pinned axis is x: cameraY is "the
-  // layout's bottom edge, one marginGap above the top of the slide", recomputed
-  // from wherever the slide is now. Restoring a stored cameraY there puts the
-  // layout wherever the number happened to mean last time -- and an anchor
-  // written before the transposition stored it under the OLD meaning, "pin my
-  // top to this height on the screen", which lands the layout below the slide's
-  // top instead of above it. Skip: "you put them below the top of the slide, the
-  // same amount they should have be above."
-  //
-  // The stored panOffset is always kept: it is his position on the pinned axis
-  // and dropping it would silently move his layout. Only cameraY is replaced,
-  // and only when the document is measurable — if it isn't yet, the render pass
-  // below corrects it once bounds arrive.
-  const restoredAnchor = useCallback((saved: FleetHudAnchor): FleetHudAnchor => {
-    if (!documentPagesFlowAcross(mainEditor)) return saved
-    const bounds = readMaintainedFleetBounds() || fleetBounds
-    const derived = bounds ? defaultAnchorForBounds(bounds) : null
-    return { panOffset: saved.panOffset, cameraY: derived ? derived.cameraY : saved.cameraY }
-  }, [defaultAnchorForBounds, fleetBounds, mainEditor, readMaintainedFleetBounds])
+  // It cannot outlive the rule that produced it, because Skip's other rule
+  // handles that: "at the moment you instantiate default layout, you wipe any
+  // information about layout that exists." _createFleetLayoutInner deletes the
+  // anchor shape when it lays a default out, so a stored anchor is always one
+  // made under the current rule. An earlier version of this file special-cased
+  // the restore to work around an anchor written under an older meaning; that
+  // was compensating in one orientation for something the wipe already covers
+  // in all of them.
 
   useEffect(() => {
     if (!identityId) return
@@ -577,7 +583,7 @@ export function FleetHUD({
   if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
     const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
     if (anchor?.meta?.panOffset !== undefined) {
-      applyHudAnchor(restoredAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }), { syncViewport: false })
+      applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
     }
   }
   const activeTopPad = TOP_PAD
@@ -780,17 +786,11 @@ export function FleetHUD({
       latestBounds.w !== fleetBounds.w ||
       latestBounds.h !== fleetBounds.h
     if (hasFreshBounds) setFleetBounds(latestBounds)
-    // Same transposition as the render-path check below: on a talk the HUD is
-    // anchored above the slide and is legitimately off the top of the screen, so
-    // reachability is measured on the horizontal axis instead.
-    const projectedTop = latestBounds.y + hudCameraAnchor.cameraY
-    const projectedBottom = projectedTop + latestBounds.h
-    const projectedLeft = latestBounds.x + hudCameraAnchor.panOffset
-    const projectedRight = projectedLeft + latestBounds.w
-    const stillReachable = documentPagesFlowAcross(mainEditor)
-      ? projectedRight > 0 && projectedLeft < window.innerWidth
-      : projectedBottom > 0 && projectedTop < window.innerHeight
-    if (stillReachable) return
+    // Reachability is measured on the axis the HUD is PINNED to, which is the
+    // flow axis. Across the flow the HUD rides the document, so being off screen
+    // there just means the document is scrolled away — that is the layout being
+    // right, not lost, and re-deriving would throw away a position the user set.
+    if (hudStillReachable(latestBounds, hudCameraAnchor, documentPageFlowAxis(mainEditor))) return
     if (userPannedRef.current) return
     ignoreSavedAnchorRef.current = true
     recenterHudForBounds(latestBounds)
@@ -822,16 +822,15 @@ export function FleetHUD({
   // travels on — X on a paper, Y on a talk.
   useEffect(() => {
     if (!expanded) return
-    // The axis the HUD follows. A paper's HUD rides the document sideways, so a
-    // pure vertical scroll is not its business; a talk's rides it up and down,
-    // so a pure sideways pan is not. Read once per subscription rather than per
-    // camera tick — documentPagesFlowAcross walks every page shape, and the
-    // effect re-runs when the pages arrive (docShapesReady).
-    const travelsVertically = documentPagesFlowAcross(mainEditor)
+    // The HUD rides the document across its flow, so that is the axis whose
+    // camera changes are its business — a move along the flow leaves it where it
+    // is. Read once per subscription rather than per camera tick: the predicate
+    // walks every page shape, and the effect re-runs when the pages arrive.
+    const rideAxis = crossAxis(documentPageFlowAxis(mainEditor))
     const travelAxisMoved = (
       cam: { x: number; y: number },
       last: { x: number; y: number },
-    ) => (travelsVertically ? cam.y !== last.y : cam.x !== last.x)
+    ) => cam[rideAxis] !== last[rideAxis]
     const initialCamera = mainEditor.getCamera()
     let lastCam: { x: number; y: number; z: number } = {
       x: initialCamera.x,
@@ -872,7 +871,7 @@ export function FleetHUD({
           }
         }
         configureFleetHudOverlayLayer(hudWm, {
-          pagesFlowAcross: documentPagesFlowAcross(mainEditor),
+          flowAxis: documentPageFlowAxis(mainEditor),
           panOffset: hudAnchorRef.current.panOffset,
           cameraY: hudAnchorRef.current.cameraY,
           mainCamera: cam,
@@ -931,17 +930,16 @@ export function FleetHUD({
       ]
       for (const r of arrivals as any[]) {
         if (isMyAnchor(r) && r.meta?.panOffset !== undefined) {
-          const restored = restoredAnchor({ panOffset: r.meta.panOffset, cameraY: r.meta.cameraY })
           const hudCameraAnchor = readHudCameraAnchor()
-          if (hudCameraAnchor?.panOffset !== restored.panOffset || hudCameraAnchor?.cameraY !== restored.cameraY) {
-            applyHudAnchor(restored)
+          if (hudCameraAnchor?.panOffset !== r.meta.panOffset || hudCameraAnchor?.cameraY !== r.meta.cameraY) {
+            applyHudAnchor({ panOffset: r.meta.panOffset, cameraY: r.meta.cameraY })
           }
           break
         }
       }
     }, { source: 'all', scope: 'document' })
     return unsub
-  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds, restoredAnchor])
+  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside
@@ -1269,23 +1267,11 @@ export function FleetHUD({
   if (!baseAnchor) return null
   // Read once for the render pass — it walks every page shape, and this render
   // path needs the same answer twice.
-  const renderPagesFlowAcross = documentPagesFlowAcross(mainEditor)
-  // On a talk cameraY is a function of where the slide is, not a position, so it
-  // is recomputed rather than carried. This is what corrects an anchor restored
-  // before the document was measurable, and it keeps the camera watcher — which
-  // reads this same ref — from putting a stale value back.
-  let effectiveAnchor = baseAnchor
-  if (renderPagesFlowAcross) {
-    const derived = defaultAnchorForBounds(activeFleetBounds)
-    if (derived && derived.cameraY !== baseAnchor.cameraY) {
-      effectiveAnchor = { panOffset: baseAnchor.panOffset, cameraY: derived.cameraY }
-      hudAnchorRef.current = effectiveAnchor
-    }
-  }
+  const renderFlowAxis = documentPageFlowAxis(mainEditor)
   configureFleetHudOverlayLayer(hudWm, {
-    pagesFlowAcross: renderPagesFlowAcross,
-    panOffset: effectiveAnchor.panOffset,
-    cameraY: effectiveAnchor.cameraY,
+    flowAxis: renderFlowAxis,
+    panOffset: baseAnchor.panOffset,
+    cameraY: baseAnchor.cameraY,
     mainCamera: mainEditor.getCamera(),
     baseCamera: hudBaseCameraRef.current,
   })
@@ -1293,21 +1279,7 @@ export function FleetHUD({
   if (!renderHudCameraAnchor) return null
 
   if (renderHudCameraAnchor !== null) {
-    const projectedTop = activeFleetBounds.y + renderHudCameraAnchor.cameraY
-    const projectedBottom = projectedTop + activeFleetBounds.h
-    const projectedLeft = activeFleetBounds.x + renderHudCameraAnchor.panOffset
-    const projectedRight = projectedLeft + activeFleetBounds.w
-    // Which axis "off screen" is measured on transposes with the layout. On a
-    // paper the HUD is pinned to a screen height, so losing it vertically means
-    // the anchor is stale. On a talk the HUD is anchored above the slide, so it
-    // is off the top of the screen whenever you are zoomed into a slide — that
-    // is the layout being right, not lost, and re-deriving there would wipe a
-    // position he set. The screen-pinned axis is the horizontal one.
-    const stillReachable = renderPagesFlowAcross
-      ? projectedRight > 0 && projectedLeft < window.innerWidth
-      : (projectedBottom > 0 && projectedTop < window.innerHeight)
-        && (projectedLeft >= 0 && projectedRight <= window.innerWidth)
-    if (!userPannedRef.current && !stillReachable) {
+    if (!userPannedRef.current && !hudStillReachable(activeFleetBounds, renderHudCameraAnchor, renderFlowAxis)) {
       const anchor = defaultAnchorForBounds(activeFleetBounds)
       if (anchor) {
         applyHudAnchor(anchor, { syncViewport: false })
