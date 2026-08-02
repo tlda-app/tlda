@@ -99,15 +99,33 @@ export function configureFleetHudOverlayLayer(
 		cameraY,
 		mainCamera = { x: 0, y: 0, z: 1 },
 		baseCamera = mainCamera,
+		pagesFlowAcross = false,
 	}: {
 		panOffset: number
 		cameraY: number
 		mainCamera?: Camera
 		baseCamera?: Camera
+		/** True when the document's pages are laid out side by side rather than
+		 *  stacked — a talk. See the axis note below. */
+		pagesFlowAcross?: boolean
 	},
 ): void {
+	// The HUD rides this layer, so whichever axis follows the main camera is the
+	// axis the HUD travels on. Skip: "a HUD working in the opposite orientation,
+	// because the talk is in the opposite orientation."
+	//
+	// A paper is portrait and you move DOWN it, so x follows the camera (the HUD
+	// keeps its place beside the document) and the vertical offset holds it near
+	// the top of the screen. A talk is landscape and you move ACROSS it —
+	// navigateToSlide sets the camera, and x changes per slide — so following x
+	// anchors the HUD to slide one and every slide after that leaves it behind.
+	//
+	// So for a talk the horizontal axis stops following and the HUD stays with
+	// you as you move sideways. Same rule read off the page layout rather than a
+	// check for "is this a talk": pages that flow across get one, pages that flow
+	// down get the other.
 	wm.setCamera(FLEET_HUD_MAIN_CAMERA_LAYER_ID, {
-		x: mainCamera.x - baseCamera.x,
+		x: pagesFlowAcross ? 0 : mainCamera.x - baseCamera.x,
 		y: mainCamera.y - baseCamera.y,
 		z: mainCamera.z,
 	})

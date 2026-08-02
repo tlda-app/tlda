@@ -17,7 +17,7 @@ import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../flee
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { getDocumentPageBounds } from '../shapes/fleet-layout-context'
+import { documentPagesFlowAcross, getDocumentPageBounds } from '../shapes/fleet-layout-context'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
@@ -387,6 +387,7 @@ export function FleetHUD({
     hudAnchorRef.current = anchor
     if (options.resetBaseCamera !== false) hudBaseCameraRef.current = mainEditor.getCamera()
     configureFleetHudOverlayLayer(hudWm, {
+      pagesFlowAcross: documentPagesFlowAcross(mainEditor),
       panOffset: anchor.panOffset,
       cameraY: anchor.cameraY,
       mainCamera: mainEditor.getCamera(),
@@ -815,6 +816,7 @@ export function FleetHUD({
           }
         }
         configureFleetHudOverlayLayer(hudWm, {
+          pagesFlowAcross: documentPagesFlowAcross(mainEditor),
           panOffset: hudAnchorRef.current.panOffset,
           cameraY: hudAnchorRef.current.cameraY,
           mainCamera: cam,
@@ -1218,6 +1220,7 @@ export function FleetHUD({
   const baseAnchor = hudAnchorRef.current
   if (!baseAnchor) return null
   configureFleetHudOverlayLayer(hudWm, {
+    pagesFlowAcross: documentPagesFlowAcross(mainEditor),
     panOffset: baseAnchor.panOffset,
     cameraY: baseAnchor.cameraY,
     mainCamera: mainEditor.getCamera(),

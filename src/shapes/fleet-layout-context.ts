@@ -155,3 +155,28 @@ function getCurrentVisibleDocumentPlaceBounds(editor: Editor): DocumentPageBound
     maxRight: bounds.x + bounds.w,
   }
 }
+
+/**
+ * Do this document's pages sit side by side rather than stacked?
+ *
+ * Read from the pages themselves rather than from a format string: a deck lays
+ * its slides out across the canvas, a paper stacks them down it, and anything
+ * that arranges pages the same way should behave the same way without being
+ * named. Undecidable with fewer than two pages, which correctly returns false —
+ * a single page has no flow and the stacked default is the existing behaviour.
+ */
+export function documentPagesFlowAcross(editor: Editor): boolean {
+  const bounds = getDocumentPageBounds(editor)
+  if (!bounds || bounds.pageShapes.length < 2) return false
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const ps of bounds.pageShapes) {
+    const b = editor.getShapePageBounds(ps.id)
+    if (!b) continue
+    if (b.x < minX) minX = b.x
+    if (b.x > maxX) maxX = b.x
+    if (b.y < minY) minY = b.y
+    if (b.y > maxY) maxY = b.y
+  }
+  if (!isFinite(minX) || !isFinite(minY)) return false
+  return (maxX - minX) > (maxY - minY)
+}
