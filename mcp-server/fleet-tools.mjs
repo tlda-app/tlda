@@ -75,7 +75,7 @@ import {
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs';
 import { formatLoginMarker } from '../agent-runtime/daemon-jsonl-hot-path.mjs';
 import { resolveMintFacts } from '../daemon/mint-store.mjs';
-import { matchesLocalParentThread } from './lib/native-parent-thread.mjs';
+import { matchesLocalParentThread, parentTranscriptContainsToolUse } from './lib/native-parent-thread.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -2079,6 +2079,7 @@ export function inboxViewForArgs(args = {}) {
 async function nativeChildBinding(threadId, toolUseId, { retry = false } = {}) {
   if ((!threadId && !toolUseId) || !PARENT_AGENT_ID) return null;
   if (threadId && isLocalParentThread(threadId)) return null;
+  if (toolUseId && isLocalParentToolUse(toolUseId)) return null;
   const selectors = [
     threadId ? { value: threadId, kind: 'native' } : null,
     toolUseId ? { value: toolUseId, kind: 'tool-use' } : null,
@@ -2100,17 +2101,24 @@ async function nativeChildBinding(threadId, toolUseId, { retry = false } = {}) {
   } while (true);
 }
 
-let _parentMintSessionId = null;
+let _parentMintFacts = null;
+function parentMintFacts() {
+  if (_parentMintFacts) return _parentMintFacts;
+  const mintId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || PARENT_AGENT_ID;
+  const mintStoreFile = path.join(
+    process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'),
+    'daemon-mints.sqlite',
+  );
+  _parentMintFacts = resolveMintFacts(mintStoreFile, mintId) || {};
+  return _parentMintFacts;
+}
+
 function isLocalParentThread(threadId) {
-  if (!_parentMintSessionId) {
-    const mintId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || PARENT_AGENT_ID;
-    const mintStoreFile = path.join(
-      process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda'),
-      'daemon-mints.sqlite',
-    );
-    _parentMintSessionId = resolveMintFacts(mintStoreFile, mintId)?.sessionId || null;
-  }
-  return matchesLocalParentThread(threadId, CLAUDE_SESSION, _parentMintSessionId);
+  return matchesLocalParentThread(threadId, CLAUDE_SESSION, parentMintFacts().sessionId || null);
+}
+
+function isLocalParentToolUse(toolUseId) {
+  return parentTranscriptContainsToolUse(parentMintFacts().sessionPath || null, toolUseId);
 }
 
 export async function handleFleetTool(name, args, context = {}) {
