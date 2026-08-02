@@ -3643,6 +3643,9 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
      should stay within the bounds of the composer... they no longer feel like
      they're in the composer. They actually go outside a little bit." */
   top: 0;
+  /* 11px is the composer's own font-size, pinned here so `1.4em` resolves
+     against the field rather than whatever the rail happens to inherit. */
+  font-size: 11px;
   height: calc(1.4em + 10px);
   display: flex;
   align-items: center;
@@ -3708,11 +3711,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    to its original size and only phone mode scales. Scaling rather than resizing
    keeps them out of layout, so the composer's height is untouched either way. */
 body.phone-mode .fleet-chat-shape .fleet-composer-gutter svg {
-  transform: scale(1.5);
+  transform: scale(1.2);
   transform-origin: center;
 }
-body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: 13.5px; }
-body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: 19.5px; }
+body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: 10.8px; }
+body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: 15.6px; }
 .fleet-chat-shape .corner-button-slider-preview {
   position: absolute;
   top: -20px;
