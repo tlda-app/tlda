@@ -1,4 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
@@ -112,11 +113,26 @@ function readProjectSourceSearchEntries(project) {
   })
 }
 
+// Tokenizing is ~10s per MB and, measured with phase timers, 99% of the cost of
+// documentAssociations — 134,118ms of a 135,610ms call, against 284ms for the
+// pairwise loop that looks like the expensive part. The canvas re-posts the same
+// documents every time it reconnects, so without this each reopen pays it again.
+// Keyed on content, so a hit returns the identical token array rather than an
+// approximation, and associations are unchanged.
+const _tokenCache = new Map()
+const TOKEN_CACHE_MAX = 300
 function documentAssociationTokens(text) {
-  return nlp.readDoc(text)
+  const key = createHash('sha1').update(text).digest('base64')
+  const cached = _tokenCache.get(key)
+  if (cached) return cached
+  const tokens = nlp.readDoc(text)
     .tokens()
     .filter(token => token.out(nlp.its.type) === 'word' && !token.out(nlp.its.stopWordFlag))
     .out(nlp.its.stem)
+  // Bounded so a long-lived worker cannot grow without limit; oldest key first.
+  if (_tokenCache.size >= TOKEN_CACHE_MAX) _tokenCache.delete(_tokenCache.keys().next().value)
+  _tokenCache.set(key, tokens)
+  return tokens
 }
 
 function materializedSourceFile(project, outputFile) {
