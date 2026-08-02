@@ -22,7 +22,7 @@ import path from 'path';
 import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
-import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, addressTerms, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../../shared/subscriptions.mjs';
 import { allTermFtsQuery, anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { parseUnifiedFilter } from '../../shared/unified-filter-grammar.mjs';
@@ -4319,7 +4319,7 @@ export class FleetStore {
       // hydrated, so filters that don't reference `my_labels` — effectively all
       // of them — now cost no agent load at all.
       const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.agent_id) : [];
-      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels, subscriberId: tap.agent_id });
+      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels, subscriberIdentity: this._agentIdentityById(tap.agent_id) });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
@@ -4340,7 +4340,14 @@ export class FleetStore {
   // What must never happen is silence nobody chose. That is guarded where it
   // actually arises — a login that cannot read its config is loud — not by a
   // floor here that would make the whole mechanism unfalsifiable.
-  resolveSubscriptionDeliveries(senderId, recipientId, eventType) {
+  // `addressAst` is the expression the sender wrote. It has always been passed
+  // by the caller and never accepted here — four arguments handed over, three in
+  // the signature — so every subscription was matched against the recipient's own
+  // labels instead of against the address. That is the inside-out part: `to:X`
+  // answered "does this recipient carry X" rather than "was this addressed to X",
+  // so a broadcast to `awake` fired an awake agent's personal-mail subscription
+  // exactly as hard as its group one.
+  resolveSubscriptionDeliveries(senderId, recipientId, eventType, addressAst = null) {
     if (!this._resolvableSubscriptionWiretapCache) {
       this._resolvableSubscriptionWiretapCache = this._getResolvableSubscriptionWiretaps.all().map(r => {
         const tap = this._hydrateWiretap(r)
@@ -4360,6 +4367,9 @@ export class FleetStore {
     if (taps.length === 0) return matched;
     const senderLabels = this._agentLabelsById(senderId);
     const recipientLabels = this._agentLabelsById(recipientId);
+    // Computed once per event rather than per subscription — this runs on the
+    // main thread for every chat, and there can be thousands of taps.
+    const envelope = addressAst ? addressTerms(addressAst) : null;
 
     for (const tap of taps) {
       // You are not notified about what you yourself sent.
@@ -4393,7 +4403,8 @@ export class FleetStore {
       // grammar is untouched: `my_labels` still means the subscriber's labels,
       // and a hand-written subscription using it means what it always meant.
       const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.owner) : [];
-      if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels, subscriberId: tap.owner })) continue;
+      const subscriberIdentity = this._agentIdentityById(tap.owner);
+      if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels, subscriberIdentity, envelope })) continue;
       // The recipient's own matching subscription IS its delivery. There is no
       // longer a floor beside it promising something different, so `direct` is
       // just "this match is the addressee's own", which is what decides the
@@ -4417,6 +4428,16 @@ export class FleetStore {
   // hydrated agents (alive and dead) and is kept current by _syncAgentRegistry
   // on every agent change, so this adds no second invalidation path: it uses the
   // one that already exists.
+  // Just the two strings that ARE this agent — its id and its friendly name.
+  // `me` resolves against these rather than the full label set, which also holds
+  // groups and status and would make `to:me` match a message sent to a crowd.
+  _agentIdentityById(agentId) {
+    if (!agentId) return [];
+    this._ensureAgentRegistryLoaded();
+    const agent = this._agentRegistry.get(agentId);
+    return [agentId, agent?.friendly_name].filter(Boolean);
+  }
+
   _agentLabelsById(agentId) {
     if (!agentId) return [];
     this._ensureAgentRegistryLoaded();

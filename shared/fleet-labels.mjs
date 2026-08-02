@@ -165,35 +165,84 @@ export function astReadsSubscriberLabels(ast) {
   }
 }
 
-export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subscriberLabels = [], subscriberId = null } = {}) {
+/**
+ * The terms a sender actually wrote in an address.
+ *
+ * An address is an expression — `awake`, `recon-lead`, `helm | skip`,
+ * `awake & !goose` — and this is the set of labels it names, ignoring anything
+ * under a negation. `!goose` says who is excluded, not who was written to, so a
+ * subscription to `goose` must not match a message that went out of its way to
+ * exclude them.
+ */
+export function addressTerms(ast) {
+  const out = new Set()
+  const walk = (n, negated) => {
+    if (!n) return
+    switch (n.t) {
+      case 'lit': if (!negated) out.add(n.v); return
+      case 'not': return walk(n.x, !negated)
+      case 'and':
+      case 'or': walk(n.l, negated); walk(n.r, negated); return
+      case 'to':
+      case 'from':
+      case 'involving': return walk(n.x, negated)
+      default: return
+    }
+  }
+  walk(ast, false)
+  return out
+}
+
+/**
+ * `envelope` is the address the sender wrote, from `addressTerms`. When it is
+ * supplied, `to:` asks what the message was addressed to; without it, `to:` falls
+ * back to what the recipient happens to carry.
+ *
+ * Those are different questions and only the first is what the words say. Asking
+ * the second makes a broadcast to `awake` match every subscription an awake agent
+ * holds — including one meant for its own mail — because by then the address is
+ * gone and all that is left is a list of people who received it. Skip's image:
+ * the letter went to a building, and we were reading the tenant list instead of
+ * the envelope.
+ */
+export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subscriberLabels = [], subscriberIdentity = [], envelope = null } = {}) {
   if (!ast) return true
   const from = fromLabels instanceof Set ? fromLabels : new Set(fromLabels)
-  const to = toLabels instanceof Set ? toLabels : new Set(toLabels)
+  const recipient = toLabels instanceof Set ? toLabels : new Set(toLabels)
+  const to = envelope || recipient
   const subscriber = subscriberLabels instanceof Set ? subscriberLabels : new Set(subscriberLabels)
+  const identity = subscriberIdentity instanceof Set ? subscriberIdentity : new Set(subscriberIdentity)
   const testLeaf = (tok) => {
     if (tok.startsWith('to:')) return to.has(tok.slice(3))
     if (tok.startsWith('from:')) return from.has(tok.slice(5))
     return from.has(tok) || to.has(tok)
   }
+  // Against an envelope the question is "did they write something I answer to",
+  // so a single named term is enough — `some`, not `every`. Against a recipient's
+  // own label set it has to stay `every`, because there the test is standing in
+  // for "this addressee is me" and any shared status label would otherwise make
+  // every agent match every other one, which is the wiretap this had before.
+  const namesAny = (candidates, labels) =>
+    envelope
+      ? [...candidates].some(label => labels.has(label))
+      : (candidates.size > 0 && [...candidates].every(label => labels.has(label)))
   const agentExpr = (n, labels) => {
     switch (n.t) {
       case 'lit': return n.v === 'my_labels'
-        ? (subscriber.size > 0 && [...subscriber].every(label => labels.has(label)))
+        ? namesAny(subscriber, labels)
         : labels.has(n.v)
-      // `me` is the subscriber, not a label spelled "me".
+      // `me` is the subscriber, not a label spelled "me". It read
+      // `labels.has('me')` — a literal token test — so `to:me` matched only an
+      // agent carrying a label spelled `me`, which is nobody. The token resolves
+      // correctly in search and history, so it looked implemented everywhere it
+      // was visible and was inert in the one place delivery is decided.
       //
-      // It read `labels.has('me')` — a literal token test, so `to:me` matched
-      // only an agent that happened to carry the label `me`, which is nobody. The
-      // token resolves correctly in search and history, so it looked implemented
-      // everywhere it was visible and was a stub in the one place delivery is
-      // decided.
-      //
-      // Tested against the id rather than the label set, because the id is the
-      // only thing about an agent that never changes. Names and labels both move,
-      // and a subscription anchored to a name follows the name to whoever holds
-      // it next.
-      case 'me': return !!subscriberId && labels.has(subscriberId)
-      case 'my_labels': return subscriber.size > 0 && [...subscriber].every(label => labels.has(label))
+      // The subscriber's identity is its name and its id together, because both
+      // are ways of writing the same agent. Anchoring to one of them would let
+      // the meaning of a name and the meaning of an id come apart, and they are
+      // the same agent.
+      case 'me': return namesAny(identity, labels)
+      case 'my_labels': return namesAny(subscriber, labels)
       case 'not': return !agentExpr(n.x, labels)
       case 'and': return agentExpr(n.l, labels) && agentExpr(n.r, labels)
       case 'or': return agentExpr(n.l, labels) || agentExpr(n.r, labels)
