@@ -45,19 +45,16 @@ test('the hidden middle is present, not another ellipsis', () => {
 
 // Skip: "it's supposed to fucking render threads at ... 16 lines tall. With a
 // fucking expand button, but it's rendering them like arbitrarily fucking tall."
-test('the card is bounded by the fold setting, and 0 means never fold', () => {
-  const bounded = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread: 16 } })
-  assert.match(bounded, /pretty-thread-bounded/)
-  assert.match(bounded, /max-height:24\.0em/)
-  // The card itself is the toggle -- click to expand, click to collapse -- and
-  // it leaves the gap marker's click alone.
-  assert.match(bounded, /onclick=/)
-  assert.match(bounded, /pretty-expand-btn'\)\)/)
-
-  const unbounded = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread: 0 } })
-  assert.doesNotMatch(unbounded, /pretty-thread-bounded/)
-  assert.doesNotMatch(unbounded, /max-height/)
-  assert.doesNotMatch(unbounded, /onclick=/)
+// Skip, on the card that clipped itself and expanded on a click: "there's no
+// fucking expand button... It's literally click to expand to something you can
+// expand." One expand, and it is the gap marker.
+test('the card has no height bound and no click of its own', () => {
+  for (const thread of [0, 16]) {
+    const html = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread } })
+    assert.doesNotMatch(html, /max-height/)
+    assert.doesNotMatch(html, /onclick=/)
+    assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
+  }
 })
 
 // The search card's shell -- its open/collapse button and its "inspected" line
