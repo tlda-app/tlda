@@ -9,7 +9,12 @@
 // real directional move with no simultaneous height change.
 
 export const FOLLOW_BOTTOM_EPS = 120 // absorbs the ~40px status footer below the last data item
-export const UP_JITTER_EPS = 4 // ignore sub-pixel / rounding scroll noise
+// Measured, not guessed. 24 hours of follow-off records from a live session:
+// genuine scroll-ups are moves over 20px that leave the bottom (129 of 155),
+// while what dropped the reader off follow was a 5-to-8 pixel drift with the
+// content height unchanged — the virtualizer and the browser settling scroll
+// position. At 4px this sat below the noise floor of the thing it measures.
+export const UP_JITTER_EPS = 20
 export const FOLLOW_CONVERGENCE_GAP = 200
 export const TRUE_BOTTOM_EPS = 8
 
@@ -27,7 +32,14 @@ export function decideFollowTransition(sample, state) {
 
   // up-scroll: top fell past the jitter eps AND content didn't shrink (a shrink
   // clamps scrollTop down without the user moving — not a real scroll-up).
-  const movedUp = top < lastTop - UP_JITTER_EPS && !shrank
+  // ...and it has to actually leave the bottom. You cannot scroll up and still
+  // be at the bottom: 386 of the 1045 recorded follow-offs left the reader at or
+  // PAST it, one as far as gap -187, which is not a position anyone can scroll
+  // to. Those are the browser reconciling an over-scrolled position, and the
+  // reader was sitting still at the tail each time.
+  // NOT isTrueBottomGap, which is symmetric: gap -187 is 187 away by absolute
+  // value and would slip through. Past the bottom is still at the bottom.
+  const movedUp = top < lastTop - UP_JITTER_EPS && !shrank && gap > TRUE_BOTTOM_EPS
   // down-to-bottom: top rose past the jitter eps to within EPS of the true
   // bottom. The shrink case this once guarded — a window shrink collapsing the
   // gap, content rather than the user returning — cannot reach here: a shrink

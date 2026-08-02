@@ -86,3 +86,35 @@ test('hard lock ignores scroll intent entirely', () => {
   )
   assert.deepEqual(out, { scrolledUp: false, action: 'none' })
 })
+
+// The live-session findings. Numbers are real records from client.log.
+
+test('a few pixels of drift at the bottom does not stop follow', () => {
+  // 250 recorded follow-offs looked like this: the reader at the tail, an 8px
+  // move, content height unchanged. The virtualizer settling, not a person.
+  const out = decideFollowTransition(
+    { top: 20864, height: 21370, clientHeight: 497, lastTop: 20872, lastHeight: 21370 },
+    FOLLOWING,
+  )
+  assert.deepEqual(out, { scrolledUp: false, action: 'none' })
+})
+
+test('a position past the bottom is not a scroll up', () => {
+  // gap -187: the browser reconciling an over-scrolled position. Nobody can
+  // scroll to a negative gap, so this can only be content, never intent.
+  const out = decideFollowTransition(
+    { top: 21135, height: 21445, clientHeight: 497, lastTop: 21141, lastHeight: 21445 },
+    FOLLOWING,
+  )
+  assert.deepEqual(out, { scrolledUp: false, action: 'none' })
+})
+
+test('a real scroll up away from the bottom still stops follow', () => {
+  // 129 of the 155 genuine scroll-ups: a move over 20px that leaves the tail.
+  // This is what the whole mechanism exists for and it must keep working.
+  const out = decideFollowTransition(
+    { top: 20500, height: 21370, clientHeight: 497, lastTop: 20872, lastHeight: 21370 },
+    FOLLOWING,
+  )
+  assert.deepEqual(out, { scrolledUp: true, action: 'follow-off' })
+})
