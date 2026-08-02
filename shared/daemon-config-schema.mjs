@@ -34,6 +34,11 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
+  // The subscription slots every agent is minted with, and how loud each one
+  // starts. Read by the server at mint. It belongs here rather than in
+  // daemon.yaml because the server is not allowed to read daemon.yaml, and
+  // minting happens on the server.
+  'subscriptions',
   // IANA zone name (e.g. "America/New_York") that human-readable times render
   // in. DISPLAY ONLY — stored timestamps stay UTC. Read by getDisplayTimeZone()
   // in shared/display-time.mjs. Absent = render in the host machine's own zone.
@@ -149,6 +154,21 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
   for (const key of ['authDisabled', 'tokensFromEnvironmentOnly']) {
     if (config[key] !== undefined && typeof config[key] !== 'boolean') {
       throw new Error(`${label}: "${key}" must be a boolean`)
+    }
+  }
+  // A malformed slot list is refused at load rather than at mint. An agent that
+  // comes up with no subscriptions is silent — nothing wakes it and the sender
+  // gets no receipt saying so — and that is the failure this key exists to
+  // prevent, so it must not be reachable by a typo.
+  if (config.subscriptions !== undefined) {
+    if (!Array.isArray(config.subscriptions)) {
+      throw new Error(`${label}: "subscriptions" must be a list of { query, policy }`)
+    }
+    for (const entry of config.subscriptions) {
+      const query = typeof entry === 'string' ? entry : entry?.query
+      if (typeof query !== 'string' || !query.trim()) {
+        throw new Error(`${label}: every "subscriptions" entry needs a nonempty query`)
+      }
     }
   }
   return config

@@ -370,6 +370,19 @@ deepgramBridgeUrl: ws://tlda-voice.internal:8180
 # DISPLAY ONLY — stored timestamps stay UTC. Absent = this machine's own zone.
 # timezone: America/New_York
 
+# The subscription slots every agent is minted with, and how loud each starts.
+# Two kinds of being talked to: someone addressed me, or someone addressed a set
+# I am in. An agent turns a slot down to batch(30s) or hold; nothing turns it
+# back up, and the slot is never removed, so there is always an answer to "why
+# didn't they get it".
+#
+# Absent = both slots on immediate. An agent with no slots hears nothing at all.
+# subscriptions:
+#   - query: to:me
+#     policy: immediate
+#   - query: to:my_labels
+#     policy: immediate
+
 # How many document builds run at once, and build ordering across projects.
 # buildMaxConcurrency: 2
 # buildPriority: []
