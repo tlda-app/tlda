@@ -424,6 +424,51 @@ export function FleetHUD({
     return resetFleetBoundsTracker()
   }, [resetFleetBoundsTracker])
 
+  // Assemble the default anchor's inputs in one place: several call sites need
+  // the same projection of the document's edges, and the transposed branch reads
+  // the top edge as well as the left.
+  const defaultAnchorForBounds = useCallback((bounds: ClipBounds): FleetHudDefaultAnchor | null => {
+    const docBounds = getDocumentPageBounds(mainEditor)
+    if (!docBounds || !isFinite(docBounds.minLeft) || !isFinite(docBounds.minTop)) return null
+    const vp = currentVisibleViewportSize() ?? mainEditor.getViewportScreenBounds()
+    const off = layoutOffset(getHumanId(), getDeviceId())
+    return computeFleetHudDefaultAnchor({
+      bounds,
+      docPageLeft: docBounds.minLeft,
+      docLeftScreen: projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, docBounds.minLeft),
+      docTopScreen: projectFleetHudDocumentTopWithWM(hudWm, mainEditor, docBounds.minTop),
+      layoutDx: off.dx,
+      topPad: FLEET_HUD_DEFAULT_TOP_PAD_PX,
+      marginGap: getLayoutReadabilityTokens(vp).marginGap,
+      pagesFlowAcross: documentPagesFlowAcross(mainEditor),
+    })
+  }, [hudWm, mainEditor])
+
+  // A stored anchor is only a position on the axis that is PINNED to the screen.
+  // The other axis is derived from the document, and a number stored for it is
+  // not a position at all -- it is last session's arithmetic.
+  //
+  // On a paper the pinned axis is y, which is what has always been stored, so a
+  // saved anchor is taken whole. On a talk the pinned axis is x: cameraY is "the
+  // layout's bottom edge, one marginGap above the top of the slide", recomputed
+  // from wherever the slide is now. Restoring a stored cameraY there puts the
+  // layout wherever the number happened to mean last time -- and an anchor
+  // written before the transposition stored it under the OLD meaning, "pin my
+  // top to this height on the screen", which lands the layout below the slide's
+  // top instead of above it. Skip: "you put them below the top of the slide, the
+  // same amount they should have be above."
+  //
+  // The stored panOffset is always kept: it is his position on the pinned axis
+  // and dropping it would silently move his layout. Only cameraY is replaced,
+  // and only when the document is measurable — if it isn't yet, the render pass
+  // below corrects it once bounds arrive.
+  const restoredAnchor = useCallback((saved: FleetHudAnchor): FleetHudAnchor => {
+    if (!documentPagesFlowAcross(mainEditor)) return saved
+    const bounds = readMaintainedFleetBounds() || fleetBounds
+    const derived = bounds ? defaultAnchorForBounds(bounds) : null
+    return { panOffset: saved.panOffset, cameraY: derived ? derived.cameraY : saved.cameraY }
+  }, [defaultAnchorForBounds, fleetBounds, mainEditor, readMaintainedFleetBounds])
+
   useEffect(() => {
     if (!identityId) return
     let cancelled = false
@@ -532,30 +577,10 @@ export function FleetHUD({
   if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
     const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
     if (anchor?.meta?.panOffset !== undefined) {
-      applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
+      applyHudAnchor(restoredAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }), { syncViewport: false })
     }
   }
   const activeTopPad = TOP_PAD
-
-  // Assemble the default anchor's inputs in one place: three call sites need the
-  // same projection of the document's edges, and the transposed branch reads the
-  // top edge as well as the left.
-  const defaultAnchorForBounds = useCallback((bounds: ClipBounds): FleetHudDefaultAnchor | null => {
-    const docBounds = getDocumentPageBounds(mainEditor)
-    if (!docBounds || !isFinite(docBounds.minLeft) || !isFinite(docBounds.minTop)) return null
-    const vp = currentVisibleViewportSize() ?? mainEditor.getViewportScreenBounds()
-    const off = layoutOffset(getHumanId(), getDeviceId())
-    return computeFleetHudDefaultAnchor({
-      bounds,
-      docPageLeft: docBounds.minLeft,
-      docLeftScreen: projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, docBounds.minLeft),
-      docTopScreen: projectFleetHudDocumentTopWithWM(hudWm, mainEditor, docBounds.minTop),
-      layoutDx: off.dx,
-      topPad: activeTopPad,
-      marginGap: getLayoutReadabilityTokens(vp).marginGap,
-      pagesFlowAcross: documentPagesFlowAcross(mainEditor),
-    })
-  }, [activeTopPad, hudWm, mainEditor])
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
@@ -906,16 +931,17 @@ export function FleetHUD({
       ]
       for (const r of arrivals as any[]) {
         if (isMyAnchor(r) && r.meta?.panOffset !== undefined) {
+          const restored = restoredAnchor({ panOffset: r.meta.panOffset, cameraY: r.meta.cameraY })
           const hudCameraAnchor = readHudCameraAnchor()
-          if (hudCameraAnchor?.panOffset !== r.meta.panOffset || hudCameraAnchor?.cameraY !== r.meta.cameraY) {
-            applyHudAnchor({ panOffset: r.meta.panOffset, cameraY: r.meta.cameraY })
+          if (hudCameraAnchor?.panOffset !== restored.panOffset || hudCameraAnchor?.cameraY !== restored.cameraY) {
+            applyHudAnchor(restored)
           }
           break
         }
       }
     }, { source: 'all', scope: 'document' })
     return unsub
-  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds])
+  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds, restoredAnchor])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside
@@ -1244,10 +1270,22 @@ export function FleetHUD({
   // Read once for the render pass — it walks every page shape, and this render
   // path needs the same answer twice.
   const renderPagesFlowAcross = documentPagesFlowAcross(mainEditor)
+  // On a talk cameraY is a function of where the slide is, not a position, so it
+  // is recomputed rather than carried. This is what corrects an anchor restored
+  // before the document was measurable, and it keeps the camera watcher — which
+  // reads this same ref — from putting a stale value back.
+  let effectiveAnchor = baseAnchor
+  if (renderPagesFlowAcross) {
+    const derived = defaultAnchorForBounds(activeFleetBounds)
+    if (derived && derived.cameraY !== baseAnchor.cameraY) {
+      effectiveAnchor = { panOffset: baseAnchor.panOffset, cameraY: derived.cameraY }
+      hudAnchorRef.current = effectiveAnchor
+    }
+  }
   configureFleetHudOverlayLayer(hudWm, {
     pagesFlowAcross: renderPagesFlowAcross,
-    panOffset: baseAnchor.panOffset,
-    cameraY: baseAnchor.cameraY,
+    panOffset: effectiveAnchor.panOffset,
+    cameraY: effectiveAnchor.cameraY,
     mainCamera: mainEditor.getCamera(),
     baseCamera: hudBaseCameraRef.current,
   })
