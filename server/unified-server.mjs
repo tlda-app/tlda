@@ -5995,11 +5995,16 @@ async function handleFleetWsMessage(ws, msg) {
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
-        const ids = [...new Set((await Promise.all(naturalQueries.map(async query => (
-          String(query || '').trim() === 'me'
-            ? [currentSearchActor()]
-            : await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
-        )))).flat())]
+        const ids = [...new Set((await Promise.all(naturalQueries.map(async query => {
+          if (String(query || '').trim() === 'me') return [currentSearchActor()]
+          const resolved = await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+          // A bare token that names nobody has to be reported here too. This is
+          // the path a lone `sinse:30m` takes — no filter expression, so the
+          // prefilter never sees it — and it was the last way to get a bare
+          // "No results" out of a term that could never have matched.
+          if (!resolved.length) unresolvedNames.add(query)
+          return resolved
+        }))).flat())]
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
           const agentResults = await fleetStore.searchAll(naturalTextQuery, {

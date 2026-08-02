@@ -305,14 +305,22 @@ function makeChatCtx(agents: any[], tasks: any[]) {
 const CHAT_HEADER_H = 30
 const SEARCH_GROUP_INITIAL_LIMIT = 6
 
-function searchQueryReadout(query: string) {
+type ReadoutSegment = { text: string; implied: boolean }
+
+function searchQueryReadout(query: string): ReadoutSegment[][] {
   const trimmed = query.trim()
   if (!trimmed) return []
-  const parsed = parseSearchQuery(trimmed)
+  const parsed = parseSearchQuery(trimmed, { autoConjoin: true })
   const filters = parsed.filters
-  const chips: string[] = []
+  const chips: ReadoutSegment[][] = []
   const structured: string[] = []
-  if (parsed.query) chips.push(`text:${displayImplicitAnd(parsed.query)}`)
+  // The expression as it parsed, with the conjunctions the editor supplied
+  // marked so they can be shown ghosted. This is the query saying how it read
+  // itself — the cheapest possible parse error is a ghost where you did not
+  // expect one.
+  const implied = (parsed.explicitSegments as ReadoutSegment[]).some(s => s.implied)
+  if (implied) chips.push([{ text: 'query:', implied: false }, ...(parsed.explicitSegments as ReadoutSegment[])])
+  if (parsed.query) chips.push([{ text: `text:${displayImplicitAnd(parsed.query)}`, implied: false }])
   if (filters.filterExpression) structured.push(filters.filterExpression)
   else {
     if (filters.from) structured.push(`from:${filters.from}`)
@@ -321,11 +329,8 @@ function searchQueryReadout(query: string) {
   }
   if (filters.type && !structured.includes(`type:${filters.type}`)) structured.push(`type:${filters.type}`)
   if (filters.role) structured.push(`role:${filters.role}`)
-  if (filters.since) structured.push(`since:${filters.since}`)
-  if (filters.after) structured.push(`after:${filters.after}`)
-  if (filters.before) structured.push(`before:${filters.before}`)
   if (!parsed.query && filters.naturalAgentQuery) structured.push(`agent:${filters.naturalAgentQuery}`)
-  if (structured.length > 0) chips.push(`filters:${structured.join(' ')}`)
+  if (structured.length > 0) chips.push([{ text: `filters:${structured.join(' ')}`, implied: false }])
   return chips
 }
 
@@ -481,7 +486,11 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
     let parsed: ReturnType<typeof parseSearchQuery>
     try {
-      parsed = parseSearchQuery(q)
+      // The box takes a bare space between terms; the language does not. The
+      // space is an input convenience, so the conjunction is written in here and
+      // the explicit form is what gets parsed and sent. The readout below shows
+      // the result, so you can see what your space became.
+      parsed = parseSearchQuery(q, { autoConjoin: true })
     } catch (e) {
       setResults([])
       setSearched(false)
@@ -727,12 +736,12 @@ function FleetSearchInner({ shape }: { shape: any }) {
   // Parse current filters for display
   const activeFilters = useMemo<Record<string, any>>(() => {
     try {
-      return parseSearchQuery(query).filters
+      return parseSearchQuery(query, { autoConjoin: true }).filters
     } catch {
       return {}
     }
   }, [query])
-  const queryReadout = useMemo<string[]>(() => {
+  const queryReadout = useMemo<ReadoutSegment[][]>(() => {
     try {
       return searchQueryReadout(query)
     } catch {
@@ -932,19 +941,30 @@ function FleetSearchInner({ shape }: { shape: any }) {
           )}
           {queryReadout.length > 0 && (
             <div className="fleet-search-query-readout" aria-label="Parsed search query">
-              {queryReadout.map((chip, i) => <span key={`${chip}-${i}`} className="fleet-search-query-chip">{chip}</span>)}
+              {queryReadout.map((chip, i) => (
+                <span key={i} className="fleet-search-query-chip">
+                  {chip.map((seg, j) => (
+                    <span
+                      key={j}
+                      className={seg.implied ? 'fleet-search-query-chip-implied' : undefined}
+                      title={seg.implied ? 'implied — type & to write it yourself' : undefined}
+                    >
+                      {j > 0 ? ` ${seg.text}` : seg.text}
+                    </span>
+                  ))}
+                </span>
+              ))}
             </div>
           )}
           {/* Active filter indicators */}
-          {(activeFilters.from || activeFilters.to || activeFilters.agent || activeFilters.before || activeFilters.after || activeFilters.since || activeFilters.type) && (
+          {/* since:/before: are terms inside the expression now, so they show in
+              the readout above rather than as tags that can no longer be set. */}
+          {(activeFilters.from || activeFilters.to || activeFilters.agent || activeFilters.type) && (
             <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
               {activeFilters.from && <span className="fleet-search-filter-tag">from:{activeFilters.from}</span>}
               {activeFilters.to && <span className="fleet-search-filter-tag">to:{activeFilters.to}</span>}
               {activeFilters.agent && <span className="fleet-search-filter-tag">agent:{activeFilters.agent}</span>}
               {activeFilters.type && <span className="fleet-search-filter-tag">type:{activeFilters.type}</span>}
-              {activeFilters.before && <span className="fleet-search-filter-tag">before:{activeFilters.before}</span>}
-              {activeFilters.after && <span className="fleet-search-filter-tag">after:{activeFilters.after}</span>}
-              {activeFilters.since && <span className="fleet-search-filter-tag">since:{activeFilters.since}</span>}
             </div>
           )}
         </div>

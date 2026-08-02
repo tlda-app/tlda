@@ -28,7 +28,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { listMarkdownSectionIds, selectMarkdown } from '../shared/markdown-selector.mjs';
 import { checkChatRender as checkSharedChatRender } from '../shared/chat-render-check.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
-import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
+import { buildFleetSearchFilters, looksLikeMistypedFilterKey, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { formatActivityHealthStatus } from '../shared/activity-health.mjs';
 import {
   INBOX_STATUSES,
@@ -625,6 +625,15 @@ function spawnModelOptionsFromArgs(opts = {}) {
     if (!reserved.has(key) && value != null && value !== '') out[key] = value;
   }
   return out;
+}
+
+// A bare token is an agent name — names are opaque atoms, so `chief:day` is one
+// whole name and no syntax rule can tell it from a mistyped `sinse:`. When such
+// a token matches nobody, say which reading it got and what the real keys are.
+function mistypedKeyHint(names) {
+  const suspects = (names || []).filter(looksLikeMistypedFilterKey);
+  if (!suspects.length) return '';
+  return ` Read as ${suspects.length > 1 ? 'agent names' : 'an agent name'} — filter keys are from:, to:, involving:, agent:, type:, role:, since:, before:.`;
 }
 
 function logEvent(event) {
@@ -1502,7 +1511,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. An unrecognised filter key is an error, not free text; quote a term to search it as text. cwd: and project: are NOT query filters — project is a separate parameter. Note since:/before: here take a relative unit where m means MONTHS, while the since/before PARAMETERS take m as minutes.' },
+          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. A bare token is an agent name, so an unrecognised key like cwd: or sinse: is read as a name and reported as matching no agent rather than silently matching nothing. cwd: and project: are NOT query filters — project is a separate parameter. Note since:/before: here take a relative unit where m means MONTHS, while the since/before PARAMETERS take m as minutes.' },
           project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
@@ -3696,9 +3705,22 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let parsedSearch;
     let searchFilters;
     try {
-      parsedSearch = parseSearchQuery(args.agent ? `agent:(${args.agent}) ${rawQuery}` : rawQuery);
+      parsedSearch = parseSearchQuery(rawQuery, { agentSelector: args.agent || null });
       searchFilters = buildFleetSearchFilters(parsedSearch.filters);
     } catch (e) {
+      // Counted separately from other rejections. Every search API a model has
+      // met does tacit AND, so the rate of this one — and whether the same
+      // caller's next query carries the `&` — is the evidence for whether the
+      // strict grammar survives. A generic failure count cannot answer that.
+      if (e.reason === 'juxtaposition') {
+        logEvent({
+          type: 'search_rejected',
+          reason: 'juxtaposition',
+          from: activeAgentId() || 'unknown',
+          query: rawQuery,
+          suggestion: e.suggestion,
+        });
+      }
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }
     const query = parsedSearch.query;
@@ -3751,7 +3773,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // reads as "nothing was said" rather than "nobody is called that". Say which
     // name failed, whether or not the rest of the query found anything.
     const unresolvedNote = unresolvedNames.length
-      ? `${unresolvedNames.map(n => `"${n}"`).join(', ')} ${unresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.`
+      ? `${unresolvedNames.map(n => `"${n}"`).join(', ')} ${unresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(unresolvedNames)}`
       : '';
 
     if (results.length === 0) {
@@ -4188,7 +4210,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       // empty history.
       if (threadUnresolvedNames.length) {
         const names = threadUnresolvedNames.map(n => `"${n}"`).join(', ');
-        return { content: [{ type: 'text', text: `No messages found. ${names} ${threadUnresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.` }] };
+        return { content: [{ type: 'text', text: `No messages found. ${names} ${threadUnresolvedNames.length > 1 ? 'match no agent' : 'matches no agent'} in environment "${activeEnvName()}" — that part of the filter can never match. Check the name, or use a fleet: id.${mistypedKeyHint(threadUnresolvedNames)}` }] };
       }
       if (args.agent && primaryId) {
         return { content: [{ type: 'text', text: `No messages found for the given criteria. Selector "${args.agent}" resolves to ${primaryId}, but no indexed fleet messages were found in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };

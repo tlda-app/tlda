@@ -2623,6 +2623,13 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   white-space: nowrap;
 }
 
+/* An operator the editor supplied rather than one you typed. Same type, same
+   colour, less presence — it has to read as part of the expression while still
+   being visibly not yours. */
+.fleet-search-query-chip-implied {
+  opacity: 0.45;
+}
+
 .fleet-search-autocomplete {
   position: absolute;
   left: 6px;
