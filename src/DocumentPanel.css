@@ -2444,18 +2444,6 @@ html[data-theme="dark"] .phone-hl-btn {
   color: var(--pill-icon-color, rgba(255, 255, 255, 1));
 }
 
-/* A talk forces a LIGHT slide canvas whatever the app theme is, so in dark mode
-   these controls were white icons on a near-white slide — present, positioned,
-   0.5 opacity, and invisible. Measured on the live talk: color
-   rgb(255,255,255) over a background of rgb(250,250,248).
-   Slides win over the theme here because the surface behind the control is the
-   slide, not the app. */
-body.slides-mode .phone-hl-btn,
-body.slides-mode .voice-note-btn,
-body.slides-mode .fleet-icon-pill-badge {
-  color: rgba(0, 0, 0, 0.85);
-}
-
 html[data-theme="dark"] .phone-hl-btn.active {
   background: var(--hl-color, #ffc940);
   color: white;
@@ -2629,4 +2617,20 @@ html[data-theme="dark"] .mic-toggle-btn {
     bottom: calc(82px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
     right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
+}
+
+/* A talk forces a LIGHT slide canvas whatever the app theme is, so in dark mode
+   these controls were white icons on a near-white slide — present, positioned,
+   0.5 opacity, and invisible. Measured on the live talk: color
+   rgb(255,255,255) over a background of rgb(250,250,248). Slides win over the
+   theme because the surface behind the control is the slide, not the app.
+   LAST IN THE FILE ON PURPOSE. The per-theme rules for these three are spread
+   through this stylesheet at the same specificity, so an override placed beside
+   any one of them loses to the ones below it. It did: the highlighter turned
+   dark and the voice-note button stayed white, because its dark rule sits a
+   hundred lines further down. */
+body.slides-mode .phone-hl-btn,
+body.slides-mode .voice-note-btn,
+body.slides-mode .fleet-icon-pill-badge {
+  color: rgba(0, 0, 0, 0.85);
 }
