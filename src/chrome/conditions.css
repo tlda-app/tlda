@@ -1,0 +1,161 @@
+/* Conditions on the bottom-right chrome buttons.
+   The stack grows LEFTWARD from each button; the detail view lifts ABOVE it. */
+
+:root {
+  --chrome-condition-warning: #c98200;
+  --chrome-condition-error: #d92d20;
+}
+
+html[data-theme="dark"] {
+  --chrome-condition-warning: #e5a83b;
+  --chrome-condition-error: #f0564a;
+}
+
+.chrome-conditions {
+  pointer-events: none;
+}
+
+/* Right-anchored at the button's left edge and bottom-aligned to it, the same
+   geometry .corner-button-slider uses. Height is set inline from the measured
+   button so the icons sit centred on it. row-reverse puts the most severe
+   condition nearest the button, matching .fleet-icon-pill-fan. */
+.chrome-condition-stack {
+  position: fixed;
+  z-index: var(--tlda-z-top-control-popover);
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+  pointer-events: none;
+}
+
+.chrome-condition-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  pointer-events: all;
+  touch-action: none;
+  color: var(--chrome-condition-error);
+}
+
+.chrome-condition-icon.chrome-condition--warning {
+  color: var(--chrome-condition-warning);
+}
+
+/* Touch: keep the full-height 44px target the other corner controls have, and
+   give each slot enough width to be hit without crowding its neighbour. */
+body.phone-mode .chrome-condition-stack,
+body.touch-toc-mode:not(.phone-mode) .chrome-condition-stack {
+  margin-right: 8px;
+  gap: 4px;
+}
+
+body.phone-mode .chrome-condition-icon,
+body.touch-toc-mode:not(.phone-mode) .chrome-condition-icon {
+  width: 28px;
+}
+
+body.phone-mode .chrome-condition-icon svg,
+body.touch-toc-mode:not(.phone-mode) .chrome-condition-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+@media (pointer: coarse) and (min-width: 601px) {
+  .chrome-condition-stack {
+    margin-right: 8px;
+  }
+  .chrome-condition-icon {
+    width: 28px;
+  }
+  .chrome-condition-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+/* Detail view — the lifted label treatment already used by the composer rail
+   (.corner-button-slider-preview), widened to hold one row per condition. */
+.chrome-condition-detail {
+  position: fixed;
+  z-index: var(--tlda-z-top-control-popover);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(32, 32, 36, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.9);
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 11px;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .chrome-condition-detail {
+  background: rgba(18, 18, 22, 0.9);
+}
+
+.chrome-condition-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.chrome-condition-detail-glyph {
+  display: block;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--chrome-condition-error);
+}
+
+.chrome-condition-detail-row.chrome-condition--warning .chrome-condition-detail-glyph {
+  color: var(--chrome-condition-warning);
+}
+
+.chrome-condition-detail-glyph svg {
+  width: 13px;
+  height: 13px;
+}
+
+.chrome-condition-detail-text {
+  min-width: 0;
+}
+
+/* Severe: the big button itself goes red.
+   The corner buttons rest at opacity 0.15, so red alone would not read — the
+   point of severe is that it cannot be missed.
+
+   The `html body` prefix (0,2,2) is load-bearing. Each button already has a
+   `html[data-theme="dark"] .<button>` colour rule at (0,2,1), so a plain
+   `.<button>.chrome-condition-severe` ties it and loses on source order — in
+   dark mode the button came out bright white instead of red. This also clears
+   `.phone-hl-btn.active` (0,2,0), so the highlighter reddens whether or not a
+   highlighter tool is active. Nothing else about the buttons changes: same
+   size, same position, same glyph. */
+html body .fleet-icon-pill-badge.chrome-condition-severe,
+html body .voice-note-btn.chrome-condition-severe,
+html body .phone-hl-btn.chrome-condition-severe {
+  color: var(--chrome-condition-error);
+  opacity: 1;
+}
+
+/* The highlighter draws its ring (inactive) and its fill (active) from
+   --hl-color, and its glyph is a mask filled with currentColor or white.
+   Overriding the variable is what actually turns that button red. */
+html body .phone-hl-btn.chrome-condition-severe {
+  --hl-color: var(--chrome-condition-error);
+}
+
+html body .phone-hl-btn.chrome-condition-severe.active {
+  opacity: 1;
+}
