@@ -201,13 +201,16 @@ export function FleetAgentDirectoryRow({
     isOrdinaryFleetAgentLabel(label) && !folderAliases.has(label)
   )
   const metadataChips = fleetAgentMetadataChips(row)
-  const compactLabel = ordinaryLabels[0]
-    ? { label: ordinaryLabels[0], ...prettyFleetAgentLabel(ordinaryLabels[0]) }
-    : null
-  const detailLabels: FleetAgentLabelChip[] = [
+  // The project is a label like any other, so it belongs in the labels column
+  // rather than only in the expansion row. The collapsed row carries the two
+  // most salient — the project first, since it is the one an agent always has
+  // — and the expansion row is what a third label and beyond are for.
+  const salientLabels: FleetAgentLabelChip[] = [
     ...(folderLabel ? [folderLabel] : []),
-    ...ordinaryLabels.slice(1).map((label) => ({ label, ...prettyFleetAgentLabel(label) })),
+    ...ordinaryLabels.map((label) => ({ label, ...prettyFleetAgentLabel(label) })),
   ]
+  const compactLabels = salientLabels.slice(0, 2)
+  const detailLabels = salientLabels.slice(2)
   return (
     <div
       className={`fleet-agents-row${isNativeChild ? ' native-child' : ''}${row.dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}
@@ -257,15 +260,16 @@ export function FleetAgentDirectoryRow({
           <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
         <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
-          {compactLabel && (
+          {compactLabels.map((chip) => (
             <FleetAgentLabelChipView
-              chip={compactLabel}
+              key={chip.label}
+              chip={chip}
               compact
               row={row}
               onLabelPointerDown={onLabelPointerDown}
               onLabelPointerUp={onLabelPointerUp}
             />
-          )}
+          ))}
         </span>
       </div>
       {expanded && (
