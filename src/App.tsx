@@ -883,7 +883,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     const byProject: Record<string, FleetAgentDirectoryRowModel[]> = {}
     for (const [project] of visibleEntries) {
       byProject[project] = agentRows
-        .filter(row => projectLabelMatches(row, project))
+        .filter(row => !row.agent?.parent_agent_id && projectLabelMatches(row, project))
         .slice(0, AGENT_CELL_RENDER_CAP)
     }
     return byProject
