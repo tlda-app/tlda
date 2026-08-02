@@ -125,6 +125,15 @@ export function ChatComposer({
     ta.value = ''
     if (draftKey) clearComposerDraft(draftKey)
     ta.style.height = ''
+    // Clearing `.value` does not always make `field-sizing: content` recompute,
+    // so a sent multiline message left the composer tall until the next click or
+    // keystroke resized it — Skip: "if you send a long message and you hit
+    // enter, the composer doesn't resize until you click into it again. Or start
+    // typing again." Reading a layout property between an explicit height and
+    // clearing it forces the recalculation the send itself should have caused.
+    ta.style.height = 'auto'
+    void ta.offsetHeight
+    ta.style.height = ''
     ta.dispatchEvent(new Event('input', { bubbles: true }))
     completeMessageSend(text)
     sentHistoryRef.current = [...sentHistoryRef.current, text]
