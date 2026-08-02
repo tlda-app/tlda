@@ -1434,6 +1434,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   -webkit-user-select: none !important;
 }
 .fleet-chat-shape .semantic-operation-collapse:hover { opacity: 1; }
+/* On a thread card the collapse exists only while the middle is open -- that is
+   the only state where it does anything. Skip: "your collapse button should be
+   invisible when the card is collapsed." The search card's collapse is
+   unaffected; it always has a body to close. */
+.fleet-chat-shape .thread-shell > .semantic-operation-collapse {
+  display: none;
+}
+.fleet-chat-shape .thread-shell.thread-middle-open > .semantic-operation-collapse {
+  display: block;
+}
 .fleet-chat-shape .semantic-operation-view {
   min-width: 0;
 }

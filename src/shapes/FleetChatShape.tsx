@@ -2142,6 +2142,10 @@ function ThreadChatOperationView({
   // the only thing the card is for -- seeing the range an agent read -- which is
   // what "the collapse isn't to a pretty expanded state, it's just a fucking
   // nothing" was about.
+  //
+  // It is only present while the middle is open, because that is the only state
+  // where it does anything. Collapsed, it would be a control that looks dead --
+  // Skip: "your collapse button should be invisible when the card is collapsed."
   const collapseToRange = useCallback((event: any) => {
     stopEventPropagation(event)
     const root = viewRef.current
@@ -2151,10 +2155,11 @@ function ThreadChatOperationView({
       const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
       if (btn && btn.dataset.collapsedLabel) btn.textContent = btn.dataset.collapsedLabel
     })
+    root.closest('.thread-shell')?.classList.remove('thread-middle-open')
   }, [])
 
   return (
-    <div className="semantic-operation-expanded-shell">
+    <div className="semantic-operation-expanded-shell thread-shell">
       <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapseToRange}>Collapse</button>
       <div className="semantic-operation-view">
         {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
@@ -2369,6 +2374,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
           moreRows.style.display = ''
           const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
           if (btn) btn.textContent = 'collapse'
+          moreRows.closest('.thread-shell')?.classList.add('thread-middle-open')
         }
       })
     }
@@ -4647,6 +4653,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           }
           moreRows.style.display = wasExpanded ? 'none' : ''
           expandBtn.textContent = wasExpanded ? (expandBtn.dataset.collapsedLabel || 'Expand') : 'collapse'
+          // The floating collapse only exists while there is something to
+          // collapse; see ThreadChatOperationView.
+          expandBtn.closest('.thread-shell')?.classList.toggle('thread-middle-open', !wasExpanded)
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
             const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])
