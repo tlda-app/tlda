@@ -111,6 +111,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'insertEventRecord',
   'insertSessionEntries',
   'isUnreadPending',
+  'labelCollisionMessage',
   'lifecycle',
   'listPendingTimerEvents',
   'markAlive',
