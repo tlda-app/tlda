@@ -4319,7 +4319,7 @@ export class FleetStore {
       // hydrated, so filters that don't reference `my_labels` — effectively all
       // of them — now cost no agent load at all.
       const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.agent_id) : [];
-      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels });
+      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels, subscriberId: tap.agent_id });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
@@ -4393,7 +4393,7 @@ export class FleetStore {
       // grammar is untouched: `my_labels` still means the subscriber's labels,
       // and a hand-written subscription using it means what it always meant.
       const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.owner) : [];
-      if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels })) continue;
+      if (!evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels, subscriberId: tap.owner })) continue;
       // The recipient's own matching subscription IS its delivery. There is no
       // longer a floor beside it promising something different, so `direct` is
       // just "this match is the addressee's own", which is what decides the

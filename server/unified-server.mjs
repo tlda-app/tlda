@@ -44,7 +44,7 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerRuntimeConfig, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, loadServerRuntimeConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat } from '../shared/document-formats.mjs'
@@ -52,7 +52,7 @@ import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
-import { defaultSubscription, DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY } from '../shared/subscriptions.mjs'
+import { defaultSubscription, DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
@@ -2009,6 +2009,51 @@ async function performSpawnRelay(caller, msg) {
       human: false,
       metadata: { shell: true },
     })
+    // Both slots, written where the row is made, because this is the mint.
+    //
+    // A spawn allocates the fleet id and writes the agent row right here, sends
+    // the daemon a request carrying no subscriptions, and the agent arrives later
+    // at `login`, which writes none either. So an agent minted this way — by
+    // another agent, or from the app — came up addressable with nothing listening
+    // on its behalf, including itself. Delivery has no floor, so that is silence
+    // rather than a degraded inbox: nothing wakes it, and the sender gets no
+    // receipt saying so, which from outside is indistinguishable from an agent
+    // that heard you and ignored you.
+    //
+    // The other mint, the daemon's shell reservation, has always done this. That
+    // is why agents spawned from the CLI worked all day while every agent spawned
+    // by an agent was deaf, and why the repair kept being a keyed one-shot
+    // backfill — three in one day, each fixing the rows that existed and leaving
+    // the next mint broken.
+    //
+    // Two slots, because there are two ways of being talked to: someone addressed
+    // me, or someone addressed a set I am in. Not three — splitting name from id
+    // is meaningless as a preference and lets two slots that both mean "you"
+    // drift apart, since names move and ids do not.
+    //
+    // Written at creation, so it happens once and never re-asserts itself over a
+    // later choice. Turning a slot down to `hold` survives every wake and
+    // re-login.
+    // The slots and their levels are declared in server.yaml under
+    // `subscriptions:`, not written into this file. Which queries an agent starts
+    // with, and how loud each one starts, is configuration.
+    //
+    // server.yaml rather than daemon.yaml because the server is not allowed to
+    // read daemon.yaml, and minting happens here. The daemon's own set still
+    // travels with a shell reservation, which is the other mint; this is the one
+    // the app and `delegate(mint:)` use.
+    //
+    // The constants are the floor for a config that declares nothing. An agent
+    // with no slots hears nothing at all, which is the failure this exists to
+    // prevent, so silence is not an available outcome of an empty key.
+    const slots = loadServerConfig().subscriptions
+    for (const slot of (slots?.length ? slots : MINT_SLOTS)) {
+      await fleetStore.ensureSubscription?.({
+        owner: pendingAgentId,
+        query: slot.query,
+        notificationPolicy: slot.policy || DEFAULT_SUBSCRIPTION_POLICY,
+      })
+    }
     await fleetStore.setAgentDaemonRoute(pendingAgentId, daemonAddress(route.machine_id, route.env_name))
   }
   const spawnRequest = {

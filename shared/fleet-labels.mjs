@@ -165,7 +165,7 @@ export function astReadsSubscriberLabels(ast) {
   }
 }
 
-export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subscriberLabels = [] } = {}) {
+export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subscriberLabels = [], subscriberId = null } = {}) {
   if (!ast) return true
   const from = fromLabels instanceof Set ? fromLabels : new Set(fromLabels)
   const to = toLabels instanceof Set ? toLabels : new Set(toLabels)
@@ -180,7 +180,19 @@ export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subsc
       case 'lit': return n.v === 'my_labels'
         ? (subscriber.size > 0 && [...subscriber].every(label => labels.has(label)))
         : labels.has(n.v)
-      case 'me': return labels.has('me')
+      // `me` is the subscriber, not a label spelled "me".
+      //
+      // It read `labels.has('me')` — a literal token test, so `to:me` matched
+      // only an agent that happened to carry the label `me`, which is nobody. The
+      // token resolves correctly in search and history, so it looked implemented
+      // everywhere it was visible and was a stub in the one place delivery is
+      // decided.
+      //
+      // Tested against the id rather than the label set, because the id is the
+      // only thing about an agent that never changes. Names and labels both move,
+      // and a subscription anchored to a name follows the name to whoever holds
+      // it next.
+      case 'me': return !!subscriberId && labels.has(subscriberId)
       case 'my_labels': return subscriber.size > 0 && [...subscriber].every(label => labels.has(label))
       case 'not': return !agentExpr(n.x, labels)
       case 'and': return agentExpr(n.l, labels) && agentExpr(n.r, labels)

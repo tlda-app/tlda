@@ -28,6 +28,26 @@
 export const DEFAULT_SUBSCRIPTION_QUERY = 'to:my_labels'
 export const DEFAULT_SUBSCRIPTION_POLICY = 'immediate'
 
+// The other slot: mail addressed to me, as opposed to mail addressed to a set I
+// happen to be in.
+//
+// Those are two different kinds of being talked to and they deserve separate
+// volumes — your own mail on `immediate` while the `awake` firehose sits on
+// `hold` is an obvious thing to want, and it is unaskable while both arrive
+// through one subscription.
+//
+// Anchored to `me`, which resolves to the subscriber's id. Not to the name: names
+// move between agents and ids do not, so a slot anchored to a name would follow
+// the name to whoever holds it next.
+// The slots an agent is minted with, when server.yaml declares none.
+//
+// The queries belong in the config file. This is only what happens with the key
+// absent, and it exists because an agent with no slots hears nothing at all.
+export const MINT_SLOTS = Object.freeze([
+  { query: 'to:me', policy: DEFAULT_SUBSCRIPTION_POLICY },
+  { query: DEFAULT_SUBSCRIPTION_QUERY, policy: DEFAULT_SUBSCRIPTION_POLICY },
+])
+
 export function defaultSubscription() {
   return { query: DEFAULT_SUBSCRIPTION_QUERY, notification_policy: DEFAULT_SUBSCRIPTION_POLICY }
 }
