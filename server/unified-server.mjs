@@ -2052,6 +2052,7 @@ async function performSpawnRelay(caller, msg) {
         owner: pendingAgentId,
         query: slot.query,
         notificationPolicy: slot.policy || DEFAULT_SUBSCRIPTION_POLICY,
+        mandatory: true,
       })
     }
     await fleetStore.setAgentDaemonRoute(pendingAgentId, daemonAddress(route.machine_id, route.env_name))

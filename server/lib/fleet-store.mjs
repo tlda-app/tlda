@@ -355,6 +355,7 @@ export class FleetStore {
     this._backfillDefaultSubscriptionsV2();
     this._backfillDefaultSubscriptionsV3();
     this._backfillSelfSubscriptions();
+    this._markMintSlotsMandatory();
     this._backfillNameHistory();
     this._backfillRuntimeStatusHistory();
     this._listeners = []; // SSE broadcast callbacks
@@ -810,6 +811,28 @@ export class FleetStore {
       this.db.exec('DROP INDEX IF EXISTS idx_events_to');
       this.db.exec('ALTER TABLE events DROP COLUMN to_id');
     }
+
+    // A mandatory subscription is a slot an agent cannot delete — it can turn the
+    // level down to `hold` and go silent, but the row stays, so there is always
+    // something to look at when asking why a message did not land. A missing row
+    // cannot be diagnosed; a row set to `hold` can, and today was a whole day of
+    // the first kind.
+    //
+    // Enforced by the trigger below rather than by a check in the delete path,
+    // for the same reason the living-name rule is a partial unique index: a code
+    // check drifts, and there is more than one way to reach a delete.
+    const subscriptionCols = this.db.prepare("PRAGMA table_info(subscriptions)").all();
+    if (!subscriptionCols.some(c => c.name === 'mandatory')) {
+      this.db.exec("ALTER TABLE subscriptions ADD COLUMN mandatory INTEGER DEFAULT 0");
+    }
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_undeletable
+      BEFORE DELETE ON subscriptions
+      WHEN OLD.mandatory = 1
+      BEGIN
+        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
+      END;
+    `);
 
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
     if (!taskCols.some(c => c.name === 'updated_at')) {
@@ -1640,7 +1663,7 @@ export class FleetStore {
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
     this._deleteWiretapsByAgent = this.db.prepare('DELETE FROM wiretaps WHERE agent_id = ?');
-    this._addSubscription = this.db.prepare(`INSERT INTO subscriptions (owner, query, notification_policy, created_at, created_by, adapter, adapter_id) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    this._addSubscription = this.db.prepare(`INSERT INTO subscriptions (owner, query, notification_policy, created_at, created_by, adapter, adapter_id, mandatory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? ORDER BY subscription_id DESC');
     this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? ORDER BY subscription_id');
     this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
@@ -2650,7 +2673,7 @@ export class FleetStore {
     let seeded = 0;
     this.db.transaction(() => {
       for (const row of this.db.prepare('SELECT id FROM agents WHERE dead = 0').all()) {
-        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, mandatory: true })) seeded++;
       }
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
@@ -2670,7 +2693,7 @@ export class FleetStore {
     let seeded = 0;
     this.db.transaction(() => {
       for (const row of this.db.prepare('SELECT id FROM agents').all()) {
-        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, mandatory: true })) seeded++;
       }
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
@@ -2701,11 +2724,36 @@ export class FleetStore {
     let seeded = 0;
     this.db.transaction(() => {
       for (const row of this.db.prepare('SELECT id FROM agents').all()) {
-        if (this.ensureSubscription({ owner: row.id, query: 'to:me', notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+        if (this.ensureSubscription({ owner: row.id, query: 'to:me', notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, mandatory: true })) seeded++;
       }
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
     console.log(`[fleet-store] ${NAME}: ${seeded} agent(s) given the self subscription`);
+  }
+
+  // The slots seeded before `mandatory` existed are marked here.
+  //
+  // The three backfills that created them are keyed one-shots and will not run
+  // again, so without this the rows they wrote stay deletable while every row
+  // written afterwards is protected — the same shape of split this whole night
+  // was about, where two populations are configured differently and nothing says
+  // so.
+  //
+  // Scoped to the two mint slots and to the `subscription` adapter, so a
+  // hand-written subscription that happens to use the same query is untouched:
+  // an agent chose that one and may drop it.
+  _markMintSlotsMandatory() {
+    const NAME = 'mandatory-mint-slots-v1';
+    if (this.db.prepare('SELECT 1 FROM store_migrations WHERE name = ?').get(NAME)) return;
+    let marked = 0;
+    this.db.transaction(() => {
+      marked = this.db.prepare(
+        `UPDATE subscriptions SET mandatory = 1
+          WHERE mandatory = 0 AND adapter = 'subscription' AND query IN (?, ?)`,
+      ).run('to:me', DEFAULT_SUBSCRIPTION_QUERY).changes;
+      this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
+    })();
+    console.log(`[fleet-store] ${NAME}: ${marked} slot(s) marked mandatory`);
   }
 
   _backfillDefaultSubscriptionsV2() {
@@ -2714,7 +2762,7 @@ export class FleetStore {
     let seeded = 0;
     this.db.transaction(() => {
       for (const row of this.db.prepare('SELECT id FROM agents').all()) {
-        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY })) seeded++;
+        if (this.ensureSubscription({ owner: row.id, query: DEFAULT_SUBSCRIPTION_QUERY, notificationPolicy: DEFAULT_SUBSCRIPTION_POLICY, mandatory: true })) seeded++;
       }
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
@@ -4254,8 +4302,8 @@ export class FleetStore {
     this._resolvableSubscriptionWiretapCache = null;
   }
 
-  addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null }) {
-    const info = this._addSubscription.run(owner, query, notificationPolicy, new Date().toISOString(), createdBy, adapter, adapterId);
+  addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null, mandatory = false }) {
+    const info = this._addSubscription.run(owner, query, notificationPolicy, new Date().toISOString(), createdBy, adapter, adapterId, mandatory ? 1 : 0);
     this._resolvableSubscriptionWiretapCache = null;
     return this.getSubscription(info.lastInsertRowid);
   }
@@ -4270,7 +4318,7 @@ export class FleetStore {
   // override a deliberate removal without anyone asking. Skip, 8/1, relayed by
   // chief-3: "if someone wants to, like, have their agents be completely
   // unaddressable, that's their fucking choice."
-  ensureSubscription({ owner, query, notificationPolicy = 'immediate', createdBy = null }) {
+  ensureSubscription({ owner, query, notificationPolicy = 'immediate', createdBy = null, mandatory = false }) {
     if (!owner || !query) return null;
     const existing = this._getSubscriptionsByOwner.all(owner).find(row => row.query === query);
     if (existing) return existing;
@@ -4281,6 +4329,7 @@ export class FleetStore {
       createdBy: createdBy || owner,
       adapter: 'subscription',
       adapterId: null,
+      mandatory,
     });
   }
 
