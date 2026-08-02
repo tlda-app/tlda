@@ -412,6 +412,7 @@ const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
 import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
+import { projectForCwd } from '../shared/project-for-cwd.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 import { reportDocName, postReportDoc } from './report-doc-post.mjs';
 const TLDA_SERVER = getServerUrl();
@@ -2208,7 +2209,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     }
 
     const cwd = getAgentCwd() || process.env.PWD || null;
-    const labels = [];
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
     const envName = getActiveEnvName();
     const daemonKey = process.env.FLEET_DAEMON_KEY || (machineId && envName ? `${machineId}:${envName}` : null);
@@ -2235,7 +2235,10 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       // session lives in the mint record, joined there from the login marker.
       tmux_session: detectedTmux || undefined,
       cwd: cwd || undefined,
-      labels,
+      // No labels. Login used to send an always-empty array, and the server's
+      // `labels || existing.labels` reads [] as an answer, so every login
+      // erased the agent's labels.
+      project: projectForCwd(cwd, { configDir: CONFIG_DIR, envName }) || undefined,
       machine_id: machineId,
       env_name: envName,
       metadata: { kind: currentHarness.kind },

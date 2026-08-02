@@ -1911,6 +1911,21 @@ function settleSpawnMailboxIndeterminate(mailbox, detail) {
   })
 }
 
+// An agent's project is a label, in the one namespace names and labels share,
+// so a project filter and a project chip are ordinary label matches with
+// nothing behind them. An agent has one project, so a new one replaces the old
+// rather than accumulating; no project leaves whatever it already had, since a
+// login from outside a repository is not a statement that the agent moved.
+const PROJECT_LABEL_PREFIX = 'project:'
+
+function withProjectLabel(labels, project) {
+  const existing = Array.isArray(labels) ? labels : []
+  if (!project) return existing
+  const label = `${PROJECT_LABEL_PREFIX}${project}`
+  const kept = existing.filter(entry => !String(entry).startsWith(PROJECT_LABEL_PREFIX))
+  return kept.includes(label) ? kept : [...kept, label]
+}
+
 async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
@@ -2025,7 +2040,7 @@ async function performSpawnRelay(caller, msg) {
       // opens at registered_at and a label-filtered panel shows the whole
       // backlog. Labelling after mint is lexically correct but starts the span
       // late, leaving the work in between invisible to that filter.
-      labels: mintLabels,
+      labels: withProjectLabel(mintLabels, doc),
       registered_at: now,
       last_seen: now,
       dead: false,
@@ -5760,7 +5775,7 @@ async function handleFleetWsMessage(ws, msg) {
   // things, and `fleet_id` is an optional fact that arrives asynchronously,
   // so "no fleet id yet" is a normal state and not an error to design around.
   if (type === 'login') {
-    const { agent_id, name, labels, manager, metadata, kind } = msg
+    const { agent_id, name, labels, manager, metadata, kind, project } = msg
     let loginAgentId = agent_id || null
     if (loginAgentId) {
       const existing = await fleetStore.getAgent?.(loginAgentId)
@@ -5771,7 +5786,7 @@ async function handleFleetWsMessage(ws, msg) {
       const now = new Date().toISOString()
       const agent = {
         ...existing,
-        labels: labels || existing.labels || [],
+        labels: withProjectLabel(labels || existing.labels || [], project),
         last_seen: now,
         dead: false,
         human: false,
