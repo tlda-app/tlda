@@ -304,6 +304,8 @@ function readAll() {
     ageFade: getPref('fleet-age-fade'),
     foldBash: getPref('fold-bash-lines'),
     foldThread: getPref('fold-thread-lines'),
+    threadFront: getPref('thread-front-messages'),
+    threadTail: getPref('thread-tail-messages'),
     foldWrite: getPref('fold-write-lines'),
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
@@ -542,6 +544,16 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <span className="prefs-num-label">Thread/search cards</span>
             <input type="number" min={5} step={5} value={prefs.semanticOperationPageSize} onChange={e => setPref('semantic-operation-page-size', Number(e.target.value))} className="prefs-num" />
             <span className="prefs-num-unit">items</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Thread card top</span>
+            <input type="number" min={0} step={1} value={prefs.threadFront} onChange={e => setPref('thread-front-messages', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">messages</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Thread card bottom</span>
+            <input type="number" min={0} step={1} value={prefs.threadTail} onChange={e => setPref('thread-tail-messages', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">messages</span>
           </div>
         </PrefSubsection>
 

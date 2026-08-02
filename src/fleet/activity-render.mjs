@@ -261,10 +261,21 @@ function renderScreenshotResult(text) {
   return `<div class="tool-pretty-result tool-pretty-screenshot"><div class="pretty-result-header" style="opacity:0.5">${esc(label)}</div></div>`
 }
 
-// Skip: "five lines up top expand thing three lines below." The card is read
-// top-down, so the head of the range gets the room.
-const THREAD_FRONT = 5
-const THREAD_TAIL = 3
+// The range view, in rows. Skip settled the unit after seeing five and three on
+// screen: "it can't be five messages, it's gotta be like three, two", and "not
+// the message scale, like, the thing scale" -- one row is one thing, message or
+// activity entry. Overridable per user; these are the defaults.
+const THREAD_FRONT = 3
+const THREAD_TAIL = 2
+
+function threadCounts(ctx) {
+  const front = Number(ctx?.threadRange?.front)
+  const tail = Number(ctx?.threadRange?.tail)
+  return {
+    front: Number.isFinite(front) && front >= 0 ? front : THREAD_FRONT,
+    tail: Number.isFinite(tail) && tail >= 0 ? tail : THREAD_TAIL,
+  }
+}
 
 // One thread row. `msg` is an ordinary message ({ timestamp, from, to, body }),
 // a tool-activity event ({ timestamp, activity }) whose `activity` is a
@@ -310,14 +321,15 @@ function renderThreadMsg(msg, ctx) {
 export function renderThreadRows(msgs, ctx, headerText = '') {
   const list = Array.isArray(msgs) ? msgs : []
   const header = headerText ? `<div class="pretty-result-header">${esc(headerText)}</div>` : ''
+  const { front, tail } = threadCounts(ctx)
   let rows
-  if (list.length > THREAD_FRONT + THREAD_TAIL) {
-    const hiddenCount = list.length - THREAD_FRONT - THREAD_TAIL
-    const hiddenRows = list.slice(THREAD_FRONT, list.length - THREAD_TAIL).map(m => renderThreadMsg(m, ctx)).join('')
-    rows = list.slice(0, THREAD_FRONT).map(m => renderThreadMsg(m, ctx)).join('')
+  if (list.length > front + tail) {
+    const hiddenCount = list.length - front - tail
+    const hiddenRows = list.slice(front, list.length - tail).map(m => renderThreadMsg(m, ctx)).join('')
+    rows = list.slice(0, front).map(m => renderThreadMsg(m, ctx)).join('')
       + `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
       + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
-      + list.slice(-THREAD_TAIL).map(m => renderThreadMsg(m, ctx)).join('')
+      + (tail ? list.slice(-tail).map(m => renderThreadMsg(m, ctx)).join('') : '')
   } else {
     rows = list.map(m => renderThreadMsg(m, ctx)).join('')
   }

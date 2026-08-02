@@ -1388,34 +1388,48 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .semantic-operation-body {
   margin-top: 4px;
 }
+/* A real gutter column for the collapse control. It used to escape the card with
+   `margin-left: -58px`, but the chat log is a scroller -- outside the content
+   box is clipped, so the control was invisible and unhittable. Skip: "it needs
+   to be further out, maybe even outside the edge of the card", "you can't really
+   see it", "nor can you click it". Reserving the column puts it beyond the
+   card's edge while staying inside the scroller. */
 .fleet-chat-shape .semantic-operation-expanded-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 20px minmax(0, 1fr);
   gap: 0;
   align-items: start;
   position: relative;
 }
+.fleet-chat-shape .semantic-operation-expanded-shell > .semantic-operation-view {
+  grid-column: 2;
+  min-width: 0;
+}
 .fleet-chat-shape .semantic-operation-collapse {
+  grid-column: 1;
+  grid-row: 1;
   position: sticky;
   top: 50vh;
-  left: -18px;
   align-self: start;
+  justify-self: center;
   border: 0;
   background: transparent;
   color: var(--accent, #7a9ec8);
   font: inherit;
   font-size: 9px;
   line-height: 1;
-  padding: 2px 0;
+  padding: 6px 0;
   text-align: center;
   cursor: pointer;
-  opacity: 0.75;
-  z-index: 1;
+  /* Skip: "you can't really see it is the problem." */
+  opacity: 0.9;
+  z-index: 3;
   width: 52px;
-  margin-left: -58px;
-  margin-bottom: -14px;
+  margin: 0;
+  /* Rotates in place. `right center` was tuned for the old escaping layout and
+     swings the box out of its own column here. */
   transform: rotate(-90deg);
-  transform-origin: right center;
+  transform-origin: center center;
   user-select: none !important;
   -webkit-user-select: none !important;
 }

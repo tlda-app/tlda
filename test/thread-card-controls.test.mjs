@@ -20,7 +20,7 @@ function threadRows(start, count) {
   }))
 }
 
-// The rows are the picture: first 5, the gap marker, the last 3, and one
+// The rows are the picture: first 3, the gap marker, the last 2, and one
 // control. Skip: "they were supposed to render literally the same thing out of
 // the database... so they're not supposed to fucking have changed the UI."
 test('a long thread draws the picture: front, gap marker, tail, one control', () => {
@@ -30,28 +30,39 @@ test('a long thread draws the picture: front, gap marker, tail, one control', ()
   assert.match(html, /message 1\b/)
   assert.match(html, /message 16\b/)
   assert.match(html, /pretty-more-rows/)
-  assert.match(html, /… 8 messages …/)
+  assert.match(html, /… 11 messages …/)
   assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
 })
 
-// Skip: "five lines up top expand thing three lines below." The split was 3 and
-// 5 -- the right shape with the ends swapped, which reads wrong on a card you
-// scan top-down. Pin the sizes, not just their sum: 16 messages hides 8 either
-// way, so the count alone cannot tell the two apart.
-test('the range shows five on top and three below', () => {
+// Skip, having seen five and three on screen: "it can't be five messages, it's
+// gotta be like three, two." Pin the two sizes, not their sum -- a total alone
+// cannot tell one split from another.
+test('the range shows three on top and two below', () => {
   const html = renderThreadRows(threadRows(1, 16), ctx)
   const head = html.slice(0, html.indexOf('pretty-expand-btn'))
   const hidden = html.slice(html.indexOf('pretty-more-rows'))
   // The hidden middle ends at the last message it holds; the tail is what the
   // card still draws after it.
-  const tail = hidden.slice(hidden.indexOf('message 13'))
+  const tail = hidden.slice(hidden.indexOf('message 14'))
 
-  assert.equal((head.match(/class="chat-line/g) || []).length, 5)
-  for (const n of [1, 2, 3, 4, 5]) assert.match(head, new RegExp(`message ${n}\\b`))
-  assert.doesNotMatch(head, /message 6\b/)
+  assert.equal((head.match(/class="chat-line/g) || []).length, 3)
+  for (const n of [1, 2, 3]) assert.match(head, new RegExp(`message ${n}\\b`))
+  assert.doesNotMatch(head, /message 4\b/)
 
-  assert.equal((tail.match(/class="chat-line/g) || []).length, 3)
-  for (const n of [14, 15, 16]) assert.match(tail, new RegExp(`message ${n}\\b`))
+  assert.equal((tail.match(/class="chat-line/g) || []).length, 2)
+  for (const n of [15, 16]) assert.match(tail, new RegExp(`message ${n}\\b`))
+})
+
+// Skip: "we can make it a preference, like, how many messages." The defaults are
+// what he settled on; the card reads whatever the user set.
+test('the range sizes come from the preference when set', () => {
+  const html = renderThreadRows(threadRows(1, 16), { ...ctx, threadRange: { front: 1, tail: 1 } })
+  const head = html.slice(0, html.indexOf('pretty-expand-btn'))
+
+  assert.match(html, /… 14 messages …/)
+  assert.equal((head.match(/class="chat-line/g) || []).length, 1)
+  assert.match(head, /message 1\b/)
+  assert.doesNotMatch(head, /message 2\b/)
 })
 
 // Expand reveals the middle out of the rows already drawn, so every message the

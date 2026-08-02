@@ -75,6 +75,13 @@ const DEFAULTS = {
   'fold-md-lines': 0 as number,
   'fold-diff-lines': 0 as number,
   'fold-thread-lines': 16 as number,
+  // The thread card's range view, in messages. Skip: "it can't be five
+  // messages, it's gotta be like three, two", and on the unit: "not the message
+  // scale, like, the thing scale" -- a row, whether it's a message or an
+  // activity entry. Not lines: the card shows a range, and a line count would
+  // cut a message in half to hit it.
+  'thread-front-messages': 3 as number,
+  'thread-tail-messages': 2 as number,
   'semantic-operation-page-size': 40 as number,
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,

@@ -1809,6 +1809,12 @@ function makeCtx(agents: any[], tasks: any[], preambleMacros: Record<string, str
       diff: getPref('fold-diff-lines'),
       thread: getPref('fold-thread-lines'),
     },
+    // The thread card's range view, in rows. Not a fold height -- the card is a
+    // picture of what was read, and its bound is a count of things, not lines.
+    threadRange: {
+      front: getPref('thread-front-messages'),
+      tail: getPref('thread-tail-messages'),
+    },
   }
 }
 
