@@ -516,6 +516,11 @@ export function useFleetGestures(opts: {
     if (!el) return
 
     let state: GestureState = { kind: 'none' }
+    // What was selected before the current touch sequence started. The longest
+    // finger lands first, so a gesture meant as two or three fingers reaches
+    // TLDraw as one and can open a selection brush before the rest arrive.
+    // Taking the gesture puts this back.
+    let selectionBeforeTouch: ReturnType<Editor['getSelectedShapeIds']> | null = null
     fleetTouchGestureActiveRef.current = false
     const w = window as any
     let clearActiveTimer = 0
@@ -597,11 +602,25 @@ export function useFleetGestures(opts: {
       if (!overlay) return
       const main = getMainEditor(mainEditor)
 
+      // A single finger is a real interaction, so it is never consumed — which
+      // means TLDraw has already acted on it by the time the other fingers land.
+      if (ts.length === 1) selectionBeforeTouch = [...main.getSelectedShapeIds()]
+
+      // TLDraw never sees the second and third fingers, so it cannot interrupt
+      // the one-finger interaction the way it does for a pinch it can see. Do
+      // for it what its own pinch_start does: interrupt, then restore the
+      // selection from before the stray brush.
+      const takeFromTldraw = () => {
+        main.interrupt()
+        if (selectionBeforeTouch) main.setSelectedShapes(selectionBeforeTouch)
+      }
+
       if (ts.length === 3) {
         // Three fingers always pan the document canvas, including when the
         // gesture starts over a fleet panel. The HUD camera mirror keeps the
         // document and fleet surface moving together.
         consumeTouchEvent(e)
+        takeFromTldraw()
         setGestureActive(true)
         const cam = main.getCamera()
         state = { kind: 'pan', z0: cam.z, lastC: touchCenter(ts), axis: null, accX: 0, accY: 0 }
@@ -689,6 +708,7 @@ export function useFleetGestures(opts: {
             return
           }
           consumeTouchEvent(e)
+          takeFromTldraw()
           setGestureActive(true)
           main.markHistoryStoppingPoint()
           const mainShape = (main.getShape(shape.id as any) ?? overlay.getShape(shape.id as any)) as any
@@ -747,6 +767,7 @@ export function useFleetGestures(opts: {
             return
           }
           consumeTouchEvent(e)
+          takeFromTldraw()
           setGestureActive(true)
           main.markHistoryStoppingPoint()
           // Scale pivot = centroid of the panels' own positions+sizes. Computed
