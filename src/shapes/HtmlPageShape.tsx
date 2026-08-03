@@ -424,6 +424,49 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
   const iframePointerActive = iframeActive && !isPageInert
 
+  // An inert page keeps `pointer-events: none`, so every touch — including one
+  // finger — reaches the canvas and pinch-to-zoom works. That is the whole
+  // reason the marker exists and it must not change.
+  //
+  // The cost is that a tap inside the page reaches nothing, Reveal's own
+  // controls included. It cannot be fixed by letting the iframe take the touch
+  // once a second finger arrives: a touch is bound to the element it started
+  // on, so by the time two fingers exist both already belong to whoever got
+  // the first. Flipping earlier means flipping on the first finger, which is
+  // the tap we are trying to keep.
+  //
+  // So the tap is carried the other way. The canvas already has the touch; if
+  // it turns out to be a tap rather than a gesture, hand that one point to the
+  // page as a click. Multi-touch never comes near this.
+  const tapStart = useRef<{ x: number; y: number; t: number } | null>(null)
+  const onInertPointerDown = useCallback((e: React.PointerEvent) => {
+    tapStart.current = e.isPrimary ? { x: e.clientX, y: e.clientY, t: Date.now() } : null
+  }, [])
+  const onInertPointerUp = useCallback((e: React.PointerEvent) => {
+    const start = tapStart.current
+    tapStart.current = null
+    if (!start || !e.isPrimary) return
+    // A tap, not a drag and not the tail of a pinch.
+    if (Date.now() - start.t > 400) return
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return
+
+    const iframe = iframeRef.current
+    const doc = iframe?.contentDocument
+    if (!iframe || !doc) return
+    const rect = iframe.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    // Screen px to the iframe's own CSS px: the shape is scaled by the camera,
+    // the iframe's internal viewport is not.
+    const x = (e.clientX - rect.left) * (iframe.clientWidth / rect.width)
+    const y = (e.clientY - rect.top) * (iframe.clientHeight / rect.height)
+    try {
+      const target = doc.elementFromPoint(x, y)
+      if (target instanceof doc.defaultView!.HTMLElement) target.click()
+    } catch {
+      // Unreadable document: nothing to hand the tap to.
+    }
+  }, [])
+
   // Viewport gating: render the iframe when the page is near the viewport, on
   // both axes, with the margin measured in PAGES.
   //
@@ -956,6 +999,13 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         position: 'relative',
         pointerEvents: iframeActive ? 'auto' : 'none',
       }}
+      // The content layer below is `pointer-events: none` while inert, so the
+      // tap has to be caught out here, where events still land. Nothing is
+      // stopped or consumed — tldraw's listeners are ancestors and still see
+      // everything, which is what keeps the pinch working.
+      {...(isPageInert
+        ? { onPointerDown: onInertPointerDown, onPointerUp: onInertPointerUp }
+        : {})}
       >
         {/* Content layer: pointer-events controlled by interaction state */}
         <div style={{
