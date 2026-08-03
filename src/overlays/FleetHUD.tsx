@@ -479,7 +479,6 @@ export function FleetHUD({
       flowAxis,
       screenPad: FLEET_HUD_DEFAULT_TOP_PAD_PX,
       marginGap: getLayoutReadabilityTokens(vp).marginGap,
-      screen: vp,
     })
   }, [hudWm, mainEditor])
 

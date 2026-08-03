@@ -39,7 +39,6 @@ export function computeFleetHudDefaultAnchor({
   flowAxis,
   screenPad,
   marginGap,
-  screen,
 }: {
   bounds: ClipBounds
   /** The document's near edge on the margin axis, projected to screen. */
@@ -47,8 +46,6 @@ export function computeFleetHudDefaultAnchor({
   flowAxis: Axis
   screenPad: number
   marginGap: number
-  /** The viewport the HUD draws into, for the on-screen guarantee below. */
-  screen: { w: number; h: number }
 }): FleetHudDefaultAnchor {
   const marginAxis = crossAxis(flowAxis)
   const alongFlow = screenPad - (flowAxis === 'x' ? bounds.x : bounds.y)
@@ -67,21 +64,20 @@ export function computeFleetHudDefaultAnchor({
   // a layout. So: place by the rule, then move the least amount that brings it
   // back on screen. Same sentence for both, and the margin still wins whenever
   // there is room for it.
-  // When the margin position is off screen, fall back to the NEAR edge at the
-  // pad — the top-left corner — not the far edge. Skip, on the first version of
-  // this: "the new layout is exactly the right width. And exactly the wrong
-  // position... it's straight up in the middle of my fucking screen." Snapping to
-  // the far edge is what put it there. The near edge is where the layout sits on
-  // a paper and where the pinned axis already puts it, so both axes agree.
-  const onScreen = (offset: number, near: number, size: number, screenSize: number) => {
-    const nearEdgeAtPad = screenPad - near
-    const farEdgeAtPad = screenSize - screenPad - (near + size)
-    const fitsOnScreen = offset <= nearEdgeAtPad && offset >= farEdgeAtPad
-    return fitsOnScreen ? offset : nearEdgeAtPad
-  }
-
+  // No screen clamp. I added one to stop the layout going off screen and it did
+  // the opposite of what it was for: overriding the slide-relative position is
+  // what puts the panels ON the slide. Skip: "what I'm currently experiencing is
+  // the fucking two chats being almost perfectly overlaid on my fucking slide...
+  // it is as if the bottom position of the chat is computed to be slightly above
+  // the bottom position of the slide."
+  //
+  // The layout went off screen because it was 2.3x the size of the screen, not
+  // because the rule was wrong. That cause is fixed — sized against the pinned
+  // axis now — so the rule stands on its own: across the flow, the layout's far
+  // edge sits one marginGap before the document's near edge, and it stays out of
+  // the document instead of being dragged over it.
   return {
-    panOffset: onScreen(flowAxis === 'x' ? alongFlow : acrossFlow, bounds.x, bounds.w, screen.w),
-    cameraY: onScreen(flowAxis === 'y' ? alongFlow : acrossFlow, bounds.y, bounds.h, screen.h),
+    panOffset: flowAxis === 'x' ? alongFlow : acrossFlow,
+    cameraY: flowAxis === 'y' ? alongFlow : acrossFlow,
   }
 }
