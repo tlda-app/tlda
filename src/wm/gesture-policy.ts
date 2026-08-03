@@ -10,7 +10,7 @@ export const RESIZE_LOCK_AFTER_MOVE = 64
 
 export const PAN_LOCK_INITIAL = 8    // px of (decayed) travel before the lock engages
 export const PAN_BREAK_RATIO = 1.6   // off-axis must out-travel the locked axis by this to flip it
-export const PAN_OFFAXIS_DAMP = 0.12 // residual off-axis fraction while locked (0 would be a hard lock)
+export const PAN_OFFAXIS_DAMP = 0.45 // residual off-axis fraction while locked (0 would be a hard lock)
 export const PAN_AXIS_DECAY = 0.8    // per-move decay of the axis accumulators (recent-motion weighting)
 export const RESIZE_AXIS_LOCK_INITIAL = 12
 export const RESIZE_AXIS_BREAK_RATIO = 1.6
