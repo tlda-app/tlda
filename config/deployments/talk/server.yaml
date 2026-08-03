@@ -9,10 +9,15 @@
 # everywhere because one box serves every site.
 deepgramBridgeUrl: ws://tlda-voice.internal:8180
 
-# NOT disabled here. live/stable run open because the tailnet is the network
-# boundary and only tailnet devices can reach them. A funnel removes exactly
-# that boundary, so the token is the only thing left in front of this server.
-authDisabled: false
+# Open, like every other deployment. I set this to false when the box was built,
+# reasoning that a funnel removes the tailnet boundary so a token should take its
+# place. Nobody asked for that. Skip: "Who told you to fucking put auth on that
+# shit, / Just fucking stand it up wide open,"
+#
+# It was also a departure from the project's stated position — "we do not do
+# auth" — and this box was the one place it had crept in. The talk is meant to be
+# opened by anyone with the URL, which is the whole point of registering one.
+authDisabled: true
 
 # Take tokens only from TLDA_TOKEN_READ/TLDA_TOKEN_RW (`fly secrets`), never
 # from a tokens.json on the box.
