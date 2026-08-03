@@ -9,6 +9,7 @@ import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighligh
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
 import { setCurrentDocumentInfo, createSvgDocumentLayout, createHtmlDocumentFromPageInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
+import { loadSlidesDocument } from './loaders/slidesLoader'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
 import { log } from './logger'
@@ -462,6 +463,36 @@ async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
  * Re-fetch SVG pages and hot-swap their TLDraw assets.
  * Called when a reload signal arrives from the MCP server after a rebuild.
  */
+/**
+ * Bring the slide shapes into line with the page count the build just produced.
+ *
+ * Only touches anything when the count actually changed — recreating shapes on
+ * every rebuild would churn the store and disturb the canvas for no reason. The
+ * layout object is mutated in place so every later reader, including the URL
+ * swap immediately after, sees the new page set.
+ */
+async function reconcileSlideCount(editor: Editor, document: SvgDocument): Promise<void> {
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
+    if (!res.ok) return
+    const cfg = await res.json()
+    const newCount: number = cfg.pages ?? document.pages.length
+    if (newCount <= 0 || newCount === document.pages.length) return
+
+    const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+    const fresh = await loadSlidesDocument(document.name, basePath)
+    document.pages.length = 0
+    document.pages.push(...fresh.pages)
+    document.slideInfo = fresh.slideInfo
+    createSlidesShapes(editor, document)
+    console.log(`[Reload] Slide count changed (\u2192 ${newCount}); reconciled slide shapes`)
+  } catch (e) {
+    // A failed reconcile must not stop the content swap below: updated slides
+    // beat no update at all.
+    console.warn('[Reload] slide-count reconcile failed:', (e as Error).message)
+  }
+}
+
 export async function reloadPages(
   editor: Editor,
   document: SvgDocument,
@@ -480,9 +511,26 @@ export async function reloadPages(
   // window.location.reload(), which is what this replaces. Skip: "the deck
   // updates... it changes. The page doesn't refresh. The same kind of experience
   // that we have editing tex."
-  if (HTML_PAGE_FORMATS.has(document.format || '') || document.format === 'slides') {
+  if (document.format === 'slides') {
+    // A rebuild can change the number of slides, and the iframe reloader cannot
+    // help with that: it walks the shapes that already exist and swaps their
+    // URLs, so a deck that grew would show its old slides updated and never
+    // produce the new one. The old window.location.reload() got this right by
+    // accident — it rebuilt every shape from fresh page-info — so replacing it
+    // without this would have traded a working case for a broken one.
+    //
+    // Skip: "if the number changes and you're off the end, you'll get blanked
+    // out or something, or it'll grow." Growing is what this serves. Being off
+    // the end after a shrink is the case he waved off, and it needs nothing:
+    // createSlidesShapes drops the stale shapes, the camera stays where it is,
+    // and he steps back. No clamping and no hint, as he asked.
+    //
+    // Same shape as the count refresh the SVG path does below, and for the same
+    // reason.
+    await reconcileSlideCount(editor, document)
     return reloadHtmlPages(editor, document)
   }
+  if (HTML_PAGE_FORMATS.has(document.format || '')) return reloadHtmlPages(editor, document)
 
   // Markdown parts attached to this project — independent of whatever this
   // document's own reload does below (own try/catch, never blocks it).
