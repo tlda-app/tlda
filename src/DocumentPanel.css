@@ -2262,36 +2262,18 @@ body.phone-mode .phone-hl-btn {
   opacity: 0.5;
 }
 
-body.touch-toc-mode:not(.phone-mode) .phone-hl-btn,
-body.touch-toc-mode:not(.phone-mode) .voice-note-btn,
-body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-badge {
-  width: 44px;
-  height: 44px;
-  /* The base rule is 0.15 and lifts to 0.5 on :hover — which no touch device
-     ever fires, so on an iPad these sat at 15% on white and were invisible in
-     practice. Rendered and unfindable is not better than absent, so they get a
-     resting opacity of their own here.
-     Not the hover value though: matching 0.5 made them louder at rest than they
-     are anywhere else, which is what Skip saw — "the bottom right buttons are
-     still more visually salient than they usually are... you could tone them
-     down a little." Between the two, findable without announcing itself. */
-  opacity: 0.3;
-}
-
-body.touch-toc-mode:not(.phone-mode) .phone-hl-btn {
-  bottom: calc(16px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
-  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
-}
-
-body.touch-toc-mode:not(.phone-mode) .voice-note-btn {
-  bottom: calc(76px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
-  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
-}
-
-body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
-  bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
-  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
-}
+/* Nothing about the corner controls belongs to touch-toc-mode. Skip: "I don't
+   want a difference in terms of touch TOC. The only thing that I want for
+   slides that's different from anything else is I don't want a fucking hover
+   table of contents. I'm good with the fucking button. Like, everything else we
+   did just fucks everything up."
+   So this mode hides the hover panel and shows the button, and stops there. The
+   size, resting opacity and repositioning of .phone-hl-btn, .voice-note-btn and
+   the fleet pill used to live here; they are gone, and those controls now look
+   and sit the same on a deck as on anything else.
+   The justification for the opacity part was wrong anyway — it assumed no touch
+   device fires :hover. Skip: "the stylus on an iPad Pro does have hover. So get
+   that straight." */
 
 /* Show selected color as subtle ring when inactive */
 /* Inactive button + tool slots (eraser, select, draw): ring style */
