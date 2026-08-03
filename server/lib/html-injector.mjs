@@ -1083,36 +1083,44 @@ const SLIDES_BRIDGE_SCRIPT = `
       }
       return { x: x / touches.length, y: y / touches.length };
     }
+    // Send the touches, not a scroll derived from them. A wheel carries
+    // translation and nothing else, so a pinch on a slide could only ever pan —
+    // which is why slides "refuse pinch gestures and comply with drag gestures
+    // but vibrate while you do them". The parent reads these with the same
+    // classifier the canvas uses. This is the slides copy of the same bridge;
+    // the other one is above and both had to change.
+    function tldaSlidePostTouches(e) {
+      if (window.parent === window) return;
+      var pts = [];
+      for (var i = 0; i < e.touches.length; i++) {
+        pts.push({ id: e.touches[i].identifier, x: e.touches[i].clientX, y: e.touches[i].clientY });
+      }
+      window.parent.postMessage({
+        type: 'tlda-touches',
+        shapeId: shapeId,
+        viewportId: tldaWheelViewportId,
+        points: pts,
+        t: e.timeStamp,
+      }, '*');
+    }
     document.addEventListener('touchstart', function(e) {
       if (tldaSlideAllowsInternalScroll(e.target)) {
         tldaSlideLastTouch = null;
         return;
       }
       tldaSlideLastTouch = e.touches && e.touches.length >= 2 ? tldaSlideTouchCenter(e.touches) : null;
+      tldaSlidePostTouches(e);
     }, { passive: true });
     document.addEventListener('touchmove', function(e) {
       if (tldaSlideAllowsInternalScroll(e.target)) return;
       if (!e.touches || e.touches.length < 2) return;
       e.preventDefault();
-      if (window.parent === window || !tldaSlideLastTouch) return;
-      var touch = tldaSlideTouchCenter(e.touches);
-      window.parent.postMessage({
-        type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
-        shapeId: shapeId,
-        viewportId: tldaWheelViewportId,
-        // Derived from touch.clientX, so it is a DISTANCE in this frame's own CSS
-        // pixels — unlike a wheel delta, which is a device unit no transform
-        // touches. The parent has to convert one and not the other.
-        deltaInFramePx: true,
-        deltaX: tldaSlideLastTouch.x - touch.x,
-        deltaY: tldaSlideLastTouch.y - touch.y,
-        deltaMode: 0,
-        clientX: touch.x, clientY: touch.y,
-        ctrlKey: false, metaKey: false,
-      }, '*');
-      tldaSlideLastTouch = touch;
+      tldaSlidePostTouches(e);
     }, { passive: false });
-    document.addEventListener('touchend', function() { tldaSlideLastTouch = null; }, { passive: true });
+    document.addEventListener('touchend', function(e) {
+      tldaSlideLastTouch = null;
+      tldaSlidePostTouches(e);
+    }, { passive: true });
     document.addEventListener('touchcancel', function() { tldaSlideLastTouch = null; }, { passive: true });
   }
 
