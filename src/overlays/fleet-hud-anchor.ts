@@ -39,6 +39,7 @@ export function computeFleetHudDefaultAnchor({
   flowAxis,
   screenPad,
   marginGap,
+  screen,
 }: {
   bounds: ClipBounds
   /** The document's near edge on the margin axis, projected to screen. */
@@ -46,14 +47,35 @@ export function computeFleetHudDefaultAnchor({
   flowAxis: Axis
   screenPad: number
   marginGap: number
+  /** The viewport the HUD draws into, for the on-screen guarantee below. */
+  screen: { w: number; h: number }
 }): FleetHudDefaultAnchor {
   const marginAxis = crossAxis(flowAxis)
   const alongFlow = screenPad - (flowAxis === 'x' ? bounds.x : bounds.y)
   const acrossFlow = docNearScreen - marginGap - (marginAxis === 'x'
     ? bounds.x + bounds.w
     : bounds.y + bounds.h)
+
+  // The margin is where the layout WANTS to be. Being on screen is what it has
+  // to be. Skip: "you also make a layout that actually works on a slideshow...
+  // right now, have shit off my screen."
+  //
+  // A document only leaves a usable margin if it doesn't fill the viewport
+  // across its flow. A portrait page doesn't, so a paper's layout sits beside it
+  // and this changes nothing. A slide fills the screen, so the margin above it is
+  // off the top — the rule is satisfied and the layout is invisible, which is not
+  // a layout. So: place by the rule, then move the least amount that brings it
+  // back on screen. Same sentence for both, and the margin still wins whenever
+  // there is room for it.
+  const onScreen = (offset: number, near: number, size: number, screenSize: number) => {
+    const lo = screenPad - near                          // near edge at the pad
+    const hi = screenSize - screenPad - (near + size)    // far edge at the pad
+    if (lo < hi) return Math.min(Math.max(offset, hi), lo)
+    return lo                                            // taller than the screen: show the near edge
+  }
+
   return {
-    panOffset: flowAxis === 'x' ? alongFlow : acrossFlow,
-    cameraY: flowAxis === 'y' ? alongFlow : acrossFlow,
+    panOffset: onScreen(flowAxis === 'x' ? alongFlow : acrossFlow, bounds.x, bounds.w, screen.w),
+    cameraY: onScreen(flowAxis === 'y' ? alongFlow : acrossFlow, bounds.y, bounds.h, screen.h),
   }
 }

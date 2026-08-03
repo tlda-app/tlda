@@ -19,6 +19,22 @@ export type DocumentPageBounds = {
 
 export type FleetLayoutViewportBounds = { x: number; y: number; w: number; h: number }
 
+/** Width of the content group a variant lays out, excluding the rail that hangs
+ *  outside it. One place, so the fit-to-viewport scale and the placement agree. */
+function variantContentW(
+  variant: FleetLayoutVariant | string,
+  vp: { w: number; h: number },
+  leftW: number,
+  chatW: number,
+  gap: number,
+): number {
+  if (variant === 'single-chat') return singleChatViewportPanelSize(vp).w
+  if (variant === 'two-chat') return chatW * 2 + gap
+  if (variant === 'big-chat') return leftW + gap + Math.round(chatW * 2)
+  if (variant === 'both-margins') return leftW + gap + Math.round(chatW * 1.5)
+  return leftW + gap + (chatW * 2 + gap)
+}
+
 export function fleetLayoutPanelCount(variant: string): number {
   return variant === '2x2' ? 4 : variant === 'big-chat' || variant === 'single-chat' ? 1 : 2
 }
@@ -51,11 +67,34 @@ export function buildFleetLayoutPlanInput({
 
   const vp = viewport ?? currentVisibleViewportSize() ?? editor.getViewportScreenBounds()
   const layoutTokens = getLayoutReadabilityTokens(vp)
-  const leftW = layoutTokens.leftW
   const gap = layoutTokens.gap
-  const chatW3 = layoutTokens.chatW
   const marginGap = layoutTokens.marginGap
-  const rightW = chatW3 * 2 + gap
+
+  const flowAxis = documentFlowAxis(editor, getDocumentPageBounds)
+  const marginAxis = crossAxis(flowAxis)
+
+  // A layout is sized against the screen dimension on the axis it is PINNED to,
+  // because that is the one it has to live within — the other axis it shares
+  // with the document and can extend along. Skip: "you're not sizing the screen
+  // width, right? Normally we size the screen height. But when we are at fixed
+  // horizontal position, we need to size to screen width."
+  //
+  // The HUD is pinned along the flow axis, so a document that runs down the page
+  // is sized to screen height, exactly as before — every column width still comes
+  // off totalH and nothing about a paper changes. A document that runs across is
+  // pinned horizontally, so it is sized to screen width instead. Its columns had
+  // been derived from height and their sum never checked against the screen,
+  // which is how 1430 of layout ended up on a 1194 screen. Skip: "right now, have
+  // shit off my fucking screen."
+  const layoutSpanFrac = 0.8
+  // two-chat has no rail hanging outside it, so its span is just its content.
+  const railSpan = variant === 'two-chat' ? 0 : layoutTokens.leftW + gap
+  const naturalSpan = railSpan + variantContentW(variant, vp, layoutTokens.leftW, layoutTokens.chatW, gap)
+  const columnScale = flowAxis === 'x' || variant === 'two-chat'
+    ? (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan)
+    : 1
+  const leftW = Math.round(layoutTokens.leftW * columnScale)
+  const chatW3 = Math.round(layoutTokens.chatW * columnScale)
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
   // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
   const totalH = layoutTokens.totalH
@@ -70,11 +109,7 @@ export function buildFleetLayoutPlanInput({
   // places one chat in the RIGHT margin, at docRight + marginGap (below).
   // Everything is laid out relative to the document edges — never relative to
   // the HUD position, which is a separate offset (the anchor shape).
-  const leftContentW =
-    variant === 'single-chat' ? singleChatViewportPanelSize(vp).w
-    : variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
-    : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
-    : leftW + gap + rightW
+  const leftContentW = variantContentW(variant, vp, leftW, chatW3, gap)
 
   // The layout lives in the margin the document leaves, which is the margin
   // ACROSS its flow: a document that runs down the canvas leaves room beside it,
@@ -85,8 +120,6 @@ export function buildFleetLayoutPlanInput({
   // layout."
   //
   // One rule, stated on an axis. There is no paper case and no talk case here.
-  const flowAxis = documentFlowAxis(editor, getDocumentPageBounds)
-  const marginAxis = crossAxis(flowAxis)
   const contentAcross = marginAxis === 'x' ? leftContentW : totalH
   const docNear = marginAxis === 'x' ? docBounds.minLeft : docBounds.minTop
   const acrossOrigin = docNear - marginGap - contentAcross

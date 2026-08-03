@@ -47,6 +47,7 @@ type LayoutId = FleetLayoutVariant
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto' | 'phone-default'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
   { id: 'single-chat', title: 'Chat: single inset chat' },
+  { id: 'two-chat', title: 'Two chats: two chats side by side, nothing else' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
   { id: 'big-chat', title: 'Big chat: large chat over source editor' },
@@ -95,6 +96,14 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
       <>
         <rect x={s*0.18} y={s*0.12} width={s*0.42} height={s*0.76} rx={r} fill={ch} />
         {docEl()}
+      </>
+    ),
+    'two-chat': (
+      // [chat] [chat] | DOC
+      <>
+        <rect x={0} y={0} width={s*0.29} height={s} rx={r} fill={ch} />
+        <rect x={s*0.29+g} y={0} width={s*0.29} height={s} rx={r} fill={ch} />
+        {docEl(s*0.6+g)}
       </>
     ),
     '3-col': (

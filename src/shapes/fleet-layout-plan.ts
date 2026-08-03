@@ -3,7 +3,7 @@ import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-regis
 import { singleChatViewportPanelSize } from './fleet-layout-sizing'
 import type { Axis } from './document-flow-axis'
 
-export type FleetLayoutVariant = 'single-chat' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
+export type FleetLayoutVariant = 'single-chat' | 'two-chat' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
 
 export type FleetLayoutShapePlan = {
   id: string
@@ -95,6 +95,33 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
           y: anchorY,
           isLocked: false,
           props: { w: size.w, h: size.h, filter: filter1 },
+        }, myId, myDevice),
+      ],
+      dispatchHudReset: false,
+    }
+  }
+
+  if (variant === 'two-chat') {
+    // Skip: "I just want fucking two chats next to each other. Fucking sized
+    // horizontally to, like, 80% screen width or whatever." — "I don't need a
+    // fucking inbox. I don't need a fucking agents panel."
+    //
+    // So: two chats, nothing else. The width they share is set by the sizing
+    // rule above, which measures the screen dimension on the pinned axis; here
+    // they just split it.
+    return {
+      shapes: [
+        panelShape('fleet-chat', {
+          id: makeSlotId('chat-0'),
+          x: anchorX, y: anchorY,
+          isLocked: false,
+          props: { w: chatW3, h: totalH, filter: filter1 },
+        }, myId, myDevice),
+        panelShape('fleet-chat', {
+          id: makeSlotId('chat-1'),
+          x: anchorX + chatW3 + gap, y: anchorY,
+          isLocked: false,
+          props: { w: chatW3, h: totalH, filter: filter2 },
         }, myId, myDevice),
       ],
       dispatchHudReset: false,

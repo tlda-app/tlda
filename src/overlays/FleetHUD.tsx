@@ -479,6 +479,7 @@ export function FleetHUD({
       flowAxis,
       screenPad: FLEET_HUD_DEFAULT_TOP_PAD_PX,
       marginGap: getLayoutReadabilityTokens(vp).marginGap,
+      screen: vp,
     })
   }, [hudWm, mainEditor])
 
@@ -839,12 +840,28 @@ export function FleetHUD({
   // travels on — X on a paper, Y on a talk.
   useEffect(() => {
     if (!expanded) return
-    // The HUD rides the document across its flow, so that is the axis whose
-    // camera changes are its business — a move along the flow leaves it where it
-    // is. Read once per subscription rather than per camera tick: the predicate
-    // walks every page shape, and the effect re-runs when the pages arrive.
+    // Two different questions live here and I had conflated them, which broke
+    // three-finger pan on a talk.
+    //
+    // WHEN TO RECOMPUTE is "the camera moved", on either axis. The overlay layer
+    // decides which axis it actually rides — that is its policy's whole job — but
+    // it has to be reconfigured, and the clip-panel viewport re-synced, whenever
+    // the camera changes at all. useFleetGestures drives three-finger pan through
+    // the main camera and relies on this poll to mirror it: "3-finger: pan the
+    // main canvas from anywhere (even over the panels)... the HUD's camera-poll
+    // mirrors a main-camera pan onto the HUD." Gating the poll on the ride axis
+    // made it deaf to horizontal pans on a deck, which is the gesture he uses to
+    // move through a talk.
+    //
+    // WHAT COUNTS AS A DELIBERATE REPOSITION is the narrower one, and that IS the
+    // ride axis: moving along the flow is navigation, not "I put my HUD here", and
+    // persisting an anchor for it would save a position nobody chose.
     const rideAxis = crossAxis(documentPageFlowAxis(mainEditor))
-    const travelAxisMoved = (
+    const cameraMoved = (
+      cam: { x: number; y: number },
+      last: { x: number; y: number },
+    ) => cam.x !== last.x || cam.y !== last.y
+    const isDeliberateReposition = (
       cam: { x: number; y: number },
       last: { x: number; y: number },
     ) => cam[rideAxis] !== last[rideAxis]
@@ -872,7 +889,7 @@ export function FleetHUD({
     }
 
     const updateFromCamera = (cam: { x: number; y: number; z: number }) => {
-      if (!travelAxisMoved(cam, lastCam) && cam.z === lastCam.z) return
+      if (!cameraMoved(cam, lastCam) && cam.z === lastCam.z) return
 
       const suppressCameraTrackingUntil = Number(readinessWindow.__tldaFleetHudSuppressCameraTrackingUntil || 0)
       const suppressCameraTracking = suppressCameraTrackingUntil > Date.now()
@@ -896,7 +913,7 @@ export function FleetHUD({
         })
         syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
         const hudCameraAnchor = readHudCameraAnchor()
-        if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking) {
+        if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking && isDeliberateReposition(cam, lastCam)) {
           userPannedRef.current = true
           ignoreSavedAnchorRef.current = false
           saveAnchorOffsets(mainEditor, hudCameraAnchor.panOffset, hudCameraAnchor.cameraY)
@@ -917,7 +934,7 @@ export function FleetHUD({
 
     const stop = react('fleet-hud-main-camera', () => {
       const cam = mainEditor.getCamera()
-      if (!travelAxisMoved(cam, lastCam) && cam.z === lastCam.z) return
+      if (!cameraMoved(cam, lastCam) && cam.z === lastCam.z) return
       pendingCam = { x: cam.x, y: cam.y, z: cam.z }
       if (frame === null) frame = requestAnimationFrame(flushCamera)
     })
