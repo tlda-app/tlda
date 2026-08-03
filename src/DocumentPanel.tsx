@@ -956,7 +956,7 @@ function VoiceNoteButtonInner() {
   const [dragging, setDragging] = useState(false)
   const [dragAnchor, setDragAnchor] = useState<DOMRect | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
-  const [selectedMode, setSelectedMode] = useState<VoiceButtonMode>(readVoiceButtonMode)
+  const selectedMode = readVoiceButtonMode()
 
   const voiceSlots = useMemo(() => [
     {
@@ -990,12 +990,18 @@ function VoiceNoteButtonInner() {
     },
   ], [triggerFromElement])
 
-  const selectedSlot = voiceSlots.findIndex(slot => slot.id === selectedMode)
-
-  const selectMode = useCallback((mode: VoiceButtonMode) => {
-    setSelectedMode(mode)
-    try { localStorage.setItem(VOICE_BUTTON_MODE_KEY, mode) } catch { /* private mode */ }
-  }, [])
+  // The corner button is a plain mic toggle tonight. Skip: "I don't need fucking
+  // stickies, bro. So if it's gonna be fucking hard, just give me a fucking
+  // toggle button."
+  //
+  // The slider it used to carry was broken in a way that always resolved to
+  // voice-note: `pickCornerSliderIndex` maps anything short of a 48px leftward
+  // drag to `fromButton = 0`, which is the LAST slot, and a rightward drag
+  // clamps to the same place -- so an under-travelled drag selected voice-note
+  // and `handlePointerUp` fired its action in the same breath. He got a note
+  // whatever he aimed at. Until the slider is rebuilt as a second instance of
+  // the highlighter's, the button does the one thing he needs.
+  const selectedSlot = Math.max(0, voiceSlots.findIndex(slot => slot.id === 'dictate-selection'))
 
   const resetDrag = useCallback(() => {
     dragStartRef.current = null
@@ -1051,19 +1057,10 @@ function VoiceNoteButtonInner() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId)
     }
-    const slot = dragSlotRef.current
-    if (dragging && slot !== null) {
-      suppressClickRef.current = true
-      const selected = voiceSlots[slot]
-      if (selected) {
-        selectMode(selected.id as VoiceButtonMode)
-        selected.action()
-      }
-      resetDrag()
-      return
-    }
+    // No slot selection: a drag off the mic toggle does nothing rather than
+    // arming a voice note.
     resetDrag()
-  }, [dragging, resetDrag, selectMode, voiceSlots])
+  }, [resetDrag])
 
   const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
