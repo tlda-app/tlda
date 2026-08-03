@@ -671,8 +671,18 @@ export function PhoneOverlay() {
           without a keyboard, so there is no surface where the right answer is
           to hide them. They were gated on a phone-SIZED viewport, which is why
           a talk on an iPad had neither. */}
-      <PhoneHighlighterButton />
-      <VoiceNoteButtonInner />
+      {/* Mounted once, by SvgDocument, via the HighlighterButton /
+          VoiceNoteButton exports below -- NOT here as well. They used to be
+          rendered in both places: ungated here, and gated on `isPhone` there.
+          On a phone the export nulled out and on a desktop prose doc this panel
+          did, so each of those surfaces got exactly one. On an iPad, or any
+          slides document, BOTH rendered -- two React instances of the same
+          button, each with its own selected-mode state, stacked at the same
+          fixed position. One painted, the other took the tap, and they stopped
+          agreeing the moment a selection was made. Skip: "it seems like you
+          overlaid the fucking new voice slider component on the fucking old
+          one... there's a voice note state that shows a fucking voice and gives
+          you a fucking voice note." */}
       {isPhone && (
         <>
           {/* Page number indicator — shows during scroll, fades out */}
@@ -832,8 +842,7 @@ export function AgentPill({ editor }: { editor: Editor }) {
 // actual phones, where the PhoneOverlay renders its own copy. iPad is a
 // touch device but not a phone, so it gets the same layout as desktop.
 export function HighlighterButton() {
-  const isPhone = usePhoneSizedViewport()
-  if (isPhone) return null
+  if (typeof window === 'undefined') return null
   return <PhoneHighlighterButton />
 }
 export function SemanticHighlightPill() { return null }
@@ -1194,8 +1203,7 @@ export function VoiceTargetFollower() {
 }
 
 export function VoiceNoteButton() {
-  const isPhone = usePhoneSizedViewport()
-  if (typeof window === 'undefined' || isPhone) return null
+  if (typeof window === 'undefined') return null
   return <VoiceNoteButtonInner />
 }
 
