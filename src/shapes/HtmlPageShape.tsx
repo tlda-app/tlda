@@ -386,8 +386,43 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     editor.getCurrentToolId() === 'text-select', [editor])
   const isBrowseTool = useValue('browse-tool', () =>
     editor.getCurrentToolId() === 'select', [editor])
+  // A page can declare that it has nothing to interact with. Skip: "on a slide
+  // by slide basis, some slides are just inert, and we may as well have the
+  // ability to say so."
+  //
+  // It has to be honoured HERE, by the parent, and that is the whole point.
+  // HTML's own `inert` makes a subtree non-interactive *within its document*, so
+  // an inert body inside the iframe would swallow the touch and do nothing with
+  // it — the event still belongs to the iframe's document and still never
+  // reaches the canvas. Only `pointer-events: none` on the iframe ELEMENT lets
+  // the gesture through to the classifier, and only the parent can set that. So
+  // the page declares, and we act on the declaration out here.
+  //
+  // Accepts the platform's word (`inert` on <html> or <body>) or the equivalent
+  // class, since a Quarto deck sets a body class more easily than an attribute.
+  const [isPageInert, setIsPageInert] = useState(false)
+  const readPageInert = useCallback((iframe: HTMLIFrameElement | null) => {
+    try {
+      const doc = iframe?.contentDocument
+      if (!doc) return
+      const root = doc.documentElement
+      const body = doc.body
+      setIsPageInert(
+        !!(
+          root?.hasAttribute('inert') ||
+          body?.hasAttribute('inert') ||
+          root?.classList.contains('tlda-inert') ||
+          body?.classList.contains('tlda-inert')
+        )
+      )
+    } catch {
+      // Unreadable document: leave it interactive, which is today's behaviour.
+      // A page we cannot read cannot have declared anything.
+    }
+  }, [])
+
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
-  const iframePointerActive = iframeActive
+  const iframePointerActive = iframeActive && !isPageInert
 
   // Viewport gating: render the iframe when the page is near the viewport, on
   // both axes, with the margin measured in PAGES.
@@ -453,6 +488,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     const iframe = iframeRef.current
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
+    readPageInert(iframe)
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
     // Bind any rgl WebGL figures in this deck to the shared orientation props.
     // Runs on every load, including the remount that follows the viewport-gated
@@ -460,7 +496,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     // return to its render-time orientation mid-session.
     detachRglSyncRef.current?.()
     detachRglSyncRef.current = attachRglFigureSync(editor, shape.id, iframe)
-  }, [isDark, shape.id, editor])
+  }, [isDark, shape.id, editor, readPageInert])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
