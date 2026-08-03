@@ -19,8 +19,10 @@ primary_region = "sjc"
   NODE_ENV = "production"
   TLDA_DEPLOYMENT = "talk"
   # Its own tailnet node — NOT tlda-fly, which is `testing` and must not be
-  # disturbed. This name is also the public hostname.
-  TS_HOSTNAME = "tlda-talk"
+  # disturbed. This name is also the public hostname, and Skip picked it: he is
+  # registering https://imagined-randomization.cormorant-matrix.ts.net and reads
+  # this string out loud, so it is the deliverable, not an internal label.
+  TS_HOSTNAME = "imagined-randomization"
   # Expose with `tailscale funnel` instead of `tailscale serve`. Unset on every
   # other deployment, which stay tailnet-only.
   TS_FUNNEL = "1"

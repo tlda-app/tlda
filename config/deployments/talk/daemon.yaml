@@ -10,9 +10,9 @@ environments:
     talk:
       # fleet, chat, registry, agents — this box's own, empty, and not shared
       # with testing or stable. Nothing here reaches the fleet database.
-      database: https://tlda-talk.cormorant-matrix.ts.net
+      database: https://imagined-randomization.cormorant-matrix.ts.net
       # document assets and shape sync
-      store: https://tlda-talk.cormorant-matrix.ts.net
+      store: https://imagined-randomization.cormorant-matrix.ts.net
       # tldraw license. Bound to *.cormorant-matrix.ts.net through 2031-06-29,
       # which is why this box is exposed with `tailscale funnel` on its .ts.net
       # name rather than a public *.fly.dev hostname: off that domain the
