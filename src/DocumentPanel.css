@@ -2267,11 +2267,15 @@ body.touch-toc-mode:not(.phone-mode) .voice-note-btn,
 body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-badge {
   width: 44px;
   height: 44px;
-  /* Same opacity phone mode gives them. The base rule is 0.15 and lifts to 0.5
-     on :hover — which no touch device ever fires, so on an iPad these sat at
-     15% on white and were invisible in practice. Rendered and unfindable is
-     not better than absent. */
-  opacity: 0.5;
+  /* The base rule is 0.15 and lifts to 0.5 on :hover — which no touch device
+     ever fires, so on an iPad these sat at 15% on white and were invisible in
+     practice. Rendered and unfindable is not better than absent, so they get a
+     resting opacity of their own here.
+     Not the hover value though: matching 0.5 made them louder at rest than they
+     are anywhere else, which is what Skip saw — "the bottom right buttons are
+     still more visually salient than they usually are... you could tone them
+     down a little." Between the two, findable without announcing itself. */
+  opacity: 0.3;
 }
 
 body.touch-toc-mode:not(.phone-mode) .phone-hl-btn {
