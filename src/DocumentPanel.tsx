@@ -11,7 +11,7 @@ import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { ProjectTab } from './panels/ProjectTab'
 import { PrefsTab } from './panels/PrefsTab'
-import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
+import { CornerButtonSlider } from './CornerButtonSlider'
 import { isPhoneViewport } from './phoneViewport'
 
 import './DocumentPanel.css'
@@ -956,7 +956,7 @@ function VoiceNoteButtonInner() {
   const [dragging, setDragging] = useState(false)
   const [dragAnchor, setDragAnchor] = useState<DOMRect | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
-  const selectedMode = readVoiceButtonMode()
+  const [selectedMode, setSelectedMode] = useState<VoiceButtonMode>(readVoiceButtonMode)
 
   const voiceSlots = useMemo(() => [
     {
@@ -990,18 +990,24 @@ function VoiceNoteButtonInner() {
     },
   ], [triggerFromElement])
 
-  // The corner button is a plain mic toggle tonight. Skip: "I don't need fucking
-  // stickies, bro. So if it's gonna be fucking hard, just give me a fucking
-  // toggle button."
+  // A second instance of the highlighter's slider behaviour, with voice slots.
+  // Skip: "make the voice notes slider a second instance of that same
+  // component", and on what that means: "there are always two on the slider
+  // instead of one fucking replacing the other."
   //
-  // The slider it used to carry was broken in a way that always resolved to
-  // voice-note: `pickCornerSliderIndex` maps anything short of a 48px leftward
-  // drag to `fromButton = 0`, which is the LAST slot, and a rightward drag
-  // clamps to the same place -- so an under-travelled drag selected voice-note
-  // and `handlePointerUp` fired its action in the same breath. He got a note
-  // whatever he aimed at. Until the slider is rebuilt as a second instance of
-  // the highlighter's, the button does the one thing he needs.
-  const selectedSlot = Math.max(0, voiceSlots.findIndex(slot => slot.id === 'dictate-selection'))
+  // So the same contract the highlighter button has: the SELECTED slot is the
+  // button's face, the slider offers only the others, drag selects and a plain
+  // tap acts. Never both -- the old code called selectMode() and the slot's
+  // action() together on pointer-up, which is why choosing "voice note" also
+  // fired it.
+  const selectedSlot = Math.max(0, voiceSlots.findIndex(slot => slot.id === selectedMode))
+  const selectedSlotRef = useRef(selectedSlot)
+  selectedSlotRef.current = selectedSlot
+
+  const selectMode = useCallback((mode: VoiceButtonMode) => {
+    setSelectedMode(mode)
+    try { localStorage.setItem(VOICE_BUTTON_MODE_KEY, mode) } catch { /* private mode */ }
+  }, [])
 
   const resetDrag = useCallback(() => {
     dragStartRef.current = null
@@ -1041,7 +1047,17 @@ function VoiceNoteButtonInner() {
       setDragging(true)
       setDragAnchor(anchor)
     }
-    const idx = pickCornerSliderIndex({ clientX: e.clientX, anchorRect: anchor, count: voiceSlots.length })
+    // The highlighter's snap math, on the highlighter's rule that the active
+    // slot is the button and therefore not in the slider. `pickCornerSliderIndex`
+    // floored the distance and inverted it, so anything under one slot's travel
+    // -- including a drag to the right, which clamped -- resolved to the LAST
+    // slot, voice-note, whatever he aimed at.
+    const distFromBtnLeft = anchor.left - e.clientX
+    const slotW = 48
+    const slotPos = Math.round((distFromBtnLeft - slotW / 2) / slotW)
+    const others = voiceSlots.map((_, i) => i).filter(i => i !== selectedSlotRef.current)
+    const clamped = Math.max(0, Math.min(others.length - 1, slotPos))
+    const idx = others[others.length - 1 - clamped] ?? selectedSlotRef.current
     dragSlotRef.current = idx
     setDragSlot(idx)
     const slot = voiceSlots[idx]
@@ -1057,10 +1073,18 @@ function VoiceNoteButtonInner() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId)
     }
-    // No slot selection: a drag off the mic toggle does nothing rather than
-    // arming a voice note.
+    const slot = dragSlotRef.current
+    if (dragging && slot !== null) {
+      // Drag SELECTS only. The tap that follows is what acts -- same split the
+      // highlighter uses, and the reason a chosen slot no longer fires itself.
+      suppressClickRef.current = true
+      const selected = voiceSlots[slot]
+      if (selected) selectMode(selected.id as VoiceButtonMode)
+      resetDrag()
+      return
+    }
     resetDrag()
-  }, [resetDrag])
+  }, [dragging, resetDrag, selectMode, voiceSlots])
 
   const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
@@ -1077,8 +1101,9 @@ function VoiceNoteButtonInner() {
         <CornerButtonSlider
           anchorRect={dragAnchor}
           className="voice-action-slider"
-          options={voiceSlots}
-          activeIndex={dragSlot ?? selectedSlot}
+          options={voiceSlots.filter((_, i) => i !== selectedSlot)}
+          activeIndex={Math.max(0, voiceSlots.filter((_, i) => i !== selectedSlot)
+            .findIndex(o => o.id === voiceSlots[dragSlot ?? selectedSlot]?.id))}
         />
       )}
       <button
