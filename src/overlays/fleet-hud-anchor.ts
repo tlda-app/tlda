@@ -67,11 +67,17 @@ export function computeFleetHudDefaultAnchor({
   // a layout. So: place by the rule, then move the least amount that brings it
   // back on screen. Same sentence for both, and the margin still wins whenever
   // there is room for it.
+  // When the margin position is off screen, fall back to the NEAR edge at the
+  // pad — the top-left corner — not the far edge. Skip, on the first version of
+  // this: "the new layout is exactly the right width. And exactly the wrong
+  // position... it's straight up in the middle of my fucking screen." Snapping to
+  // the far edge is what put it there. The near edge is where the layout sits on
+  // a paper and where the pinned axis already puts it, so both axes agree.
   const onScreen = (offset: number, near: number, size: number, screenSize: number) => {
-    const lo = screenPad - near                          // near edge at the pad
-    const hi = screenSize - screenPad - (near + size)    // far edge at the pad
-    if (lo < hi) return Math.min(Math.max(offset, hi), lo)
-    return lo                                            // taller than the screen: show the near edge
+    const nearEdgeAtPad = screenPad - near
+    const farEdgeAtPad = screenSize - screenPad - (near + size)
+    const fitsOnScreen = offset <= nearEdgeAtPad && offset >= farEdgeAtPad
+    return fitsOnScreen ? offset : nearEdgeAtPad
   }
 
   return {
