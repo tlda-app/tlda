@@ -170,31 +170,51 @@ const BRIDGE_SCRIPT = `
         return;
       }
       tldaLastTouch = tldaTouchCenter(e.touches);
+      tldaPostTouches(e);
     }, { passive: true });
+    // Send the touches themselves, not a scroll derived from them.
+    //
+    // This used to post the centroid delta as a WHEEL event, and that was the
+    // judder: a wheel carries translation and nothing else, so a pinch inside a
+    // page could only ever pan. Skip: "the slide seemed to refuse pinch
+    // gestures, and they comply with drag gestures but they vibrate while you
+    // do them." Pan arrived by one mechanism with its own timing while the
+    // scale it implied was thrown away.
+    //
+    // The parent already converts this frame's CSS pixels to screen pixels for
+    // the wheel path, and it owns the same pan/zoom classifier the canvas uses.
+    // So hand it the raw points and let one classifier read them, wherever the
+    // fingers happen to be.
+    function tldaPostTouches(e) {
+      if (window.parent === window) return;
+      var pts = [];
+      for (var i = 0; i < e.touches.length; i++) {
+        pts.push({ id: e.touches[i].identifier, x: e.touches[i].clientX, y: e.touches[i].clientY });
+      }
+      window.parent.postMessage({
+        type: 'tlda-touches',
+        shapeId: shapeId,
+        viewportId: tldaWheelViewportId,
+        points: pts,
+        // Frame CSS pixels. The parent converts; it is the only side that can
+        // see both coordinate systems.
+        t: e.timeStamp,
+      }, '*');
+    }
     document.addEventListener('touchmove', function(e) {
       if (tldaAllowsInternalScroll(e.target)) return;
       if (!e.touches || e.touches.length < 2) return;
       e.preventDefault();
-      if (window.parent === window || !tldaLastTouch) return;
-      var touch = tldaTouchCenter(e.touches);
-      var deltaX = tldaLastTouch.x - touch.x;
-      var deltaY = tldaLastTouch.y - touch.y;
-      tldaLastTouch = touch;
-      window.parent.postMessage({
-        type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
-        shapeId: shapeId,
-        viewportId: tldaWheelViewportId,
-        // Derived from touch.clientX, so it is a DISTANCE in this frame's own CSS
-        // pixels — unlike a wheel delta, which is a device unit no transform
-        // touches. The parent has to convert one and not the other.
-        deltaInFramePx: true,
-        deltaX: deltaX, deltaY: deltaY, deltaMode: 0,
-        clientX: touch.x, clientY: touch.y,
-        ctrlKey: false, metaKey: false,
-      }, '*');
+      tldaPostTouches(e);
     }, { passive: false });
-    document.addEventListener('touchend', function() { tldaLastTouch = null; }, { passive: true });
-    document.addEventListener('touchcancel', function() { tldaLastTouch = null; }, { passive: true });
+    document.addEventListener('touchend', function(e) {
+      tldaLastTouch = null;
+      tldaPostTouches(e);
+    }, { passive: true });
+    document.addEventListener('touchcancel', function(e) {
+      tldaLastTouch = null;
+      tldaPostTouches(e);
+    }, { passive: true });
 
     function tldaElementFromNode(node) {
       if (!node) return null;

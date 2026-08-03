@@ -24,6 +24,7 @@ import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 import { attachRglFigureSync } from '../rglFigureSync'
+import { GestureInterpreter } from '@tldraw/editor'
 
 /** How many pages either side of the viewport keep their iframe mounted, on
  *  each axis. Measured in pages rather than viewports so it means the same
@@ -400,6 +401,13 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   //
   // Accepts the platform's word (`inert` on <html> or <body>) or the equivalent
   // class, since a Quarto deck sets a body class more easily than an attribute.
+  // One classifier reads the fingers wherever they land — canvas or inside a
+  // page. These carry the in-page gesture between messages.
+  const touchInterpreterRef = useRef<GestureInterpreter | null>(null)
+  const isPinchingRef = useRef(false)
+  const scaleOffsetRef = useRef(1)
+  const lastOriginRef = useRef({ x: 0, y: 0 })
+
   const [isPageInert, setIsPageInert] = useState(false)
   const readPageInert = useCallback((iframe: HTMLIFrameElement | null) => {
     try {
@@ -650,6 +658,78 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             chipRect: topLevelChipRect(),
           },
         }))
+        return
+      }
+      if (e.data?.type === 'tlda-touches') {
+        if (e.data.shapeId !== shape.id) return
+        const iframe = iframeRef.current
+        const rect = iframe?.getBoundingClientRect()
+        if (!iframe || !rect || !iframe.offsetWidth) return
+        // Frame CSS px to screen px, off the same rect the wheel path uses.
+        const s = rect.width / iframe.offsetWidth
+        const pts = (e.data.points || []).map((p: { id: number; x: number; y: number }) => ({
+          id: p.id,
+          x: rect.left + p.x * s,
+          y: rect.top + p.y * s,
+        }))
+
+        const interpreter = (touchInterpreterRef.current ||= new GestureInterpreter())
+        const frame = interpreter.update(pts, Number(e.data.t) || performance.now())
+        const { zoomSpeed } = editor.getCameraOptions()
+
+        if (frame.count < 2) {
+          if (isPinchingRef.current) {
+            isPinchingRef.current = false
+            interpreter.end()
+            const zoom = editor.getZoomLevel()
+            editor.dispatch({
+              type: 'pinch', name: 'pinch_end',
+              point: { x: lastOriginRef.current.x, y: lastOriginRef.current.y, z: zoom },
+              delta: { x: 0, y: 0 },
+              shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, accelKey: false,
+            })
+          }
+          return
+        }
+
+        lastOriginRef.current = { x: frame.origin.x, y: frame.origin.y }
+
+        if (!isPinchingRef.current) {
+          isPinchingRef.current = true
+          scaleOffsetRef.current = editor.getZoomLevel() ** (1 / zoomSpeed)
+          editor.dispatch({
+            type: 'pinch', name: 'pinch_start',
+            point: { x: frame.origin.x, y: frame.origin.y, z: editor.getZoomLevel() },
+            delta: { x: 0, y: 0 },
+            shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, accelKey: false,
+          })
+          return
+        }
+
+        // Only a reading of "zooming" moves the zoom. A drag whose fingers
+        // splayed a little stays a drag — the same rule the canvas follows,
+        // because it is the same classifier.
+        let zoom: number
+        if (frame.kind === 'zooming') {
+          const baseZoom = editor.getBaseZoom()
+          const { zoomSteps } = editor.getCameraOptions()
+          const min = (zoomSteps[0] * baseZoom) ** (1 / zoomSpeed)
+          const max = (zoomSteps[zoomSteps.length - 1] * baseZoom) ** (1 / zoomSpeed)
+          scaleOffsetRef.current = Math.min(max, Math.max(min, scaleOffsetRef.current * frame.scale))
+          zoom = scaleOffsetRef.current ** zoomSpeed
+        } else {
+          scaleOffsetRef.current = editor.getZoomLevel() ** (1 / zoomSpeed)
+          zoom = editor.getZoomLevel()
+        }
+
+        editor.dispatch({
+          type: 'pinch', name: 'pinch',
+          point: { x: frame.origin.x, y: frame.origin.y, z: zoom },
+          // Already screen px: the points were converted before the interpreter
+          // ever saw them, so its pan is in screen px too.
+          delta: { x: frame.pan.x, y: frame.pan.y },
+          shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, accelKey: false,
+        })
         return
       }
       if (e.data?.type === 'tlda-wheel') {
