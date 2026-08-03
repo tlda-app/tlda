@@ -467,7 +467,22 @@ export async function reloadPages(
   document: SvgDocument,
   pageNumbers: number[] | null, // null = all pages
 ): Promise<ReloadResult> {
-  if (HTML_PAGE_FORMATS.has(document.format || '')) return reloadHtmlPages(editor, document)
+  // A deck's pages are iframes too, so it reloads the same way: swap each
+  // shape's URL and let the iframe re-fetch. document-formats.mjs keeps `slides`
+  // out of HTML_PAGE_FORMATS deliberately — that set also answers "does this
+  // have synctex" and "is the source line-addressed", and a deck answers no to
+  // both — so the routing says `slides` here rather than widening the set.
+  //
+  // The reason given there for slides taking "its own reload path" is that a
+  // deck is addressed by slide coordinates. That is true of the shapes and not
+  // of the reloader: htmlPageReloadUrl parses the query and only SETS
+  // _tldaReload, so _tldaH and _tldaV survive untouched. Its own path had become
+  // window.location.reload(), which is what this replaces. Skip: "the deck
+  // updates... it changes. The page doesn't refresh. The same kind of experience
+  // that we have editing tex."
+  if (HTML_PAGE_FORMATS.has(document.format || '') || document.format === 'slides') {
+    return reloadHtmlPages(editor, document)
+  }
 
   // Markdown parts attached to this project — independent of whatever this
   // document's own reload does below (own try/catch, never blocks it).
@@ -484,7 +499,11 @@ export async function reloadPages(
   // and the viewer wedges on the stale layout (showing the last old page on
   // repeat). Re-fetch the count and, if it changed, rebuild the layout and
   // reconcile the page shapes (create new, drop removed) before fetching SVGs.
-  if (pageNumbers === null && document.format !== 'slides') {
+  //
+  // This used to also test `format !== 'slides'`. A deck now returns above, at
+  // the iframe reloader, so that test could never be false and is gone rather
+  // than left as decoration.
+  if (pageNumbers === null) {
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
       if (res.ok) {
