@@ -1269,6 +1269,37 @@ async function validateSourcePushRequest(name, project, { files, deletedFiles, s
     if (error) return { status: 400, ok: false, error }
     if (await pathExists(join(sourceRoot, filePath))) proposed.add(filePath)
   }
+
+  // A file the client declares, which is really sitting in our own source dir,
+  // is real — whether or not the stored manifest happens to remember it.
+  //
+  // Without this the two records the server keeps of its own source set can
+  // deadlock a project permanently. The stored manifest is a cache; the source
+  // dir is the thing itself. When the cache loses an entry for a file that is
+  // still on disk, that file is declared by every push, credited by none, and
+  // therefore `extra` forever — and the push it would take to restore the entry
+  // is the push being rejected. Nothing client-side can break the loop: the CLI
+  // sends only files whose hash differs from the server's, and this one matches,
+  // so it is never carried; and the client can read /hashes but not the stored
+  // manifest, so it cannot even see the condition. Measured on a live project:
+  // 471 declared, 471 in /hashes, 3 that a push would actually carry.
+  //
+  // Deliberately NOT a walk of sourceRoot. That would make `missing` — the
+  // mirror test below — fire for every file on disk the client does not declare,
+  // turning this into a rejection in the opposite direction for any client whose
+  // walk is narrower than the server's. Crediting only DECLARED files cannot do
+  // that, and the arithmetic is the point:
+  //
+  //   proposed' = proposed ∪ (declared ∩ disk)
+  //   missing'  = proposed' − declared = missing ∪ ∅ = missing   (unchanged)
+  //   extra'    = declared − proposed' ⊆ extra                   (can only shrink)
+  //
+  // So this turns rejections into acceptances and can never do the reverse.
+  for (const filePath of declared) {
+    if (proposed.has(filePath)) continue
+    if (await pathExists(join(sourceRoot, filePath))) proposed.add(filePath)
+  }
+
   for (const filePath of deletes) proposed.delete(filePath)
   for (const file of pushFiles) proposed.add(file.path)
 
