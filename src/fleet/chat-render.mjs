@@ -210,6 +210,31 @@ export function timerDoneLabel(s) {
   return String(s || '').replace(/\s*—\s*say\b[^]*$/i, '')
 }
 
+function durationLabel(seconds) {
+  const value = Number(seconds)
+  if (!Number.isFinite(value) || value <= 0) return ''
+  if (value % 86400 === 0) return `${value / 86400}d`
+  if (value % 3600 === 0) return `${value / 3600}h`
+  if (value % 60 === 0) return `${value / 60}m`
+  return `${value}s`
+}
+
+function absoluteTime(ts) {
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString([], {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  })
+}
+
+function countdownLabel(ts) {
+  const remaining = Math.max(0, Math.ceil((new Date(ts).getTime() - Date.now()) / 1000))
+  const mins = Math.floor(remaining / 60)
+  const secs = remaining % 60
+  return mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+}
+
 // --- Standalone att-token resolver ---
 // Used by the unquote handler to render a rechat result (resolvedMessage +
 // inlineAttachments) into HTML without the full chat-line wrapper — the immediate
@@ -341,6 +366,10 @@ export function renderChatLine(m, ctx) {
   const { agentLabel, getNickClass, isHumanId, getAgents, getTasks, tldaToken, renderMarkdown } = ctx
 
   const recipients = recipientIds(m)
+
+  // A deferred task is represented by its task card. Its linked timer remains
+  // durable for scheduling and notification, but is not a second chat row.
+  if (m._timerTaskId) return ''
 
   // Name provenance: the nick a HISTORICAL message shows is the name its sender
   // held AT send time. The server stamps `fromName`/`toName` (the period name,
@@ -523,10 +552,18 @@ export function renderChatLine(m, ctx) {
     const messageHtml = message
       ? `<div class="lc-message">${linkifyCodeUrls(renderMarkdown(message))}</div>`
       : ''
+    const suppliedCallArgs = m._taskCallArgs && typeof m._taskCallArgs === 'object'
+      ? Object.entries(m._taskCallArgs).map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+      : []
+    const call = `delegate(${suppliedCallArgs.join(', ')})`
+    const scheduleHtml = m._taskNextFireAt
+      ? `<div class="lc-task-schedule" data-timer-until="${esc(m._taskNextFireAt)}"><span class="timer-msg">${esc(absoluteTime(m._taskNextFireAt))} · in ${esc(countdownLabel(m._taskNextFireAt))}${m._taskRepeatSeconds ? ` · every ${esc(durationLabel(m._taskRepeatSeconds))}` : ''}</span></div>`
+      : ''
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
         <div class="drag-handle" title="Drag"></div>
-        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${esc(call)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
+        ${scheduleHtml}
         ${messageHtml}
         ${criteriaHtml}
       </div></div>`

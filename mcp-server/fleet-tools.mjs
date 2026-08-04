@@ -2458,6 +2458,10 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       const delegateBody = {
         from: activeAgentId(),
         agent: targetAgent,
+        // Preserve the MCP call exactly as supplied for the user-visible task
+        // card. The normalized fields below drive execution; they may contain
+        // derived defaults and therefore are not an honest rendering source.
+        tool_args: args,
         task_id: args.task_id || undefined,
         description,
         message: routedMessage,

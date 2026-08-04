@@ -3891,7 +3891,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     const tick = () => {
-      const nodes = logEl.querySelectorAll<HTMLElement>('.chat-timer-countdown[data-timer-until]')
+      const nodes = logEl.querySelectorAll<HTMLElement>('.chat-timer-countdown[data-timer-until], .lc-task-schedule[data-timer-until]')
       for (const node of nodes) {
         const until = node.getAttribute('data-timer-until')
         const span = node.querySelector<HTMLElement>('.timer-msg')
@@ -3901,9 +3901,17 @@ function FleetChatInner({ shape }: { shape: any }) {
         const secs = r % 60
         const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
         const txt = span.textContent || ''
-        const arrowIdx = txt.indexOf('→')
-        const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
-        setTickerText(span, `⏱ ${timeStr} ${tail}`.trimEnd())
+        if (node.classList.contains('lc-task-schedule')) {
+          const middleDot = txt.indexOf(' · in ')
+          const repeat = txt.indexOf(' · every ')
+          const absolute = middleDot >= 0 ? txt.slice(0, middleDot) : txt
+          const recurrence = repeat >= 0 ? txt.slice(repeat) : ''
+          setTickerText(span, `${absolute} · in ${timeStr}${recurrence}`)
+        } else {
+          const arrowIdx = txt.indexOf('→')
+          const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
+          setTickerText(span, `⏱ ${timeStr} ${tail}`.trimEnd())
+        }
       }
       // ScheduleWakeup cards: same idea — recompute the "in Xm Ys" countdown each
       // second from the absolute fire epoch baked into data-fire-at.

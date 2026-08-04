@@ -4,8 +4,10 @@ import assert from 'node:assert/strict'
 import { ServerTimerScheduler } from '../server/lib/timer-scheduler.mjs'
 
 function timerStore(event, task = null) {
+  const delegateEvent = task ? { id: 99, type: 'delegate', metadata: { taskId: task.id } } : null
   return {
     event,
+    delegateEvent,
     getEventById(id) {
       return Number(id) === Number(this.event.id) ? structuredClone(this.event) : null
     },
@@ -18,7 +20,11 @@ function timerStore(event, task = null) {
       return true
     },
     updateEventMetadata(id, patch) {
-      this.event.metadata = { ...this.event.metadata, ...patch }
+      if (Number(id) === Number(this.event.id)) this.event.metadata = { ...this.event.metadata, ...patch }
+      if (Number(id) === Number(this.delegateEvent?.id)) this.delegateEvent.metadata = { ...this.delegateEvent.metadata, ...patch }
+    },
+    getTaskDeliveryState(id) {
+      return task?.id === id ? { task, event: this.delegateEvent } : null
     },
     listPendingTimerEvents() {
       return this.event.metadata.pending ? [structuredClone(this.event)] : []
@@ -59,6 +65,11 @@ test('recurring task timer reschedules the same durable event while task is open
   assert.equal(store.event.metadata.fire_at, '2026-07-28T10:05:00.000Z')
   assert.equal(broadcasts[0].data.metadata.state, 'fired')
   assert.equal(broadcasts[1].data.metadata.state, 'pending')
+  assert.equal(store.delegateEvent.metadata.next_fire_at, '2026-07-28T10:05:00.000Z')
+  assert.deepEqual(broadcasts[2], {
+    type: 'event-update',
+    data: { id: 99, event_id: 99, metadata_patch: { next_fire_at: '2026-07-28T10:05:00.000Z' } },
+  })
 })
 
 test('recurring task timer cancels instead of notifying after task closes', async () => {

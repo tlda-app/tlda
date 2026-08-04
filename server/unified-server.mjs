@@ -6612,6 +6612,7 @@ async function handleFleetWsMessage(ws, msg) {
       notify_every,
       expires_at,
       allow_pending_agent,
+      tool_args,
       operation_id,
       task_id,
     } = msg
@@ -6664,6 +6665,23 @@ async function handleFleetWsMessage(ws, msg) {
     if (notify_every != null && (!Number.isFinite(Number(notify_every)) || Number(notify_every) <= 0)) { error('notify_every must be a positive number of seconds'); return }
     if (expires_at && !Number.isFinite(expiresAtMs)) { error('expires_at must be an ISO timestamp'); return }
     if (Number.isFinite(expiresAtMs) && Number.isFinite(atMs) && expiresAtMs <= atMs) { error('expires_at must be later than at'); return }
+    const notifyEverySeconds = notify_every != null ? Number(notify_every) : null
+    const reminderAtMs = atMs > nowMs
+      ? atMs
+      : notifyEverySeconds
+        ? nowMs + notifyEverySeconds * 1000
+        : NaN
+    const publicDelegateArgNames = [
+      'agent', 'task_id', 'mint', 'description', 'message', 'file', 'selector',
+      'after', 'at', 'notify_every', 'expires_at', 'friendly_name',
+      'success_criteria', 'template', 'requires_approval', 'operation_id',
+      'model', 'cwd',
+    ]
+    const delegateCallArgs = tool_args && typeof tool_args === 'object' && !Array.isArray(tool_args)
+      ? tool_args
+      : Object.fromEntries(publicDelegateArgNames
+        .filter(name => Object.hasOwn(msg, name))
+        .map(name => [name, msg[name]]))
     const metadata = {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
@@ -6681,6 +6699,13 @@ async function handleFleetWsMessage(ws, msg) {
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
       message: taskMsg || '',
+      callArgs: delegateCallArgs,
+      ...(at ? { at: new Date(atMs).toISOString() } : {}),
+      ...(Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs
+        ? { next_fire_at: new Date(reminderAtMs).toISOString() }
+        : {}),
+      ...(notifyEverySeconds ? { repeat_seconds: notifyEverySeconds } : {}),
+      ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
       ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
     }
     let delegateEvent
@@ -6723,12 +6748,6 @@ async function handleFleetWsMessage(ws, msg) {
         if (timer.metadata?.task_id === taskId) await serverTimerScheduler?.cancel(Number(timer.id))
       }
     }
-    const notifyEverySeconds = notify_every != null ? Number(notify_every) : null
-    const reminderAtMs = atMs > nowMs
-      ? atMs
-      : notifyEverySeconds
-        ? nowMs + notifyEverySeconds * 1000
-        : NaN
     if (Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs) {
       await fleetStore.share({
         type: 'timer',

@@ -141,6 +141,16 @@ export class ServerTimerScheduler {
           ...timerFireBroadcast({ event, to, metadataPatch: repeatPatch, message }),
           text: event.text || `⏱ ${event.metadata?.message || message || 'Timer'}`,
         })
+        const taskState = await this.store.getTaskDeliveryState?.(taskId)
+        if (taskState?.event?.id) {
+          const taskPatch = { next_fire_at: nextFireAt }
+          await this.store.updateEventMetadata?.(Number(taskState.event.id), taskPatch)
+          this.broadcast?.('event-update', {
+            id: Number(taskState.event.id),
+            event_id: Number(taskState.event.id),
+            metadata_patch: taskPatch,
+          })
+        }
         await this.refresh()
         return { ok: true, to, notified: true, recurring: true, next_fire_at: nextFireAt }
       }

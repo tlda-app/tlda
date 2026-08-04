@@ -44,6 +44,11 @@ export function convertChatEvent(e) {
     msg._toLabel = e.metadata?.toLabel || ''
     msg._criteria = e.metadata?.criteria || []
     if (e.metadata?.message) msg._message = e.metadata.message
+    if (e.metadata?.callArgs && typeof e.metadata.callArgs === 'object') msg._taskCallArgs = e.metadata.callArgs
+    if (e.metadata?.at) msg._taskAt = e.metadata.at
+    if (e.metadata?.next_fire_at) msg._taskNextFireAt = e.metadata.next_fire_at
+    if (e.metadata?.repeat_seconds) msg._taskRepeatSeconds = e.metadata.repeat_seconds
+    if (e.metadata?.expires_at) msg._taskExpiresAt = e.metadata.expires_at
   } else if (type === 'task_done') {
     msg._evType = 'task_done'
     msg._description = e.text || ''
@@ -71,6 +76,7 @@ export function convertChatEvent(e) {
     msg._evType = type
     msg._source = e.source || 'terminal'
   } else if (type === 'timer') {
+    if (e.metadata?.task_id) msg._timerTaskId = e.metadata.task_id
     const tmsg = e.metadata?.message || (e.text || '').replace(/^[⏱⏰]\s*/, '')
     if (e.metadata?.state === 'cancelled') {
       msg._timerCancelled = true
