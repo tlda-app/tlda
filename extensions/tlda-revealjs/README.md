@@ -1,7 +1,7 @@
 # tlda RevealJS
 
 An experimental [Quarto custom format](https://quarto.org/docs/extensions/formats.html)
-for RevealJS presentations shown in [tlda](https://github.com/qtm285/tlda).
+for RevealJS presentations shown in [tlda](https://github.com/tlda-app/tlda).
 It supplies the RevealJS defaults that tlda's `slides` document format expects.
 
 ## Start a presentation

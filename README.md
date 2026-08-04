@@ -297,7 +297,7 @@ tlda project link <project-name> <main-file>
 On Linux, run this.
 
 ```bash
-npm install -g github:qtm285/tlda
+npm install -g github:tlda-app/tlda
 git clone <project-url>
 cd <project-directory>
 tlda config init
@@ -317,7 +317,7 @@ Agents use tlda's MCP (Model Context Protocol) to understand the project,
 interact with what's on the canvas, and coordinate with the rest of the
 fleet.
 
-[tlda](https://github.com/davidahirshberg/tlda) works with
+[tlda](https://github.com/tlda-app/tlda) works with
 [Claude models](https://docs.anthropic.com/en/docs/about-claude/models/overview)
 in [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview),[^claude-auth]
 [OpenAI models](https://platform.openai.com/docs/models) in
@@ -485,7 +485,7 @@ On Linux, install a TeX distribution that provides those three commands. Then
 install tlda.
 
 ```bash
-npm install -g github:qtm285/tlda
+npm install -g github:tlda-app/tlda
 ```
 
 ### Start tlda and link the paper
