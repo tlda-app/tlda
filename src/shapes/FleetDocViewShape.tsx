@@ -41,6 +41,7 @@ import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap, FLEET_SHAPE_TYPES }
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
+import { optionalJson } from '../optionalJson'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -211,7 +212,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   useEffect(() => {
     if (!doc?.projectName) return
     fetch(`/docs/${doc.projectName}/proof-info.json?t=${Date.now()}`)
-      .then(r => r.ok ? r.json() : null)
+      .then(optionalJson)
       .then(setProofInfo)
       .catch(e => console.warn('[doc-view] proof-info fetch failed:', e.message))
   }, [doc?.projectName])

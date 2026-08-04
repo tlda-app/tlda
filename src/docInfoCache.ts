@@ -13,6 +13,7 @@
 
 import { onReloadSignal } from './useYjsSync'
 import { STORE_HTTP } from './activeConfig'
+import { optionalJson } from './optionalJson'
 
 const _proofInfoCache = new Map<string, Promise<any>>()
 const _theoremMapCache = new Map<string, Promise<any>>()
@@ -32,7 +33,7 @@ export function fetchProofInfo(projectName: string): Promise<any> {
     _proofInfoCache.set(
       projectName,
       fetch(`${base}docs/${projectName}/proof-info.json`)
-        .then(r => r.ok ? r.json() : null)
+        .then(optionalJson)
         .catch(() => null)
     )
   }
@@ -45,7 +46,7 @@ export function fetchTheoremMap(projectName: string): Promise<any> {
     _theoremMapCache.set(
       projectName,
       fetch(`${base}docs/${projectName}/theorem-map.json`)
-        .then(r => r.ok ? r.json() : null)
+        .then(optionalJson)
         .catch(() => null)
     )
   }

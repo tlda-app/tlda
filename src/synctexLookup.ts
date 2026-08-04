@@ -4,6 +4,7 @@
 import type { SourceAnchor, PdfPosition } from './synctexAnchor'
 import { onReloadSignal } from './useYjsSync'
 import { STORE_HTTP } from './activeConfig'
+import { optionalJson } from './optionalJson'
 
 // Doc assets come from the active config's STORE (http), injected by the server.
 function assetBase(): string {
@@ -39,10 +40,7 @@ export function loadLookup(projectName: string): Promise<LookupData | null> {
   if (!lookupCache.has(projectName)) {
     const base = assetBase()
     lookupCache.set(projectName, fetch(`${base}docs/${projectName}/lookup.json`)
-      .then(resp => {
-        if (!resp.ok) return null
-        return resp.json() as Promise<LookupData>
-      })
+      .then(resp => optionalJson<LookupData>(resp))
       .catch(() => {
         console.warn(`[SyncTeX] Could not load lookup.json for ${projectName}`)
         return null
