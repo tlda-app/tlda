@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null, sendMsgWithReply = async () => ({}) } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, recordMintMarker = null, jsonlFileName = 'rollout-jsonl-owner.jsonl', jsonlTailIdleMs = 10 * 60 * 1000, initialCursors = null, sendMsgWithReply = async () => ({}), liveSessions = ['fleet-jsonl-owner'] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -96,7 +96,7 @@ function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFac
     isConnected: () => true,
     isServerReady: () => ready,
     getAgents: () => projectJsonlAgentsFromProcessBindings(rows, { daemonKey: 'mini:default' }),
-    listSessions: async () => ({ sessions: ['fleet-jsonl-owner'] }),
+    listSessions: async () => ({ sessions: liveSessions }),
     selectAgentKind: async agent => agent.runtimeKind || agent.metadata?.kind,
     harnessAdapters: {
       codex: {
@@ -582,12 +582,58 @@ function assertTailCount(harness, expected) {
 }
 
 {
+  const harness = createHarness({
+    liveSessions: [],
+    initialCursors: {
+      'rollout-jsonl-owner': {
+        offset: 0,
+        owner: {
+          state: 'mine',
+          daemon_key: 'mini:default',
+          fleet_id: 'fleet:jsonl-owner',
+        },
+      },
+    },
+  })
+  try {
+    harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
+    await harness.sync('stale-owned-session-at-eof')
+    assertTailCount(harness, 0)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
   const harness = createHarness()
   try {
     harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
     await harness.sync('daemon-welcome')
     assertWatcher(harness, false)
     assertTailCount(harness, 0)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const harness = createHarness({
+    initialCursors: {
+      'rollout-jsonl-owner': {
+        offset: 0,
+        owner: {
+          state: 'mine',
+          daemon_key: 'mini:default',
+          fleet_id: 'fleet:jsonl-owner',
+        },
+      },
+    },
+  })
+  try {
+    harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
+    await harness.sync('owned-session-at-eof')
+    assertTailCount(harness, 1)
+    assert.equal(harness.sentToChild.find(message => message.type === 'watch')?.startOffset, 0)
   } finally {
     harness.cleanup()
   }

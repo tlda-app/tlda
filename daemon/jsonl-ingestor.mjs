@@ -952,6 +952,8 @@ export function createJsonlIngestor({
     const agentList = Array.isArray(input) ? input : (input?.agentList || [])
     const requestedPaths = Array.isArray(input?.paths) ? input.paths : null
     const agentsByPath = agentBySessionPath(agentList)
+    const listedSessions = await listSessions()
+    const liveTmuxSessions = new Set(listedSessions?.sessions || [])
 
     retainJsonlRootWatchers()
 
@@ -1101,7 +1103,12 @@ export function createJsonlIngestor({
         if (harness.backfillSearch && jsonlOwnershipState(cursorEntry, daemonKey) === 'mine' && cursorEntry.owner?.fleet_id) {
           backfillSearchEntries(cursorEntry.owner.fleet_id, resolvedPath, sessionId, harness.kind)
         }
-        continue
+        // An owned live session at EOF still needs a direct tail. Relying only
+        // on the recursive directory watcher here makes activity delivery
+        // silently stop when that coarse watcher misses a nested-file change.
+        if (!agent ||
+            !liveTmuxSessions.has(agent.tmux_session) ||
+            jsonlOwnershipState(cursorEntry, daemonKey) !== 'mine') continue
       }
 
       try {
