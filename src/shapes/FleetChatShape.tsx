@@ -32,7 +32,7 @@ import { renderActivityGroup, renderThreadRows, scheduleTimeLabel } from '../fle
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
@@ -795,8 +795,10 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
     stopEventPropagation(e as any)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      submitInput(inputRef.current?.value ?? '')
+      const text = inputRef.current?.value ?? ''
+      submitInput(text)
       if (inputRef.current) inputRef.current.value = ''
+      completeMessageSend(text)
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault()
       sendInput('\x03')
