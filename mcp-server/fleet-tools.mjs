@@ -4802,7 +4802,7 @@ function currentTransportSessionId() {
   return CLAUDE_SESSION || process.env.CLAUDE_SESSION || null;
 }
 
-function scheduleFleetTransportFlush(delayMs = 1000, agentId = AGENT_ID) {
+function scheduleFleetTransportFlush(delayMs = 1000, agentId = activeAgentId()) {
   if (!agentId || _fleetTransportFlushTimers.has(agentId)) return;
   const timer = setTimeout(() => {
     _fleetTransportFlushTimers.delete(agentId);

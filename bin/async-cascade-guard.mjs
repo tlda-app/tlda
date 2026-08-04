@@ -132,6 +132,7 @@ function sourceFiles() {
     for (const e of entries) {
       const p = path.join(dir, e.name)
       if (e.isDirectory()) {
+        if (path.relative(ROOT, p) === 'server/public') continue
         if (e.name === 'node_modules' || e.name.startsWith('.')) continue
         walk(p)
       } else if (e.name.endsWith('.mjs') || e.name.endsWith('.js')) out.push(p)

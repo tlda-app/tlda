@@ -53,7 +53,7 @@ async function scanJsonl(filePath) {
         if (nameMatch) name = nameMatch[1];
         found = true;
         rl.close();
-      } catch { errors++; }
+      } catch { /* skip malformed lines */ }
     });
 
     rl.on('close', () => resolve(found ? { fleetId, name } : null));
