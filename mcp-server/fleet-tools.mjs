@@ -479,6 +479,7 @@ function annotateEnvResult(result, envName) {
 
 function sendOneShotWS(envName, type, params = {}, opts = {}) {
   const id = crypto.randomUUID();
+  const loginId = opts.authenticateAgentId && type !== 'login' ? crypto.randomUUID() : null;
   const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
   const wsUrl = `${getFleetServerUrl(envName).replace(/^http/, 'ws')}/ws/fleet?agent=${encodeURIComponent(activeAgentId() || '')}`;
   return new Promise((resolve, reject) => {
@@ -497,20 +498,37 @@ function sendOneShotWS(envName, type, params = {}, opts = {}) {
       try { ws.close(); } catch { /* best-effort cleanup; original WS result wins */ }
       fn(value);
     }
+    const sendRequest = () => ws.send(JSON.stringify({
+      type,
+      ...params,
+      id,
+      ...(opts.envelope ? {
+        operation_id: params.operation_id || opts.envelope.operation_id,
+        fleet_operation: opts.envelope,
+      } : {}),
+    }));
     ws.on('open', () => {
-      ws.send(JSON.stringify({
-        type,
-        ...params,
-        id,
-        ...(opts.envelope ? {
-          operation_id: params.operation_id || opts.envelope.operation_id,
-          fleet_operation: opts.envelope,
-        } : {}),
-      }));
+      if (loginId) {
+        ws.send(JSON.stringify({ type: 'login', agent_id: opts.authenticateAgentId, id: loginId }));
+      } else {
+        sendRequest();
+      }
     });
     ws.on('message', data => {
       let msg;
       try { msg = JSON.parse(String(data)); } catch { return; }
+      if (loginId && msg.id === loginId) {
+        if (msg.error) {
+          const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
+          const err = new Error(detail.message || String(msg.error));
+          Object.assign(err, detail);
+          err.serverRejected = true;
+          finish(reject, err);
+          return;
+        }
+        sendRequest();
+        return;
+      }
       if (msg.id !== id) return;
       if (msg.error) {
         const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
@@ -2266,9 +2284,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
-    const serverResult = nativeBinding
-      ? { agent: { id: shellId, friendly_name: nativeBinding.child_name } }
-      : await sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })?.catch(e => ({ error: e.message }));
+    const serverResult = await sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: [
         localMarker({}),
@@ -4753,6 +4769,13 @@ function _sendWSOnce(type, params = {}, opts = {}) {
 // needs to cover a live tool call's brief reconnect window, bounded by the
 // request deadline/idle timeout.
 async function sendFleetRequestAttempt(type, params = {}, opts = {}) {
+  const nativeBinding = activeNativeBinding();
+  if (nativeBinding?.child_agent_id) {
+    return sendOneShotWS(_activeToolEnv || activeEnvName(), type, params, {
+      ...opts,
+      authenticateAgentId: nativeBinding.child_agent_id,
+    });
+  }
   if (_activeToolEnv) return sendOneShotWS(_activeToolEnv, type, params, opts);
   const startedAt = Date.now();
   const deadlineMs = Number.isFinite(opts.deadlineMs)
