@@ -14,6 +14,7 @@
 // Writes go to server → DB → SSE → subscriber. One path.
 
 import { convertChatEvent } from './convert-chat-event.mjs'
+import { applyFleetEventUpdate } from './event-update.mjs'
 export { convertChatEvent } from './convert-chat-event.mjs'
 import { matchesFleetFilter, resolveFleetFilter } from '../../shared/filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
@@ -30,6 +31,7 @@ import {
   upsertFleetEventsForBuffer,
   upsertLocalEventIntoBuffer,
   applyFilterEvents,
+  patchFleetEventInStores,
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
@@ -577,8 +579,9 @@ export function updateEventById(dbId, updates) {
   const ev = _store.patchByDbId(dbId, updates)
   if (ev) {
     upsertFleetEvent(ev)
-    notify('messages', null)
   }
+  const patched = patchFleetEventInStores(dbId, updates)
+  if (ev || patched) notify('messages', null)
 }
 
 /** Link an optimistic event to its server-assigned ID (if SSE hasn't already done it). */
@@ -1147,6 +1150,11 @@ export function connect() {
         applyAgentDelta(data.changed || [], data.removed || [], data.agentTotals)
         applyTaskDelta(data.task_delta)
         applyFleetEphemeral(data)
+        return
+      }
+
+      if (eventType === 'event-update') {
+        applyFleetEventUpdate(data, updateEventById)
         return
       }
 

@@ -434,6 +434,25 @@ export function upsertLocalEventIntoBuffer(
   buffer.store.upsert(asFleetEvent(event))
 }
 
+// An event-update is not a new membership decision. Patch every store that
+// already holds the db row, including server-fed chat buffers; do not fan it
+// through the filter matcher and do not insert it into unrelated panels.
+export function patchFleetEventInStores(
+  dbId: string | number,
+  updates: Record<string, unknown>,
+): number {
+  const id = `db:${String(dbId)}`
+  const stores = [eventStore, ...[...eventBuffers.values()].map(buffer => buffer.store)]
+  let patched = 0
+  for (const store of new Set(stores)) {
+    const existing = store.get(id)
+    if (!existing) continue
+    store.upsert({ ...existing, ...updates, id })
+    patched++
+  }
+  return patched
+}
+
 export function removeFleetEvent(event: Record<string, unknown> | null | undefined): void {
   if (!event) return
   const id = eventIds.get(event) ?? keyOfEvent(event)
