@@ -4144,6 +4144,7 @@ app.use('/docs', (req, res, next) => {
       res.set('Cache-Control', 'no-cache')
       return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
     }
+    return res.status(204).end()
   }
 
   if (filePath.endsWith('.html')) {
