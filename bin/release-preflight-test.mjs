@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -7,6 +7,8 @@ import test from 'node:test'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const releaseScript = path.join(repoRoot, 'bin', 'release.sh')
+const packageVersion = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).version
+const releaseTag = `v${packageVersion}`
 
 async function withMockGit(run) {
   const mockDir = await mkdtemp(path.join(tmpdir(), 'tlda-release-preflight-'))
@@ -16,11 +18,11 @@ case "$*" in
   "status --porcelain") exit 0 ;;
   "branch --show-current") echo main ;;
   "remote get-url origin") echo git@github.com:tlda-app/tlda.git ;;
-  "rev-parse --verify --quiet refs/tags/v0.3.1")
+  "rev-parse --verify --quiet refs/tags/${releaseTag}")
     [[ "\${MOCK_TAG_EXISTS:-}" == 1 ]] && exit 0
     exit 1
     ;;
-  "ls-remote --tags origin refs/tags/v0.3.1") exit 0 ;;
+  "ls-remote --tags origin refs/tags/${releaseTag}") exit 0 ;;
   "ls-remote origin refs/heads/main") printf 'release-sha\\trefs/heads/main\\n' ;;
   "rev-parse HEAD") echo release-sha ;;
   *) echo "unexpected git call: $*" >&2; exit 2 ;;
@@ -44,9 +46,9 @@ function release(args, env) {
 
 test('release dry-run accepts the package version and makes no release changes', async () => {
   await withMockGit((env) => {
-    const result = release(['v0.3.1', '--dry-run'], env)
+    const result = release([releaseTag, '--dry-run'], env)
     assert.equal(result.status, 0, result.stderr || result.stdout)
-    assert.match(result.stdout, /Release preflight passed for v0\.3\.1 at release-sha/)
+    assert.match(result.stdout, new RegExp(`Release preflight passed for ${releaseTag.replaceAll('.', '\\.') } at release-sha`))
     assert.match(result.stdout, /github\.com\/tlda-app\/tlda/)
   })
 })
@@ -57,15 +59,15 @@ test('release requires an explicit version matching package.json', async () => {
     assert.equal(missing.status, 1)
     assert.match(missing.stdout, /Usage:/)
 
-    const mismatch = release(['v0.4.0', '--dry-run'], env)
+    const mismatch = release(['v999.0.0', '--dry-run'], env)
     assert.equal(mismatch.status, 1)
-    assert.match(mismatch.stdout, /does not match package version 0\.3\.1/)
+    assert.match(mismatch.stdout, new RegExp(`does not match package version ${packageVersion.replaceAll('.', '\\.')}`))
   })
 })
 
 test('release refuses to move an existing local tag', async () => {
   await withMockGit((env) => {
-    const result = release(['v0.3.1', '--dry-run'], { ...env, MOCK_TAG_EXISTS: '1' })
+    const result = release([releaseTag, '--dry-run'], { ...env, MOCK_TAG_EXISTS: '1' })
     assert.equal(result.status, 1)
     assert.match(result.stdout, /already exists locally/)
   })
