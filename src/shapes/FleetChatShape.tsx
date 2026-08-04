@@ -776,6 +776,16 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
 
   const shortId = agentId.replace('fleet:', '')
 
+  const submitCurrent = (submittedText?: string) => {
+    const el = inputRef.current
+    if (!el) return false
+    const text = el.value
+    submitInput(text)
+    el.value = ''
+    completeMessageSend(submittedText ?? text)
+    return true
+  }
+
   // Make this field the active voice target — dictation flows in, and saying
   // "send" runs the command in the terminal pane (mirrors the chat textarea's
   // setVoiceTarget wiring, but with a terminal-specific send).
@@ -784,10 +794,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
       getSendTargets: () => [agentId],
       getAgentNames: () => ({ [agentId]: agentName || shortId }),
       getTargetKind: () => 'terminal',
-      sendVoice: async (_targets: string[], text: string) => {
-        submitInput(text)
-        el.value = ''
-      },
+      submitCurrent,
     })
   }
 
@@ -795,10 +802,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
     stopEventPropagation(e as any)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      const text = inputRef.current?.value ?? ''
-      submitInput(text)
-      if (inputRef.current) inputRef.current.value = ''
-      completeMessageSend(text)
+      submitCurrent()
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault()
       sendInput('\x03')

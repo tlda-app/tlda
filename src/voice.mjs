@@ -2513,15 +2513,9 @@ function replaceTextareaValue(text) {
 
 function submitTextareaViaMagicWord(cleanText, submittedText) {
   if (!_activeTextarea || activeSendTargets().length === 0) return false
-  if (_activeTargetHandle?.submitCurrent) {
-    replaceTextareaValue(cleanText)
-    return _activeTargetHandle.submitCurrent()
-  }
-  if (!_activeTargetHandle?.sendVoice) return false
-  _activeTargetHandle.sendVoice(activeSendTargets(), cleanText)
-  replaceTextareaValue('')
-  afterSend(submittedText)
-  return true
+  if (!_activeTargetHandle?.submitCurrent) return false
+  replaceTextareaValue(cleanText)
+  return _activeTargetHandle.submitCurrent(submittedText)
 }
 
 function handleSendMagicWord(leftTrimmed) {
@@ -3599,19 +3593,8 @@ function sendCurrentText() {
     return
   }
 
-  if (_activeTargetHandle?.submitCurrent) {
-    if (!_activeTargetHandle.submitCurrent()) return
-  } else if (_activeTargetHandle?.sendVoice) {
-    _activeTargetHandle.sendVoice(targets, text)
-    afterSend(text)
-    _filling = true
-    ta.value = ''
-    ta.style.height = 'auto'
-    ta.dispatchEvent(new Event('input', { bubbles: true }))
-    _filling = false
-  } else {
-    return
-  }
+  if (!_activeTargetHandle?.submitCurrent) return
+  if (!_activeTargetHandle.submitCurrent(text)) return
 
   const who = targetLabel()
   showHud(`sent → ${who}`, '#7ab8a0')

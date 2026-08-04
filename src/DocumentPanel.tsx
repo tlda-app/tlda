@@ -890,7 +890,6 @@ function useVoiceNoteController() {
       getSendTargets: () => [],
       getAgentNames: () => ({}),
       getAgentColor: () => null,
-      sendVoice: () => {},
     })
     if (!isRecording()) toggleRecording()
     setStopRecordingCallback(() => {

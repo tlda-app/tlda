@@ -25,7 +25,7 @@ type VoiceTargetHandle = {
   agentNames: Record<string, string>
   getSendTargets: () => string[]
   getAgentNames: () => Record<string, string>
-  submitCurrent: () => boolean
+  submitCurrent: (submittedText?: string) => boolean
 }
 /** Pre-send command hook (e.g. /terminal). Gets the textarea so it can clear (or
  *  not) exactly as the original did. Return true if it consumed the input — the
@@ -99,13 +99,13 @@ export function ChatComposer({
   // other consumer of these refs.
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
-  const submitCurrentRef = useRef<() => boolean>(() => false)
+  const submitCurrentRef = useRef<(submittedText?: string) => boolean>(() => false)
   const voiceTargetRef = useRef<VoiceTargetHandle>({
     sendTargets: [],
     agentNames: {},
     getSendTargets() { return this.sendTargets },
     getAgentNames() { return this.agentNames },
-    submitCurrent() { return submitCurrentRef.current() },
+    submitCurrent(submittedText) { return submitCurrentRef.current(submittedText) },
   })
   voiceTargetRef.current.sendTargets = sendTargets
   voiceTargetRef.current.agentNames = agentNames
@@ -116,7 +116,7 @@ export function ChatComposer({
     if (draftKey) saveComposerDraft(draftKey, ta.value)
   }
 
-  const submitCurrent = () => {
+  const submitCurrent = (submittedText?: string) => {
     const ta = inputRef.current
     const text = ta?.value.trim() || ''
     if (!ta || !text || sendTargets.length === 0) return false
@@ -135,7 +135,7 @@ export function ChatComposer({
     void ta.offsetHeight
     ta.style.height = ''
     ta.dispatchEvent(new Event('input', { bubbles: true }))
-    completeMessageSend(text)
+    completeMessageSend(submittedText ?? text)
     sentHistoryRef.current = [...sentHistoryRef.current, text]
     historyIndexRef.current = -1
     return true
