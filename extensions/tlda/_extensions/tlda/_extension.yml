@@ -1,0 +1,17 @@
+title: tlda Project
+author: tlda contributors
+version: 0.1.0
+quarto-required: ">=1.2.0"
+contributes:
+  project:
+    project:
+      type: book
+      post-render:
+        - tlda-manifest.ts
+    format: html
+  formats:
+    html:
+      embed-resources: false
+      fig-format: svg
+      html-math-method: mathjax
+

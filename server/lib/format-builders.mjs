@@ -12,6 +12,7 @@ import { getBuildReporter } from './build-runner.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
 import { buildQmdDocument } from './build-qmd.mjs'
+import { readTldaManifest } from './tlda-manifest.mjs'
 
 function signalReload(name, pages) {
   getBuildReporter().broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
@@ -83,10 +84,14 @@ export async function buildHtml(name) {
   }
   copyRecursive(srcDir, outDir)
 
-  // Use existing page-info.json if pushed, otherwise auto-generate from HTML titles
+  // A tlda-aware Quarto render declares its page order and source coordinates.
+  const renderedProject = readTldaManifest(outDir)
   const pageInfoPath = join(outDir, 'page-info.json')
   let pageInfo
-  if (existsSync(pageInfoPath)) {
+  if (renderedProject) {
+    pageInfo = renderedProject.pageInfo
+    writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
+  } else if (existsSync(pageInfoPath)) {
     pageInfo = JSON.parse(readFileSync(pageInfoPath, 'utf8'))
   } else {
     const htmlFiles = readdirSync(outDir).filter(f => f.endsWith('.html') && !f.startsWith('_'))

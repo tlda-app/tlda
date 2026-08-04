@@ -17,10 +17,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'fs'
 import { join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { parse as parseYaml } from 'yaml'
 
 import { readProject, sourceDir as getSourceDir, outputDir as getOutputDir, readClientSourceManifest } from './project-store.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 import { buildPerSlideDocuments } from './slides-parser.mjs'
+import { readTldaManifest } from './tlda-manifest.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -187,8 +189,9 @@ function stampFigureUrls(html, stamp = Date.now()) {
  * make a build mutate the tree the version is taken from, so the whole tree is
  * copied first and the render runs against the copy.
  */
-async function renderInOutput(quarto, outDir, mainFile, addLog) {
-  addLog(`[qmd] quarto render ${mainFile}`)
+async function renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject = false } = {}) {
+  const target = wholeProject ? [] : [mainFile]
+  addLog(`[qmd] quarto render${wholeProject ? '' : ` ${mainFile}`}`)
   let result
   try {
     // No `--to`. The document's own `format:` decides what it renders to, and
@@ -198,7 +201,7 @@ async function renderInOutput(quarto, outDir, mainFile, addLog) {
     // page with no <div class="reveal"> in it at all.
     result = await execFileAsync(
       quarto,
-      ['render', mainFile],
+      ['render', ...target],
       { cwd: outDir, timeout: RENDER_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
     )
   } catch (e) {
@@ -213,6 +216,16 @@ async function renderInOutput(quarto, outDir, mainFile, addLog) {
       if (line.trim()) addLog(`[qmd] ${line}`)
     }
   }
+}
+
+function isNativeTldaProject(dir) {
+  for (const name of ['_quarto.yml', '_quarto.yaml']) {
+    const path = join(dir, name)
+    if (!existsSync(path)) continue
+    const config = parseYaml(readFileSync(path, 'utf8'))
+    return config?.project?.type === 'tlda'
+  }
+  return false
 }
 
 async function writeSourceScope(name, srcDir, outDir) {
@@ -248,7 +261,33 @@ export async function buildQmdDocument(name, addLog = console.log) {
   cpSync(srcDir, outDir, { recursive: true })
 
   await restoreRenv(outDir, addLog)
-  await renderInOutput(quarto, outDir, mainFile, addLog)
+  const nativeTldaProject = isNativeTldaProject(outDir)
+  await renderInOutput(quarto, outDir, mainFile, addLog, { wholeProject: nativeTldaProject })
+
+  if (nativeTldaProject) {
+    const renderedProject = readTldaManifest(outDir)
+    if (!renderedProject) {
+      throw new Error('tlda Quarto project rendered without producing tlda-manifest.json')
+    }
+    for (const page of renderedProject.pageInfo) {
+      const path = join(outDir, page.file)
+      writeFileSync(path, stampFigureUrls(readFileSync(path, 'utf8')))
+    }
+    writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(renderedProject.pageInfo, null, 2))
+    await writeSourceScope(name, srcDir, outDir)
+    await reporter.updateProject(name, {
+      buildStatus: 'success',
+      pages: renderedProject.pageInfo.length,
+      renderedFormat: 'html',
+      lastBuild: new Date().toISOString(),
+    })
+    reporter.broadcastSignal(`doc-${name}`, 'signal:reload', {
+      pages: renderedProject.pageInfo.length,
+      timestamp: Date.now(),
+    })
+    addLog(`[qmd] ${name}: rendered tlda project with ${renderedProject.pageInfo.length} pages`)
+    return
+  }
 
   const outputFile = qmdOutputFileForSource(mainFile)
   const renderedPath = join(outDir, outputFile)

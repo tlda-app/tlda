@@ -1,0 +1,8 @@
+project:
+  type: tlda
+
+book:
+  title: "tlda project"
+  chapters:
+    - index.qmd
+
