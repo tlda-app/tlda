@@ -70,6 +70,10 @@ test('recurring task timer reschedules the same durable event while task is open
     type: 'event-update',
     data: { id: 99, event_id: 99, metadata_patch: { next_fire_at: '2026-07-28T10:05:00.000Z' } },
   })
+  assert.equal(broadcasts[3].type, 'fleet-event')
+  assert.equal(broadcasts[3].data.id, 99)
+  assert.equal(broadcasts[3].data.type, 'delegate')
+  assert.equal(broadcasts[3].data.metadata.next_fire_at, '2026-07-28T10:05:00.000Z')
 })
 
 test('recurring task timer cancels instead of notifying after task closes', async () => {

@@ -150,6 +150,14 @@ export class ServerTimerScheduler {
             event_id: Number(taskState.event.id),
             metadata_patch: taskPatch,
           })
+          // Chat panels are server-fed subscription buffers. Send the updated
+          // delegate row through their authoritative filter-event intake as
+          // well; the unchanged event id makes this an in-place upsert, not a
+          // second task row.
+          this.broadcast?.('fleet-event', {
+            ...taskState.event,
+            metadata: { ...(taskState.event.metadata || {}), ...taskPatch },
+          })
         }
         await this.refresh()
         return { ok: true, to, notified: true, recurring: true, next_fire_at: nextFireAt }
