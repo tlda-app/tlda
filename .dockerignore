@@ -23,6 +23,15 @@ telemetry
 .vite
 .turbo
 coverage
+docs
+extensions
+homebrew
+mcp-server
+public
+src
+test
+tests
+.github
 **/__pycache__
 **/.biber-par-cache
 **/build-cache
