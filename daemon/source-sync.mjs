@@ -504,8 +504,9 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return !isSourceFile(rel, context) && !rel.includes('.tlda/scratch/')
   }
 
-  function collectSourceManifest(sourceDir, context, watchSet = null, authorityManifest = null) {
-    const rels = new Set(Array.isArray(authorityManifest) ? authorityManifest : [])
+  function collectSourceManifest(sourceDir, context, watchSet = null, authorityManifest = null, sendingPaths = null) {
+    const authority = new Set(Array.isArray(authorityManifest) ? authorityManifest : [])
+    const rels = new Set(authority)
     if (watchSet) {
       for (const rel of watchSet) {
         if (typeof rel !== 'string') continue
@@ -527,6 +528,40 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       }
     }
     walk(sourceDir)
+
+    // A walk implies existence, which was true until the gap between walking and
+    // the server validating got long enough to matter.
+    //
+    // For a slides or html project every file under the source dir is source
+    // (shared/source-manifest.mjs, deliberately — there is no reference graph
+    // that reveals the set), so quarto's scratch is walked in: project-cache,
+    // quarto-session-temp<random>, and their SQLite -shm/-wal companions. Quarto
+    // makes and unmakes those during a render. One that dies inside the gap is
+    // declared here and gone when the server checks, so it is `extra` and the
+    // whole push is rejected — a different file each render, which is why it
+    // reads as intermittent and unfixable. Observed live:
+    // `nonexistent authored file: .quarto/project-cache/deno-kv-file-shm`.
+    //
+    // Re-checking existence stays true when quarto changes its scratch layout,
+    // which enumerating its temp directories would not.
+    //
+    // Two things are never dropped, and both are needed:
+    //
+    //   authority   — the set the server already holds. Undeclaring one of these
+    //                 fails the mirror test, `missing surviving authored file`,
+    //                 which is this same wedge pointing the other way. It also
+    //                 makes an editor's atomic save safe: a delete-and-recreate
+    //                 of a file the server knows stays declared through the gap.
+    //   sendingPaths — the files in THIS push. Undeclaring one of those fails
+    //                 `sourceManifest missing pushed file`. A file can be read
+    //                 into the payload and vanish before this walk; it must stay
+    //                 declared because we are still sending it.
+    const keep = new Set(Array.isArray(sendingPaths) ? sendingPaths : [])
+    for (const rel of [...rels]) {
+      if (authority.has(rel) || keep.has(rel)) continue
+      if (!fs.existsSync(path.join(sourceDir, rel))) rels.delete(rel)
+    }
+
     return normalizeSourceManifest([...rels], context)
   }
 
@@ -875,6 +910,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         { format: state.format, mainFile: state.mainFile },
         state.isMarkdown ? state.watchSet : null,
         state.isMarkdown ? null : [...state.authorityManifest],
+        files.map(f => f.path),
       ),
       ...(deleted.length > 0 && { deletedFiles: deleted }),
       ...(editedBy && { editedBy }),
