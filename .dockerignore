@@ -2,6 +2,7 @@
 # server/lib, server/routes, unified-server.mjs, package + vite config, index.html,
 # and scripts/. Everything below is excluded from the upload context.
 node_modules
+**/node_modules
 .git
 .worktrees
 .env
@@ -11,6 +12,7 @@ server/projects
 server/data
 server/persist
 server/uploads
+server/public
 server/*.db
 server/*.sqlite
 scratch
