@@ -8183,11 +8183,22 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
     await fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
-    markAgentAlive(agentId, Date.parse(ts) || Date.now(), {
-      source: 'daemon-agent-status',
-      daemon_key: ws._daemonKey,
-      daemon_boot_id: ws._bootId,
-    })
+    const atMs = Date.parse(ts) || Date.now()
+    if (state === 'hibernating') {
+      markAgentNotAlive(agentId, {
+        source: 'daemon-agent-status',
+        reason: 'daemon pane is no longer observable',
+        atMs,
+        daemon_key: ws._daemonKey,
+        daemon_boot_id: ws._bootId,
+      })
+    } else {
+      markAgentAlive(agentId, atMs, {
+        source: 'daemon-agent-status',
+        daemon_key: ws._daemonKey,
+        daemon_boot_id: ws._bootId,
+      })
+    }
     runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
     broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
     broadcastState()
