@@ -4203,7 +4203,6 @@ app.use('/docs', (req, res, next) => {
       }
     } catch (e) {
       console.error(`[docs] lazy column render failed for ${name}/${filePath}: ${e.message}`)
-      return res.status(500).json({ error: 'Column render failed', detail: e.message })
     }
   }
 
