@@ -337,6 +337,11 @@ let jsonlBindingReconciler
 let terminalRpc
 let activityDeliveryMetricsTimer = null
 let daemonWsConnectedAtMs = null
+const desiredTailReconcileTimer = setInterval(() => {
+  jsonlIngestor?.reconcileDesiredTails?.()
+    .catch(error => log.error(`desired JSONL tail reconciliation failed: ${error?.stack || error?.message || error}`))
+}, 30_000)
+desiredTailReconcileTimer.unref?.()
 
 const TERMINAL_SIZE_POLL_MS = parseInt(process.env.TLDA_TERMINAL_SIZE_POLL_MS, 10) || 5000
 

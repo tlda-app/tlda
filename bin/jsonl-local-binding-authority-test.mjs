@@ -618,6 +618,7 @@ function assertTailCount(harness, expected) {
 
 {
   const harness = createHarness({
+    jsonlTailIdleMs: 20,
     initialCursors: {
       'rollout-jsonl-owner': {
         offset: 0,
@@ -633,7 +634,14 @@ function assertTailCount(harness, expected) {
     harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
     await harness.sync('owned-session-at-eof')
     assertTailCount(harness, 1)
-    assert.equal(harness.sentToChild.find(message => message.type === 'watch')?.startOffset, 0)
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    assert.equal(watch?.startOffset, 0)
+    await wait(40)
+    assert.equal(
+      harness.sentToChild.some(message => message.type === 'stop' && message.watchId === watch.watchId),
+      false,
+      'a desired live tail must not be idle-retired',
+    )
   } finally {
     harness.cleanup()
   }

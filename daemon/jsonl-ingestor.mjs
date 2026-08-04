@@ -1029,8 +1029,25 @@ export function createJsonlIngestor({
             continue jsonlLoop
           }
           pw.harnessKind = harness.kind
+          pw.desiredLive = !!agent && liveTmuxSessions.has(agent.tmux_session)
           pw.terminalChat = terminalChatForTail(harness, nativeSubagent)
           pw.backfillSearch = !!harness.backfillSearch
+          const acknowledgedOffset = Number(cursors[fileSessionId]?.offset ?? pw.lastSavedOffset ?? 0)
+          if (currentStat.size > acknowledgedOffset) {
+            pw.lagObservedAtMs ??= nowMs()
+            if (nowMs() - pw.lagObservedAtMs >= 60_000) {
+              retireJsonlTail(pw, `JSONL cursor stalled behind file size: ${path.basename(resolvedPath)}`, {
+                healthKind: 'tail-error',
+                healthDetail: { fileSize: currentStat.size, cursorOffset: acknowledgedOffset },
+              })
+            }
+          } else {
+            pw.lagObservedAtMs = null
+          }
+          if (pw.stopped) {
+            // Fall through and replace the stalled watcher from its last
+            // acknowledged cursor rather than waiting for another event.
+          } else {
           try {
             sendJsonlIngesterMessage({
               type: 'update',
@@ -1063,6 +1080,7 @@ export function createJsonlIngestor({
             })
           }
           continue
+          }
         }
       }
 
@@ -1122,6 +1140,7 @@ export function createJsonlIngestor({
           liveOffset: stat.size,
           ownershipState: initialOwnership,
           nativeSubagent,
+          desiredLive: !!agent && liveTmuxSessions.has(agent.tmux_session),
         })
         if (initialOwnership === 'mine') startOwnedJsonlBackfill(pwState)
         pathWatchers.set(resolvedPath, pwState)
@@ -1240,6 +1259,7 @@ export function createJsonlIngestor({
     liveOffset,
     ownershipState = 'unknown',
     nativeSubagent = null,
+    desiredLive = false,
   }) {
     startJsonlIngester()
     const initialAgentId = cursors[sessionId]?.owner?.fleet_id || null
@@ -1261,6 +1281,8 @@ export function createJsonlIngestor({
       pendingFlushOffset: null,
       ownershipState,
       nativeSubagent,
+      desiredLive,
+      lagObservedAtMs: null,
       terminalChat: terminalChatForTail(harness, nativeSubagent),
       backfillSearch: !!harness.backfillSearch,
       catchupUntilOffset,
@@ -1503,6 +1525,10 @@ export function createJsonlIngestor({
       scheduleJsonlTailIdle(pw)
       return
     }
+    if (pw.desiredLive) {
+      scheduleJsonlTailIdle(pw)
+      return
+    }
     let before
     try { before = fs.statSync(pw.jsonlPath) } catch {
       retireJsonlTail(pw, `idle JSONL vanished: ${path.basename(pw.jsonlPath)}`)
@@ -1713,8 +1739,25 @@ export function createJsonlIngestor({
     }
   }
 
+  async function reconcileDesiredTails() {
+    if (_shuttingDown || !isServerReady()) return
+    const agentList = getAgents() || []
+    const listedSessions = await listSessions()
+    const liveTmuxSessions = new Set(listedSessions?.sessions || [])
+    const paths = agentList
+      .filter(agent =>
+        agent?.session_path &&
+        agent.tmux_session &&
+        liveTmuxSessions.has(agent.tmux_session) &&
+        (!agent.daemon_key || agent.daemon_key === daemonKey)
+      )
+      .map(agent => path.resolve(agent.session_path))
+    await sessionWatcherSyncRunner.sync({ agentList, paths })
+  }
+
   return {
     sync: syncSessionWatchers,
+    reconcileDesiredTails,
     syncIdentityNames: syncSessionIdentityNamesFromAgents,
     syncIfRosterChanged,
     rosterSignature: sessionWatcherRosterSignature,
