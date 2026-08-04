@@ -21,10 +21,17 @@ jobs:
           node-version: 23
           cache: npm
 
-      - name: Build SPA
+      - name: Verify release
         run: |
           npm ci
-          npx vite build
+          npm run build
+          npm run lint
+          node --test \
+            bin/mcp-login-delegate-session-contract-test.mjs \
+            bin/release-preflight-test.mjs \
+            tests/daemon-status-liveness-contract.test.mjs \
+            tests/terminal-composer-voice-send.test.mjs \
+            tests/terminal-input-policy.test.mjs
           mkdir -p server/public
           cp -r dist/* server/public/
 
@@ -51,4 +58,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ARCHIVE }}
-          generate_release_notes: true
+          body_path: .github/release-notes-v0.4.0.md
