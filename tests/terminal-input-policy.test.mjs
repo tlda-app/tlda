@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
+import { createTerminalRpc, terminalSafeNotificationText } from '../daemon/terminal-rpc.mjs'
 import { validateDaemonConfigTopLevel } from '../shared/daemon-config-schema.mjs'
 import {
   sendKeyAllowedWithoutTextInput,
@@ -39,6 +39,51 @@ function makeTerminalRpc({ terminalInputAllowed }) {
     },
   })
   return { rpc, calls }
+}
+
+function makeTerminalRpcWithPty() {
+  const calls = []
+  const ptyWrites = []
+  const fakePty = {
+    write(data) { ptyWrites.push(data) },
+    resize() {},
+    kill() {},
+    onData() {},
+    onExit() {},
+  }
+  const rpc = createTerminalRpc({
+    tmuxArgs: [],
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg() {},
+    detectPrompt: () => ({ type: 'none' }),
+    stripAnsi: value => value,
+    promptCooldowns: new Map(),
+    surfacedPrompts: new Map(),
+    alivenessCache: new Map(),
+    thinkingSpinnerRe: /NEVER_MATCH/,
+    interruptHintRe: /NEVER_MATCH/,
+    thinkingScanLines: 5,
+    terminalSizePollMs: 1000,
+    decideTerminalWatchExit: () => ({ terminalDead: false }),
+    onArmAgent() {},
+    onArmBySession() {},
+    onEmitAgentStatus() {},
+    onPlanModeSeen() {},
+    onPlanModeGone() {},
+    hasPlanMode: () => false,
+    resolveAgentRoute: () => ({ tmux_session: 'agent-session', agent_id: 'fleet:test' }),
+    validateTmuxOwner: () => true,
+    resolveTerminalAgent: () => ({ id: 'fleet:test', tmuxSession: 'agent-session', sessionId: 'session-1' }),
+    terminalInputAllowed: false,
+    ptyModuleImpl: {
+      spawn: () => fakePty,
+    },
+    execFileImpl: async (cmd, args) => {
+      calls.push([cmd, args])
+      return { stdout: '', stderr: '' }
+    },
+  })
+  return { rpc, calls, ptyWrites }
 }
 
 test('daemon terminal input defaults to read-only', () => {
@@ -90,4 +135,40 @@ test('explicit opt-in preserves terminal text injection', async () => {
   const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: true })
   await rpc.handlers['send-text']({ agent_id: 'fleet:test', text: 'hello', enter: false })
   assert.deepEqual(calls.at(-1), ['tmux', ['send-keys', '-t', '=agent-session:', '--', 'hello']])
+})
+
+test('notification text is converted to one printable line', () => {
+  assert.equal(
+    terminalSafeNotificationText('!rm -rf ~\nEnter\r\t\x1b[31m\u2028'),
+    'TLDA notification: !rm -rf ~\\nEnter\\r\\t\\x1b[31m\\u2028',
+  )
+})
+
+test('notification tmux fallback writes sanitized text literally before one Enter', async () => {
+  const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: false })
+  await rpc.handlers['notify-agent']({
+    agent_id: 'fleet:test',
+    text: '!rm -rf ~\nEnter\r\x1b[31m',
+    enter_delay_ms: 0,
+  })
+  assert.deepEqual(calls.slice(-2), [
+    ['tmux', ['send-keys', '-t', '=agent-session:', '-l', '--', 'TLDA notification: !rm -rf ~\\nEnter\\r\\x1b[31m']],
+    ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']],
+  ])
+})
+
+test('notification active PTY writes sanitized text before one Enter', async () => {
+  const { rpc, calls, ptyWrites } = makeTerminalRpcWithPty()
+  try {
+    await rpc.handlers['start-terminal-watch']({ agent_id: 'fleet:test' })
+    await rpc.handlers['notify-agent']({
+      agent_id: 'fleet:test',
+      text: '!rm -rf ~\nEnter\r\x1b[31m',
+      enter_delay_ms: 0,
+    })
+    assert.deepEqual(ptyWrites, ['TLDA notification: !rm -rf ~\\nEnter\\r\\x1b[31m'])
+    assert.deepEqual(calls.at(-1), ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']])
+  } finally {
+    rpc.stopAllTerminalWatches()
+  }
 })

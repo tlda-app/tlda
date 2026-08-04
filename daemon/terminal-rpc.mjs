@@ -11,6 +11,25 @@ import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../sha
 const execFileP = promisify(execFile)
 const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
 const QUEUED_LINE_RE = /^\s*←\s/
+const NOTIFICATION_PREFIX = 'TLDA notification: '
+
+export function terminalSafeNotificationText(value) {
+  return NOTIFICATION_PREFIX + String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, char => {
+    switch (char) {
+      case '\n': return '\\n'
+      case '\r': return '\\r'
+      case '\t': return '\\t'
+      case '\x1b': return '\\x1b'
+      case '\u2028': return '\\u2028'
+      case '\u2029': return '\\u2029'
+      default: {
+        const code = char.codePointAt(0)
+        if (code <= 0xff) return `\\x${code.toString(16).padStart(2, '0')}`
+        return `\\u${code.toString(16).padStart(4, '0')}`
+      }
+    }
+  })
+}
 
 function tmuxSessionAlreadyGone(error) {
   const text = `${error?.stderr || ''}\n${error?.stdout || ''}\n${error?.message || ''}`
@@ -135,7 +154,7 @@ export function createTerminalRpc({
   async function writeTextToTerminal(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
-    const { text, enter, enter_delay_ms } = args
+    const { text, enter, enter_delay_ms, literal_text } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
     // A live tmux can still be unable to consume task text. Clear only prompts
@@ -162,7 +181,10 @@ export function createTerminalRpc({
       }
       return { ok: true, via: 'pty' }
     }
-    if (text) await tmux('send-keys', '-t', tmuxSession, '--', text)
+    if (text) {
+      if (literal_text) await tmux('send-keys', '-t', tmuxSession, '-l', '--', text)
+      else await tmux('send-keys', '-t', tmuxSession, '--', text)
+    }
     if (enter !== false) {
       const delay = Number(enter_delay_ms ?? 120)
       if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
@@ -177,9 +199,10 @@ export function createTerminalRpc({
     if (!text) throw new Error('notification text required')
     return writeTextToTerminal({
       agent_id: agentId,
-      text,
+      text: terminalSafeNotificationText(text),
       enter: true,
       enter_delay_ms: enterDelayMs,
+      literal_text: true,
     })
   }
 
