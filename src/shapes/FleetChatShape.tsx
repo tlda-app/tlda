@@ -59,14 +59,14 @@ import { TERMINAL_GLYPH_PATHS, TERMINAL_GLYPH_UNAVAILABLE_PATH, TERMINAL_GLYPH_V
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
-import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
@@ -103,10 +103,12 @@ import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
 import {
   FleetAgentDirectoryList,
+  FleetAgentDirectoryNameColumn,
   getFleetAgentDirectoryRows,
   fleetAgentLabelColor,
   sortFleetAgentDirectoryRowsByRecency,
 } from './FleetAgentDirectoryRow'
+import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -2471,6 +2473,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
+  const { startDrag: startUnreadRailDrag } = usePillDrag()
+  const showUnreadAgentRail = useValue('show-unread-agent-rail', () => {
+    if (filterOpen) return false
+    const userId = getHumanId()
+    const deviceId = getDeviceId()
+    if (!userId || !deviceId) return false
+    const ownedFleetShapes = editor.getCurrentPageShapes().filter((candidate: any) =>
+      isFleetShapeForOwnerKey(candidate, userId, deviceId),
+    )
+    return isOnlyOwnedChat(ownedFleetShapes, shape.id)
+  }, [editor, filterOpen, shape.id])
+
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
   filterRef.current = filter
@@ -2871,6 +2885,35 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
     return sorted
   }, [events, quietDmTraffic])
+
+  // Unread-per-sender for the rail, read from the rail's own to-me buffer. Same
+  // count the browser-wide store used to answer: chat messages addressed to me
+  // that I have not read, grouped by who sent them.
+  const railIdentity = useFleetIdentity()
+  const railMe = railIdentity.name || railIdentity.id || ''
+  const railEvents = useFleetEvents(unreadRailFilter(railMe), undefined, unreadRailBufferKey(shape.id))
+  const unreadRailCounts = useMemo(() => {
+    const humanId = getHumanId()
+    const counts: Record<string, number> = {}
+    if (!humanId) return counts
+    for (const event of railEvents) {
+      if (event.type !== 'chat' || event.read === true || !event.from) continue
+      counts[event.from] = (counts[event.from] || 0) + 1
+    }
+    return counts
+  }, [railEvents])
+
+  const displayedUnreadSenderIds = useMemo(() => {
+    const humanId = getHumanId()
+    const ids = new Set<string>()
+    if (!humanId) return ids
+    for (const message of chatMessages) {
+      if (message.type === 'chat' && message.read !== true && message.to === humanId && message.from) {
+        ids.add(message.from)
+      }
+    }
+    return ids
+  }, [chatMessages])
 
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
@@ -6219,6 +6262,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
           {!filterOpen && (
             <>
+              {showUnreadAgentRail && <FleetUnreadAgentRail unreadCounts={unreadRailCounts} displayedUnreadSenderIds={displayedUnreadSenderIds} startDrag={startUnreadRailDrag} />}
               {/* Messages — Virtuoso owns the scroll container and all virtualized
                   item measurement, including the status/suggestions trailing row. */}
               <Virtuoso
@@ -6723,9 +6767,65 @@ function useChatFilterSubscription(shape: any) {
   }, [dnf, shape.id])
 }
 
+/**
+ * The unread rail's own subscription: everything addressed to me, whoever sent it.
+ *
+ * The rail exists to name the agents whose messages this chat is NOT showing, so
+ * it cannot read the chat's buffer — that buffer holds exactly the conversation
+ * already on screen. It used to read the browser-wide event store; that store no
+ * longer takes global intake, so the rail asks the server the one question it
+ * needs, on the same subscription mechanism every panel uses, and lands the
+ * answer in its own buffer.
+ *
+ * Only the single-chat surface subscribes, which is the only surface that renders
+ * the rail — so this is one extra subscription on a page with one chat, not a
+ * second stream per panel.
+ */
+const UNREAD_RAIL_PAGE = 60
+
+function unreadRailBufferKey(shapeId: string) {
+  // `chat:` prefix marks the buffer server-fed — it holds exactly the rows the
+  // server said match, with no second client-side predicate over them.
+  return `chat:unread-rail:${shapeId}`
+}
+
+function unreadRailFilter(me: string): [string, string][][] | null {
+  return me ? [[['to', me]]] : null
+}
+
+function useUnreadRailSubscription(shape: any) {
+  const editor = useEditor()
+  const identity = useFleetIdentity()
+  const me = identity.name || identity.id || ''
+  // The render-time predicate also excludes an open filter pane, which is panel
+  // state the subscription cannot see. Subscribing while the pane is open costs
+  // nothing: the rail simply is not rendered.
+  const isOnlyChat = useValue('unread-rail-subscribe', () => {
+    const userId = getHumanId()
+    const deviceId = getDeviceId()
+    if (!userId || !deviceId) return false
+    const ownedFleetShapes = editor.getCurrentPageShapes().filter((candidate: any) =>
+      isFleetShapeForOwnerKey(candidate, userId, deviceId),
+    )
+    return isOnlyOwnedChat(ownedFleetShapes, shape.id)
+  }, [editor, shape.id])
+  useEffect(() => {
+    const dnf = unreadRailFilter(me)
+    if (!isOnlyChat || !dnf) return
+    const bufferKey = unreadRailBufferKey(shape.id)
+    return subscribeChat(
+      dnf,
+      UNREAD_RAIL_PAGE,
+      (events, meta) => { receiveFilterEvents(bufferKey, events, meta) },
+      { humanId: getHumanId(), humanName: getHumanName(), correlationKey: bufferKey },
+    )
+  }, [isOnlyChat, me, shape.id])
+}
+
 const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props as { w: number; h: number }
   useChatFilterSubscription(shape)
+  useUnreadRailSubscription(shape)
   const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
@@ -6865,6 +6965,41 @@ function SendHint({
     >
       {enterPrefix}→&nbsp;{targets}
     </span>
+  )
+}
+
+function FleetUnreadAgentRail({
+  unreadCounts,
+  displayedUnreadSenderIds,
+  startDrag,
+}: {
+  unreadCounts: Record<string, number>
+  displayedUnreadSenderIds: ReadonlySet<string>
+  startDrag: (
+    e: React.PointerEvent,
+    pillType: 'agent' | 'label',
+    value: string,
+    displayName: string,
+    color: string,
+  ) => void
+}) {
+  const agents = useFleetAgents()
+  const unreadRows = useMemo(
+    () => getUnreadAgentRailRows(agents, unreadCounts, displayedUnreadSenderIds),
+    [agents, unreadCounts, displayedUnreadSenderIds],
+  )
+
+  if (unreadRows.length === 0) return null
+  return (
+    <div className="fleet-unread-agent-rail" aria-label="Unread conversations">
+      {unreadRows.map((row) => (
+        <FleetAgentDirectoryNameColumn
+          key={row.id || row.exactName}
+          row={row}
+          onAgentPointerDown={(event, agentRow) => startDrag(event, 'agent', agentRow.exactName, agentRow.displayName, agentRow.color)}
+        />
+      ))}
+    </div>
   )
 }
 
