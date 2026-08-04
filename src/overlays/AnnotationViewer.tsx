@@ -23,6 +23,7 @@ import type {
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { recordSpatialTraversalToShape } from '../spatialDocumentWorld'
+import { annotationViewerCanvasOwnsEvent } from './annotation-viewer-event-ownership'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -404,6 +405,8 @@ export function AnnotationViewer({
   }
 
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
+  const shouldLetCanvasOwnEvent = (event: { target: EventTarget | null }) =>
+    annotationViewerCanvasOwnsEvent(state, event.target)
   const backArrowPath = (
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
       strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
@@ -504,18 +507,35 @@ export function AnnotationViewer({
         }
       }}
       onPointerDownCapture={(e) => {
+        if (shouldLetCanvasOwnEvent(e)) return
+        if (state === 'hovering' && e.target instanceof Element && e.target.closest('.annotation-viewer-canvas')) {
+          clickStartRef.current = { x: e.clientX, y: e.clientY }
+        }
         stopEventPropagation(e)
       }}
       onPointerMoveCapture={(e) => {
+        if (shouldLetCanvasOwnEvent(e)) return
         stopEventPropagation(e)
       }}
       onPointerUpCapture={(e) => {
+        if (shouldLetCanvasOwnEvent(e)) return
+        if (state === 'hovering' && clickStartRef.current) {
+          const dx = e.clientX - clickStartRef.current.x
+          const dy = e.clientY - clickStartRef.current.y
+          clickStartRef.current = null
+          if (Math.sqrt(dx * dx + dy * dy) < 5) setState('pinned')
+        }
         stopEventPropagation(e)
       }}
       onPointerCancelCapture={(e) => {
+        if (shouldLetCanvasOwnEvent(e)) return
+        clickStartRef.current = null
         stopEventPropagation(e)
       }}
-      onWheel={stopEventPropagation}
+      onWheel={(e) => {
+        if (shouldLetCanvasOwnEvent(e)) return
+        stopEventPropagation(e)
+      }}
     >
       {/* Canvas — read-only, full page width, click anywhere to pin */}
       <div ref={canvasWrapRef} className="annotation-viewer-canvas" style={{ height: size.h }}>
@@ -528,7 +548,7 @@ export function AnnotationViewer({
           panelWidth={size.w}
           maxHeightFraction={isPhoneViewportSurface() ? 1 : 0.5}
           emphasizeShapeIds={data.shapeIds}
-          readOnly
+          readOnly={state === 'hovering'}
           className="annotation-viewer-clip"
           requestedShapeIds={data.shapeIds}
           interactionMode={state === 'hovering' ? 'preview' : 'pinned'}
