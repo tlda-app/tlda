@@ -39,7 +39,8 @@ history; and source ranges carried into working documents keep their
 provenance. All of it is laid out on one timeline. You can visualize and walk
 through that record in spacetime.
 
-<sub>\* Here, “everything” means LaTeX and Markdown documents.</sub>
+<sub>\* Here, “everything” means versioned LaTeX, Markdown, Quarto, and
+pre-rendered HTML documents, including RevealJS decks.</sub>
 
 I wrote tlda without typing a single line while I had a repetitive stress
 injury, so I could do my work without typing. It is voice- and touch-first. I
@@ -161,13 +162,15 @@ setup.
 If you bring your agents then your collaborators can work with them through
 chat. And if they bring theirs too then everyone can work together.
 
-Markdown is a first-class input format in tlda. A project can contain several
-documents and each is its own place. You can teleport between the main paper
-and a Markdown working document without leaving the project. This lets you work
-with more isolation, better syntax, and fewer compilation headaches than
-working directly in TeX. You can write mathematical expressions with your
-paper's own macros. Write `$\imbalance_{\model}(\hgamma)$` inline or use a
-display:
+tlda accepts LaTeX, Markdown, and Quarto source, as well as already-rendered
+HTML documents and RevealJS decks. A project can contain several documents and
+each is its own place. You can teleport between the main paper and a working
+document without leaving the project.
+
+Markdown is a first-class input format. It gives you more isolation, better
+syntax, and fewer compilation headaches than working directly in TeX. You can
+write mathematical expressions with your paper's own macros. Write
+`$\imbalance_{\model}(\hgamma)$` inline or use a display:
 
 ```markdown
 $$
@@ -192,13 +195,17 @@ the canvas. Someday, hopefully, we'll manage to map those edits back to the
 file directly. See
 [Using tlda](docs/using-tlda.md#markdown-documents).
 
-The experimental `slides` format puts a Quarto RevealJS presentation on the
-same canvas. Its slides run as interactive HTML and are laid out from left to
-right, so you can move between the deck and the rest of the project without
-turning the presentation into screenshots. Use the
+Quarto source is rendered on the tlda server. A normal HTML result is a
+scrolling document; a RevealJS result is split into interactive slides laid out
+from left to right. You can instead link an already-rendered HTML document or
+RevealJS deck when another machine owns the render. See
+[Using tlda](docs/using-tlda.md#document-formats) for the commands and server
+requirements.
+
+The
 [`tlda-revealjs`](https://github.com/tlda-labs/quarto-tlda-revealjs)
-Quarto extension to render a compatible deck. The extension's README explains
-how to install it, render the talk, and link it to tlda.
+Quarto extension renders a compatible deck. Its README explains how to install
+it and render a talk.
 
 ### Rebuild and compare
 

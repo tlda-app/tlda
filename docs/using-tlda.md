@@ -1,12 +1,13 @@
 # Using tlda
 
 This is the user reference after the first successful project open. It covers
-identity, Markdown working documents, search, agents, and a full-strength local
+identity, supported document formats, search, agents, and a full-strength local
 setup. Exact command and tool arguments remain authoritative in `tlda --help`
 and the running MCP schemas.
 
 - [Identity, settings, editor, and voice](#identity-and-settings)
 - [Project source, linking, and history](#project-source-linking-and-history)
+- [Document formats](#document-formats)
 - [Markdown documents](#markdown-documents)
 - [Search and chat filters](#search-and-chat-filters)
 - [Agents](#agents)
@@ -50,8 +51,7 @@ background log.
 ## Project source linking and history
 
 You can link a local working copy, an Overleaf project, or another Git remote to
-a tlda project. The source can be a LaTeX paper or a Markdown document. Local
-editing, browser editing, and history then stay connected.
+a tlda project. Local editing, browser editing, and history then stay connected.
 
 ```mermaid
 flowchart LR
@@ -90,7 +90,6 @@ tlda project link eiv-paper https://git.overleaf.com/project-id \
 
 The server owns the remote clone and polling. You may omit `--main` when the
 project already has an entry file or the clone contains exactly one entry file.
-Markdown format is inferred from a `.md` main file.
 
 Linking the same project to the same source is an idempotent no-op. Linking it
 to a different local path on one machine or a different Git URL fails without
@@ -108,11 +107,50 @@ The server does not silently overwrite a linked local checkout with a browser
 edit. The checkout discovers the newer server revision when it next submits and
 then receives a merge conflict to resolve locally.
 
+## Document formats
+
+tlda supports authored LaTeX, Markdown, and Quarto source, plus already-rendered
+HTML documents and RevealJS slide decks. A file argument ending in `.md`,
+`.qmd`, `.html`, or `.htm` selects its format automatically. LaTeX remains the
+default for `.tex` files and repository paths.
+
+| source | what tlda does | link it |
+| --- | --- | --- |
+| LaTeX (`.tex`) | Builds the paper with `latexmk`, converts its pages to SVG, and retains SyncTeX source positions. | `tlda project link paper /path/to/repo/paper.tex` |
+| Markdown (`.md`) | Renders the authored Markdown and the local Markdown documents and assets it links to. | `tlda project link notes /path/to/notes.md` |
+| Quarto (`.qmd`) | Sends the source directory to the server and runs Quarto there. An HTML document becomes a scrolling page; a RevealJS result becomes individual interactive slides. | `tlda project link report /path/to/report.qmd` |
+| Rendered HTML | Copies a rendered HTML site or book and its assets without running its source renderer. Top-level HTML files become document pages unless the artifact supplies `page-info.json`. | `tlda project link book /path/to/rendered-book --format html` |
+| Rendered RevealJS | Copies an already-rendered deck and its assets, then lays its interactive slides from left to right on the canvas. | `tlda project link talk /path/to/rendered-talk --format slides` |
+
+For a Quarto project, the server needs `quarto` on `PATH`. It uses the document's
+own output format rather than overriding it. A project with `renv.lock` also
+needs `Rscript`; tlda restores that environment before rendering. The source
+upload includes the project directory—such as `_quarto.yml`, extensions, data,
+and figures—but excludes Git metadata and prior render output.
+
+The `html` and `slides` formats are for output you rendered yourself. Run the
+source renderer first, then link the directory containing the resulting HTML
+and support files. Use `qmd` when tlda should own the Quarto render instead.
+
+A book groups existing projects without combining their source, history, sync
+rooms, or annotations. Create one after linking its members:
+
+```sh
+tlda project book monograph --members introduction,proofs,appendix
+```
+
+The viewer presents one member at a time and provides tabs to move between
+them.
+
 ## Markdown documents
 
 Markdown is a versioned document format in tlda. Use it for outlines, proof
 development, proposed passages, research notes, or any other working document
 that should retain its history and references.
+
+To publish one Markdown file as a page and add it to a book, use
+`tlda project scratch notes.md --book fleet-workspace`. The default book is
+`fleet-workspace`.
 
 ### Ordinary Markdown
 

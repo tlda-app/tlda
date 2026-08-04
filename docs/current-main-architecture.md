@@ -46,6 +46,22 @@ manifest contains the main Markdown file, the local Markdown documents it links
 to, and their referenced assets. Those files remain ordinary versioned project
 source rather than detached chat artifacts.
 
+Format-specific builders share the same project record and output manifest:
+
+- LaTeX builds to SVG pages and SyncTeX source positions.
+- Markdown source is rendered to HTML on the server.
+- Quarto source is rendered on the server; the rendered HTML determines whether
+  it is served as a scrolling document or split into RevealJS slides.
+- Pre-rendered HTML and RevealJS projects arrive with their assets. The server
+  copies and indexes them without running their source renderer.
+- A book is a navigation grouping over existing projects. Its members retain
+  separate source, history, sync rooms, and annotations.
+
+`page-info.json` is the common page manifest consumed by the browser's HTML and
+slide loaders. A Quarto render produces it after inspecting the output;
+pre-rendered HTML may supply it, while the server otherwise derives it from the
+top-level HTML files.
+
 An Overleaf or Git remote is polled and pushed through a server-owned clone.
 That path uses ordinary Git fetch, reset, commit, and push behavior rather than
 the symmetric stale-peer contract of an interactive edit. Concurrent remote
