@@ -6,7 +6,11 @@
  * One per room, fixed ID: shape:doc-version--sentinel
  * Renders nothing — opacity 0, 1×1px, off-screen not required.
  */
-import { BaseBoxShapeUtil, T } from 'tldraw'
+import { BaseBoxShapeUtil, T, type TLPropsMigrations } from 'tldraw'
+import {
+  DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+  stripRetiredDocVersionProps,
+} from '../../shared/shapes/doc-version-migrations.mjs'
 
 export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'doc-version' as const
@@ -25,6 +29,13 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     warningsJson: T.optional(T.string),
     errorsJson: T.optional(T.string),
     syncErrorJson: T.optional(T.string),
+  }
+  static override migrations: TLPropsMigrations = {
+    sequence: [{
+      id: DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+      up: stripRetiredDocVersionProps,
+      down: 'none' as const,
+    }],
   }
 
   getDefaultProps() {

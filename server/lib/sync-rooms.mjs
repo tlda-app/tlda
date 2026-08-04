@@ -18,6 +18,10 @@ import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 import { outlineProps } from '../../shared/shapes/outline-schema.mjs'
 import { graphNodeProps, graphExplainProps } from '../../shared/shapes/graph-node-schema.mjs'
 import {
+  DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+  stripRetiredDocVersionProps,
+} from '../../shared/shapes/doc-version-migrations.mjs'
+import {
   fleetAgentsProps,
   fleetChatProps,
   fleetDocviewProps,
@@ -315,7 +319,14 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',
-      sequence: [],
+      sequence: [{
+        id: DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+        scope: 'record',
+        filter: (record) => record.typeName === 'shape' && record.type === 'doc-version',
+        up: (record) => {
+          record.props = stripRetiredDocVersionProps(record.props)
+        },
+      }],
     }),
   },
   'doc-viewer-state': {
