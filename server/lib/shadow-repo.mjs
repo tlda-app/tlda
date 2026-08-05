@@ -52,6 +52,7 @@ const GITIGNORE_CONTENT = `# Build artifacts
 *.lot
 *.bbl
 *.blg
+*.bb
 *.bcf
 *.run.xml
 *.nav
@@ -178,7 +179,7 @@ export async function initShadowRepo(name) {
  * (.bib/.bst) and svg siblings of pdf figures. Build artifacts are
  * filtered here.
  */
-const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
+const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|bb|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
 
 export function readPaperScope(name) {
   return diagnosePaperScope(name).scope
