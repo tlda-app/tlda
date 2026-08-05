@@ -10,7 +10,7 @@
  *
  * This replaces the old copy-store approach (separate editor + bidirectional sync).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TldrawViewport, Vec, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
 import {
@@ -408,10 +408,10 @@ export function CanvasClipPanel({
     }
   }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnly])
 
-  const handleReadOnlyWheelCapture = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
+  const handleReadOnlyWheelCapture = useCallback((e: WheelEvent) => {
     if (!readOnly || !bounds) return
     e.preventDefault()
-    stopEventPropagation(e)
+    e.stopPropagation()
     setInteractiveCamera(prev => {
       const base = prev ?? plannedCamera
       return canvasClipWheelCamera(base, e.deltaX, e.deltaY, bounds, panelWidth, canvasHeight, {
@@ -420,6 +420,13 @@ export function CanvasClipPanel({
       })
     })
   }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnly, unboundedPanning])
+
+  useEffect(() => {
+    const panel = panelRef.current
+    if (!panel || !readOnly || !bounds) return
+    panel.addEventListener('wheel', handleReadOnlyWheelCapture, { capture: true, passive: false })
+    return () => panel.removeEventListener('wheel', handleReadOnlyWheelCapture, { capture: true })
+  }, [bounds, handleReadOnlyWheelCapture, readOnly])
 
   const requestedShapeIdsKey = useMemo(
     () => (requestedShapeIds || []).join('\0'),
@@ -568,7 +575,6 @@ export function CanvasClipPanel({
           <div
             className="clip-panel-wheel-capture"
             aria-hidden="true"
-            onWheel={handleReadOnlyWheelCapture}
             style={{
               position: 'absolute',
               inset: 0,
