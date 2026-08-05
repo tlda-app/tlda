@@ -228,11 +228,10 @@ function absoluteTime(ts) {
   })
 }
 
-function countdownLabel(ts) {
-  const remaining = Math.max(0, Math.ceil((new Date(ts).getTime() - Date.now()) / 1000))
-  const mins = Math.floor(remaining / 60)
-  const secs = remaining % 60
-  return mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+export function taskCountdownLabel(ts, now = Date.now()) {
+  const remaining = Math.max(0, new Date(ts).getTime() - now)
+  if (remaining <= 0) return 'due'
+  return `${Math.ceil(remaining / 60_000)}m`
 }
 
 // --- Standalone att-token resolver ---
@@ -557,7 +556,7 @@ export function renderChatLine(m, ctx) {
       : []
     const call = `delegate(${suppliedCallArgs.join(', ')})`
     const scheduleHtml = m._taskNextFireAt
-      ? `<div class="lc-task-schedule" data-timer-until="${esc(m._taskNextFireAt)}"><span class="timer-msg">${esc(absoluteTime(m._taskNextFireAt))} · in ${esc(countdownLabel(m._taskNextFireAt))}${m._taskRepeatSeconds ? ` · every ${esc(durationLabel(m._taskRepeatSeconds))}` : ''}</span></div>`
+      ? `<div class="lc-task-schedule" data-timer-until="${esc(m._taskNextFireAt)}"><span class="timer-msg">${esc(absoluteTime(m._taskNextFireAt))} · in ${esc(taskCountdownLabel(m._taskNextFireAt))}${m._taskRepeatSeconds ? ` · every ${esc(durationLabel(m._taskRepeatSeconds))}` : ''}</span></div>`
       : ''
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">

@@ -24,7 +24,7 @@ import { probe } from '../perf-probe'
 import { isPhoneViewport } from '../phoneViewport'
 
 // @ts-ignore — vanilla JS module
-import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature } from '../fleet/chat-render.mjs'
+import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature, taskCountdownLabel } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
 // @ts-ignore — vanilla JS module
@@ -3939,18 +3939,18 @@ function FleetChatInner({ shape }: { shape: any }) {
         const until = node.getAttribute('data-timer-until')
         const span = node.querySelector<HTMLElement>('.timer-msg')
         if (!until || !span) continue
-        const r = Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / 1000))
-        const mins = Math.floor(r / 60)
-        const secs = r % 60
-        const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
         const txt = span.textContent || ''
         if (node.classList.contains('lc-task-schedule')) {
           const middleDot = txt.indexOf(' · in ')
           const repeat = txt.indexOf(' · every ')
           const absolute = middleDot >= 0 ? txt.slice(0, middleDot) : txt
           const recurrence = repeat >= 0 ? txt.slice(repeat) : ''
-          setTickerText(span, `${absolute} · in ${timeStr}${recurrence}`)
+          setTickerText(span, `${absolute} · in ${taskCountdownLabel(until)}${recurrence}`)
         } else {
+          const r = Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / 1000))
+          const mins = Math.floor(r / 60)
+          const secs = r % 60
+          const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
           const arrowIdx = txt.indexOf('→')
           const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
           setTickerText(span, `⏱ ${timeStr} ${tail}`.trimEnd())
