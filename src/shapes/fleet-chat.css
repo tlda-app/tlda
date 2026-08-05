@@ -530,6 +530,15 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   overscroll-behavior: contain;
 }
 
+/* The task ticker changes once a second inside tldraw's transformed canvas.
+   Keep its raster invalidation on a leaf compositor layer so the surrounding
+   chat does not repaint with it. */
+.fleet-chat-shape .lc-task-schedule .timer-msg {
+  display: inline-block;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 /* --- Draggable elements in chat --- */
 /* Only timestamps and attachment-type elements are drag handles.
    Nick spans and message text are selectable/copyable. */

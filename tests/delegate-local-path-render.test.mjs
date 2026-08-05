@@ -1,16 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { esc, renderChatLine, taskCountdownLabel } from '../src/fleet/chat-render.mjs'
-
-test('task countdown changes only at minute boundaries', () => {
-  const now = Date.parse('2026-08-05T19:00:00Z')
-  assert.equal(taskCountdownLabel('2026-08-05T19:11:21Z', now), '12m')
-  assert.equal(taskCountdownLabel('2026-08-05T19:11:01Z', now), '12m')
-  assert.equal(taskCountdownLabel('2026-08-05T19:11:00Z', now), '11m')
-  assert.equal(taskCountdownLabel('2026-08-05T19:00:30Z', now), '1m')
-  assert.equal(taskCountdownLabel('2026-08-05T19:00:00Z', now), 'due')
-})
+import { esc, renderChatLine } from '../src/fleet/chat-render.mjs'
 import { convertChatEvent } from '../src/fleet/convert-chat-event.mjs'
 
 const ctx = {
