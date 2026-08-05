@@ -68,7 +68,11 @@ function SpatialLodSvgPage({ shape }: { shape: any }) {
   const viewportId = useVisibilityViewportId()
   const mapLevel = useValue(
     `spatial-lod-svg-${shape.id}`,
-    () => (viewportId ? editor.getViewport(viewportId).camera.z : editor.getZoomLevel()) <= SPATIAL_MAP_ZOOM,
+    () => {
+      if (!viewportId) return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM
+      try { return editor.getViewport(viewportId).camera.z <= SPATIAL_MAP_ZOOM }
+      catch { return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM }
+    },
     [editor, shape.id, viewportId],
   )
   if (mapLevel) {
@@ -210,16 +214,17 @@ function SvgPageComponent({ shape }: { shape: any }) {
   // Track whether this page is vertically near the viewport (±2 pages buffer).
   // Horizontal panning should not unload/reload page SVGs.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
-    const viewport = viewportId
-      ? (() => {
+    const viewport = (() => {
+      if (viewportId) try {
           const registered = editor.getViewport(viewportId)
           const z = registered.camera.z || 1
           return {
             minY: registered.screenBounds.y / z - registered.camera.y,
             maxY: (registered.screenBounds.y + registered.screenBounds.h) / z - registered.camera.y,
           }
-        })()
-      : editor.getViewportPageBounds()
+      } catch { /* viewport registration can lag shape mounting */ }
+      return editor.getViewportPageBounds()
+    })()
     const b = editor.getShapePageBounds(shape.id)
     if (!b) return false
     const marginY = b.h * VIEWPORT_BUFFER_PAGES

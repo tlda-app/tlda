@@ -340,7 +340,11 @@ function SpatialLodHtmlPage({ shape }: { shape: any }) {
   const viewportId = useVisibilityViewportId()
   const mapLevel = useValue(
     `spatial-lod-html-${shape.id}`,
-    () => (viewportId ? editor.getViewport(viewportId).camera.z : editor.getZoomLevel()) <= SPATIAL_MAP_ZOOM,
+    () => {
+      if (!viewportId) return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM
+      try { return editor.getViewport(viewportId).camera.z <= SPATIAL_MAP_ZOOM }
+      catch { return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM }
+    },
     [editor, shape.id, viewportId],
   )
   if (mapLevel) {
