@@ -7,6 +7,7 @@ import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
 import { subscribeChat } from './fleet/chat-subscription.mjs'
+import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { STORE_HTTP } from './activeConfig'
 import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
@@ -24,7 +25,7 @@ import { renderChatLine, esc } from './fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { toggleRecording, isRecording, onRecordingChange } from './voice.mjs'
+import { toggleRecording, isRecording, onRecordingChange, maybeShowRadioSubtitleForIncomingChat, setRadioReplyHandler, setVoiceTarget, completeMessageSend } from './voice.mjs'
 import './App.css'
 import './themes.css'
 import './shapes/fleet-chat.css'
@@ -487,12 +488,59 @@ function App() {
       return (
         <div className="App">
           <IdentityPicker />
+          <DocumentRadio />
           <ErrorBoundary>
             <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
           </ErrorBoundary>
         </div>
       )
   }
+}
+
+function DocumentRadio() {
+  const identity = useFleetIdentity()
+  const agents = useFleetAgents()
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    const target = identity.name || identity.id
+    if (!target || !identity.id) return
+    return subscribeChat(
+      [[['to', target]]],
+      1,
+      (events, meta) => {
+        if (meta.reason !== 'live') return
+        for (const raw of events) {
+          maybeShowRadioSubtitleForIncomingChat(convertChatEvent(raw), agents, identity.id)
+        }
+      },
+      { humanId: identity.id, humanName: identity.name, correlationKey: 'radio:document' },
+    )
+  }, [identity.id, identity.name, agents])
+
+  useEffect(() => {
+    setRadioReplyHandler((entry: { from: string; label: string }) => {
+      const textarea = textareaRef.current
+      if (!textarea || !entry.from) return false
+      const submitCurrent = (submittedText?: string) => {
+        const text = textarea.value.trim()
+        if (!text) return false
+        void sendMessage(entry.from, text)
+        textarea.value = ''
+        completeMessageSend(submittedText ?? text)
+        return true
+      }
+      setVoiceTarget(textarea, {
+        getSendTargets: () => [entry.from],
+        getAgentNames: () => ({ [entry.from]: entry.label }),
+        submitCurrent,
+      })
+      return true
+    })
+    return () => setRadioReplyHandler(null)
+  }, [])
+
+  return <textarea ref={textareaRef} aria-hidden="true" tabIndex={-1} style={{ position: 'fixed', width: 1, height: 1, opacity: 0, pointerEvents: 'none', left: -9999 }} />
 }
 
 type ProjectMeta = Record<string, { lastBuild?: string; lastAnnotated?: string }>

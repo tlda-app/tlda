@@ -475,6 +475,11 @@ let _radioSubtitle = null
 let _radioHistory = []
 let _radioExpanded = false
 let _radioCollapseTimer = null
+let _radioReplyHandler = null
+
+export function setRadioReplyHandler(handler) {
+  _radioReplyHandler = typeof handler === 'function' ? handler : null
+}
 
 function cleanRadioSubtitleText(text) {
   const cleaned = String(text || '')
@@ -591,13 +596,13 @@ function showRadioSubtitle(event, agents = []) {
   return true
 }
 
+/** @param {string|null} humanId */
 export function maybeShowRadioSubtitleForIncomingChat(event, agents = [], humanId = null) {
   if (!getPref('radio-subtitles-enabled')) return false
   if (!isDocSurface()) return false
   if (!event || event.type !== 'chat') return false
   if (!humanId || !(event.recipients || []).includes(humanId)) return false
   if (!event.from || event.from === humanId) return false
-  if (!radioAgentMatchesActiveTarget(event.from, agents)) return false
   return showRadioSubtitle(event, agents)
 }
 
@@ -1071,6 +1076,29 @@ function showHud(text, stateColor) {
       width: '100%',
     })
     hud.appendChild(line)
+    const reply = document.createElement('button')
+    reply.type = 'button'
+    reply.textContent = `reply to ${_radioSubtitle.label}`
+    reply.setAttribute('aria-label', `Target radio reply to ${_radioSubtitle.label}`)
+    Object.assign(reply.style, {
+      alignSelf: 'center',
+      marginTop: '5px',
+      border: '0',
+      padding: '2px 7px',
+      borderRadius: '999px',
+      background: 'rgba(255,255,255,0.12)',
+      color: 'inherit',
+      font: 'inherit',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+    })
+    reply.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      _radioReplyHandler?.(_radioSubtitle)
+      showHud(`radio -> ${_radioSubtitle.label}`, '#7ab8a0')
+    })
+    hud.appendChild(reply)
     const prior = _radioHistory.slice(1)
     if (prior.length) {
       const trace = document.createElement('div')
