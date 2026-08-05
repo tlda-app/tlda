@@ -181,6 +181,11 @@ export async function initShadowRepo(name) {
  */
 const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|bb|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
 
+export function isGeneratedSvgCompanionPdf(rel, root) {
+  if (typeof rel !== 'string' || !rel.endsWith('.pdf')) return false
+  return existsSync(join(root, rel.replace(/\.pdf$/, '.svg')))
+}
+
 export function readPaperScope(name) {
   return diagnosePaperScope(name).scope
 }
@@ -213,6 +218,7 @@ export function diagnosePaperScope(name) {
   for (const rel of files) {
     if (typeof rel !== 'string' || !rel) continue
     if (BUILD_ARTIFACT_RE.test(rel)) continue
+    if (isGeneratedSvgCompanionPdf(rel, srcDir)) continue
     if (!existsSync(join(srcDir, rel))) { absent++; continue }
     out.add(rel)
   }
@@ -230,6 +236,7 @@ export function diagnosePaperScope(name) {
 export async function readShadowSourceScope(name) {
   const out = new Set(readPaperScope(name) || [])
   const repoDir = shadowRepoDir(name)
+  const srcDir = sourceDir(name)
   if (existsSync(join(repoDir, '.git'))) {
     const { stdout: commitsRaw } = await execAsync('git log --format=%H', { cwd: repoDir, timeout: 10000 })
     const commits = commitsRaw.split('\n').map(line => line.trim()).filter(Boolean)
@@ -238,6 +245,7 @@ export async function readShadowSourceScope(name) {
       for (const rel of filesRaw.split('\0')) {
         if (!rel || rel === '.gitignore' || rel === 'CLAUDE.md') continue
         if (BUILD_ARTIFACT_RE.test(rel)) continue
+        if (isGeneratedSvgCompanionPdf(rel, srcDir)) continue
         out.add(rel)
       }
     }

@@ -485,6 +485,11 @@ export function setRadioReplyHandler(handler) {
 export function setRadioDraftText(text) {
   _radioDraftText = String(text || '')
   if (!_radioSubtitle || !_radioDraftText.trim()) return
+  const draft = _hud?.querySelector?.('[data-radio-draft="true"]')
+  if (draft) {
+    draft.textContent = `you: ${_radioDraftText}`
+    return
+  }
   _radioExpanded = true
   clearTimeout(_radioCollapseTimer)
   showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
