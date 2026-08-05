@@ -4125,9 +4125,33 @@ function FleetChatInner({ shape }: { shape: any }) {
     const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!el || !list) return
     const observer = new ResizeObserver(() => {
-      if (touchScrollActiveRef.current) return
-      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      const before = {
+        top: el.scrollTop,
+        height: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        gap: el.scrollHeight - (el.scrollTop + el.clientHeight),
+      }
+      if (touchScrollActiveRef.current) {
+        log.metric('chat-scroll', 'list resized while touch scroll was active — correction deferred', {
+          panelId: String(shape.id), ...before,
+        })
+        return
+      }
+      if (userScrolledUpRef.current && !hardLockedRef.current) {
+        log.metric('chat-scroll', 'list resized while reader was scrolled up — viewport held', {
+          panelId: String(shape.id), ...before,
+          anchorKey: viewportAnchorRef.current?.key || null,
+        })
+        return
+      }
       el.scrollTop = el.scrollHeight
+      log.metric('chat-scroll', 'list resized while following — pinned immediately', {
+        panelId: String(shape.id),
+        ...before,
+        afterTop: el.scrollTop,
+        afterGap: el.scrollHeight - (el.scrollTop + el.clientHeight),
+        hardLocked: hardLockedRef.current,
+      })
     })
     observer.observe(list)
     return () => observer.disconnect()
@@ -4208,11 +4232,28 @@ function FleetChatInner({ shape }: { shape: any }) {
     let frame = 0
     let stableBottomFrames = 0
     let lastHeight = -1
+    const initialEl = chatLogRef.current
+    log.metric('chat-scroll', 'settle-to-tail started', {
+      panelId: String(shape.id),
+      reason,
+      force: !!opts.force,
+      resumeFollow: !!opts.resumeFollow,
+      top: initialEl?.scrollTop ?? null,
+      height: initialEl?.scrollHeight ?? null,
+      clientHeight: initialEl?.clientHeight ?? null,
+      gap: initialEl ? initialEl.scrollHeight - (initialEl.scrollTop + initialEl.clientHeight) : null,
+      scrolledUp: userScrolledUpRef.current,
+      hardLocked: hardLockedRef.current,
+      touchActive: touchScrollActiveRef.current,
+    })
 
     const step = () => {
       if (settleTailRunRef.current !== run) return
       if (!opts.force && userScrolledUpRef.current && !hardLockedRef.current) {
         if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
+        log.metric('chat-scroll', 'settle-to-tail aborted because reader was scrolled up', {
+          panelId: String(shape.id), reason, frame,
+        })
         return
       }
 
@@ -4220,7 +4261,9 @@ function FleetChatInner({ shape }: { shape: any }) {
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       } catch (e) {
         if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
-        log.debug('chat-scroll', 'settle-to-tail scrollToIndex skipped', { reason, e: String(e) })
+        log.metric('chat-scroll', 'settle-to-tail scrollToIndex failed', {
+          panelId: String(shape.id), reason, e: String(e),
+        })
         return
       }
 
@@ -4240,7 +4283,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             userScrolledUpRef.current = false
             setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
           }
-          log.debug('chat-scroll', 'settle-to-tail reached true bottom', {
+          log.metric('chat-scroll', 'settle-to-tail reached true bottom', {
+            panelId: String(shape.id),
             reason,
             frame,
             gap,
@@ -4255,7 +4299,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           requestAnimationFrame(step)
         } else {
           if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
-          log.debug('chat-scroll', 'settle-to-tail stopped before stable true bottom', {
+          log.metric('chat-scroll', 'settle-to-tail stopped before stable true bottom', {
+            panelId: String(shape.id),
             reason,
             gap,
             height,
@@ -4270,9 +4315,18 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
-    log.debug('chat-scroll', 'user clicked ⇣ jump-to-bottom → settle at true tail before resuming follow')
+    const el = chatLogRef.current
+    log.metric('chat-scroll', 'user clicked ⇣ jump-to-bottom', {
+      panelId: String(shape.id),
+      top: el?.scrollTop ?? null,
+      height: el?.scrollHeight ?? null,
+      clientHeight: el?.clientHeight ?? null,
+      gap: el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : null,
+      scrolledUp: userScrolledUpRef.current,
+      hardLocked: hardLockedRef.current,
+    })
     settleToTail('jump-button', { force: true, resumeFollow: true })
-  }, [settleToTail])
+  }, [shape.id, settleToTail])
 
   useLayoutEffect(() => {
     const prev = prevTailMessageKeyRef.current
@@ -4280,7 +4334,8 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!tailMessageKey || tailMessageKey === prev) return
     const state = { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current }
     if (!shouldGlueTailChange(prev, tailMessageKey, state)) {
-      log.debug('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', {
+      log.metric('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', {
+        panelId: String(shape.id),
         prev,
         tail: tailMessageKey,
         scrolledUp: userScrolledUpRef.current,
@@ -4288,7 +4343,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
       return
     }
-    log.debug('chat-scroll', 'tail changed → STICK TO BOTTOM (following / hard-locked)', {
+    log.metric('chat-scroll', 'tail changed → STICK TO BOTTOM (following / hard-locked)', {
+      panelId: String(shape.id),
       prev,
       tail: tailMessageKey,
       scrolledUp: userScrolledUpRef.current,
@@ -6299,7 +6355,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               const state = { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current }
               const shouldPin = typeof gapNow === 'number' && shouldConvergeToBottom(gapNow, state)
-              log.debug('chat-scroll', shouldPin
+              log.metric('chat-scroll', shouldPin
                 ? 'content grew → STICK TO BOTTOM (following / hard-locked)'
                 : state.scrolledUp && !state.hardLocked
                   ? 'content grew → HELD position (user scrolled up) — YANK AVERTED'
@@ -6329,7 +6385,8 @@ function FleetChatInner({ shape }: { shape: any }) {
               const el = chatLogEl
               const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
               if (isAtBottomRef.current !== atBottom) {
-                log.debug('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
+                log.metric('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
+                  panelId: String(shape.id),
                   scrollTop: el?.scrollTop,
                   scrollHeight: el?.scrollHeight,
                   clientHeight: el?.clientHeight,
