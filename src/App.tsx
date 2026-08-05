@@ -1182,7 +1182,20 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
         <div className="index-top-chat-header">
           <span>{selectedAgent ? selectedAgent.displayName : 'Chat'}</span>
           {/* Dictation is toggled by Right Shift on a keyboard; a phone has none. */}
-          <button type="button" onClick={() => toggleRecording()}>{recording ? 'Stop' : 'Voice'}</button>
+          <button
+            type="button"
+            className={`index-top-chat-mic${recording ? ' recording' : ''}`}
+            onClick={() => toggleRecording()}
+            title={recording ? 'Stop transcription' : 'Start transcription'}
+            aria-label={recording ? 'Stop transcription' : 'Start transcription'}
+            aria-pressed={recording}
+          >
+            <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="6.5" y="2" width="5" height="8" rx="2.5" fill="currentColor" stroke="none" />
+              <path d="M3.5 8.5a5.5 5.5 0 0 0 11 0" />
+              <line x1="9" y1="14" x2="9" y2="16" />
+            </svg>
+          </button>
           {selectedAgent && <button type="button" onClick={() => setSelectedAgentId(null)}>All</button>}
         </div>
         <div className="index-top-chat-log fleet-chat-log" aria-live="polite">

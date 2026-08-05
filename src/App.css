@@ -252,6 +252,24 @@ body.tlda-pan-mode * {
   letter-spacing: normal;
 }
 
+.index-top-chat-header .index-top-chat-mic {
+  display: flex;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: currentColor;
+  opacity: 0.55;
+}
+
+.index-top-chat-header .index-top-chat-mic.recording {
+  color: #dc2626;
+  opacity: 1;
+}
+
 .index-top-chat-log {
   flex: 1;
   min-height: 0;
