@@ -5,7 +5,8 @@ import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
-import { sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
+import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
+import { subscribeChat } from './fleet/chat-subscription.mjs'
 import { STORE_HTTP } from './activeConfig'
 import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
@@ -892,9 +893,26 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     if (!selectedAgentId) return null
     return agentRows.find(row => row.id === selectedAgentId || row.exactName === selectedAgentId) || null
   }, [agentRows, selectedAgentId])
-  const selectedAgentFilter = useMemo(() => fleetChatFilterForAgent(selectedAgent, identity.id), [selectedAgent, identity.id])
+  const selectedAgentFilter = useMemo(
+    () => fleetChatFilterForAgent(selectedAgent, identity.id),
+    [selectedAgent?.exactName, identity.id],
+  )
   const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
-  const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, selectedAgent?.id ? `index:${selectedAgent.id}` : 'index:no-agent')
+  const indexChatBufferKey = selectedAgent?.id ? `chat:index:${selectedAgent.id}` : 'chat:index:no-agent'
+  useEffect(() => {
+    if (!selectedAgentFilter || !identity.id) return
+    return subscribeChat(
+      selectedAgentFilter,
+      100,
+      (events, meta) => { receiveFilterEvents(indexChatBufferKey, events, meta) },
+      {
+        humanId: identity.id,
+        humanName: identity.name,
+        correlationKey: indexChatBufferKey,
+      },
+    )
+  }, [selectedAgentFilter, indexChatBufferKey, identity.id, identity.name])
+  const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, indexChatBufferKey)
   const chatRenderContext = useMemo(() => makeIndexChatRenderContext(agents, tasks, identity), [agents, tasks, identity])
   const selectedChatRows = useMemo(() => {
     if (!selectedAgent) return []

@@ -603,6 +603,11 @@ body.tlda-pan-mode * {
     margin-bottom: 14px;
   }
 
+  /* iOS Safari zooms the page when a focused text control is below 16px. */
+  .index-top-chat-composer {
+    font-size: 16px;
+  }
+
   .project-index-axis,
   .project-index-row {
     grid-template-columns: minmax(0, 1fr) 104px 76px;
