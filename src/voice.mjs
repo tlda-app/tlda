@@ -476,9 +476,30 @@ let _radioHistory = []
 let _radioExpanded = false
 let _radioCollapseTimer = null
 let _radioReplyHandler = null
+let _radioDraftText = ''
 
 export function setRadioReplyHandler(handler) {
   _radioReplyHandler = typeof handler === 'function' ? handler : null
+}
+
+export function setRadioDraftText(text) {
+  _radioDraftText = String(text || '')
+  if (!_radioSubtitle || !_radioDraftText.trim()) return
+  _radioExpanded = true
+  clearTimeout(_radioCollapseTimer)
+  showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
+}
+
+export function commitRadioDraft(text) {
+  const cleaned = cleanRadioSubtitleText(text)
+  if (!_radioSubtitle || !cleaned) return
+  const entry = {
+    from: 'you',
+    label: 'you',
+    text: cleaned,
+    timestamp: new Date().toISOString(),
+  }
+  _radioHistory = [_radioSubtitle, entry, ..._radioHistory.slice(1)].slice(0, RADIO_HUD_HISTORY_LIMIT)
 }
 
 function cleanRadioSubtitleText(text) {
@@ -1100,6 +1121,27 @@ function showHud(text, stateColor) {
       width: '100%',
     })
     hud.appendChild(line)
+    if (_radioDraftText.trim()) {
+      const draft = document.createElement('div')
+      draft.textContent = `you: ${_radioDraftText}`
+      draft.dataset.radioDraft = 'true'
+      Object.assign(draft.style, {
+        marginTop: '4px',
+        minWidth: '0',
+        overflow: 'hidden',
+        display: '-webkit-box',
+        WebkitBoxOrient: 'vertical',
+        WebkitLineClamp: '4',
+        whiteSpace: 'normal',
+        wordBreak: 'break-word',
+        color: 'rgba(255,255,255,0.72)',
+        fontSize: '12px',
+        lineHeight: '1.35',
+        textAlign: 'left',
+        width: '100%',
+      })
+      hud.appendChild(draft)
+    }
     const prior = _radioHistory.slice(1)
     if (prior.length) {
       const trace = document.createElement('div')

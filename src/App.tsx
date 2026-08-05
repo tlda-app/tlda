@@ -25,7 +25,7 @@ import { renderChatLine, esc } from './fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { toggleRecording, isRecording, onRecordingChange, maybeShowRadioSubtitleForIncomingChat, setRadioReplyHandler, setVoiceTarget, completeMessageSend } from './voice.mjs'
+import { toggleRecording, isRecording, onRecordingChange, maybeShowRadioSubtitleForIncomingChat, setRadioReplyHandler, setRadioDraftText, commitRadioDraft, setVoiceTarget, completeMessageSend } from './voice.mjs'
 import './App.css'
 import './themes.css'
 import './shapes/fleet-chat.css'
@@ -526,7 +526,9 @@ function DocumentRadio() {
         const text = textarea.value.trim()
         if (!text) return false
         void sendMessage(entry.from, text)
+        commitRadioDraft(text)
         textarea.value = ''
+        setRadioDraftText('')
         completeMessageSend(submittedText ?? text)
         return true
       }
@@ -540,7 +542,7 @@ function DocumentRadio() {
     return () => setRadioReplyHandler(null)
   }, [])
 
-  return <textarea ref={textareaRef} aria-hidden="true" tabIndex={-1} style={{ position: 'fixed', width: 1, height: 1, opacity: 0, pointerEvents: 'none', left: -9999 }} />
+  return <textarea ref={textareaRef} aria-hidden="true" tabIndex={-1} onInput={event => setRadioDraftText(event.currentTarget.value)} style={{ position: 'fixed', width: 1, height: 1, opacity: 0, pointerEvents: 'none', left: -9999 }} />
 }
 
 type ProjectMeta = Record<string, { lastBuild?: string; lastAnnotated?: string }>
