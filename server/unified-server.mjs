@@ -80,6 +80,7 @@ import { createAgentRuntimeStatusStore, RUNTIME_KIND, RUNTIME_STATUS } from './l
 import { createHumanPresenceTracker } from './lib/human-presence.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
+import { spawnCallerId } from './lib/spawn-caller.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
@@ -5834,8 +5835,8 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'spawn') {
-    const callerId = ws._tldaAgentId || ws._tldaHumanId
-    if (!callerId) { error('spawn requires an authenticated fleet WS identity; call login() first'); return }
+    const callerId = spawnCallerId(ws, msg)
+    if (!callerId) { error('spawn requires a caller identity'); return }
     const caller = await fleetStore.getAgent?.(callerId)
     if (!caller) { error(`spawn caller ${callerId} is not registered`); return }
     try {
