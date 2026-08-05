@@ -4119,6 +4119,20 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     captureViewportAnchor()
   }, [allItems, shape.id, captureViewportAnchor])
+
+  useLayoutEffect(() => {
+    const el = chatLogEl
+    const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
+    if (!el || !list) return
+    const observer = new ResizeObserver(() => {
+      if (touchScrollActiveRef.current) return
+      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      el.scrollTop = el.scrollHeight
+    })
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [chatLogEl])
+
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // This panel's composer text, across unmounts. Filter mode unmounts the whole
   // input area, and a filter pill hovering over the panel opens filter mode on
