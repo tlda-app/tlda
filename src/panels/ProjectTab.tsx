@@ -135,6 +135,7 @@ function ProjectMapViewport({
           readOnly
           interactionMode="preview"
           unboundedPanning
+          fitBounds
         />
       )}
       <button

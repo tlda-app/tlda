@@ -20,6 +20,7 @@ import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 import { isPhoneViewport } from '../phoneViewport'
 import { ProjectContext } from '../PanelContext'
 import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
+import { useVisibilityViewportId } from './useIsInViewport'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -64,10 +65,11 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 
 function SpatialLodSvgPage({ shape }: { shape: any }) {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const mapLevel = useValue(
     `spatial-lod-svg-${shape.id}`,
-    () => editor.getZoomLevel() <= SPATIAL_MAP_ZOOM,
-    [editor, shape.id],
+    () => (viewportId ? editor.getViewport(viewportId).camera.z : editor.getZoomLevel()) <= SPATIAL_MAP_ZOOM,
+    [editor, shape.id, viewportId],
   )
   if (mapLevel) {
     return <HTMLContainer><div style={{ width: shape.props.w, height: shape.props.h }} /></HTMLContainer>
@@ -150,6 +152,7 @@ function drainWordSpaceQueue() {
 
 function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
   const doc = useContext(ProjectContext)
@@ -207,12 +210,21 @@ function SvgPageComponent({ shape }: { shape: any }) {
   // Track whether this page is vertically near the viewport (±2 pages buffer).
   // Horizontal panning should not unload/reload page SVGs.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
-    const viewport = editor.getViewportPageBounds()
+    const viewport = viewportId
+      ? (() => {
+          const registered = editor.getViewport(viewportId)
+          const z = registered.camera.z || 1
+          return {
+            minY: registered.screenBounds.y / z - registered.camera.y,
+            maxY: (registered.screenBounds.y + registered.screenBounds.h) / z - registered.camera.y,
+          }
+        })()
+      : editor.getViewportPageBounds()
     const b = editor.getShapePageBounds(shape.id)
     if (!b) return false
     const marginY = b.h * VIEWPORT_BUFFER_PAGES
     return b.y + b.h > viewport.minY - marginY && b.y < viewport.maxY + marginY
-  }, [editor, shape.id])
+  }, [editor, shape.id, viewportId])
 
   // Fetch SVG when page enters the viewport — handles both initial load and re-entry.
   // On first entry (no svgText): fetch the SVG.

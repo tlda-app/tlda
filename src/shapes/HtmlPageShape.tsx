@@ -20,7 +20,7 @@ import {
   recordHtmlNavigationStart,
 } from '../html-page-navigation-history'
 import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
-import { useIsInViewport } from './useIsInViewport'
+import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 import { attachRglFigureSync } from '../rglFigureSync'
@@ -337,10 +337,11 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
 
 function SpatialLodHtmlPage({ shape }: { shape: any }) {
   const editor = useEditor()
+  const viewportId = useVisibilityViewportId()
   const mapLevel = useValue(
     `spatial-lod-html-${shape.id}`,
-    () => editor.getZoomLevel() <= SPATIAL_MAP_ZOOM,
-    [editor, shape.id],
+    () => (viewportId ? editor.getViewport(viewportId).camera.z : editor.getZoomLevel()) <= SPATIAL_MAP_ZOOM,
+    [editor, shape.id, viewportId],
   )
   if (mapLevel) {
     return <HTMLContainer><div style={{ width: shape.props.w, height: shape.props.h }} /></HTMLContainer>
