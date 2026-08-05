@@ -605,7 +605,7 @@ body.tlda-pan-mode * {
 
   /* iOS Safari zooms the page when a focused text control is below 16px. */
   .index-top-chat-composer {
-    font-size: 16px;
+    font-size: 16px !important;
   }
 
   .project-index-axis,
