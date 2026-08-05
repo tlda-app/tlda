@@ -892,6 +892,16 @@ async function cmdPush() {
 
   const dir = resolve(getFlag('dir') || '.')
 
+  // A push establishes the same owning-daemon binding as `project link`.
+  // Without it, the server can build and version source that no daemon will
+  // mirror back into the working-copy Git history.
+  const projectMetadata = await api('GET', `/api/projects/${name}`)
+  await callLocalDaemonLifecycle('project-source-link', {
+    project: name,
+    sourceDir: dir,
+    projectMetadata,
+  })
+
   // Session tagging: --session <id> or CLAUDE_SESSION_ID env var
   const session = getFlag('session') || process.env.CLAUDE_SESSION_ID || null
 

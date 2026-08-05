@@ -119,6 +119,12 @@ let _reporter = _directReporter
 export function setBuildReporter(r) { _reporter = r || _directReporter }
 export function getBuildReporter() { return _reporter }
 
+export function assertLatexBuildHasNoErrors(errors) {
+  if (errors.length > 0) {
+    throw new Error(`LaTeX produced ${errors.length} error(s); keeping the last successful render`)
+  }
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')
 const SCRIPTS_DIR = join(PROJECT_ROOT, 'scripts')
@@ -708,6 +714,7 @@ async function compileLaTeX(ctx) {
   if (logErrors.length > 0) {
     addLog(`Found ${logErrors.length} error(s) in log — signaling immediately`)
     await signalBuildStatus(name, `Build has errors`)
+    assertLatexBuildHasNoErrors(logErrors)
   } else {
     await signalBuildStatus(name, null)
   }
@@ -1763,29 +1770,25 @@ async function finalizeBuildVersion({
   const recorded = await recordBuildVersion({
     name, ctx, expectedPages, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion,
   })
-  if (!recorded.committed) return recorded
-  const result = recorded.result
+  if (!recorded.hash) return recorded
 
-  const hash7 = result.hash.slice(0, 7)
+  const hash7 = recorded.hash.slice(0, 7)
   try {
-    const mirrorResult = await _reporter.mirrorShadow(name, result.hash)
+    // Re-mirror unchanged builds too. A prior build may have committed the
+    // server snapshot while its owning daemon was disconnected; "unchanged"
+    // describes source bytes, not working-copy durability.
+    const mirrorResult = await _reporter.mirrorShadow(name, recorded.hash)
     await _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
     await _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
     console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} -> ${mirrorResult?.sourceDir || 'source repo'}`)
   } catch (mirrorErr) {
-    // Mirror-back to the working copy is NON-FATAL: the doc is built and rendered
-    // regardless. The resilient sender already retried across any reconnect flap,
-    // so a failure here means the working-copy git repo is momentarily behind —
-    // not that the build failed. Record it (for debugging) and log it, but do NOT
-    // paint a red sync-error badge on the doc or a "Mirror failed" card at the
-    // user. A timeout is not a failure, and a non-fatal miss is not the user's
-    // problem to see. (Skip 7/22)
-    console.error(`[mirror] ${name}@${hash7} failed (non-fatal, not surfaced): ${mirrorErr.message}`)
-    ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
-    await _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
+    console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
+    ctx.addLog(`mirror to working copy failed: ${mirrorErr.message}`)
+    await _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: recorded.hash, message: mirrorErr.message } })
+    throw new Error(`working-copy checkpoint failed for ${name}@${hash7}: ${mirrorErr.message}`)
   }
 
-  try {
+  if (recorded.committed) try {
     const shadowDir = join(projDir, 'shadow-repo')
     const { stdout: diffOutput } = await _execAsync(
       `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
@@ -1855,7 +1858,7 @@ async function finalizeBuildVersion({
     }
   } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
 
-  return { hash: result.hash, committed: true }
+  return recorded
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
