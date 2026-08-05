@@ -40,6 +40,10 @@ export function composeVoiceText(left, interim, right) {
   return `${left || ''}${interim || ''}${right || ''}`
 }
 
+export function isPriorFinalSuffixEcho(previousFinalNorm, finalNorm, hasSeenInterim) {
+  return !hasSeenInterim && !!previousFinalNorm && !!finalNorm && previousFinalNorm.endsWith(finalNorm)
+}
+
 export function partitionAtCursor(value, selectionStart, selectionEnd = selectionStart) {
   const text = typeof value === 'string' ? value : ''
   const start = Number.isFinite(selectionStart) ? Math.max(0, Math.min(text.length, selectionStart)) : text.length

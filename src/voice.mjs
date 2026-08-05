@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
+import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
@@ -2876,6 +2876,14 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       // Computed on normalized text so punctuation and spacing can't hide it.
       const _asmLeftNorm = normalizeDeepgramText(_left || '')
       const _asmDuplicate = !!normalizedFinal && !!_asmLeftNorm && _asmLeftNorm.endsWith(normalizedFinal)
+      if (isPriorFinalSuffixEcho(_dgLastFinalNorm, normalizedFinal, _dgHasSeenInterim)) {
+        vlog('DROPPED transcript (committed final echo)', {
+          text: text.slice(0, 60),
+          leftTailBefore: vtail(_left),
+          speechFinal: !!msg.speech_final,
+        })
+        return
+      }
       vlog(_asmDuplicate ? 'assembly: DUPLICATE APPEND' : 'assembly: append final', {
         duplicateAppend: _asmDuplicate,
         stateAtEntry: _asmStateBefore,
