@@ -475,6 +475,11 @@ let _radioSubtitle = null
 let _radioHistory = []
 let _radioExpanded = false
 let _radioCollapseTimer = null
+let _radioReplyHandler = null
+
+export function setRadioReplyHandler(handler) {
+  _radioReplyHandler = typeof handler === 'function' ? handler : null
+}
 
 function cleanRadioSubtitleText(text) {
   const cleaned = String(text || '')
@@ -591,13 +596,13 @@ function showRadioSubtitle(event, agents = []) {
   return true
 }
 
+/** @param {string|null} humanId */
 export function maybeShowRadioSubtitleForIncomingChat(event, agents = [], humanId = null) {
   if (!getPref('radio-subtitles-enabled')) return false
   if (!isDocSurface()) return false
   if (!event || event.type !== 'chat') return false
   if (!humanId || !(event.recipients || []).includes(humanId)) return false
   if (!event.from || event.from === humanId) return false
-  if (!radioAgentMatchesActiveTarget(event.from, agents)) return false
   return showRadioSubtitle(event, agents)
 }
 
@@ -1050,6 +1055,30 @@ function showHud(text, stateColor) {
     whiteSpace: 'nowrap',
   })
   statusRow.appendChild(span)
+  if (_radioExpanded && _radioSubtitle && _radioReplyHandler) {
+    const target = document.createElement('button')
+    target.type = 'button'
+    target.textContent = 'voice →'
+    target.setAttribute('aria-label', `Set voice target to ${_radioSubtitle.label}`)
+    Object.assign(target.style, {
+      marginLeft: '6px',
+      border: '0',
+      padding: '1px 4px',
+      borderRadius: '3px',
+      background: 'rgba(255,255,255,0.12)',
+      color: 'inherit',
+      font: 'inherit',
+      cursor: 'pointer',
+      pointerEvents: 'auto',
+      flex: '0 0 auto',
+    })
+    target.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      _radioReplyHandler(_radioSubtitle)
+    })
+    statusRow.appendChild(target)
+  }
   appendCallSegment(statusRow)
   const phone = document.body?.classList?.contains('phone-mode')
   if (_radioExpanded && _radioSubtitle) {
