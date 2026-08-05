@@ -25,9 +25,6 @@ const NS = 'pill-forensics'
 export type FleetPillDeleter =
   /** The 10s staleness reclaim in fleet-pill-reclaimer. */
   | 'stale-reclaim'
-  /** The 5s from-creation timer in FleetPillShape.onCreate. Only a tldraw
-   *  translate clears it, and chat-dragged pills never start one. */
-  | 'create-timer'
   /** The sweep that removes every ACTIVE pill when the window loses focus, the
    *  tab hides, Escape is pressed, or the page is going away. */
   | 'terminate-active'
