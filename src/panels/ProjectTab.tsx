@@ -1,5 +1,6 @@
-import { useCallback, useContext, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useEditor, useValue, type Editor, type TLCamera } from 'tldraw'
+import { CanvasClipPanel } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
 import {
   SPATIAL_MAP_ZOOM,
@@ -69,16 +70,12 @@ export function ProjectTab({ query = '' }: { query?: string }) {
 
   return (
     <div className="doc-panel-content project-tab">
-      <div className="project-tab-toolbar">
-        <button
-          type="button"
-          className={`project-map-button${zoom <= SPATIAL_MAP_ZOOM ? ' active' : ''}`}
-          onClick={toggleMap}
-          disabled={nodes.length === 0}
-        >
-          {zoom <= SPATIAL_MAP_ZOOM && savedMapCameras.has(editor) ? 'Return' : 'Map'}
-        </button>
-      </div>
+      <ProjectMapViewport
+        editor={editor}
+        bounds={spatialWorldBounds(nodes)}
+        returning={zoom <= SPATIAL_MAP_ZOOM && savedMapCameras.has(editor)}
+        onNavigate={toggleMap}
+      />
       {visibleNodes.length === 0 && <div className="panel-empty">No documents found</div>}
       {visibleNodes.map(node => {
         const active = ui.hoveredNodeId === node.id || ui.selectedNodeId === node.id
@@ -97,6 +94,67 @@ export function ProjectTab({ query = '' }: { query?: string }) {
           </button>
         )
       })}
+    </div>
+  )
+}
+
+function ProjectMapViewport({
+  editor,
+  bounds,
+  returning,
+  onNavigate,
+}: {
+  editor: Editor
+  bounds: { x: number; y: number; w: number; h: number } | null
+  returning: boolean
+  onNavigate: () => void
+}) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const measure = () => setWidth(Math.max(1, Math.floor(host.getBoundingClientRect().width)))
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(host)
+    return () => observer.disconnect()
+  }, [])
+
+  if (!bounds) return null
+  return (
+    <div ref={hostRef} className="project-map-viewport">
+      {width > 0 && (
+        <CanvasClipPanel
+          mainEditor={editor}
+          bounds={bounds}
+          panelWidth={width}
+          maxHeightFraction={0.22}
+          className="project-map-viewport-clip"
+          readOnly
+          interactionMode="preview"
+          unboundedPanning
+        />
+      )}
+      <button
+        type="button"
+        className="project-map-navigate"
+        aria-label={returning ? 'Return to document view' : 'Open project map'}
+        title={returning ? 'Return to document view' : 'Open project map'}
+        onClick={onNavigate}
+      >
+        <svg width="72" height="72" viewBox="0 0 250 250" aria-hidden="true">
+          <path
+            d={returning ? 'M238 125 H12 M80 12 L12 125 L80 238' : 'M12 125 H238 M170 12 L238 125 L170 238'}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="48"
+            strokeLinecap="square"
+            strokeLinejoin="miter"
+          />
+        </svg>
+      </button>
     </div>
   )
 }

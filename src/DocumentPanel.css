@@ -949,27 +949,40 @@ html[data-theme="dark"] .toc-drop-hint {
   padding-top: 0;
 }
 
-.project-tab-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 5px 8px;
+.project-map-viewport {
+  position: relative;
+  width: 100%;
   border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  background: var(--tlda-canvas-background, var(--color-background, var(--tl-color-background, #f8fafb)));
 }
 
-.project-map-button {
-  min-height: 28px;
-  padding: 3px 9px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 999px;
-  background: transparent;
-  color: inherit;
+.project-map-viewport .clip-panel,
+.project-map-viewport .clip-panel-canvas,
+.project-map-viewport-clip {
+  border-radius: 0;
+  background: var(--tlda-canvas-background, var(--color-background, var(--tl-color-background, #f8fafb)));
+  box-shadow: none;
+}
+
+.project-map-navigate {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  width: 72px;
+  height: 72px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: none;
+  color: rgba(90, 90, 90, 0.55);
   cursor: pointer;
-  font: inherit;
+  transition: color 0.2s;
 }
 
-.project-map-button.active {
-  border-color: color-mix(in srgb, var(--color-primary, #2563eb) 55%, transparent);
-  background: color-mix(in srgb, var(--color-primary, #2563eb) 10%, transparent);
+.project-map-navigate:hover {
+  color: rgba(70, 70, 70, 0.9);
 }
 
 .project-document-row {
