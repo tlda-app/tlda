@@ -6300,7 +6300,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                   itemCount: allItems.length,
                   messageCount: chatMessages.length,
                 })
-              if (shouldPin) settleToTail('content-height-growth')
+              if (shouldPin) {
+                // This callback runs after Virtuoso has measured the larger
+                // list. Correct the scroller in the same turn so in-place
+                // activity/tool-card growth never paints a gap below a reader
+                // who is following the tail. The settle loop remains necessary
+                // for later measurements from the same render.
+                if (el) el.scrollTop = el.scrollHeight
+                settleToTail('content-height-growth')
+              }
             }}
             atBottomStateChange={(atBottom) => {
               const t0 = probe.isEnabled('chat') ? performance.now() : 0
