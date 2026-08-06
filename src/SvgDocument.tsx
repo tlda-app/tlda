@@ -1192,6 +1192,14 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             const { displayLabel } = anchorIdToLabel(labelTitle)
 
             const dvTitle = (displayLabel || anchorId).replace(/^equation\./, 'eq ').replace(/^theorem\./, 'thm ')
+            const targetPage = document.pages[page - 1]
+            if (targetPage) {
+              const targetY = targetPage.bounds.y + (yTop / PDF_HEIGHT) * targetPage.bounds.height
+              editor.centerOnPoint(
+                { x: targetPage.bounds.x + targetPage.bounds.width / 2, y: targetY },
+                { animation: { duration: 300 } },
+              )
+            }
             editor.getCurrentPageShapes()
               .filter((s: any) => s.type === 'fleet-docview')
               .filter((s: any) => {
