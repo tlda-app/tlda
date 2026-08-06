@@ -36,6 +36,12 @@ interface ForeignDoc {
   labelId: TLShapeId
 }
 
+interface HtmlPageInfo {
+  file: string
+  width?: number
+  height?: number
+}
+
 export function useDocAutoOpen(
   editorRef: React.MutableRefObject<Editor | null>,
   document: SvgDocument,
@@ -74,7 +80,23 @@ export function useDocAutoOpen(
       return
     }
 
-    const pageCount = projectInfo.pages || event.pages || 0
+    const format = projectInfo.format || event.format
+    let htmlPages: HtmlPageInfo[] = []
+    if (format === 'markdown') {
+      try {
+        const res = await fetch(`/docs/${event.name}/page-info.json`)
+        if (!res.ok) return
+        const parsed = await res.json()
+        if (!Array.isArray(parsed)) return
+        htmlPages = parsed.filter((page): page is HtmlPageInfo => typeof page?.file === 'string')
+      } catch {
+        return
+      }
+    }
+
+    const pageCount = format === 'markdown'
+      ? htmlPages.length
+      : projectInfo.pages || event.pages || 0
     if (pageCount === 0) return
 
     // Determine position: to the right of all existing content
@@ -90,22 +112,29 @@ export function useDocAutoOpen(
     // Fetch and create page shapes
     const shapeIds: TLShapeId[] = []
 
-    // Create shapes first (they'll show loading state), then fetch SVGs
+    // Create shapes first (SVG pages show their loading state while fetched).
     const shapes: any[] = []
     for (let i = 0; i < pageCount; i++) {
       const id = createShapeId(`foreign-${event.name}-p${i + 1}`)
-      const y = startY + i * (document.pages[0]?.bounds.height || 1035 + PAGE_GAP)
+      const htmlPage = htmlPages[i]
+      const width = htmlPage?.width || TARGET_WIDTH
+      const height = htmlPage?.height || document.pages[0]?.bounds.height || 1035
+      const y = format === 'markdown'
+        ? startY + htmlPages.slice(0, i).reduce((sum, page) => sum + (page.height || 1200) + PAGE_GAP, 0)
+        : startY + i * ((document.pages[0]?.bounds.height || 1035) + PAGE_GAP)
       shapes.push({
         id,
-        type: 'svg-page' as any,
+        type: (format === 'markdown' ? 'html-page' : 'svg-page') as any,
         x: startX,
         y,
         isLocked: true,
         opacity: FOREIGN_DOC_OPACITY,
         props: {
-          w: TARGET_WIDTH,
-          h: document.pages[0]?.bounds.height || 1035,
-          pageIndex: i,
+          w: width,
+          h: height,
+          ...(format === 'markdown'
+            ? { url: `/docs/${event.name}/${htmlPage.file}`, source: '' }
+            : { pageIndex: i }),
         },
       })
       shapeIds.push(id)
@@ -136,6 +165,8 @@ export function useDocAutoOpen(
     // Track foreign doc
     foreignDocsRef.current.set(event.name, { name: event.name, shapeIds, labelId })
     setForeignDocNames([...foreignDocsRef.current.keys()])
+
+    if (format === 'markdown') return
 
     // Fetch SVGs asynchronously — served at /docs/{name}/page-{n}.svg
     const svgBasePath = `/docs/${event.name}/`
