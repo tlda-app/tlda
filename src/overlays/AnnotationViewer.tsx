@@ -22,7 +22,12 @@ import type {
 } from '../wm/managed-surfaces'
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
-import { recordSpatialTraversalToShape } from '../spatialDocumentWorld'
+import {
+  activateSpatialDocument,
+  currentSpatialDocument,
+  recordSpatialTraversalToShape,
+  spatialWorldDocuments,
+} from '../spatialDocumentWorld'
 import { annotationViewerCanvasOwnsEvent } from './annotation-viewer-event-ownership'
 import './AnnotationViewer.css'
 
@@ -82,6 +87,7 @@ export function AnnotationViewer({
   type ViewSnapshot = {
     pageId: ReturnType<Editor['getCurrentPageId']>
     camera: { x: number; y: number; z: number }
+    spatialDocumentId?: string
   }
   const [data, setData] = useState<ViewerData | null>(null)
   const [state, setState] = useState<ViewerState>('hovering')
@@ -185,11 +191,13 @@ export function AnnotationViewer({
       const shapeId = (e as CustomEvent).detail?.shapeId
       if (shapeId && !data.shapeIds?.includes(shapeId)) return
       const cam = mainEditor.getCamera()
+      const currentDocument = currentSpatialDocument(mainEditor, spatialWorldDocuments(mainEditor))
       prevViewStackRef.current = [
         ...prevViewStackRef.current,
         {
           pageId: mainEditor.getCurrentPageId(),
           camera: { x: cam.x, y: cam.y, z: cam.z },
+          spatialDocumentId: currentDocument?.id,
         },
       ]
       // A fresh move abandons any forward history, same as a browser.
@@ -247,15 +255,24 @@ export function AnnotationViewer({
     const cam = mainEditor.getCamera()
     const targetShapeId = data.shapeIds?.[0] as TLShapeId | undefined
     if (targetShapeId) recordSpatialTraversalToShape(mainEditor, targetShapeId)
+    const spatialDocuments = spatialWorldDocuments(mainEditor)
+    const sourceDocument = currentSpatialDocument(mainEditor, spatialDocuments)
+    const targetDocument = targetShapeId
+      ? spatialDocuments.find(document => document.id === targetShapeId)
+      : undefined
     prevViewStackRef.current = [
       ...prevViewStackRef.current,
       {
         pageId: mainEditor.getCurrentPageId(),
         camera: { x: cam.x, y: cam.y, z: cam.z },
+        spatialDocumentId: sourceDocument?.id,
       },
     ]
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
+    if (sourceDocument && targetDocument) {
+      activateSpatialDocument(mainEditor, sourceDocument, targetDocument, cam)
+    }
     if (data.useFullBounds) {
       const cx = targetBounds.x + targetBounds.w / 2
       const cy = targetBounds.y + targetBounds.h / 2
@@ -288,14 +305,23 @@ export function AnnotationViewer({
   // opposite stack can bring the reader back to it.
   const enterView = useCallback((view: ViewSnapshot): ViewSnapshot => {
     const cam = mainEditor.getCamera()
+    const spatialDocuments = spatialWorldDocuments(mainEditor)
+    const sourceDocument = currentSpatialDocument(mainEditor, spatialDocuments)
     const departing: ViewSnapshot = {
       pageId: mainEditor.getCurrentPageId(),
       camera: { x: cam.x, y: cam.y, z: cam.z },
+      spatialDocumentId: sourceDocument?.id,
     }
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
     if (mainEditor.getCurrentPageId() !== view.pageId) {
       mainEditor.setCurrentPage(view.pageId)
+    }
+    const targetDocument = view.spatialDocumentId
+      ? spatialDocuments.find(document => document.id === view.spatialDocumentId)
+      : undefined
+    if (sourceDocument && targetDocument) {
+      activateSpatialDocument(mainEditor, sourceDocument, targetDocument, cam)
     }
     mainEditor.setCamera(view.camera, { animation: { duration: 300 } })
     window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)

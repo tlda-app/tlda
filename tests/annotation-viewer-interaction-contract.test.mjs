@@ -39,3 +39,14 @@ test('viewer capture handlers pin previews and yield pinned canvases', () => {
   assert.match(source, /<CanvasClipPanel[\s\S]*?\n\s+readOnly\n/)
   assert.doesNotMatch(source, /readOnly=\{state === 'hovering'\}/)
 })
+
+test('document traversal carries the fleet in both directions', () => {
+  const source = readFileSync(new URL('../src/overlays/AnnotationViewer.tsx', import.meta.url), 'utf8')
+  assert.match(source, /const sourceDocument = currentSpatialDocument\(mainEditor, spatialDocuments\)/)
+  assert.match(source, /spatialDocumentId: sourceDocument\?\.id/)
+  assert.match(source, /if \(sourceDocument && targetDocument\) \{\s+activateSpatialDocument\(mainEditor, sourceDocument, targetDocument, cam\)\s+\}/)
+  const handleGo = source.slice(source.indexOf('const handleGo'), source.indexOf('// Restore a stored view'))
+  const enterView = source.slice(source.indexOf('const enterView'), source.indexOf('// Go back'))
+  assert.match(handleGo, /activateSpatialDocument/)
+  assert.match(enterView, /activateSpatialDocument/)
+})
