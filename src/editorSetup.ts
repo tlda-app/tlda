@@ -670,9 +670,13 @@ export async function reloadPages(
     const { index, svgText } = result
     const page = pages[index]
 
-    // Skip if SVG content is identical (stale reload signal, no actual rebuild)
+    // Identical bytes still prove that this page was fetched for the current
+    // sentinel build. Advance its render hash before skipping the text swap.
     const oldSvg = getSvgText(page.shapeId)
-    if (oldSvg === svgText) continue
+    if (oldSvg === svgText) {
+      stampRenderHash(page.shapeId, editor)
+      continue
+    }
 
     // Rebuild anchor index and viewBox for this page
     const parser = new DOMParser()

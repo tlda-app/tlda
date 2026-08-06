@@ -71,7 +71,7 @@ import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onCompareSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
@@ -265,7 +265,7 @@ interface SvgDocumentEditorProps {
  */
 const MAX_VISIBLE_VERSIONS = 5
 
-function VersionStamp({ document }: { document: SvgDocument }) {
+function VersionStamp({ document, reloadCompletedAt }: { document: SvgDocument; reloadCompletedAt: number }) {
   const projectName = document.name
   const editor = useEditor()
   const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
@@ -321,10 +321,11 @@ function VersionStamp({ document }: { document: SvgDocument }) {
     }
   }, [sentinel?.commitHash, projectName, document, editor, usesHtmlPages])
 
-  // Track reload signals to detect misses.
+  // A signal only requests a reload. Count it after the page fetches complete,
+  // otherwise a failed reload suppresses both the sentinel recovery and watchdog.
   useEffect(() => {
-    return onReloadSignal(sig => { lastReloadAtRef.current = sig.timestamp })
-  }, [])
+    if (reloadCompletedAt > 0) lastReloadAtRef.current = reloadCompletedAt
+  }, [reloadCompletedAt])
 
   // Watchdog: periodically re-check staleness in case the one-shot guard was consumed
   // without a successful reload (rapid builds, WS reconnect with same hash).
@@ -458,6 +459,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Remap/reload warnings from reload paths (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
   const [reloadWarnings, setReloadWarnings] = useState<BuildWarning[]>([])
+  const [reloadCompletedAt, setReloadCompletedAt] = useState(0)
 
   // Fleet playback — listen for BroadcastChannel and swap annotation shapes
   const playbackState = useSyncedPlayback(editorRef, projectName)
@@ -522,6 +524,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         return
       }
       setReloadWarnings([])
+      if (result.failedPages.length === 0) setReloadCompletedAt(Date.now())
       if (result.remapResult && result.remapResult.failed > 0) {
         const { failed, total } = result.remapResult
         setRemapWarnings([{
@@ -1074,7 +1077,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // AgentPill replaced by FleetIconPill in build-pills-row
   const agentPillContent = null
 
-  const versionStampContent = <VersionStamp document={document} />
+  const versionStampContent = <VersionStamp document={document} reloadCompletedAt={reloadCompletedAt} />
 
   return (
     <>
