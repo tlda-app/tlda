@@ -451,7 +451,7 @@ async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
     if (!res.ok) return
     const pageInfos = await res.json()
     if (!Array.isArray(pageInfos) || pageInfos.length === 0) return
-    const partsDoc = createHtmlDocumentFromPageInfo(partsName, basePath, pageInfos)
+    const partsDoc = createHtmlDocumentFromPageInfo(partsName, basePath, pageInfos, { reuseDefaultPage: false })
     document.partPages = partsDoc.pages
     createHtmlShapes(editor, { ...document, name: partsName, pages: partsDoc.pages, format: 'html' }, { reuseDefaultPage: false })
   } catch (e) {

@@ -38,6 +38,7 @@ export function createHtmlDocumentFromPageInfo(
   name: string,
   basePath: string,
   pageInfos: HtmlPageEntry[],
+  { reuseDefaultPage = true }: { reuseDefaultPage?: boolean } = {},
 ): SvgDocument {
   console.log(`Found ${pageInfos.length} HTML pages`)
 
@@ -53,8 +54,12 @@ export function createHtmlDocumentFromPageInfo(
     if (!info.group) {
       // Normal page: own TLDraw page, shape at origin
       const pageId = `${name}-page-${i}`
-      // First page reuses TLDraw's default page ID; subsequent pages get synthetic IDs
-      const tlPageId = tldrawPageIdx === 0 ? 'page:page' : `page:${name}-ch-${tldrawPageIdx}`
+      // A document's first page normally reuses TLDraw's default page. Attached
+      // project parts must not: putting their first iframe on page:page lays it
+      // over the primary document and intercepts every pointer event beneath it.
+      const tlPageId = tldrawPageIdx === 0 && reuseDefaultPage
+        ? 'page:page'
+        : `page:${name}-ch-${tldrawPageIdx}`
       const pageName = info.title || info.file.replace(/\.html$/, '').replace(/-/g, ' ')
       pages.push({
         src: basePath + info.file,
