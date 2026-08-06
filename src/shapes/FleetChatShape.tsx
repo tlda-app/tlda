@@ -2802,7 +2802,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => { docRef.current = doc }, [doc])
   const shapeContainerRef = useRef<HTMLDivElement>(null)
 
-  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
+  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
     openChatMarkdownColumn({
       editor,
       sourceShapeId: shape.id,
@@ -2810,6 +2810,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       markdown,
       sourceEl,
       placementEl: shapeContainerRef.current,
+      sourcePath: source?.path,
+      sourceSection: source?.section,
       logPrefix: 'fleet-chat',
     })
   }, [editor, shape.id])
