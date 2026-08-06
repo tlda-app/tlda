@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { renderActivityGroup, renderThreadRows } from '../src/fleet/activity-render.mjs'
@@ -105,4 +106,18 @@ test('a thread card carries no semantic-operation shell', () => {
   assert.equal((html.match(/semantic-chat-operation/g) || []).length, 0)
   assert.equal((html.match(/semantic-operation-inspected/g) || []).length, 0)
   assert.match(html, /semantic-operation-body/)
+})
+
+// The renderer test above cannot see the React control wrapped around its HTML.
+// That was the exact hole which let a green suite ship Collapse on every
+// collapsed card. Pin the component boundary too: the floating control exists
+// only in the open-middle branch.
+test('a collapsed thread does not render the floating collapse control', () => {
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+  const start = source.indexOf('function ThreadChatOperationView(')
+  const end = source.indexOf('\nfunction SemanticChatOperationView(', start)
+  const component = source.slice(start, end)
+
+  assert.match(component, /\{middleOpen \? <button[^>]+semantic-operation-collapse/)
+  assert.equal((component.match(/semantic-operation-collapse/g) || []).length, 1)
 })
