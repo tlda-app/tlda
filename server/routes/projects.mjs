@@ -442,6 +442,41 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
 
 // Remove a project part (its file + manifest entry) and tell open viewers to
 // reload so the removed column disappears from the canvas.
+router.delete('/:name/parts', requireRw, async (req, res) => {
+  const project = await readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const ids = Array.isArray(req.body?.ids)
+    ? [...new Set(req.body.ids.map(id => String(id || '').trim()).filter(Boolean))]
+    : []
+  if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array' })
+
+  const root = projectPartsRoot(req.params.name)
+  const manifest = await readProjectPartsManifest(req.params.name)
+  const byId = new Map(manifest.parts.map(part => [part.id, part]))
+  const missing = ids.filter(id => !byId.has(id))
+  if (missing.length) return res.status(404).json({ error: 'Part not found', missing })
+
+  for (const id of ids) {
+    const part = byId.get(id)
+    const targetPath = String(part.path || part.storage?.path || '')
+    if (targetPath && !targetPath.startsWith('/') && !targetPath.split('/').includes('..')) {
+      const localPath = join(root, targetPath)
+      if (await pathExists(localPath)) await rm(localPath)
+    }
+  }
+  const deleted = new Set(ids)
+  await writeProjectPartsManifest(req.params.name, {
+    ...manifest,
+    parts: manifest.parts.filter(part => !deleted.has(part.id)),
+  })
+  if (project.format === 'markdown') {
+    await dispatchBuild(req.params.name)
+  } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
+    await dispatchBuild(req.params.name, { kind: 'parts' })
+  }
+  res.json({ ok: true, deleted: ids })
+})
+
 router.delete('/:name/parts/:id', requireRw, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
