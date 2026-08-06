@@ -1386,7 +1386,6 @@ export function getFleetTools() {
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
               model: { type: 'string', description: 'Configured daemon model alias.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
-              labels: { type: 'array', items: { type: 'string' }, description: 'Labels to apply at mint, before the agent\'s first tool call — so a label-filtered panel shows its whole backlog. Same labels as label(): a label may not be a live agent\'s name or a reserved routing label (here, away, awake, hibernating, dead, human), and the filter grammar cannot address a label containing whitespace or & | ! ( ).' },
               permissionRequest: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permissionRequest },
             },
 	          },
@@ -2505,7 +2504,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
           modelOptions: spawnModelOptionsFromArgs(spawnOpts),
           effort: spawnOpts.effort,
           cwd: agentCwd,
-          labels: spawnOpts.labels,
           permissionRequest: spawnOpts.permissionRequest,
         });
         if (spawnResult?.ok === false || spawnResult?.error) {

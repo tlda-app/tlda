@@ -19,6 +19,12 @@ test('chat schema documents pure Markdown suggestions', () => {
   assert.doesNotMatch(chat.description, /label \|/)
 })
 
+test('delegate mint does not expose labels', () => {
+  const delegate = getFleetTools().find(tool => tool.name === 'delegate')
+  const mintProperties = delegate?.inputSchema?.properties?.mint?.properties || {}
+  assert.equal(mintProperties.labels, undefined)
+})
+
 test('note MCP schema exposes file+selector body form', () => {
   const source = fs.readFileSync(new URL('../mcp-server/index.mjs', import.meta.url), 'utf8')
   const noteStart = source.indexOf("name: 'note'")
