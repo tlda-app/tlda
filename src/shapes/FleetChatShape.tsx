@@ -4212,6 +4212,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     goToTail('jump-button')
   }, [goToTail])
 
+  const enterReaderMode = useCallback((reason: string) => {
+    if (hardLockedRef.current || userScrolledUpRef.current) return
+    goToTailRunRef.current += 1
+    userScrolledUpRef.current = true
+    setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
+    noteFollowTransition(String(shape.id), 'follow-off', {
+      reason,
+      bufferKey: chatEventBufferKey,
+    })
+  }, [shape.id, chatEventBufferKey])
+
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
@@ -4221,7 +4232,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
+      // Trackpad deltas commonly arrive below UP_JITTER_EPS one event at a
+      // time. The wheel event itself proves reader intent, so enter reader
+      // mode before Virtuoso can follow a concurrently arriving row.
+      if (e.deltaY < 0) enterReaderMode('wheel-up')
       el.scrollTop += e.deltaY
+      if (e.deltaY < 0) captureViewportAnchor()
     }
     // A touch-driven scroll runs past the release: the finger lifts and the
     // scroller keeps gliding. Treat it as in flight until scroll events stop
@@ -4316,7 +4332,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (settleTimer) clearTimeout(settleTimer)
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, reconcileViewportGeometry])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, enterReaderMode, reconcileViewportGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {
