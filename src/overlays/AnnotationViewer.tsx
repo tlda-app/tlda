@@ -574,7 +574,7 @@ export function AnnotationViewer({
           panelWidth={size.w}
           maxHeightFraction={isPhoneViewportSurface() ? 1 : 0.5}
           emphasizeShapeIds={data.shapeIds}
-          readOnly
+          readOnly={state === 'hovering'}
           className="annotation-viewer-clip"
           requestedShapeIds={data.shapeIds}
           interactionMode={state === 'hovering' ? 'preview' : 'pinned'}
