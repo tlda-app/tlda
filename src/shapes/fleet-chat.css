@@ -243,8 +243,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .tl-theme__dark .fleet-inbox-shape .fleet-filter-mode {
   --fleet-filter-scroll-column-bg: rgba(255, 255, 255, 0.035);
 }
-.fleet-chat-body-filtering > .fleet-chat-log {
-  display: none !important;
+.fleet-chat-shape .fleet-filter-mode-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
 }
 .fleet-chat-shape .fleet-filter-mode-header,
 .fleet-inbox-shape .fleet-filter-mode-header {
@@ -530,13 +533,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   overscroll-behavior: contain;
 }
 
-/* The task ticker changes once a second inside tldraw's transformed canvas.
-   Keep its raster invalidation on a leaf compositor layer so the surrounding
-   chat does not repaint with it. */
-.fleet-chat-shape .lc-task-schedule .timer-msg {
+/* Countdown leaves keep fixed inline geometry while their text ticks. */
+.fleet-chat-shape .ticker-countdown {
   display: inline-block;
-  transform: translateZ(0);
-  backface-visibility: hidden;
+  width: 4.2em;
+  line-height: 1.4;
 }
 
 /* --- Draggable elements in chat --- */
@@ -1546,6 +1547,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   flex-shrink: 0;
 }
 .fleet-chat-shape .schedule-time {
+  display: inline-block;
+  width: 8em;
+  line-height: 1.4;
   font-weight: 600;
   font-size: 11px;
   color: rgba(140, 200, 140, 0.9);
@@ -3330,6 +3334,9 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text-dim, #888);
 }
 .chat-thinking .thinking-elapsed {
+  display: inline-block;
+  width: 5em;
+  line-height: 1.4;
   color: var(--text-dim, #888);
   opacity: 0.75;
   font-size: 10px;

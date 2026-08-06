@@ -15,14 +15,14 @@ export const FOLLOW_BOTTOM_EPS = 120 // absorbs the ~40px status footer below th
 // content height unchanged — the virtualizer and the browser settling scroll
 // position. At 4px this sat below the noise floor of the thing it measures.
 export const UP_JITTER_EPS = 20
-export const FOLLOW_CONVERGENCE_GAP = 200
 export const TRUE_BOTTOM_EPS = 8
 
 /**
  * @param {{top:number, height:number, clientHeight:number, lastTop:number, lastHeight:number}} sample
  *   top/height = current scrollTop/scrollHeight; lastTop/lastHeight = previous event's values.
- * @param {{scrolledUp:boolean, hardLocked:boolean, programmatic:boolean}} state
- *   scrolledUp = current userScrolledUpRef; hardLocked = forced-follow; programmatic = inside a pin fence.
+ * @param {{scrolledUp:boolean, hardLocked:boolean, geometryReconciliation:boolean}} state
+ *   scrolledUp = reader mode; hardLocked = forced-follow; geometryReconciliation
+ *   marks the one layout seam preserving that mode.
  * @returns {{scrolledUp:boolean, action:'follow-off'|'follow-on'|'none'}}
  */
 export function decideFollowTransition(sample, state) {
@@ -46,44 +46,31 @@ export function decideFollowTransition(sample, state) {
   // clamps scrollTop DOWN, so top < lastTop and this is already false. Growth
   // can only push the bottom further away, so arriving within EPS during growth
   // still took a real user move. And nothing else scrolls this list down while
-  // scrolledUp is true, which is the only state that consults this: followOutput
-  // returns false and settleToTail bails. Requiring !grew therefore excluded
-  // nothing and dropped the ordinary case — a message landing while the reader
+  // scrolledUp is true: followOutput is disabled and geometry reconciliation
+  // restores the anchor. Requiring !grew therefore excluded nothing and dropped
+  // the ordinary case — a message landing while the reader
   // was on their way back down, which left follow off while they sat at the
   // bottom watching the next message not arrive.
   const movedDownToBottom = top > lastTop + UP_JITTER_EPS && gap <= FOLLOW_BOTTOM_EPS
 
-  if (state.hardLocked) return { scrolledUp: state.scrolledUp, action: 'none' }
+  if (state.hardLocked || state.geometryReconciliation) {
+    return { scrolledUp: state.scrolledUp, action: 'none' }
+  }
 
   if (movedUp) {
     // A real upward move is the user — UNAMBIGUOUSLY, even mid-pin: our pins
     // (scrollToIndex LAST) only ever scroll DOWN, and a content-shrink clamp is
-    // excluded by !shrank. So honor it regardless of the programmatic fence —
-    // fencing it was what discarded a scroll-up that landed in a pin's window
-    // and let the next message re-yank the reader down.
+    // excluded by !shrank. So it is reader intent.
     return { scrolledUp: true, action: state.scrolledUp ? 'none' : 'follow-off' }
   }
-  if (movedDownToBottom && !state.programmatic) {
-    // Resume only on a genuine user down-move to the true bottom. Fence out the
-    // pin's own downward motion (harmless — we only pin while already following
-    // — but keep the signal clean).
+  if (movedDownToBottom) {
+    // Geometry reconciliation is excluded above. goToTail enters following
+    // before it scrolls, so only the reader can reach this branch while reading.
     return { scrolledUp: false, action: state.scrolledUp ? 'follow-on' : 'none' }
   }
   return { scrolledUp: state.scrolledUp, action: 'none' }
 }
 
-export function shouldConvergeToBottom(gap, state) {
-  return gap > FOLLOW_CONVERGENCE_GAP && (!state.scrolledUp || state.hardLocked)
-}
-
-export function shouldGlueTailChange(prevTail, nextTail, state) {
-  return !!nextTail && nextTail !== prevTail && (!state.scrolledUp || state.hardLocked)
-}
-
 export function isTrueBottomGap(gap) {
   return Number.isFinite(gap) && Math.abs(gap) <= TRUE_BOTTOM_EPS
-}
-
-export function shouldResumeFollowFromBottom(atBottom, gap) {
-  return !!atBottom && isTrueBottomGap(gap)
 }

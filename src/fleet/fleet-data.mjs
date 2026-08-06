@@ -1045,6 +1045,7 @@ export function connect() {
     // resubscribeAll() was written for exactly this and was never called from
     // anywhere — dead from the day it was added, harmless while panels still
     // rendered from the client store, load-bearing the moment they stopped.
+    setChatSubscriptionTransport((name, payload) => browserFleetTransport.ephemeral(name, payload))
     const resent = resubscribeAll()
     if (resent) log.metric('chat-subscription', 're-subscribed after reconnect', { count: resent })
     flushBrowserDurableOutbox().catch(error => {
@@ -1084,7 +1085,6 @@ export function connect() {
     // Roster/task lists are loaded independently; the socket stays clear for
     // request replies and incremental deltas. Chat panels resubscribe above;
     // each subscription returns its own matching history window.
-    setChatSubscriptionTransport((name, payload) => browserFleetTransport.ephemeral(name, payload))
   }
 
   _ws.onclose = (ev) => {

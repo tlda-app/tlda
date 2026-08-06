@@ -82,7 +82,7 @@ import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 // @ts-ignore — vanilla JS module
-import { decideFollowTransition, isTrueBottomGap, shouldConvergeToBottom, shouldGlueTailChange, shouldResumeFollowFromBottom } from './chatScrollIntent.mjs'
+import { decideFollowTransition, isTrueBottomGap } from './chatScrollIntent.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { Terminal } from 'xterm'
@@ -2475,7 +2475,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const { startDrag: startUnreadRailDrag } = usePillDrag()
   const showUnreadAgentRail = useValue('show-unread-agent-rail', () => {
-    if (filterOpen) return false
     const userId = getHumanId()
     const deviceId = getDeviceId()
     if (!userId || !deviceId) return false
@@ -2483,7 +2482,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       isFleetShapeForOwnerKey(candidate, userId, deviceId),
     )
     return isOnlyOwnedChat(ownedFleetShapes, shape.id)
-  }, [editor, filterOpen, shape.id])
+  }, [editor, shape.id])
 
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
@@ -2638,13 +2637,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // One buffer per chat: liveEvents is the id-keyed event view for this chat's
   // buffer. Live websocket events and history loads are inputs to that buffer.
   const events = liveEvents
-
-  // Reset scroll state when filter changes; history for the new filter is loaded
-  // into that filter's named buffer by the backfill effect below.
-  useEffect(() => {
-    isAtBottomRef.current = true
-    setAtBottom(true)
-  }, [filterKey])
 
   // Resolve a friendly name/label to fleet IDs for UI interactions such as
   // drag/drop. Chat/history/status scoping uses the maintained live-store target
@@ -2915,28 +2907,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     return ids
   }, [chatMessages])
 
-  // Standing diagnostic — does the message list momentarily empty? When
-  // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
-  // div (a different DOM node), which remounts the scroller and can read as a
-  // flash/blank. These two transitions are the fingerprint to look for if the
-  // history ever vanishes-and-returns. warn (notable); grep `chat-scroll`.
-  const _prevMsgLen = useRef(chatMessages.length)
+  // The scroller is durable for the shape lifetime. A second non-null identity
+  // is therefore an invariant violation rather than a routine render event.
+  const mountedChatLogRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    if (chatMessages.length === 0 && _prevMsgLen.current !== 0) {
-      log.debug('chat-scroll', 'message list emptied → "No messages" branch (scroller will remount)', { prev: _prevMsgLen.current })
-    } else if (chatMessages.length !== 0 && _prevMsgLen.current === 0) {
-      log.debug('chat-scroll', 'message list refilled 0→N (Virtuoso remounts)', { now: chatMessages.length })
+    if (!chatLogEl) return
+    if (mountedChatLogRef.current && mountedChatLogRef.current !== chatLogEl) {
+      log.metric('chat-scroll', 'durable chat viewport was replaced', { panelId: String(shape.id) })
     }
-    _prevMsgLen.current = chatMessages.length
-  }, [chatMessages.length])
-
-  // Standing diagnostic — the scroll container's DOM node identity. A change
-  // here means the scroller was mounted or REPLACED (e.g. the empty-branch swap
-  // above, or a Virtuoso remount). A replacement mid-session is the signature of
-  // a flash; routine on first mount. debug.
-  useEffect(() => {
-    log.debug('chat-scroll', 'scroll node mounted/replaced', { hasEl: !!chatLogEl, msgCount: chatMessages.length })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    mountedChatLogRef.current = chatLogEl
   }, [chatLogEl])
 
   // Fetch macros for any preamble doc referenced by a message we haven't cached.
@@ -3409,11 +3388,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   }
   previousVirtuosoItemKeysRef.current = nextVirtuosoItemKeys
   const virtuosoFirstItemIndex = virtuosoFirstItemIndexRef.current
-  const tailMessageKey = useMemo(() => {
-    const m = chatMessages[chatMessages.length - 1]
-    if (!m) return ''
-    return String(m._dbId ?? m._tempId ?? `${m.timestamp}:${m.from}`)
-  }, [chatMessages])
   // Virtual scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
@@ -3937,24 +3911,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       const nodes = logEl.querySelectorAll<HTMLElement>('.chat-timer-countdown[data-timer-until], .lc-task-schedule[data-timer-until]')
       for (const node of nodes) {
         const until = node.getAttribute('data-timer-until')
-        const span = node.querySelector<HTMLElement>('.timer-msg')
+        const span = node.querySelector<HTMLElement>('.ticker-countdown')
         if (!until || !span) continue
         const r = Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / 1000))
         const mins = Math.floor(r / 60)
         const secs = r % 60
         const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
-        const txt = span.textContent || ''
-        if (node.classList.contains('lc-task-schedule')) {
-          const middleDot = txt.indexOf(' · in ')
-          const repeat = txt.indexOf(' · every ')
-          const absolute = middleDot >= 0 ? txt.slice(0, middleDot) : txt
-          const recurrence = repeat >= 0 ? txt.slice(repeat) : ''
-          setTickerText(span, `${absolute} · in ${timeStr}${recurrence}`)
-        } else {
-          const arrowIdx = txt.indexOf('→')
-          const tail = arrowIdx >= 0 ? txt.slice(arrowIdx) : ''
-          setTickerText(span, `⏱ ${timeStr} ${tail}`.trimEnd())
-        }
+        setTickerText(span, timeStr)
       }
       // ScheduleWakeup cards: same idea — recompute the "in Xm Ys" countdown each
       // second from the absolute fire epoch baked into data-fire-at.
@@ -4024,16 +3987,17 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }, [chatLogEl, editor, shape.id])
 
-  const isAtBottomRef = useRef(true)
+  // Reader mode is the only scroll-intent state. Content/layout never changes it.
   const userScrolledUpRef = useRef(false)
   const viewportAnchorRef = useRef<{ key: string; top: number } | null>(null)
   // True while a finger-driven scroll is in flight: from touchdown through the
   // momentum glide that follows the release, until the scroller goes quiet.
   const touchScrollActiveRef = useRef(false)
-  const prevTailMessageKeyRef = useRef(tailMessageKey)
-  const prevTotalHeightRef = useRef(0)
-  const settleTailRunRef = useRef(0)
-  const activeSettleTailRunRef = useRef(0)
+  const goToTailRunRef = useRef(0)
+  const deferredGeometryReconcileRef = useRef(false)
+  // The geometry seam records the scrollTop it writes. The next matching scroll
+  // event updates measurements but cannot be interpreted as reader intent.
+  const geometryReconcileScrollTopRef = useRef<number | null>(null)
   // Reactive bottom-position state. Drives the unified follow/jump button:
   // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
   // Position (not scroll-intent) is the right signal here — matches the spec
@@ -4062,7 +4026,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // same reason.
   const termHoverPinnedIdRef = useRef<string | null>(null)
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
-  const viewportCorrectionRef = useRef(false)
   const captureViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
     if (!el || !userScrolledUpRef.current) {
@@ -4093,8 +4056,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!row) return false
     const delta = row.getBoundingClientRect().top - viewportTop - anchor.top
     if (Math.abs(delta) <= 0.5) return true
-    viewportCorrectionRef.current = true
+    geometryReconcileScrollTopRef.current = el.scrollTop + delta
     el.scrollTop += delta
+    geometryReconcileScrollTopRef.current = el.scrollTop
     log.metric('chat-anchor', 'preserved viewport across content resize', {
       panelId: String(shape.id),
       anchorKey: anchor.key,
@@ -4103,75 +4067,35 @@ function FleetChatInner({ shape }: { shape: any }) {
     return true
   }, [shape.id])
 
-  useLayoutEffect(() => {
+  const reconcileViewportGeometry = useCallback(() => {
     const el = chatLogRef.current
-    const anchor = viewportAnchorRef.current
-    if (!el || !userScrolledUpRef.current || !anchor?.key) {
+    if (!el) return
+    if (touchScrollActiveRef.current) {
+      deferredGeometryReconcileRef.current = true
+      return
+    }
+    deferredGeometryReconcileRef.current = false
+    if (userScrolledUpRef.current && !hardLockedRef.current) {
+      restoreViewportAnchor()
       captureViewportAnchor()
       return
     }
-    // Writing scrollTop cancels an in-flight momentum scroll, so correcting
-    // here kills the glide a flick just started. Hold off while the scroll is
-    // running — the scroll listener recaptures the anchor throughout, and the
-    // next list change after the scroller settles corrects from there.
-    if (touchScrollActiveRef.current) return
-    if (!restoreViewportAnchor()) {
-      log.metric('chat-anchor', 'visible anchor row was not rendered after list change', {
-        panelId: String(shape.id),
-        anchorKey: anchor.key,
-        itemCount: allItems.length,
-      })
-      captureViewportAnchor()
-      return
-    }
-    captureViewportAnchor()
-  }, [allItems, shape.id, captureViewportAnchor, restoreViewportAnchor])
+    geometryReconcileScrollTopRef.current = el.scrollHeight
+    el.scrollTop = el.scrollHeight
+    geometryReconcileScrollTopRef.current = el.scrollTop
+  }, [captureViewportAnchor, restoreViewportAnchor])
 
   useLayoutEffect(() => {
     const el = chatLogEl
     const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!el || !list) return
-    const observer = new ResizeObserver(() => {
-      const before = {
-        top: el.scrollTop,
-        height: el.scrollHeight,
-        clientHeight: el.clientHeight,
-        gap: el.scrollHeight - (el.scrollTop + el.clientHeight),
-      }
-      if (touchScrollActiveRef.current) {
-        log.metric('chat-scroll', 'list resized while touch scroll was active — correction deferred', {
-          panelId: String(shape.id), ...before,
-        })
-        return
-      }
-      if (userScrolledUpRef.current && !hardLockedRef.current) {
-        const restored = restoreViewportAnchor()
-        log.metric('chat-scroll', 'list resized while reader was scrolled up', {
-          panelId: String(shape.id), ...before,
-          anchorKey: viewportAnchorRef.current?.key || null,
-          restored,
-        })
-        captureViewportAnchor()
-        return
-      }
-      el.scrollTop = el.scrollHeight
-      log.metric('chat-scroll', 'list resized while following — pinned immediately', {
-        panelId: String(shape.id),
-        ...before,
-        afterTop: el.scrollTop,
-        afterGap: el.scrollHeight - (el.scrollTop + el.clientHeight),
-        hardLocked: hardLockedRef.current,
-      })
-    })
+    const observer = new ResizeObserver(reconcileViewportGeometry)
     observer.observe(list)
     return () => observer.disconnect()
-  }, [chatLogEl, captureViewportAnchor, restoreViewportAnchor])
+  }, [chatLogEl, reconcileViewportGeometry])
 
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // This panel's composer text, across unmounts. Filter mode unmounts the whole
-  // input area, and a filter pill hovering over the panel opens filter mode on
-  // its own — so the draft has to live outside the textarea. See
-  // stores/composerDraftStore.
+  // This panel's composer text survives any shape recreation. See composerDraftStore.
   const composerDraftKey = `chat:${shape.id}`
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
@@ -4214,9 +4138,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  // Hard-lock toggle: when on, every pin path fires unconditionally
-  // (ignores isAtBottomRef), and atBottomStateChange can't un-pin us.
-  // Persisted per browser in localStorage.
+  // Hard lock is an explicit preference orthogonal to reader mode.
   const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
   const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
   const hardLockedRef = useRef(hardLocked)
@@ -4236,49 +4158,29 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => clearFleetEventsLiveTailPinned(shape.id, chatEventBufferKey)
   }, [shape.id, chatEventBufferKey])
 
-  const settleToTail = useCallback((reason: string, opts: { force?: boolean; resumeFollow?: boolean } = {}) => {
-    const run = ++settleTailRunRef.current
-    activeSettleTailRunRef.current = run
+  const goToTail = useCallback((reason: string) => {
+    const run = ++goToTailRunRef.current
+    userScrolledUpRef.current = false
+    viewportAnchorRef.current = null
+    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
     let frame = 0
     let stableBottomFrames = 0
     let lastHeight = -1
-    const initialEl = chatLogRef.current
-    log.metric('chat-scroll', 'settle-to-tail started', {
-      panelId: String(shape.id),
-      reason,
-      force: !!opts.force,
-      resumeFollow: !!opts.resumeFollow,
-      top: initialEl?.scrollTop ?? null,
-      height: initialEl?.scrollHeight ?? null,
-      clientHeight: initialEl?.clientHeight ?? null,
-      gap: initialEl ? initialEl.scrollHeight - (initialEl.scrollTop + initialEl.clientHeight) : null,
-      scrolledUp: userScrolledUpRef.current,
-      hardLocked: hardLockedRef.current,
-      touchActive: touchScrollActiveRef.current,
-    })
 
     const step = () => {
-      if (settleTailRunRef.current !== run) return
-      if (!opts.force && userScrolledUpRef.current && !hardLockedRef.current) {
-        if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
-        log.metric('chat-scroll', 'settle-to-tail aborted because reader was scrolled up', {
-          panelId: String(shape.id), reason, frame,
-        })
-        return
-      }
+      if (goToTailRunRef.current !== run) return
 
       try {
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
       } catch (e) {
-        if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
-        log.metric('chat-scroll', 'settle-to-tail scrollToIndex failed', {
+        log.metric('chat-scroll', 'go-to-tail scrollToIndex failed', {
           panelId: String(shape.id), reason, e: String(e),
         })
         return
       }
 
       requestAnimationFrame(() => {
-        if (settleTailRunRef.current !== run) return
+        if (goToTailRunRef.current !== run) return
         const el = chatLogRef.current
         const gap = el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : Number.POSITIVE_INFINITY
         const height = el?.scrollHeight ?? -1
@@ -4286,21 +4188,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         lastHeight = height
 
         if (stableBottomFrames >= 1) {
-          if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
-          isAtBottomRef.current = true
-          setAtBottom(true)
-          if (opts.resumeFollow || hardLockedRef.current) {
-            userScrolledUpRef.current = false
-            setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-          }
-          log.metric('chat-scroll', 'settle-to-tail reached true bottom', {
-            panelId: String(shape.id),
-            reason,
-            frame,
-            gap,
-            height,
-            resumeFollow: !!opts.resumeFollow,
-          })
           return
         }
 
@@ -4308,13 +4195,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (frame < 12) {
           requestAnimationFrame(step)
         } else {
-          if (activeSettleTailRunRef.current === run) activeSettleTailRunRef.current = 0
-          log.metric('chat-scroll', 'settle-to-tail stopped before stable true bottom', {
+          log.metric('chat-scroll', 'go-to-tail stopped before stable true bottom', {
             panelId: String(shape.id),
             reason,
             gap,
             height,
-            resumeFollow: !!opts.resumeFollow,
           })
         }
       })
@@ -4323,45 +4208,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     requestAnimationFrame(step)
   }, [shape.id, chatEventBufferKey])
 
-  // Imperative scroll-to-bottom for the floating ⇣ button.
   const scrollToBottom = useCallback(() => {
-    const el = chatLogRef.current
-    log.metric('chat-scroll', 'user clicked ⇣ jump-to-bottom', {
-      panelId: String(shape.id),
-      top: el?.scrollTop ?? null,
-      height: el?.scrollHeight ?? null,
-      clientHeight: el?.clientHeight ?? null,
-      gap: el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : null,
-      scrolledUp: userScrolledUpRef.current,
-      hardLocked: hardLockedRef.current,
-    })
-    settleToTail('jump-button', { force: true, resumeFollow: true })
-  }, [shape.id, settleToTail])
-
-  useLayoutEffect(() => {
-    const prev = prevTailMessageKeyRef.current
-    prevTailMessageKeyRef.current = tailMessageKey
-    if (!tailMessageKey || tailMessageKey === prev) return
-    const state = { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current }
-    if (!shouldGlueTailChange(prev, tailMessageKey, state)) {
-      log.metric('chat-scroll', 'tail changed → HELD position (user scrolled up) — YANK AVERTED', {
-        panelId: String(shape.id),
-        prev,
-        tail: tailMessageKey,
-        scrolledUp: userScrolledUpRef.current,
-        hardLocked: hardLockedRef.current,
-      })
-      return
-    }
-    log.metric('chat-scroll', 'tail changed → STICK TO BOTTOM (following / hard-locked)', {
-      panelId: String(shape.id),
-      prev,
-      tail: tailMessageKey,
-      scrolledUp: userScrolledUpRef.current,
-      hardLocked: hardLockedRef.current,
-    })
-    settleToTail('tail-change')
-  }, [tailMessageKey, settleToTail])
+    goToTail('jump-button')
+  }, [goToTail])
 
   useEffect(() => {
     const el = chatLogEl
@@ -4383,7 +4232,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (settleTimer) clearTimeout(settleTimer)
       settleTimer = window.setTimeout(() => {
         settleTimer = 0
-        if (!fingerDown) touchScrollActiveRef.current = false
+        if (!fingerDown) {
+          touchScrollActiveRef.current = false
+          if (deferredGeometryReconcileRef.current) reconcileViewportGeometry()
+        }
       }, TOUCH_SCROLL_SETTLE_MS)
     }
     const onTouchStart = () => {
@@ -4404,11 +4256,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       const gap = el.scrollHeight - top - el.clientHeight
       const previousTop = lastTop
       const previousHeight = lastHeight
+      const reconcileTarget = geometryReconcileScrollTopRef.current
+      const geometryReconciliation = reconcileTarget !== null && Math.abs(top - reconcileTarget) <= 1
+      if (reconcileTarget !== null) geometryReconcileScrollTopRef.current = null
       const { scrolledUp, action } = decideFollowTransition(
         { top, height, clientHeight: el.clientHeight, lastTop: previousTop, lastHeight: previousHeight },
-        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: activeSettleTailRunRef.current !== 0 || viewportCorrectionRef.current },
+        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, geometryReconciliation },
       )
-      viewportCorrectionRef.current = false
       lastTop = top
       lastHeight = height
       if (action === 'follow-off') {
@@ -4420,11 +4274,9 @@ function FleetChatInner({ shape }: { shape: any }) {
           gap,
           lastTop: previousTop,
           lastHeight: previousHeight,
-          programmatic: activeSettleTailRunRef.current !== 0,
           bufferKey: chatEventBufferKey,
         })
-        settleTailRunRef.current += 1
-        activeSettleTailRunRef.current = 0
+        goToTailRunRef.current += 1
         userScrolledUpRef.current = scrolledUp
         captureViewportAnchor()
         setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
@@ -4442,7 +4294,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           gap,
           lastTop: previousTop,
           lastHeight: previousHeight,
-          programmatic: activeSettleTailRunRef.current !== 0,
           bufferKey: chatEventBufferKey,
         })
         userScrolledUpRef.current = scrolledUp
@@ -4465,31 +4316,16 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (settleTimer) clearTimeout(settleTimer)
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, reconcileViewportGeometry])
 
-  // Refilter → bottom. Changing the filter swaps the whole rendered list out
-  // from under Virtuoso; the scroll-position reset effect above (keyed on
-  // filterKey) resets the atBottom *state*, but it runs before
-  // userScrolledUpRef exists and never actually pins. So a refilter while at the
-  // bottom could strand the user mid-list (Virtuoso keeps the old scrollTop
-  // against new content) and, worse, a stale userScrolledUp=true would keep
-  // every follow path disabled in the new view. Reset follow intent and pin:
-  // the filtered history loads async, so the one pin here lands at the current
-  // tail and the existing force-pin-on-item-grow + followOutput + watchdog ride
-  // the new content down as it arrives. A refilter is a fresh view — bottom is
-  // the right default, which is exactly what the user asked for.
+  // A committed filter change is a new conversation view and starts following.
   useEffect(() => {
     noteFollowTransition(String(shape.id), 'filter-reset', {
       filterKey,
       bufferKey: chatEventBufferKey,
     })
-    userScrolledUpRef.current = false
-    viewportAnchorRef.current = null
-    isAtBottomRef.current = true
-    setAtBottom(true)
-    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-    settleToTail('filter-change', { force: true, resumeFollow: true })
-  }, [filterKey, shape.id, settleToTail, chatEventBufferKey])
+    goToTail('filter-change')
+  }, [filterKey, shape.id, goToTail, chatEventBufferKey])
 
   // Terminal card hover — mouseover on .lc-terminal-card shows the terminal overlay.
   useEffect(() => {
@@ -6331,18 +6167,19 @@ function FleetChatInner({ shape }: { shape: any }) {
           className={filterOpen ? 'fleet-chat-body fleet-chat-body-filtering' : 'fleet-chat-body'}
           style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}
         >
-          {/* Filter mode is the chat shape's alternate body, not a separate overlay/panel. */}
+          {/* Filter editing covers the durable reader without replacing it. */}
           {filterOpen && (
-            <FleetChatFilterMode
-              filter={filter}
-              shapeId={shape.id}
-              editor={editor}
-              externalPillOver={pillOver}
-            />
+            <div className="fleet-filter-mode-overlay">
+              <FleetChatFilterMode
+                filter={filter}
+                shapeId={shape.id}
+                editor={editor}
+                externalPillOver={pillOver}
+              />
+            </div>
           )}
 
-          {!filterOpen && (
-            <>
+          <>
               {showUnreadAgentRail && <FleetUnreadAgentRail unreadCounts={unreadRailCounts} displayedUnreadSenderIds={displayedUnreadSenderIds} startDrag={startUnreadRailDrag} />}
               {/* Messages — Virtuoso owns the scroll container and all virtualized
                   item measurement, including the status/suggestions trailing row. */}
@@ -6358,62 +6195,11 @@ function FleetChatInner({ shape }: { shape: any }) {
             alignToBottom
             followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
             atBottomThreshold={1}
-            totalListHeightChanged={(h) => {
-              const prev = prevTotalHeightRef.current
-              prevTotalHeightRef.current = h
-              if (h <= prev) return
-              const el = chatLogEl
-              const gapNow = el ? Math.round(el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-              const state = { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current }
-              const shouldPin = typeof gapNow === 'number' && shouldConvergeToBottom(gapNow, state)
-              log.metric('chat-scroll', shouldPin
-                ? 'content grew → STICK TO BOTTOM (following / hard-locked)'
-                : state.scrolledUp && !state.hardLocked
-                  ? 'content grew → HELD position (user scrolled up) — YANK AVERTED'
-                  : 'content grew → already near bottom',
-                {
-                  prev,
-                  h,
-                  gapNow,
-                  follow: !userScrolledUpRef.current || hardLockedRef.current,
-                  scrolledUp: userScrolledUpRef.current,
-                  hardLocked: hardLockedRef.current,
-                  itemCount: allItems.length,
-                  messageCount: chatMessages.length,
-                })
-              if (shouldPin) {
-                // This callback runs after Virtuoso has measured the larger
-                // list. Correct the scroller in the same turn so in-place
-                // activity/tool-card growth never paints a gap below a reader
-                // who is following the tail. The settle loop remains necessary
-                // for later measurements from the same render.
-                if (el) el.scrollTop = el.scrollHeight
-                settleToTail('content-height-growth')
-              }
-            }}
             atBottomStateChange={(atBottom) => {
               const t0 = probe.isEnabled('chat') ? performance.now() : 0
               const el = chatLogEl
               const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-              if (isAtBottomRef.current !== atBottom) {
-                log.metric('chat-scroll', atBottom ? 'pinned to bottom' : 'left bottom', {
-                  panelId: String(shape.id),
-                  scrollTop: el?.scrollTop,
-                  scrollHeight: el?.scrollHeight,
-                  clientHeight: el?.clientHeight,
-                  gap,
-                  items: allItems.length,
-                  scrolledUp: userScrolledUpRef.current,
-                  hardLocked: hardLockedRef.current,
-                })
-              }
-              isAtBottomRef.current = atBottom
               setAtBottom(atBottom)
-              if (shouldResumeFollowFromBottom(atBottom, gap) && userScrolledUpRef.current) {
-                userScrolledUpRef.current = false
-                viewportAnchorRef.current = null
-                setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-              }
               if (probe.isEnabled('chat')) {
                 const dt = performance.now() - t0
                 if (dt > 1) {
@@ -6482,11 +6268,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </div>
               )}
             </>
-          )}
         </div>
 
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
-        {!filterOpen && (
         <div
           ref={inputAreaRef}
           className={`fleet-chat-input-area${shapeDropActive ? ' fleet-chat-input-drop-active' : ''}`}
@@ -6496,6 +6280,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             padding: 4,
             flexShrink: 0,
             position: 'relative',
+            visibility: filterOpen ? 'hidden' : 'visible',
           }}
         >
           {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
@@ -6607,7 +6392,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 // At bottom: toggle follow mode.
                 setHardLocked(prev => {
                   const next = !prev
-                  if (next) settleToTail('hard-lock-toggle', { force: true, resumeFollow: true })
+                  if (next) goToTail('hard-lock-toggle')
                   return next
                 })
               }}
@@ -6788,27 +6573,13 @@ function FleetChatInner({ shape }: { shape: any }) {
             />
           </div>
         </div>
-        )}
-
       </div>
     </HTMLContainer>
   )
 }
 
 /**
- * Subscribe this chat's filter to the server outside FleetChatInner.
- *
- * Deliberately not inside FleetChatInner: culling unmounts that component, which
- * would tear down and re-create the subscription every time a panel crosses the
- * viewport edge. With nineteen panels a single pan becomes a burst of
- * subscribe/unsubscribe frames for conversations whose membership never changed.
- * Culling is an optimisation about *rendering*; it must not decide membership.
- *
- * During the additive phase the panel still renders from the existing client
- * path — the events delivered here are consumed only by the equivalence
- * comparator, which lines the server's verdict up against the client's. Once
- * that comparison runs quiet on real traffic, this becomes the render source and
- * the client-side decision goes.
+ * Subscribe this chat's filter to the server for the shape/filter lifetime.
  *
  * The window is the panel's subscription history page, not a cap on live
  * delivery. There is no second history access path.
