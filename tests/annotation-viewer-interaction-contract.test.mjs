@@ -36,5 +36,6 @@ test('viewer capture handlers pin previews and yield pinned canvases', () => {
     const body = source.slice(start, source.indexOf('}}', start))
     assert.ok(body.indexOf('if (shouldLetCanvasOwnEvent(e)) return') < body.indexOf('stopEventPropagation(e)'))
   }
-  assert.match(source, /readOnly=\{state === 'hovering'\}/)
+  assert.match(source, /<CanvasClipPanel[\s\S]*?\n\s+readOnly\n/)
+  assert.doesNotMatch(source, /readOnly=\{state === 'hovering'\}/)
 })
