@@ -140,7 +140,7 @@ test('explicit opt-in preserves terminal text injection', async () => {
 test('notification text is converted to one printable line', () => {
   assert.equal(
     terminalSafeNotificationText('!rm -rf ~\nEnter\r\t\x1b[31m\u2028'),
-    'TLDA notification: !rm -rf ~\\nEnter\\r\\t\\x1b[31m\\u2028',
+    '!rm -rf ~\\nEnter\\r\\t\\x1b[31m\\u2028',
   )
 })
 
@@ -152,7 +152,7 @@ test('notification tmux fallback writes sanitized text literally before one Ente
     enter_delay_ms: 0,
   })
   assert.deepEqual(calls.slice(-2), [
-    ['tmux', ['send-keys', '-t', '=agent-session:', '-l', '--', 'TLDA notification: !rm -rf ~\\nEnter\\r\\x1b[31m']],
+    ['tmux', ['send-keys', '-t', '=agent-session:', '-l', '--', '!rm -rf ~\\nEnter\\r\\x1b[31m']],
     ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']],
   ])
 })
@@ -166,7 +166,7 @@ test('notification active PTY writes sanitized text before one Enter', async () 
       text: '!rm -rf ~\nEnter\r\x1b[31m',
       enter_delay_ms: 0,
     })
-    assert.deepEqual(ptyWrites, ['TLDA notification: !rm -rf ~\\nEnter\\r\\x1b[31m'])
+    assert.deepEqual(ptyWrites, ['!rm -rf ~\\nEnter\\r\\x1b[31m'])
     assert.deepEqual(calls.at(-1), ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']])
   } finally {
     rpc.stopAllTerminalWatches()

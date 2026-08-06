@@ -11,10 +11,8 @@ import { exactTmuxTarget, exactTmuxTargets, exactTmuxWindowTarget } from '../sha
 const execFileP = promisify(execFile)
 const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
 const QUEUED_LINE_RE = /^\s*←\s/
-const NOTIFICATION_PREFIX = 'TLDA notification: '
-
 export function terminalSafeNotificationText(value) {
-  return NOTIFICATION_PREFIX + String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, char => {
+  return String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, char => {
     switch (char) {
       case '\n': return '\\n'
       case '\r': return '\\r'
