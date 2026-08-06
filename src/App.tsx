@@ -725,7 +725,7 @@ function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null, humanI
   ]
 }
 
-function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>) {
+function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>, sendTargets: string[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     if (identity.id && id === identity.id) return identity.name || 'You'
@@ -742,6 +742,7 @@ function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: Retur
     isHumanId: (id: string) => !!identity.id && id === identity.id,
     getAgents: () => agents,
     getTasks: () => tasks,
+    sendTargets,
     tldaToken: null,
     renderMarkdown: (input: string) => renderMarkdownUtil(input),
     highlightSyntax: (code: string) => esc(code),
@@ -967,7 +968,11 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     )
   }, [selectedAgentFilter, indexChatBufferKey, identity.id, identity.name])
   const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, indexChatBufferKey)
-  const chatRenderContext = useMemo(() => makeIndexChatRenderContext(agents, tasks, identity), [agents, tasks, identity])
+  const sendTargets = useMemo(() => selectedAgent?.exactName ? [selectedAgent.exactName] : [], [selectedAgent?.exactName])
+  const chatRenderContext = useMemo(
+    () => makeIndexChatRenderContext(agents, tasks, identity, sendTargets),
+    [agents, tasks, identity, sendTargets],
+  )
   const selectedChatRows = useMemo(() => {
     if (!selectedAgent) return []
     return selectedChatEvents
@@ -991,8 +996,6 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const composerAgentNames = useMemo(() => (
     selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
   ), [selectedAgent])
-  const sendTargets = selectedAgent?.exactName ? [selectedAgent.exactName] : []
-
   useEffect(() => {
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
       .filter(name => !requestedHistoriesRef.current.has(name))

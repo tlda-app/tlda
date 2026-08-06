@@ -106,3 +106,24 @@ test('task-linked timer is not rendered as a second row', () => {
 
   assert.equal(renderChatLine(timer, ctx), '')
 })
+
+test('message to the panel default target omits the recipient arrow', () => {
+  const agents = [
+    { id: 'fleet:skip', friendly_name: 'skip', human: true },
+    { id: 'fleet:app-recovery', friendly_name: 'app-recovery', dead: 0 },
+  ]
+  const html = renderChatLine({
+    from: 'fleet:skip',
+    recipients: ['fleet:app-recovery'],
+    text: 'status?',
+    timestamp: '2026-08-06T15:13:00.000Z',
+  }, {
+    ...ctx,
+    getAgents: () => agents,
+    sendTargets: ['app-recovery'],
+  })
+
+  assert.match(html, />skip<\/span>:/)
+  assert.doesNotMatch(html, /chat-arrow/)
+  assert.doesNotMatch(html, /fleet:app-recovery<\/span>:/)
+})
