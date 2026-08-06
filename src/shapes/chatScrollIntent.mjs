@@ -28,10 +28,10 @@ export const TRUE_BOTTOM_EPS = 8
 export function decideFollowTransition(sample, state) {
   const { top, height, clientHeight, lastTop, lastHeight } = sample
   const gap = height - top - clientHeight
-  const shrank = height < lastHeight - 2
+  const heightStable = Math.abs(height - lastHeight) <= 2
 
-  // up-scroll: top fell past the jitter eps AND content didn't shrink (a shrink
-  // clamps scrollTop down without the user moving — not a real scroll-up).
+  // up-scroll: top fell past the jitter eps while content height stayed fixed.
+  // A resize can shift scrollTop in either direction without reader input.
   // ...and it has to actually leave the bottom. You cannot scroll up and still
   // be at the bottom: 386 of the 1045 recorded follow-offs left the reader at or
   // PAST it, one as far as gap -187, which is not a position anyone can scroll
@@ -39,7 +39,7 @@ export function decideFollowTransition(sample, state) {
   // reader was sitting still at the tail each time.
   // NOT isTrueBottomGap, which is symmetric: gap -187 is 187 away by absolute
   // value and would slip through. Past the bottom is still at the bottom.
-  const movedUp = top < lastTop - UP_JITTER_EPS && !shrank && gap > TRUE_BOTTOM_EPS
+  const movedUp = top < lastTop - UP_JITTER_EPS && heightStable && gap > TRUE_BOTTOM_EPS
   // down-to-bottom: top rose past the jitter eps to within EPS of the true
   // bottom. The shrink case this once guarded — a window shrink collapsing the
   // gap, content rather than the user returning — cannot reach here: a shrink
@@ -59,8 +59,8 @@ export function decideFollowTransition(sample, state) {
 
   if (movedUp) {
     // A real upward move is the user — UNAMBIGUOUSLY, even mid-pin: our pins
-    // (scrollToIndex LAST) only ever scroll DOWN, and a content-shrink clamp is
-    // excluded by !shrank. So it is reader intent.
+    // (scrollToIndex LAST) only ever scroll DOWN, and content-height changes are
+    // excluded by heightStable. So it is reader intent.
     return { scrolledUp: true, action: state.scrolledUp ? 'none' : 'follow-off' }
   }
   if (movedDownToBottom) {

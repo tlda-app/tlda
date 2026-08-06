@@ -19,3 +19,18 @@ test('reader movement to the bottom resumes following', () => {
 
   assert.deepEqual(transition, { scrolledUp: false, action: 'follow-on' })
 })
+
+test('content growth shifting the viewport upward does not disable follow', () => {
+  const transition = decideFollowTransition(
+    {
+      top: 13900.9091796875,
+      height: 14290,
+      clientHeight: 321,
+      lastTop: 13929.544921875,
+      lastHeight: 14222,
+    },
+    { scrolledUp: false, hardLocked: false, geometryReconciliation: false },
+  )
+
+  assert.deepEqual(transition, { scrolledUp: false, action: 'none' })
+})
