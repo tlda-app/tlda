@@ -264,7 +264,6 @@ export function usePillDrag() {
   const viewportId = useVisibilityViewportId()
   const frame = useMemo(() => fleetInteractionFrame(viewportId), [viewportId])
   const dragRef = useRef<DragState | null>(null)
-  const releaseRef = useRef<null | (() => void)>(null)
 
   const cancelDrag = useCallback(() => {
     const drag = dragRef.current
@@ -295,7 +294,7 @@ export function usePillDrag() {
 
     // Claim the shared drag coordinator — one global listener pair handles
     // move/up events, eliminating capture-phase registration races.
-    releaseRef.current = dragCoordinator.claim(
+    dragCoordinator.claim(
       // onMove
       (ev: PointerEvent) => {
         const drag = dragRef.current
@@ -351,7 +350,6 @@ export function usePillDrag() {
       (ev: PointerEvent) => {
         const drag = dragRef.current
         dragRef.current = null
-        releaseRef.current = null
         if (!drag) return
         if (!drag.started || !drag.pillId) {
           drag.onTap?.(ev)
@@ -390,12 +388,6 @@ export function usePillDrag() {
       cancelDrag,
     )
   }, [cancelDrag, editor, frame])
-
-  useEffect(() => () => {
-    releaseRef.current?.()
-    releaseRef.current = null
-    cancelDrag()
-  }, [cancelDrag])
 
   return { startDrag }
 }
