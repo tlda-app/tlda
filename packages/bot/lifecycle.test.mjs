@@ -12,6 +12,8 @@ async function login(socket, assignedName, id = 'fleet:fixture') {
   await turn()
   const request = socket.sent.find(message => message.type === 'login')
   assert.ok(request)
+  assert.equal(request.kind, 'bot')
+  assert.equal(request.metadata.model, 'fixture')
   socket.reply(request, { ok: true, agent: { id, friendly_name: assignedName } })
   await turn()
   const subscription = socket.sent.find(message => message.type === 'subscribe-filter')

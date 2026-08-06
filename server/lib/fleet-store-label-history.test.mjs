@@ -132,7 +132,7 @@ test('living friendly names block labels and dead names are reusable', () => wit
   const before = labelEvents(store, 'fleet:target').length
   assert.throws(
     () => store.mutateAgentLabels('fleet:target', 'add', 'held-name'),
-    /Label collision: held-name/,
+    /Label rejected: .*held-name/,
   )
   assert.deepEqual(store.getAgent('fleet:target').labels, ['before'])
   assert.equal(labelEvents(store, 'fleet:target').length, before)
@@ -144,8 +144,19 @@ test('living friendly names block labels and dead names are reusable', () => wit
   )
   assert.throws(
     () => store.mutateAgentLabels('fleet:target', 'add', 'fleet:target'),
-    /Label collision: fleet:target/,
+    /Label rejected: .*fleet:target/,
   )
+}))
+
+test('an agent cannot also hold its own friendly name as a label', () => withStore(store => {
+  store.upsertAgent({
+    id: 'fleet:todd',
+    friendly_name: 'todd',
+    labels: ['bot', 'todd'],
+    registered_at: '2026-08-06T00:00:00.000Z',
+  })
+
+  assert.deepEqual(store.getAgent('fleet:todd').labels, ['bot'])
 }))
 
 test('offline mixed-state migration fills missing canonical agents then rebuilds', () => withStore(store => {

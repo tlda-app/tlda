@@ -8,7 +8,7 @@
 // into one surface:
 //
 //   import { runBot } from '@tlda/bot'
-//   const bot = runBot({ name: 'teacher', labels: ['bot','teacher'] })
+//   const bot = runBot({ name: 'teacher', labels: ['bot'] })
 //   bot.onCommand(({ text, from, reply }) => {
 //     if (text === 'ping') reply('pong')
 //   })
@@ -176,9 +176,10 @@ export function createBot({
       cwd,
       labels,
       human,
+      kind: human ? undefined : 'bot',
       machine_id: MACHINE_ID || undefined,
       tmux_session: TMUX_SESSION || undefined,
-      metadata: { bot: key, pid: process.pid, ...metadata },
+      metadata: { bot: key, model: key, pid: process.pid, ...metadata },
     };
     let result;
     try {

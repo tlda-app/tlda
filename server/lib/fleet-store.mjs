@@ -2363,11 +2363,14 @@ export class FleetStore {
       // colliding label shadows the named agent and breaks filter-by-label.
       // Strip such labels at write time (only when labels are actually being set).
       if (Array.isArray(agent.labels) && agent.labels.length) {
+        const current = this._getAgent.get(agent.id);
         const taken = new Set(
           this.db.prepare(
             'SELECT friendly_name FROM agents WHERE dead = 0 AND friendly_name IS NOT NULL AND id != ?'
           ).all(agent.id || '').map(r => r.friendly_name)
         );
+        const ownName = agent.friendly_name || current?.friendly_name || null;
+        if (ownName) taken.add(ownName);
         const filtered = agent.labels.filter(l => !taken.has(l));
         if (filtered.length !== agent.labels.length) {
           const dropped = agent.labels.filter(l => taken.has(l));

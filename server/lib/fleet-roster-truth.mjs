@@ -11,6 +11,7 @@ function rowForAgent(agent, now = Date.now()) {
   return {
     id: agent.id,
     name: agentName(agent),
+    labels: Array.isArray(agent.labels) ? agent.labels : [],
     status: agent.dead ? 'dead' : runtimeStatusName(agent),
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
     model: agent.metadata?.model || null,
