@@ -61,14 +61,9 @@ export function useDocAutoOpen(
       return
     }
 
-    // Already on canvas — refresh (remove old shapes, re-fetch)
+    // Keep an existing document visible until its replacement has been fetched
+    // and validated. A transient project/page-info failure is not a removal.
     const existing = foreignDocsRef.current.get(event.name)
-    if (existing) {
-      editor.store.mergeRemoteChanges(() => {
-        editor.store.remove([...existing.shapeIds, existing.labelId] as any)
-      })
-      foreignDocsRef.current.delete(event.name)
-    }
 
     // Fetch project info to get page count and format
     let projectInfo: any
@@ -98,6 +93,13 @@ export function useDocAutoOpen(
       ? htmlPages.length
       : projectInfo.pages || event.pages || 0
     if (pageCount === 0) return
+
+    if (existing) {
+      editor.store.mergeRemoteChanges(() => {
+        editor.store.remove([...existing.shapeIds, existing.labelId] as any)
+      })
+      foreignDocsRef.current.delete(event.name)
+    }
 
     // Determine position: to the right of all existing content
     let rightEdge = 0
