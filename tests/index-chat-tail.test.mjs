@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { attachIndexChatTail } from '../src/index-chat-tail.mjs'
+
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+
+test('index chat exposes voice send in its placeholder and has no false All control', () => {
+  assert.match(appSource, /Message \$\{selectedAgent\.displayName\} · say “send” to send/)
+  assert.doesNotMatch(appSource, />All<\/button>/)
+})
 
 test('index chat follows the tail immediately and whenever rendered content changes height', () => {
   const log = { scrollTop: 0, scrollHeight: 240 }

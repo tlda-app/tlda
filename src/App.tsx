@@ -1273,7 +1273,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           agentNames={composerAgentNames}
           onSend={sendChromeChat}
           isTouchDevice={_isTouchDevice}
-          placeholder={selectedAgent ? `Message ${selectedAgent.displayName}` : ''}
+          placeholder={selectedAgent ? `Message ${selectedAgent.displayName} · say “send” to send` : ''}
         />
         {chatSendError && <div className="index-top-chat-error">{chatSendError}</div>}
       </div>
