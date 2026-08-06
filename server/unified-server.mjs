@@ -537,7 +537,7 @@ function markAgentNotAlive(agentId, detail = {}) {
     : runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   if (evidence?.liveness === 'alive') return
   if (!detail.unknown) {
-    fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
+    fleetStore.recordRuntimeState(agentId, { kind: RUNTIME_KIND.AI, status: detail.status || RUNTIME_STATUS.HIBERNATING }, evidence.liveness_at)
       .catch(e => console.error(`[liveness] runtime status write failed for ${agentId}: ${e?.message || e}`))
   }
   _aliveAgents.delete(agentId)
@@ -3925,7 +3925,8 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-    markAgentNotAlive(agent.id, { source: 'http-kill-session', reason: 'operator killed session' })
+    markAgentNotAlive(agent.id, { source: 'http-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
+    await fleetStore.markDead(agent.id)
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore.share(killEvent)
     broadcastState(agent.id)
@@ -7263,7 +7264,8 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
+      markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session', status: RUNTIME_STATUS.DEAD })
+      await fleetStore.markDead(agent.id)
       await markUnroutedNativeDescendantsNotAlive(agent.id, { source: 'ws-kill-session', reason: 'native parent session killed' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
