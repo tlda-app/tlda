@@ -14,6 +14,8 @@ import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import { ChatComposer } from './shapes/ChatComposer'
+// @ts-ignore — vanilla JS module
+import { attachIndexChatTail } from './index-chat-tail.mjs'
 import {
   getFleetAgentDirectoryRows,
   sortFleetAgentDirectoryRowsByRecency,
@@ -813,6 +815,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [timeAxisNow] = useState(() => Date.now())
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [chatSendError, setChatSendError] = useState('')
+  const indexChatLogRef = useRef<HTMLDivElement | null>(null)
+  const indexChatRowsRef = useRef<HTMLDivElement | null>(null)
   const pointerStart = useRef<PointerStart | null>(null)
   const pointerSwiped = useRef(false)
   const requestedHistoriesRef = useRef(new Set<string>())
@@ -977,6 +981,13 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       html: renderChatLine(event, chatRenderContext),
     }))
   ), [chatRenderContext, selectedChatRows])
+
+  useEffect(() => {
+    const log = indexChatLogRef.current
+    const rows = indexChatRowsRef.current
+    if (!log || !rows || !selectedAgent) return
+    return attachIndexChatTail(log, rows)
+  }, [selectedAgent?.id, renderedChatRows])
   const composerAgentNames = useMemo(() => (
     selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
   ), [selectedAgent])
@@ -1246,14 +1257,15 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
               <line x1="9" y1="14" x2="9" y2="16" />
             </svg>
           </button>
-          {selectedAgent && <button type="button" onClick={() => setSelectedAgentId(null)}>All</button>}
         </div>
-        <div className="index-top-chat-log fleet-chat-log" aria-live="polite">
-          {!selectedAgent && <div className="index-top-chat-empty">Select an agent from a project column.</div>}
-          {selectedAgent && renderedChatRows.length === 0 && <div className="index-top-chat-empty">No messages</div>}
-          {renderedChatRows.map(row => (
-            <div key={row.key} className="chat-row-wrap" dangerouslySetInnerHTML={{ __html: row.html }} />
-          ))}
+        <div ref={indexChatLogRef} className="index-top-chat-log fleet-chat-log" aria-live="polite">
+          <div ref={indexChatRowsRef}>
+            {!selectedAgent && <div className="index-top-chat-empty">Select an agent from a project column.</div>}
+            {selectedAgent && renderedChatRows.length === 0 && <div className="index-top-chat-empty">No messages</div>}
+            {renderedChatRows.map(row => (
+              <div key={row.key} className="chat-row-wrap" dangerouslySetInnerHTML={{ __html: row.html }} />
+            ))}
+          </div>
         </div>
         <ChatComposer
           className="index-top-chat-composer"
