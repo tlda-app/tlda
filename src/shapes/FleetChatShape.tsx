@@ -2081,6 +2081,8 @@ function ThreadChatOperationView({
   const [loading, setLoading] = useState(cached == null)
   const [error, setError] = useState('')
   const [collapseTop, setCollapseTop] = useState('50%')
+  const [middleOpen, setMiddleOpen] = useState(false)
+  const shellRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async (force = false) => {
@@ -2127,6 +2129,14 @@ function ThreadChatOperationView({
   useEffect(() => { void load() }, [load])
 
   useLayoutEffect(() => {
+    const shell = shellRef.current
+    if (!shell) return
+    const update = (event: Event) => setMiddleOpen(Boolean((event as CustomEvent).detail?.open))
+    shell.addEventListener('thread-middle-change', update)
+    return () => shell.removeEventListener('thread-middle-change', update)
+  }, [])
+
+  useLayoutEffect(() => {
     if (viewRef.current && html) restoreExpansions(viewRef.current)
   }, [html, restoreExpansions])
 
@@ -2167,11 +2177,12 @@ function ThreadChatOperationView({
       }
     })
     root.closest('.thread-shell')?.classList.remove('thread-middle-open')
+    setMiddleOpen(false)
   }, [])
 
   return (
-    <div className="semantic-operation-expanded-shell thread-shell">
-      <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapseToRange}>Collapse</button>
+    <div ref={shellRef} className="semantic-operation-expanded-shell thread-shell">
+      {middleOpen ? <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapseToRange}>Collapse</button> : null}
       <div className="semantic-operation-view">
         {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void load(true) }}>Retry</button></div> : null}
         {!error && !loading && !html ? <div className="semantic-operation-status">no results</div> : null}
@@ -2390,6 +2401,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             btn.classList.add('thread-fold-open')
           }
           moreRows.closest('.thread-shell')?.classList.add('thread-middle-open')
+          moreRows.closest('.thread-shell')?.dispatchEvent(new CustomEvent('thread-middle-change', { detail: { open: true } }))
         }
       })
     }
@@ -4662,6 +4674,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           // The floating collapse only exists while there is something to
           // collapse; see ThreadChatOperationView.
           expandBtn.closest('.thread-shell')?.classList.toggle('thread-middle-open', !wasExpanded)
+          expandBtn.closest('.thread-shell')?.dispatchEvent(new CustomEvent('thread-middle-change', { detail: { open: !wasExpanded } }))
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
             const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])
