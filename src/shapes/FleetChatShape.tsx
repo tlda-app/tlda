@@ -4062,6 +4062,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // same reason.
   const termHoverPinnedIdRef = useRef<string | null>(null)
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
+  const viewportCorrectionRef = useRef(false)
   const captureViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
     if (!el || !userScrolledUpRef.current) {
@@ -4082,6 +4083,26 @@ function FleetChatInner({ shape }: { shape: any }) {
     viewportAnchorRef.current = null
   }, [])
 
+  const restoreViewportAnchor = useCallback(() => {
+    const el = chatLogRef.current
+    const anchor = viewportAnchorRef.current
+    if (!el || !userScrolledUpRef.current || !anchor?.key || touchScrollActiveRef.current) return false
+    const viewportTop = el.getBoundingClientRect().top
+    const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
+    const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
+    if (!row) return false
+    const delta = row.getBoundingClientRect().top - viewportTop - anchor.top
+    if (Math.abs(delta) <= 0.5) return true
+    viewportCorrectionRef.current = true
+    el.scrollTop += delta
+    log.metric('chat-anchor', 'preserved viewport across content resize', {
+      panelId: String(shape.id),
+      anchorKey: anchor.key,
+      delta: Math.round(delta),
+    })
+    return true
+  }, [shape.id])
+
   useLayoutEffect(() => {
     const el = chatLogRef.current
     const anchor = viewportAnchorRef.current
@@ -4094,10 +4115,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     // running — the scroll listener recaptures the anchor throughout, and the
     // next list change after the scroller settles corrects from there.
     if (touchScrollActiveRef.current) return
-    const viewportTop = el.getBoundingClientRect().top
-    const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
-    const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
-    if (!row) {
+    if (!restoreViewportAnchor()) {
       log.metric('chat-anchor', 'visible anchor row was not rendered after list change', {
         panelId: String(shape.id),
         anchorKey: anchor.key,
@@ -4106,19 +4124,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       captureViewportAnchor()
       return
     }
-    const nextTop = row.getBoundingClientRect().top - viewportTop
-    const delta = nextTop - anchor.top
-    if (Math.abs(delta) > 0.5) {
-      el.scrollTop += delta
-      log.metric('chat-anchor', 'preserved viewport across list change', {
-        panelId: String(shape.id),
-        anchorKey: anchor.key,
-        delta: Math.round(delta),
-        itemCount: allItems.length,
-      })
-    }
     captureViewportAnchor()
-  }, [allItems, shape.id, captureViewportAnchor])
+  }, [allItems, shape.id, captureViewportAnchor, restoreViewportAnchor])
 
   useLayoutEffect(() => {
     const el = chatLogEl
@@ -4138,10 +4145,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         return
       }
       if (userScrolledUpRef.current && !hardLockedRef.current) {
-        log.metric('chat-scroll', 'list resized while reader was scrolled up — viewport held', {
+        const restored = restoreViewportAnchor()
+        log.metric('chat-scroll', 'list resized while reader was scrolled up', {
           panelId: String(shape.id), ...before,
           anchorKey: viewportAnchorRef.current?.key || null,
+          restored,
         })
+        captureViewportAnchor()
         return
       }
       el.scrollTop = el.scrollHeight
@@ -4155,7 +4165,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
     observer.observe(list)
     return () => observer.disconnect()
-  }, [chatLogEl])
+  }, [chatLogEl, captureViewportAnchor, restoreViewportAnchor])
 
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // This panel's composer text, across unmounts. Filter mode unmounts the whole
@@ -4396,8 +4406,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       const previousHeight = lastHeight
       const { scrolledUp, action } = decideFollowTransition(
         { top, height, clientHeight: el.clientHeight, lastTop: previousTop, lastHeight: previousHeight },
-        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: activeSettleTailRunRef.current !== 0 },
+        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, programmatic: activeSettleTailRunRef.current !== 0 || viewportCorrectionRef.current },
       )
+      viewportCorrectionRef.current = false
       lastTop = top
       lastHeight = height
       if (action === 'follow-off') {
