@@ -74,7 +74,7 @@ import { PersistentCornerButtonSlider } from '../CornerButtonSlider'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { cancelDragBeforeRelease } from './fleet-pill-lifecycle'
-import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
+import { hasActiveFleetPill, markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -3567,14 +3567,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     // apply-line's proposal ref (.apply-ref) opts into this same machinery via a
     // data-token, so we don't maintain a second hover handler.
     async function onChipOver(e: MouseEvent) {
-      if (dragCoordinator.isActive) return
+      if (dragCoordinator.isActive || hasActiveFleetPill()) return
       const chip = (e.target as HTMLElement).closest('.ref-chip[data-token], .apply-ref[data-token]') as HTMLElement | null
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
       // Delay to avoid accidental triggers
       await new Promise(r => setTimeout(r, 500))
-      if (dragCoordinator.isActive) return
+      if (dragCoordinator.isActive || hasActiveFleetPill()) return
       if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
@@ -3869,11 +3869,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     const logEl = chatLogEl
     if (!logEl) return
     function onNickOver(e: MouseEvent) {
-      // A hover never ends a drag, whoever owns the drag. The coordinator is the
-      // one place that knows a drag is in flight — a per-shape flag only ever
-      // covers drags that start in this chat log, and the pill drags that end up
-      // over a chat mostly start in the agents panel.
-      if (dragCoordinator.isActive) return
+      // Native tldraw pill translation does not use dragCoordinator. Both drag
+      // paths suppress the name hover that would otherwise cover the filter UI.
+      if (dragCoordinator.isActive || hasActiveFleetPill()) return
       const nick = (e.target as HTMLElement).closest('.agent-nick[data-agent-id]') as HTMLElement | null
       if (!nick) return
       const agentId = nick.dataset.agentId
@@ -3882,7 +3880,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (skillShowTimerRef.current) clearTimeout(skillShowTimerRef.current)
       skillShowTimerRef.current = setTimeout(() => {
         skillShowTimerRef.current = null
-        if (dragCoordinator.isActive) return
+        if (dragCoordinator.isActive || hasActiveFleetPill()) return
         if (!nick.matches(':hover')) return
         const r = nick.getBoundingClientRect()
         setSkillHover({ agentId: agentId!, agentName: nick.textContent?.trim() || agentId!, rect: { left: r.left, bottom: r.bottom, top: r.top } })

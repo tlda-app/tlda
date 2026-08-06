@@ -6,6 +6,7 @@ const activePills = new Set<string>()
 export function markFleetPillActive(id: string) { activePills.add(id) }
 export function markFleetPillInactive(id: string) { activePills.delete(id) }
 export function isFleetPillActive(id: string) { return activePills.has(id) }
+export function hasActiveFleetPill() { return activePills.size > 0 }
 export function getActiveFleetPillIds() { return [...activePills] }
 
 export type FleetPillPolicyRecord = {

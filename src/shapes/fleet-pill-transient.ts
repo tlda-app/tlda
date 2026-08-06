@@ -4,7 +4,7 @@ import { getDeviceId, getHumanId } from '../fleet/fleet-data.mjs'
 
 import { installFleetPillReclaimerWithIdentity } from './fleet-pill-reclaimer'
 import { shouldReclaimFleetPill as shouldReclaimFleetPillPolicy } from './fleet-pill-policy'
-export { FLEET_PILL_LEGACY_GRACE_MS, FLEET_PILL_STALE_MS, isFleetPillActive, markFleetPillActive, markFleetPillInactive } from './fleet-pill-policy'
+export { FLEET_PILL_LEGACY_GRACE_MS, FLEET_PILL_STALE_MS, hasActiveFleetPill, isFleetPillActive, markFleetPillActive, markFleetPillInactive } from './fleet-pill-policy'
 
 export function transientFleetPillProps<T extends Record<string, unknown>>(props: T) {
   return {
