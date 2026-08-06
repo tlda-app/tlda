@@ -1,6 +1,9 @@
 export function eventUpdateFields(data) {
   const fields = {}
   if (Object.hasOwn(data || {}, 'text')) fields.text = data.text
+  if (Object.hasOwn(data || {}, 'inline_attachments')) {
+    fields._inlineAttachments = data.inline_attachments
+  }
   if (data?.metadata_patch && typeof data.metadata_patch === 'object') {
     fields.metadata = data.metadata_patch
     if (Object.hasOwn(data.metadata_patch, 'next_fire_at')) {

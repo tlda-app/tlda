@@ -28,6 +28,18 @@ test('live event-update intake patches the existing event id', () => {
   })
 })
 
+test('unquote event update carries inline attachments into the rendered message', () => {
+  const inlineAttachments = [{ id: 0, type: 'file', name: 'outline.md', url: '/uploads/outline.md' }]
+  assert.deepEqual(eventUpdateFields({
+    id: 99,
+    text: 'Outline is at {{att:0}}',
+    inline_attachments: inlineAttachments,
+  }), {
+    text: 'Outline is at {{att:0}}',
+    _inlineAttachments: inlineAttachments,
+  })
+})
+
 test('event update does not invent fields absent from the server patch', () => {
   assert.deepEqual(eventUpdateFields({ id: 99, metadata_patch: { pending: true } }), {
     metadata: { pending: true },
