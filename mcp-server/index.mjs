@@ -503,21 +503,14 @@ async function educationGate(name, args) {
   const list = owed.map(s => `\`${s}\``).join(', ');
   const dismissArg = owed.map(s => `"${s}"`).join(', ');
   const isGoose = harness.kind === 'goose';
-  // Each harness reads skills from its OWN natural place (harness.skillsDir) — not
-  // a hardcoded checkout path on one machine. '~/' expands to the agent's home; a
-  // relative dir (goose) stays workspace-relative.
-  const skillsDir = harness.skillsDir.startsWith('~/')
-    ? path.join(os.homedir(), harness.skillsDir.slice(2))
-    : harness.skillsDir;
-  const skillPath = s => `${skillsDir}/${s}/SKILL.md`;
   const satisfyLines = isGoose
     ? [
-        `• Load each named skill with Goose Summon from \`${harness.skillsDir}/<name>/SKILL.md\`.`,
+        `• Load each named skill with Goose Summon.`,
         `  Example: ask Summon to load ${owed.map(s => `"${s}"`).join(', ')}.`,
       ]
     : [
-        `• Read each skill's markdown with your native file reader:`,
-        `  ${owed.map(skillPath).join('\n  ')}`,
+        `• Load each named skill with your native skill tool:`,
+        `  ${owed.map(s => `skill("${s}")`).join('\n  ')}`,
       ];
   const text = [
     `⚠️ Before \`${name}\`, you must clear ${owed.length} required skill(s): ${list}.`,

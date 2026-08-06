@@ -160,7 +160,7 @@ if (reason) reason += '\n'
 reason += 'You must clear ' + (items.length === 1 ? 'this required skill' : 'these ' + items.length + ' required skills') + ' before continuing.\n\n'
 for (const { skill, desc, foundPath } of items) {
   reason += '- `' + skill + '`' + (desc ? ' - ' + desc : '') + '\n'
-  reason += '  Read `' + foundPath + '`.'
+  reason += '  Load it with `skill("' + skill + '")`.'
   const partial = partialBySkill.get(skill)
   if (partial?.ranges?.length && partial?.missing?.length) {
     reason += `\n  You read lines ${partial.ranges.map(fmtRange).join(', ')}, but you need the whole thing. Remaining lines: ${partial.missing.map(fmtRange).join(', ')}.`
