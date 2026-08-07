@@ -7,7 +7,7 @@ import {
   terminalInputAllowedFromConfig,
 } from '../shared/terminal-input-policy.mjs'
 
-function makeTerminalRpc({ terminalInputAllowed }) {
+function makeTerminalRpc({ terminalInputAllowed, resolveTerminalAgent = () => ({ id: 'fleet:test', tmuxSession: 'agent-session', sessionId: 'session-1' }) }) {
   const calls = []
   const rpc = createTerminalRpc({
     tmuxArgs: [],
@@ -31,7 +31,7 @@ function makeTerminalRpc({ terminalInputAllowed }) {
     hasPlanMode: () => false,
     resolveAgentRoute: () => ({ tmux_session: 'agent-session', agent_id: 'fleet:test' }),
     validateTmuxOwner: () => true,
-    resolveTerminalAgent: () => ({ id: 'fleet:test', tmuxSession: 'agent-session', sessionId: 'session-1' }),
+    resolveTerminalAgent,
     terminalInputAllowed,
     execFileImpl: async (cmd, args) => {
       calls.push([cmd, args])
@@ -135,6 +135,20 @@ test('explicit opt-in preserves terminal text injection', async () => {
   const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: true })
   await rpc.handlers['send-text']({ agent_id: 'fleet:test', text: 'hello', enter: false })
   assert.deepEqual(calls.at(-1), ['tmux', ['send-keys', '-t', '=agent-session:', '--', 'hello']])
+})
+
+test('kill-session succeeds when the terminal ledger row is already absent', async () => {
+  const { rpc, calls } = makeTerminalRpc({
+    terminalInputAllowed: false,
+    resolveTerminalAgent: () => null,
+  })
+  const result = await rpc.handlers['kill-session']({ agent_id: 'fleet:test' })
+  assert.deepEqual(result, {
+    ok: true,
+    already_unavailable: true,
+    reason: 'terminal already unavailable',
+  })
+  assert.deepEqual(calls, [])
 })
 
 test('notification text is converted to one printable line', () => {

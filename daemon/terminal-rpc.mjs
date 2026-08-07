@@ -91,7 +91,10 @@ export function createTerminalRpc({
     if (!fleetId) throw new Error('agent id required')
     if (!resolveTerminalAgent) throw new Error('terminal agent resolution unavailable')
     const row = resolveTerminalAgent({ agentId: fleetId })
-    if (!row) throw new Error(`terminal unavailable for ${fleetId}`)
+    if (!row) {
+      if (allowUnavailable) return { unavailable: true, reason: 'terminal already unavailable', agentId: fleetId }
+      throw new Error(`terminal unavailable for ${fleetId}`)
+    }
     if (!row.tmuxSession || !row.sessionId) {
       if (allowUnavailable) return { unavailable: true, reason: 'terminal already unavailable', agentId: row.id || fleetId }
       throw new Error(`terminal unavailable for ${fleetId}`)
