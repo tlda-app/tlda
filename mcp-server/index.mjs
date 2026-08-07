@@ -3519,7 +3519,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!content) return { content: [{ type: 'text', text: `No content for ${spec.path} — provide content or localPath.` }], isError: true };
         files.push({ path: spec.path, content });
       }
-      await pushMcpSourceFiles({ project, files, session: process.env.CLAUDE_SESSION, serverFetch });
+      await pushMcpSourceFiles({
+        project,
+        files,
+        session: process.env.CLAUDE_SESSION,
+        editedBy: process.env.FLEET_ID,
+        serverFetch,
+      });
 
       // Shadow-branch commit (best-effort)
       try {

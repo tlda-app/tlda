@@ -6,6 +6,18 @@ import { randomUUID } from 'crypto'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, isTextSourcePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 
+export function resolveWatchedSourceFile(sourceWatchers, filePath) {
+  if (!filePath || !path.isAbsolute(filePath)) return null
+  const matches = []
+  for (const [project, state] of sourceWatchers) {
+    const rel = path.relative(path.resolve(state.sourceDir), path.resolve(filePath))
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      matches.push({ project, file: rel.replaceAll(path.sep, '/') })
+    }
+  }
+  return matches.length === 1 ? matches[0] : null
+}
+
 export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
   const revisions = new Map()
   const pending = new Map()
@@ -990,6 +1002,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return sourceWatchers.get(project)?.sourceDir || null
   }
 
+  function sourceFileForAbsolutePath(filePath) {
+    return resolveWatchedSourceFile(sourceWatchers, filePath)
+  }
+
   function closeAll() {
     for (const [, state] of sourceWatchers) closeSourceState(state)
     sourceWatchers.clear()
@@ -1004,6 +1020,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     finishReconnect,
     flushPending,
     getSourceDir,
+    sourceFileForAbsolutePath,
     applyAcceptedSourceUpdate,
     closeAll,
     handleSourceChangeResult,

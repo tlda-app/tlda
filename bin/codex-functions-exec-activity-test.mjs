@@ -34,6 +34,26 @@ function customExec(input, callId = 'call_outer') {
 
 {
   const event = parseCodexRecord(customExec(`
+    const patch = "*** Begin Patch\\n*** Update File: /work/paper/main.md\\n@@\\n-old\\n+new\\n*** End Patch";
+    text(await tools.apply_patch(patch));
+  `, 'call_patch'))
+  assert.equal(event.blocks.length, 1)
+  assert.equal(event.blocks[0].name, 'Edit')
+  assert.equal(event.blocks[0].input.file_path, '/work/paper/main.md')
+  assert.match(event.blocks[0].input.diff, /\+new/)
+
+  const normalized = normalizeDaemonActivityEvent({
+    tool: 'Edit',
+    input: event.blocks[0].input,
+    project: 'paper',
+    sourceFile: 'main.md',
+  })
+  assert.equal(normalized.metadata.project, 'paper')
+  assert.equal(normalized.metadata.sourceFile, 'main.md')
+}
+
+{
+  const event = parseCodexRecord(customExec(`
     const [a, b, c] = await Promise.all([
       tools.exec_command({cmd:'git status --short',workdir:'/repo'}),
       tools.mcp__tlda__inbox({view:'current-task'}),
