@@ -27,13 +27,23 @@ export function rewriteBareLocalPaths(html = '') {
       return segment
     }
     if (inCode > 0 || inAnchor > 0) return segment
+    // The outer split keeps these passes off markup that arrived here, but this
+    // pass also emits markup INTO the segment the later passes read. A generated
+    // title="/Users/skip/.claude/CLAUDE.md." is plain text to the relative-md
+    // pass below, whose lookbehind excludes / " ' > and word characters but not
+    // the dot of a dotfile directory — so it chipped a path inside the attribute
+    // and split the tag open. Park generated markup behind a placeholder, the
+    // way the absolute-markdown pass already does, and restore it once every
+    // pass has run.
+    const generated = []
+    const park = (markup) => `\u0000generated-markup-${generated.push(markup) - 1}\u0000`
     segment = segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
-      if (fullPath.endsWith('.md')) return fileChip(fullPath, rel.split('/').pop())
+      if (fullPath.endsWith('.md')) return park(fileChip(fullPath, rel.split('/').pop()))
       if (/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(fullPath)) {
         const name = rel.split('/').pop()
-        return `<img class="chat-image" src="/api/file?path=${encodeURIComponent(fullPath)}" alt="${esc(name)}" style="max-width:300px;max-height:200px;border-radius:4px;cursor:zoom-in;display:block;margin:4px 0" onerror="this.style.display='none'">`
+        return park(`<img class="chat-image" src="/api/file?path=${encodeURIComponent(fullPath)}" alt="${esc(name)}" style="max-width:300px;max-height:200px;border-radius:4px;cursor:zoom-in;display:block;margin:4px 0" onerror="this.style.display='none'">`)
       }
-      return `<span class="file-path" title="${esc(fullPath)}" style="cursor:pointer;text-decoration:underline dotted">~/${esc(rel)}</span>`
+      return park(`<span class="file-path" title="${esc(fullPath)}" style="cursor:pointer;text-decoration:underline dotted">~/${esc(rel)}</span>`)
     })
     const absoluteMarkdownChips = []
     segment = segment.replace(/(^|\s)(\/(?!\/|Users\/)[\w/._-]+\.(?:md|markdown))(?=\s|$|[)\].,;!?])/gi, (_, before, fullPath) => {
@@ -44,6 +54,7 @@ export function rewriteBareLocalPaths(html = '') {
       return fileChip(relPath, relPath.split('/').pop())
     })
     segment = segment.replace(/\u0000absolute-markdown-chip-(\d+)\u0000/g, (_, index) => absoluteMarkdownChips[Number(index)])
+    segment = segment.replace(/\u0000generated-markup-(\d+)\u0000/g, (_, index) => generated[Number(index)])
     return segment
   })
 }
