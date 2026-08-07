@@ -128,18 +128,19 @@ function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`
 }
 
-async function gitCommitRecords(dir, range) {
+export async function gitCommitRecords(dir, range) {
   const { stdout } = await execAsync(
-    `git log --reverse --format=%H%x00%aN%x00%aE%x00%aI%x00%cN%x00%cE%x00%cI%x00 ${range}`,
+    `git log --reverse --format=%x1e%H%x00%aN%x00%aE%x00%aI%x00%cN%x00%cE%x00%cI ${range}`,
     { cwd: dir, timeout: 30000, maxBuffer: 50 * 1024 * 1024 },
   )
-  const fields = stdout.split('\0')
   const commits = []
-  for (let i = 0; i + 7 < fields.length; i += 8) {
-    const hash = fields[i]?.trim()
-    if (!hash) continue
+  const records = stdout.split('\x1e').map(record => record.replace(/^\n+|\n+$/g, '')).filter(Boolean)
+  for (const record of records) {
+    const fields = record.split('\0')
+    if (fields.length !== 7) throw new Error(`Unexpected git log record with ${fields.length} fields`)
+    const [hash, authorName, authorEmail, authorTimestamp, committerName, committerEmail, committerTimestamp] = fields
     const changed = await execAsync(
-      `git diff-tree --no-commit-id --name-status -r -z ${shellQuote(hash)}`,
+      `git diff-tree --root --no-commit-id --name-status -r -z ${shellQuote(hash)}`,
       { cwd: dir, timeout: 30000, maxBuffer: 10 * 1024 * 1024 },
     )
     const changedPaths = []
@@ -160,8 +161,8 @@ async function gitCommitRecords(dir, range) {
     }
     commits.push({
       hash,
-      author: { name: fields[i + 1] || '', email: fields[i + 2] || '', timestamp: fields[i + 3] || null },
-      committer: { name: fields[i + 4] || '', email: fields[i + 5] || '', timestamp: fields[i + 6] || null },
+      author: { name: authorName || '', email: authorEmail || '', timestamp: authorTimestamp || null },
+      committer: { name: committerName || '', email: committerEmail || '', timestamp: committerTimestamp || null },
       changed_paths: changedPaths.filter(p => !shouldSkip(p)),
       deleted_paths: deletedPaths.filter(p => !shouldSkip(p)),
     })
