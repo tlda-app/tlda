@@ -2420,6 +2420,9 @@ let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing 
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
+// Words already committed by the last final that a CONTINUING interim restates.
+// Kept separately from _dgLastFinalNorm, which the interim path clears on sight.
+let _dgFinalEchoPrefixNorm = ''
 const DEEPGRAM_REPEAT_ECHO_WINDOW_MS = 1200
 let _micFrameCadenceMs = null
 let _audioChunkCadenceMs = null
@@ -2494,6 +2497,25 @@ function _dgTrickleFlush() {
   _dgTrickleTimer = null
 }
 
+// Drop the leading words of an interim that merely restate what the previous
+// final already committed. Deepgram ends a segment on a pause and then, when the
+// sentence continues, re-sends the finalized words with the continuation glued
+// on: final "Cool." then interim "Cool. I". The old guard compared the two for
+// EQUALITY, so it only ever fired when the speaker stopped at exactly the segment
+// boundary — every continuation slipped through and rendered "Cool.Cool."
+// Word-wise so punctuation and spacing cannot hide the overlap.
+// Returns null when nothing is left, i.e. a pure repeat the caller should drop.
+export function stripCommittedEchoPrefix(text, committedNorm) {
+  const words = String(text || '').split(/\s+/).filter(Boolean)
+  const committed = normalizeDeepgramText(committedNorm).split(' ').filter(Boolean)
+  if (!words.length || !committed.length) return { text, dropped: 0 }
+  let i = 0
+  while (i < committed.length && i < words.length && normalizeDeepgramText(words[i]) === committed[i]) i++
+  if (i !== committed.length) return { text, dropped: 0 }  // not an echo of the whole final
+  const rest = words.slice(i)
+  return rest.length ? { text: rest.join(' '), dropped: i } : null
+}
+
 function normalizeDeepgramText(text) {
   return String(text || '')
     .replace(/[.!?,;:]+/g, '')
@@ -2544,6 +2566,7 @@ function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText
   }
   if (!preserveLastFinal) _dgLastFinalNorm = ''
   if (!preserveLastFinal) _dgLastFinalAt = 0
+  if (!preserveLastFinal) _dgFinalEchoPrefixNorm = ''
   _dgTrickleFlush()
   _dgTrickleWords = []
   _dgTrickleShown = 0
@@ -2904,7 +2927,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       })
     }
 
-    const text = msg.text
+    let text = msg.text
 
     // ⚠️ OPEN BUG LIVES HERE — read before patching. Skip, 2026-07-25: he received
     // "Cool. Cool. Okay. So Cool. Cool. Okay. So so what do we do?" and said "I didn't
@@ -2970,6 +2993,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       })
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
       _dgLastFinalNorm = normalizedFinal
+      _dgFinalEchoPrefixNorm = normalizedFinal
       _dgLastFinalAt = Date.now()
       resetDeepgramTextState({ preserveLastFinal: true })
       _interim = ''
@@ -2980,6 +3004,32 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       if (normalizedInterim && normalizedInterim === _dgLastFinalNorm && sinceLastFinal <= DEEPGRAM_REPEAT_ECHO_WINDOW_MS) {
         vlog('DROPPED transcript (duplicate interim)', { text: text.slice(0, 30), sinceLastFinal })
         return
+      }
+      // A continuing interim restates the committed final and adds to it. Keep the
+      // addition, drop the restatement — the whole-message equality check above only
+      // catches the case where the speaker stopped exactly at the segment boundary.
+      //
+      // Deliberately NOT bounded by DEEPGRAM_REPEAT_ECHO_WINDOW_MS. In the 02:42:31
+      // specimen the restating interims land 0.9s and 1.9s after the final, so a 1.2s
+      // window fixes the first and lets the second duplicate again. The bound is
+      // structural instead: the prefix is dropped the moment an interim stops
+      // restating it, and replaced whenever the next final commits.
+      if (_dgFinalEchoPrefixNorm) {
+        const stripped = stripCommittedEchoPrefix(text, _dgFinalEchoPrefixNorm)
+        if (stripped === null) {
+          vlog('DROPPED transcript (interim restates committed final)', { text: text.slice(0, 40), sinceLastFinal })
+          return
+        }
+        if (stripped.dropped) {
+          vlog('trimmed committed final echo from interim', {
+            droppedWords: stripped.dropped,
+            original: text.slice(0, 60),
+            trimmed: stripped.text.slice(0, 60),
+          })
+          text = stripped.text
+        } else {
+          _dgFinalEchoPrefixNorm = ''  // interim diverged; the segment moved on
+        }
       }
       _deepgramInterim = text
       _dgHasSeenInterim = true   // saw an interim → finals for this utterance are valid
