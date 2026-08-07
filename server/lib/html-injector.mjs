@@ -88,7 +88,7 @@ const BRIDGE_SCRIPT = `
     // Add padding to approximate default article margins (1in each side at 800/612 scale)
     document.body.style.margin = '0';
     document.body.style.padding = '0 90px';
-    document.body.style.overflow = 'hidden';
+    document.body.style.overflow = 'visible';
     document.body.style.background = 'transparent';
     document.documentElement.style.background = 'transparent';
 
