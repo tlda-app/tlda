@@ -62,7 +62,15 @@ function installListeners() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) cancelActive()
   })
-  window.addEventListener('blur', cancelActive, true)
+  // NOT capture. blur does not bubble, but a capture-phase listener on window
+  // still receives it from every element in the document, so `true` here meant
+  // "anything lost focus" rather than "the window lost focus". Starting a drag
+  // blurs whatever held the caret, which cancelled the drag immediately: the
+  // pill was deleted under the pointer and, with no pill on the page, the chat
+  // filter overlay lost its preview and the drop silently did nothing. Only the
+  // window losing focus should cancel — same form as the reclaimer's own blur
+  // listener in fleet-pill-reclaimer.
+  window.addEventListener('blur', cancelActive)
   window.addEventListener('pagehide', cancelActive, true)
 }
 
