@@ -1096,7 +1096,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         <div style={{
           width: '100%',
           height: '100%',
-          overflow: 'hidden',
+          overflow: 'visible',
           pointerEvents: iframePointerActive ? 'auto' : 'none',
         }}>
           {isNearViewport && urlWithParams ? (
