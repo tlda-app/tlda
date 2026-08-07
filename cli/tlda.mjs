@@ -1821,7 +1821,11 @@ async function bootoutBot(bot) {
 async function restartLoadedBot(bot) {
   const paths = botServicePaths(bot.name)
   const target = daemonLaunchdTarget(paths.label)
-  await runLaunchctl(['print', target])
+  try {
+    await runLaunchctl(['print', target])
+  } catch (e) {
+    throw new Error(`${paths.label} is not loaded; register it once with \`tlda config apply\` before using routine restart: ${e?.message || String(e)}`)
+  }
   await enlistBot(bot)
 
   const previousPid = existsSync(paths.pidFile) ? readFileSync(paths.pidFile, 'utf8').trim() : ''
@@ -1837,7 +1841,18 @@ async function restartLoadedBot(bot) {
   const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
     const currentPid = existsSync(paths.pidFile) ? readFileSync(paths.pidFile, 'utf8').trim() : ''
-    if (currentPid && currentPid !== previousPid) return { paths, pid: currentPid }
+    const pid = Number(currentPid)
+    let alive = false
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0)
+        alive = true
+      } catch {
+        // A fresh pidfile is not readiness when its process has already exited.
+      }
+    }
+    const sessionReady = spawnSync('tmux', ['has-session', '-t', tmuxTarget], { stdio: 'ignore' }).status === 0
+    if (currentPid !== previousPid && alive && sessionReady) return { paths, pid: currentPid }
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   throw new Error(`${paths.label} did not restart through its loaded launchd supervisor`)
