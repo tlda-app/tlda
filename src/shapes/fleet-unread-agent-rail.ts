@@ -8,7 +8,16 @@ export function isOnlyOwnedChat(
   return ownedChats.length === 1 && ownedChats[0]?.id === chatShapeId
 }
 
-function lastActiveMs(agent: any): number {
+/** The four fields `lastActiveMs` reads. Agents are `any` throughout
+ *  `FleetAgentDirectoryModel`; this types what this function touches. */
+type FleetAgentActivityFields = {
+  _ts?: number
+  last_active?: string | number
+  last_seen?: string | number
+  registered_at?: string | number
+}
+
+function lastActiveMs(agent: FleetAgentActivityFields | null | undefined): number {
   if (typeof agent?._ts === 'number') return agent._ts
   const raw = agent?.last_active || agent?.last_seen || agent?.registered_at
   const parsed = raw ? new Date(raw).getTime() : 0
@@ -16,7 +25,7 @@ function lastActiveMs(agent: any): number {
 }
 
 export function getUnreadAgentRailRows(
-  agents: any[],
+  agents: unknown[],
   unreadCounts: Record<string, number>,
   displayedUnreadSenderIds: ReadonlySet<string> = new Set(),
 ): FleetAgentDirectoryRowModel[] {
