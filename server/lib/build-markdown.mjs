@@ -21,6 +21,7 @@ import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-col
 import { getBuildReporter } from './build-runner.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { stripVolatileMarkdownMarkersForRender } from '../../shared/markdown-volatile.mjs'
+import { baseMacros } from '../../shared/katex-base-macros.mjs'
 
 const FRONTMATTER_RE = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/
 
@@ -756,7 +757,7 @@ function markdownTocForSource(source, page) {
 }
 
 export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, mainFile = null, macros = {} }) {
-  _macros = { ...macros, ...extractMacros(source) }
+  _macros = { ...baseMacros, ...macros, ...extractMacros(source) }
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
   const processedSource = stripVolatileMarkdownMarkersForRender(renderSource)

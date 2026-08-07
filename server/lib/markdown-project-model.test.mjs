@@ -80,7 +80,7 @@ test('Markdown member links target project routes while external URLs stay exter
 
 test('Markdown columns render with the parent project macros', () => {
   const html = renderMarkdownColumnHtml({
-    source: 'The fitted value is $\\hmu$.',
+    source: 'The fitted value is $\\hmu$ with error $\\abs{x}$.',
     title: 'Scratch note',
     macros: { '\\hmu': '\\widehat{\\mu}' },
   })
@@ -88,6 +88,15 @@ test('Markdown columns render with the parent project macros', () => {
   assert.match(html, /class="katex"/)
   assert.doesNotMatch(html, /class="math-error"/)
   assert.match(html, /<mover accent="true">/)
+  assert.match(html, /<mo fence="true">∣<\/mo><mi>x<\/mi><mo fence="true">∣<\/mo>/)
+
+  const overridden = renderMarkdownColumnHtml({
+    source: '$$\\newcommand{\\hmu}{\\operatorname{LOCAL}}$$\n\n$\\hmu$',
+    title: 'Scratch note',
+    macros: { '\\hmu': '\\widehat{\\mu}' },
+  })
+  assert.match(overridden, /<mi mathvariant="normal">LOCAL<\/mi>/)
+  assert.doesNotMatch(overridden, /<mover accent="true">/)
 })
 
 test('a new Git-linked project infers Markdown format and main file', () => {
