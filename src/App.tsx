@@ -980,6 +980,17 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   }, [selectedAgentFilter, indexChatBufferKey, identity.id, identity.name])
   const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, indexChatBufferKey)
   const sendTargets = useMemo(() => selectedAgent?.exactName ? [selectedAgent.exactName] : [], [selectedAgent?.exactName])
+  // The React Compiler bails out here — `react-hooks/preserve-manual-memoization`
+  // reports "Compilation Skipped: Existing memoization could not be preserved"
+  // against this dep array — so this component does not get compiler
+  // optimisation. That is accepted, not unnoticed: it is recorded in
+  // `config/eslint-baseline.json` deliberately, because leaving a severity-2 red
+  // that nobody intends to fix is how a lint gate becomes one people route
+  // around.
+  //
+  // What is not known is whether it costs anything. Nobody has profiled index
+  // chat rendering against a version the compiler accepts. If you are here
+  // because rendering is slow, this is a real lead and it has not been chased.
   const chatRenderContext = useMemo(
     () => makeIndexChatRenderContext(agents, tasks, identity, sendTargets),
     [agents, tasks, identity, sendTargets],
