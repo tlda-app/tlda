@@ -1,4 +1,4 @@
-import { noteFleetPillDeleted } from './fleet-pill-forensics'
+import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillInactive } from './fleet-pill-transient'
 
 export type FleetPillSnapState = {
@@ -30,9 +30,9 @@ export function finishFleetPillTranslation(
   snapState.lines = []
 
   const deleteIfPresent = () => {
-    if (editor.getShape(pillId)) noteFleetPillDeleted(String(pillId), 'translate-end')
+    // Record before clearing ACTIVE, so the record says the pill was mid-drag.
+    deleteFleetPill(editor, pillId, 'translate-end')
     markFleetPillInactive(String(pillId))
-    if (editor.getShape(pillId)) editor.deleteShapes([pillId])
   }
   if (options.deferDelete) queueMicrotask(deleteIfPresent)
   else deleteIfPresent()

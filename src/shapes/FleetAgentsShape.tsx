@@ -20,6 +20,7 @@ import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, us
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget, fleetTaskDropBus } from './FleetPillShape'
+import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { agentDisplayLabel, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
@@ -271,8 +272,7 @@ export function usePillDrag() {
     if (drag?.pillId) {
       markFleetPillInactive(String(drag.pillId))
       editor.run(() => {
-        const id = drag.pillId as TLShapeId
-        if (editor.getShape(id)) editor.deleteShapes([id])
+        deleteFleetPill(editor, drag.pillId as TLShapeId, 'drag-cancel', { surface: 'roster' })
       }, { history: 'ignore' })
     }
   }, [editor])
@@ -375,10 +375,7 @@ export function usePillDrag() {
         }
         editor.run(() => {
           try {
-            const id = drag.pillId as TLShapeId
-            if (editor.getShape(id)) {
-              editor.deleteShapes([id])
-            }
+            deleteFleetPill(editor, drag.pillId as TLShapeId, 'drag-drop', { surface: 'roster' })
           } catch {
             // The drop already ran; leftover transient preview cleanup has no
             // owned non-modal surface in this drag coordinator.
@@ -692,8 +689,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     cleanedRef.current = true
     const orphanPills = editor.getCurrentPageShapes()
       .filter((s: any) => s.type === 'fleet-pill' && s.parentId === shape.id)
-    if (orphanPills.length > 0) {
-      editor.deleteShapes(orphanPills.map((s: any) => s.id))
+    for (const orphan of orphanPills) {
+      deleteFleetPill(editor, orphan.id, 'legacy-orphan', { surface: 'roster' })
     }
   }
 

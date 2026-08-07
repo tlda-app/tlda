@@ -46,6 +46,7 @@ import {
 } from '../fleet/search-autocomplete'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
+import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { dragCoordinator } from './dragCoordinator'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
@@ -123,7 +124,7 @@ function usePillDrag() {
     markFleetPillInactive(String(drag.pillId))
     const id = drag.pillId as TLShapeId
     editor.run(() => {
-      if (editor.getShape(id)) editor.deleteShapes([id])
+      deleteFleetPill(editor, id, 'drag-cancel', { surface: 'search' })
     }, { history: 'ignore' })
   }, [editor])
 
@@ -192,7 +193,7 @@ function usePillDrag() {
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
         dropPillOnTarget(editor, id, drag.value, pagePos, drag.content)
         editor.run(() => {
-          if (editor.getShape(id)) editor.deleteShapes([id])
+          deleteFleetPill(editor, id, 'drag-drop', { surface: 'search' })
         }, { history: 'ignore' })
       },
       cancelDrag,

@@ -74,6 +74,7 @@ import { PersistentCornerButtonSlider } from '../CornerButtonSlider'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { cancelDragBeforeRelease } from './fleet-pill-lifecycle'
+import { deleteFleetPill } from './fleet-pill-forensics'
 import { hasActiveFleetPill, markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { ProjectContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
@@ -5861,8 +5862,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
         const onMain = !!drag._onMain
         const deleteEditor = onMain && mainEditor ? mainEditor : editor
-        const id = drag.pillId as TLShapeId
-        if (deleteEditor?.getShape?.(id)) deleteEditor.deleteShapes([id])
+        deleteFleetPill(deleteEditor, drag.pillId as TLShapeId, 'drag-cancel', { surface: 'chat' })
       }
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
@@ -5954,10 +5954,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           if (outside && !onMain) {
             // Handoff: panel → main
             try {
-              const id = drag.pillId as TLShapeId
-              if (editor.getShape(id)) {
-                editor.deleteShapes([id])
-              }
+              deleteFleetPill(editor, drag.pillId as TLShapeId, 'editor-handoff', { surface: 'chat' })
             } catch {
               // Drag-preview cleanup has no owned non-modal surface here. Do not
               // create the second preview if deleting the first one failed.
@@ -5986,10 +5983,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           } else if (!outside && onMain) {
             // Handoff back: main → panel
             try {
-              const id = drag.pillId as TLShapeId
-              if (mainEditor.getShape(id)) {
-                mainEditor.deleteShapes([id])
-              }
+              deleteFleetPill(mainEditor, drag.pillId as TLShapeId, 'editor-handoff', { surface: 'chat' })
             } catch {
               // Drag-preview cleanup has no owned non-modal surface here. Do not
               // create the second preview if deleting the first one failed.
@@ -6086,10 +6080,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         (message) => addToast({ title: message, severity: 'error' }),
       )
       try {
-        const id = drag.pillId as TLShapeId
-        if (dropEditor.getShape(id)) {
-          dropEditor.deleteShapes([id])
-        }
+        deleteFleetPill(dropEditor, drag.pillId as TLShapeId, 'drag-drop', { surface: 'chat' })
       } catch {
         // The drop already ran; leftover transient preview cleanup has no owned
         // non-modal surface in this drag coordinator.
