@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, partitionAtCursor, pcmInputLevel, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
+import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, normalizeTranscriptText as normalizeDeepgramText, partitionAtCursor, pcmInputLevel, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
@@ -2514,14 +2514,6 @@ export function stripCommittedEchoPrefix(text, committedNorm) {
   if (i !== committed.length) return { text, dropped: 0 }  // not an echo of the whole final
   const rest = words.slice(i)
   return rest.length ? { text: rest.join(' '), dropped: i } : null
-}
-
-function normalizeDeepgramText(text) {
-  return String(text || '')
-    .replace(/[.!?,;:]+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase()
 }
 
 function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false } = {}) {

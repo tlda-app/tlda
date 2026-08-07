@@ -44,7 +44,7 @@ export function isPriorFinalSuffixEcho(previousFinalNorm, finalNorm, hasSeenInte
   return !hasSeenInterim && !!previousFinalNorm && !!finalNorm && previousFinalNorm.endsWith(finalNorm)
 }
 
-function normalizeTranscriptText(text) {
+export function normalizeTranscriptText(text) {
   return String(text || '')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/[.!?,;:]+/g, '')

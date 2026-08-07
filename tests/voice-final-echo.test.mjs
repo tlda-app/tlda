@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isPriorFinalSuffixEcho, trimSubmittedPrefixFromDeepgramText } from '../src/voice-indicator.mjs'
+import { isPriorFinalSuffixEcho, normalizeTranscriptText, trimSubmittedPrefixFromDeepgramText } from '../src/voice-indicator.mjs'
 
 test('drops a final that only repeats the suffix of the preceding final', () => {
   assert.equal(isPriorFinalSuffixEcho('on the quotient', 'quotient', false), true)
@@ -17,7 +17,7 @@ test('keeps a corrected carried word without repeating the submitted suffix', ()
   assert.deepEqual(
     trimSubmittedPrefixFromDeepgramText(
       'possible. That itself is a bug. Do you understand?',
-      "Okay. Like, that shouldn't beThat itself is a bug. Do you understand?",
+      normalizeTranscriptText("Okay. Like, that shouldn't beThat itself is a bug. Do you understand?"),
     ),
     { text: 'possible.', droppedWords: 8 },
   )
