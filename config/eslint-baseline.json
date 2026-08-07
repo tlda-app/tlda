@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "errors": 1556,
+  "errors": 1557,
   "warnings": 75,
   "diagnostics": {
     "extensions/drawable-tldraw/src/index.tsx\t2\t@typescript-eslint/no-unused-vars\t'useEffect' is defined but never used.": 1,
@@ -181,7 +181,7 @@
     "src/shapes/FleetAgentDirectoryModel.ts\t2\t@typescript-eslint/no-unused-vars\t'_kind' is defined but never used.": 1,
     "src/shapes/FleetAgentDirectoryRow.tsx\t2\treact-refresh/only-export-components\tFast refresh only works when a file only exports components. Use a new file to share constants or functions between components.": 15,
     "src/shapes/FleetAgentsShape.tsx\t2\t@typescript-eslint/ban-ts-comment\tUse \"@ts-expect-error\" instead of \"@ts-ignore\", as \"@ts-ignore\" will do nothing if the following line is error-free.": 1,
-    "src/shapes/FleetAgentsShape.tsx\t2\t@typescript-eslint/no-explicit-any\tUnexpected any. Specify a different type.": 27,
+    "src/shapes/FleetAgentsShape.tsx\t2\t@typescript-eslint/no-explicit-any\tUnexpected any. Specify a different type.": 26,
     "src/shapes/FleetAgentsShape.tsx\t2\treact-refresh/only-export-components\tFast refresh only works when a file only exports components. Move your component(s) to a separate file.": 4,
     "src/shapes/FleetAgentsShape.tsx\t2\treact-hooks/refs\tError: Cannot access refs during render": 13,
     "src/shapes/FleetAgentsShape.tsx\t2\treact-hooks/set-state-in-effect\tError: Calling setState synchronously within an effect can trigger cascading renders": 1,
@@ -322,6 +322,7 @@
     "src/shapes/fleet-ownership.ts\t2\t@typescript-eslint/ban-ts-comment\tUse \"@ts-expect-error\" instead of \"@ts-ignore\", as \"@ts-ignore\" will do nothing if the following line is error-free.": 2,
     "src/shapes/fleet-ownership.ts\t2\t@typescript-eslint/no-explicit-any\tUnexpected any. Specify a different type.": 2,
     "src/shapes/fleet-pill-forensics.ts\t2\t@typescript-eslint/ban-ts-comment\tUse \"@ts-expect-error\" instead of \"@ts-ignore\", as \"@ts-ignore\" will do nothing if the following line is error-free.": 1,
+    "src/shapes/fleet-pill-forensics.ts\t2\t@typescript-eslint/no-explicit-any\tUnexpected any. Specify a different type.": 2,
     "src/shapes/fleet-pill-lifecycle.ts\t2\t@typescript-eslint/no-explicit-any\tUnexpected any. Specify a different type.": 3,
     "src/shapes/fleet-pill-transient.ts\t2\t@typescript-eslint/ban-ts-comment\tUse \"@ts-expect-error\" instead of \"@ts-ignore\", as \"@ts-ignore\" will do nothing if the following line is error-free.": 1,
     "src/shapes/fleet-utils.ts\t2\t@typescript-eslint/ban-ts-comment\tUse \"@ts-expect-error\" instead of \"@ts-ignore\", as \"@ts-ignore\" will do nothing if the following line is error-free.": 2,
