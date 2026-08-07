@@ -43,6 +43,7 @@ export function buildCmd({
   botPidFile = null,
   botHeartbeatFile = null,
   botWaitChannel = null,
+  botEnv = null,
 } = {}) {
   const requestedBotName = botName || name
   const script = resolveBotScript(botScript)
@@ -71,6 +72,11 @@ export function buildCmd({
   if (configName) parts.push(`TLDA_ENV=${sq(configName)}`)
   if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
   for (const [key, value] of passthroughConfigEnv(env)) parts.push(`${key}=${sq(value)}`)
+  for (const [key, value] of Object.entries(botEnv || {})) {
+    if (/^[A-Z_][A-Z0-9_]*$/.test(key) && value !== undefined && value !== null) {
+      parts.push(`${key}=${sq(value)}`)
+    }
+  }
   parts.push(sq(process.execPath))
   parts.push(sq(script))
   const signalExit = botWaitChannel ? `; tmux wait-for -S ${sq(botWaitChannel)}` : ''

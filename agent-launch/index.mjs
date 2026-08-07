@@ -210,7 +210,7 @@ function shellReservationOptions(params = {}) {
   return params.shellReservationTimeoutMs ? { timeoutMs: params.shellReservationTimeoutMs } : {}
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env, botScript = null, botName = null, botIdFile = null, botPidFile = null, botHeartbeatFile = null, botWaitChannel = null }) {
+async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env, botScript = null, botName = null, botIdFile = null, botPidFile = null, botHeartbeatFile = null, botWaitChannel = null, botEnv = null }) {
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
@@ -258,6 +258,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
       botPidFile,
       botHeartbeatFile,
       botWaitChannel,
+      botEnv,
     })
   }
   const commandBeforeFence = cmd
@@ -353,6 +354,7 @@ export async function launchMintProcess(params) {
     botPidFile: params.botPidFile || params.bot_pid_file || null,
     botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
     botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
+    botEnv: params.botEnv || params.bot_env || null,
   })
   const launched = await (params._deps?.spawnTmux || spawnTmux)(
     tmuxSession,

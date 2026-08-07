@@ -1886,6 +1886,7 @@ async function enlistBot(bot) {
       botPidFile: paths.pidFile,
       botHeartbeatFile: paths.heartbeatFile,
       botWaitChannel: paths.waitChannel,
+      botEnv: bot.env || {},
       tmuxSession: paths.tmuxSession,
       permissionGrant: grant.permissionGrant,
       permissionSet: grant.permissionSet,
