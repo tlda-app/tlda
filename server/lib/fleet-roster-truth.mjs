@@ -11,6 +11,7 @@ function rowForAgent(agent, now = Date.now()) {
   return {
     id: agent.id,
     name: agentName(agent),
+    parent_agent_id: agent.parent_agent_id || null,
     human: !!agent.human,
     labels: Array.isArray(agent.labels) ? agent.labels : [],
     status: agent.dead ? 'dead' : runtimeStatusName(agent),

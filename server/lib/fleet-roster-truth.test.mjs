@@ -31,3 +31,16 @@ test('fleet table rows retain human identity used by automation consumers', () =
 
   assert.equal(result.agents[0].human, true)
 })
+
+test('fleet table rows retain native subagent parent identity used by lifecycle automation', () => {
+  const result = summarizeFleetRosterTruth({
+    roster: [{
+      id: 'fleet:child',
+      friendly_name: 'chief:child',
+      parent_agent_id: 'fleet:chief',
+      runtime_status: { kind: 'ai', status: 'awake' },
+    }],
+  })
+
+  assert.equal(result.agents[0].parent_agent_id, 'fleet:chief')
+})
