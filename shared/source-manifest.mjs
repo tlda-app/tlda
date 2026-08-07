@@ -70,10 +70,32 @@ export function isQuartoRenderOutput(path, mainFile = '') {
   return !!rendered && rel === rendered
 }
 
+/**
+ * Paths referenced in chat, project-relative.
+ *
+ * A file is a member of a project because something refers to it, not because
+ * of where it sits or what it is called. Two things seed that: the main file,
+ * and anything referenced in chat. `mainFile` above is the first seed; this is
+ * the second.
+ *
+ * The server records the reference when a chat chip is opened as a column, but
+ * it records the path on the AUTHOR'S machine, because that is what the chip
+ * carried. It cannot turn that into a project coordinate: project-store strips
+ * `sourceDir` from every shared project on purpose, so the server does not know
+ * where the author keeps the tree. The client does. So the relativizing happens
+ * there and arrives here already project-relative.
+ */
+function referencedRootSet(roots) {
+  const values = roots instanceof Set ? [...roots] : roots
+  if (!Array.isArray(values)) return new Set()
+  return new Set(values.filter(p => typeof p === 'string' && p).map(normalizePath))
+}
+
 export function sourceManifestContext(project = {}) {
   return {
     format: project?.format || 'svg',
     mainFile: normalizePath(project?.mainFile || ''),
+    referencedRoots: referencedRootSet(project?.referencedRoots),
   }
 }
 
@@ -81,6 +103,16 @@ export function isSourceFilePath(path, context = {}) {
   const rel = normalizePath(path)
   if (!rel || isBuildJunkPath(rel)) return false
   const ctx = sourceManifestContext(context)
+  // A chat reference makes a file a member whatever its extension. This is the
+  // route `b4-outline.md` came in by and the one that did not exist: a Markdown
+  // outline beside a LaTeX paper failed the extension test below, so it was
+  // never pushed, never watched, and the column made from it froze at the
+  // moment it was opened — with no build to fail and nothing to report.
+  //
+  // Above the format branches deliberately: the reference is what decides, and
+  // asking the parent project's format about a file referenced into it is the
+  // "Markdown is less real than TeX" reading that put this bug here.
+  if (ctx.referencedRoots.has(rel)) return true
   // html and slides push a rendered tree; qmd pushes an unrendered one. All
   // three share the same rule for the same reason: what the document needs is
   // whatever sits beside it — site_libs, _quarto.yml, _extensions, data, images

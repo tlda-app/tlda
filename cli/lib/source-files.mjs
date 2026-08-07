@@ -6,7 +6,7 @@
  */
 
 import { readdirSync, readFileSync, existsSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join, relative, sep } from 'path'
 import { createHash } from 'crypto'
 import {
   SOURCE_EXTENSIONS,
@@ -26,6 +26,43 @@ export function isSourceFile(filename, context = {}) {
   return isSourceFilePath(filename, context)
 }
 
+/**
+ * Turn the server's chat references into project coordinates.
+ *
+ * The server records each reference as an absolute path on this machine and
+ * cannot relativize it — it strips `sourceDir` from every shared project, so it
+ * does not know `dir`. This side does. A reference that does not land inside
+ * `dir` has no project-relative coordinate and no watcher, so it is dropped
+ * here rather than half-supported: nothing beneath this line can make a file
+ * outside the tree live, and pretending otherwise would put the silence back.
+ */
+export function withReferencedRoots(dir, context = {}) {
+  const referenced = Array.isArray(context.referencedSourcePaths) ? context.referencedSourcePaths : []
+  const existingRoots = context.referencedRoots instanceof Set
+    ? [...context.referencedRoots]
+    : Array.isArray(context.referencedRoots) ? context.referencedRoots : []
+  const roots = new Set(existingRoots)
+  for (const abs of referenced) {
+    if (typeof abs !== 'string' || !abs) continue
+    const rel = relative(dir, abs)
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue
+    const projectRelative = rel.split(sep).join('/')
+    roots.add(projectRelative)
+    // Membership is closed under references, so a root drags in what it refers
+    // to, and what those refer to. This is the same walk that already backs
+    // markdown pushes and chat file-share rather than a second traversal — the
+    // seed differs, the edge-following does not.
+    if (!/\.(?:md|markdown)$/i.test(projectRelative)) continue
+    try {
+      const closure = scanMarkdownDependencyClosure(projectRelative, dir)
+      for (const rel of [...closure.files, ...closure.assets]) roots.add(rel)
+    } catch {
+      // A root whose closure cannot be read is still a member on its own.
+    }
+  }
+  return { ...context, referencedRoots: [...roots] }
+}
+
 /** Check if a file should be ignored by the watcher. */
 export function isJunk(filename) {
   return isBuildJunkPath(filename)
@@ -42,26 +79,32 @@ export function readForUpload(fullPath) {
 /** Recursively collect all source files in a directory, encoded for upload. */
 export function collectSourceFiles(dir, context = {}) {
   const files = []
-  walkCollect(dir, dir, files, context)
+  walkCollect(dir, dir, files, withReferencedRoots(dir, context))
   return files
 }
 
 /** Recursively collect MD5 hashes of all source files (without reading full content for upload). */
 export function collectSourceHashes(dir, context = {}) {
   const hashes = {}
-  walkHash(dir, dir, hashes, context)
+  walkHash(dir, dir, hashes, withReferencedRoots(dir, context))
   return hashes
 }
 
 /** Collect hashes through the project's format-specific source-set adapter. */
 export function collectProjectSourceHashes(dir, context = {}) {
-  if (context.format !== 'markdown' || !context.mainFile) {
-    return collectSourceHashes(dir, context)
+  const resolvedContext = withReferencedRoots(dir, context)
+  if (resolvedContext.format !== 'markdown' || !resolvedContext.mainFile) {
+    return collectSourceHashes(dir, resolvedContext)
   }
 
   const hashes = {}
-  for (const rel of scanMarkdownDependencyClosure(context.mainFile, dir).files) {
+  const paths = new Set([
+    ...scanMarkdownDependencyClosure(resolvedContext.mainFile, dir).files,
+    ...(resolvedContext.referencedRoots || []),
+  ])
+  for (const rel of paths) {
     const full = join(dir, rel)
+    if (!existsSync(full) || !isSourceFilePath(rel, resolvedContext)) continue
     hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
   }
   return hashes

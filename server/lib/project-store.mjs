@@ -23,6 +23,7 @@ import {
 import { resolveContainedPath } from './path-containment.mjs'
 import { createSourceLifecycleStore } from './source-lifecycle.mjs'
 import { ProjectFilesStoreClient } from './project-files-store-client.mjs'
+import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 
 let projectsDir = null
 let projectFilesDb = null
@@ -354,10 +355,15 @@ export function outputDir(name) {
 // Dormant authority store for the lifecycle rollout. Current ingress paths do
 // not call this until the revision contract is wired atomically in Phase B.
 export async function sourceLifecycleStore(name, options = {}) {
-  if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
+  const project = await readProject(name)
+  if (!project) throw new Error(`Project "${name}" not found`)
   return createSourceLifecycleStore({
     root: join(projectDir(name), '.source-lifecycle'),
-    context: sourceManifestContext(await readProject(name)),
+    // The snapshot guard rejects a manifest containing anything it does not
+    // consider authored, so it needs the same membership answer as the walk and
+    // the push validator. A store built without the chat roots refuses the very
+    // manifest the client was told to send.
+    context: await sourceMembershipContext(project, await clientOwnedSourceSet(project)),
     ...options,
   })
 }
@@ -375,6 +381,56 @@ export async function readProjectPartsManifest(name) {
   return readPartsManifestForRootAsync(projectPartsRoot(name))
 }
 
+/**
+ * The absolute source paths of everything referenced into this project through
+ * chat, newest first — the second seed of project membership.
+ *
+ * Absolute and on the AUTHOR'S machine, because that is what the chat chip
+ * carried and what the parts manifest recorded. The server cannot relativize
+ * them: it strips `sourceDir` from every shared project on purpose, so it does
+ * not know where the tree lives. The client that holds the binding does that
+ * and hands back project-relative paths.
+ */
+/**
+ * Chat references as project coordinates, given the paths the project already
+ * speaks in.
+ *
+ * The manifest holds `/Users/skip/work/bregman-lower-bound/b4-outline.md` and
+ * this server needs `b4-outline.md`. It cannot subtract the prefix — it strips
+ * `sourceDir` from every shared project on purpose — so it matches on the tail
+ * against paths already known to belong to the project. That can only ever
+ * admit a path some other authority already named, which is why it is a lookup
+ * and not a guess.
+ *
+ * `known` is the client's declared manifest, plus whatever a push in flight is
+ * declaring: the first push of a newly-referenced file is the one moment the
+ * path is not yet in the manifest, and it is the moment membership has to work.
+ */
+export function referencedRootsFromPaths(referenced, known) {
+  const candidates = [...new Set([...(known || [])])]
+    .filter(p => typeof p === 'string' && p)
+    .map(p => p.replace(/\\/g, '/'))
+  const roots = new Set()
+  for (const abs of referenced || []) {
+    if (typeof abs !== 'string' || !abs) continue
+    const normalized = abs.replace(/\\/g, '/')
+    for (const rel of candidates) {
+      if (normalized === rel || normalized.endsWith(`/${rel}`)) roots.add(rel)
+    }
+  }
+  return [...roots]
+}
+
+export async function referencedSourcePaths(name) {
+  const manifest = await readProjectPartsManifest(name)
+  const paths = []
+  for (const part of manifest.parts || []) {
+    const sourcePath = part?.metadata?.sourcePath
+    if (typeof sourcePath === 'string' && sourcePath) paths.push(sourcePath)
+  }
+  return [...new Set(paths)]
+}
+
 export async function writeProjectPartsManifest(name, manifest) {
   if (!await readProject(name)) throw new Error(`Project "${name}" not found`)
   return writePartsManifestForRoot(projectPartsRoot(name), manifest)
@@ -385,12 +441,37 @@ export async function recoverProjectPartsManifest(name, options = {}) {
   return recoverPartsManifestForRoot(projectPartsRoot(name), options)
 }
 
+/**
+ * The membership context for a project, chat references included.
+ *
+ * Deliberately not folded into `readProject`, which is on every hot path here
+ * and would gain two file reads per call. Membership is asked in three places
+ * and they all already read the client manifest.
+ */
+async function sourceMembershipContext(project, owned) {
+  const base = sourceManifestContext(project || {})
+  if (!project?.name) return base
+  const referenced = await referencedSourcePaths(project.name).catch(() => [])
+  if (!referenced.length) return base
+  const roots = referencedRootsFromPaths(referenced, owned)
+  const reached = new Set(roots)
+  for (const root of roots) {
+    if (!/\.(?:md|markdown)$/i.test(root)) continue
+    try {
+      for (const path of scanMarkdownDependencyClosure(root, sourceDir(project.name)).files) reached.add(path)
+    } catch {
+      // A missing root remains a root; the source validator reports absence.
+    }
+  }
+  return { ...base, referencedRoots: [...reached] }
+}
+
 export async function listSourceFiles(name) {
   const dir = sourceDir(name)
   if (!await pathExists(dir)) return []
   const project = await readProject(name)
-  const context = sourceManifestContext(project || {})
   const owned = await clientOwnedSourceSet(project)
+  const context = await sourceMembershipContext(project, owned)
   return (await walkDirAsync(dir))
     .map(f => relative(dir, f))
     .filter(f => isClientSourcePath(f, context, owned))
@@ -448,8 +529,8 @@ export async function hashSourceFiles(name) {
   const dir = sourceDir(name)
   if (!await pathExists(dir)) return {}
   const project = await readProject(name)
-  const context = sourceManifestContext(project || {})
   const owned = await clientOwnedSourceSet(project)
+  const context = await sourceMembershipContext(project, owned)
   const hashes = {}
   for (const full of await walkDirAsync(dir)) {
     const rel = relative(dir, full)
@@ -498,11 +579,10 @@ export async function checkpointProjectPartWritebackOffloop(payload) {
   return projectFilesDb.checkpointProjectPart({ payload })
 }
 
-export async function updateClientSourceManifest(name, sourceManifest) {
+export async function updateClientSourceManifest(name, sourceManifest, context = null) {
   const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
-  const context = sourceManifestContext(project)
-  await replaceClientSourceManifestRows(name, normalizeSourceManifest(sourceManifest, context))
+  await replaceClientSourceManifestRows(name, normalizeSourceManifest(sourceManifest, context || sourceManifestContext(project)))
 }
 
 async function replaceClientSourceManifestRows(name, manifest) {

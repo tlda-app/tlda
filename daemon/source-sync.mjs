@@ -437,6 +437,24 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return new Set(scanMarkdownDependencyClosure(mainFile, sourceDir).files)
   }
 
+  function scanReferencedInputs(sourceDir, sourcePaths = []) {
+    const roots = new Set()
+    const reached = new Set()
+    for (const sourcePath of sourcePaths || []) {
+      const rel = sourceRel(sourceDir, sourcePath)
+      if (!rel) continue
+      roots.add(rel)
+      reached.add(rel)
+      if (!/\.(?:md|markdown)$/i.test(rel)) continue
+      try {
+        for (const dependency of scanMarkdownDependencyClosure(rel, sourceDir).files) reached.add(dependency)
+      } catch {
+        // The root stays watched so creating or repairing it can make the closure readable.
+      }
+    }
+    return { roots, reached }
+  }
+
   // A markdown doc bundles only its dependency graph (main + linked documents
   // and supported assets), never the
   // rest of sourceDir — so the "any source file always passes" escape hatch must
@@ -635,7 +653,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         state.sourceDir,
         filePath,
         stats,
-        { format: state.format, mainFile: state.mainFile },
+        { format: state.format, mainFile: state.mainFile, referencedRoots: state.referencedRoots },
       ),
     })
     state.watcher = watcher
@@ -700,9 +718,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
         : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
       )
-      const watchSet = hasFlsWatchList
+      const projectWatchSet = hasFlsWatchList
         ? new Set([...normalizeWatchSet(sourceDir, p.watchFiles), ...declaredWatchSet])
         : declaredWatchSet
+      const referenced = scanReferencedInputs(sourceDir, p.referencedSourcePaths)
+      const watchSet = new Set([...projectWatchSet, ...referenced.reached])
 
       if (sourceWatchers.has(p.name)) {
         const existing = sourceWatchers.get(p.name)
@@ -710,7 +730,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           closeSourceState(existing)
           sourceWatchers.delete(p.name)
         } else {
+          const previousReferenced = new Set(existing.referencedRoots || [])
           existing.watchSet = watchSet
+          existing.projectWatchSet = projectWatchSet
+          existing.chatReferenceRoots = referenced.roots
+          existing.referencedRoots = referenced.reached
           existing.mainFile = p.mainFile
           existing.extraInputCommands = p.extraInputCommands || []
           existing.isMarkdown = isMarkdown
@@ -718,11 +742,14 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           existing.authorityManifest = new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : [])
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
+          for (const rel of referenced.reached) {
+            if (!previousReferenced.has(rel)) existing.onFileChange(rel)
+          }
           continue
         }
       }
 
-      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), remoteApplied: new Set(), reconcileTimer: null, _symlinkWatchers: new Map() }
+      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, projectWatchSet, chatReferenceRoots: referenced.roots, referencedRoots: referenced.reached, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), remoteApplied: new Set(), reconcileTimer: null, _symlinkWatchers: new Map() }
 
       const onFileChange = (filename) => {
         if (!filename) return
@@ -743,7 +770,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
             // won't be in it yet, but we must still push it so the build can pick it up.
             // Non-source files (build artifacts, .aux, etc.) are filtered by watchSet when
             // available, or dropped entirely when the watchSet is empty (bootstrap mode).
-            if (!isSourceFile(filename, { format: state.format, mainFile: state.mainFile })) {
+            if (!isSourceFile(filename, { format: state.format, mainFile: state.mainFile, referencedRoots: state.referencedRoots })) {
               if (state.watchSet.size > 0) {
                 if (!state.watchSet.has(filename)) return
               } else {
@@ -869,6 +896,33 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       }
     }
 
+    if (state.chatReferenceRoots.size > 0 && filePaths.some(file => /\.(?:md|markdown)$/i.test(file))) {
+      const alreadyPushed = new Set(filePaths)
+      const previous = state.referencedRoots
+      const referenced = scanReferencedInputs(
+        state.sourceDir,
+        [...state.chatReferenceRoots].map(rel => path.join(state.sourceDir, rel)),
+      )
+      for (const rel of previous) {
+        if (!referenced.reached.has(rel) && state.authorityManifest.has(rel) && !deleted.includes(rel)) deleted.push(rel)
+      }
+      state.chatReferenceRoots = referenced.roots
+      state.referencedRoots = referenced.reached
+      state.watchSet = new Set([...state.projectWatchSet, ...referenced.reached])
+      for (const rel of referenced.reached) {
+        if (alreadyPushed.has(rel) || previous.has(rel)) continue
+        const full = path.join(state.sourceDir, rel)
+        if (!fs.existsSync(full)) continue
+        try {
+          files.push({ path: rel, ...readFileForUpload(full) })
+          log.info(`chat-reference rescan discovered dep: ${rel}`)
+        } catch (e) {
+          // One unreadable dependency must not suppress the readable files in this push.
+          log.error(`read ${full}: ${e.message}`)
+        }
+      }
+    }
+
     // Watch symlink targets in .tlda/scratch/ — changes to the linked file should
     // trigger a rebuild even when the target sits outside the source dir.
     for (const rel of filePaths) {
@@ -907,7 +961,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       files,
       sourceManifest: collectSourceManifest(
         state.sourceDir,
-        { format: state.format, mainFile: state.mainFile },
+        { format: state.format, mainFile: state.mainFile, referencedRoots: state.referencedRoots },
         state.isMarkdown ? state.watchSet : null,
         state.isMarkdown ? null : [...state.authorityManifest],
         files.map(f => f.path),

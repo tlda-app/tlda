@@ -2519,6 +2519,10 @@ async function reportDaemonEventFailure(msg, operation, error) {
 onGlobalEvent(async (event) => {
   if (event?.type === 'project-changed') {
     broadcastEvent('projects-updated', { name: event.name })
+    const payload = JSON.stringify({ type: 'project-metadata-changed', project: event.name })
+    for (const ws of daemonConnections.values()) {
+      try { if (ws.readyState === 1) ws.send(payload) } catch { /* reconnect reloads current metadata */ }
+    }
   }
   if (event?.type === 'version-committed') {
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.

@@ -28,7 +28,7 @@ import {
   readProjectMeta,
   listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarningsAsync, addBookMember, getProjectsDir, projectDir as getProjectDir,
-  projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
+  projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest, referencedSourcePaths, referencedRootsFromPaths,
   listDocumentAssociations,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
@@ -55,6 +55,7 @@ import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
+import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 
@@ -331,8 +332,12 @@ router.get('/:name', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   const activeBuild = getBuildStatus(req.params.name)
+  // The chat-reference seed of project membership. This is the payload the
+  // watcher already reads its source context from, so the roots arrive by the
+  // channel that already carries mainFile rather than a second call.
   res.json({
     ...project,
+    referencedSourcePaths: await referencedSourcePaths(req.params.name).catch(() => []),
     ...(activeBuild?.building && { activeBuild }),
   })
 })
@@ -927,11 +932,34 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   }
   project = await readProject(name)
 
-  const validation = await validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
+  // One membership context for the whole push. The four places below that ask
+  // "is this path project source" have to give the same answer, and building it
+  // per call site is how they drift — which is the shape of the bug this change
+  // fixes, one level up. The request's own declared paths are included because
+  // the first push of a newly-referenced file is exactly when that path is not
+  // yet in the stored manifest, and it is exactly when membership must hold.
+  const referencedRoots = referencedRootsFromPaths(
+    await referencedSourcePaths(name).catch(() => []),
+    [
+      ...(await readClientSourceManifest(name).catch(() => [])),
+      ...(sourceManifest || []),
+      ...(files || []).map(f => f?.path),
+    ].filter(Boolean),
+  )
+  const pushContext = {
+    ...sourceManifestContext(project),
+    referencedRoots: await referencedClosureForPush(name, referencedRoots, { files, sourceManifest }),
+  }
+
+  const validation = await validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest }, pushContext)
   if (!validation.ok) return validation
 
   const sourceMutation = (files?.length || 0) > 0 || (deletedFiles?.length || 0) > 0
-  const lifecycle = await sourceLifecycleStore(name)
+  // Same context the validator and the manifest normalization above used. The
+  // store would otherwise rebuild membership from the STORED manifest, which on
+  // the first push of a newly-referenced file does not contain it yet — and the
+  // snapshot guard would reject the manifest the client was just told to send.
+  const lifecycle = await sourceLifecycleStore(name, { context: pushContext })
   const authorityBefore = lifecycle.readAuthority()
   if (sourceMutation && expectedRevision === undefined) {
     return { status: 428, ok: false, error: 'expectedRevision is required for source mutations', authority: authorityBefore }
@@ -944,7 +972,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       ? new Set(await readClientSourceManifest(name))
       : new Set()
     if (authorityBefore.state === 'uninitialized') {
-      for (const filePath of normalizeSourceManifest(sourceManifest, sourceManifestContext(project))) {
+      for (const filePath of normalizeSourceManifest(sourceManifest, pushContext)) {
         if (!inheritedManifest.has(filePath)) continue
         const content = await readSourceFileAsync(name, filePath)
         if (content !== null) candidate.set(filePath, { path: filePath, content: Buffer.from(content).toString('base64'), encoding: 'base64' })
@@ -956,7 +984,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       content: file.encoding === 'base64' ? file.content : Buffer.from(String(file.content ?? '')).toString('base64'),
       encoding: 'base64',
     })
-    const manifest = normalizeSourceManifest(sourceManifest, sourceManifestContext(project))
+    const manifest = normalizeSourceManifest(sourceManifest, pushContext)
     if (candidate.size !== manifest.length || manifest.some(path => !candidate.has(path))) {
       return { status: 409, ok: false, error: authorityBefore.state === 'uninitialized' ? 'Bootstrap requires a complete source snapshot' : 'Proposed snapshot does not match sourceManifest', authority: authorityBefore }
     }
@@ -1027,7 +1055,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       }
     }
     const nextManifest = Array.isArray(sourceManifest)
-      ? normalizeSourceManifest(sourceManifest, sourceManifestContext(project))
+      ? normalizeSourceManifest(sourceManifest, pushContext)
       : null
     const metadata = {
       ...(session ? { session, sessionAt: sessionAt || Date.now() } : {}),
@@ -1041,7 +1069,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       } : {}),
     }
     await updateProject(name, metadata)
-    if (nextManifest) await updateClientSourceManifest(name, nextManifest)
+    if (nextManifest) await updateClientSourceManifest(name, nextManifest, pushContext)
     if (lifecycleCandidate) {
       const { observedServerFiles, observedSourceManifest, ...candidate } = lifecycleCandidate
       const lifecycleResult = authorityBefore.state === 'uninitialized'
@@ -1203,12 +1231,31 @@ async function refreshMaterializedPartsFromChangedSources(name, project, changed
 
   for (const file of changedPushFiles) {
     const sourcePath = resolve(sourceRoot, file.path)
-    const matchingParts = manifest.parts.filter(part => part.metadata?.sourcePath === sourcePath)
+    // `sourceRoot` is this server's own projects directory; the manifest records
+    // where the file lives on the AUTHOR'S machine, because that is what the
+    // chat chip carried. Those namespaces are disjoint on any deployment where
+    // the server is not the author's laptop, so the equality below never held —
+    // measured: with the paths made equal by hand the part rematerializes, and
+    // with the real recorded path it stays stale while the same push succeeds.
+    //
+    // Both sides agree on the project-relative path, which is the coordinate the
+    // push already speaks, so match on that tail.
+    const relKey = `/${String(file.path).replace(/\\/g, '/')}`
+    const matchingParts = manifest.parts.filter(part => {
+      const recorded = part.metadata?.sourcePath
+      if (typeof recorded !== 'string' || !recorded) return false
+      return recorded === sourcePath || recorded.replace(/\\/g, '/').endsWith(relKey)
+    })
     for (const part of matchingParts) {
-      const result = await realizeProjectMarkdownArtifact({
+      // Write the part we just identified, by id. Going back through
+      // realizeProjectMarkdownArtifact would redo the lookup against the
+      // server-side `sourcePath`, fail the same comparison that has just been
+      // worked around above, and mint a SECOND column for the same file rather
+      // than updating this one — a duplicate that then also goes stale.
+      const result = await writeProjectMarkdownArtifact({
         project: name,
+        projectArtifactId: part.id,
         markdown: bufferToUtf8(file.content),
-        sourcePath,
         title: part.title,
         provenance: part.metadata?.provenance || {},
       })
@@ -1217,6 +1264,39 @@ async function refreshMaterializedPartsFromChangedSources(name, project, changed
   }
 
   return [...changedPartFiles]
+}
+
+async function referencedClosureForPush(name, roots, { files, sourceManifest }) {
+  const declared = new Set(Array.isArray(sourceManifest) ? sourceManifest : [])
+  const pushed = new Map((files || [])
+    .filter(file => typeof file?.path === 'string')
+    .map(file => [file.path, file.encoding === 'base64'
+      ? Buffer.from(file.content || '', 'base64').toString('utf8')
+      : bufferToUtf8(file.content)]))
+  const reached = new Set()
+  const queue = [...roots]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || reached.has(current) || !declared.has(current)) continue
+    reached.add(current)
+    if (!/\.(?:md|markdown)$/i.test(current)) continue
+
+    const content = pushed.has(current)
+      ? pushed.get(current)
+      : await readSourceFileAsync(name, current)
+    if (content == null) continue
+
+    const base = resolve('/', dirname(current))
+    for (const dep of scanMarkdownDeps(bufferToUtf8(content), base)) {
+      if (!dep.abs || dep.ref.startsWith('/') || dep.ref.startsWith('~/')) continue
+      const target = dep.abs.replace(/^\/+/, '').replace(/\\/g, '/')
+      if (!target || target.startsWith('../') || !declared.has(target)) continue
+      if (!reached.has(target)) queue.push(target)
+    }
+  }
+
+  return [...reached]
 }
 
 async function rebuildProjectPartsView(name, project) {
@@ -1236,14 +1316,13 @@ function broadcastProjectPartsChanged(name, files) {
   broadcastSignal(`doc-${name}`, 'signal:project-parts-changed', { files, timestamp: Date.now() })
 }
 
-async function validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest }) {
+async function validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest }, context) {
   const pushFiles = files || []
   const deletes = deletedFiles || []
   if ((pushFiles.length > 0 || deletes.length > 0) && !Array.isArray(sourceManifest)) {
     return { status: 400, ok: false, error: 'sourceManifest is required for source pushes' }
   }
 
-  const context = sourceManifestContext(project)
   const validateAuthoredPath = (filePath, label) => {
     if (typeof filePath !== 'string' || !filePath) return `${label} must be a non-empty string`
     try {
@@ -1352,7 +1431,7 @@ async function validateSourcePushRequest(name, project, { files, deletedFiles, s
 // Exported for the dormant lifecycle contract tests. This does not change any
 // route or caller behavior before the Phase B ingress cutover.
 export async function validateSourceLifecycleCandidate(name, project, candidate) {
-  return validateSourcePushRequest(name, project, candidate)
+  return validateSourcePushRequest(name, project, candidate, sourceManifestContext(project))
 }
 
 async function sourcePushWouldChange(name, { files, deletedFiles }) {

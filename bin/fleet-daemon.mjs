@@ -1376,6 +1376,12 @@ async function handleServerMessage(msg, wsAttemptId) {
     sourceSync.handleSourceChangeResult(msg)
     return
   }
+  if (msg.type === 'project-metadata-changed') {
+    if (!sourceSync.boundProjectNames().includes(msg.project)) return
+    serverProjects = await loadLocallyBoundProjects()
+    applyProjectWorldOwnership('project-metadata-changed')
+    return
+  }
   if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
     if (msg.outbox_id) daemonDelivery.handleAck(msg.outbox_id)
     return

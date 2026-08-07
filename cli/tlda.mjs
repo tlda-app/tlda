@@ -14,7 +14,7 @@ import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { execFileSync, spawn as cpSpawn } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
-import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
+import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
@@ -354,7 +354,11 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
   } catch (e) {
     throw new Error(`could not fetch project metadata for ${name}: ${e.message}`)
   }
-  const sourceContext = { format: project.format, mainFile: project.mainFile }
+  const sourceContext = withReferencedRoots(dir, {
+    format: project.format,
+    mainFile: project.mainFile,
+    referencedSourcePaths: project.referencedSourcePaths,
+  })
   // Compute local hashes (fast — just reads + MD5, no encoding)
   const localHashes = collectProjectSourceHashes(dir, sourceContext)
   const localPaths = Object.keys(localHashes)

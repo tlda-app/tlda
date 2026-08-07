@@ -12,7 +12,7 @@
 import { watch, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { spawn } from 'child_process'
-import { collectSourceHashes, isSourceFile, isJunk, readForUpload } from './source-files.mjs'
+import { collectProjectSourceHashes, collectSourceHashes, collectSpecificFiles, isSourceFile, isJunk, readForUpload, withReferencedRoots } from './source-files.mjs'
 import { connectSSE } from '../../shared/sse-parser.mjs'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
@@ -90,9 +90,9 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   // Initial push — rebuild if source is newer than last build
   async function initialPush() {
     try {
-      sourceContext = await fetchSourceContext(server, name, authHeaders)
+      sourceContext = withReferencedRoots(dir, await fetchSourceContext(server, name, authHeaders))
       await loadExpectedRevision()
-      const files = (await import('./source-files.mjs')).collectSourceFiles(dir, sourceContext)
+      const files = collectSpecificFiles(dir, Object.keys(collectProjectSourceHashes(dir, sourceContext)))
       const sourceManifest = normalizeSourceManifest(files.map(f => f.path), sourceContext)
       if (files.length > 0) {
         console.log(`[watch] Initial push: ${files.length} file(s)`)
@@ -185,6 +185,28 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
     }
   }
 
+  // Membership can grow while the watcher runs: Skip opens a chat chip as a
+  // column and that file becomes a member from then on. The context captured at
+  // startup would never learn it, and the filter below would keep dropping its
+  // changes — which is the bug this whole change exists to fix, reintroduced one
+  // level up. It cannot be driven by the file's own edits, because those are
+  // exactly what the stale filter is discarding.
+  const REFERENCE_REFRESH_MS = 30_000
+  const referenceRefresh = setInterval(async () => {
+    const next = withReferencedRoots(dir, await fetchSourceContext(server, name, authHeaders))
+    if (!next.mainFile && !next.referencedRoots?.length) return
+    const before = new Set(sourceContext.referencedRoots || [])
+    sourceContext = next
+    const added = (next.referencedRoots || []).filter(r => !before.has(r) && isSourceFile(r, next))
+    if (added.length) {
+      console.log(`[watch] Now watching ${added.length} chat-referenced file(s): ${dim(added.join(', '))}`)
+      for (const rel of added) pendingFiles.add(rel)
+      if (pushTimeout) clearTimeout(pushTimeout)
+      pushTimeout = setTimeout(pushChanges, debounceMs)
+    }
+  }, REFERENCE_REFRESH_MS)
+  referenceRefresh.unref?.()
+
   console.log('[watch] Watching for changes...')
 
   watch(dir, { recursive: true }, (_event, filename) => {
@@ -230,7 +252,11 @@ async function fetchSourceContext(server, name, authHeaders) {
     })
     if (!res.ok) return {}
     const project = await res.json()
-    return { format: project.format, mainFile: project.mainFile }
+    return {
+      format: project.format,
+      mainFile: project.mainFile,
+      referencedSourcePaths: project.referencedSourcePaths,
+    }
   } catch {
     return {}
   }
