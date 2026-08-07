@@ -59,7 +59,6 @@ import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
-import { clearSourceEditsForAgent, recordSourceEditActivity } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
@@ -543,7 +542,6 @@ function markAgentNotAlive(agentId, detail = {}) {
   }
   _aliveAgents.delete(agentId)
   _aliveSince.delete(agentId)
-  clearSourceEditsForAgent(agentId)
   clearEphemeralState(agentId)
   // Fire-and-forget for the reason given where onChange does the same.
   if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
@@ -8360,14 +8358,12 @@ async function handleDaemonWsMessage(ws, msg) {
       tool,
       atMs: Date.parse(msg.ts) || serverReceivedAtMs,
     })
-    const sourceEditActivity = recordSourceEditActivity(msg)
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_ACCEPTED, msg, 1, {
       type: 'activity-event',
       agent: agent_id,
       tool,
     })
     touchActivity(agent_id)
-    if (sourceEditActivity && (msg.status === 'completed' || msg.status === 'error')) return
     if (!shouldStoreDaemonActivity(msg)) return
     try {
       const serverBroadcastQueuedAtMs = Date.now()

@@ -38,7 +38,7 @@ import {
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
-import { readEditEvents, recordAcceptedSourceTransaction } from '../lib/edit-events.mjs'
+import { recordAcceptedSourceTransaction } from '../lib/edit-events.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -58,7 +58,6 @@ import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
-import { activeSourceEditors } from '../lib/source-edit-activity.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -684,34 +683,6 @@ router.get('/:name/files', requireRead, async (req, res) => {
 router.get('/:name/source-authority', requireRead, async (req, res) => {
   try { res.json((await sourceLifecycleStore(req.params.name)).readAuthority()) }
   catch (e) { res.status(404).json({ error: e.message }) }
-})
-
-router.get('/:name/source-activity', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-  const file = typeof req.query.file === 'string' ? req.query.file.replace(/^\.\//, '') : ''
-  if (!file) return res.status(400).json({ error: 'file is required' })
-  const fleetStore = req.app?.locals?.fleetStore
-  const editorIds = activeSourceEditors(req.params.name, file)
-  const editors = await Promise.all(editorIds.map(async id => {
-    const agent = await fleetStore?.getAgent?.(id)
-    return { id, name: agent?.friendly_name || id }
-  }))
-  const editHistory = await readEditEvents(req.params.name, { limit: Infinity })
-  const last = editHistory.events.find(event =>
-    Array.isArray(event.changed_files) && event.changed_files.some(changed => changed.path === file)
-  ) || null
-  let lastChangedBy = last?.actor_display_name || last?.actor_id || null
-  if (lastChangedBy) {
-    const agent = await fleetStore?.getAgent?.(lastChangedBy)
-    lastChangedBy = agent?.friendly_name || lastChangedBy
-  }
-  res.json({
-    file,
-    editors,
-    lastChangedAt: last?.timestamp ? Date.parse(last.timestamp) : null,
-    lastChangedBy,
-  })
 })
 
 // Read a specific source file's content

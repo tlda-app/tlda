@@ -4,9 +4,8 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { initProjectStore, closeProjectStore, createProject, sourceLifecycleStore, updateProject } from './project-store.mjs'
+import { initProjectStore, closeProjectStore, createProject, sourceLifecycleStore } from './project-store.mjs'
 import {
-  appendAgentActionFromActivity,
   appendAgentAction,
   finalizeEditEventsForSourceRevision,
   readEditEvents,
@@ -141,46 +140,6 @@ test('daemon transaction reconciles a delayed agent action and leaves residual d
     assert.equal(residual.actor_kind, 'daemon')
     assert.equal(residual.attribution_status, 'inferred')
     assert.equal(payload.pending_count, 0)
-  })
-})
-
-test('local checkout Edit activity attributes the watched source transaction to the editing agent', async () => {
-  await withProject(async name => {
-    await updateProject(name, { sourceDir: '/work/bregman' })
-    const before = await bootstrap(name, 'alpha\n')
-    await appendAgentActionFromActivity({
-      id: 91,
-      from: 'fleet:b4-live-writer',
-      timestamp: '2026-08-07T20:21:00.000Z',
-      metadata: {
-        tool: 'Edit',
-        correlationId: 'edit-b4',
-        project: name,
-        sourceFile: 'main.tex',
-        input: {
-          file_path: join('/work/bregman', 'main.tex'),
-          diff: '-alpha\n+alpha agent',
-        },
-      },
-    }, { daemonKey: 'mini:testing', machineId: 'mini', envName: 'testing' })
-    const after = await submit(name, before, 'alpha agent\n')
-    await recordAcceptedSourceTransaction(name, {
-      requestId: 'daemon-b4',
-      sourceDaemonKey: 'mini:testing',
-      sourceMachineId: 'mini',
-      sourceEnvName: 'testing',
-    }, {
-      previousRevision: before,
-      sourceRevision: after,
-      files: [{ path: 'main.tex' }],
-      deletedFiles: [],
-      sourceManifest: ['main.tex'],
-    })
-
-    const payload = await readEditEvents(name)
-    assert.equal(payload.events.length, 1)
-    assert.equal(payload.events[0].actor_id, 'fleet:b4-live-writer')
-    assert.equal(payload.events[0].manual_residual, false)
   })
 })
 
