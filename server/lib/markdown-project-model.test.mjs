@@ -78,6 +78,18 @@ test('Markdown member links target project routes while external URLs stay exter
   assert.match(html, /href="https:\/\/example\.com\/outside\.md"/)
 })
 
+test('Markdown columns render with the parent project macros', () => {
+  const html = renderMarkdownColumnHtml({
+    source: 'The fitted value is $\\hmu$.',
+    title: 'Scratch note',
+    macros: { '\\hmu': '\\widehat{\\mu}' },
+  })
+
+  assert.match(html, /class="katex"/)
+  assert.doesNotMatch(html, /class="math-error"/)
+  assert.match(html, /<mover accent="true">/)
+})
+
 test('a new Git-linked project infers Markdown format and main file', () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-markdown-remote-'))
   writeFileSync(join(root, 'README.md'), '# Remote notes\n')

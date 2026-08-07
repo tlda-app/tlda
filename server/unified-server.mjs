@@ -4169,6 +4169,17 @@ app.use('/docs', (req, res, next) => {
         const column = columns.find(c => c.file === filePath)
         if (column) {
           const source = await fs.promises.readFile(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
+          let macros = {}
+          const texBase = /\.tex$/i.test(project.mainFile || '')
+            ? basename(project.mainFile, '.tex')
+            : null
+          if (texBase) {
+            const macrosPath = join(PROJECTS_DIR, name, 'output', `${texBase}-macros.json`)
+            if (existsSync(macrosPath)) {
+              const data = JSON.parse(await fs.promises.readFile(macrosPath, 'utf8'))
+              macros = data.macros || {}
+            }
+          }
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
           const agentNames = isTaskDoc ? await fleetStore.getAgentDisplayNames() : []
           const html = renderMarkdownColumnHtml({
@@ -4179,6 +4190,7 @@ app.use('/docs', (req, res, next) => {
             projectName: name,
             sourceFile: column.sourceFile,
             mainFile: project.mainFile || 'index.md',
+            macros,
           })
           const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
 

@@ -755,8 +755,8 @@ function markdownTocForSource(source, page) {
   return toc
 }
 
-export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, mainFile = null }) {
-  _macros = extractMacros(source)
+export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, mainFile = null, macros = {} }) {
+  _macros = { ...macros, ...extractMacros(source) }
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
   const processedSource = stripVolatileMarkdownMarkersForRender(renderSource)
