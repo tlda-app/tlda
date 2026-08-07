@@ -1,8 +1,7 @@
 import { createHash, randomUUID } from 'crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
-import { relative } from 'path'
 import { diff } from 'node:util'
-import { projectDir, readProject, sourceLifecycleStore, getProjectsDir, listProjects } from './project-store.mjs'
+import { projectDir, readProject, sourceLifecycleStore, getProjectsDir } from './project-store.mjs'
 import { readShadowChangelog } from './shadow-changelog.mjs'
 
 const SCHEMA_VERSION = 1
@@ -352,28 +351,23 @@ export async function appendAgentActionFromActivity(activity, { daemonKey = null
   const input = activity?.metadata?.input || activity?.input || {}
   const filePath = input.file_path || input.path
   if (!filePath || !getProjectsDir()) return null
-  const candidates = []
-  for (const project of await listProjects()) {
-    const sourceRoot = `${projectDir(project.name)}/source/`
-    const rel = relative(sourceRoot, filePath)
-    if (!rel.startsWith('..') && rel !== '' && !rel.startsWith('/')) {
-      candidates.push({ project: project.name, rel })
-    }
+  const ownedProject = activity?.metadata?.project || activity?.project || null
+  const ownedFile = activity?.metadata?.sourceFile || activity?.sourceFile || null
+  if (ownedProject && ownedFile) {
+    return appendAgentAction(ownedProject, {
+      daemon_key: daemonKey,
+      machine_id: machineId,
+      env_name: envName,
+      agent_id: activity.from || activity.agent_id || null,
+      agent_display_name: activity.from || activity.agent_id || null,
+      fleet_activity_event_id: activity.id || null,
+      tool_use_id: activity.metadata?.correlationId || activity.metadata?.tool_use_id || activity.metadata?.id || input.id || null,
+      tool: activity.metadata?.tool || activity.tool || 'Edit',
+      observed_at: activity.timestamp || nowIso(),
+      files: [{ path: ownedFile, absolute_path: filePath, patch: input.diff || input.patch || null, content_delta: input.content_delta || null }],
+    })
   }
-  if (candidates.length !== 1) return null
-  const { project, rel } = candidates[0]
-  return appendAgentAction(project, {
-    daemon_key: daemonKey,
-    machine_id: machineId,
-    env_name: envName,
-    agent_id: activity.from || activity.agent_id || null,
-    agent_display_name: activity.from || activity.agent_id || null,
-    fleet_activity_event_id: activity.id || null,
-    tool_use_id: activity.metadata?.tool_use_id || activity.metadata?.id || input.id || null,
-    tool: activity.metadata?.tool || activity.tool || 'Edit',
-    observed_at: activity.timestamp || nowIso(),
-    files: [{ path: rel, absolute_path: filePath, patch: input.diff || input.patch || null, content_delta: input.content_delta || null }],
-  })
+  return null
 }
 
 export async function recordAcceptedSourceTransaction(name, body = {}, acceptedSourceMutation = {}) {

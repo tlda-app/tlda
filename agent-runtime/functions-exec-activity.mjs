@@ -146,6 +146,10 @@ function parseStaticLiteral(source) {
 
 export function extractFunctionsExecCalls(source) {
   if (typeof source !== 'string' || !source.includes('tools.')) return []
+  const staticStrings = new Map()
+  for (const match of source.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*("(?:[^"\\]|\\.)*")\s*;/g)) {
+    try { staticStrings.set(match[1], JSON.parse(match[2])) } catch { /* unresolved stays raw */ }
+  }
   const calls = []
   for (let i = 0; i < source.length;) {
     const ch = source[i]
@@ -160,7 +164,12 @@ export function extractFunctionsExecCalls(source) {
     const close = findClosingParen(source, open)
     if (close < 0) return []
     const argSource = firstArgument(source.slice(open + 1, close))
-    calls.push({ name: nameMatch[0], input: parseStaticLiteral(argSource), sourceStart: i })
+    const boundString = staticStrings.get(argSource)
+    calls.push({
+      name: nameMatch[0],
+      input: boundString === undefined ? parseStaticLiteral(argSource) : { _resolvedString: boundString },
+      sourceStart: i,
+    })
     i = close + 1
   }
   return calls

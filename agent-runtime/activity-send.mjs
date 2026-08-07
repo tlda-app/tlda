@@ -18,6 +18,11 @@ export function activityEventMessage(agentId, evt) {
     ...(evt.usage ? { usage: evt.usage } : {}),
     ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
     ...(evt.origTool ? { origTool: evt.origTool } : {}),
+    ...(evt.status ? { status: evt.status } : {}),
+    ...(evt.duration ? { duration: evt.duration } : {}),
+    ...(evt.correlationId || evt.id ? { correlationId: evt.correlationId || evt.id } : {}),
+    ...(evt.project ? { project: evt.project } : {}),
+    ...(evt.sourceFile ? { sourceFile: evt.sourceFile } : {}),
   }
 }
 
