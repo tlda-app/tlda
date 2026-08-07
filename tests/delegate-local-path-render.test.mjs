@@ -33,7 +33,7 @@ test('delegate lifecycle card renders preserved local path as text, not attachme
   assert.doesNotMatch(html, /ref-chip-pending/)
 })
 
-test('deferred recurring delegation renders one task card with call and schedule', () => {
+test('deferred recurring delegation renders one task card with its schedule', () => {
   const event = convertChatEvent({
     id: 12,
     type: 'delegate',
@@ -46,14 +46,6 @@ test('deferred recurring delegation renders one task card with call and schedule
       fromLabel: 'caller',
       toLabel: 'worker',
       message: 'Run the real command.',
-      callArgs: {
-        mint: { name: 'worker', cwd: '/Users/skip/worktrees/task', model: 'gpt-5.6-sol' },
-        description: 'Check the build',
-        message: 'Run the real command.',
-        success_criteria: ['The build passes'],
-        at: '2026-08-04T13:00:00.000Z',
-        notify_every: 300,
-      },
       at: '2026-08-04T13:00:00.000Z',
       next_fire_at: '2026-08-04T13:00:00.000Z',
       repeat_seconds: 300,
@@ -62,31 +54,15 @@ test('deferred recurring delegation renders one task card with call and schedule
 
   const html = renderChatLine(event, ctx)
 
-  assert.match(html, /delegate\(mint: \{&quot;name&quot;:&quot;worker&quot;,&quot;cwd&quot;:&quot;\/Users\/skip\/worktrees\/task&quot;,&quot;model&quot;:&quot;gpt-5\.6-sol&quot;\}, description: &quot;Check the build&quot;, message: &quot;Run the real command\.&quot;, success_criteria: \[&quot;The build passes&quot;\], at: &quot;2026-08-04T13:00:00\.000Z&quot;, notify_every: 300\)/)
+  // The header is a one-line title on every lifecycle card. It carries the task
+  // description, never the delegate() call source — that filled a 385px panel
+  // with the whole brief and was what made these cards unreadable.
+  assert.match(html, /<span class="lc-title">Check the build<\/span>/)
+  assert.doesNotMatch(html, /delegate\(/)
   assert.match(html, /caller/)
   assert.match(html, /data-timer-until="2026-08-04T13:00:00\.000Z"/)
   assert.match(html, /every 5m/)
   assert.match(html, /Run the real command\./)
-})
-
-test('delegate call display does not invent omitted arguments', () => {
-  const html = renderChatLine(convertChatEvent({
-    id: 14,
-    type: 'delegate',
-    from: 'fleet:caller',
-    recipients: ['fleet:worker'],
-    text: 'Transfer task',
-    timestamp: '2026-08-04T12:00:00.000Z',
-    metadata: {
-      taskId: 'task-14',
-      callArgs: { agent: 'worker', task_id: 'existing-task', message: 'Take over.' },
-    },
-  }), ctx)
-
-  assert.match(html, /delegate\(agent: &quot;worker&quot;, task_id: &quot;existing-task&quot;, message: &quot;Take over\.&quot;\)/)
-  assert.doesNotMatch(html, /description:/)
-  assert.doesNotMatch(html, /notify_every:/)
-  assert.doesNotMatch(html, /mint:/)
 })
 
 test('task-linked timer is not rendered as a second row', () => {

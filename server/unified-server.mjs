@@ -6614,7 +6614,6 @@ async function handleFleetWsMessage(ws, msg) {
       notify_every,
       expires_at,
       allow_pending_agent,
-      tool_args,
       operation_id,
       task_id,
     } = msg
@@ -6673,17 +6672,6 @@ async function handleFleetWsMessage(ws, msg) {
       : notifyEverySeconds
         ? nowMs + notifyEverySeconds * 1000
         : NaN
-    const publicDelegateArgNames = [
-      'agent', 'task_id', 'mint', 'description', 'message', 'file', 'selector',
-      'after', 'at', 'notify_every', 'expires_at', 'friendly_name',
-      'success_criteria', 'template', 'requires_approval', 'operation_id',
-      'model', 'cwd',
-    ]
-    const delegateCallArgs = tool_args && typeof tool_args === 'object' && !Array.isArray(tool_args)
-      ? tool_args
-      : Object.fromEntries(publicDelegateArgNames
-        .filter(name => Object.hasOwn(msg, name))
-        .map(name => [name, msg[name]]))
     const metadata = {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
@@ -6701,7 +6689,6 @@ async function handleFleetWsMessage(ws, msg) {
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
       message: taskMsg || '',
-      callArgs: delegateCallArgs,
       ...(at ? { at: new Date(atMs).toISOString() } : {}),
       ...(Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs
         ? { next_fire_at: new Date(reminderAtMs).toISOString() }

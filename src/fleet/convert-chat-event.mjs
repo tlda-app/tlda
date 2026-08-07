@@ -44,7 +44,6 @@ export function convertChatEvent(e) {
     msg._toLabel = e.metadata?.toLabel || ''
     msg._criteria = e.metadata?.criteria || []
     if (e.metadata?.message) msg._message = e.metadata.message
-    if (e.metadata?.callArgs && typeof e.metadata.callArgs === 'object') msg._taskCallArgs = e.metadata.callArgs
     if (e.metadata?.at) msg._taskAt = e.metadata.at
     if (e.metadata?.next_fire_at) msg._taskNextFireAt = e.metadata.next_fire_at
     if (e.metadata?.repeat_seconds) msg._taskRepeatSeconds = e.metadata.repeat_seconds
