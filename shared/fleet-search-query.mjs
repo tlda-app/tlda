@@ -74,7 +74,7 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
       }
         const raw = token.slice(token.indexOf(':') + 1)
         const resolved = resolveTimeFilter(raw)
-        if (!resolved) throw new Error(`"${token}" is not a time I can read. Use an ISO timestamp, "now", "today", "yesterday", or a relative span like 30m, 2h, 3d, 1w, 3mo.`)
+        if (!resolved) throw new Error(`"${token}" is not a time I can read. Use an ISO timestamp, "now", "today", "yesterday", or a relative span like 30s, 30m, 2h, 3d, 1w, 3mo.`)
         filterParts.push(`${key === 'after' ? 'since' : key}:${resolved}`)
         lastEmittedWasFilterTerm = true
         continue
@@ -250,12 +250,17 @@ export function resolveTimeFilter(val) {
   // longer expressible, which is no loss to a chat search.
   // `mo` is months and must be tried before `m`, which is minutes. Months keep a
   // spelling of their own so that fixing the units costs nobody their meaning.
-  const relMatch = lower.match(/^(\d+)\s*(mo(?:nths?)?|m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?|w(?:eeks?)?)$/)
+  // `s` is seconds, and it exists on both sides for the same reason `m` means
+  // the same thing on both: a span written one way in a query and the identical
+  // way in a `since` parameter must not mean two things, or be readable in one
+  // channel and not the other.
+  const relMatch = lower.match(/^(\d+)\s*(mo(?:nths?)?|s(?:ec(?:s|onds?)?)?|m(?:in(?:utes?)?)?|h(?:r(?:s)?|ours?)?|d(?:ays?)?|w(?:eeks?)?)$/)
   if (relMatch) {
     const n = parseInt(relMatch[1])
     const unit = relMatch[2].startsWith('mo') ? 'mo' : relMatch[2][0]
     const d = new Date(now)
     if (unit === 'mo') d.setMonth(d.getMonth() - n)
+    else if (unit === 's') d.setSeconds(d.getSeconds() - n)
     else if (unit === 'm') d.setMinutes(d.getMinutes() - n)
     else if (unit === 'h') d.setHours(d.getHours() - n)
     else if (unit === 'd') d.setDate(d.getDate() - n)
