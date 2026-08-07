@@ -286,6 +286,22 @@ export async function prepareSourcePushToOverleaf(name, { files = [], deletedFil
     const upstreamRef = (await execAsync('git rev-parse --abbrev-ref @{u}', { cwd: dir, timeout: 5000 })).stdout.trim()
     const remoteBranch = upstreamRef.replace(/^[^/]+\//, '')
     const previousRemoteHead = (await execAsync('git rev-parse @{u}', { cwd: dir, timeout: 5000 })).stdout.trim()
+    if (previousRemoteHead !== originalLocalHead) {
+      const { stdout } = await execAsync(
+        `git diff --name-only -z ${shellQuote(originalLocalHead)} ${shellQuote(previousRemoteHead)}`,
+        { cwd: dir, timeout: 30000 },
+      )
+      const remoteChanged = new Set(stdout.split('\0').filter(Boolean))
+      const conflictFiles = [...new Set([
+        ...changedFiles.map(file => file.path),
+        ...removedFiles,
+      ].filter(filePath => remoteChanged.has(filePath)))].sort()
+      if (conflictFiles.length > 0) {
+        const error = new Error(`Linked remote changed the same source: ${conflictFiles.join(', ')}`)
+        error.overleafConflictFiles = conflictFiles
+        throw error
+      }
+    }
     await execAsync('git reset --hard @{u}', { cwd: dir, timeout: 30000 })
 
     for (const file of changedFiles) {
@@ -339,7 +355,9 @@ export async function prepareSourcePushToOverleaf(name, { files = [], deletedFil
     if (originalLocalHead) {
       await execAsync(`git reset --hard ${shellQuote(originalLocalHead)}`, { cwd: dir, timeout: 30000 })
     }
-    throw new Error(scrubCreds(e.message))
+    const error = new Error(scrubCreds(e.message))
+    if (Array.isArray(e.overleafConflictFiles)) error.overleafConflictFiles = e.overleafConflictFiles
+    throw error
   }
 }
 

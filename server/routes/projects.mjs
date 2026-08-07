@@ -1147,11 +1147,21 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     } catch (rollbackError) {
       rollbackFailures.push(`local rollback failed: ${rollbackError.message}`)
     }
+    if (Array.isArray(e.overleafConflictFiles) && e.overleafConflictFiles.length > 0) {
+      await updateProject(name, {
+        overleafSyncStatus: 'conflict',
+        overleafSyncError: e.message,
+        overleafConflictFiles: e.overleafConflictFiles,
+      })
+    }
     console.error(`[${name}] Source transaction failed: ${e.message}`)
     return {
       status: 409, ok: false,
       error: `Source transaction failed: ${e.message}${rollbackFailures.length ? `; ${rollbackFailures.join('; ')}` : ''}`,
       ...(e.lifecycleResult ? { lifecycleStatus: e.lifecycleResult.status, authority: e.lifecycleResult.authority, evidence: e.lifecycleResult.evidence } : {}),
+      ...(Array.isArray(e.overleafConflictFiles) ? {
+        lifecycleStatus: 'overleaf-conflict', authority: authorityBefore, conflictFiles: e.overleafConflictFiles,
+      } : {}),
       ...(rollbackFailures.length ? { rollbackFailures } : {}),
     }
   }
