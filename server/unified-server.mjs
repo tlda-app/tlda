@@ -85,6 +85,7 @@ import { spawnCallerId } from './lib/spawn-caller.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
+import { scheduleSubscriptionWakes } from './lib/subscription-wake-scheduling.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
@@ -6537,21 +6538,20 @@ async function handleFleetWsMessage(ws, msg) {
           wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to, from), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
       }
-      for (const subDelivery of r.subscriptionDeliveries) {
-        if (subDelivery.delivery === 'notified') {
-          const subscriptionStatus = await inboxStatusFor(subDelivery.recipient)
-          wakeRequests.push({
-            to: subDelivery.recipient,
-            text: wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) }),
-            asker: from,
-            traceId,
-            source: { sourceEventId: eventId, priority: basePriority, subscriptionId: subDelivery.subscription_id },
-          })
-        } else if (subDelivery.delivery === 'batched' && subDelivery.notifyBy) {
-          queueSubscriptionBatchWake({ delivery: subDelivery, eventId, text, from, traceId, priority: basePriority })
-        }
-      }
     }
+    await scheduleSubscriptionWakes({
+      deliveries: subscriptionDeliveriesAll,
+      eventId,
+      text,
+      from,
+      traceId,
+      priority: basePriority,
+      wakeRequests,
+      wakeText,
+      agentDisplayName,
+      previewForWake,
+      queueBatchWake: queueSubscriptionBatchWake,
+    })
     // Cache _tempId for idempotent retries
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
