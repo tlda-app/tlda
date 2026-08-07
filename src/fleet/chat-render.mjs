@@ -552,17 +552,13 @@ export function renderChatLine(m, ctx) {
     const messageHtml = message
       ? `<div class="lc-message">${linkifyCodeUrls(renderMarkdown(message))}</div>`
       : ''
-    const suppliedCallArgs = m._taskCallArgs && typeof m._taskCallArgs === 'object'
-      ? Object.entries(m._taskCallArgs).map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
-      : []
-    const call = `delegate(${suppliedCallArgs.join(', ')})`
     const scheduleHtml = m._taskNextFireAt
       ? `<div class="lc-task-schedule" data-timer-until="${esc(m._taskNextFireAt)}"><span class="timer-msg">${esc(absoluteTime(m._taskNextFireAt))} · in <span class="ticker-countdown">${esc(countdownLabel(m._taskNextFireAt))}</span>${m._taskRepeatSeconds ? ` · every ${esc(durationLabel(m._taskRepeatSeconds))}` : ''}</span></div>`
       : ''
     return `<div class="chat-line" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span>
       <div class="lifecycle-card lc-delegate" data-task-id="${esc(taskId)}" data-lc-type="delegate">
         <div class="drag-handle" title="Drag"></div>
-        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${esc(call)}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
+        <div class="lc-header"><span class="lc-icon">\u25B6</span> <span class="lc-title">${desc}</span> <span class="lc-chain"></span> <span class="lc-routing"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(fromLabel)}</span> <span class="lc-arrow">\u2192</span> <span class="agent-nick ${toCls}" data-agent-id="${esc(toId)}">${esc(toLabel)}</span></span></div>
         ${scheduleHtml}
         ${messageHtml}
         ${criteriaHtml}
