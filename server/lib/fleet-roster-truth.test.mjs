@@ -18,3 +18,16 @@ test('fleet table rows retain labels used by roster consumers', () => {
 
   assert.deepEqual(result.agents[0].labels, ['bot', 'todd'])
 })
+
+test('fleet table rows retain human identity used by automation consumers', () => {
+  const result = summarizeFleetRosterTruth({
+    roster: [{
+      id: 'fleet:skip',
+      friendly_name: 'skip',
+      human: true,
+      runtime_status: { kind: 'human', status: 'here' },
+    }],
+  })
+
+  assert.equal(result.agents[0].human, true)
+})
