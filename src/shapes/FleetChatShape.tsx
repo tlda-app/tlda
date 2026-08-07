@@ -240,6 +240,40 @@ function useFleetPillCount(editor: Editor): number {
   return count
 }
 
+/**
+ * The fleet pill currently over a given chat shape, or null.
+ *
+ * There can be more than one fleet-pill on the page — pills are ordinary synced
+ * shapes, so another client's pill shows up here too, and one left behind by a
+ * different user or device is not reclaimable by this one
+ * (shouldReclaimFleetPill requires a matching userId/deviceId). Taking
+ * `pills[0]` therefore tracked whichever pill happened to sort first rather than
+ * the one under the pointer, and a single foreign pill was enough to aim the
+ * filter overlay at the wrong shape.
+ *
+ * One selection, shared by every reader, so the preview and the filter that
+ * gets committed cannot disagree about which pill is being dragged.
+ */
+function fleetPillOverShape(editor: Editor, shapeId: TLShapeId) {
+  const chatBounds = editor.getShapePageBounds(shapeId)
+  if (!chatBounds) return null
+  for (const pill of editor.getCurrentPageShapes()) {
+    if ((pill.type as string) !== 'fleet-pill') continue
+    const props = pill.props as { pillType?: string; value?: string; displayName?: string }
+    // Content pills (msg, code, ref, …) go to the composer, not to the filter.
+    if (props.pillType !== 'agent' && props.pillType !== 'label' && props.pillType !== 'team') continue
+    const pb = editor.getShapePageBounds(pill.id)
+    if (!pb) continue
+    const cx = pb.x + pb.w / 2
+    const cy = pb.y + pb.h / 2
+    if (cx >= chatBounds.x && cx <= chatBounds.x + chatBounds.w &&
+        cy >= chatBounds.y && cy <= chatBounds.y + chatBounds.h) {
+      return { props, centre: { x: cx, y: cy }, chatBounds }
+    }
+  }
+  return null
+}
+
 // Bind a handler that fires on both mouse click and a touch tap. On touch a tap
 // on a text element (e.g. the lightbox ✕ or a chip) never synthesizes a `click`,
 // so click-only handlers are dead on iPad; add a movement-guarded pointerup so a
@@ -4982,24 +5016,11 @@ function FleetChatInner({ shape }: { shape: any }) {
   const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('pill-over', () => {
     if (fleetPillCount === 0) return ''
-    const pills = editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-pill') as any[]
-    if (pills.length === 0) return ''
-    const myBounds = editor.getShapePageBounds(shape.id)
-    if (!myBounds) return ''
-    for (const pill of pills) {
-      const props = pill.props
-      if (props.pillType !== 'agent' && props.pillType !== 'label' && props.pillType !== 'team') continue
-      const pb = editor.getShapePageBounds(pill.id)
-      if (!pb) continue
-      const cx = pb.x + pb.w / 2
-      const cy = pb.y + pb.h / 2
-      if (cx >= myBounds.x && cx <= myBounds.x + myBounds.w &&
-          cy >= myBounds.y && cy <= myBounds.y + myBounds.h) {
-        const role = cy < myBounds.y + myBounds.h / 2 ? 'to' : 'from'
-        return `${role}\0${props.value}\0${props.displayName}\0${props.pillType}`
-      }
-    }
-    return ''
+    const over = fleetPillOverShape(editor, shape.id)
+    if (!over) return ''
+    const { props, centre, chatBounds } = over
+    const role = centre.y < chatBounds.y + chatBounds.h / 2 ? 'to' : 'from'
+    return `${role}\0${props.value}\0${props.displayName}\0${props.pillType}`
   }, [editor, shape.id, fleetPillCount])
   const pillOver = useMemo(() => {
     if (!pillOverKey) return null
@@ -6981,17 +7002,9 @@ export function FleetChatFilterMode({
   const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('filter-pill-over', () => {
     if (fleetPillCount === 0) return ''
-    const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
-    if (pills.length === 0) return ''
-    const pill = pills[0] as any
-    const pb = editor.getShapePageBounds(pill.id)
-    if (!pb) return ''
-    const cx = pb.x + pb.w / 2
-    const cy = pb.y + pb.h / 2
-    const shapeBounds = editor.getShapePageBounds(shapeId)
-    if (!shapeBounds || cx < shapeBounds.x || cx > shapeBounds.x + shapeBounds.w ||
-        cy < shapeBounds.y || cy > shapeBounds.y + shapeBounds.h) return ''
-    return `${pill.props.value}\0${pill.props.displayName}\0${pill.props.pillType}`
+    const over = fleetPillOverShape(editor, shapeId)
+    if (!over) return ''
+    return `${over.props.value}\0${over.props.displayName}\0${over.props.pillType}`
   }, [editor, shapeId, fleetPillCount])
 
   const internalPillOver = useMemo(() => {
@@ -7025,12 +7038,9 @@ export function FleetChatFilterMode({
     if (externalPane) return { pane: externalPane, idx: -1 }
     if (!pillOver) { lastGroupRef.current = null; return null }
     if (fleetPillCount === 0) { lastGroupRef.current = null; return null }
-    const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
-    if (pills.length === 0) { lastGroupRef.current = null; return null }
-    const pill = pills[0]
-    const pb = editor.getShapePageBounds(pill.id)
-    if (!pb) return null
-    const screenPt = pagePointToClient(editor, { x: pb.x + pb.w / 2, y: pb.y + pb.h / 2 }, viewportId)
+    const over = fleetPillOverShape(editor, shapeId)
+    if (!over) { lastGroupRef.current = null; return null }
+    const screenPt = pagePointToClient(editor, over.centre, viewportId)
 
     const ENTER_PAD = 8
     const EXIT_PAD = 30
