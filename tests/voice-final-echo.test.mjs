@@ -17,7 +17,7 @@ test('keeps a corrected carried word without repeating the submitted suffix', ()
   assert.deepEqual(
     trimSubmittedPrefixFromDeepgramText(
       'possible. That itself is a bug. Do you understand?',
-      "okay like that shouldn't be that itself is a bug do you understand",
+      "Okay. Like, that shouldn't beThat itself is a bug. Do you understand?",
     ),
     { text: 'possible.', droppedWords: 8 },
   )

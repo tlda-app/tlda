@@ -45,7 +45,12 @@ export function isPriorFinalSuffixEcho(previousFinalNorm, finalNorm, hasSeenInte
 }
 
 function normalizeTranscriptText(text) {
-  return String(text || '').replace(/[.!?,;:]+/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+  return String(text || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[.!?,;:]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
 }
 
 function transcriptWordTokens(text) {
