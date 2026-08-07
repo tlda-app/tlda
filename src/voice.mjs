@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
+import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, partitionAtCursor, pcmInputLevel, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
@@ -2522,39 +2522,6 @@ function normalizeDeepgramText(text) {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase()
-}
-
-function deepgramWordTokens(text) {
-  const tokens = []
-  const re = /[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?/g
-  const source = String(text || '')
-  for (const match of source.matchAll(re)) {
-    tokens.push({
-      norm: normalizeDeepgramText(match[0]),
-      end: match.index + match[0].length,
-    })
-  }
-  return tokens.filter(token => token.norm)
-}
-
-function trimSubmittedPrefixFromDeepgramText(text, submittedNorm) {
-  const submitted = String(submittedNorm || '').trim()
-  if (!submitted) return { text, droppedWords: 0 }
-  const incomingWords = deepgramWordTokens(text)
-  let overlap = 0
-  for (let n = incomingWords.length; n > 0; n--) {
-    const incomingPrefix = incomingWords.slice(0, n).map(token => token.norm).join(' ')
-    if (submitted.endsWith(incomingPrefix)) {
-      overlap = n
-      break
-    }
-  }
-  if (overlap === 0) return { text, droppedWords: 0 }
-  if (overlap >= incomingWords.length) return { text: '', droppedWords: overlap }
-  return {
-    text: String(text || '').slice(incomingWords[overlap - 1].end).replace(/^[\s,.;:!?-]+/, ''),
-    droppedWords: overlap,
-  }
 }
 
 function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false } = {}) {

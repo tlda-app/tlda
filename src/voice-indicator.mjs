@@ -44,6 +44,50 @@ export function isPriorFinalSuffixEcho(previousFinalNorm, finalNorm, hasSeenInte
   return !hasSeenInterim && !!previousFinalNorm && !!finalNorm && previousFinalNorm.endsWith(finalNorm)
 }
 
+function normalizeTranscriptText(text) {
+  return String(text || '').replace(/[.!?,;:]+/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function transcriptWordTokens(text) {
+  const tokens = []
+  for (const match of String(text || '').matchAll(/[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?/g)) {
+    tokens.push({ norm: normalizeTranscriptText(match[0]), start: match.index, end: match.index + match[0].length })
+  }
+  return tokens.filter(token => token.norm)
+}
+
+export function trimSubmittedPrefixFromDeepgramText(text, submittedNorm) {
+  const submitted = normalizeTranscriptText(submittedNorm)
+  if (!submitted) return { text, droppedWords: 0 }
+  const incomingWords = transcriptWordTokens(text)
+  const submittedWords = submitted.split(' ')
+  // A carried final can prepend a corrected word to text already submitted.
+  // Keep that correction and remove the repeated submitted suffix.
+  for (let start = 0; start < incomingWords.length; start++) {
+    const suffix = incomingWords.slice(start).map(token => token.norm)
+    if (suffix.length > submittedWords.length) continue
+    if (submittedWords.slice(-suffix.length).join(' ') !== suffix.join(' ')) continue
+    if (start === 0) return { text: '', droppedWords: suffix.length }
+    return {
+      text: String(text || '').slice(0, incomingWords[start].start).trimEnd().replace(/[\s,;:!?-]+$/, ''),
+      droppedWords: suffix.length,
+    }
+  }
+  // Or it can begin by repeating the submitted tail before continuing with new
+  // words. Remove that leading overlap and keep the continuation.
+  for (let length = incomingWords.length; length > 0; length--) {
+    const prefix = incomingWords.slice(0, length).map(token => token.norm)
+    if (prefix.length > submittedWords.length) continue
+    if (submittedWords.slice(-prefix.length).join(' ') !== prefix.join(' ')) continue
+    if (length === incomingWords.length) return { text: '', droppedWords: length }
+    return {
+      text: String(text || '').slice(incomingWords[length - 1].end).replace(/^[\s,.;:!?-]+/, ''),
+      droppedWords: length,
+    }
+  }
+  return { text, droppedWords: 0 }
+}
+
 export function partitionAtCursor(value, selectionStart, selectionEnd = selectionStart) {
   const text = typeof value === 'string' ? value : ''
   const start = Number.isFinite(selectionStart) ? Math.max(0, Math.min(text.length, selectionStart)) : text.length

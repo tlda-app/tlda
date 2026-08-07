@@ -24,6 +24,7 @@ import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
 import * as bot from './harness/bot.mjs'
 import { randomUUID } from 'node:crypto'
+import { assertCodexKickoffDelivered } from './launch-result.mjs'
 
 export class SpawnError extends Error {
   constructor(reason, message, detail = {}) {
@@ -372,11 +373,12 @@ export async function launchMintProcess(params) {
     )
   }
   if (requestedKind === 'codex') {
-    await (params._deps?.injectCodexPrompt || injectCodexPrompt)(
+    const delivered = await (params._deps?.injectCodexPrompt || injectCodexPrompt)(
       tmuxSession,
       codex.kickoffPrompt(name),
       { tmuxSocket: params.tmuxSocket },
     )
+    assertCodexKickoffDelivered(delivered, tmuxSession)
   }
   return {
     mint_id: mintId,
