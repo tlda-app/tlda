@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlink
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
-import { execFileSync, spawn as cpSpawn } from 'child_process'
+import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, normalizeSourceManifest } from '../shared/source-manifest.mjs'
@@ -126,6 +126,7 @@ const SERVER_COMMANDS = [
 ]
 const DAEMON_COMMANDS = [
   ['start', 'Start the fleet daemon'],
+  ['restart', 'Restart the loaded fleet daemon'],
   ['stop', 'Stop the fleet daemon'],
   ['status', 'Check daemon status'],
   ['log', 'Show recent daemon log'],
@@ -138,6 +139,7 @@ const BOT_COMMANDS = [
   ['install', 'Install bot launchd services'],
   ['uninstall', 'Remove bot launchd services'],
   ['start', 'Start bot services'],
+  ['restart', 'Refresh and restart loaded bot services'],
   ['stop', 'Stop bot services'],
   ['status', 'Check bot services'],
   ['log', 'Show recent bot logs'],
@@ -201,8 +203,8 @@ const COMMAND_HELP = {
   unlink:  'tlda project unlink <name> <source>\n\n  Detach exactly the local path or Git URL currently linked to the project.\n  The source must match the existing binding.',
   init:    'tlda project init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda project link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
   push:    'tlda project push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
-  watch:   'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
-  'watch-all': 'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
+  watch:   'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
+  'watch-all': 'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/restart/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda project open [name]\n\n  Open the viewer in the default browser (RW token = presenter permission).',
   share:   'tlda project share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific project\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda project status [name]\n\n  Show build status for a project.',
@@ -210,10 +212,10 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement.',
+  bot:     'tlda bot [list|install|enlist|uninstall|start|restart|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement. Restart refreshes its launch recipe from current configuration and restarts an already-loaded service.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
-  daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
+  daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   config:  'tlda config [init | apply | mcp-setup | setup | auth | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  setup      Run one-time local setup tasks, such as editor URL handlers.\n  auth       Manage access tokens.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
@@ -1816,6 +1818,31 @@ async function bootoutBot(bot) {
   await runLaunchctl(['bootout', daemonLaunchdTarget(paths.label)], { ignoreFailure: true })
 }
 
+async function restartLoadedBot(bot) {
+  const paths = botServicePaths(bot.name)
+  const target = daemonLaunchdTarget(paths.label)
+  await runLaunchctl(['print', target])
+  await enlistBot(bot)
+
+  const previousPid = existsSync(paths.pidFile) ? readFileSync(paths.pidFile, 'utf8').trim() : ''
+  const tmuxTarget = exactTmuxTarget(paths.tmuxSession)
+  const hasRuntime = spawnSync('tmux', ['has-session', '-t', tmuxTarget], { stdio: 'ignore' }).status === 0
+  if (hasRuntime) {
+    execFileSync('tmux', ['kill-session', '-t', tmuxTarget], { stdio: 'ignore' })
+    execFileSync('tmux', ['wait-for', '-S', paths.waitChannel], { stdio: 'ignore' })
+  } else {
+    await runLaunchctl(['kickstart', '-k', target])
+  }
+
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    const currentPid = existsSync(paths.pidFile) ? readFileSync(paths.pidFile, 'utf8').trim() : ''
+    if (currentPid && currentPid !== previousPid) return { paths, pid: currentPid }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(`${paths.label} did not restart through its loaded launchd supervisor`)
+}
+
 function printBotPlan(bot) {
   const paths = botServicePaths(bot.name)
   console.log(`${bot.name}: ${paths.label}`)
@@ -2263,6 +2290,30 @@ async function cmdFleetWatch(sub) {
     return
   }
 
+  if (sub === 'restart') {
+    requireLaunchd()
+    try {
+      await runLaunchctl(['print', daemonLaunchdTarget()])
+    } catch (e) {
+      console.error(red(`Fleet daemon launchd job is not loaded: ${FLEET_DAEMON_LABEL}`))
+      console.error(dim('  Register it once with `tlda config apply`; routine restarts do not bootstrap jobs.'))
+      process.exit(1)
+    }
+    await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
+    const result = await pollTargetDaemonReadiness({
+      timeoutMs: 5_000,
+      getCandidatePid: () => launchdDaemonPid(),
+      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
+    })
+    if (!result.ready) {
+      console.error(red(`Fleet daemon restart did not become ready: ${result.reason}`))
+      printRecentDaemonLog()
+      process.exit(1)
+    }
+    console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${result.pid})`))
+    return
+  }
+
   if (sub === 'status') {
     if (process.platform === 'darwin' && existsSync(FLEET_DAEMON_PLIST)) {
       try {
@@ -2411,7 +2462,7 @@ async function cmdFleetWatch(sub) {
   }
 
   console.error(`Unknown subcommand: tlda daemon ${sub}`)
-  console.error('Usage: tlda daemon [start|stop|status|log|run|install|uninstall|write-test-plist]')
+  console.error('Usage: tlda daemon [start|restart|stop|status|log|run|install|uninstall|write-test-plist]')
   process.exit(1)
 }
 
@@ -2488,6 +2539,23 @@ async function cmdBot() {
     return
   }
 
+  if (sub === 'restart') {
+    const bots = findConfiguredBot(name)
+    if (!dryRun) requireLaunchd()
+    for (const bot of bots) {
+      if (dryRun) {
+        console.log('Would refresh the bot launch recipe and restart its loaded service:')
+        printBotPlan(bot)
+        continue
+      }
+      const result = await restartLoadedBot(bot)
+      console.log(green(`Restarted ${result.paths.label}.`))
+      console.log(dim(`  Bot pid: ${result.pid}`))
+      console.log(dim(`  Log: ${result.paths.logFile}`))
+    }
+    return
+  }
+
   if (sub === 'stop') {
     const bots = findConfiguredBot(name)
     requireLaunchd()
@@ -2537,7 +2605,7 @@ async function cmdBot() {
   }
 
   console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]')
+  console.error('Usage: tlda bot [list|install|enlist|uninstall|start|restart|stop|status|log] [name] [--dry-run]')
   process.exit(1)
 }
 
@@ -2545,7 +2613,7 @@ async function cmdWatch() {
   const arg1 = getPositional(0)
 
   // Fleet-daemon dispatch — `tlda daemon start/stop/status/log/run`
-  const daemonSubs = new Set(['start', 'stop', 'status', 'log', 'logs', 'run', 'install', 'uninstall', 'write-test-plist'])
+  const daemonSubs = new Set(['start', 'restart', 'stop', 'status', 'log', 'logs', 'run', 'install', 'uninstall', 'write-test-plist'])
   if (daemonSubs.has(arg1)) {
     return cmdFleetWatch(arg1)
   }
