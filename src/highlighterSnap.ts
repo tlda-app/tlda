@@ -1054,11 +1054,12 @@ function showSourceContextCard(
         () => {
           const pillId = dragState?.pillId as TLShapeId | undefined
           dragState = null
-          if (pillId) markFleetPillInactive(String(pillId))
           if (pillId) {
+            // Delete (and so record) before clearing ACTIVE — see fleet-pill-forensics.
             pillEditor.run(() => {
               deleteFleetPill(pillEditor, pillId, 'drag-cancel', { surface: 'highlighter' })
             }, { history: 'ignore' })
+            markFleetPillInactive(String(pillId))
           }
         },
       )

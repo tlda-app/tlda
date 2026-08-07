@@ -121,11 +121,12 @@ function usePillDrag() {
     const drag = dragRef.current
     dragRef.current = null
     if (!drag?.pillId) return
-    markFleetPillInactive(String(drag.pillId))
     const id = drag.pillId as TLShapeId
+    // Delete (and so record) before clearing ACTIVE — see fleet-pill-forensics.
     editor.run(() => {
       deleteFleetPill(editor, id, 'drag-cancel', { surface: 'search' })
     }, { history: 'ignore' })
+    markFleetPillInactive(String(drag.pillId))
   }, [editor])
 
   const startDrag = useCallback((

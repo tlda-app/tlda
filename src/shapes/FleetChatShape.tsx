@@ -5858,11 +5858,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       const drag = dragRef.current
       dragRef.current = null
       if (drag?.pillId) {
-        markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
         const onMain = !!drag._onMain
         const deleteEditor = onMain && mainEditor ? mainEditor : editor
+        // Delete (and so record) before clearing ACTIVE — see fleet-pill-forensics.
         deleteFleetPill(deleteEditor, drag.pillId as TLShapeId, 'drag-cancel', { surface: 'chat' })
+        markFleetPillInactive(String(drag.pillId))
       }
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''

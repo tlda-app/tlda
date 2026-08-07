@@ -270,10 +270,12 @@ export function usePillDrag() {
     const drag = dragRef.current
     dragRef.current = null
     if (drag?.pillId) {
-      markFleetPillInactive(String(drag.pillId))
+      // Delete (and so record) before clearing ACTIVE, so the record shows the
+      // pill went out from under a live drag. Nothing else runs between.
       editor.run(() => {
         deleteFleetPill(editor, drag.pillId as TLShapeId, 'drag-cancel', { surface: 'roster' })
       }, { history: 'ignore' })
+      markFleetPillInactive(String(drag.pillId))
     }
   }, [editor])
 

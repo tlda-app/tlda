@@ -82,8 +82,10 @@ function noteFleetPillDeleted(
   deleter: FleetPillDeleter,
   context: FleetPillDeletionContext = {},
 ) {
-  // A pill deleted while ACTIVE was deleted out from under a drag. That is the
-  // signature of the reported bug, and it is the field to read first.
+  // A pill deleted while ACTIVE was deleted out from under a live drag. That is
+  // the signature of the reported bug and the field to read first, so every
+  // cancel path records BEFORE it clears ACTIVE. The drop paths clear it first
+  // by design — a completed drag is over, and 'drag-drop' already says so.
   const active = isFleetPillActive(pillId)
   log.metric(NS, active ? 'pill deleted MID-DRAG' : 'pill deleted', {
     pillId,
