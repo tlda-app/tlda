@@ -26,6 +26,8 @@
 //
 // Volume is a pill deletion per drag, not a hot path.
 
+import type { TLShape, TLShapeId } from 'tldraw'
+
 // @ts-ignore -- vanilla JS module
 import { log } from '../logger'
 
@@ -97,10 +99,11 @@ function noteFleetPillDeleted(
 
 /** The part of tldraw's Editor this module needs. Keeps the panel surfaces —
  *  which pass a main editor or a clipped panel editor interchangeably — from
- *  having to agree on a type. */
-type FleetPillDeletingEditor = {
-  getShape: (id: any) => unknown
-  deleteShapes: (ids: any[]) => void
+ *  having to agree on a type. Exported so the one other module with a
+ *  structural editor shim composes this instead of restating it. */
+export type FleetPillDeletingEditor = {
+  getShape: (id: TLShapeId) => TLShape | undefined
+  deleteShapes: (ids: TLShapeId[]) => void
 }
 
 /**
@@ -116,7 +119,7 @@ type FleetPillDeletingEditor = {
  */
 export function deleteFleetPill(
   editor: FleetPillDeletingEditor,
-  pillId: unknown,
+  pillId: TLShapeId,
   deleter: FleetPillDeleter,
   context: FleetPillDeletionContext = {},
 ) {
