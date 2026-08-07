@@ -4028,6 +4028,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   // True while a finger-driven scroll is in flight: from touchdown through the
   // momentum glide that follows the release, until the scroller goes quiet.
   const touchScrollActiveRef = useRef(false)
+  // A scrollTop delta is not evidence of reader intent: Virtuoso re-anchors
+  // rows while their measured content changes, and those internal moves emit
+  // the same scroll event as a person. Only a live input gesture may change
+  // reader/follow mode.
+  const explicitScrollInputRef = useRef(false)
+  const explicitScrollInputTimerRef = useRef(0)
+  const followInvariantTimerRef = useRef(0)
   const goToTailRunRef = useRef(0)
   const deferredGeometryReconcileRef = useRef(false)
   // The geometry seam records the scrollTop it writes. The next matching scroll
@@ -4243,6 +4250,28 @@ function FleetChatInner({ shape }: { shape: any }) {
     requestAnimationFrame(step)
   }, [shape.id, chatEventBufferKey])
 
+  const checkFollowInvariant = useCallback((reason: string) => {
+    if (followInvariantTimerRef.current) clearTimeout(followInvariantTimerRef.current)
+    followInvariantTimerRef.current = window.setTimeout(() => {
+      followInvariantTimerRef.current = 0
+      if (userScrolledUpRef.current && !hardLockedRef.current) return
+      const el = chatLogRef.current
+      if (!el) return
+      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
+      if (isTrueBottomGap(gap)) return
+      log.metric('chat-scroll', 'follow invariant violated; repairing tail', {
+        panelId: String(shape.id),
+        reason,
+        top: el.scrollTop,
+        height: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        gap,
+        inputActive: touchScrollActiveRef.current || explicitScrollInputRef.current,
+      })
+      goToTail('follow-invariant-repair')
+    }, 500)
+  }, [goToTail, shape.id])
+
   const scrollToBottom = useCallback(() => {
     goToTail('jump-button')
   }, [goToTail])
@@ -4261,12 +4290,21 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
+    const markExplicitScrollInput = () => {
+      explicitScrollInputRef.current = true
+      if (explicitScrollInputTimerRef.current) clearTimeout(explicitScrollInputTimerRef.current)
+      explicitScrollInputTimerRef.current = window.setTimeout(() => {
+        explicitScrollInputTimerRef.current = 0
+        explicitScrollInputRef.current = false
+      }, 250)
+    }
     const handleWheelCapture = (e: WheelEvent) => {
       const target = e.target instanceof Element ? e.target : null
       if (!target || !el.contains(target)) return
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
+      markExplicitScrollInput()
       // Trackpad deltas commonly arrive below UP_JITTER_EPS one event at a
       // time. The wheel event itself proves reader intent, so enter reader
       // mode before Virtuoso can follow a concurrently arriving row.
@@ -4292,6 +4330,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const onTouchStart = () => {
       fingerDown = true
       touchScrollActiveRef.current = true
+      markExplicitScrollInput()
       if (settleTimer) { clearTimeout(settleTimer); settleTimer = 0 }
     }
     const onTouchEnd = () => {
@@ -4312,7 +4351,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (reconcileTarget !== null) geometryReconcileScrollTopRef.current = null
       const { scrolledUp, action } = decideFollowTransition(
         { top, height, clientHeight: el.clientHeight, lastTop: previousTop, lastHeight: previousHeight },
-        { scrolledUp: userScrolledUpRef.current, hardLocked: hardLockedRef.current, geometryReconciliation },
+        {
+          scrolledUp: userScrolledUpRef.current,
+          hardLocked: hardLockedRef.current,
+          geometryReconciliation,
+          userInputActive: touchScrollActiveRef.current || explicitScrollInputRef.current,
+        },
       )
       lastTop = top
       lastHeight = height
@@ -4352,6 +4396,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
       }
       if (userScrolledUpRef.current) captureViewportAnchor()
+      else checkFollowInvariant('scroll-event')
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
     el.addEventListener('scroll', handle, { passive: true })
@@ -4365,9 +4410,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       el.removeEventListener('touchend', onTouchEnd)
       el.removeEventListener('touchcancel', onTouchEnd)
       if (settleTimer) clearTimeout(settleTimer)
+      if (explicitScrollInputTimerRef.current) clearTimeout(explicitScrollInputTimerRef.current)
+      if (followInvariantTimerRef.current) clearTimeout(followInvariantTimerRef.current)
+      explicitScrollInputTimerRef.current = 0
+      followInvariantTimerRef.current = 0
+      explicitScrollInputRef.current = false
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, enterReaderMode, reconcileViewportGeometry])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, checkFollowInvariant, enterReaderMode, reconcileViewportGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {

@@ -5,8 +5,8 @@ import { decideFollowTransition, FOLLOW_BOTTOM_EPS } from '../src/shapes/chatScr
 
 // The reader is scrolled up, reading history. `scrolledUp: true` is the only
 // state that consults the resume path at all.
-const READING = { scrolledUp: true, hardLocked: false, programmatic: false }
-const FOLLOWING = { scrolledUp: false, hardLocked: false, programmatic: false }
+const READING = { scrolledUp: true, hardLocked: false, geometryReconciliation: false, userInputActive: true }
+const FOLLOWING = { scrolledUp: false, hardLocked: false, geometryReconciliation: false, userInputActive: true }
 
 const CLIENT = 400
 
@@ -74,7 +74,7 @@ test('sub-pixel scroll noise is not a scroll up', () => {
 test('a scroll up mid-pin is still the user, because pins only ever scroll down', () => {
   const out = decideFollowTransition(
     sample({ top: 400, height: 1000, lastTop: 600 }),
-    { scrolledUp: false, hardLocked: false, programmatic: true },
+    { scrolledUp: false, hardLocked: false, geometryReconciliation: false, userInputActive: true },
   )
   assert.deepEqual(out, { scrolledUp: true, action: 'follow-off' })
 })
@@ -117,4 +117,21 @@ test('a real scroll up away from the bottom still stops follow', () => {
     FOLLOWING,
   )
   assert.deepEqual(out, { scrolledUp: true, action: 'follow-off' })
+})
+
+test('Virtuoso re-anchor after reaching bottom cannot disable follow', () => {
+  // Exact production sequence from Skip's panel at 2026-08-07T16:29:54Z:
+  // the reader had just reached true bottom, then Virtuoso shifted scrollTop
+  // upward 661px without a wheel/touch/pointer gesture.
+  const out = decideFollowTransition(
+    {
+      top: 37455,
+      height: 38678,
+      clientHeight: 560,
+      lastTop: 38116.81640625,
+      lastHeight: 38677,
+    },
+    { scrolledUp: false, hardLocked: false, geometryReconciliation: false, userInputActive: false },
+  )
+  assert.deepEqual(out, { scrolledUp: false, action: 'none' })
 })
