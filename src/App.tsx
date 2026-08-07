@@ -948,6 +948,17 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     if (!selectedAgentId) return null
     return agentRows.find(row => row.id === selectedAgentId || row.exactName === selectedAgentId) || null
   }, [agentRows, selectedAgentId])
+  // The dep array is narrowed to `.exactName` on purpose, and `exhaustive-deps`
+  // will tell you it is incomplete. It is not: `fleetChatFilterForAgent` reads
+  // `row.exactName` and `humanId` and nothing else, so this is every value the
+  // closure consumes. The rule tracks whole identifiers and cannot express
+  // "only this property," which is why it ships as a warning.
+  //
+  // Widening it to `selectedAgent` is a regression, not a cleanup. This filter
+  // feeds the `subscribeChat` effect below, and `agentRows` rebuilds its row
+  // objects on every refresh — so depending on the object identity recomputes
+  // the filter continuously, and tears down and re-establishes the index chat
+  // subscription with it.
   const selectedAgentFilter = useMemo(
     () => fleetChatFilterForAgent(selectedAgent, identity.id),
     [selectedAgent?.exactName, identity.id],
