@@ -1,5 +1,5 @@
 import type { Editor, TLShapeId } from 'tldraw'
-import { noteFleetPillDeleted } from './fleet-pill-forensics'
+import { deleteFleetPill } from './fleet-pill-forensics'
 import {
   FLEET_PILL_LEGACY_GRACE_MS,
   FLEET_PILL_STALE_MS,
@@ -43,13 +43,12 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
     if (shape && shouldReclaimFleetPill(shape, now(), options.getIdentity())) editor.run(() => {
       if (!editor.getShape(id)) return
       const props = shape.props || {}
-      noteFleetPillDeleted(String(id), 'stale-reclaim', {
+      deleteFleetPill(editor, id, 'stale-reclaim', {
         createdAt: props.createdAt,
         ageMs: typeof props.createdAt === 'number' ? now() - props.createdAt : undefined,
         ephemeral: props.ephemeral,
         ownerless: !props.userId && !props.deviceId,
       })
-      editor.deleteShapes([id])
     }, { history: 'ignore' })
   }
   const schedule = (shape: Pill) => {
@@ -78,16 +77,19 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
       const ownerless = !props.userId && !props.deviceId
       const local = !!identity.userId && !!identity.deviceId && props.userId === identity.userId && props.deviceId === identity.deviceId
       if (!ownerless && !local) continue
-      noteFleetPillDeleted(rawId, 'terminate-active', {
-        trigger,
-        createdAt: props.createdAt,
-        ageMs: typeof props.createdAt === 'number' ? now() - props.createdAt : undefined,
-        ephemeral: props.ephemeral,
-        ownerless,
-      })
+      // Delete (and so record) before clearing ACTIVE — `active` is the field
+      // that says the pill went out from under a drag.
+      editor.run(() => {
+        deleteFleetPill(editor, id, 'terminate-active', {
+          trigger,
+          createdAt: props.createdAt,
+          ageMs: typeof props.createdAt === 'number' ? now() - props.createdAt : undefined,
+          ephemeral: props.ephemeral,
+          ownerless,
+        })
+      }, { history: 'ignore' })
       markFleetPillInactive(rawId)
       cancelTimer(rawId)
-      editor.run(() => { if (editor.getShape(id)) editor.deleteShapes([id]) }, { history: 'ignore' })
     }
   }
   const onVisibilityChange = () => documentTarget.hidden ? terminateActivePills('visibility-hidden') : scan()
