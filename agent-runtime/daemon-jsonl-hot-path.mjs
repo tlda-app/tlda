@@ -185,6 +185,7 @@ export function extractIdentityFromRecord(record) {
   if (record.message?.content) texts.push(...textPartsFromValue(record.message.content))
   if (record.payload?.output) texts.push(...textPartsFromValue(record.payload.output))
   if (record.payload?.result) texts.push(...textPartsFromValue(record.payload.result))
+  if (record.payload?.item?.result) texts.push(...textPartsFromValue(record.payload.item.result))
   let identity = null
   for (const text of texts) {
     identity = extractIdentityFromText(text)

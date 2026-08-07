@@ -5370,7 +5370,7 @@ async function cmdDoctorYolo() {
     console.log(`  cwd: ${cwd}`)
     console.log(`  model: ${modelAlias}`)
     console.log(`  kind: ${kind}`)
-    console.log('  path: direct local tmux launch; no daemon/server/grant dependency')
+    console.log('  path: direct local tmux launch; opportunistic tlda binding if server is reachable')
     return
   }
 
@@ -5382,6 +5382,7 @@ async function cmdDoctorYolo() {
     tmuxSocket,
   })
   const { localAgentId, fleetId, tmuxSession, harness: harnessKind, model } = launched
+  const reportedName = launched.name || name
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
@@ -5396,7 +5397,7 @@ async function cmdDoctorYolo() {
   console.log(green(bold('Break-glass agent launched locally.')))
   if (fleetId) console.log(`  fleet_id: ${fleetId}`)
   console.log(`  local_agent_id: ${localAgentId}`)
-  console.log(`  name: ${name}`)
+  console.log(`  name: ${reportedName}`)
   console.log(`  kind: ${harnessKind}`)
   console.log(`  tmux: ${tmuxSession}`)
   console.log(`  cwd: ${cwd}`)
@@ -5404,7 +5405,11 @@ async function cmdDoctorYolo() {
   if (launched.promptDelivery?.ok === false) {
     console.log(dim('  Prompt delivery was not verified; attach to inspect the local session.'))
   }
-  console.log(dim('  This is not a normal fleet mint and does not prove a server recipient binding.'))
+  if (fleetId) {
+    console.log(dim('  tlda server binding is recorded for login()/resume.'))
+  } else {
+    console.log(dim(`  tlda server binding deferred: ${launched.registrationError || 'server unavailable'}`))
+  }
 }
 
 

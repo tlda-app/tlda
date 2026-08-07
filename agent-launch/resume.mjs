@@ -306,7 +306,7 @@ export function scanCodexRolloutIdentity(fpath) {
         }
       }
       let parsed = null
-      if ((ownId == null || localAgentId == null) && (line.includes('"function_call"') || line.includes('"function_call_output"') || line.includes('"mcp_tool_call_end"') || line.includes('TLDA_LOGIN_MARKER'))) {
+      if ((ownId == null || localAgentId == null) && (line.includes('"function_call"') || line.includes('"function_call_output"') || line.includes('"mcp_tool_call_end"') || line.includes('"McpToolCall"') || line.includes('TLDA_LOGIN_MARKER'))) {
         try {
           parsed = JSON.parse(line)
         } catch {
@@ -341,6 +341,16 @@ export function scanCodexRolloutIdentity(fpath) {
       }
       if (ownId == null && payload.type === 'mcp_tool_call_end' && payload.invocation?.server === 'tlda' && payload.invocation?.tool === 'login') {
         for (const text of textPartsFromToolResult(payload.result)) {
+          const login = parseLoginText(text)
+          if (!login) continue
+          if (login.ownId) ownId = login.ownId
+          if (login.localAgentId) localAgentId = login.localAgentId
+          if (login.agentName) agentName = login.agentName
+          break
+        }
+      }
+      if ((ownId == null || localAgentId == null) && payload.item?.type === 'McpToolCall' && payload.item?.server === 'tlda' && payload.item?.tool === 'login') {
+        for (const text of textPartsFromToolResult(payload.item.result)) {
           const login = parseLoginText(text)
           if (!login) continue
           if (login.ownId) ownId = login.ownId

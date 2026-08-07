@@ -1,8 +1,8 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
-import { newLocalAgentId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { activeEnvName, newLocalAgentId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
-import { resolveMintFacts } from '../daemon/mint-store.mjs'
+import { MintStore, resolveMintFacts } from '../daemon/mint-store.mjs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeSpawnModelKwargs } from './models.mjs'
@@ -689,6 +689,41 @@ function defaultMintStorePath() {
   return path.join(configDir, 'daemon-mints.sqlite')
 }
 
+function recordDoctorYoloMintFacts({
+  mintStorePath,
+  localAgentId,
+  fleetId,
+  friendlyName,
+  name,
+  tmuxSession,
+  cwd,
+  harness,
+  model,
+  metadata = {},
+}) {
+  const store = new MintStore(mintStorePath || defaultMintStorePath())
+  try {
+    store.ensure(localAgentId)
+    if (fleetId) store.setFact(localAgentId, 'fleet_id', fleetId)
+    if (friendlyName || name) store.setFact(localAgentId, 'friendly_name', friendlyName || name)
+    store.setFact(localAgentId, 'metadata', metadata)
+    store.updateLaunchRecipe(localAgentId, { kind: harness, model, cwd, name })
+    store.updateProcessState(localAgentId, {
+      fleet_id: fleetId || null,
+      local_agent_id: localAgentId,
+      name,
+      harness,
+      model,
+      tmux_session: tmuxSession,
+      cwd,
+      permission_grant: 'doctor-yolo',
+    })
+    if (fleetId) store.markJoined(localAgentId)
+  } finally {
+    store.close()
+  }
+}
+
 async function spawnRespawn(params) {
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
@@ -1019,6 +1054,7 @@ function normalizeSessionKind(kind) {
 
 export async function launchDoctorYolo(params = {}) {
   const deps = params._deps || {}
+  const api = (deps.resolveApi || resolveApi)()
   const requestedKind = String(params.kind || params.harness || 'codex').trim().toLowerCase()
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown doctor yolo harness: ${requestedKind}`, { kind: requestedKind })
@@ -1030,6 +1066,11 @@ export async function launchDoctorYolo(params = {}) {
   const tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
   const modelSpec = resolveLaunchSpec(rawModel, config)
   const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
+  const machineId = params.machineId || os.hostname().split('.')[0]
+  const envName = params.activeEnvName || activeEnvName()
+  const daemonKey = machineId && envName ? `${machineId}:${envName}` : null
+  const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath || undefined)
+  const localAgentLedger = params.localAgentLedger || ownedLocalLedger
   const { cmd, sendKeys, commandTrace } = await buildCommand({
     requestedKind,
     adapter,
@@ -1065,36 +1106,133 @@ export async function launchDoctorYolo(params = {}) {
     commandContainsCodexYolo: commandTrace.commandContainsCodexYolo,
     commandContainsDangerSandbox: commandTrace.commandContainsDangerSandbox,
   })
-  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, {
-    autoDismiss: requestedKind === 'claude',
-    sendKeys,
-    tmuxSocket: params.tmuxSocket,
-    crashLogPath: params.crashLogPath,
-  })
-  if (!launched) throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
-  if (requestedKind === 'codex') {
-    const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
-    if (!injected) {
+  try {
+    localAgentLedger.create({
+      localAgentId,
+      friendlyName: name,
+      harness: requestedKind,
+      model: modelResolved.model,
+      tmuxName: tmuxSession,
+      cwd,
+      permissionGrant: 'doctor-yolo',
+    })
+    recordDoctorYoloMintFacts({
+      mintStorePath: params.mintStorePath,
+      localAgentId,
+      name,
+      tmuxSession,
+      cwd,
+      harness: requestedKind,
+      model: modelResolved.model,
+      metadata: {
+        permissionGrant: 'doctor-yolo',
+        shell: true,
+        source: 'doctor-yolo',
+        ...(daemonKey ? { daemonKey } : {}),
+        ...(envName ? { envName } : {}),
+      },
+    })
+    const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, {
+      autoDismiss: requestedKind === 'claude',
+      sendKeys,
+      tmuxSocket: params.tmuxSocket,
+      crashLogPath: params.crashLogPath,
+    })
+    if (!launched) throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
+    const promptDeliveryPromise = requestedKind === 'codex'
+      ? Promise.resolve((deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
+      : Promise.resolve(true)
+    const registrationPromise = (async () => {
+      const serverUp = await (deps.ensureServer || ensureServer)({ api })
+      if (!serverUp) throw new Error(`server unavailable at ${api}`)
+      return await (deps.wsMintShell || wsMintShell)({
+        localAgentId,
+        name,
+        tmuxSession,
+        cwd,
+        model: modelResolved.model,
+        effort: params.effort,
+        kind: requestedKind,
+        metadata: {
+          permissionGrant: 'doctor-yolo',
+          permissionMode: 'bypass',
+          shell: true,
+          source: 'doctor-yolo',
+          ...(daemonKey ? { daemonKey } : {}),
+          ...(envName ? { envName } : {}),
+        },
+        machineId,
+        envName,
+        daemonKey,
+        api,
+        ...shellReservationOptions(params),
+      })
+    })()
+    const [promptOutcome, registrationOutcome] = await Promise.allSettled([promptDeliveryPromise, registrationPromise])
+    const promptDelivery = promptOutcome.status === 'fulfilled' && promptOutcome.value
+      ? null
+      : { ok: false, reason: 'unverified' }
+    if (registrationOutcome.status === 'fulfilled') {
+      const reserve = registrationOutcome.value
+      const fleetId = reserve?.server_agent_id || reserve?.agent?.id || null
+      if (!fleetId) {
+        return {
+          ok: true,
+          localAgentId,
+          fleetId: null,
+          tmuxSession,
+          harness: requestedKind,
+          model: modelResolved.model,
+          registrationDeferred: true,
+          registrationError: 'server mint returned no server agent id',
+          ...(promptDelivery ? { promptDelivery } : {}),
+        }
+      }
+      const assignedName = reserve?.assigned_name || name
+      localAgentLedger.bind(localAgentId, fleetId, { friendlyName: assignedName })
+      recordDoctorYoloMintFacts({
+        mintStorePath: params.mintStorePath,
+        localAgentId,
+        fleetId,
+        friendlyName: assignedName,
+        name,
+        tmuxSession,
+        cwd,
+        harness: requestedKind,
+        model: modelResolved.model,
+        metadata: {
+          permissionGrant: 'doctor-yolo',
+          shell: true,
+          source: 'doctor-yolo',
+          ...(daemonKey ? { daemonKey } : {}),
+          ...(envName ? { envName } : {}),
+        },
+      })
       return {
         ok: true,
         localAgentId,
-        fleetId: null,
+        fleetId,
+        name: assignedName,
         tmuxSession,
         harness: requestedKind,
         model: modelResolved.model,
-        registrationDeferred: true,
-        promptDelivery: { ok: false, reason: 'unverified' },
+        registrationDeferred: false,
+        ...(promptDelivery ? { promptDelivery } : {}),
       }
     }
-  }
-  return {
-    ok: true,
-    localAgentId,
-    fleetId: null,
-    tmuxSession,
-    harness: requestedKind,
-    model: modelResolved.model,
-    registrationDeferred: true,
+    return {
+      ok: true,
+      localAgentId,
+      fleetId: null,
+      tmuxSession,
+      harness: requestedKind,
+      model: modelResolved.model,
+      registrationDeferred: true,
+      registrationError: registrationOutcome.reason?.message || String(registrationOutcome.reason),
+      ...(promptDelivery ? { promptDelivery } : {}),
+    }
+  } finally {
+    ownedLocalLedger?.close()
   }
 }
 
