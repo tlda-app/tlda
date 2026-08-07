@@ -4370,6 +4370,18 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
       const lineBytes = Buffer.byteLength(line + SEP, 'utf8');
 
+      // `lines.length > 0` exempts the first message, so MAX_BYTES cannot bind
+      // on a single row that exceeds it by itself — one message to several
+      // hundred agents renders its recipient list at ~29-37 bytes per recipient
+      // (`name fleet:id, `), which reaches the whole budget before any text.
+      // That row is returned whole.
+      //
+      // The exemption is not an oversight: breaking on the first line returns an
+      // empty page, which is worse than a large one — the caller then has no
+      // message and no way to page past it. Making the cap bind here means
+      // truncating within the row rather than dropping it, which is a real
+      // change to what a message looks like. Do not layer a second cap over
+      // this one.
       if (totalBytes + lineBytes > MAX_BYTES && lines.length > 0) {
         truncatedAt = m.timestamp;
         break;
