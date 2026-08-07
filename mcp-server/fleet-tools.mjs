@@ -1531,14 +1531,14 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. A bare token is an agent name, so an unrecognised key like cwd: or sinse: is read as a name and reported as matching no agent rather than silently matching nothing. cwd: and project: are NOT query filters — project is a separate parameter. Note since:/before: here take a relative unit where m means MONTHS, while the since/before PARAMETERS take m as minutes.' },
+          query: { type: 'string', description: 'Literal text terms plus event filters: from:, to:, involving:, agent:, type:, role:, since:, before:. Agent filters use the fleet expression grammar — |, &, !, parens, names/ids/labels, and me — and A <> B reads messages BETWEEN two parties in both directions. A bare token is an agent name, so an unrecognised key like cwd: or sinse: is read as a name and reported as matching no agent rather than silently matching nothing. cwd: and project: are NOT query filters — project is a separate parameter. since:/before: here take m as MINUTES, the same as the since/before parameters, and additionally accept 1w, 3mo, today, and yesterday, which the parameters do not.' },
           project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
           limit: { type: 'number', description: 'Max results (default 20, max 100). Ignored when both since and before are set (bounded calls return full range, up to 500).' },
           context: { type: 'number', description: 'Number of surrounding messages to include with each chat match (default 0, max 20). Shows N messages before and after each match.' },
-          since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only return matches after this time.' },
-          before: { type: 'string', description: 'ISO timestamp, relative shorthand, or "now" — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
+          since: { type: 'string', description: 'ISO timestamp or relative shorthand — "30s", "20m", "2h", "1d". Only return matches after this time. An unreadable value is an error, not an unbounded search; weeks and months are query-only, so write 7d or 90d here.' },
+          before: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or "now" — only return matches before this time. Use for pagination: pass the oldest timestamp from a previous result set.' },
         },
         required: ['query'],
       },
@@ -1552,8 +1552,8 @@ export function getFleetTools() {
           agent: { type: 'string', description: 'Agent selector. Equivalent to filter="agent:<selector>" and resolved by the unified fleet search grammar. Required unless task_id or filter is given.' },
           filter: { type: 'string', description: 'Unified message filter expression, e.g. "from:tabby", "tabby <> permfix", or "from:(chief | tabby) & type:chat".' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
-          since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
-          until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
+          since: { type: 'string', description: 'ISO timestamp or relative shorthand — "30s", "20m", "2h", "1d". Only messages after this time. An unreadable value is an error, not an unbounded read; weeks and months are query-only, so write 7d or 90d here.' },
+          until: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, login, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
@@ -3769,8 +3769,14 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
     }
     const query = parsedSearch.query;
-    const sinceTs = parseTimestamp(args.since) || searchFilters.since || undefined;
-    const beforeTs = parseTimestamp(args.before) || searchFilters.before || undefined;
+    let sinceTs, beforeTs;
+    try {
+      sinceTs = parseTimestamp(args.since) || searchFilters.since || undefined;
+      beforeTs = parseTimestamp(args.before) || searchFilters.before || undefined;
+    } catch (e) {
+      if (e.name !== 'TimeBoundError') throw e;
+      return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
+    }
     const isBoundedSearch = !!(sinceTs && beforeTs);
     const limit = isBoundedSearch ? Math.min(args.limit || 500, 500) : Math.min(args.limit || 20, 100);
     const contextWindow = Math.min(Math.max(args.context || 0, 0), 20);
@@ -4048,8 +4054,14 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let overflow = false;
     let threadUnresolvedNames = [];
 
-    const resolvedSince = parseTimestamp(args.since);
-    const resolvedUntil = parseTimestamp(args.until);
+    let resolvedSince, resolvedUntil;
+    try {
+      resolvedSince = parseTimestamp(args.since);
+      resolvedUntil = parseTimestamp(args.until);
+    } catch (e) {
+      if (e.name !== 'TimeBoundError') throw e;
+      return { content: [{ type: 'text', text: `Thread failed: ${e.message}` }], isError: true };
+    }
     // When both bounds are set the caller committed to a finite range, so grab
     // the whole window in one shot; otherwise page in 200s.
     const isBounded = !!(resolvedSince && resolvedUntil);
