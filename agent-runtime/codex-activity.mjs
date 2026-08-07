@@ -260,21 +260,15 @@ export function parseCodexRecord(o) {
           // here so the outer JavaScript envelope never becomes a fake Bash.
           const nativeCalls = calls.filter(call => !isMcpToolName(call.name))
           if (!nativeCalls.length) return null
-          const blocks = nativeCalls.flatMap((call, index) => {
-            if (call.name === 'apply_patch' && typeof call.input?._resolvedString === 'string') {
-              return applyPatchEvent(call.input._resolvedString, `${p.call_id}#${index}`, ts).blocks
-            }
-            return [{
+          return {
+            type: 'assistant',
+            timestamp: ts,
+            blocks: nativeCalls.map((call, index) => ({
               type: 'tool_use',
               name: normalizeToolName(call.name),
               input: addGenericArgSummary(aliasNativeArgs(call.name, call.input)),
               id: nativeCalls.length === 1 ? p.call_id : `${p.call_id}#${index}`,
-            }]
-          })
-          return {
-            type: 'assistant',
-            timestamp: ts,
-            blocks,
+            })),
           }
         }
         // An exec cell with no recognizable tools is still real activity. Keep

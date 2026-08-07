@@ -390,14 +390,12 @@ function bufferActivity(agentId, evts) {
     const existing = evt?.daemonReceivedAtMs == null || evt.daemonReceivedAtMs === ''
       ? null
       : Number(evt.daemonReceivedAtMs)
-    const stamped = Number.isFinite(existing) ? evt : {
+    if (Number.isFinite(existing)) return evt
+    return {
       ...evt,
       daemonReceivedAt: new Date(daemonReceivedAtMs).toISOString(),
       daemonReceivedAtMs,
     }
-    const filePath = stamped?.input?.file_path || stamped?.input?.path
-    const source = filePath ? sourceSync.sourceFileForAbsolutePath(filePath) : null
-    return source ? { ...stamped, project: source.project, sourceFile: source.file } : stamped
   })
   // A JSONL line is a per-turn heartbeat. Warm the liveness cache keyed by
   // tmux_session so rpcCheckAlive / wake read "alive" from observed activity,

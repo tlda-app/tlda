@@ -54,7 +54,6 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
   // tool_use_id. Entries expire after 30s to avoid leaking memory on abandoned
   // tool calls.
   const pendingPrettyPrint = new Map()
-  const pendingTools = new Map()
 
   function extractActivityEvents(events) {
     const result = []
@@ -92,13 +91,10 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
             input.query || input.description || input.reason ||
             input.agent || input.doc || input.ref || input.text || input._raw || ''
           const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
-          evt.status = block.status || 'started'
+          if (block.status) evt.status = block.status
           if (block.duration) evt.duration = block.duration
           if (block.correlationId) evt.correlationId = block.correlationId
           if (Object.keys(input).length > 0) evt.input = input
-          if (block.id && evt.status !== 'completed' && evt.status !== 'error') {
-            pendingTools.set(block.id, { tool: humanName, arg, input, ts: ev.timestamp })
-          }
           // Attach result for pretty-printed tools
           if (isPrettyPrintTool(name) && block.id) {
             if (toolResults.has(block.id)) {
@@ -117,24 +113,6 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
         }
       }
       if (ev.usage) result.push({ tool: '_usage', ts: ev.timestamp, usage: ev.usage })
-    }
-    for (const [resultId] of toolResults) {
-      const matchingIds = pendingTools.has(resultId)
-        ? [resultId]
-        : [...pendingTools.keys()].filter(id => id.startsWith(`${resultId}#`))
-      for (const id of matchingIds) {
-        const pending = pendingTools.get(id)
-        pendingTools.delete(id)
-        result.push({
-          tool: pending.tool,
-          arg: pending.arg,
-          input: pending.input,
-          ts: events.at(-1)?.timestamp || pending.ts,
-          id,
-          status: 'completed',
-          correlationId: id,
-        })
-      }
     }
     // Check if any tool_results in this batch match pending pretty-print requests
     for (const [id, resultText] of toolResults) {
