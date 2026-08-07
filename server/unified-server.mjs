@@ -6537,18 +6537,19 @@ async function handleFleetWsMessage(ws, msg) {
           wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to, from), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
       }
-    }
-    for (const subDelivery of subscriptionDeliveriesAll) {
-      if (subDelivery.delivery === 'notified') {
-        wakeRequests.push({
-          to: subDelivery.recipient,
-          text: wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) }),
-          asker: from,
-          traceId,
-          source: { sourceEventId: eventId, priority: basePriority, subscriptionId: subDelivery.subscription_id },
-        })
-      } else if (subDelivery.delivery === 'batched' && subDelivery.notifyBy) {
-        queueSubscriptionBatchWake({ delivery: subDelivery, eventId, text, from, traceId, priority: basePriority })
+      for (const subDelivery of r.subscriptionDeliveries) {
+        if (subDelivery.delivery === 'notified') {
+          const subscriptionStatus = await inboxStatusFor(subDelivery.recipient)
+          wakeRequests.push({
+            to: subDelivery.recipient,
+            text: wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) }),
+            asker: from,
+            traceId,
+            source: { sourceEventId: eventId, priority: basePriority, subscriptionId: subDelivery.subscription_id },
+          })
+        } else if (subDelivery.delivery === 'batched' && subDelivery.notifyBy) {
+          queueSubscriptionBatchWake({ delivery: subDelivery, eventId, text, from, traceId, priority: basePriority })
+        }
       }
     }
     // Cache _tempId for idempotent retries
