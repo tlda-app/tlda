@@ -470,7 +470,9 @@ manage each bot's launchd service, tmux session, log, and pid paths. A bot logs
 in to the fleet like an agent. After changing a managed bot's code or declared
 environment, `tlda bot restart [name]` refreshes its launch recipe and restarts
 the already-loaded service. Use `tlda config apply` only when adding, removing,
-or changing the launchd declaration itself.
+or changing the launchd declaration itself. `tlda bot stop` refuses rather than
+unloading a supervised job that an agent shell cannot bootstrap again; use
+`restart` for routine maintenance or `uninstall` to remove the service.
 
 Ordinary CLI preferences such as browser selection live in
 `~/.config/tlda/cli.yaml`. Before changing local configuration, confirm the

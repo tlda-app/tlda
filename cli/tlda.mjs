@@ -127,7 +127,7 @@ const SERVER_COMMANDS = [
 const DAEMON_COMMANDS = [
   ['start', 'Start the fleet daemon'],
   ['restart', 'Restart the loaded fleet daemon'],
-  ['stop', 'Stop the fleet daemon'],
+  ['stop', 'Refuse to unload the supervised fleet daemon'],
   ['status', 'Check daemon status'],
   ['log', 'Show recent daemon log'],
   ['run', 'Run the daemon in the foreground'],
@@ -140,7 +140,7 @@ const BOT_COMMANDS = [
   ['uninstall', 'Remove bot launchd services'],
   ['start', 'Start bot services'],
   ['restart', 'Refresh and restart loaded bot services'],
-  ['stop', 'Stop bot services'],
+  ['stop', 'Refuse to unload supervised bot services'],
   ['status', 'Check bot services'],
   ['log', 'Show recent bot logs'],
 ]
@@ -212,10 +212,10 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|install|enlist|uninstall|start|restart|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement. Restart refreshes its launch recipe from current configuration and restarts an already-loaded service.',
+  bot:     'tlda bot [list|install|enlist|uninstall|start|restart|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement. Restart refreshes its launch recipe from current configuration and restarts an already-loaded service. Stop refuses because unloading a supervised job from an agent shell strands it; use restart or uninstall.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
-  daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service.',
+  daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model <provider-model>] [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         With no model or kind, uses the configured default model. --model names\n         a provider model directly; --kind then defaults to codex. Run in a\n         terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Non-interactive calls report the local tmux\n         session and local mint id; they do not claim a fleet-recipient binding.',
   'repo-doctor': 'tlda project repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   config:  'tlda config [init | apply | mcp-setup | setup | auth | set <key> <value> | get [key]]\n\n  init       Create the config files a fresh install needs (daemon.yaml, server.yaml)\n             pointing at this machine. Only writes files that are missing; an\n             existing config is never merged into or overwritten.\n  apply      Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n             --dry-run       show the plan without writing plists or running launchctl.\n             --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  mcp-setup  Write .mcp.json in the current directory for tlda and fleet tools.\n  setup      Run one-time local setup tasks, such as editor URL handlers.\n  auth       Manage access tokens.\n  set        Manage CLI preferences.\n  get        Show CLI preferences.',
@@ -2298,11 +2298,9 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'stop') {
     requireLaunchd()
-    const existingPid = runningFleetDaemonPid()
-    await bootoutDaemonLabel()
-    if (existingPid) await terminateFleetDaemon(existingPid)
-    console.log(green('Fleet daemon launchd job stopped.'))
-    return
+    console.error(red('Refusing to unload the supervised fleet daemon.'))
+    console.error(dim('  An agent/background shell cannot bootstrap it again. Use `tlda daemon restart` for routine maintenance or `tlda daemon uninstall` to remove the service.'))
+    process.exit(1)
   }
 
   if (sub === 'restart') {
@@ -2572,18 +2570,10 @@ async function cmdBot() {
   }
 
   if (sub === 'stop') {
-    const bots = findConfiguredBot(name)
     requireLaunchd()
-    for (const bot of bots) {
-      const paths = botServicePaths(bot.name)
-      await bootoutBot(bot)
-      const childProcess = await import('child_process')
-      const target = exactTmuxTarget(paths.tmuxSession)
-      const tmuxSessionExists = childProcess.spawnSync('tmux', ['has-session', '-t', target], { stdio: 'ignore' }).status === 0
-      if (tmuxSessionExists) childProcess.execFileSync('tmux', ['kill-session', '-t', target], { stdio: 'ignore' })
-      console.log(green(`Stopped ${paths.label}.`))
-    }
-    return
+    console.error(red('Refusing to unload supervised bot services.'))
+    console.error(dim('  An agent/background shell cannot bootstrap them again. Use `tlda bot restart [name]` for routine maintenance or `tlda bot uninstall [name]` to remove a service.'))
+    process.exit(1)
   }
 
   if (sub === 'status') {
