@@ -1058,7 +1058,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         <SyncErrorPill />
         <BuildErrorPill />
         <BuildWarningPill warnings={pillWarnings}>
-          <BuildProgressPill />
+          <BuildProgressPill document={document} />
         </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}
         {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}

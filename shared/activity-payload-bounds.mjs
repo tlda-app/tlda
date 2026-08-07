@@ -35,7 +35,7 @@ export function boundActivityPayload(value, options = {}, depth = 0) {
   return out
 }
 
-export function boundActivityMetadata({ tool, arg, input, usage, origTool, status, duration, correlationId, activityLatency }) {
+export function boundActivityMetadata({ tool, arg, input, usage, origTool, status, duration, correlationId, project, sourceFile, activityLatency }) {
   return {
     tool: tool || '',
     arg: boundActivityPayload(arg || ''),
@@ -46,5 +46,7 @@ export function boundActivityMetadata({ tool, arg, input, usage, origTool, statu
     ...(status ? { status } : {}),
     ...(duration ? { duration: boundActivityPayload(duration) } : {}),
     ...(correlationId ? { correlationId } : {}),
+    ...(project ? { project } : {}),
+    ...(sourceFile ? { sourceFile } : {}),
   }
 }
