@@ -948,6 +948,17 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     if (!selectedAgentId) return null
     return agentRows.find(row => row.id === selectedAgentId || row.exactName === selectedAgentId) || null
   }, [agentRows, selectedAgentId])
+  // The dep array is narrowed to `.exactName` on purpose, and `exhaustive-deps`
+  // will tell you it is incomplete. It is not: `fleetChatFilterForAgent` reads
+  // `row.exactName` and `humanId` and nothing else, so this is every value the
+  // closure consumes. The rule tracks whole identifiers and cannot express
+  // "only this property," which is why it ships as a warning.
+  //
+  // Widening it to `selectedAgent` is a regression, not a cleanup. This filter
+  // feeds the `subscribeChat` effect below, and `agentRows` rebuilds its row
+  // objects on every refresh — so depending on the object identity recomputes
+  // the filter continuously, and tears down and re-establishes the index chat
+  // subscription with it.
   const selectedAgentFilter = useMemo(
     () => fleetChatFilterForAgent(selectedAgent, identity.id),
     [selectedAgent?.exactName, identity.id],
@@ -969,6 +980,17 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   }, [selectedAgentFilter, indexChatBufferKey, identity.id, identity.name])
   const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, indexChatBufferKey)
   const sendTargets = useMemo(() => selectedAgent?.exactName ? [selectedAgent.exactName] : [], [selectedAgent?.exactName])
+  // The React Compiler bails out here — `react-hooks/preserve-manual-memoization`
+  // reports "Compilation Skipped: Existing memoization could not be preserved"
+  // against this dep array — so this component does not get compiler
+  // optimisation. That is accepted, not unnoticed: it is recorded in
+  // `config/eslint-baseline.json` deliberately, because leaving a severity-2 red
+  // that nobody intends to fix is how a lint gate becomes one people route
+  // around.
+  //
+  // What is not known is whether it costs anything. Nobody has profiled index
+  // chat rendering against a version the compiler accepts. If you are here
+  // because rendering is slow, this is a real lead and it has not been chased.
   const chatRenderContext = useMemo(
     () => makeIndexChatRenderContext(agents, tasks, identity, sendTargets),
     [agents, tasks, identity, sendTargets],

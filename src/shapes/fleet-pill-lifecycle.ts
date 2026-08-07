@@ -1,4 +1,6 @@
-import { deleteFleetPill } from './fleet-pill-forensics'
+import type { TLShapeId } from 'tldraw'
+
+import { deleteFleetPill, type FleetPillDeletingEditor } from './fleet-pill-forensics'
 import { markFleetPillInactive } from './fleet-pill-transient'
 
 export type FleetPillSnapState = {
@@ -9,9 +11,7 @@ export type FleetPillSnapState = {
   expanded: boolean
 }
 
-type FleetPillLifecycleEditor = {
-  getShape: (id: any) => unknown
-  deleteShapes: (ids: any[]) => void
+type FleetPillLifecycleEditor = FleetPillDeletingEditor & {
   user: {
     updateUserPreferences: (preferences: { isSnapMode: boolean }) => void
   }
@@ -19,7 +19,7 @@ type FleetPillLifecycleEditor = {
 
 export function finishFleetPillTranslation(
   editor: FleetPillLifecycleEditor,
-  pillId: any,
+  pillId: TLShapeId,
   snapState: FleetPillSnapState,
   options: { deferDelete?: boolean } = {},
 ) {
