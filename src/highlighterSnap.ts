@@ -21,6 +21,7 @@ function serverBase(): string {
 }
 import { openInEditor } from './texsync'
 import { chatInsertBus, chipContentStore, dropPillOnTarget } from './shapes/FleetPillShape'
+import { deleteFleetPill } from './shapes/fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './shapes/fleet-pill-transient'
 import { dragCoordinator } from './shapes/dragCoordinator'
 import { FLEET_HUD_VIEWPORT_ID } from './wm/fleet-hud-layer'
@@ -1044,7 +1045,7 @@ function showSourceContextCard(
             const dropPoint = fleetPointerEventPagePoint(pillEditor, frame, ev)
             dropPillOnTarget(pillEditor, pillId, token, dropPoint, token)
             pillEditor.run(() => {
-              if (pillEditor.getShape(pillId)) pillEditor.deleteShapes([pillId])
+              deleteFleetPill(pillEditor, pillId, 'drag-drop', { surface: 'highlighter' })
             }, { history: 'ignore' })
           }
           dragState = null
@@ -1053,9 +1054,12 @@ function showSourceContextCard(
         () => {
           const pillId = dragState?.pillId as TLShapeId | undefined
           dragState = null
-          if (pillId) markFleetPillInactive(String(pillId))
-          if (pillId && pillEditor.getShape(pillId)) {
-            pillEditor.run(() => { pillEditor.deleteShapes([pillId]) }, { history: 'ignore' })
+          if (pillId) {
+            // Delete (and so record) before clearing ACTIVE — see fleet-pill-forensics.
+            pillEditor.run(() => {
+              deleteFleetPill(pillEditor, pillId, 'drag-cancel', { surface: 'highlighter' })
+            }, { history: 'ignore' })
+            markFleetPillInactive(String(pillId))
           }
         },
       )
