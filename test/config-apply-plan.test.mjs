@@ -30,6 +30,18 @@ test('planLaunchdApply updates changed jobs and leaves identical jobs alone', ()
   assert.deepEqual(plan.remove, [])
 })
 
+test('planLaunchdApply bootstraps desired jobs that exist on disk but are unloaded', () => {
+  const plan = planLaunchdApply({
+    desiredJobs: [{ label: 'com.tlda.fleet-daemon.testing', plist: '/a/testing.plist', content: 'same' }],
+    existingJobs: [{ label: 'com.tlda.fleet-daemon.testing', plist: '/a/testing.plist', content: 'same', loaded: false }],
+  })
+  assert.deepEqual(plan.add.map(j => j.label), ['com.tlda.fleet-daemon.testing'])
+  assert.equal(plan.add[0].previous.loaded, false)
+  assert.deepEqual(plan.update, [])
+  assert.deepEqual(plan.unchanged, [])
+  assert.deepEqual(plan.remove, [])
+})
+
 test('planLaunchdApply removes stale managed jobs', () => {
   const plan = planLaunchdApply({
     desiredJobs: [{ label: 'com.tlda.fleet-daemon.testing', plist: '/a/testing.plist', content: 'new' }],
@@ -51,4 +63,3 @@ test('planLaunchdApply rejects malformed desired jobs', () => {
     /missing content/,
   )
 })
-

@@ -1653,9 +1653,19 @@ function existingManagedLaunchdJobs() {
       const label = file.slice(0, -'.plist'.length)
       if (!isManagedLaunchdLabel(label)) return null
       const plist = join(dir, file)
-      return { label, plist, content: readFileSync(plist, 'utf8') }
+      return { label, plist, content: readFileSync(plist, 'utf8'), loaded: isLaunchdJobLoaded(label) }
     })
     .filter(Boolean)
+}
+
+function isLaunchdJobLoaded(label) {
+  try {
+    const invocation = launchctlCommand(['print', daemonLaunchdTarget(label)], { uid: process.getuid() })
+    execFileSync(invocation.command, invocation.args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    return true
+  } catch {
+    return false
+  }
 }
 
 function writeLaunchdJob(job) {

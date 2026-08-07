@@ -22,6 +22,8 @@ export function planLaunchdApply({ desiredJobs, existingJobs }) {
     const current = existing.get(job.label)
     if (!current) {
       add.push(job)
+    } else if (current.loaded === false) {
+      add.push({ ...job, previous: current })
     } else if (current.content !== job.content || current.plist !== job.plist) {
       update.push({ ...job, previous: current })
     } else {
@@ -35,4 +37,3 @@ export function planLaunchdApply({ desiredJobs, existingJobs }) {
 
   return { add, update, unchanged, remove }
 }
-
