@@ -4086,14 +4086,35 @@ function FleetChatInner({ shape }: { shape: any }) {
     for (const row of rows) {
       const rect = row.getBoundingClientRect()
       if (rect.bottom <= viewportTop + 0.5) continue
-      viewportAnchorRef.current = {
-        key: row.dataset.chatItemKey || '',
-        top: rect.top - viewportTop,
+      const key = row.dataset.chatItemKey || ''
+      const top = rect.top - viewportTop
+      const previous = viewportAnchorRef.current
+      // Observation only — this still re-baselines exactly as before, and that
+      // re-baselining is the bug: the anchored row moved with no gesture behind
+      // it, and recording the new position as the truth is what makes the drift
+      // permanent and silent. What is missing is not the correction, it is the
+      // measurement. `scrollTop`/`scrollHeight` are here because the last attempt
+      // to correct this asked for 450px of scroll from an element with roughly
+      // 106px of range, and that had to be inferred afterwards from a neighbouring
+      // record. With the pair on the record it is a measurement, not an inference:
+      // the correction is impossible whenever |drift| exceeds the range on offer.
+      if (previous && previous.key === key
+          && !(touchScrollActiveRef.current || explicitScrollInputRef.current)
+          && Math.abs(top - previous.top) > 1) {
+        log.metric('chat-anchor', 'anchor drifted with no input', {
+          panelId: String(shape.id),
+          anchorKey: key,
+          drift: Math.round(top - previous.top),
+          scrollTop: Math.round(el.scrollTop),
+          scrollHeight: Math.round(el.scrollHeight),
+          clientHeight: Math.round(el.clientHeight),
+        })
       }
+      viewportAnchorRef.current = { key, top }
       return
     }
     viewportAnchorRef.current = null
-  }, [])
+  }, [shape.id])
 
   const restoreViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
