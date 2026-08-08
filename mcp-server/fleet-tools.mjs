@@ -4875,6 +4875,15 @@ const FLEET_TOOL_READ_WAIT_MS = 45_000;
 // "couldn't fetch the agent roster ... (transient). Retry shortly." -- no new
 // wording, because the right sentence already exists.
 const FLEET_RESOLVE_DEADLINE_MS = 5_000;
+
+// Longer than the resolve deadline because this waits on an ACK for a row that
+// is already durably enqueued, and a slow-but-succeeding send is worth waiting
+// for. Measured over 17,523 real chat sends: p50 119ms, p90 425ms, p99 3,954ms.
+// 15s is roughly four times p99, so a send that would have succeeded still does;
+// what changes is that one which never would now says "queued" instead of
+// hanging until the host kills the tool call.
+const FLEET_DURABLE_SEND_DEADLINE_MS = 15_000;
+
 const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRWS?.connected });
 
 /**
@@ -5059,7 +5068,21 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
     throw new Error(row.lastError || `durable ${type} ${row.status}`);
   }
 
-  const result = await flushFleetTransport({ operationId, agentId: transportAgentId });
+  // The durable send had no deadline: `flushFleetTransport` defaults deadlineMs
+  // to null, and null selects an unbounded `while (true)` in
+  // sendFleetRequestAttempt. So chat() to a bare id never failed and never
+  // returned — the MCP host killed the call, and the caller saw a bare protocol
+  // error with no text. On 2026-08-08 that silently ate ten consecutive messages
+  // from the app chief to Skip while /health answered in under 100ms.
+  //
+  // The row is already enqueued above, so an expiry here loses nothing: the
+  // outbox keeps it and the scheduled flush below retries. Bounded, the caller
+  // gets "queued" and can say so; unbounded, the caller gets silence.
+  const result = await flushFleetTransport({
+    operationId,
+    agentId: transportAgentId,
+    deadlineMs: FLEET_DURABLE_SEND_DEADLINE_MS,
+  });
   const latest = outbox.get(operationId);
   if (latest?.status === 'accepted') return latest.result || result || { ok: true, operation_id: operationId };
   if (latest?.status === 'failed' || latest?.status === 'dead') {
