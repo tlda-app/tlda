@@ -82,5 +82,7 @@ export function inspectSubmissionArchive(bytes) {
     errors.push(`${qmdPath} has no answer blocks. Write your answers inside the blanked solution callouts from the template rather than replacing them.`)
   }
 
-  return { ok: errors.length === 0, errors, qmdPath, answerIds, files: names }
+  // `entries` rides along so accepting a submission does not unzip a second
+  // time — and so the bytes that were validated are the bytes that get stored.
+  return { ok: errors.length === 0, errors, qmdPath, answerIds, files: names, entries: unpacked }
 }

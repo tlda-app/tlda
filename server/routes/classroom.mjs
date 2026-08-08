@@ -2,7 +2,9 @@ import { Router } from 'express'
 import crypto from 'node:crypto'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
 import { extractToken, validateToken } from '../lib/auth.mjs'
-import { hashSourceFiles, readProject } from '../lib/project-store.mjs'
+import { createProject, hashSourceFiles, readProject, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { dispatchBuild } from '../lib/build-dispatch.mjs'
+import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 
 function studentToken(req) {
   return req.headers['x-tlda-student-token'] || null
@@ -20,11 +22,11 @@ function allowedStudent(principal, studentId) {
   return principal?.role === 'instructor' || (principal?.role === 'student' && principal.studentId === studentId)
 }
 
-export function classroomTemplateVersion(templateDocKey) {
-  const project = readProject(templateDocKey)
+export async function classroomTemplateVersion(templateDocKey) {
+  const project = await readProject(templateDocKey)
   if (!project) throw new Error('template document not found')
   if (project.buildStatus !== 'success') throw new Error('template document build is not ready')
-  const hashes = Object.entries(hashSourceFiles(templateDocKey)).sort(([left], [right]) => left.localeCompare(right))
+  const hashes = Object.entries(await hashSourceFiles(templateDocKey)).sort(([left], [right]) => left.localeCompare(right))
   return crypto.createHash('sha256').update(JSON.stringify(hashes)).digest('hex')
 }
 
@@ -80,11 +82,11 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     res.json(assignment)
   })
 
-  router.put('/assignments/:assignmentId/template', instructor, (req, res) => {
+  router.put('/assignments/:assignmentId/template', instructor, async (req, res) => {
     const { templateDocKey } = req.body || {}
     if (!templateDocKey) return res.status(400).json({ error: 'templateDocKey is required' })
     try {
-      const templateVersion = resolveTemplateVersion(templateDocKey)
+      const templateVersion = await resolveTemplateVersion(templateDocKey)
       res.json(store.freezeTemplate(req.params.assignmentId, { templateDocKey, templateVersion }))
     } catch (error) {
       const status = error.message.includes('not found') ? 404 : 409
@@ -107,6 +109,64 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const contentRef = String(req.body?.contentRef || '').trim()
     if (!contentRef) return res.status(400).json({ error: 'contentRef is required' })
     res.json(store.submit({ assignmentId: req.params.assignmentId, studentId, contentRef }))
+  })
+
+  // A submission arrives as an archive, not a file: an answer done on paper is
+  // photographed and included with ordinary markdown image syntax, so the .qmd
+  // cannot travel alone.
+  //
+  // Accepting one means materialising it as a qmd project, because that is what
+  // renders the work to HTML pages — which is what the side-by-side marking view
+  // already reads. So `contentRef` stays a document key and nothing downstream
+  // has to learn a new shape.
+  router.post('/assignments/:assignmentId/submissions/:studentId/upload', (req, res) => {
+    const { assignmentId, studentId } = req.params
+    if (!allowedStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })
+    if (!store.getAssignment(assignmentId)) return res.status(404).json({ error: 'Assignment not found' })
+
+    const chunks = []
+    let settled = false
+    const fail = (code, body) => {
+      if (settled) return
+      settled = true
+      res.status(code).json(body)
+    }
+    // A disconnect mid-upload must never be recorded as a submission. Telling a
+    // student their work arrived when only half of it did is the exact failure
+    // this whole path exists to prevent, so nothing is stored until the bytes
+    // are complete and the archive has been read.
+    req.on('aborted', () => fail(400, { error: 'The upload stopped before it finished. Nothing was recorded — please upload again.' }))
+    req.on('error', error => fail(400, { error: `The upload failed in transit: ${error.message}. Nothing was recorded.` }))
+    req.on('data', chunk => chunks.push(chunk))
+    req.on('end', async () => {
+      if (settled) return
+      const archive = Buffer.concat(chunks)
+      if (!archive.length) return fail(422, { error: 'The upload was empty — no file bytes arrived.' })
+
+      const inspection = inspectSubmissionArchive(archive)
+      if (!inspection.ok) return fail(422, { error: 'This archive cannot be marked yet.', problems: inspection.errors })
+
+      const contentRef = `submission-${assignmentId}-${studentId}`
+      try {
+        if (!await readProject(contentRef)) {
+          createProject({ name: contentRef, title: `${studentId} — ${assignmentId}`, mainFile: inspection.qmdPath, format: 'qmd' })
+        }
+        for (const [entryPath, bytes] of Object.entries(inspection.entries)) {
+          if (entryPath.endsWith('/')) continue
+          await writeSourceFileAsync(contentRef, entryPath, Buffer.from(bytes))
+        }
+        const submission = store.submit({ assignmentId, studentId, contentRef })
+        settled = true
+        // The record is written before the render is asked for: a build that
+        // fails leaves the work stored and re-renderable, where waiting on the
+        // build would lose it.
+        res.json({ ...submission, qmdPath: inspection.qmdPath, answerIds: inspection.answerIds })
+        dispatchBuild(contentRef).catch(error => console.error(`[classroom] render failed for ${contentRef}:`, error))
+      } catch (error) {
+        console.error(`[classroom] could not store submission ${contentRef}:`, error)
+        fail(500, { error: 'The submission could not be stored. Nothing was recorded — please try again.' })
+      }
+    })
   })
 
   router.post('/assignments/:assignmentId/submissions/:studentId/feedback', instructor, (req, res) => {
