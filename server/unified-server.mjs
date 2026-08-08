@@ -1583,6 +1583,30 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
   return false
 }
 
+// `_tldaAgentId` is set by BOTH `login` and `reserve-shell`, and `reserve-shell`
+// stamps it on whichever socket sent the request -- which for a wake or a spawn
+// is the CALLER's connection, not the target's. So hasOpenFleetSocketForAgent
+// answers "is some socket labelled with this id", which is not the same question
+// as "does this agent's own client hold a connection".
+//
+// The difference is not theoretical. On 2026-08-08 `math-delivery-oncall` and
+// `really-able-to-do-stuff` both sat at a prompt reading `⚠ MCP startup
+// interrupted … tlda` -- no tlda MCP at all -- and both read as having an open
+// socket, because something had reserved a shell for them. A watchdog built on
+// the first question would have called them healthy.
+//
+// This one only counts a socket that authenticated AS the agent through `login`,
+// which is what the agent's own MCP client does on connect and reconnect. Read
+// by the dev bot's `agent-channel` check, which needs to separate an agent busy
+// inside a long tool call (client attached, heartbeating) from one whose client
+// is gone.
+function hasOwnClientSocketForAgent(agentId) {
+  for (const client of wsFleetClients) {
+    if (client._tldaLoginAgentId === agentId && client.readyState === 1) return true
+  }
+  return false
+}
+
 const spawnLibrarian = new SpawnLibrarian({
   loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
@@ -4434,6 +4458,7 @@ const fleetRouter = createFleetRouter({
   sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget,
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
   hasOpenFleetSocketForAgent,
+  hasOwnClientSocketForAgent,
   reanimateAgent,
   requireOperationRead: requireRw,
 })
@@ -5780,6 +5805,7 @@ async function handleFleetWsMessage(ws, msg) {
       await fleetStore.upsertAgent(agent)
       if (agent.human) {
         ws._tldaAgentId = null
+        ws._tldaLoginAgentId = null
         humanPresence.attach(ws, agent.id)
       }
     } catch (e) {
@@ -5870,6 +5896,9 @@ async function handleFleetWsMessage(ws, msg) {
       humanPresence.detach(ws)
       agentFleetConnections.set(loginAgentId, ws)
       ws._tldaAgentId = loginAgentId
+      // Set on `login` only, never on `reserve-shell`: this is the socket the
+      // agent's own client authenticated on. See hasOwnClientSocketForAgent.
+      ws._tldaLoginAgentId = loginAgentId
       const now = new Date().toISOString()
       const agent = {
         ...existing,
@@ -5914,6 +5943,7 @@ async function handleFleetWsMessage(ws, msg) {
     }
     await fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
     ws._tldaAgentId = null
+    ws._tldaLoginAgentId = null
     humanPresence.attach(ws, agent.id)
     broadcastState(agent.id)
     reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })

@@ -5,7 +5,7 @@ function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
 }
 
-function rowForAgent(agent, now = Date.now(), hasOpenFleetSocket = null) {
+function rowForAgent(agent, now = Date.now(), hasOwnClientSocket = null) {
   const lastSeenMs = agent.last_seen ? now - new Date(agent.last_seen).getTime() : null
   const act = agent.metadata?.status || null
   return {
@@ -30,11 +30,22 @@ function rowForAgent(agent, now = Date.now(), hasOpenFleetSocket = null) {
     // whose process is up and whose client has stopped. Read by the dev bot's
     // `agent-receiving` check.
     activity_at: act?.ts || null,
-    // Whether this agent currently holds an open /ws/fleet socket. Null when the
-    // caller did not supply the predicate, which is NOT the same as false — a
-    // watcher must treat null as "not measured" rather than as "no socket".
-    // Read by the dev bot's `agent-mcp-channel` check.
-    fleet_socket_open: typeof hasOpenFleetSocket === 'function' ? !!hasOpenFleetSocket(agent.id) : null,
+    // Whether the agent's OWN client currently holds an open /ws/fleet socket —
+    // one that authenticated as this agent through `login`, which is what its
+    // MCP client does on connect and reconnect.
+    //
+    // This deliberately does NOT use hasOpenFleetSocketForAgent. That predicate
+    // reads `_tldaAgentId`, which `reserve-shell` stamps on the CALLER's socket
+    // when waking or spawning someone else, so it reports a socket for an agent
+    // that has no client at all. Shipped as `fleet_socket_open` for one evening
+    // on 2026-08-08, it read true for two agents sitting at a prompt saying
+    // `⚠ MCP startup interrupted … tlda`, which is exactly the state a watchdog
+    // exists to catch.
+    //
+    // Null when the caller supplied no predicate, which is NOT false: a watcher
+    // must treat null as "not measured" rather than as "no socket".
+    // Read by the dev bot's `agent-channel` check.
+    client_socket_open: typeof hasOwnClientSocket === 'function' ? !!hasOwnClientSocket(agent.id) : null,
     runtime_status: agent.runtime_status || null,
     activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}),
   }
@@ -68,13 +79,13 @@ export function summarizeFleetRosterTruth({
   limit = 50,
   machineSessions = {},
   now = Date.now(),
-  hasOpenFleetSocket = null,
+  hasOwnClientSocket = null,
 } = {}) {
   const agentRoster = roster || []
   const totals = fleetRosterTotals(agentRoster)
   const capped = Math.max(1, Math.min(Number(limit) || 50, 500))
   const matchedRoster = matched || agentRoster
-  const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now, hasOpenFleetSocket))
+  const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now, hasOwnClientSocket))
   const summary = {
     models: countValues(matchedRoster, a => a.metadata?.model || null),
     inbox_statuses: countValues(matchedRoster, a => a.metadata?.inboxStatus || null),
