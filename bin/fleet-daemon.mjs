@@ -1025,11 +1025,19 @@ async function rpcRestart(params = {}) {
     agent_id: agentId,
     mint_id: mintId,
   }).catch(e => ({ ok: false, error: e?.message || String(e) }))
+  // BOTH HALVES DECIDE, and the kill is the one that was silently optional.
+  // A restart exists to replace the process, so if the kill did not happen there
+  // is nothing to wake: `wakeMint` finds the session already alive, returns ok,
+  // and the caller is told the restart succeeded. That is not a hypothetical —
+  // `really-able-to-do-stuff` was reported restarted twice while its codex
+  // process ran unbroken from 17:18:41, and its missing tlda MCP survived both
+  // because no process ever ended. Stop before the wake so the kill's own error
+  // is what the caller sees.
+  if (killed?.ok === false) {
+    throw new Error(`restart did not kill the session: ${killed.error || 'kill-session refused'}`)
+  }
   const woke = await wakeMint(params)
-  // A restart that killed and did not wake is a hibernate. Reporting ok:true for
-  // it left `really-able-to-do-stuff` face down with the CLI printing "ok" — the
-  // wake had failed on a stored profile that is not a configured one, and
-  // nothing said so. The wake is the half that decides.
+  // And a restart that killed and did not wake is a hibernate.
   return { ok: woke?.ok !== false, killed, woke }
 }
 
