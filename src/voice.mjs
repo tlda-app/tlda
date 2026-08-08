@@ -2480,6 +2480,23 @@ let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
 let _dgCarriedSubmittedText = null // submitted message tail that cannot contaminate the next message
+let _dgCarriedSubmittedAt = 0    // when that carry was armed; bounds how long it can eat text
+// THE BOUND THAT MAKES THE CARRY SAFE. `trimSubmittedPrefixFromDeepgramText`
+// drops a transcript ENTIRELY when its whole text is a suffix of the submitted
+// message (voice-indicator.mjs:75), so a carry left armed swallows any later
+// utterance that happens to end the same way. Skip's send word is "bro" and he
+// ends messages with it, so an unbounded carry ate his send word and locked him
+// out of his own app on 2026-08-08 04:12. The carry protects against ONE thing —
+// the pre-send tail Deepgram flushes after a Finalize — and that arrives inside
+// a second. `utterance_end_ms` is 1000 and the bridge's own carry backstop is
+// 800 (deepgram-sdk-bridge.mjs:85), so 1500 is past both.
+const DG_CARRY_WINDOW_MS = 1500
+function releaseSubmittedCarry(reason) {
+  if (!_dgCarriedSubmittedText) return
+  vlog('released submitted carry', { reason, carried: vtail(_dgCarriedSubmittedText) })
+  _dgCarriedSubmittedText = null
+  _dgCarriedSubmittedAt = 0
+}
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
 // Words already committed by the last final that a CONTINUING interim restates.
@@ -2584,7 +2601,10 @@ function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText
   if (!preserveUtteranceGuard) {
     _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
     _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
-    if (!preserveSubmittedCarry) _dgCarriedSubmittedText = _dgIgnoredSubmittedText
+    if (!preserveSubmittedCarry) {
+      _dgCarriedSubmittedText = _dgIgnoredSubmittedText
+      _dgCarriedSubmittedAt = _dgCarriedSubmittedText ? Date.now() : 0
+    }
   }
   if (!preserveLastFinal) _dgLastFinalNorm = ''
   if (!preserveLastFinal) _dgLastFinalAt = 0
@@ -2872,6 +2892,12 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'speech_started') {
       _lastResultTime = Date.now()
       dotAudioFlowing()
+      // He is audibly talking again, so nothing arriving from here on is the
+      // tail of the message he already sent. This is the same content boundary
+      // the bridge uses to release its own carry (deepgram-sdk-bridge.mjs:533),
+      // and releasing on it is what keeps a later "bro" — a whole utterance
+      // that happens to be a suffix of the last one — from being swallowed.
+      releaseSubmittedCarry('speech started')
       _dgLastFinalNorm = ''
       _dgLastFinalAt = 0
       vlog('speech started')
@@ -2881,7 +2907,17 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'utterance_end') {
       _dgIgnoreUntilUtteranceEnd = false
       _dgIgnoredSubmittedText = null
-      _dgCarriedSubmittedText = null
+      // THE CARRY IS DELIBERATELY NOT RELEASED HERE, and this line is the bug
+      // Skip has hit on every send since 8/7. The bridge releases its OWN carry
+      // on this very signal and forwards this message in the same breath
+      // (deepgram-sdk-bridge.mjs:546), which means the pre-send tail that
+      // follows is stamped with the CURRENT epoch and sails past the epoch check
+      // above. This branch used to disarm, in the same instant, the only filter
+      // left that could recognise it — so the tail landed in the composer he had
+      // just emptied, and he deleted it by hand, by voice, with RSI.
+      //
+      // Bounded by `speech_started` above and by DG_CARRY_WINDOW_MS at the trim
+      // site, so it cannot become the unbounded carry that ate his send word.
       _dgLastFinalNorm = ''
       _dgLastFinalAt = 0
       return
@@ -2918,6 +2954,10 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _dgIgnoredSubmittedText = null
     }
 
+    if (_dgCarriedSubmittedText && Date.now() - _dgCarriedSubmittedAt > DG_CARRY_WINDOW_MS) {
+      releaseSubmittedCarry('carry window elapsed')
+    }
+
     if (_dgCarriedSubmittedText) {
       const trimmed = trimSubmittedPrefixFromDeepgramText(msg.text, _dgCarriedSubmittedText)
       if (trimmed.droppedWords > 0) {
@@ -2928,6 +2968,25 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
             droppedWords: trimmed.droppedWords,
             text: msg.text.slice(0, 60),
           })
+          // LOUD, at warn, not vlog. This is the one operation in the voice path
+          // that destroys words he said, and on 2026-08-08 04:12 it destroyed his
+          // send word until he noticed and said so. vlog is gated below warn, so
+          // an unbounded carry was invisible in client.log while it was happening;
+          // the only instrument was Skip. Anything that can take his voice has to
+          // be greppable without him.
+          console.warn('voice: dropped a whole transcript as submitted-tail carryover', {
+            droppedWords: trimmed.droppedWords,
+            sinceSendMs: Date.now() - _dgCarriedSubmittedAt,
+            final: !!msg.is_final,
+            text: msg.text.slice(0, 60),
+          })
+          // The tail is over once its own final has been consumed — the same
+          // content boundary the bridge releases on. Keeping it armed past that
+          // buys nothing and only widens the window in which a real utterance
+          // can be mistaken for it. It also caps the blast radius: at most ONE
+          // transcript per send can ever be swallowed here, where the 04:12
+          // regression swallowed every later utterance that ended the same way.
+          if (msg.is_final) releaseSubmittedCarry('carried tail consumed')
           return
         }
         _voiceBoundaryTelemetry.contaminationTrimmed++
@@ -2938,6 +2997,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
           trimmed: trimmed.text.slice(0, 60),
         })
         msg.text = trimmed.text
+        if (msg.is_final) releaseSubmittedCarry('carried tail consumed')
       }
     }
 
