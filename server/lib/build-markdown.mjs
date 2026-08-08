@@ -59,8 +59,15 @@ function escapedDollar(state, silent) {
   return true
 }
 
-// Extract \newcommand and \DeclareMathOperator from preamble $$ blocks
-function extractMacros(source) {
+// Extract \newcommand and \DeclareMathOperator from preamble $$ blocks.
+//
+// Exported because a part needs its PROJECT MAIN's preamble as well as its own.
+// The scope chain here is document → project main → fleet, the same one the rest
+// of tlda borrows from lexical scope, and this function is the only reader of the
+// middle scope for a markdown project — a `.tex` project gets it from the build's
+// macros.json instead. Without the middle scope a macro he defines once, in the
+// main document, renders as red error text in every part.
+export function extractMacros(source) {
   const macros = {}
   const preambleRe = /\$\$([\s\S]*?)\$\$/g
   let m
