@@ -4102,7 +4102,20 @@ function FleetChatInner({ shape }: { shape: any }) {
     const viewportTop = el.getBoundingClientRect().top
     const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
     const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
-    if (!row) return false
+    if (!row) {
+      // The anchored row left the DOM. Virtuoso unmounts rows outside its render
+      // window, which is what a reanchor does — so this is the likely state
+      // exactly when the viewport most needs holding. Nothing corrects the
+      // position after this return and the reader drifts. The success case below
+      // has always been recorded; this is the other half of the same story.
+      log.metric('chat-anchor', 'anchor row gone; viewport left uncorrected', {
+        panelId: String(shape.id),
+        anchorKey: anchor.key,
+        renderedRows: rows.length,
+        top: el.scrollTop,
+      })
+      return false
+    }
     const delta = row.getBoundingClientRect().top - viewportTop - anchor.top
     if (Math.abs(delta) <= 0.5) return true
     geometryReconcileScrollTopRef.current = el.scrollTop + delta
@@ -4120,6 +4133,19 @@ function FleetChatInner({ shape }: { shape: any }) {
     const el = chatLogRef.current
     if (!el) return
     if (touchScrollActiveRef.current) {
+      // Where the skip actually happens. restoreViewportAnchor has its own
+      // touchScrollActive term, but this early return is its only caller's
+      // first act, so that term never decides anything — instrumenting it
+      // would have recorded a permanent zero. One record per gesture: the
+      // deferred flag is already the dedupe.
+      if (!deferredGeometryReconcileRef.current) {
+        log.metric('chat-anchor', 'geometry reconcile deferred; touch gesture in flight', {
+          panelId: String(shape.id),
+          anchorKey: viewportAnchorRef.current?.key ?? null,
+          scrolledUp: userScrolledUpRef.current,
+          top: el.scrollTop,
+        })
+      }
       deferredGeometryReconcileRef.current = true
       return
     }
@@ -4132,7 +4158,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollHeight
     el.scrollTop = el.scrollHeight
     geometryReconcileScrollTopRef.current = el.scrollTop
-  }, [captureViewportAnchor, restoreViewportAnchor])
+  }, [captureViewportAnchor, restoreViewportAnchor, shape.id])
 
   useLayoutEffect(() => {
     const el = chatLogEl
