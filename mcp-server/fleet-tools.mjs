@@ -1793,6 +1793,96 @@ export function formatRecipientStatusSummary(recipients = [], agents = [], recei
   }).join(', ');
 }
 
+function mimeTypeForImagePath(filePath) {
+  const ext = String(filePath || '').split('.').pop()?.toLowerCase() || 'png';
+  const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+  return mimeMap[ext] || 'image/png';
+}
+
+export async function resolveMarkdownImagesForMcp(text, {
+  fetcher = fleetFetch,
+  fsImpl = fs,
+  pathImpl = path,
+  now = () => Date.now(),
+  tmpDir = os.tmpdir(),
+} = {}) {
+  if (!text) return { text, images: [] };
+  const imgPattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const images = [];
+  let cleaned = text;
+
+  for (const match of [...text.matchAll(imgPattern)]) {
+    const [full, alt, url] = match;
+    let localPath = null;
+    let failure = null;
+
+    const pathMatch = url.match(/[?&]path=([^&]+)/);
+    if (pathMatch) {
+      localPath = decodeURIComponent(pathMatch[1]);
+      if (!fsImpl.existsSync(localPath)) localPath = null;
+    }
+
+    if (!localPath && url.startsWith('http')) {
+      try {
+        const resp = await fetcher(url);
+        if (!resp.ok) {
+          failure = `HTTP ${resp.status}`;
+        } else {
+          const buf = Buffer.from(await resp.arrayBuffer());
+          const ext = pathImpl.extname(new URL(url).pathname) || '.png';
+          localPath = pathImpl.join(tmpDir, `fleet-img-${now()}-${images.length}${ext}`);
+          fsImpl.writeFileSync(localPath, buf, { mode: 0o600 });
+        }
+      } catch (e) {
+        failure = e?.message || String(e);
+      }
+    }
+
+    if (localPath) {
+      images.push({ path: localPath, mimeType: mimeTypeForImagePath(localPath), alt: alt || '' });
+      cleaned = cleaned.replace(full, alt ? `[image attached: ${alt}]` : '[image attached]');
+    } else if (failure) {
+      const label = alt ? `image: ${alt}` : 'image';
+      cleaned = cleaned.replace(full, `[${label} not pre-materialized: ${failure}]`);
+    }
+  }
+  return { text: cleaned, images };
+}
+
+export function formatInboxContent({ text, messages = [], fsImpl = fs } = {}) {
+  const content = [{ type: 'text', text: text || '' }];
+  const imageFailures = [];
+  for (const message of messages || []) {
+    for (const image of message?.images || []) {
+      if (image?.source?.type === 'base64' && image.source.data) {
+        content.push({
+          type: 'image',
+          data: image.source.data,
+          mimeType: image.source.media_type || image.mimeType || 'image/png',
+        });
+        continue;
+      }
+      if (!image?.path) continue;
+      try {
+        content.push({
+          type: 'image',
+          data: fsImpl.readFileSync(image.path).toString('base64'),
+          mimeType: image.mimeType || mimeTypeForImagePath(image.path),
+        });
+      } catch (e) {
+        imageFailures.push(`${image.path}: ${e?.message || String(e)}`);
+      }
+    }
+  }
+  if (imageFailures.length) {
+    content[0] = {
+      ...content[0],
+      text: `${content[0].text}\n\n⚠️ Inbox image injection failed:\n${imageFailures.map(line => `- ${line}`).join('\n')}`,
+    };
+  }
+  return content;
+}
+
 function inboxTaskSummary(task) {
   if (!task) return null;
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
@@ -3409,53 +3499,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   // Extract image URLs from markdown, resolve to local paths, return as
   // { text, images } where images are { path, mimeType } objects.
   async function resolveImages(text) {
-    if (!text) return { text, images: [] }
-    const imgPattern = /!\[([^\]]*)\]\(([^)]+)\)/g
-    const images = []
-    let cleaned = text
-
-    for (const match of [...text.matchAll(imgPattern)]) {
-      const [full, alt, url] = match
-      let localPath = null
-
-      // Direct local path in URL query param: /api/file?path=/tmp/...
-      const pathMatch = url.match(/[?&]path=([^&]+)/)
-      if (pathMatch) {
-        localPath = decodeURIComponent(pathMatch[1])
-      }
-
-      // If the referenced file is not readable locally (common with Fly-hosted
-      // /api/file?path=/tmp/... links), download the image into a local temp.
-      if (localPath) {
-        try {
-          const fs = await import('fs')
-          if (!fs.existsSync(localPath)) localPath = null
-        } catch {
-          localPath = null
-        }
-      }
-      if (!localPath && url.startsWith('http')) {
-        try {
-          const fs = await import('fs')
-          const path = await import('path')
-          const resp = await fleetFetch(url)
-          if (resp.ok) {
-            const buf = Buffer.from(await resp.arrayBuffer())
-            const ext = path.extname(new URL(url).pathname) || '.png'
-            localPath = `/tmp/fleet-img-${Date.now()}${ext}`
-            fs.writeFileSync(localPath, buf)
-          }
-        } catch {}
-      }
-
-      if (localPath) {
-        const ext = localPath.split('.').pop()?.toLowerCase() || 'png'
-        const mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
-        images.push({ path: localPath, mimeType: mimeMap[ext] || 'image/png', alt: alt || '' })
-        cleaned = cleaned.replace(full, alt ? `[image attached: ${alt}]` : '[image attached]')
-      }
-    }
-    return { text: cleaned, images }
+    return resolveMarkdownImagesForMcp(text)
   }
 
   // ---- chip token resolution ----
@@ -3522,12 +3566,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   }
 
   async function resolveInboxImages(text) {
-    if (!text) return { text, images: [] }
-    const cleaned = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (full, alt, url) => {
-      const label = alt ? `image: ${alt}` : 'image'
-      return `[${label} not pre-materialized: ${url}]`
-    })
-    return { text: cleaned, images: [] }
+    return resolveMarkdownImagesForMcp(text)
   }
 
   // ---- inbox ----
@@ -3623,7 +3662,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       ];
       if (stopped) lines.push(`⚠️ ${stopped}`);
       if (!drained) lines.push('Inbox was already empty.');
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return { content: formatInboxContent({ text: lines.join('\n') }) };
     }
 
     let data;
@@ -3659,7 +3698,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         text += `\n\n⚠️ Parent fallback acknowledgement failed; these messages may be offered again: ${e.message}`;
       }
     }
-    return { content: [{ type: 'text', text }] };
+    return { content: formatInboxContent({ text, messages }) };
   }
 
   // ---- configuration ----

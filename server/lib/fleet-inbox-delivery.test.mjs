@@ -7,7 +7,12 @@ import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 
-import { formatInboxText, resolveInboxMessage } from '../../mcp-server/fleet-tools.mjs'
+import {
+  formatInboxContent,
+  formatInboxText,
+  resolveInboxMessage,
+  resolveMarkdownImagesForMcp,
+} from '../../mcp-server/fleet-tools.mjs'
 import { FleetStore } from './fleet-store.mjs'
 
 async function unusedPort() {
@@ -105,6 +110,72 @@ test('all inbox formatting includes a delivered user message', async () => {
   assert.match(rendered, /ALL ACTIVE INBOX/)
   assert.match(rendered, /visible in all/)
   assert.match(rendered, /fleet:skip/)
+})
+
+test('MCP inbox injects markdown image content instead of a not-pre-materialized URL placeholder', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-inbox-image-'))
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64')
+  const resolveImages = text => resolveMarkdownImagesForMcp(text, {
+    tmpDir: dir,
+    now: () => 1234,
+    fetcher: async () => new Response(png, {
+      status: 200,
+      headers: { 'content-type': 'image/png', 'content-length': String(png.length) },
+    }),
+  })
+
+  try {
+    const message = await resolveInboxMessage({
+      id: 44,
+      type: 'chat',
+      from: 'fleet:skip',
+      to: 'fleet:recipient',
+      text: 'see this ![screenshot](https://example.test/screenshot.png)',
+      metadata: {},
+    }, {
+      resolveChipTokens: async text => ({ text, images: [] }),
+      resolveTheoremRefs: text => text,
+      resolveImages,
+    })
+
+    const rendered = formatInboxText({
+      mode: 'all',
+      task: null,
+      tasks: [],
+      messages: [message],
+      counts: { messages: 1 },
+    })
+    const content = formatInboxContent({ text: rendered, messages: [message] })
+
+    assert.doesNotMatch(content[0].text, /not pre-materialized/)
+    assert.match(content[0].text, /image attached: screenshot/)
+    assert.equal(content[1].type, 'image')
+    assert.equal(content[1].mimeType, 'image/png')
+    assert.equal(content[1].data, png.toString('base64'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('MCP inbox reports the exact markdown image pre-materialization failure', async () => {
+  const message = await resolveInboxMessage({
+    id: 45,
+    type: 'chat',
+    from: 'fleet:skip',
+    to: 'fleet:recipient',
+    text: 'broken ![screenshot](https://example.test/screenshot.png)',
+    metadata: {},
+  }, {
+    resolveChipTokens: async text => ({ text, images: [] }),
+    resolveTheoremRefs: text => text,
+    resolveImages: text => resolveMarkdownImagesForMcp(text, {
+      fetcher: async () => new Response('nope', { status: 503 }),
+    }),
+  })
+
+  assert.match(message.line, /image: screenshot not pre-materialized: HTTP 503/)
+  const content = formatInboxContent({ text: message.line, messages: [message] })
+  assert.equal(content.length, 1)
 })
 
 test('my-task delivers unread messages and ack-inbox clears only returned ids', async () => {
