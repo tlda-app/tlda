@@ -503,11 +503,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
   // Returning marks needs the editor, and the control that triggers it lives
   // outside this component; the bridge is a window event, as elsewhere.
+  //
+  // Page 0 is the student's submission in the compare view — his solution is
+  // page 1. Marks are scoped to that block, so what he draws on his own
+  // solution stays the common layer rather than being handed to one student.
   useEffect(() => {
     const editor = editorRef.current
-    if (!editorMounted || !editor) return
-    return installReturnMarksBridge(editor, shapeIdSetRef.current)
-  }, [editorMounted])
+    const submissionShapeId = document.pages[0]?.shapeId
+    if (!editorMounted || !editor || !submissionShapeId) return
+    return installReturnMarksBridge(editor, submissionShapeId)
+  }, [document, editorMounted])
 
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
