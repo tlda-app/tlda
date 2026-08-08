@@ -113,3 +113,18 @@ test('zooming one pane does not rescale the other', () => {
   assert.deepEqual(ends.from, { x: 40, y: 100 })
   assert.deepEqual(ends.to, { x: 980, y: 200 })
 })
+
+test('each pane hands CanvasClipPanel the surface it expects', () => {
+  // CanvasClipPanel owns the viewport lifecycle — it registers the viewport and
+  // syncs its camera. A pane supplies the id and the surface and lets it, so
+  // there is one place doing that rather than two that can disagree.
+  const { wm, panes } = mounted()
+  for (const pane of panes) {
+    assert.equal(pane.wmSurface.wm, wm)
+    assert.equal(pane.wmSurface.layerId, pane.layerId)
+    assert.equal(pane.wmSurface.surfaceId, pane.request.surfaceId)
+    assert.ok(wm.hasLayer(pane.wmSurface.layerId), 'the surface names a layer that does not exist')
+  }
+  // Two panes, two viewports — the whole point.
+  assert.equal(new Set(panes.map(p => p.viewportId)).size, 2)
+})

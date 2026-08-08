@@ -78,7 +78,17 @@ export function mountGradingPanes(
       parent: wm.rootLayerId,
       backing: { kind: 'viewport', viewportId, editor: adapter },
     })
-    return { pane, request, viewportId, layerId, bounds }
+    return {
+      pane,
+      request,
+      viewportId,
+      layerId,
+      bounds,
+      // The shape CanvasClipPanel wants. It owns the viewport's lifecycle —
+      // registering it, syncing its camera — so a pane hands it an id and a
+      // surface and lets it do that, rather than a second place doing it too.
+      wmSurface: { wm, layerId, surfaceId: request.surfaceId },
+    }
   })
   return panes
 }
