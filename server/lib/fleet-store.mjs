@@ -2279,6 +2279,26 @@ export class FleetStore {
       if (byId) found.set(byId.id, byId);
       for (const a of this._aliveAgentByName.get(literal)) found.set(a.id, a);
       for (const a of this._aliveAgentByLabel.get(literal)) found.set(a.id, a);
+      // Addressing one agent by name or id, and the registries have nothing.
+      //
+      // The registries are built from _getAliveAgents, which excludes rows still
+      // carrying the mint's shell flag — an agent whose login never completed. That
+      // predicate is the ROSTER's question (is this one of the three runtime states)
+      // and it is the wrong question here: "not running" is not "does not exist".
+      // A hibernating agent is not running either, and chat to it is accepted and
+      // waits. AGENTS.md: "Messaging is not gated on recipient wake state; delivery
+      // queues or bounces at the messaging layer." A shell was bouncing instead, so
+      // addressing an agent that plainly exists returned "No recipients matched" —
+      // which is how Skip lost a worker whose exact friendly name he had.
+      //
+      // Only on an empty result, so this cannot change any resolution that already
+      // succeeds, and still never dead: a dead agent cannot act on a message, and a
+      // dead twin sharing a live name double-fans the send (see the caller). Dead is
+      // reached by reanimating first, exactly as before.
+      if (found.size === 0) {
+        const stored = this.findAgent(literal);
+        if (stored && !stored.dead && stored.id !== from) found.set(stored.id, stored);
+      }
       return [...found.values()]
         .filter(a => a.id !== from)
         .sort(compareAgentsForRoster)
