@@ -1,8 +1,8 @@
 {
   "rules": [
-    { "edit": "*.tex", "requires": ["writing-arguments"] },
-    { "edit": "*.bib", "requires": ["writing-arguments"] },
-    { "edit": "*.md",  "requires": ["writing-arguments"], "condition": "latex-project" },
+    { "edit": "*.tex", "requires": ["constructing-arguments"] },
+    { "edit": "*.bib", "requires": ["constructing-arguments"] },
+    { "edit": "*.md",  "requires": ["constructing-arguments"], "condition": "latex-project" },
 
     { "edit": "*.css", "requires": ["app-development", "app-testing", "appearance-requires-permission"] },
     { "edit": "*.tsx", "requires": ["app-development", "app-testing", "appearance-requires-permission", "code-patterns"] },

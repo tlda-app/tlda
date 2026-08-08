@@ -3,6 +3,7 @@ import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
+import { log } from './logger'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
@@ -54,7 +55,13 @@ class ErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('ErrorBoundary caught:', error, errorInfo)
+    // Same reason as the shape boundary in SvgDocument: raw console.error is
+    // not forwarded, so a whole-app crash left no record either.
+    log.error('app-error', 'app error boundary caught a render throw', {
+      message: error?.message ?? String(error),
+      stack: error?.stack ?? null,
+      componentStack: errorInfo?.componentStack ?? null,
+    })
   }
 
   render() {

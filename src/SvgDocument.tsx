@@ -39,6 +39,7 @@ import { FleetReportArtifactShapeUtil } from './shapes/FleetReportArtifactShape'
 import { FleetSourceEditorShapeUtil } from './shapes/FleetSourceEditorShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { dispatchFleetHudReset } from './wm/editor-host-bridge'
+import { log } from './logger'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { OutlineShapeUtil } from './shapes/OutlineShape'
@@ -178,7 +179,16 @@ class ShapeErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error(`Shape render error [${this.props.shapeType}]:`, error, info)
+    // Raw console.error goes nowhere: the logger wraps console for its own
+    // calls, it does not patch the global, so every crash caught here has been
+    // invisible in client.log while the red box sat on the document. The
+    // component stack is the payload — it names the line that threw.
+    log.error('shape-error', 'shape render threw; showing the error placeholder', {
+      shapeType: this.props.shapeType,
+      message: error?.message ?? String(error),
+      stack: error?.stack ?? null,
+      componentStack: info?.componentStack ?? null,
+    })
   }
 
   render() {
