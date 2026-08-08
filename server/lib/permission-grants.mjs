@@ -454,7 +454,8 @@ function permissionClampFact({ requestedProfile, permissionGrant, clampedBy } = 
     granted: typeof permissionGrant === 'string'
       ? permissionGrant
       : `intersection(${(permissionGrant?.profiles || []).join(',')})`,
-    by: clampedBy || 'profile intersection',
+    by: clampedBy?.by || 'profile intersection',
+    byProfile: clampedBy?.byProfile || null,
   }
 }
 
@@ -493,15 +494,18 @@ function resolvedPermissionGrantIdentity({
   const modelProfileSet = modelPermissionProfile ? profileSet(config, modelPermissionProfile, { cwd, project }) : null
   const spawnerProfileSet = spawnerPermissionProfile ? profileSet(config, spawnerPermissionProfile, { cwd, project }) : null
 
+  // The reason travels as a pair, never as a pre-quoted string: a plain-text
+  // surface wants "math" and a markdown one wants `math`, and a reason that
+  // carries its own quotes is wrong in one of them.
   if (modelPermissionProfile && strictlyClamps(modelProfileSet || modelPermissionSet, chosenSet || requestedSet)) {
     chosenProfile = modelPermissionProfile
     chosenSet = modelProfileSet || modelPermissionSet
-    clampedBy = `model ceiling "${modelPermissionProfile}"`
+    clampedBy = { by: 'model ceiling', byProfile: modelPermissionProfile }
   }
   if (spawnerPermissionProfile && strictlyClamps(spawnerProfileSet || spawnerPermissionSet, chosenSet || requestedSet)) {
     chosenProfile = spawnerPermissionProfile
     chosenSet = spawnerProfileSet || spawnerPermissionSet
-    clampedBy = `spawner profile "${spawnerPermissionProfile}"`
+    clampedBy = { by: 'spawner profile', byProfile: spawnerPermissionProfile }
   }
 
   if (!chosenProfile) {
@@ -517,7 +521,7 @@ function resolvedPermissionGrantIdentity({
     modelPermissionProfile,
     spawnerPermissionProfile,
   })
-  if (intersection) return { permissionGrant: intersection, clampedBy: clampedBy || 'profile intersection' }
+  if (intersection) return { permissionGrant: intersection, clampedBy: clampedBy || { by: 'profile intersection', byProfile: null } }
 
   throw new Error(`permission request for "${requestedProfile || '(unknown)'}" cannot be represented as configured permission profiles`)
 }
@@ -546,7 +550,8 @@ function structuredPermissionIntersection({
 // wider profile, and an intersection is neither.
 export function permissionClampLine(clamp) {
   if (!clamp?.requested) return null
-  return `permissions: requested "${clamp.requested}", granted "${clamp.granted}" — clamped by ${clamp.by}`
+  const reason = clamp.byProfile ? `${clamp.by} "${clamp.byProfile}"` : clamp.by
+  return `permissions: requested "${clamp.requested}", granted "${clamp.granted}" — clamped by ${reason}`
 }
 
 export function permissionGrantTransparencyLine(grant, permissionSet = null) {

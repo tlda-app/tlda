@@ -1956,7 +1956,8 @@ function deliverSpawnPermissionClamp(entry, detail) {
     'fleet:tlda',
     entry.ownerId,
     `**permissions clamped** — \`${label}\` launched, but not on the profile you asked for.\n\n`
-    + `requested \`${clamp.requested}\` · granted \`${clamp.granted}\` · clamped by ${clamp.by}\n\n`
+    + `requested \`${clamp.requested}\` · granted \`${clamp.granted}\` · clamped by ${clamp.by}`
+    + `${clamp.byProfile ? ` \`${clamp.byProfile}\`` : ''}\n\n`
     + `agent_id: \`${agentId || '(none)'}\``,
     { type: 'spawn_permission_clamped', mailbox_id: entry.id, agent_id: agentId, ...clamp },
   )).catch(e => console.error(`[spawn-mailbox] failed to deliver clamp notice for ${entry.id}: ${e.message}`))

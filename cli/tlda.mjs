@@ -3635,6 +3635,24 @@ export async function runFleetSpawn(spawnArgs, {
   // returns before the launcher runs, and for a year the flag it was given was
   // neither validated nor sent.
   if (explicitPermissionArg) {
+    // Naming a profile here CONFERS it, and the wake path confers it unclamped —
+    // the daemon takes wakeParams.permissionGrant ahead of everything and applies
+    // no intersection to it, because that path was only ever reachable by an
+    // operator. It stopped being operator-only the moment this flag started
+    // working: it had been dropped before the RPC, so the door was shut by
+    // accident, not by a check. Same gate as `agent permissions`, for the same
+    // reason and in Skip's words — "the agents can't run it thing is a privilege
+    // escalation thing. It's for real."
+    //
+    // Scoped to the flag, not the command: an agent may still mint and wake, it
+    // just cannot choose the grant. Do not relax this to a clamp — the daemon
+    // wake path has nothing to clamp against.
+    try {
+      await assertNotAgentContext()
+    } catch (e) {
+      console.error(red(e.message))
+      process.exit(1)
+    }
     const known = Object.keys(readDaemonConfig(defaultDaemonConfigPath(configDir))?.profiles || {})
     if (!known.includes(explicitPermissionArg)) {
       console.error(red(`unknown permission profile "${explicitPermissionArg}". Profiles (daemon.yaml): ${known.join(', ') || '(none configured)'}`))
