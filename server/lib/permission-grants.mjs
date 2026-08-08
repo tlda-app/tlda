@@ -422,7 +422,7 @@ export function resolveSpawnGrant({
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })
-  const permissionGrant = resolvedPermissionGrantIdentity({
+  const { permissionGrant, clampedBy } = resolvedPermissionGrantIdentity({
     requestedProfile,
     requestedSet,
     modelPermissionProfile,
@@ -437,6 +437,24 @@ export function resolveSpawnGrant({
   return {
     permissionGrant,
     permissionSet,
+    // A refusal that says nothing is how `app-dev` was requested on every mint
+    // for a day while `math` was written and nobody was told. When the resolved
+    // grant is not the profile that was asked for, the caller gets the fact and
+    // the reason — the reason names which knob to reach for.
+    permissionClamp: permissionClampFact({ requestedProfile, permissionGrant, clampedBy }),
+  }
+}
+
+function permissionClampFact({ requestedProfile, permissionGrant, clampedBy } = {}) {
+  const requested = String(requestedProfile || '').trim()
+  if (!requested) return null
+  if (typeof permissionGrant === 'string' && permissionGrant.trim() === requested) return null
+  return {
+    requested,
+    granted: typeof permissionGrant === 'string'
+      ? permissionGrant
+      : `intersection(${(permissionGrant?.profiles || []).join(',')})`,
+    by: clampedBy || 'profile intersection',
   }
 }
 
@@ -470,6 +488,7 @@ function resolvedPermissionGrantIdentity({
 } = {}) {
   let chosenProfile = firstConfiguredProfile(config, requestedProfile)
   let chosenSet = chosenProfile ? profileSet(config, chosenProfile, { cwd, project }) : null
+  let clampedBy = null
 
   const modelProfileSet = modelPermissionProfile ? profileSet(config, modelPermissionProfile, { cwd, project }) : null
   const spawnerProfileSet = spawnerPermissionProfile ? profileSet(config, spawnerPermissionProfile, { cwd, project }) : null
@@ -477,10 +496,12 @@ function resolvedPermissionGrantIdentity({
   if (modelPermissionProfile && strictlyClamps(modelProfileSet || modelPermissionSet, chosenSet || requestedSet)) {
     chosenProfile = modelPermissionProfile
     chosenSet = modelProfileSet || modelPermissionSet
+    clampedBy = `model ceiling "${modelPermissionProfile}"`
   }
   if (spawnerPermissionProfile && strictlyClamps(spawnerProfileSet || spawnerPermissionSet, chosenSet || requestedSet)) {
     chosenProfile = spawnerPermissionProfile
     chosenSet = spawnerProfileSet || spawnerPermissionSet
+    clampedBy = `spawner profile "${spawnerPermissionProfile}"`
   }
 
   if (!chosenProfile) {
@@ -488,7 +509,7 @@ function resolvedPermissionGrantIdentity({
   }
 
   if (chosenSet && samePermissionSet(permissionSet, chosenSet)) {
-    return chosenProfile
+    return { permissionGrant: chosenProfile, clampedBy }
   }
 
   const intersection = structuredPermissionIntersection({
@@ -496,7 +517,7 @@ function resolvedPermissionGrantIdentity({
     modelPermissionProfile,
     spawnerPermissionProfile,
   })
-  if (intersection) return intersection
+  if (intersection) return { permissionGrant: intersection, clampedBy: clampedBy || 'profile intersection' }
 
   throw new Error(`permission request for "${requestedProfile || '(unknown)'}" cannot be represented as configured permission profiles`)
 }
@@ -517,6 +538,15 @@ function structuredPermissionIntersection({
     type: 'permission-intersection',
     profiles: uniqueProfiles,
   }
+}
+
+// Said out loud wherever a grant is resolved. Naming the clamp without naming
+// its reason sends the reader to the wrong knob: a model ceiling is raised by
+// the operator per-agent, a spawner clamp is raised by giving the SPAWNER a
+// wider profile, and an intersection is neither.
+export function permissionClampLine(clamp) {
+  if (!clamp?.requested) return null
+  return `permissions: requested "${clamp.requested}", granted "${clamp.granted}" — clamped by ${clamp.by}`
 }
 
 export function permissionGrantTransparencyLine(grant, permissionSet = null) {

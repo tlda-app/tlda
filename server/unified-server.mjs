@@ -1936,6 +1936,32 @@ function deliverSpawnLaunchFailure(entry, detail) {
   )).catch(e => console.error(`[spawn-mailbox] failed to deliver ${entry.id}: ${e.message}`))
 }
 
+// A spawn that SUCCEEDS with a narrower grant than was asked for is the quietest
+// failure this system has. `deliverSpawnMailboxCompletion` above is a record
+// addressed to nobody, so the caller is told the mint worked and never told the
+// request was refused: a `math` seat asked for `app-dev` on every mint for a day,
+// got `math` every time, and found out by watching four agents fail to commit.
+//
+// Delivered to the owner, not the server owner — a routine clamp is not Skip's
+// business, and the person who needs it is the one who asked. Fires only when the
+// granted profile differs from the requested one, so it is rare and always
+// actionable: the reason names which knob to reach for.
+function deliverSpawnPermissionClamp(entry, detail) {
+  if (entry.kind !== 'spawn' || !entry.ownerId) return
+  const clamp = detail?.permissionClamp
+  if (!clamp?.requested) return
+  const label = detail.label || entry.meta?.name || 'mint'
+  const agentId = detail.agentId || entry.meta?.agentId || null
+  Promise.resolve(fleetStore.chat(
+    'fleet:tlda',
+    entry.ownerId,
+    `**permissions clamped** — \`${label}\` launched, but not on the profile you asked for.\n\n`
+    + `requested \`${clamp.requested}\` · granted \`${clamp.granted}\` · clamped by ${clamp.by}\n\n`
+    + `agent_id: \`${agentId || '(none)'}\``,
+    { type: 'spawn_permission_clamped', mailbox_id: entry.id, agent_id: agentId, ...clamp },
+  )).catch(e => console.error(`[spawn-mailbox] failed to deliver clamp notice for ${entry.id}: ${e.message}`))
+}
+
 function isIndeterminateSpawnOutcome(value) {
   const reason = value?.reason || value?.code
   const message = value?.error || value?.message || String(value || '')
@@ -2282,12 +2308,17 @@ async function performSpawnRelay(caller, msg) {
         requested_name: requestedName,
         name_changed: result?.name_changed ?? (assignedName !== requestedName),
         permissionGrant,
+        // The daemon answers `mint` in snake_case and `spawn` in camelCase, and
+        // `mint` is the op the delegate path takes. Reading one spelling would
+        // have left the clamp silent on exactly the path that produced this bug.
+        permissionClamp: result?.permissionClamp || result?.permission_clamp || null,
         spawnerPermission: result?.spawnerPermission,
         projectPermission: result?.projectPermission,
         modelPermission: result?.modelPermission,
       }
       const settled = mailboxLibrarian.complete(mailbox.id, completion)
       if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
+      if (settled) deliverSpawnPermissionClamp(settled, completion)
       broadcastState()
     } catch (e) {
       if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')

@@ -52,6 +52,7 @@ import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import {
   compilePermissionGrant,
+  permissionClampLine,
   permissionGrantProfileName,
   permissionGrantTransparencyLine,
   resolveDirectSpawnGrant,
@@ -3628,6 +3629,18 @@ export async function runFleetSpawn(spawnArgs, {
   const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
   const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
+  // A named --permissions profile must be one the operator actually configured in
+  // daemon.yaml. Unknown profile → loud error listing the real ones, never a
+  // silent fallback. Checked here so it covers wake as well: the wake branch
+  // returns before the launcher runs, and for a year the flag it was given was
+  // neither validated nor sent.
+  if (explicitPermissionArg) {
+    const known = Object.keys(readDaemonConfig(defaultDaemonConfigPath(configDir))?.profiles || {})
+    if (!known.includes(explicitPermissionArg)) {
+      console.error(red(`unknown permission profile "${explicitPermissionArg}". Profiles (daemon.yaml): ${known.join(', ') || '(none configured)'}`))
+      process.exit(1)
+    }
+  }
   if (spawnMode === 'session') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
     const result = await lifecycleImpl('spawn', {
@@ -3691,11 +3704,27 @@ export async function runFleetSpawn(spawnArgs, {
     } finally {
       mintStore.close()
     }
-    const result = await lifecycleImpl('wake', { mint_id: restored.identifier })
+    // The daemon has taken `permissionGrant` on wake since wake-permission-profile
+    // existed; this call is the wire that was never connected, so `--permissions`
+    // on wake resolved to nothing at all. The daemon writes the ledger from what
+    // it actually launched, so passing it here is what makes the change durable.
+    const result = await lifecycleImpl('wake', {
+      mint_id: restored.identifier,
+      ...(explicitPermissionArg ? { permissionGrant: explicitPermissionArg } : {}),
+    })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${name}`)
     printLocalDaemonOutcome(result)
     const identity = result.agent_id || result.fleetId || result.mint_id || restored.identifier
     console.log(`Woke ${result.tmux_session || result.tmuxSession || name} (${identity}) in ${restored.cwd}`)
+    if (explicitPermissionArg) {
+      const verified = await readDurablePermissionGrant(identity, { configDir })
+      if (permissionGrantProfileName(verified) !== explicitPermissionArg) {
+        console.error(red(`wake did not take: ${identity} durable grant is ${describePermissionGrant(verified)}, not "${explicitPermissionArg}"`))
+        process.exitCode = 1
+        return
+      }
+      console.log(`  permissions: ${explicitPermissionArg} (verified in the daemon permission ledger)`)
+    }
     return
   }
   const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
@@ -3732,15 +3761,6 @@ export async function runFleetSpawn(spawnArgs, {
       }
     }
     const modelOptions = collectSpawnModelOptionsFromRaw(spawnArgs)
-    // A named --permissions profile must be one the operator actually configured
-    // in daemon.yaml. Unknown profile → loud error listing the real ones, never a
-    // silent fallback.
-    if (explicitPermissionArg) {
-      const known = Object.keys(daemonConfig?.profiles || {})
-      if (!known.includes(explicitPermissionArg)) {
-        throw new Error(`unknown permission profile "${explicitPermissionArg}". Profiles (daemon.yaml): ${known.join(', ') || '(none configured)'}`)
-      }
-    }
     ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
     applyDaemonGrants(ledger, daemonConfig)
     const config = withDaemonModelAliases(loadDaemonConfigImpl(), daemonConfig)
@@ -3840,6 +3860,8 @@ export async function runFleetSpawn(spawnArgs, {
     const action = params.enroll ? 'Enrolled' : (params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke')
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)
     if (permissionLine) console.log(permissionLine)
+    const clampLine = permissionClampLine(grant.permissionClamp)
+    if (clampLine) console.error(red(clampLine))
   } catch (e) {
     console.error(red(e?.message || String(e)))
     process.exitCode = 1
@@ -4452,6 +4474,34 @@ async function resolveFleetPrefUserId(query) {
   throw new Error(`No agent/user matched "${query}". Use an existing name or an explicit fleet:<id>.`)
 }
 
+// The daemon permission ledger is the durable grant — the store `agent move`
+// already treats as authoritative and the one wake now reads. Every claim this
+// CLI makes about an agent's permissions is read back from here.
+async function readDurablePermissionGrant(agentId, { configDir = CONFIG_DIR } = {}) {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
+  try {
+    return ledger.get(agentId)?.permissionGrant || null
+  } finally {
+    await ledger.close()
+  }
+}
+
+async function writeDurablePermissionGrant(agentId, permissionGrant, { source, configDir = CONFIG_DIR } = {}) {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
+  try {
+    await ledger.set(agentId, { permissionGrant, source })
+  } finally {
+    await ledger.close()
+  }
+}
+
+function describePermissionGrant(grant) {
+  if (!grant) return 'none'
+  return typeof grant === 'string' ? `"${grant}"` : JSON.stringify(grant)
+}
+
 async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', configDir = CONFIG_DIR } = {}) {
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
   const spawnConfig = withDaemonModelAliases({}, daemonConfig)
@@ -4806,11 +4856,9 @@ async function cmdAgentPermissions() {
 
   if (!profileArg) {
     const agent = await findSingleAgent(agentQuery)
-    const meta = normalizeAgentMetadata(agent.metadata)
-    const stored = meta.permissionGrant || null
-    const storedText = stored ? (typeof stored === 'string' ? stored : JSON.stringify(stored)) : 'none'
+    const durable = await readDurablePermissionGrant(agent.id)
     console.log(`${agent.friendly_name || agent.id} (${agent.id})`)
-    console.log(`  permissions: ${storedText}`)
+    console.log(`  permissions: ${describePermissionGrant(durable)}`)
     return
   }
 
@@ -4840,6 +4888,14 @@ async function cmdAgentPermissions() {
 
   const agent = await findAgentForPermission(agentQuery)
   const spawnName = spawnNameForAgent(agent, agentQuery)
+  // The durable grant — what the agent's next launch actually runs under. This
+  // command used to write only the server metadata below, which no launch path
+  // reads, and then report success.
+  await writeDurablePermissionGrant(agent.id, profileArg, { source: 'tlda-agent-permissions-cli' })
+  // Server metadata is a different question with a different reader: it is this
+  // agent's profile AS A SPAWNER, used by the server-relayed spawn path to clamp
+  // what it may confer on children. One command, both consumers of "what profile
+  // is this agent at".
   await api('POST', '/api/set-metadata', {
     agent: agent.id,
     permissionRequest: profileArg,
@@ -4847,12 +4903,19 @@ async function cmdAgentPermissions() {
     permissionGrantChangedBy: 'tlda-agent-permissions-cli',
     permissionGrantChangedAt: new Date().toISOString(),
   })
-  if (!wakeNow) {
-    console.log(`Updated ${agent.id} permissions to ${description}; will apply on wake.`)
+  // No success line for a write nobody read back.
+  const verified = await readDurablePermissionGrant(agent.id)
+  if (permissionGrantProfileName(verified) !== profileArg) {
+    console.error(red(`Refusing to report success: ${agent.id} durable grant reads back as ${describePermissionGrant(verified)}, not "${profileArg}". Nothing about the next launch has changed.`))
+    process.exitCode = 1
     return
   }
-  console.log(`Updated ${agent.id} permissions to ${description}.`)
-  console.log(`Wake locally with: ${agentWakeSuggestion([spawnName, '--permissions', profileArg])}`)
+  if (!wakeNow) {
+    console.log(`Updated ${agent.id} permissions to ${description} (verified in the daemon permission ledger); applies on its next wake.`)
+    return
+  }
+  console.log(`Updated ${agent.id} permissions to ${description} (verified in the daemon permission ledger).`)
+  console.log(`It takes effect at the next launch. Wake locally with: ${agentWakeSuggestion([spawnName, '--permissions', profileArg])}`)
 }
 
 async function cmdAgentModels() {

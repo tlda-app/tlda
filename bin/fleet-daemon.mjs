@@ -120,7 +120,7 @@ import { launchMintProcess } from '../agent-launch/index.mjs'
 import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
-import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
+import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
@@ -875,6 +875,7 @@ const wakeMint = createDaemonWakeCore({
     const wakePermission = compileWakePermissionProfile({
       facts,
       wakeParams,
+      ledgerGrant: facts.fleetId ? (permissionLedger.get(facts.fleetId)?.permissionGrant || null) : null,
       loadDaemonLaunchConfig,
       readDaemonConfigForCwd,
       withDaemonModelAliases,
@@ -924,6 +925,10 @@ async function rpcMint(params = {}) {
     config: grantConfig,
     cwd,
   })
+  const mintClampLine = permissionClampLine(grant.permissionClamp)
+  if (mintClampLine) {
+    log.warn(`mint ${params.friendly_name || params.name || '(unnamed)'}: ${mintClampLine}`)
+  }
   if (explicitKind === 'bot' && !(params.fleet_id || params.agent_id)) {
     const requestedName = params.friendly_name || params.name || null
     const mintId = params.mint_id || randomUUID()
@@ -989,6 +994,8 @@ async function rpcMint(params = {}) {
     joined: !!facts.joinedAt,
     registration_deferred: !!facts.registrationError,
     registration_error: facts.registrationError || null,
+    permission_grant: grant.permissionGrant,
+    permission_clamp: grant.permissionClamp || null,
   }
 }
 

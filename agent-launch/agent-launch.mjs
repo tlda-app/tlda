@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
+import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
@@ -364,9 +364,16 @@ export function createAgentLauncher({
     } catch (e) {
       return { ok: false, name: agentName, error: `permission grant resolution failed: ${e.message}` }
     }
+    // The requester asked for a profile and got a narrower one. Logged and traced
+    // here; told to the requester by the server, which is the only party that
+    // knows who asked. NOT a `daemon-warning` — those go to the server owner, and
+    // a routine clamp is not Skip's business.
+    const clampLine = permissionClampLine(grant.permissionClamp)
+    if (clampLine) log.warn(`${agentName}: ${clampLine}`)
     trace('grant', {
       agentName,
       agent_id: requestedAgentId || null,
+      permissionClamp: grant.permissionClamp || null,
       requestedKind: kind || null,
       launchKind: launchKind || null,
       requestedModel: model || null,
@@ -558,6 +565,7 @@ export function createAgentLauncher({
           modelPermission: grant.modelPermission,
           permissionSet: grant.permissionSet,
           permissionGrant: grant.permissionGrant,
+          permissionClamp: grant.permissionClamp || null,
           ...(ledgerCleanupError ? { cleanup_error: ledgerCleanupError } : {}),
         }
       }
@@ -615,6 +623,7 @@ export function createAgentLauncher({
         modelPermission: grant.modelPermission,
         permissionSet: grant.permissionSet,
         permissionGrant: grant.permissionGrant,
+        permissionClamp: grant.permissionClamp || null,
       }
     } catch (e) {
       const detail = typeof e?.message === 'string' ? e.message : (e?.message ? JSON.stringify(e.message) : String(e))
