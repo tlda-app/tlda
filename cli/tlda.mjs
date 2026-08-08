@@ -5039,7 +5039,13 @@ async function restartMcpAgents(rest) {
       try {
         const stored = mintStore.resolve(name)
         if (!stored) throw new Error(`no local agent found for "${name}"`)
-        const res = await callLocalDaemonLifecycle('restart', { mint_id: stored.mintId, agent_id: stored.fleetId })
+        const res = await callLocalDaemonLifecycle('restart', {
+          mint_id: stored.mintId,
+          agent_id: stored.fleetId,
+          // So the daemon can check tmux rather than believe kill-session, which
+          // answers ok when it cannot place the agent at all.
+          tmux_session: `fleet-${stored.friendlyName || name}`,
+        })
         if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
         console.log('ok')
         ok++

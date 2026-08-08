@@ -1036,6 +1036,23 @@ async function rpcRestart(params = {}) {
   if (killed?.ok === false) {
     throw new Error(`restart did not kill the session: ${killed.error || 'kill-session refused'}`)
   }
+  // And `ok` is not enough, because kill-session answers `{ ok: true,
+  // already_unavailable: true }` whenever resolveTerminalEndpoint cannot place
+  // the agent — correct for a hibernate, whose goal is "not running", and wrong
+  // here, whose goal is a replaced process. That is the path that reported
+  // really-able-to-do-stuff restarted while tmux still held its session. So ask
+  // tmux, rather than believing the handler: if the session is still listed,
+  // nothing was killed and there is nothing to wake.
+  // The caller supplies the session name because the daemon cannot derive it
+  // here: resolveTerminalEndpoint reads it off the agent row, and a row missing
+  // it is exactly the `already_unavailable` case this check exists to catch.
+  const sessionName = params.tmux_session || params.tmuxSession
+  if (sessionName) {
+    const listed = await terminalRpc.handlers['list-sessions']().catch(() => null)
+    if (listed?.sessions?.includes(sessionName)) {
+      throw new Error(`restart did not kill the session: tmux still lists "${sessionName}"${killed?.already_unavailable ? ' (the daemon could not place this agent, so kill-session was a no-op)' : ''}`)
+    }
+  }
   const woke = await wakeMint(params)
   // And a restart that killed and did not wake is a hibernate.
   return { ok: woke?.ok !== false, killed, woke }
