@@ -4230,6 +4230,23 @@ app.use('/docs', (req, res, next) => {
               const data = JSON.parse(await fs.promises.readFile(macrosPath, 'utf8'))
               macros = data.macros || {}
             }
+          } else if (project.mainFile && project.mainFile !== column.sourceFile) {
+            // THE MIDDLE SCOPE. Only a `.tex` project had one: its preamble is
+            // extracted at build time into macros.json above, so every part of a
+            // LaTeX paper inherits the paper's macros. A markdown project had no
+            // equivalent, and renderMarkdownColumnHtml reads only the CURRENT
+            // file's own $$ preamble — so a macro defined once, in the main
+            // document, rendered as red undefined-macro text in every part.
+            //
+            // Same chain either way: document → project main → fleet. The
+            // renderer already puts these below the document's own macros and
+            // above baseMacros, so the precedence needs nothing new; the middle
+            // scope was simply absent for one of the two project formats.
+            const mainPath = join(PROJECTS_DIR, name, 'source', project.mainFile)
+            if (existsSync(mainPath)) {
+              const { extractMacros } = await import('./lib/build-markdown.mjs')
+              macros = extractMacros(await fs.promises.readFile(mainPath, 'utf8'))
+            }
           }
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
           const agentNames = isTaskDoc ? await fleetStore.getAgentDisplayNames() : []
