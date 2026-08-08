@@ -2169,7 +2169,9 @@ export function inboxViewForArgs(args = {}) {
   return normalizeInboxView(args?.view || 'default');
 }
 
-async function nativeChildBinding(threadId, toolUseId, { retry = false } = {}) {
+export const LOOKUP_RETRY_WINDOW_MS = 2000;
+
+export async function nativeChildBinding(threadId, toolUseId, { retry = false } = {}) {
   if ((!threadId && !toolUseId) || !PARENT_AGENT_ID) return null;
   if (threadId && isLocalParentThread(threadId)) return null;
   if (toolUseId && isLocalParentToolUse(toolUseId)) return null;
@@ -2177,19 +2179,45 @@ async function nativeChildBinding(threadId, toolUseId, { retry = false } = {}) {
     threadId ? { value: threadId, kind: 'native' } : null,
     toolUseId ? { value: toolUseId, kind: 'tool-use' } : null,
   ].filter(Boolean);
-  const deadline = Date.now() + (retry && toolUseId ? 2000 : 0);
+  // A 404 is an ANSWER -- "no binding exists" -- so the caller is not a native
+  // child and BASE_AGENT_ID is its true identity. Any other failure is the
+  // ABSENCE of an answer: we cannot tell whether a binding exists, and guessing
+  // null would make a native child write to its parent's outbox and post chat,
+  // report and delegate AS its parent. So a transient failure retries inside
+  // this window instead of aborting the caller's actual request on the first
+  // blip, and if the window closes with no definitive answer we raise rather
+  // than guess.
+  //
+  // The window applies to every tool, not just login. It used to be zero for
+  // everything else, so the loop this sits in could never retry anything.
+  const deadline = Date.now() + LOOKUP_RETRY_WINDOW_MS;
+  let lastError = null;
   do {
+    // Answered = the server told us this selector has no binding. Only when
+    // EVERY selector has been answered do we know the caller is not a native
+    // child; a 404 on one selector says nothing about the other.
+    let answered = 0;
     for (const selector of selectors) {
       const query = selector.kind === 'tool-use' ? '?selector=tool-use' : '';
-      const res = await fleetFetch(
-        `${TLDA_FLEET_SERVER}/api/fleet/native-subagent-binding/${encodeURIComponent(PARENT_AGENT_ID)}/${encodeURIComponent(selector.value)}${query}`,
-        { signal: AbortSignal.timeout(2000) },
-      );
-      if (res.status === 404) continue;
-      if (!res.ok) throw new Error(`native child identity lookup returned HTTP ${res.status}`);
+      let res;
+      try {
+        res = await fleetFetch(
+          `${TLDA_FLEET_SERVER}/api/fleet/native-subagent-binding/${encodeURIComponent(PARENT_AGENT_ID)}/${encodeURIComponent(selector.value)}${query}`,
+          { signal: AbortSignal.timeout(2000) },
+        );
+      } catch (e) {
+        lastError = e;
+        continue;
+      }
+      if (res.status === 404) { answered++; continue; }
+      if (!res.ok) {
+        lastError = new Error(`native child identity lookup returned HTTP ${res.status}`);
+        continue;
+      }
       return await res.json();
     }
-    if (Date.now() >= deadline) return null;
+    if (answered === selectors.length) return null;
+    if (Date.now() >= deadline) throw lastError;
     await new Promise(resolve => setTimeout(resolve, 50));
   } while (true);
 }
