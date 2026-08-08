@@ -3258,6 +3258,136 @@ function appendClientLogEntry(entry) {
   })
 }
 
+// The composer detected its own committed text being destroyed and said so into
+// client.log, where nothing was watching: on 2026-08-08 the alarm fired at
+// 17:26:04.121 and Skip found out by reading garbage on his own screen twenty
+// minutes later, then had to fight the same composer to describe it. The
+// detection was never the missing part. This is the part that was missing.
+//
+// Deliberately not a subsystem: one call, one cooldown so a cascade delivers
+// once rather than per final, and a console line so the condition stays
+// greppable even when delivery fails.
+//
+// Both conditions, not just the loud one. On 2026-08-08 `COMMITTED TEXT LOST`
+// fired 4 times while `composer text got shorter` fired 57 — and the specimen
+// Skip attested at 13:34 EDT is in the second set, not the first. An alarm on
+// the loud condition alone would have been silent for the case we were handed.
+//
+// LOAD-BEARING STRINGS: these match log messages emitted by src/voice.mjs — the
+// committed-loss check and the shrink check. Rewording either message there
+// silently disables this alarm.
+const COMPOSER_CORRUPTION_MSGS = ['COMMITTED TEXT LOST', 'composer text got shorter']
+function isComposerCorruptionMsg(msg) {
+  const text = String(msg ?? '')
+  return COMPOSER_CORRUPTION_MSGS.some(prefix => text.startsWith(prefix))
+}
+
+// The two conditions carry DIFFERENT fields, and the first version of this
+// alarm shaped its payload around the loud one: the quiet alarm — the one he
+// actually lives with — arrived reading `prevLeftLen=undefined target=undefined`.
+// It would have paged someone about his real condition and told them nothing.
+// So each condition names its own fields.
+function composerCorruptionDetail(entry) {
+  const d = entry?.data || {}
+  if (String(entry?.msg ?? '').startsWith('COMMITTED TEXT LOST')) {
+    return {
+      short: `committed ${d.prevLeftLen} -> ${d.leftLen} chars state=${d.state} target=${d.target}`,
+      body: `committed \`${d.prevLeftLen}\` → \`${d.leftLen}\` chars · state \`${d.state}\` · target \`${d.target}\`\n\n`
+        + `prev tail: \`${String(d.prevLeftTail ?? '').slice(-60)}\`\n`
+        + `now  tail: \`${String(d.leftTail ?? '').slice(-60)}\``,
+    }
+  }
+  return {
+    short: `composer ${d.before} -> ${d.after} chars left=${d.leftLen} interim=${d.interimLen} state=${d.state}`,
+    body: `composer \`${d.before}\` → \`${d.after}\` chars · left \`${d.leftLen}\` · interim \`${d.interimLen}\` · state \`${d.state}\``,
+  }
+}
+
+// Address `on-call`, and when no awake agent holds it, deliver elsewhere and SAY
+// SO in the message. A silent fallback fixes today and hides the next
+// occurrence: on 2026-08-08 all three `on-call` holders were hibernating 8h,
+// 94h and 371h, and the alarm reached nobody while reporting success.
+//
+// Tiers are tried in order and the first non-empty one wins. The last is capped
+// because "every awake agent" is a broadcast, not an alarm.
+const COMPOSER_ALARM_SENDER = 'fleet:tlda'
+const COMPOSER_ALARM_TIERS = [
+  { filter: 'on-call & awake', note: () => null },
+  {
+    filter: 'on-call',
+    note: () => 'No **awake** `on-call` holder. Delivered to hibernating on-call holders, who will read this when they wake — nobody is watching this right now.',
+  },
+  {
+    filter: 'awake',
+    limit: 5,
+    // The cap is STATED, not just applied. A truncated recipient list that reads
+    // as complete is the same shape as the delivery that reported success having
+    // reached nobody.
+    note: (sent, total) => `Nobody holds \`on-call\` at all. Delivered to ${sent} of ${total} awake agents (capped at ${5}); somebody should take the label.`,
+  },
+]
+async function resolveComposerAlarmRecipients() {
+  for (const tier of COMPOSER_ALARM_TIERS) {
+    const matched = await fleetStore.resolveChatRecipients(parseFilter(tier.filter), {
+      from: COMPOSER_ALARM_SENDER,
+      filter: tier.filter,
+    })
+    if (!matched.length) continue
+    const ids = tier.limit ? matched.slice(0, tier.limit) : matched
+    return { ids, note: tier.note(ids.length, matched.length), filter: tier.filter }
+  }
+  return { ids: [], note: null, filter: null }
+}
+
+let _composerCorruptionAt = 0
+const COMPOSER_CORRUPTION_COOLDOWN_MS = 60_000
+function reportComposerCorruption(entry) {
+  const now = Date.now()
+  // The FIRST occurrence always delivers; the cooldown only suppresses the ones
+  // after it. Not rate-limiting for tidiness: a cascade re-fires this condition
+  // per final, and the second through fiftieth alarms say nothing the first did
+  // not. An alarm that pages fifty times is one somebody mutes.
+  if (now - _composerCorruptionAt < COMPOSER_CORRUPTION_COOLDOWN_MS) return
+  _composerCorruptionAt = now
+  const detail = composerCorruptionDetail(entry)
+  console.error(`[composer-corruption] ${entry.ts} session=${entry.session || '?'} ${detail.short}`)
+  // Recipients are RESOLVED ids, not a selector string. `_insertEventRecord`
+  // keys recipient rows by whatever it is handed, verbatim — passing `'on-call'`
+  // writes a recipient row for an agent id that does not exist, and returns
+  // cleanly. Three alarms were delivered that way on 2026-08-08: the events
+  // exist, addressed to a string, visible to no living agent. Resolution is the
+  // caller's job here, exactly as it is for the MCP `chat` tool.
+  //
+  // Nothing below is optional-chained. If a method stops existing this must
+  // throw into the catch and say so, not silently no-op while the console line
+  // above keeps printing and makes it look delivered. Both `chat` and
+  // `resolveChatRecipients` are in FLEET_STORE_METHODS and run on the store
+  // worker, so this is async off the request thread — no synchronous SQLite on
+  // `/api/log`.
+  Promise.resolve(resolveComposerAlarmRecipients()).then(({ ids, note, filter }) => {
+    if (!ids.length) {
+      console.error('[composer-corruption] delivery failed: no living agent matched any tier')
+      return null
+    }
+    return fleetStore.chat(
+      COMPOSER_ALARM_SENDER,
+      ids,
+      `**composer corruption** — \`${entry.msg}\`\n\n`
+      + `\`${entry.ts}\` · session \`${entry.session || '?'}\`\n\n`
+      + `${detail.body}\n\n`
+      + (note ? `⚠️ ${note}\n\n` : '')
+      + `This is Skip's only input path. Further occurrences are suppressed for 60s.`,
+      {
+        type: 'composer_corruption',
+        session: entry.session || null,
+        ts: entry.ts,
+        alarm_filter: filter,
+        alarm_fell_back: !!note,
+      },
+    )
+  }).catch(e => console.error(`[composer-corruption] delivery failed: ${e.message}`))
+}
+
 app.post('/api/log', async (req, res) => {
   const body = req.body
   const entries = Array.isArray(body) ? body : [body]
@@ -3273,6 +3403,7 @@ app.post('/api/log', async (req, res) => {
       ...(e.session ? { session: e.session } : {}),
     }
     if (obj.ns === 'live-perf') recordLivePerfEntry(obj)
+    if (obj.ns === 'voice' && isComposerCorruptionMsg(obj.msg)) reportComposerCorruption(obj)
     lines.push(JSON.stringify(obj))
   }
   if (lines.length) {
