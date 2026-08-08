@@ -37,9 +37,8 @@ server/build-info.json
 # Fleet runtime uploads / generated chat artifacts
 mcp-server/fleet-data/
 
-# Project build output (gitignore all except test fixtures)
-server/projects/*
-!server/projects/fleet-multi-chat-test/
+# Project build output
+server/projects/
 
 # Test artifacts
 test-results/
