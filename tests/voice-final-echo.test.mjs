@@ -29,3 +29,17 @@ test('removes a submitted prefix from a carried continuation', () => {
     { text: 'new words', droppedWords: 1 },
   )
 })
+
+test('removes submitted message carryover before next-message text', () => {
+  assert.deepEqual(
+    trimSubmittedPrefixFromDeepgramText('Okay, previous message new message words', 'Okay, previous message'),
+    { text: 'new message words', droppedWords: 3 },
+  )
+})
+
+test('drops a pure submitted message carryover', () => {
+  assert.deepEqual(
+    trimSubmittedPrefixFromDeepgramText('Okay, previous message.', 'Okay, previous message'),
+    { text: '', droppedWords: 3 },
+  )
+})

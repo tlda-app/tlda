@@ -36,7 +36,7 @@ assert.deepEqual(partitionAtCursor('abcXYZdef', 3, 6), { left: 'abc', interim: '
 assert.equal(composeVoiceText('hello ', 'new ', 'world'), 'hello new world')
 const chatComposerSource = readFileSync(new URL('../src/shapes/ChatComposer.tsx', import.meta.url), 'utf8')
 assert.match(chatComposerSource, /const textarea = inputRef\.current\s+return \(\) => \{ if \(textarea\) clearVoiceTarget\(textarea\) \}/)
-assert.match(chatComposerSource, /completeMessageSend\(text\)/)
+assert.match(chatComposerSource, /completeMessageSend\(submittedText \?\? text\)/)
 const voiceSource = readFileSync(new URL('../src/voice.mjs', import.meta.url), 'utf8')
 assert.doesNotMatch(voiceSource, /retainVoiceTextareaValue|retention-check|retained/)
 assert.doesNotMatch(voiceSource, /hardResetVoice\(\{ keepDeepgramMic: true \}\)/)
@@ -44,6 +44,10 @@ assert.match(voiceSource, /if \(msg\.type === 'utterance_end'\) \{[\s\S]*?_dgLas
 assert.doesNotMatch(voiceSource, /if \(msg\.is_final && !_dgHasSeenInterim && _state === 'edit'\) return/)
 assert.match(voiceSource, /const partition = partitionAtCursor\(ta\?\.value, ta\?\.selectionStart, ta\?\.selectionEnd\)/)
 assert.match(voiceSource, /function afterSend\(submittedTextOverride\) \{\s+const submittedText = submittedTextOverride \?\? currentSubmittedVoiceText\(\)/)
+assert.match(voiceSource, /closeVoiceSpanBoundary\('message-send', submittedText\)/)
+assert.match(voiceSource, /closeVoiceSpanBoundary\('line-break', composerText\)/)
+assert.match(voiceSource, /spanOpenAfter: !!_span/)
+assert.match(voiceSource, /boundaryTelemetry: \{ \.\.\._voiceBoundaryTelemetry \}/)
 // Cross-epoch messages must still be dropped, never applied — this is the guard that
 // fixed the cross-message leak. It now records the discard before returning (a dropped
 // transcript is speech that vanished), so pin the condition and the `return`, and pin
@@ -54,6 +58,9 @@ assert.match(voiceSource, /if \(!isCarriedTail &&\s*\(msg\.type === 'transcript'
 // exception exists only to let that guard run. Widening any of these four conditions
 // re-opens the cross-message leak the epoch mechanism exists to prevent.
 assert.match(voiceSource, /const isCarriedTail = msg\.type === 'transcript' && !!msg\.text && !!msg\.is_final &&\s*_dgIgnoreUntilUtteranceEnd && msg\.epoch === _speechEpoch - 1/)
+assert.match(voiceSource, /let _dgCarriedSubmittedText = null/)
+assert.match(voiceSource, /trimmed submitted message carryover from transcript/)
+assert.match(voiceSource, /DROPPED transcript \(submitted message carryover\)/)
 // Committed text disappearing is Skip's reported symptom; it must never be rate-limited.
 assert.match(voiceSource, /vlog\('COMMITTED TEXT LOST/)
 // All THREE message types the epoch check can drop must leave a record. Each carries

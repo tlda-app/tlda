@@ -415,6 +415,36 @@ function notifyBridgeOfSpeechEpoch() {
 // where it starts in the sink's document; `interimLen` is the length of the
 // replaceable tail sitting just after it.
 let _span = null
+const _voiceBoundaryTelemetry = {
+  messageSends: 0,
+  lineBreaks: 0,
+  closedSpanOnMessageSend: 0,
+  closedSpanOnLineBreak: 0,
+  contaminationTrimmed: 0,
+  contaminationDropped: 0,
+  lastBoundary: null,
+}
+
+function closeVoiceSpanBoundary(kind, submittedText = null) {
+  const hadSpan = !!_span
+  _state = 'edit'
+  _left = _interim = _right = ''
+  _span = null
+  if (kind === 'message-send') {
+    _voiceBoundaryTelemetry.messageSends++
+    if (hadSpan) _voiceBoundaryTelemetry.closedSpanOnMessageSend++
+  } else if (kind === 'line-break') {
+    _voiceBoundaryTelemetry.lineBreaks++
+    if (hadSpan) _voiceBoundaryTelemetry.closedSpanOnLineBreak++
+  }
+  _voiceBoundaryTelemetry.lastBoundary = {
+    kind,
+    hadSpan,
+    spanOpenAfter: !!_span,
+    submittedTextLen: submittedText == null ? null : String(submittedText).length,
+    at: Date.now(),
+  }
+}
 
 function beginVoiceSpan() {
   // Called at speech entry, where `_left` is exactly what is already in the
@@ -1425,7 +1455,7 @@ function enterEdit(trigger = 'unknown') {
     setTextareaGlow(GLOW_AMBER)
     _state = 'edit'
     _left = _interim = _right = ''
-  _span = null
+    _span = null
     return
   }
   _state = 'edit'
@@ -1491,7 +1521,7 @@ export function setVoiceTarget(textarea, targetHandle) {
     _state = 'edit'
     advanceSpeechEpoch()
     _left = _interim = _right = ''
-  _span = null
+    _span = null
     if (_backend === 'deepgram') {
       // The bridge was told the new epoch by advanceSpeechEpoch() above.
       resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
@@ -1638,6 +1668,11 @@ export function getVoiceRuntimeSummary(now = Date.now()) {
     activeSendTargetCount: activeSendTargets().length,
     generation: _speechEpoch,
     editStopped: _editStopped,
+    spanOpen: !!_span,
+    spanCommittedLen: _span?.committed?.length ?? 0,
+    spanInterimLen: _span?.interimLen ?? 0,
+    submittedCarryArmed: !!_dgCarriedSubmittedText,
+    boundaryTelemetry: { ..._voiceBoundaryTelemetry },
     deepgram: {
       relayConnected: _deepgramRelayConnected,
       recognizerStatus: currentDeepgramRecognizerStatus(),
@@ -2418,6 +2453,7 @@ let _dgTrickleEpoch = 0
 let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
+let _dgCarriedSubmittedText = null // submitted message tail that cannot contaminate the next message
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
 // Words already committed by the last final that a CONTINUING interim restates.
@@ -2516,12 +2552,13 @@ export function stripCommittedEchoPrefix(text, committedNorm) {
   return rest.length ? { text: rest.join(' '), dropped: i } : null
 }
 
-function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false } = {}) {
+function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false, preserveSubmittedCarry = false } = {}) {
   _deepgramInterim = ''
   _dgHasSeenInterim = false
   if (!preserveUtteranceGuard) {
     _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
     _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
+    if (!preserveSubmittedCarry) _dgCarriedSubmittedText = _dgIgnoredSubmittedText
   }
   if (!preserveLastFinal) _dgLastFinalNorm = ''
   if (!preserveLastFinal) _dgLastFinalAt = 0
@@ -2808,6 +2845,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'utterance_end') {
       _dgIgnoreUntilUtteranceEnd = false
       _dgIgnoredSubmittedText = null
+      _dgCarriedSubmittedText = null
       _dgLastFinalNorm = ''
       _dgLastFinalAt = 0
       return
@@ -2844,6 +2882,29 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _dgIgnoredSubmittedText = null
     }
 
+    if (_dgCarriedSubmittedText) {
+      const trimmed = trimSubmittedPrefixFromDeepgramText(msg.text, _dgCarriedSubmittedText)
+      if (trimmed.droppedWords > 0) {
+        if (!trimmed.text) {
+          _voiceBoundaryTelemetry.contaminationDropped++
+          vlog('DROPPED transcript (submitted message carryover)', {
+            final: !!msg.is_final,
+            droppedWords: trimmed.droppedWords,
+            text: msg.text.slice(0, 60),
+          })
+          return
+        }
+        _voiceBoundaryTelemetry.contaminationTrimmed++
+        vlog('trimmed submitted message carryover from transcript', {
+          final: !!msg.is_final,
+          droppedWords: trimmed.droppedWords,
+          original: msg.text.slice(0, 60),
+          trimmed: trimmed.text.slice(0, 60),
+        })
+        msg.text = trimmed.text
+      }
+    }
+
     _lastResultTime = Date.now()
     dotAudioFlowing()
 
@@ -2873,7 +2934,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _interim = partition.interim
       _right = partition.right
       beginVoiceSpan()
-      resetDeepgramTextState()
+      resetDeepgramTextState({ preserveSubmittedCarry: true })
       // THE SUSPECTED DOUBLING ENGINE. _left is re-seeded from what is already on
       // screen — which includes the interim words just displayed — and a final carrying
       // those same words is about to be appended to it. If `absorbedTail` ends with the
@@ -2954,7 +3015,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _dgLastFinalNorm = normalizedFinal
       _dgFinalEchoPrefixNorm = normalizedFinal
       _dgLastFinalAt = Date.now()
-      resetDeepgramTextState({ preserveLastFinal: true })
+      resetDeepgramTextState({ preserveLastFinal: true, preserveSubmittedCarry: true })
       _interim = ''
     } else {
       // Interim — trickle new words in one at a time, smoothed
@@ -3031,7 +3092,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         _state = 'edit'
         advanceSpeechEpoch()
         _left = _interim = _right = ''
-  _span = null
+        _span = null
         resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
         return
@@ -3343,9 +3404,7 @@ function stopDeepgramMic() {
 function afterSend(submittedTextOverride) {
   const submittedText = submittedTextOverride ?? currentSubmittedVoiceText()
   advanceSpeechEpoch()
-  _state = 'edit'
-  _left = _interim = _right = ''
-  _span = null
+  closeVoiceSpanBoundary('message-send', submittedText)
   if (_backend === 'whisper-stream') {
     flushWhisperBridge()
     return
@@ -3379,6 +3438,16 @@ function afterSend(submittedTextOverride) {
 
 export function completeMessageSend(submittedText) {
   afterSend(submittedText)
+}
+
+// A native composer newline ends the current dictated span without sending the
+// message. Keep the live Deepgram connection, but remember the text already in
+// the composer so a carried result can contribute only genuinely new words on
+// the blank line instead of repainting the preceding line.
+export function completeVoiceLineBreak(composerText) {
+  if (_backend !== 'deepgram' || _state !== 'speech') return
+  closeVoiceSpanBoundary('line-break', composerText)
+  resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText: composerText })
 }
 
 // --- Recording ---
@@ -3936,6 +4005,46 @@ export function isMathMode() { return _mathMode }
 export function getSpeechEpoch() { return _speechEpoch }
 export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
+export const __test = {
+  forceDeepgram() { _backend = 'deepgram' },
+  setRecording(value) { _recording = !!value },
+  deepgramMessage(message) { onDeepgramMessage({ data: JSON.stringify(message) }, _deepgramWs) },
+  boundaryTelemetry() { return { ..._voiceBoundaryTelemetry } },
+  state() {
+    return {
+      backend: _backend,
+      recording: _recording,
+      speechEpoch: _speechEpoch,
+      state: _state,
+      left: _left,
+      interim: _interim,
+      right: _right,
+      spanOpen: !!_span,
+      submittedCarryArmed: !!_dgCarriedSubmittedText,
+    }
+  },
+  resetForVoiceTest() {
+    _recording = false
+    _backend = 'none'
+    _state = 'edit'
+    _left = _interim = _right = ''
+    _span = null
+    _activeTextarea = null
+    _activeTargetHandle = null
+    _accumulator = null
+    _voiceDumping = false
+    _speechEpoch = 0
+    resetDeepgramTextState()
+    _voiceBoundaryTelemetry.messageSends = 0
+    _voiceBoundaryTelemetry.lineBreaks = 0
+    _voiceBoundaryTelemetry.closedSpanOnMessageSend = 0
+    _voiceBoundaryTelemetry.closedSpanOnLineBreak = 0
+    _voiceBoundaryTelemetry.contaminationTrimmed = 0
+    _voiceBoundaryTelemetry.contaminationDropped = 0
+    _voiceBoundaryTelemetry.lastBoundary = null
+    _voiceLogs.length = 0
+  },
+}
 export async function setBackend(be) {
   if (be === 'whisper') be = 'whisper-stream' // prefs dropdown uses the short name
   if (be === 'deepgram' || be === 'deepgram-sdk') be = 'deepgram'
