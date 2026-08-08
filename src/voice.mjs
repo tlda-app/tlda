@@ -1852,8 +1852,34 @@ export function enterVoiceSink() {
 // backend — the only way to measure real first-interim latency on phone/iPad where
 // we can't profile. Pure: label/log only, no behavior change.
 function maybeMarkFirstInterim(content) {
-  if (_firstInterimLogged || !_recording || !_recordStartTime) return
-  if (!content || !String(content).trim()) return
+  // 284 sessions of real dictation and 162,728 transcripts produced zero
+  // `first-interim` records, while the Mini logs one in every session that
+  // receives speech (11 of 11). Which of the four guard terms is false has never
+  // been observable, so name it rather than returning silently.
+  //
+  // `alreadyLogged` is deliberately not reported: it is the benign steady state
+  // after a success, the flag is set only at the emit two lines below, and the
+  // emitted record already says so. Reporting it would be one line per interim
+  // for the rest of the recording, saying nothing.
+  const blocked = _firstInterimLogged ? 'alreadyLogged'
+    : !_recording ? 'notRecording'
+    : !_recordStartTime ? 'noRecordStartTime'
+    : (!content || !String(content).trim()) ? 'emptyContent'
+    : null
+  if (blocked) {
+    if (blocked !== 'alreadyLogged') {
+      // Per-interim call site: throttled per term, so a stuck state reads as a
+      // rising suppressed count and the first occurrence always lands.
+      vdiscard(`first-interim-blocked:${blocked}`, 'first-interim blocked', {
+        blocked,
+        recording: _recording,
+        hasRecordStart: !!_recordStartTime,
+        contentLen: content ? String(content).trim().length : 0,
+        backend: _backend,
+      })
+    }
+    return
+  }
   _firstInterimLogged = true
   // metric, not info: log.info is gated at the default `warn` threshold, so this
   // never reached client.log in a normal session — the measurement it exists for
