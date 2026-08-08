@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, type ReactNode } from 'react'
+import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import {
   MAX_RADIO_SUBTITLE_DWELL_SEC,
   MIN_RADIO_SUBTITLE_DWELL_SEC,
@@ -325,6 +325,7 @@ function readAll() {
 }
 
 export function PrefsTab({ query = '' }: { query?: string }) {
+  const scrollRef = useRef<HTMLDivElement>(null)
   const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
@@ -332,6 +333,29 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
+
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root) return
+
+    const onWheel = (event: WheelEvent) => {
+      const nested = event.target instanceof Element
+        ? event.target.closest<HTMLElement>('.prefs-section-body')
+        : null
+      const nestedCanScroll = nested && nested.scrollHeight > nested.clientHeight && (
+        (event.deltaY < 0 && nested.scrollTop > 0) ||
+        (event.deltaY > 0 && nested.scrollTop + nested.clientHeight < nested.scrollHeight)
+      )
+      const scrollOwner = nestedCanScroll ? nested : root
+
+      event.preventDefault()
+      event.stopPropagation()
+      scrollOwner.scrollTop += event.deltaY
+    }
+
+    root.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => root.removeEventListener('wheel', onWheel, true)
+  }, [])
 
   const toggleSource = useCallback((src: string) => {
     const next = prefs.sources.includes(src)
@@ -431,7 +455,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   }, [])
 
   return (
-    <div className="doc-panel-content prefs-tab">
+    <div ref={scrollRef} className="doc-panel-content prefs-tab">
       {prefs.loadError && (
         <div className="prefs-load-error">
           Preferences could not load; defaults are in use until preferences reconnect: {prefs.loadError}
