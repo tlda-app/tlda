@@ -18,15 +18,22 @@ import { createWMCore } from '../src/wm/wm-core.ts'
 
 // A stand-in for what tldraw's editor would supply: two named viewports, each
 // with its own camera over the same page.
-function forkAdapter(cameras) {
+// Mirrors tldraw Editor.pageToScreen/screenToPage exactly, screenBounds included:
+//   pageToScreen: (x + cx) * cz + screenBounds.x
+//   screenToPage: (x - screenBounds.x) / cz - cx
+// The screenBounds term is what puts two panes in different places on screen,
+// so a stand-in that drops it maps both panes to the same origin and every
+// connector lands somewhere plausible and wrong.
+function forkAdapter(cameras, bounds = {}) {
+  const b = id => bounds[id] ?? { x: 0, y: 0 }
   return {
     pageToScreen: (p, { viewportId }) => {
       const c = cameras[viewportId]
-      return { x: (p.x + c.x) * c.z, y: (p.y + c.y) * c.z }
+      return { x: (p.x + c.x) * c.z + b(viewportId).x, y: (p.y + c.y) * c.z + b(viewportId).y }
     },
     screenToPage: (p, { viewportId }) => {
       const c = cameras[viewportId]
-      return { x: p.x / c.z - c.x, y: p.y / c.z - c.y }
+      return { x: (p.x - b(viewportId).x) / c.z - c.x, y: (p.y - b(viewportId).y) / c.z - c.y }
     },
     getCamera: id => cameras[id],
     setCamera: (id, c) => { cameras[id] = c },
@@ -75,4 +82,25 @@ test('the camera of a viewport-backed layer comes from the viewport, not the lay
   assert.deepEqual(wm.camera('pane:submission'), cameras['submission'])
   wm.setCamera('pane:submission', { x: -5, y: -5, z: 3 })
   assert.deepEqual(cameras['submission'], { x: -5, y: -5, z: 3 }, 'setCamera did not reach the viewport')
+})
+
+test('two panes side by side map to their own screen regions', () => {
+  // The real layout: his solution on the left, the student's answer on the
+  // right. Each viewport has its own screenBounds, and that offset is the only
+  // thing putting them in different places. A stand-in that omits it maps both
+  // to the same origin, and every connector is plausibly wrong.
+  const cameras = { solution: { x: 0, y: 0, z: 1 }, submission: { x: 0, y: 0, z: 1 } }
+  const bounds = { solution: { x: 0, y: 0 }, submission: { x: 900, y: 0 } }
+  const wm = createWMCore({ rootLayerId: 'screen' })
+  const editor = forkAdapter(cameras, bounds)
+  wm.defineLayer('pane:solution', { parent: 'screen', backing: { kind: 'viewport', viewportId: 'solution', editor } })
+  wm.defineLayer('pane:submission', { parent: 'screen', backing: { kind: 'viewport', viewportId: 'submission', editor } })
+
+  // The same page coordinate in each pane sits 900px apart on screen — which is
+  // the length of the arrow between them.
+  const left = wm.translate({ x: 20, y: 10 }, 'pane:solution', 'screen')
+  const right = wm.translate({ x: 20, y: 10 }, 'pane:submission', 'screen')
+  assert.deepEqual(left, { x: 20, y: 10 })
+  assert.deepEqual(right, { x: 920, y: 10 })
+  assert.equal(right.x - left.x, 900, 'the panes collapsed onto the same screen origin')
 })

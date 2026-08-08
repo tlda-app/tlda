@@ -87,7 +87,12 @@ export function createHomeworkGradingSurfaceRequest({
 			onReplace: 'replace-existing-surface',
 			onOwnerChange: 'remove-surface',
 		},
-		persistence: { pinned: false, scope: 'session' },
+		// 'room', not 'session': marking a class is not one sitting, and the
+		// feedback on a submission outlives the tab that drew it. Nothing reads
+		// this field today — it is serialised into shape metadata and never
+		// consumed — so this changes no behaviour. It is here so the declaration
+		// is not lying when something does read it.
+		persistence: { pinned: false, scope: 'room' },
 		source,
 		payload: {
 			assignmentId,
