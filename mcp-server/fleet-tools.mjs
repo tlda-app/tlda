@@ -2877,10 +2877,17 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         sendFailure = 'the server did not accept it';
       }
     } catch (e) {
-      sendFailure = e.message;
+      const row = getFleetTransportOutbox(activeAgentId())?.get(chatBody._tempId);
+      const d = durableDelivery(row);
+      sendFailure = describeDurableOutcome('chat', d, { waitedMs: e.waitedMs })
+        || e.message;
+      if (d.delivery === 'unknown' && d.queued) {
+        sent = recipients;
+        queuedOperationId = chatBody._tempId;
+      }
     }
 
-    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — not accepted or queued (${sendFailure}). Recipients: ${recipients.join(', ')}` }], isError: true };
+    if (sent.length === 0) return { content: [{ type: 'text', text: `${sendFailure} Recipients: ${recipients.join(', ')}` }], isError: true };
 
     let warning = '';
     let suggestionNotice = '';
@@ -4917,6 +4924,36 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
   return inFlight;
 }
 
+// Delivery is a fact about the outbox row, not about whether we got bored
+// waiting. "unknown" is the only honest word when we stopped listening before
+// the server answered — and it is safe, because every durable operation carries
+// an operation_id the server dedupes on, so a resend replays the first result
+// rather than acting twice.
+export function durableDelivery(row) {
+  switch (row?.status) {
+    case 'accepted':
+      return { delivery: 'delivered' }
+    case 'failed':
+      return { delivery: 'not delivered', reason: row.lastError, resend: 'pointless' }
+    case 'dead':
+      return { delivery: 'unknown', reason: row.lastError, attempts: row.attempts, resend: 'safe' }
+    default:
+      return { delivery: 'unknown', queued: true, resend: 'unnecessary' }
+  }
+}
+
+export function describeDurableOutcome(type, d, { waitedMs } = {}) {
+  const waited = Number.isFinite(waitedMs) ? ` after ${(waitedMs / 1000).toFixed(1)}s` : ''
+  if (d.delivery === 'delivered') return null
+  if (d.delivery === 'not delivered') {
+    return `⚠ ${type} NOT DELIVERED — the server refused it: ${d.reason}. Re-sending will not help; fix the cause.`
+  }
+  if (d.queued) {
+    return `⏳ ${type} timed out${waited}. Delivery UNKNOWN — it is queued and will be retried automatically under the same operation id. Do not re-send.`
+  }
+  return `⏳ ${type} gave up after ${d.attempts} attempts. Delivery UNKNOWN (last: ${d.reason}). Re-sending is safe — the operation id is deduped server-side — but check the thread first.`
+}
+
 async function sendDurableFleet(type, params = {}, opts = {}) {
   const transportAgentId = opts.agentId || activeAgentId();
   if (!transportAgentId) throw new Error(`cannot send durable ${type}: no transport identity`);
@@ -4936,15 +4973,21 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
     mode: 'durable',
   });
   if (row.status === 'accepted') return row.result || { ok: true, operation_id: operationId };
-  if (row.status === 'failed' || row.status === 'dead') {
-    throw new Error(row.lastError || `durable ${type} ${row.status}`);
+  if (row.status === 'failed') {
+    throw new Error(row.lastError || `durable ${type} failed`);
+  }
+  if (row.status === 'dead') {
+    return { ok: false, operation_id: operationId, ...durableDelivery(row) };
   }
 
   const result = await flushFleetTransport({ operationId, agentId: transportAgentId });
   const latest = outbox.get(operationId);
   if (latest?.status === 'accepted') return latest.result || result || { ok: true, operation_id: operationId };
-  if (latest?.status === 'failed' || latest?.status === 'dead') {
-    throw new Error(latest.lastError || `durable ${type} ${latest.status}`);
+  if (latest?.status === 'failed') {
+    throw new Error(latest.lastError || `durable ${type} failed`);
+  }
+  if (latest?.status === 'dead') {
+    return { ok: false, operation_id: operationId, ...durableDelivery(latest) };
   }
   scheduleFleetTransportFlush(1000, transportAgentId);
   return { ok: true, queued: true, operation_id: operationId };

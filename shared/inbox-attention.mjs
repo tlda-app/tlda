@@ -98,7 +98,15 @@ export function formatAttentionReceipt({ recipientLabel, status, tag, priority, 
     ? `${recipientLabel || 'recipient'} [${notificationPolicy}]`
     : `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
   const p = normalizeMessagePriority(priority)
-  if (delivery === 'notified') return `Notified ${label}${p === 'normal' ? '' : ` as ${p}`}.`
+  // "Notified" was a completed-action verb for something that has not happened.
+  // Everything this function is given is pre-delivery: `delivery` is the policy
+  // decision from decideSubscriptionDelivery, `status` is the recipient's inbox
+  // state, and the channel is their *configured* preference. The server's own
+  // trace at this moment says `status: 'stored'`. Nothing here is evidence the
+  // message reached anyone, and on 2026-08-08 an agent was told
+  // "Notified skip [available]" for a message Skip never received. The other
+  // branches below already say Queued/Batched/Held and were never the problem.
+  if (delivery === 'notified') return `Notify queued for ${label}${p === 'normal' ? '' : ` as ${p}`}.`
   if (delivery === 'batched') {
     const when = notifyBy ? ` This will be delivered by ${new Date(notifyBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''
     return `Batched for ${label}.${when}\nSay "this is urgent" if it should interrupt now.`
