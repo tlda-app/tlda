@@ -59,8 +59,8 @@ default: wd
   return { dir, configDir, binDir }
 }
 
-function runDaemonStartFixture(fixture) {
-  return spawnSync(process.execPath, [join(here, '..', 'cli', 'tlda.mjs'), 'daemon', 'start', '--env', 'stable'], {
+function runDaemonFixture(fixture, args) {
+  return spawnSync(process.execPath, [join(here, '..', 'cli', 'tlda.mjs'), ...args], {
     cwd: join(here, '..'),
     encoding: 'utf8',
     env: {
@@ -73,6 +73,10 @@ function runDaemonStartFixture(fixture) {
       TLDA_SYNC_SERVER: undefined,
     },
   })
+}
+
+function runDaemonStartFixture(fixture) {
+  return runDaemonFixture(fixture, ['daemon', 'start', '--env', 'stable'])
 }
 
 test('JSONL ingester IPC send contains EPIPE and closed-channel failures', () => {
@@ -409,6 +413,32 @@ exit 0
     assert.doesNotMatch(calls, /kickstart/)
     assert.match(result.stderr, /Fleet daemon launchd job is not loaded: com\.tlda\.fleet-daemon\.stable/)
     assert.match(result.stderr, /will not rewrite plists or run launchctl bootstrap/)
+  } finally {
+    rmSync(fixture.dir, { recursive: true, force: true })
+  }
+})
+
+test('daemon status --env selects the named launchd world', () => {
+  const fixture = writeDaemonStartFixture({
+    launchctlScript: `#!/bin/sh
+echo "$@" >> "$HOME/launchctl.calls"
+if [ "$1" = "print" ]; then echo "state = running"; echo "pid = 456"; exit 0; fi
+exit 0
+`,
+  })
+  try {
+    const plist = join(fixture.dir, 'Library', 'LaunchAgents', 'com.tlda.fleet-daemon.testing.plist')
+    writeFileSync(plist, '<plist/>')
+    const result = runDaemonFixture(fixture, ['daemon', 'status', '--env', 'testing'])
+    const calls = readFileSync(join(fixture.dir, 'launchctl.calls'), 'utf8')
+    assert.equal(result.status, 0)
+    assert.match(calls, /print gui\/\d+\/com\.tlda\.fleet-daemon\.testing/)
+    assert.match(result.stdout, /Fleet daemon launchd job loaded/)
+    assert.match(result.stdout, /pid = 456/)
+    assert.match(result.stdout, /Config target: https:\/\/db-testing\.example/)
+    assert.match(result.stdout, /com\.tlda\.fleet-daemon\.testing\.plist/)
+    assert.match(result.stdout, /fleet-daemon\.testing\.log/)
+    assert.doesNotMatch(result.stdout, /db-stable|fleet-daemon\.stable/)
   } finally {
     rmSync(fixture.dir, { recursive: true, force: true })
   }

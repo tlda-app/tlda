@@ -942,7 +942,7 @@ async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
 
 async function reanimateAgent(agentQuery) {
   if (!agentQuery) throw new Error('reanimate requires agent')
-  const before = await fleetStore.findAgentStored?.(agentQuery) || await fleetStore.findAgent(agentQuery)
+  const before = await fleetStore.findAgent(agentQuery)
   if (!before) {
     const err = new Error('agent not found')
     err.status = 404
@@ -958,10 +958,7 @@ async function reanimateAgent(agentQuery) {
     err.status = 409
     throw err
   }
-  const storedRoute = await fleetStore.getAgentDaemonRoute?.(before.id)
-  const daemonKey = storedRoute?.daemon_key
-    || before.daemon_key
-    || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
+  const daemonKey = before.daemon_key || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
   if (!daemonKey) {
     const err = new Error(`${before.friendly_name || before.id} has no daemon address`)
     err.status = 409
@@ -5800,21 +5797,11 @@ async function handleFleetWsMessage(ws, msg) {
   // things, and `fleet_id` is an optional fact that arrives asynchronously,
   // so "no fleet id yet" is a normal state and not an error to design around.
   if (type === 'login') {
-    const { agent_id, name, labels, manager, metadata, kind, project, machine_id, env_name } = msg
+    const { agent_id, name, labels, manager, metadata, kind, project } = msg
     let loginAgentId = agent_id || null
     if (loginAgentId) {
-      let existing = await fleetStore.getAgent?.(loginAgentId)
-      if (!existing) { error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`); return }
-      if (existing.dead) {
-        const daemonKey = machine_id && env_name ? daemonAddress(machine_id, env_name) : null
-        const ownerDaemon = daemonKey ? daemonConnections.get(daemonKey) : null
-        if (!daemonKey || !ownerDaemon || ownerDaemon.readyState !== 1) {
-          error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`)
-          return
-        }
-        await fleetStore.setAgentDaemonRoute(loginAgentId, daemonKey)
-        existing = await fleetStore.markAlive(loginAgentId)
-      }
+      const existing = await fleetStore.getAgent?.(loginAgentId)
+      if (!existing || existing.dead) { error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`); return }
       humanPresence.detach(ws)
       agentFleetConnections.set(loginAgentId, ws)
       ws._tldaAgentId = loginAgentId

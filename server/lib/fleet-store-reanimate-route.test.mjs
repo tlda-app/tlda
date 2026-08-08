@@ -19,6 +19,9 @@ test('marking an agent dead preserves the daemon route needed to reanimate it', 
 
     store.markDead('fleet:agent')
 
+    const deadAgent = store.findAgent('fleet:agent')
+    assert.equal(deadAgent.dead, true)
+    assert.equal(deadAgent.daemon_key, 'mini:testing')
     assert.deepEqual(store.getAgentDaemonRoute('fleet:agent'), {
       agent_id: 'fleet:agent',
       daemon_key: 'mini:testing',
