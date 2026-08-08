@@ -57,7 +57,7 @@ import {
 } from '../agent-launch/permission-ledger.mjs';
 import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
 import { applyNonClaudeRolePack } from '../shared/task-role-routing.mjs';
-import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
+import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
@@ -76,6 +76,7 @@ import { createFleetOperationTransport } from '../shared/fleet-operation-transpo
 import { formatLoginMarker } from '../agent-runtime/daemon-jsonl-hot-path.mjs';
 import { resolveMintFacts } from '../daemon/mint-store.mjs';
 import { matchesLocalParentThread, parentTranscriptContainsToolUse } from './lib/native-parent-thread.mjs';
+import { normalizeThreadFilterExpression } from './lib/thread-filter-normalize.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -861,22 +862,6 @@ async function resolveAgent(query) {
     throw new Error(`Agent resolution transport failed for "${query}": no response from fleet server`);
   }
   return data.agent || null;
-}
-
-function normalizeThreadFilterExpression(raw) {
-  let queryParseError = null;
-  try {
-    const parsed = parseSearchQuery(raw);
-    if (!parsed.query && parsed.filters.filterExpression) return parsed.filters.filterExpression;
-  } catch (e) {
-    queryParseError = e;
-  }
-  try {
-    parseMessageFilter(raw);
-    return raw;
-  } catch (e) {
-    throw queryParseError || e;
-  }
 }
 
 // ---- Report linter ----
