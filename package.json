@@ -55,6 +55,7 @@
     "chokidar": "^5.0.0",
     "codemirror": "^6.0.2",
     "codemirror-lang-latex": "^0.2.0",
+    "fflate": "^0.8.3",
     "jsdom": "^27.0.1",
     "katex": "^0.16.28",
     "livekit-client": "^2.20.0",
