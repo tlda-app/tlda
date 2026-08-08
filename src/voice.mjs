@@ -2676,6 +2676,16 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'proxy_status') {
       if (relay !== _deepgramWs) return
       _lastProxyTelemetry = { ...(msg.proxy || {}), receivedAt: Date.now() }
+      // The relay's drop counters had no durable sink — this updated a module
+      // variable read only by an in-memory perf snapshot, so "were his frames
+      // dropped before Deepgram heard them" was unanswerable from client.log.
+      // The relay reports only while it is BUFFERING (before upstream opens) and
+      // once on flush, so these are connect-window numbers, not steady state.
+      const proxy = msg.proxy || {}
+      // The buffering path can fire per audio frame (~50/s); the flush report is
+      // one-shot and carries what the connect window actually cost.
+      if (proxy.upstreamReadyState === 1) vlog('proxy status', proxy)
+      else vdiscard('proxy-status', 'proxy status', proxy)
       return
     }
 
@@ -3329,6 +3339,14 @@ async function startDeepgramMic() {
       recognizerStatus: currentDeepgramRecognizerStatus(),
       backlogFrames: backlog.frames,
       backlogDropped: backlog.droppedFrames,
+      // Relay-side counters for the browser→bridge hop, beside the client-side
+      // backlog above. proxyAgeMs is load-bearing: the relay only reports while
+      // buffering, so a large age reads "no relay backlog since then" rather than
+      // a fresh zero.
+      proxyDropped: _lastProxyTelemetry?.droppedFrames ?? null,
+      proxyPending: _lastProxyTelemetry?.pendingFrames ?? null,
+      proxyFlushed: _lastProxyTelemetry?.flushedFrames ?? null,
+      proxyAgeMs: _lastProxyTelemetry ? Date.now() - _lastProxyTelemetry.receivedAt : null,
       lastResultMs: _lastResultTime ? Date.now() - _lastResultTime : null,
       routed: voiceHasRoute(),
       target: targetLabel(),
