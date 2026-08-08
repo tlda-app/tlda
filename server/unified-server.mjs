@@ -1899,6 +1899,30 @@ function deliverSpawnMailboxCompletion(entry, status, detail) {
   })).catch(e => console.error(`[spawn-mailbox] failed to record ${entry.id}: ${e.message}`))
 }
 
+// The record above is written for every settle and addressed to nobody, which is
+// right for a record. It is not a delivery: share() builds its recipient list
+// from `to`, so an entry with none reaches no inbox, and no reader of type
+// `spawn_mailbox` exists. The caller is told "failure will arrive from the server
+// mailbox" and, for the whole life of this path, nothing ever did — four mints
+// died that way on 8/8 and every caller was told it worked.
+//
+// Delivered only where the daemon refused or threw, which carries a real error
+// string. NOT for the login clock at the readiness settle: a timeout is not a
+// failure (Skip 7/22, reasoned out in the onExpire comment above), and that
+// decision is left exactly as it is.
+function deliverSpawnLaunchFailure(entry, detail) {
+  if (entry.kind !== 'spawn' || !entry.ownerId) return
+  const label = detail.label || entry.meta?.name || entry.meta?.agentId || 'mint'
+  const agentId = detail.agentId || entry.meta?.agentId || null
+  const reason = detail.error || detail.reason || 'launch-failed'
+  Promise.resolve(fleetStore?.chat?.(
+    'fleet:tlda',
+    entry.ownerId,
+    `**mint failed** — \`${label}\` never launched.\n\n${reason}\n\nagent_id: \`${agentId || '(none)'}\` · mailbox: \`${entry.id}\``,
+    { type: 'spawn_launch_failed', mailbox_id: entry.id, agent_id: agentId, reason },
+  )).catch(e => console.error(`[spawn-mailbox] failed to deliver ${entry.id}: ${e.message}`))
+}
+
 function isIndeterminateSpawnOutcome(value) {
   const reason = value?.reason || value?.code
   const message = value?.error || value?.message || String(value || '')
@@ -2190,6 +2214,7 @@ async function performSpawnRelay(caller, msg) {
             error: e.message || String(e),
           })
           if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+          if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
           return
         }
       }
@@ -2216,6 +2241,7 @@ async function performSpawnRelay(caller, msg) {
         if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
         const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
         if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
+        if (settled) deliverSpawnLaunchFailure(settled, { ...result, error: result.error || result.reason || 'launch-failed' })
         return
       }
       let ready = null
@@ -2257,6 +2283,7 @@ async function performSpawnRelay(caller, msg) {
         error: e.message || String(e),
       })
       if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+      if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
     }
   })()
   return {
@@ -2530,36 +2557,6 @@ onGlobalEvent(async (event) => {
     const payload = JSON.stringify({ type: 'project-metadata-changed', project: event.name })
     for (const ws of daemonConnections.values()) {
       try { if (ws.readyState === 1) ws.send(payload) } catch { /* reconnect reloads current metadata */ }
-    }
-  }
-  if (event?.type === 'version-committed') {
-    // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
-    // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
-    // The spawn library reserves an agent shell before starting tmux, so findAgent() works
-    // immediately after the spawn RPC resolves — no login hook or name-pattern needed.
-    if (fleetStore) {
-      const docName = event.name
-      const qaName = `qa-${docName}`
-      const existing = await fleetStore.findAgent(qaName)
-      if (!existing || existing.dead) {
-        const machineIds = [...daemonConnections.keys()]
-        if (machineIds.length > 0) {
-          const taskDesc = `Watch the ${docName} writing project. Read the qa-writing-watch skill for your full spec.`
-          sendDaemonDurable(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
-            .then(async () => {
-              const agent = await fleetStore.findAgent(qaName)
-              if (agent) {
-                const taskId = `qa-task-${docName}-${Date.now()}`
-                await fleetStore.delegate('fleet:tlda', agent.id, taskId, taskDesc, { type: 'qa_watch', project: docName })
-                console.log(`[qa-watch] delegated task to ${qaName} (${agent.id}) for project ${docName}`)
-              } else {
-                console.warn(`[qa-watch] spawn succeeded but agent ${qaName} not found in store`)
-              }
-            })
-            .catch(e => console.warn(`[qa-watch] spawn failed for ${qaName}: ${e.message}`))
-          console.log(`[qa-watch] spawning ${qaName} for project ${docName}`)
-        }
-      }
     }
   }
   if (event?.type === 'build-card' && fleetStore && event.name) {
