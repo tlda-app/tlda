@@ -3,6 +3,7 @@ import { SvgDocumentEditor } from '../SvgDocument'
 import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type ProblemsView } from './api'
+import { MARKS_RETURNED_EVENT, RETURN_MARKS_EVENT } from './marking'
 import './ClassroomWorkspace.css'
 
 // The assignment as Skip marks it: "that would just be the homework assignment
@@ -29,6 +30,18 @@ export function ProblemMarking() {
   const [studentIndex, setStudentIndex] = useState(0)
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [error, setError] = useState('')
+  const [returned, setReturned] = useState('')
+
+  useEffect(() => {
+    const onReturned = (event: Event) => {
+      const count = (event as CustomEvent).detail?.count ?? 0
+      setReturned(count ? `returned ${count}` : 'nothing to return')
+    }
+    window.addEventListener(MARKS_RETURNED_EVENT, onReturned)
+    return () => window.removeEventListener(MARKS_RETURNED_EVENT, onReturned)
+  }, [])
+
+  useEffect(() => { setReturned('') }, [problemIndex, studentIndex])
 
   useEffect(() => {
     classroomApi.problems(assignmentId).then(setView).catch(e => setError(e.message))
@@ -101,6 +114,8 @@ export function ProblemMarking() {
       <span>{answer?.displayName} · {studentIndex + 1} of {problem.answers.length}</span>
       <button onClick={() => step(1)} aria-label="Next student">→</button>
       {answer && <span className="statusChip">{answer.gradingStatus}</span>}
+      <button onClick={() => window.dispatchEvent(new CustomEvent(RETURN_MARKS_EVENT))}>Return marks</button>
+      {returned && <span>{returned}</span>}
     </aside>
   </>
 }

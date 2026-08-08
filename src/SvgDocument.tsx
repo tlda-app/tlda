@@ -128,6 +128,7 @@ import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
+import { installReturnMarksBridge } from './classroom/marking'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -500,6 +501,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   }, [document, editorMounted])
 
   useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
+  // Returning marks needs the editor, and the control that triggers it lives
+  // outside this component; the bridge is a window event, as elsewhere.
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editorMounted || !editor) return
+    return installReturnMarksBridge(editor, shapeIdSetRef.current)
+  }, [editorMounted])
 
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
