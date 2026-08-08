@@ -1003,6 +1003,32 @@ async function rpcWake(params = {}) {
   return wakeMint(params)
 }
 
+// Kill the agent's session and bring it back, entirely inside the daemon.
+//
+// This exists so an agent can restart ITSELF. Doing it from the agent's own
+// shell cannot work: the hibernate kills the tmux session the CLI is running in,
+// so the process that was going to issue the wake dies first and the agent never
+// comes back. Skip, 2026-08-08 17:22 EDT: "you have to bounce it off the demon,
+// so that you can do it to yourself. That is the point."
+//
+// It matters because MCP-client code reaches an agent only when that agent's
+// process restarts — so a fix can be merged, deployed, and invisible to every
+// running agent, including the one that shipped it.
+//
+// Both halves already exist here; this only composes them, so there is no second
+// mechanism to keep in step with hibernate or wake.
+async function rpcRestart(params = {}) {
+  const agentId = params.agent_id || params.agentId
+  const mintId = params.mint_id || params.mintId
+  if (!agentId && !mintId) throw new Error('restart requires agent_id or mint_id')
+  const killed = await terminalRpc.handlers['kill-session']({
+    agent_id: agentId,
+    mint_id: mintId,
+  }).catch(e => ({ ok: false, error: e?.message || String(e) }))
+  const woke = await wakeMint(params)
+  return { ok: true, killed, woke }
+}
+
 const machineRpc = createMachineRpc({
   sendMsg,
   getPid: () => process.pid,
@@ -1046,6 +1072,7 @@ function startLocalLifecycleRpc() {
         const handlers = {
           mint: rpcMint,
           wake: rpcWake,
+          restart: rpcRestart,
           spawn: agentLauncher.handlers.spawn,
           'project-source-link': rpcLinkProjectSource,
           'project-source-unlink': rpcUnlinkProjectSource,

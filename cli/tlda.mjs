@@ -4985,42 +4985,73 @@ async function cmdAgent() {
   }
 }
 
-// Restart the fleet MCP for agents by driving Claude Code's /mcp menu via the
-// bin/fleet-mcp-restart script (path resolved here, not relying on PATH).
 // Dev-only — surfaced as `tlda-dev restart-mcp`, kept out of `tlda --help`.
-//   tlda-dev restart-mcp                  → your own MCP (current tmux session)
 //   tlda-dev restart-mcp foo bar          → those agents
 //   tlda-dev restart-mcp --all [--except foo bar]
+//
+// Hibernate then wake. That is the whole mechanism, and it is deliberately not
+// the old one: `bin/fleet-mcp-restart` drove Claude Code's interactive `/mcp`
+// menu by typing keystrokes into the pane and matching the rendered output.
+// That only ever worked on claude seats — codex answers `/mcp` with a static
+// listing and offers no reconnect action — so most of the fleet could not be
+// restarted at all, and the failure was reported by scraping the last line of a
+// terminal, which read a normal status footer as an error message.
+//
+// Hibernate/wake works on every harness, restores the session (same session id,
+// conversation intact — a bounce costs nothing but the seconds), and is the same
+// path the daemon already owns. Skip, 2026-08-08 17:20:23 EDT: "if it works by
+// messing around with some readline menu, it's not supposed to do that. It's
+// supposed to hibernate and wake."
+//
+// Why this exists at all: MCP-client code under `mcp-server/` reaches an agent
+// ONLY when that agent's process restarts. A fix can be merged, deployed and
+// invisible to every running agent — which on 2026-08-08 left the whole fleet on
+// a client that could wedge silently mid-conversation.
 async function restartMcpAgents(rest) {
-  const { spawnSync } = await import('child_process')
-  const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-mcp-restart')
-  if (!existsSync(script)) { console.error(red(`fleet-mcp-restart not found: ${script}`)); process.exit(1) }
-
-  // No args → restart own MCP (script defaults the session to the current tmux session).
-  if (rest.length === 0) {
-    const r = spawnSync('bash', [script, '--skip-preflight'], { stdio: 'inherit' })
-    process.exit(r.status ?? 0)
-  }
-
   let targets
   if (rest.includes('--all')) {
+    const { spawnSync } = await import('child_process')
     const ei = rest.indexOf('--except')
     const except = new Set((ei >= 0 ? rest.slice(ei + 1) : []).map(n => n.replace(/^fleet-/, '')))
     const res = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' })
     const all = (res.status === 0 ? res.stdout.trim().split('\n') : [])
-      .filter(n => n.startsWith('fleet-')).map(n => n.replace(/^fleet-/, ''))
+      .filter(n => n.startsWith('fleet-') && !n.startsWith('fleet-bot-'))
+      .map(n => n.replace(/^fleet-/, ''))
     targets = all.filter(n => !except.has(n))
   } else {
     targets = rest.filter(a => !a.startsWith('--'))
   }
 
-  if (targets.length === 0) { console.log('No agents to restart.'); process.exit(0) }
+  if (targets.length === 0) {
+    console.error('Usage: tlda-dev restart-mcp <agent…> | --all [--except <agent…>]')
+    process.exit(1)
+  }
+
+  // The daemon does the kill and the wake; we only ask. That is what lets an
+  // agent restart ITSELF: hibernating from your own shell kills the tmux session
+  // your CLI is running in, so the process that would have issued the wake dies
+  // first and you never come back. The daemon outlives you and finishes the job.
+  const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'))
   let ok = 0, fail = 0
-  for (const name of targets) {
-    process.stdout.write(`restart-mcp ${name} … `)
-    const r = spawnSync('bash', [script, agentSessionName(name)], { encoding: 'utf8' })
-    if (r.status === 0) { console.log('ok'); ok++ }
-    else { console.log(`FAILED: ${((r.stderr || '') + (r.stdout || '')).trim().split('\n').filter(Boolean).pop() || 'error'}`); fail++ }
+  try {
+    for (const name of targets) {
+      process.stdout.write(`restart-mcp ${name} … `)
+      try {
+        const stored = mintStore.resolve(name)
+        if (!stored) throw new Error(`no local agent found for "${name}"`)
+        await callLocalDaemonLifecycle('restart', { mint_id: stored.identifier })
+        console.log('ok')
+        ok++
+      } catch (e) {
+        // Reported, not rethrown, so one bad agent does not abandon the rest of
+        // the batch — the point of taking a list is restarting a list. The
+        // failure is printed per agent and the command exits nonzero below.
+        console.log(`FAILED: ${e?.message || String(e)}`)
+        fail++
+      }
+    }
+  } finally {
+    mintStore.close()
   }
   console.log(`Done: ${ok} ok${fail ? `, ${fail} failed` : ''}.`)
   process.exit(fail ? 1 : 0)
