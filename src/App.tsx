@@ -1019,7 +1019,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     const rows = indexChatRowsRef.current
     if (!log || !rows || !selectedAgent) return
     return attachIndexChatTail(log, rows)
-  }, [selectedAgent?.id, renderedChatRows])
+  }, [selectedAgent?.id])
   const composerAgentNames = useMemo(() => (
     selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
   ), [selectedAgent])
