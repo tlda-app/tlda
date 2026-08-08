@@ -338,19 +338,26 @@ export function PrefsTab({ query = '' }: { query?: string }) {
     const root = scrollRef.current
     if (!root) return
 
+    // The canvas takes wheel input before Settings ever sees it, so the panel
+    // would not scroll on a touchpad and the Radio control sat below the fold —
+    // Skip could not turn off a popup he had asked about four times in nine
+    // hours. Capture phase and preventDefault are what keep the gesture here.
+    //
+    // `.prefs-tab` is the only scroller. It is a `.doc-panel-content`, which
+    // carries `overflow-y: auto` (DocumentPanel.css:732), and no `prefs-*`
+    // selector anywhere declares overflow, max-height or height — so no
+    // subsection can be a scroll container and there is no inner scroller to
+    // offer the gesture to first.
+    //
+    // deltaMode is deliberately not converted. Chrome on a Mac trackpad reports
+    // pixels, which is the surface this is for; a mouse wheel reporting
+    // DOM_DELTA_LINE would scroll a few pixels per notch instead of a few lines.
+    // Written down rather than handled, because nobody has reported it and a
+    // speculative unit conversion is a second thing to get wrong.
     const onWheel = (event: WheelEvent) => {
-      const nested = event.target instanceof Element
-        ? event.target.closest<HTMLElement>('.prefs-section-body')
-        : null
-      const nestedCanScroll = nested && nested.scrollHeight > nested.clientHeight && (
-        (event.deltaY < 0 && nested.scrollTop > 0) ||
-        (event.deltaY > 0 && nested.scrollTop + nested.clientHeight < nested.scrollHeight)
-      )
-      const scrollOwner = nestedCanScroll ? nested : root
-
       event.preventDefault()
       event.stopPropagation()
-      scrollOwner.scrollTop += event.deltaY
+      root.scrollTop += event.deltaY
     }
 
     root.addEventListener('wheel', onWheel, { capture: true, passive: false })
