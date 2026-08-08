@@ -2,9 +2,31 @@ import { Router } from 'express'
 import crypto from 'node:crypto'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
 import { extractToken, validateToken } from '../lib/auth.mjs'
-import { createProject, hashSourceFiles, readProject, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { readdir, readFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import { zipSync, strToU8 } from 'fflate'
+import { createProject, hashSourceFiles, readProject, sourceDir, writeSourceFileAsync } from '../lib/project-store.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
+
+// Everything the student uploaded, in the shape they uploaded it. Deliberately
+// not listSourceFiles, which filters by client-source ownership rules — an
+// export that quietly omitted a file would defeat its own purpose.
+async function walkSubmissionFiles(dir, base = dir) {
+  const found = []
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return found  // a submission recorded but never materialised — the index still lists it
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) found.push(...await walkSubmissionFiles(full, base))
+    else found.push(relative(base, full))
+  }
+  return found
+}
 
 function studentToken(req) {
   return req.headers['x-tlda-student-token'] || null
@@ -73,6 +95,61 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
 
   router.get('/courses/:courseId/status', instructor, (req, res) => res.json(store.status(req.params.courseId)))
+
+  // The safety net: everything students submitted, plus whatever has been said
+  // back to them, as one archive that opens without tlda. It exists so the
+  // interface can be trusted before anyone has reason to trust it, which means
+  // the export must not depend on the app being up, the database being
+  // readable, or this code being present later. Plain files and plain text.
+  router.get('/courses/:courseId/export', instructor, async (req, res) => {
+    const { courseId } = req.params
+    const course = store.getCourse(courseId)
+    if (!course) return res.status(404).json({ error: 'Course not found' })
+
+    try {
+      const students = store.listStudents(courseId)
+      const assignments = store.listAssignments(courseId)
+      const files = {}
+      const index = [`# ${course.title}`, '', `Exported ${new Date().toISOString()}.`, '',
+        'Every folder below is one student\'s submitted work for one assignment,',
+        'exactly as they uploaded it. `feedback.md` is what was written back to',
+        'them. Nothing here needs tlda to read.', '']
+
+      for (const assignment of assignments) {
+        index.push(`## ${assignment.title} (${assignment.id}) — due ${assignment.dueAt}`, '')
+        for (const student of students) {
+          const submission = store.getSubmission(assignment.id, student.id, { includeDrafts: true })
+          if (!submission) {
+            index.push(`- ${student.displayName} (${student.id}) — **not submitted**`)
+            continue
+          }
+          index.push(`- ${student.displayName} (${student.id}) — ${submission.gradingStatus}, submitted ${submission.submittedAt}`)
+
+          const root = `${assignment.id}/${student.id}`
+          const dir = sourceDir(submission.contentRef)
+          for (const relativePath of await walkSubmissionFiles(dir)) {
+            files[`${root}/${relativePath}`] = new Uint8Array(await readFile(join(dir, relativePath)))
+          }
+          if (submission.feedback.length) {
+            const notes = submission.feedback.map(mark =>
+              `## ${mark.title}\n\n_${mark.visibility === 'returned' ? 'Returned to the student' : 'Draft, not yet returned'}_\n\n${mark.text}\n`)
+            files[`${root}/feedback.md`] = strToU8(`# Feedback for ${student.displayName} — ${assignment.title}\n\n${notes.join('\n')}`)
+          }
+        }
+        index.push('')
+      }
+
+      files['README.md'] = strToU8(index.join('\n'))
+      const archive = Buffer.from(zipSync(files))
+      res.setHeader('Content-Type', 'application/zip')
+      res.setHeader('Content-Disposition', `attachment; filename="${courseId}-submissions.zip"`)
+      res.setHeader('Content-Length', archive.length)
+      res.end(archive)
+    } catch (error) {
+      console.error(`[classroom] export failed for ${courseId}:`, error)
+      res.status(500).json({ error: `The export could not be built: ${error.message}` })
+    }
+  })
 
   router.get('/assignments/:assignmentId', (req, res) => {
     const assignment = store.getAssignment(req.params.assignmentId)
