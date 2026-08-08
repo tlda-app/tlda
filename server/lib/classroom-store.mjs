@@ -134,10 +134,16 @@ export class ClassroomStore {
   problems(assignmentId) {
     const assignment = this.getAssignment(assignmentId)
     if (!assignment) return null
-    const rows = this.db.prepare(`SELECT s.student_id AS studentId, st.display_name AS displayName,
+    // Driven by the roster, not by the submissions table. Selecting from
+    // submissions drops anyone who handed in nothing, so the class silently
+    // shrinks: the flick-through reads "1 of 1" while the roster holds two, and
+    // the student who submitted nothing is the one most worth arriving at.
+    const rows = this.db.prepare(`SELECT st.id AS studentId, st.display_name AS displayName,
       s.content_ref AS contentRef, s.grading_status AS gradingStatus, s.answer_ids AS answerIds
-      FROM submissions s JOIN students st ON st.id = s.student_id
-      WHERE s.assignment_id = ? ORDER BY st.display_name`).all(assignmentId)
+      FROM students st LEFT JOIN submissions s
+        ON s.student_id = st.id AND s.assignment_id = ?
+      WHERE st.course_id = ? AND st.active = 1
+      ORDER BY st.display_name`).all(assignmentId, assignment.courseId)
 
     const parsed = rows.map(row => ({ ...row, answerIds: row.answerIds ? JSON.parse(row.answerIds) : [] }))
     // Order follows first appearance in a submission, which is the template's
@@ -153,7 +159,9 @@ export class ClassroomStore {
           studentId: row.studentId,
           displayName: row.displayName,
           contentRef: row.contentRef,
-          gradingStatus: row.gradingStatus,
+          // Same word the gradebook uses, so the two surfaces do not describe
+          // the same student differently.
+          gradingStatus: row.gradingStatus ?? 'not-submitted',
           // The anchor into that student's rendered page. Anchoring beats
           // slicing their HTML apart: the id is a contract the template sets,
           // the surrounding markup is Quarto's business.
