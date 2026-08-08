@@ -13,7 +13,7 @@
 // Write API: sendMessage, respawnAgent, renameAgent, etc.
 // Writes go to server → DB → SSE → subscriber. One path.
 
-import { convertChatEvent } from './convert-chat-event.mjs'
+import { convertChatEvent, convertChatEvents } from './convert-chat-event.mjs'
 import { applyFleetEventUpdate } from './event-update.mjs'
 export { convertChatEvent } from './convert-chat-event.mjs'
 import { matchesFleetFilter, resolveFleetFilter } from '../../shared/filter-semantics.mjs'
@@ -1327,19 +1327,6 @@ function applyTaskDelta(delta) {
   notify('tasks', { type: 'tasks', tasks: _tasks })
 }
 
-// The renderable set shared by subscription history and live delivery.
-const RENDERABLE_CHAT_TYPES = new Set([
-  'chat', 'delegate', 'task_done', 'terminal_user', 'terminal_assistant', 'timer',
-  'compacting', 'activity', 'terminal_attention', 'terminal_card', 'plan_approval',
-  'kill-session', 'interrupt',
-])
-
-function toRenderableChatEvents(rows) {
-  return (rows || [])
-    .filter(e => RENDERABLE_CHAT_TYPES.has(e.event_type || e.type))
-    .map(convertChatEvent)
-}
-
 /**
  * Put a subscription's events into that panel's buffer. The ONE intake for a
  * server-fed chat panel — history page and live push both land here, converted
@@ -1351,7 +1338,7 @@ function toRenderableChatEvents(rows) {
  */
 export function receiveFilterEvents(bufferKey, rows, { browserReceivedAtMs = null } = {}) {
   if (!bufferKey) return 0
-  const events = toRenderableChatEvents(rows)
+  const events = convertChatEvents(rows)
   if (Number.isFinite(browserReceivedAtMs)) {
     for (const event of events) {
       if (!event?._activityLatency) continue

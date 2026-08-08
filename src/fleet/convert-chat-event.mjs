@@ -131,3 +131,7 @@ export function convertChatEvent(e) {
   }
   return msg
 }
+
+export function convertChatEvents(events) {
+  return (events || []).map(convertChatEvent)
+}
