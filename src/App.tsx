@@ -11,6 +11,7 @@ import { subscribeChat } from './fleet/chat-subscription.mjs'
 import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { GradebookWorkspace } from './classroom/GradebookWorkspace'
 import { ProblemMarking } from './classroom/ProblemMarking'
+import { StudentWork } from './classroom/StudentWork'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
 import { viewFormat } from '../shared/document-formats.mjs'
@@ -45,7 +46,7 @@ function standaloneWorkspace() {
 }
 function isStandaloneWorkspaceRoute() {
   const workspace = standaloneWorkspace()
-  return workspace === 'classroom-gradebook' || workspace === 'classroom-problems'
+  return workspace === 'classroom-gradebook' || workspace === 'classroom-problems' || workspace === 'classroom-work'
 }
 // Fetch auth level (presenter permission) — fire and forget, UI updates reactively.
 // The standalone gradebook uses its classroom API request instead of viewer auth state.
@@ -1487,7 +1488,9 @@ function App() {
   if (isStandaloneWorkspaceRoute()) {
     return (
       <ErrorBoundary>
-        {standaloneWorkspace() === 'classroom-problems' ? <ProblemMarking /> : <GradebookWorkspace />}
+        {standaloneWorkspace() === 'classroom-problems' ? <ProblemMarking />
+          : standaloneWorkspace() === 'classroom-work' ? <StudentWork />
+          : <GradebookWorkspace />}
       </ErrorBoundary>
     )
   }

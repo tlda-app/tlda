@@ -194,6 +194,17 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     }
   })
 
+  // A student asking for their own work, without naming themselves. Their id
+  // comes from their token, so there is no path here that can be pointed at
+  // somebody else's submission by editing a URL.
+  router.get('/assignments/:assignmentId/mine', (req, res) => {
+    const p = req.classroomPrincipal
+    if (p.role !== 'student') return res.status(400).json({ error: 'Only a student has a submission of their own' })
+    const row = store.getSubmission(req.params.assignmentId, p.studentId)
+    if (!row) return res.status(404).json({ error: 'Not submitted yet' })
+    res.json(row)
+  })
+
   router.get('/assignments/:assignmentId/submissions/:studentId', (req, res) => {
     const { assignmentId, studentId } = req.params
     if (!allowedStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })

@@ -1,5 +1,7 @@
 export type GradingStatus = 'ungraded' | 'graded' | 'returned'
-export interface Assignment { id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string }
+export interface Assignment {
+  solutionsLocked?: boolean
+ id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string }
 export interface StatusCell { assignmentId: string; state: 'not-submitted' | GradingStatus; studentId?: string; contentRef?: string; submittedAt?: string; gradingStatus?: GradingStatus }
 export interface StatusRow { id: string; displayName: string; assignments: StatusCell[] }
 export interface CourseStatus { course: { id: string; title: string }; assignments: Assignment[]; rows: StatusRow[]; counts: Record<string, number> }
@@ -20,6 +22,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const classroomApi = {
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
   problems: (assignmentId: string) => request<ProblemsView>(`/assignments/${encodeURIComponent(assignmentId)}/problems`),
+  // The student's own work. Their identity comes from their token, so this
+  // takes no student id and cannot be aimed at anyone else.
+  mySubmission: (assignmentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/mine`),
   assignment: (id: string) => request<Assignment>(`/assignments/${encodeURIComponent(id)}`),
   submission: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}`),
   feedback: (assignmentId: string, studentId: string, body: { title: string; text: string; attached?: boolean }) => request<{ id: string }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/feedback`, { method: 'POST', body: JSON.stringify(body) }),

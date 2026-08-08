@@ -69,6 +69,25 @@ export function ProblemMarking() {
     return () => { cancelled = true }
   }, [view, answer])
 
+  // Choosing a problem has to move the panes to it, or "problem by problem" is
+  // only true of the student list: the document still opens at the top and he
+  // hunts for question 4 himself, twice, on every student.
+  //
+  // The anchor is the same `#ans-<exercise-id>` in both documents — his copy and
+  // theirs came from one handout — so navigating the submission brings the
+  // matching solution level with it.
+  useEffect(() => {
+    if (!document || !problem || !answer?.anchor) return
+    const shapeId = document.pages[0]?.shapeId
+    if (!shapeId) return
+    // After the editor has mounted the page; the same message the table of
+    // contents and cross-member links already use.
+    const timer = setTimeout(() => {
+      window.postMessage({ type: 'tlda-navigate', anchor: problem.problemId, shapeId }, '*')
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [document, problem, answer])
+
   // The URL follows what you're looking at, so a reload lands you back here and
   // the link is shareable — but flicking never navigates.
   useEffect(() => {
