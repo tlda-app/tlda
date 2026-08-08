@@ -942,7 +942,7 @@ async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
 
 async function reanimateAgent(agentQuery) {
   if (!agentQuery) throw new Error('reanimate requires agent')
-  const before = await fleetStore.findAgent(agentQuery)
+  const before = await fleetStore.findAgentStored?.(agentQuery) || await fleetStore.findAgent(agentQuery)
   if (!before) {
     const err = new Error('agent not found')
     err.status = 404

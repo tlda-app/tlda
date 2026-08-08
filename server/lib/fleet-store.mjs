@@ -3589,6 +3589,7 @@ export class FleetStore {
 
   markDead(id) {
     this.db.transaction(() => {
+      this._deleteAgentDaemonRoute.run(id);
       this._markAgentDead.run(id);
     })();
     this.retireTasksForGoneAgent(id, 'agent marked dead');
