@@ -54,6 +54,11 @@ export class ClassroomStore {
     `)
     const assignmentColumns = new Set(this.db.pragma('table_info(assignments)').map(column => column.name))
     if (!assignmentColumns.has('template_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN template_doc_key TEXT')
+    // The answer ids a submission actually contains. Problem-by-problem marking
+    // pairs one exercise across every student, so the join key has to survive
+    // upload rather than being re-derived by reparsing each archive.
+    const submissionColumns = new Set(this.db.pragma('table_info(submissions)').map(column => column.name))
+    if (!submissionColumns.has('answer_ids')) this.db.exec('ALTER TABLE submissions ADD COLUMN answer_ids TEXT')
   }
 
   close() { this.db.close() }
@@ -109,12 +114,53 @@ export class ClassroomStore {
     return this.getAssignment(assignmentId)
   }
 
-  submit({ assignmentId, studentId, contentRef, submittedAt = new Date().toISOString() }) {
-    this.db.prepare(`INSERT INTO submissions(assignment_id,student_id,content_ref,submitted_at,grading_status)
-      VALUES (?,?,?,?, 'ungraded') ON CONFLICT(assignment_id,student_id) DO UPDATE SET
-      content_ref=excluded.content_ref, submitted_at=excluded.submitted_at, grading_status='ungraded', graded_at=NULL, returned_at=NULL`)
-      .run(assignmentId, studentId, contentRef, submittedAt)
+  submit({ assignmentId, studentId, contentRef, answerIds = null, submittedAt = new Date().toISOString() }) {
+    this.db.prepare(`INSERT INTO submissions(assignment_id,student_id,content_ref,submitted_at,grading_status,answer_ids)
+      VALUES (?,?,?,?, 'ungraded', ?) ON CONFLICT(assignment_id,student_id) DO UPDATE SET
+      content_ref=excluded.content_ref, submitted_at=excluded.submitted_at, grading_status='ungraded', graded_at=NULL, returned_at=NULL,
+      answer_ids=excluded.answer_ids`)
+      .run(assignmentId, studentId, contentRef, submittedAt, answerIds ? JSON.stringify(answerIds) : null)
     return this.getSubmission(assignmentId, studentId, { includeDrafts: true })
+  }
+
+  /**
+   * The assignment seen the way he marks it: one row per exercise, and for each
+   * exercise every student's answer to it, in roster order.
+   *
+   * A student who did not answer a problem still appears, because "nobody
+   * attempted question 4" is the thing worth seeing, and a list that silently
+   * omits them hides it.
+   */
+  problems(assignmentId) {
+    const assignment = this.getAssignment(assignmentId)
+    if (!assignment) return null
+    const rows = this.db.prepare(`SELECT s.student_id AS studentId, st.display_name AS displayName,
+      s.content_ref AS contentRef, s.grading_status AS gradingStatus, s.answer_ids AS answerIds
+      FROM submissions s JOIN students st ON st.id = s.student_id
+      WHERE s.assignment_id = ? ORDER BY st.display_name`).all(assignmentId)
+
+    const parsed = rows.map(row => ({ ...row, answerIds: row.answerIds ? JSON.parse(row.answerIds) : [] }))
+    // Order follows first appearance in a submission, which is the template's
+    // order — every student's copy came from the same handout.
+    const problemIds = []
+    for (const row of parsed) for (const id of row.answerIds) if (!problemIds.includes(id)) problemIds.push(id)
+
+    return {
+      assignment,
+      problems: problemIds.map(problemId => ({
+        problemId,
+        answers: parsed.map(row => ({
+          studentId: row.studentId,
+          displayName: row.displayName,
+          contentRef: row.contentRef,
+          gradingStatus: row.gradingStatus,
+          // The anchor into that student's rendered page. Anchoring beats
+          // slicing their HTML apart: the id is a contract the template sets,
+          // the surrounding markup is Quarto's business.
+          anchor: row.answerIds.includes(problemId) ? problemId : null,
+        })),
+      })),
+    }
   }
 
   addFeedback({ id = crypto.randomUUID(), assignmentId, studentId, title, text, attached = true, createdAt = new Date().toISOString() }) {

@@ -151,6 +151,14 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     }
   })
 
+  // The assignment as he marks it: each problem, and every student's answer to
+  // that problem, so he can hold one exercise still and flick through the class.
+  router.get('/assignments/:assignmentId/problems', instructor, (req, res) => {
+    const view = store.problems(req.params.assignmentId)
+    if (!view) return res.status(404).json({ error: 'Assignment not found' })
+    res.json(view)
+  })
+
   router.get('/assignments/:assignmentId', (req, res) => {
     const assignment = store.getAssignment(req.params.assignmentId)
     if (!assignment) return res.status(404).json({ error: 'Assignment not found' })
@@ -232,7 +240,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
           if (entryPath.endsWith('/')) continue
           await writeSourceFileAsync(contentRef, entryPath, Buffer.from(bytes))
         }
-        const submission = store.submit({ assignmentId, studentId, contentRef })
+        const submission = store.submit({ assignmentId, studentId, contentRef, answerIds: inspection.answerIds })
         settled = true
         // The record is written before the render is asked for: a build that
         // fails leaves the work stored and re-renderable, where waiting on the
