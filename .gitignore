@@ -71,6 +71,7 @@ __pycache__/
 *.pyc
 
 # Personal / development artifacts
+.home/
 *.png
 *.jpeg
 *.jpg
