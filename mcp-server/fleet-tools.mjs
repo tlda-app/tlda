@@ -4519,7 +4519,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
       const t = data.totals || { awake: 0, hibernating: 0, dead: 0, total: 0 };
       const rows = data.agents || [];
-      const header = `Fleet: ${t.awake} awake · ${t.hibernating} hibernating · ${t.dead} dead · ${t.total} total`;
+      // `pending` is agents whose login never completed. Shown always, including when it
+      // is zero, because its absence is what made stuck agents read as gone.
+      const header = `Fleet: ${t.awake} awake · ${t.hibernating} hibernating · ${t.pending ?? 0} pending · ${t.dead} dead · ${t.total} total`;
       const scope = data.matched != null && data.matched !== t.total
         ? `  (filter matched ${data.matched}${data.shown < data.matched ? `, showing ${data.shown}` : ''})`
         : '';
@@ -4539,7 +4541,14 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const summaryText = summaryLines.length ? `\n${summaryLines.join('\n')}` : '';
 
       if (rows.length === 0) {
-        return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n(no agents match)` }] };
+        // The name resolved, the roster has no row for it. Say so: an empty
+        // roster answer is otherwise read as "no such agent", which is how a
+        // deleted agent looks identical to a typo.
+        const elsewhere = (data.resolved_elsewhere || [])
+          .map(r => `  ⚠ \`${r.token}\` resolves to ${r.ids.join(', ')} but has no live roster row — known to the store, absent from the registry. Reach it by id; a resolvable name with no row is a missing agent, not a missing name.`)
+          .join('\n');
+        const tail = elsewhere ? `\n(no agents match)\n${elsewhere}` : '\n(no agents match)';
+        return { content: [{ type: 'text', text: `${header}${scope}${summaryText}${tail}` }] };
       }
 
       // Compact aligned table.

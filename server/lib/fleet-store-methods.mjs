@@ -58,6 +58,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getAliveAgentCounts',
   'getAliveAgents',
   'getAliveAgentsPage',
+  'getPendingShellAgents',
   'getAllAgents',
   'getAllFleetPrefs',
   'getAllSkillReadsByAgent',

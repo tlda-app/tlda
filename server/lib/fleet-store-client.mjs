@@ -31,6 +31,7 @@ const AGENT_RESULT_SHAPE = {
   getAgentsByDaemonKey: 'many',
   getLiveAgentsByFriendlyName: 'many',
   getAliveAgents: 'many',
+  getPendingShellAgents: 'many',
   getLineageRoster: 'many',
   getAliveAgentsPage: 'page',
 }

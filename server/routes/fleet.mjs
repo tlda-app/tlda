@@ -153,6 +153,29 @@ function compareFleetRosterRows(x, y) {
     || String(y.id || '').localeCompare(String(x.id || ''))
 }
 
+// Bare name/id tokens in a filter AST, ignoring negated branches and the
+// pseudo-labels and prefixed selectors that are never agent names. Used only on
+// the zero-match path below.
+const ROSTER_PSEUDO_TOKENS = new Set(['awake', 'hibernating', 'dead', 'human', 'here', 'away', 'me'])
+export function collectFilterNameTokens(node, out = [], negated = false) {
+  if (!node) return out
+  switch (node.t) {
+    case 'lit': {
+      const v = String(node.v || '')
+      if (negated || !v || v.includes(':') && !v.startsWith('fleet:')) break
+      if (ROSTER_PSEUDO_TOKENS.has(v.toLowerCase())) break
+      if (!out.includes(v)) out.push(v)
+      break
+    }
+    case 'not': collectFilterNameTokens(node.x, out, !negated); break
+    case 'and': case 'or':
+      collectFilterNameTokens(node.l, out, negated)
+      collectFilterNameTokens(node.r, out, negated)
+      break
+  }
+  return out
+}
+
 export function filteredFleetRosterPage(roster, {
   filterAst = null,
   labelsForRow = labelsForAgent,
@@ -508,6 +531,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const now = Date.now()
       const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
       const roster = await fleetStore.getAliveAgents?.() || []
+      // An agent whose login never completed keeps metadata.shell=1, and no roster read
+      // returns it — so the one surface people use to ask "where is X" answers "no agents
+      // match" for a row that is sitting right there. Skip hit this reaching for an agent
+      // whose exact friendly name he already knew, and it read as the agent being deleted.
+      //
+      // Rows are merged in only when the caller filtered: an unfiltered roster stays the
+      // live fleet, so a backlog of never-booted shells cannot flood it, while a name or
+      // id lookup finds them. The count is reported either way — the totals previously
+      // summed to a number these rows were absent from, which is what made "0 dead,
+      // N total" look like proof that nothing had gone missing.
+      const pendingShells = await fleetStore.getPendingShellAgents?.() || []
 
       // Whole-fleet totals (independent of the filter) — the at-a-glance load.
       // Optional filter expression from the query (e.g. "awake & reviewers").
@@ -517,16 +551,33 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (req.query.filter) {
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
       }
-      const page = filteredFleetRosterPage(roster, {
+      const page = filteredFleetRosterPage(filterAst ? [...roster, ...pendingShells] : roster, {
         filterAst,
         labelsForRow: fleetTableLabelsForAgent,
         limit,
         cursor: req.query.cursor || null,
       })
 
+      // A zero-match filter is the one place the roster's view and the store's
+      // name resolver can disagree. The roster array holds live rows only;
+      // `resolveAgentQuery` also reads `name_history`, so a name whose agents
+      // row is gone still resolves there. An agent asked to find another agent
+      // by name reaches for roster first, and "(no agents match)" is then a
+      // false negative it has no way to detect. Resolve only on the empty path
+      // — doing it per token on every read would put a LIKE on the hot query.
+      let resolvedElsewhere = []
+      if (filterAst && page.matched === 0 && typeof fleetStore.resolveAgentQuery === 'function') {
+        for (const token of collectFilterNameTokens(filterAst)) {
+          let ids = []
+          try { ids = await fleetStore.resolveAgentQuery(token) || [] } catch { ids = [] }
+          if (ids.length) resolvedElsewhere.push({ token, ids })
+        }
+      }
+
       const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now })
       res.json({
-        totals: summary.totals,
+        resolved_elsewhere: resolvedElsewhere,
+        totals: { ...summary.totals, pending: pendingShells.length },
         wholeFleet: await fleetStore.getAgentSummary?.() || null,
         summary: summary.summary,
         agents: summary.agents,

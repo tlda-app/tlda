@@ -119,6 +119,10 @@ const FLEET_API = DATABASE_HTTP
 // as finished. A momentum glide emits scroll events continuously, so this only
 // has to outlast the gap between two of them.
 const TOUCH_SCROLL_SETTLE_MS = 150
+// Movement of the anchored row within the viewport that counts as real drift
+// rather than sub-pixel measurement noise. Sits just above the 0.5px floor
+// restoreViewportAnchor already treats as "already in place".
+const ANCHOR_DRIFT_EPS = 1
 // Finger travel that counts as a drag rather than a tap. A drag is the touch
 // analogue of a wheel event: the gesture proves reader intent by itself, the
 // way `enterReaderMode('wheel-up')` treats any upward wheel delta.
@@ -4086,14 +4090,31 @@ function FleetChatInner({ shape }: { shape: any }) {
     for (const row of rows) {
       const rect = row.getBoundingClientRect()
       if (rect.bottom <= viewportTop + 0.5) continue
-      viewportAnchorRef.current = {
-        key: row.dataset.chatItemKey || '',
-        top: rect.top - viewportTop,
+      const key = row.dataset.chatItemKey || ''
+      const top = rect.top - viewportTop
+      const previous = viewportAnchorRef.current
+      const liveInput = touchScrollActiveRef.current || explicitScrollInputRef.current
+      if (previous && previous.key === key && !liveInput
+          && Math.abs(top - previous.top) > ANCHOR_DRIFT_EPS) {
+        // The anchored row moved within the viewport and no gesture moved it:
+        // content above it changed height without the resize observer seeing it.
+        // Re-recording `top` here is what made that drift permanent — the next
+        // restore measured zero against the already-drifted position and
+        // reported nothing wrong, which is why `preserved viewport` sat at 0
+        // while the reader was being pushed up the history. Keep the anchor the
+        // reader was actually looking at; restoreViewportAnchor puts it back.
+        log.metric('chat-anchor', 'anchor drifted with no input; holding the original', {
+          panelId: String(shape.id),
+          anchorKey: key,
+          drift: Math.round(top - previous.top),
+        })
+        return
       }
+      viewportAnchorRef.current = { key, top }
       return
     }
     viewportAnchorRef.current = null
-  }, [])
+  }, [shape.id])
 
   const restoreViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
@@ -4473,7 +4494,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         viewportAnchorRef.current = null
         setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
       }
-      if (userScrolledUpRef.current) captureViewportAnchor()
+      if (userScrolledUpRef.current) {
+        // Holding the anchor only helps if something acts on it. A virtualizer
+        // reanchor moves scrollTop and emits this scroll event, but resizes no
+        // observed element, so no reconcile follows and nothing would correct
+        // the drift. Attempt the restore here for the same reason reconcile
+        // does — and only when no gesture is live, because then the reader
+        // moved and there is nothing to put back.
+        if (!(touchScrollActiveRef.current || explicitScrollInputRef.current)) restoreViewportAnchor()
+        captureViewportAnchor()
+      }
       else checkFollowInvariant('scroll-event')
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
@@ -4497,7 +4527,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       explicitScrollInputRef.current = false
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, checkFollowInvariant, enterReaderMode, reconcileViewportGeometry])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, restoreViewportAnchor, checkFollowInvariant, enterReaderMode, reconcileViewportGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {

@@ -1565,6 +1565,12 @@ export class FleetStore {
     // Live-only roster (the agents panel never shows dead agents). Indexed by
     // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
     this._getAliveAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) != 1 ORDER BY agents.last_seen DESC`);
+    // The complement: alive rows still carrying the mint's shell flag. A mint writes
+    // metadata.shell=1 before the daemon launches, and login is the only thing that
+    // clears it — so a launch that never reaches login leaves a real, fully populated
+    // row that no roster read returns. Selected separately rather than by widening the
+    // query above, which the agents panel and the descendant walks also use.
+    this._getPendingShellAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND COALESCE(json_extract(agents.metadata, '$.shell'), 0) = 1 ORDER BY agents.last_seen DESC`);
     // id→friendly_name only — for labeling chat history without hydrating all
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
@@ -3085,6 +3091,13 @@ export class FleetStore {
 
   getAllAgents() {
     return this._getAllAgents.all().map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
+  }
+
+  // Alive agents whose login never completed. Not part of the live roster — they are
+  // not running — but they exist, they hold their friendly name, and "where is X" has
+  // to be able to answer with them.
+  getPendingShellAgents() {
+    return this._getPendingShellAgents.all().map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
   }
 
   getAgentDisplayNames() {
