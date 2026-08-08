@@ -8078,6 +8078,10 @@ async function setSentinelSyncError(projectName, syncError) {
   }
 }
 
+// Daemon message types seen with no handler, so the warning fires once each
+// rather than per message.
+const _unknownDaemonMessageTypes = new Set()
+
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
@@ -8732,7 +8736,18 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  // Unknown — ignore.
+  // An unhandled type is a message someone is still sending and nobody is
+  // receiving. Ignoring it silently is how 'agent-route' spent eleven days being
+  // announced by the daemon on every reconnect, durably and in order, into a
+  // server that had dropped its handler in 5df067015 — with green tests either
+  // side asserting the daemon still sent it. Nothing anywhere said so, and an
+  // agent Skip needed could not be reanimated because of it.
+  //
+  // Once per type per process: enough to see it, never enough to flood.
+  if (!_unknownDaemonMessageTypes.has(type)) {
+    _unknownDaemonMessageTypes.add(type)
+    console.warn(`[fleet-daemon] no handler for daemon message type "${type}" (from ${ws._daemonKey || 'unknown daemon'}) — dropping. Every further one of this type is silent.`)
+  }
 }
 
 // ---------- Manifest generation ----------
