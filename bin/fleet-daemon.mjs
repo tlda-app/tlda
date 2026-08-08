@@ -1026,7 +1026,11 @@ async function rpcRestart(params = {}) {
     mint_id: mintId,
   }).catch(e => ({ ok: false, error: e?.message || String(e) }))
   const woke = await wakeMint(params)
-  return { ok: true, killed, woke }
+  // A restart that killed and did not wake is a hibernate. Reporting ok:true for
+  // it left `really-able-to-do-stuff` face down with the CLI printing "ok" — the
+  // wake had failed on a stored profile that is not a configured one, and
+  // nothing said so. The wake is the half that decides.
+  return { ok: woke?.ok !== false, killed, woke }
 }
 
 const machineRpc = createMachineRpc({
