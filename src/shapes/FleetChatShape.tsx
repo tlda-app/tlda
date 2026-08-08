@@ -119,6 +119,13 @@ const FLEET_API = DATABASE_HTTP
 // as finished. A momentum glide emits scroll events continuously, so this only
 // has to outlast the gap between two of them.
 const TOUCH_SCROLL_SETTLE_MS = 150
+// Finger travel that counts as a drag rather than a tap. A drag is the touch
+// analogue of a wheel event: the gesture proves reader intent by itself, the
+// way `enterReaderMode('wheel-up')` treats any upward wheel delta.
+const TOUCH_READER_INTENT_PX = 8
+// Delay before the follow invariant repairs the tail. Also the re-arm interval
+// while an input gesture is in flight.
+const FOLLOW_INVARIANT_MS = 500
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 type TerminalAgent = {
@@ -4252,11 +4259,19 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const checkFollowInvariant = useCallback((reason: string) => {
     if (followInvariantTimerRef.current) clearTimeout(followInvariantTimerRef.current)
-    followInvariantTimerRef.current = window.setTimeout(() => {
+    const run = () => {
       followInvariantTimerRef.current = 0
       if (userScrolledUpRef.current && !hardLockedRef.current) return
       const el = chatLogRef.current
       if (!el) return
+      // An input gesture in flight is the reader, mid-move: repairing through it
+      // throws them to the tail with a finger still on the glass. Both flags
+      // clear on their own — touch settle, or 250ms after the last wheel — so
+      // wait rather than overrule a gesture that has not finished deciding.
+      if (touchScrollActiveRef.current || explicitScrollInputRef.current) {
+        followInvariantTimerRef.current = window.setTimeout(run, FOLLOW_INVARIANT_MS)
+        return
+      }
       const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
       if (isTrueBottomGap(gap)) return
       log.metric('chat-scroll', 'follow invariant violated; repairing tail', {
@@ -4269,7 +4284,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         inputActive: touchScrollActiveRef.current || explicitScrollInputRef.current,
       })
       goToTail('follow-invariant-repair')
-    }, 500)
+    }
+    followInvariantTimerRef.current = window.setTimeout(run, FOLLOW_INVARIANT_MS)
   }, [goToTail, shape.id])
 
   const scrollToBottom = useCallback(() => {
@@ -4323,15 +4339,51 @@ function FleetChatInner({ shape }: { shape: any }) {
         settleTimer = 0
         if (!fingerDown) {
           touchScrollActiveRef.current = false
+          // The other half of touch intent, and it ships with the drag below or
+          // not at all: entering reader mode on a small drag would otherwise
+          // strand the reader at the bottom with follow off, because resuming
+          // needs a single scroll event over UP_JITTER_EPS that a slow drag back
+          // down never produces. A gesture that ends at the true bottom IS the
+          // reader returning.
+          const el = chatLogRef.current
+          const gap = el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : Number.POSITIVE_INFINITY
+          if (el && userScrolledUpRef.current && isTrueBottomGap(gap)) {
+            noteFollowTransition(String(shape.id), 'follow-on', {
+              reason: 'touch-settle-at-bottom',
+              top: el.scrollTop,
+              height: el.scrollHeight,
+              clientHeight: el.clientHeight,
+              gap,
+              bufferKey: chatEventBufferKey,
+            })
+            userScrolledUpRef.current = false
+            viewportAnchorRef.current = null
+            setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
+          }
           if (deferredGeometryReconcileRef.current) reconcileViewportGeometry()
         }
       }, TOUCH_SCROLL_SETTLE_MS)
     }
-    const onTouchStart = () => {
+    // Where the finger went down, so a drag can be measured against it.
+    let touchStartY = 0
+    const onTouchStart = (e: TouchEvent) => {
       fingerDown = true
       touchScrollActiveRef.current = true
+      touchStartY = e.touches[0]?.clientY ?? 0
       markExplicitScrollInput()
       if (settleTimer) { clearTimeout(settleTimer); settleTimer = 0 }
+    }
+    // The touch counterpart of handleWheelCapture's enterReaderMode('wheel-up').
+    // Per-event scroll deltas from a finger arrive below UP_JITTER_EPS, and a
+    // live chat's content height moves on nearly every frame, so a genuine
+    // scroll-up often clears neither bar decideFollowTransition sets. The
+    // gesture itself is the evidence: a finger travelling DOWN the screen
+    // reveals older content, which is the reader leaving the tail.
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY
+      if (y === undefined) return
+      markExplicitScrollInput()
+      if (y - touchStartY > TOUCH_READER_INTENT_PX) enterReaderMode('touch-drag-up')
     }
     const onTouchEnd = () => {
       fingerDown = false
@@ -4401,12 +4453,14 @@ function FleetChatInner({ shape }: { shape: any }) {
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
     el.addEventListener('scroll', handle, { passive: true })
     el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
     el.addEventListener('touchend', onTouchEnd, { passive: true })
     el.addEventListener('touchcancel', onTouchEnd, { passive: true })
     return () => {
       document.removeEventListener('wheel', handleWheelCapture, true)
       el.removeEventListener('scroll', handle)
       el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
       el.removeEventListener('touchend', onTouchEnd)
       el.removeEventListener('touchcancel', onTouchEnd)
       if (settleTimer) clearTimeout(settleTimer)
