@@ -5,7 +5,7 @@ function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
 }
 
-function rowForAgent(agent, now = Date.now()) {
+function rowForAgent(agent, now = Date.now(), hasOpenFleetSocket = null) {
   const lastSeenMs = agent.last_seen ? now - new Date(agent.last_seen).getTime() : null
   const act = agent.metadata?.status || null
   return {
@@ -22,6 +22,19 @@ function rowForAgent(agent, now = Date.now()) {
     delivery_channel: agent.metadata?.deliveryChannel || null,
     activity: act?.state || null,
     tool: act?.tool || null,
+    // `activity` without `activity_at` is a state with no age, and the age is
+    // the whole signal for a watcher: `reportStatus` fires on every tlda MCP
+    // tool call, so this is the last time the agent's OWN client reached the
+    // server. Read against `last_seen` — which the daemon advances from the
+    // process — a frozen `activity_at` beside a fresh `last_seen` is an agent
+    // whose process is up and whose client has stopped. Read by the dev bot's
+    // `agent-receiving` check.
+    activity_at: act?.ts || null,
+    // Whether this agent currently holds an open /ws/fleet socket. Null when the
+    // caller did not supply the predicate, which is NOT the same as false — a
+    // watcher must treat null as "not measured" rather than as "no socket".
+    // Read by the dev bot's `agent-mcp-channel` check.
+    fleet_socket_open: typeof hasOpenFleetSocket === 'function' ? !!hasOpenFleetSocket(agent.id) : null,
     runtime_status: agent.runtime_status || null,
     activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}),
   }
@@ -55,12 +68,13 @@ export function summarizeFleetRosterTruth({
   limit = 50,
   machineSessions = {},
   now = Date.now(),
+  hasOpenFleetSocket = null,
 } = {}) {
   const agentRoster = roster || []
   const totals = fleetRosterTotals(agentRoster)
   const capped = Math.max(1, Math.min(Number(limit) || 50, 500))
   const matchedRoster = matched || agentRoster
-  const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now))
+  const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now, hasOpenFleetSocket))
   const summary = {
     models: countValues(matchedRoster, a => a.metadata?.model || null),
     inbox_statuses: countValues(matchedRoster, a => a.metadata?.inboxStatus || null),
