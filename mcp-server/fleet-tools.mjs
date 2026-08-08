@@ -2766,7 +2766,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     // A transient roster miss must never block a direct (exact-id) send.
     if (recipients.length === 0) {
       if (rosterUnavailable) return { content: [{ type: 'text', text: "⚠ Message NOT sent — couldn't fetch the agent roster to resolve a label filter (transient). Retry shortly." }], isError: true };
-      return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.to}". Check the name/label — this is a targeting miss, not a server problem.` }], isError: true };
+      return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.to}". Check the name/label.` }], isError: true };
     }
     const maxRecipients = args.max_recipients ?? 5;
     if (recipients.length > maxRecipients) {
