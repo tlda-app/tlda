@@ -2845,14 +2845,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'utterance_end') {
       _dgIgnoreUntilUtteranceEnd = false
       _dgIgnoredSubmittedText = null
-      // NOT cleared here. Its declared invariant is "submitted message tail
-      // that cannot contaminate the next message", so it has to outlive the
-      // utterance guard — and the other release path below already treats it
-      // that way: on a fresh transcript it clears _dgIgnoreUntilUtteranceEnd
-      // and _dgIgnoredSubmittedText and deliberately leaves this one armed.
-      // Clearing it here ended the protection at the first utterance_end after
-      // a send, so a carried final arriving after that had nothing to trim it
-      // and landed in the emptied composer. It is re-armed by the next send.
+      _dgCarriedSubmittedText = null
       _dgLastFinalNorm = ''
       _dgLastFinalAt = 0
       return
