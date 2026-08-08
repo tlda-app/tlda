@@ -2939,9 +2939,17 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       // screen — which includes the interim words just displayed — and a final carrying
       // those same words is about to be appended to it. If `absorbedTail` ends with the
       // words in the incoming text, the next append duplicates them.
+      // rightLen is THE corrupting precondition and it was the one thing this
+      // record did not say. Voice re-partitions at the caret, so a caret that is
+      // not at the end leaves text to its right and the next insert lands in
+      // front of that text rather than after it. On 2026-08-08 at 17:26:04.121
+      // this partitioned 313 characters into left=290 and right=23, and
+      // "server." was inserted at 290 — the splice Skip read back as cascading
+      // garbage. rightLen === 0 is the ordinary case and says nothing.
       vlog('assembly: re-partitioned from textarea', {
         stateWas: _asmStateBefore,
         absorbedTail: vtail(_left),
+        rightLen: (_right || '').length,
         incoming: vtail(msg.text, 60),
         final: !!msg.is_final,
       })
