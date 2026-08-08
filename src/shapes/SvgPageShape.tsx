@@ -20,7 +20,7 @@ import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 import { isPhoneViewport } from '../phoneViewport'
 import { ProjectContext } from '../PanelContext'
 import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
-import { useVisibilityViewportId } from './useIsInViewport'
+import { getOptionalVisibilityViewport, useVisibilityViewportId } from './useIsInViewport'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -70,8 +70,8 @@ function SpatialLodSvgPage({ shape }: { shape: any }) {
     `spatial-lod-svg-${shape.id}`,
     () => {
       if (!viewportId) return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM
-      try { return editor.getViewport(viewportId).camera.z <= SPATIAL_MAP_ZOOM }
-      catch { return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM }
+      const viewport = getOptionalVisibilityViewport(editor, viewportId)
+      return !viewport || viewport.camera.z <= SPATIAL_MAP_ZOOM
     },
     [editor, shape.id, viewportId],
   )
@@ -214,17 +214,18 @@ function SvgPageComponent({ shape }: { shape: any }) {
   // Track whether this page is vertically near the viewport (±2 pages buffer).
   // Horizontal panning should not unload/reload page SVGs.
   const isNearViewport = useValue('near-viewport-' + shape.id, () => {
-    const viewport = (() => {
-      if (viewportId) try {
-          const registered = editor.getViewport(viewportId)
+    const viewport = viewportId
+      ? (() => {
+          const registered = getOptionalVisibilityViewport(editor, viewportId)
+          if (!registered) return null
           const z = registered.camera.z || 1
           return {
             minY: registered.screenBounds.y / z - registered.camera.y,
             maxY: (registered.screenBounds.y + registered.screenBounds.h) / z - registered.camera.y,
           }
-      } catch { /* viewport registration can lag shape mounting */ }
-      return editor.getViewportPageBounds()
-    })()
+        })()
+      : editor.getViewportPageBounds()
+    if (!viewport) return true
     const b = editor.getShapePageBounds(shape.id)
     if (!b) return false
     const marginY = b.h * VIEWPORT_BUFFER_PAGES

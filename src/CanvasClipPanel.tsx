@@ -32,6 +32,7 @@ import {
 } from './wm/editor-wm'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
 import { canvasClipWheelCamera, isCanvasClipWheelMessage } from './canvas-clip-wheel'
+import { createCanvasClipShapePredicate } from './canvas-clip-shape-predicate'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -498,14 +499,11 @@ export function CanvasClipPanel({
 
   // Shape predicate: filter shapes based on mode
   const shapePredicate = useMemo(() => {
-    if (!lockCamera && !readOnly) return undefined
-
-    return (shape: TLShape) => {
-      if (lockCamera) return hostShapePredicate?.(shape) ?? false
-
-      // In readOnly mode, render all shapes
-      return true
-    }
+    return createCanvasClipShapePredicate<TLShape>({
+      lockCamera,
+      readOnly,
+      hostShapePredicate,
+    })
   }, [hostShapePredicate, lockCamera, readOnly])
 
   if (!bounds && !wmSurface) return null

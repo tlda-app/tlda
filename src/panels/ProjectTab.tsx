@@ -17,6 +17,7 @@ import {
   subscribeSpatialWorldUi,
 } from '../spatialDocumentWorldUi'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
+import { isProjectMapShape } from './project-map-shape-predicate'
 
 /** Where you were when you zoomed out to the map: the camera to come back to,
  *  and the document your layout is currently wrapped around. Activating from
@@ -133,6 +134,7 @@ function ProjectMapViewport({
           maxHeightFraction={0.22}
           className="project-map-viewport-clip"
           readOnly
+          shapePredicate={isProjectMapShape}
           interactionMode="preview"
           unboundedPanning
           fitBounds

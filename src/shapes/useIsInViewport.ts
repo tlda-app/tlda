@@ -36,7 +36,7 @@ export function VisibilityViewportProvider({
   return createElement(VisibilityViewportContext.Provider, { value: { viewportId, keepMounted } }, children)
 }
 
-function getOptionalViewport(editor: Editor, viewportId: TLViewportId) {
+export function getOptionalVisibilityViewport(editor: Editor, viewportId: TLViewportId) {
   try {
     return editor.getViewport(viewportId)
   } catch (error) {
@@ -56,7 +56,7 @@ export function useIsInViewport(shapeId: string): boolean {
     if (!bounds) return true  // unknown → assume visible
     let vp = editor.getViewportPageBounds()
     if (viewportId) {
-      const registered = getOptionalViewport(editor, viewportId)
+      const registered = getOptionalVisibilityViewport(editor, viewportId)
       // Viewport not yet registered → we can't compute correct bounds, so
       // assume visible. Using the main viewport as fallback here causes a
       // false "not in viewport" for fleet shapes (which live far off the main

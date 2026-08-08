@@ -20,7 +20,7 @@ import {
   recordHtmlNavigationStart,
 } from '../html-page-navigation-history'
 import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
-import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { getOptionalVisibilityViewport, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 import { attachRglFigureSync } from '../rglFigureSync'
@@ -342,8 +342,8 @@ function SpatialLodHtmlPage({ shape }: { shape: any }) {
     `spatial-lod-html-${shape.id}`,
     () => {
       if (!viewportId) return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM
-      try { return editor.getViewport(viewportId).camera.z <= SPATIAL_MAP_ZOOM }
-      catch { return editor.getZoomLevel() <= SPATIAL_MAP_ZOOM }
+      const viewport = getOptionalVisibilityViewport(editor, viewportId)
+      return !viewport || viewport.camera.z <= SPATIAL_MAP_ZOOM
     },
     [editor, shape.id, viewportId],
   )
