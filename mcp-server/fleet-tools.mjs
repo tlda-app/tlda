@@ -4973,21 +4973,15 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
     mode: 'durable',
   });
   if (row.status === 'accepted') return row.result || { ok: true, operation_id: operationId };
-  if (row.status === 'failed') {
-    throw new Error(row.lastError || `durable ${type} failed`);
-  }
-  if (row.status === 'dead') {
-    return { ok: false, operation_id: operationId, ...durableDelivery(row) };
+  if (row.status === 'failed' || row.status === 'dead') {
+    throw new Error(row.lastError || `durable ${type} ${row.status}`);
   }
 
   const result = await flushFleetTransport({ operationId, agentId: transportAgentId });
   const latest = outbox.get(operationId);
   if (latest?.status === 'accepted') return latest.result || result || { ok: true, operation_id: operationId };
-  if (latest?.status === 'failed') {
-    throw new Error(latest.lastError || `durable ${type} failed`);
-  }
-  if (latest?.status === 'dead') {
-    return { ok: false, operation_id: operationId, ...durableDelivery(latest) };
+  if (latest?.status === 'failed' || latest?.status === 'dead') {
+    throw new Error(latest.lastError || `durable ${type} ${latest.status}`);
   }
   scheduleFleetTransportFlush(1000, transportAgentId);
   return { ok: true, queued: true, operation_id: operationId };
