@@ -3254,6 +3254,57 @@ function appendClientLogEntry(entry) {
   })
 }
 
+// The composer detected its own committed text being destroyed and said so into
+// client.log, where nothing was watching: on 2026-08-08 the alarm fired at
+// 17:26:04.121 and Skip found out by reading garbage on his own screen twenty
+// minutes later, then had to fight the same composer to describe it. The
+// detection was never the missing part. This is the part that was missing.
+//
+// Deliberately not a subsystem: one guarded call, one cooldown so a cascade
+// delivers once rather than per keystroke, and a console line so the alarm is
+// never fully silent even if no agent holds the label.
+// Both conditions, not just the loud one. On 2026-08-08 `COMMITTED TEXT LOST`
+// fired 4 times while `composer text got shorter` fired 57 — and the specimen
+// Skip attested at 13:34 EDT is in the second set, not the first. An alarm on
+// the hard condition alone would have missed the case we were handed.
+//
+// LOAD-BEARING STRINGS: these match log messages emitted by src/voice.mjs.
+// Rewording either message there silently disables this alarm.
+const COMPOSER_CORRUPTION_MSGS = ['COMMITTED TEXT LOST', 'composer text got shorter']
+function isComposerCorruptionMsg(msg) {
+  const text = String(msg ?? '')
+  return COMPOSER_CORRUPTION_MSGS.some(prefix => text.startsWith(prefix))
+}
+let _composerCorruptionAt = 0
+const COMPOSER_CORRUPTION_COOLDOWN_MS = 60_000
+function reportComposerCorruption(entry) {
+  const now = Date.now()
+  // The FIRST occurrence always delivers; the cooldown only suppresses the
+  // ones after it. A cascade re-fires this condition per final, and the
+  // second through fiftieth say nothing the first did not.
+  if (now - _composerCorruptionAt < COMPOSER_CORRUPTION_COOLDOWN_MS) return
+  _composerCorruptionAt = now
+  const d = entry?.data || {}
+  console.error(`[composer-corruption] ${entry.ts} session=${entry.session || '?'} ` +
+    `prevLeftLen=${d.prevLeftLen} leftLen=${d.leftLen} state=${d.state} target=${d.target}`)
+  // NOT optional-chained: if this method stops existing the alarm must throw
+  // into the catch below and say so, not silently no-op while the console line
+  // above keeps printing and makes it look delivered. `chat` is listed in
+  // FLEET_STORE_METHODS and runs on the store worker, so this is async off the
+  // request thread — no synchronous SQLite on /api/log.
+  Promise.resolve(fleetStore.chat(
+    'fleet:tlda',
+    'on-call',
+    `**composer corruption** — \`${entry.msg}\`\n\n` +
+    `\`${entry.ts}\` · session \`${entry.session || '?'}\` · committed ` +
+    `\`${d.prevLeftLen}\` → \`${d.leftLen}\` chars, state \`${d.state}\`\n\n` +
+    `prev tail: \`${String(d.prevLeftTail ?? '').slice(-60)}\`\n` +
+    `now  tail: \`${String(d.leftTail ?? '').slice(-60)}\`\n\n` +
+    `This is Skip's only input path. Further occurrences are suppressed for 60s.`,
+    { type: 'composer_corruption', session: entry.session || null, ts: entry.ts },
+  )).catch(e => console.error(`[composer-corruption] delivery failed: ${e.message}`))
+}
+
 app.post('/api/log', async (req, res) => {
   const body = req.body
   const entries = Array.isArray(body) ? body : [body]
@@ -3269,6 +3320,7 @@ app.post('/api/log', async (req, res) => {
       ...(e.session ? { session: e.session } : {}),
     }
     if (obj.ns === 'live-perf') recordLivePerfEntry(obj)
+    if (obj.ns === 'voice' && isComposerCorruptionMsg(obj.msg)) reportComposerCorruption(obj)
     lines.push(JSON.stringify(obj))
   }
   if (lines.length) {
