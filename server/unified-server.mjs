@@ -1924,7 +1924,11 @@ function deliverSpawnLaunchFailure(entry, detail) {
   const label = detail.label || entry.meta?.name || entry.meta?.agentId || 'mint'
   const agentId = detail.agentId || entry.meta?.agentId || null
   const reason = detail.error || detail.reason || 'launch-failed'
-  Promise.resolve(fleetStore?.chat?.(
+  // NOT optional-chained. This alarm exists because four mints died on 8/8 and
+  // every caller was told it worked; a delivery that silently no-ops when the
+  // method is missing reproduces exactly that failure one layer up. Let it throw
+  // into the catch below, which says so.
+  Promise.resolve(fleetStore.chat(
     'fleet:tlda',
     entry.ownerId,
     `**mint failed** — \`${label}\` never launched.\n\n${reason}\n\nagent_id: \`${agentId || '(none)'}\` · mailbox: \`${entry.id}\``,
