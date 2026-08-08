@@ -5,7 +5,12 @@
 // so a phase-suffixed name, a name collision, or an ambiguous selector can never
 // silently route to a different agent than the one displayed.
 import assert from 'node:assert/strict'
-import { uniqueLiveAgentForLabel, bindSendTargetId, inboxConversationRecipientId } from '../src/fleet/send-target-binding.mjs'
+import {
+  uniqueLiveAgentForLabel,
+  bindSendTargetId,
+  inboxConversationRecipientId,
+  indexSelectedAgentRecipientId,
+} from '../src/fleet/send-target-binding.mjs'
 
 let failed = false
 try {
@@ -56,6 +61,16 @@ try {
   assert.notEqual(inboxConversationRecipientId(thread), thread.friendly,
     'inbox must never send the mutable friendly name')
   assert.equal(inboxConversationRecipientId({}), null, 'no partner id → null (guarded, not a wrong send)')
+
+  // Project-index top chat symmetry: the selected row is already the target.
+  // Send to its immutable id, never to the display/exact name that can be
+  // renamed, phase-suffixed, or otherwise re-resolved by the server.
+  const indexRow = { id: 'fleet:e149d63c', exactName: 'outline-hands', displayName: 'outline-hands' }
+  assert.equal(indexSelectedAgentRecipientId(indexRow), 'fleet:e149d63c',
+    'index top chat must send the selected row id')
+  assert.notEqual(indexSelectedAgentRecipientId(indexRow), indexRow.exactName,
+    'index top chat must never send the mutable selected-row name')
+  assert.equal(indexSelectedAgentRecipientId(null), null, 'no selected row → null')
 
   console.log('PASS chat-send-target-binding-regression-test')
 } catch (e) {

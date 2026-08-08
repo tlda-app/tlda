@@ -432,7 +432,6 @@ const _fleetTransportOutboxes = new Map();
 const _fleetTransportFlushTimers = new Map();
 const _fleetTransportFlushesInFlight = new Map();
 const _fleetTransportRecoveredAgents = new Set();
-const WS_REQUEST_IDLE_MS = 45_000;
 
 const ENV_SCOPED_TOOL_NAMES = new Set([
   'delegate', 'chat',
@@ -480,21 +479,27 @@ function annotateEnvResult(result, envName) {
 function sendOneShotWS(envName, type, params = {}, opts = {}) {
   const id = crypto.randomUUID();
   const loginId = opts.authenticateAgentId && type !== 'login' ? crypto.randomUUID() : null;
-  const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
+  const deadlineMs = Number.isFinite(opts.deadlineMs)
+    ? opts.deadlineMs
+    : Number.isFinite(opts.idleTimeoutMs)
+      ? opts.idleTimeoutMs
+      : null;
   const wsUrl = `${getFleetServerUrl(envName).replace(/^http/, 'ws')}/ws/fleet?agent=${encodeURIComponent(activeAgentId() || '')}`;
   return new Promise((resolve, reject) => {
     let settled = false;
     const ws = new WebSocket(wsUrl);
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try { ws.close(); } catch { /* best-effort cleanup; timeout is already reported */ }
-      reject(new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
-    }, deadlineMs);
+    const timer = deadlineMs === null
+      ? null
+      : setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { ws.close(); } catch { /* best-effort cleanup; timeout is already reported */ }
+        reject(new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
+      }, deadlineMs);
     function finish(fn, value) {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       try { ws.close(); } catch { /* best-effort cleanup; original WS result wins */ }
       fn(value);
     }
@@ -567,12 +572,8 @@ function getFleetTransportOutbox(agentId) {
 }
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
-// All server fetches go through fleetFetch — adds a timeout so tool handlers
-// never hang when the server is down. Without this, Claude Code kills the
-// MCP process (SIGKILL) after its own internal timeout.
-function fleetFetch(url, opts = {}) {
-  const timeoutMs = 10_000;
-  if (!opts.signal) opts.signal = AbortSignal.timeout(timeoutMs);
+// Callers pass an AbortSignal when a command explicitly asks for a deadline.
+export function fleetFetch(url, opts = {}) {
   return fetch(rewriteActiveServerUrl(url), opts);
 }
 

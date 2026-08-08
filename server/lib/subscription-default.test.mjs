@@ -173,13 +173,13 @@ test('daemon.yaml sets are additive on top of the default, in { default, values 
       },
     },
   })
-  assert.equal(wanted[0].query, DEFAULT_SUBSCRIPTION_QUERY, 'the default leads')
-  assert.deepEqual(wanted.map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY, 'incident'])
+  assert.equal(wanted[0].query, 'to:me', 'direct mail leads')
+  assert.deepEqual(wanted.map(w => w.query), ['to:me', DEFAULT_SUBSCRIPTION_QUERY, 'incident'])
   assert.ok(!wanted.some(w => w.query === 'release'), 'a set that is not the default grants nothing')
 })
 
-test('with no daemon config at all, an agent still asks for the default', () => {
-  assert.deepEqual(mintSubscriptionsFor({}).map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY])
-  assert.deepEqual(mintSubscriptionsFor(undefined).map(w => w.query), [DEFAULT_SUBSCRIPTION_QUERY])
+test('with no daemon config at all, an agent still asks for both mint slots', () => {
+  assert.deepEqual(mintSubscriptionsFor({}).map(w => w.query), ['to:me', DEFAULT_SUBSCRIPTION_QUERY])
+  assert.deepEqual(mintSubscriptionsFor(undefined).map(w => w.query), ['to:me', DEFAULT_SUBSCRIPTION_QUERY])
   assert.deepEqual(subscriptionSetsFromDaemonConfig({}), { defaultSet: null, sets: {} })
 })

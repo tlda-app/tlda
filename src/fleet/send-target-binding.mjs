@@ -49,3 +49,12 @@ export function bindSendTargetId(label, agentList) {
 export function inboxConversationRecipientId(thread) {
   return thread?.partnerId ?? null
 }
+
+/**
+ * The project-index top chat sends to the selected row's immutable id. The row
+ * already carries the exact recipient object, so using its mutable display name
+ * would re-open name-resolution failure on a surface whose target is selected.
+ */
+export function indexSelectedAgentRecipientId(agentRow) {
+  return agentRow?.id ?? null
+}

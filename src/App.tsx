@@ -16,6 +16,8 @@ import { useFleetTheme } from './hooks/useFleetTheme'
 import { ChatComposer } from './shapes/ChatComposer'
 // @ts-ignore — vanilla JS module
 import { attachIndexChatTail } from './index-chat-tail.mjs'
+// @ts-ignore — vanilla JS module
+import { indexSelectedAgentRecipientId } from './fleet/send-target-binding.mjs'
 import {
   getFleetAgentDirectoryRows,
   sortFleetAgentDirectoryRowsByRecency,
@@ -979,7 +981,10 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     )
   }, [selectedAgentFilter, indexChatBufferKey, identity.id, identity.name])
   const selectedChatEvents = useFleetEvents(chromeChatFilter, undefined, indexChatBufferKey)
-  const sendTargets = useMemo(() => selectedAgent?.exactName ? [selectedAgent.exactName] : [], [selectedAgent?.exactName])
+  const sendTargets = useMemo(() => {
+    const recipientId = indexSelectedAgentRecipientId(selectedAgent)
+    return recipientId ? [recipientId] : []
+  }, [selectedAgent?.id])
   // The React Compiler bails out here — `react-hooks/preserve-manual-memoization`
   // reports "Compilation Skipped: Existing memoization could not be preserved"
   // against this dep array — so this component does not get compiler

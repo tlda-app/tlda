@@ -52,7 +52,7 @@ import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { NOTIFICATION_MARKER, systemMessage } from '../shared/terminal-system-markers.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
-import { defaultSubscription, DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
+import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
@@ -420,20 +420,24 @@ function agentWithDaemonCapabilities(agent) {
 // now is the row the matcher reads.
 // The subscriptions a mint asks for, as they arrive from the daemon.
 //
-// A daemon that sends none gets the default — not as a floor, but because a
+// A daemon that sends none gets the mint slots — not as a floor, but because a
 // mint with nothing at all is a daemon too old to know about this, and an agent
-// nobody can reach is worse than one holding a row it may delete. It is an
-// ordinary row either way: visible in the panel, evaluated by the matcher, and
+// nobody can reach is worse than one holding rows it may delete. They are
+// ordinary rows either way: visible in the panel, evaluated by the matcher, and
 // removable, because "if someone wants to, like, have their agents be
 // completely unaddressable, that's their fucking choice."
 function normalizeMintSubscriptions(sent) {
-  if (!Array.isArray(sent)) return [defaultSubscription()]
+  const defaultSlots = MINT_SLOTS.map(slot => ({
+    query: slot.query,
+    notification_policy: slot.policy || DEFAULT_SUBSCRIPTION_POLICY,
+  }))
+  if (!Array.isArray(sent)) return defaultSlots
   const wanted = sent
     .map(s => (typeof s === 'string'
       ? { query: s, notification_policy: DEFAULT_SUBSCRIPTION_POLICY }
       : { query: s?.query, notification_policy: s?.notification_policy || s?.policy || DEFAULT_SUBSCRIPTION_POLICY }))
     .filter(s => typeof s.query === 'string' && s.query.length > 0)
-  return wanted.length ? wanted : [defaultSubscription()]
+  return wanted.length ? wanted : defaultSlots
 }
 
 function agentWithSubscriptions(agent, byOwner) {
@@ -6425,7 +6429,21 @@ async function handleFleetWsMessage(ws, msg) {
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
       for (const id of subscriptionRecipients) watchRecipients.add(id)
       subscriptionDeliveriesAll.push(...subscriptionDeliveries)
-      if (!deliveryDecision) continue
+      const entry = deliveryDecision ? {
+        recipient: to,
+        delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
+        status: inboxStatus,
+        statusTag: inboxStatusTag,
+        deliveryChannel,
+        ...(deliveryDecision.notifyBy ? { notifyBy: deliveryDecision.notifyBy } : {}),
+      } : {
+        recipient: to,
+        delivery: 'no_direct_subscription',
+        status: inboxStatus,
+        statusTag: inboxStatusTag,
+        deliveryChannel,
+        reason: 'no matching direct subscription',
+      }
       perRecipient.push({
         to,
         recipientAgent,
@@ -6434,14 +6452,7 @@ async function handleFleetWsMessage(ws, msg) {
         subscriptionDeliveries,
         // The delivery facts that used to be scalar metadata keys describing
         // "the" recipient. One entry per recipient of this one event.
-        entry: {
-          recipient: to,
-          delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
-          status: inboxStatus,
-          statusTag: inboxStatusTag,
-          deliveryChannel,
-          ...(deliveryDecision.notifyBy ? { notifyBy: deliveryDecision.notifyBy } : {}),
-        },
+        entry,
         deliveryDecision,
       })
     }
@@ -6505,7 +6516,12 @@ async function handleFleetWsMessage(ws, msg) {
       component: 'fleet-store',
       operation: 'chat.insert',
       status: 'stored',
-      detail: { event_id: eventId, from, to: recipients },
+      detail: {
+        event_id: eventId,
+        from,
+        to: recipients,
+        recipient_delivery: perRecipient.map(r => r.entry),
+      },
     })
     eventIds.push(eventId)
     for (const r of perRecipient) {
@@ -6516,8 +6532,9 @@ async function handleFleetWsMessage(ws, msg) {
         priority: basePriority,
         delivery: r.entry.delivery,
         deliveryChannel: r.entry.deliveryChannel,
-        wokeRecipient: r.nativeNeedsParent ? false : r.deliveryDecision.wokeRecipient,
-        notifyBy: r.deliveryDecision.notifyBy,
+        wokeRecipient: r.deliveryDecision ? (r.nativeNeedsParent ? false : r.deliveryDecision.wokeRecipient) : 'no',
+        notifyBy: r.deliveryDecision?.notifyBy || null,
+        ...(r.entry.reason ? { reason: r.entry.reason } : {}),
       })
     }
     // Echo _tempId on the broadcast so a client whose WS reply was lost during
@@ -6525,6 +6542,7 @@ async function handleFleetWsMessage(ws, msg) {
     // (the reply, not the DB row, is what normally carries _tempId).
     insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, recipients, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
     for (const r of perRecipient) {
+      if (!r.deliveryDecision) continue
       if (r.deliveryDecision.delivery === 'notified') {
         if (r.nativeNeedsParent) {
           wakeRequests.push({

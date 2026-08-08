@@ -161,3 +161,66 @@ test('my-task delivers unread messages and ack-inbox clears only returned ids', 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('chat reply names a resolved recipient with no direct subscription', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-inbox-no-direct-subscription-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  const now = new Date().toISOString()
+  await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
+  await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
+  store.close()
+
+  const port = await unusedPort()
+  const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
+    cwd: join(import.meta.dirname, '..', '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      PROJECTS_DIR: join(dir, 'projects'),
+      TLDA_FLEET_DB: dbPath,
+      TLDA_DEV_SERVER: '1',
+      TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    await waitForServer(child)
+    const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', reject)
+    })
+    const sent = await request(ws, 1, 'chat', {
+      from: 'fleet:sender',
+      to: 'recipient',
+      message: 'delivery without a direct subscription',
+      _tempId: 'no-direct-subscription-proof',
+    })
+
+    assert.equal(sent.ok, true)
+    assert.deepEqual(sent.recipients, ['fleet:recipient'])
+    assert.deepEqual(sent.receipts, [{
+      recipient: 'fleet:recipient',
+      status: 'available',
+      tag: null,
+      priority: 'normal',
+      delivery: 'no_direct_subscription',
+      deliveryChannel: 'channel',
+      wokeRecipient: 'no',
+      notifyBy: null,
+      reason: 'no matching direct subscription',
+    }])
+
+    const inbox = await request(ws, 2, 'my-task', { agent: 'fleet:recipient', peek: true })
+    assert.deepEqual(inbox.messages.map(message => message.id), sent.event_ids)
+    assert.equal(inbox.messages[0].metadata.recipient_delivery[0].delivery, 'no_direct_subscription')
+    assert.equal(inbox.messages[0].metadata.recipient_delivery[0].reason, 'no matching direct subscription')
+    ws.close()
+  } finally {
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

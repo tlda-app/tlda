@@ -77,23 +77,22 @@ export function subscriptionSetsFromDaemonConfig(daemonConfig) {
   return { defaultSet, sets }
 }
 
-// Everything an agent is given at mint: the default, plus the entries of
-// whichever named set daemon.yaml makes default on this machine.
+// Everything an agent is given at mint: the built-in direct/group slots, plus
+// the entries of whichever named set daemon.yaml makes default on this machine.
 //
 // Additive and ordinary. An agent may unsubscribe from any of it afterwards —
 // "if someone wants to, like, have their agents be completely unaddressable,
 // that's their fucking choice." Nothing here refuses to let that happen.
 export function mintSubscriptionsFor(daemonConfig) {
   const { defaultSet, sets } = subscriptionSetsFromDaemonConfig(daemonConfig)
-  // Additive on top of the default, which is what the sentence above says and
-  // what the code did not do: it returned the named set alone, so a machine
-  // whose daemon.yaml declared any set at all minted agents *without*
-  // `to:my_labels` — unable to receive their own mail — and a machine with no
-  // subscriptions block minted them with nothing whatsoever.
-  //
-  // It went unnoticed because the set on this machine happens to be exactly the
-  // default, so the two agree here and nowhere else.
-  const out = [{ query: DEFAULT_SUBSCRIPTION_QUERY, notification_policy: DEFAULT_SUBSCRIPTION_POLICY, set: null }]
+  // Additive on top of the built-ins. Returning the named set alone makes a
+  // machine whose daemon.yaml declares any set mint agents without the slots
+  // that let them hear direct mail and group mail.
+  const out = MINT_SLOTS.map(slot => ({
+    query: slot.query,
+    notification_policy: slot.policy || DEFAULT_SUBSCRIPTION_POLICY,
+    set: null,
+  }))
   for (const entry of sets[defaultSet] || []) {
     if (out.some(existing => existing.query === entry.query)) continue
     out.push({ query: entry.query, notification_policy: entry.notification_policy, set: defaultSet })
