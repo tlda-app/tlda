@@ -574,7 +574,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         }
       }
 
-      const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now })
+      const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now, hasOpenFleetSocket: hasOpenFleetSocketForAgent })
       res.json({
         resolved_elsewhere: resolvedElsewhere,
         totals: { ...summary.totals, pending: pendingShells.length },
