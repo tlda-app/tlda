@@ -10,6 +10,7 @@ import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFl
 import { subscribeChat } from './fleet/chat-subscription.mjs'
 import { convertChatEvent } from './fleet/convert-chat-event.mjs'
 import { GradebookWorkspace } from './classroom/GradebookWorkspace'
+import { ProblemMarking } from './classroom/ProblemMarking'
 import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
 import { viewFormat } from '../shared/document-formats.mjs'
@@ -39,8 +40,12 @@ import './shapes/fleet-chat.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()
+function standaloneWorkspace() {
+  return new URLSearchParams(window.location.search).get('workspace')
+}
 function isStandaloneWorkspaceRoute() {
-  return new URLSearchParams(window.location.search).get('workspace') === 'classroom-gradebook'
+  const workspace = standaloneWorkspace()
+  return workspace === 'classroom-gradebook' || workspace === 'classroom-problems'
 }
 // Fetch auth level (presenter permission) — fire and forget, UI updates reactively.
 // The standalone gradebook uses its classroom API request instead of viewer auth state.
@@ -1482,7 +1487,7 @@ function App() {
   if (isStandaloneWorkspaceRoute()) {
     return (
       <ErrorBoundary>
-        <GradebookWorkspace />
+        {standaloneWorkspace() === 'classroom-problems' ? <ProblemMarking /> : <GradebookWorkspace />}
       </ErrorBoundary>
     )
   }

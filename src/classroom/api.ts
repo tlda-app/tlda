@@ -4,6 +4,8 @@ export interface StatusCell { assignmentId: string; state: 'not-submitted' | Gra
 export interface StatusRow { id: string; displayName: string; assignments: StatusCell[] }
 export interface CourseStatus { course: { id: string; title: string }; assignments: Assignment[]; rows: StatusRow[]; counts: Record<string, number> }
 export interface FeedbackMark { id: string; title: string; text: string; attached: boolean; visibility: 'instructor-draft' | 'returned' }
+export interface ProblemAnswer { studentId: string; displayName: string; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
+export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }
 export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -17,6 +19,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const classroomApi = {
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
+  problems: (assignmentId: string) => request<ProblemsView>(`/assignments/${encodeURIComponent(assignmentId)}/problems`),
   assignment: (id: string) => request<Assignment>(`/assignments/${encodeURIComponent(id)}`),
   submission: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}`),
   feedback: (assignmentId: string, studentId: string, body: { title: string; text: string; attached?: boolean }) => request<{ id: string }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/feedback`, { method: 'POST', body: JSON.stringify(body) }),
