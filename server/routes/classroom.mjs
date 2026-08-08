@@ -44,6 +44,21 @@ function allowedStudent(principal, studentId) {
   return principal?.role === 'instructor' || (principal?.role === 'student' && principal.studentId === studentId)
 }
 
+// Submitting is what unlocks the solution. Skip, 26 June: "once you've submitted
+// an assignment the solution becomes accessible to you and you can see it
+// side-by-side yours."
+//
+// Documents are fetched by key, so handing an unsubmitted student
+// solutionsDocKey hands them the solutions — the difference between a rule and
+// a suggestion is whether the key is in the response at all.
+function forStudent(assignment, principal, store) {
+  if (principal.role === 'instructor') return assignment
+  const submitted = store.getSubmission(assignment.id, principal.studentId)
+  if (submitted) return assignment
+  const { solutionsDocKey, solutionsVersion, ...withheld } = assignment
+  return { ...withheld, solutionsLocked: true }
+}
+
 export async function classroomTemplateVersion(templateDocKey) {
   const project = await readProject(templateDocKey)
   if (!project) throw new Error('template document not found')
@@ -89,7 +104,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     const assignments = store.listAssignments(req.params.courseId)
     if (p.role === 'instructor') return res.json({ assignments })
     res.json({ assignments: assignments.map(assignment => ({
-      ...assignment,
+      ...forStudent(assignment, p, store),
       submission: store.getSubmission(assignment.id, p.studentId),
     })) })
   })
@@ -164,7 +179,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     if (!assignment) return res.status(404).json({ error: 'Assignment not found' })
     const p = req.classroomPrincipal
     if (p.role === 'student' && p.courseId !== assignment.courseId) return res.status(403).json({ error: 'Forbidden' })
-    res.json(assignment)
+    res.json(forStudent(assignment, p, store))
   })
 
   router.put('/assignments/:assignmentId/template', instructor, async (req, res) => {
