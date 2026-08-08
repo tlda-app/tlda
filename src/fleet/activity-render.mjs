@@ -353,6 +353,37 @@ export function humanizeToolName(name) {
   return shorts[n] || n
 }
 
+// The call, written the way a call is written: the function, then its arguments
+// in the order the call made them. Values are clipped so one long string
+// argument (a Write's content, a Bash heredoc) can't push the arguments after it
+// off the row — every argument stays named even when its value elides. The caps
+// are set above what the row carried before this (one unclipped value), so no
+// call reads shorter than it used to.
+const CALL_ARG_VALUE_MAX = 80
+const CALL_ARGS_MAX = 240
+
+function callArgValue(value) {
+  const text = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value))
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return oneLine.length > CALL_ARG_VALUE_MAX ? `${oneLine.slice(0, CALL_ARG_VALUE_MAX - 1)}…` : oneLine
+}
+
+export function toolCallArgs(input, fallbackArg = '') {
+  // `_semantic*` keys are stamped onto _toolInput by the dedup merge, not by the
+  // agent — they were never part of the call.
+  const entries = input && typeof input === 'object'
+    ? Object.entries(input).filter(([key]) => !key.startsWith('_semantic'))
+    : []
+  if (!entries.length) return fallbackArg ? callArgValue(fallbackArg) : ''
+  let out = ''
+  for (const [key, value] of entries) {
+    const part = `${key}: ${callArgValue(value)}`
+    if (out && out.length + 2 + part.length > CALL_ARGS_MAX) { out += ', …'; break }
+    out = out ? `${out}, ${part}` : part
+  }
+  return out
+}
+
 export function toolToCommand(name, input) {
   if (!name || !input) return ''
   const n = name.toLowerCase().replace(/^mcp__\w+__/, '')
@@ -784,12 +815,16 @@ export function renderActivityGroup(group, ctx) {
   const texts = group.filter(t => t._isText)
   const lastText = texts.length ? texts[texts.length - 1] : null
 
+  // The collapsed card's row, same call the tool lines carry. Note this row does
+  // not currently draw: its CSS is `:not(.collapsed)`, and nothing in this client
+  // puts `collapsed` on an activity card — the class has been CSS-only since
+  // activity cards landed. The visible top row is the tool line below.
   let headerSummary = ''
-  if (lastText && lastText._text) {
-    headerSummary = esc(lastText._text.split('\n')[0])
-  } else if (lastTool) {
+  if (lastTool) {
     const extra = tools.length > 1 ? ` <span class="activity-more">(+${tools.length - 1} more)</span>` : ''
-    headerSummary = `${esc(lastTool._toolName)}: ${esc(lastTool._toolArg || '')}${extra}`
+    headerSummary = `${esc(lastTool._toolName)}: ${esc(toolCallArgs(lastTool._toolInput, lastTool._toolArg))}${extra}`
+  } else if (lastText && lastText._text) {
+    headerSummary = esc(lastText._text.split('\n')[0])
   }
 
   const badge = `<span class="activity-badge">`
@@ -853,7 +888,17 @@ export function renderActivityGroup(group, ctx) {
       const countHtml = t._count > 1 ? `<span class="tool-count">×${t._count}</span>` : ''
       const toolNameRaw = t._toolName || ''
       const isSkill = toolNameRaw === 'Skill'
-      let arg = t._toolArg ? esc(t._toolArg) : ''
+      // The top row of a tool call card is the call. It used to be the daemon's
+      // `arg` — one value off a first-hit chain (`file_path || command || pattern
+      // || …`) with its parameter name dropped, so a Read lost its offset and
+      // limit and a thread(), whose parameters that chain names none of, drew as
+      // the bare word `mcp__tlda__thread`. Skip: "them fucking saying in their
+      // fucking top row, like, what the fucking call was. Function, arguments,
+      // etcetera."
+      // `_mergedArgs` means dedupTools folded several reads into this row and
+      // rewrote `_toolArg` to their basenames; `_toolInput` is only the first
+      // one's, so the merged list is the truthful call there.
+      let arg = t._mergedArgs ? esc(t._toolArg || '') : esc(toolCallArgs(t._toolInput, t._toolArg))
       arg = arg.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => `<span class="md-file-chip">att:${idx}</span>`)
       let displayName = toolNameRaw
       let detail = t._toolDetail ? `<div class="tool-detail">${esc(t._toolDetail)}</div>` : ''
