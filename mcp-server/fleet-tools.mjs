@@ -2783,7 +2783,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         const resolved = await mcpFleetTransport.ephemeral('resolve-chat-recipients', {
           to: args.to,
           from: activeAgentId(),
-        });
+        }, { deadlineMs: FLEET_RESOLVE_DEADLINE_MS });
         recipients = resolved?.recipients || [];
       } catch (e) {
         rosterUnavailable = true;
@@ -4821,6 +4821,22 @@ let _channelRWS = null;  // ResilientWS instance
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
 const FLEET_TOOL_READ_WAIT_MS = 45_000;
+
+// Recipient resolution is a READ that happens before anything is enqueued, so a
+// deadline here costs a retry and cannot lose a message -- unlike a deadline on
+// the durable send, where a message may already be in flight.
+//
+// Without it this call inherits deadlineMs=null, which selects the unbounded
+// `while (true)` branch in sendFleetRequestAttempt: chat() then never returns
+// and the MCP host eventually kills the tool call, which is what a caller sees
+// as a bare protocol error with no text.
+//
+// 5s against measured cost: the agent-resolution query behind this op ran
+// 42,791 times over two weeks with p99 85.6ms and a maximum of 502ms, and never
+// once exceeded 2s. On expiry the existing `rosterUnavailable` path reports
+// "couldn't fetch the agent roster ... (transient). Retry shortly." -- no new
+// wording, because the right sentence already exists.
+const FLEET_RESOLVE_DEADLINE_MS = 5_000;
 const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRWS?.connected });
 
 /**
