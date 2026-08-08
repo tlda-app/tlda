@@ -1819,7 +1819,10 @@ router.post('/:name/extract', requireRw, async (req, res) => {
   for (const s of allShapes) {
     if (s.typeName === 'shape' && s.index && s.index > maxIndex) maxIndex = s.index
   }
-  const { getIndexAbove } = await import('tldraw')
+  // From @tldraw/utils, which the server image already installs — `tldraw` is
+  // not in it, so this path threw in production while booting fine, the import
+  // being lazy. tldraw re-exports this function from utils unchanged.
+  const { getIndexAbove } = await import('@tldraw/utils')
   const noteIndex = getIndexAbove(maxIndex)
 
   const shape = {
