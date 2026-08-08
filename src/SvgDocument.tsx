@@ -127,6 +127,7 @@ import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
+import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -497,6 +498,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       y: page.bounds.y + page.bounds.h / 2,
     })
   }, [document, editorMounted])
+
+  useMarkedExerciseHtmlAlignment(editorRef, document, editorMounted)
+
 
   // Divider diff: draw on the gap between columns to trigger word-level diff
   useDividerDiff(editorRef, projectName, shadowActiveVersion?.hash ?? null, shadowColumnX, shadowYOffset)

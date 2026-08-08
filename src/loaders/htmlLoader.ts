@@ -7,6 +7,7 @@ import type { SvgPage, SvgDocument } from './types'
 
 export interface HtmlPageEntry {
   file: string
+  url?: string
   width: number
   height: number
   title?: string
@@ -62,7 +63,7 @@ export function createHtmlDocumentFromPageInfo(
         : `page:${name}-ch-${tldrawPageIdx}`
       const pageName = info.title || info.file.replace(/\.html$/, '').replace(/-/g, ' ')
       pages.push({
-        src: basePath + info.file,
+        src: info.url || basePath + info.file,
         bounds: new Box(0, 0, info.width, info.height),
         assetId: AssetRecordType.createId(pageId),
         shapeId: createShapeId(pageId),
@@ -85,7 +86,7 @@ export function createHtmlDocumentFromPageInfo(
         const gp = pageInfos[i]
         const pageId = `${name}-page-${i}`
         pages.push({
-          src: basePath + gp.file,
+          src: gp.url || basePath + gp.file,
           bounds: new Box(left, 0, gp.width, gp.height),
           assetId: AssetRecordType.createId(pageId),
           shapeId: createShapeId(pageId),

@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Homework Review Prototype</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #f7f5ef;
+        --ink: #25221d;
+        --muted: #69645b;
+        --line: #d8d2c4;
+        --panel: #fffdf8;
+        --student: #eef6f2;
+        --official: #f8f1df;
+        --feedback: #f5e7ea;
+        --returned: #e4f0e7;
+        --accent: #276a77;
+        --warn: #a94b45;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+      }
+
+      button,
+      select {
+        font: inherit;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+      }
+
+      .sidebar {
+        border-right: 1px solid var(--line);
+        background: #ebe7db;
+        padding: 18px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .title {
+        display: grid;
+        gap: 4px;
+      }
+
+      .title h1 {
+        font-size: 18px;
+        line-height: 1.2;
+        margin: 0;
+        font-weight: 680;
+      }
+
+      .title p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      .controlGroup {
+        display: grid;
+        gap: 8px;
+      }
+
+      .controlGroup label,
+      .controlLabel {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 680;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+
+      .segmented {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        overflow: hidden;
+        background: #f8f6ef;
+      }
+
+      .segmented.two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .segmented button {
+        min-height: 36px;
+        border: 0;
+        border-right: 1px solid var(--line);
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .segmented button:last-child {
+        border-right: 0;
+      }
+
+      .segmented button.active {
+        background: var(--panel);
+        color: var(--ink);
+        font-weight: 680;
+      }
+
+      .sidebar select {
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel);
+        color: var(--ink);
+        padding: 0 10px;
+      }
+
+      .actionButton {
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel);
+        color: var(--ink);
+        cursor: pointer;
+        text-align: left;
+        padding: 0 11px;
+      }
+
+      .actionButton.primary {
+        border-color: rgba(39, 106, 119, 0.45);
+        background: #e9f2f1;
+        color: #174e59;
+        font-weight: 680;
+      }
+
+      .studentList {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+
+      .studentRow {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 42px;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        background: transparent;
+        padding: 0 10px;
+        color: var(--ink);
+        text-align: left;
+      }
+
+      .studentRow:last-child {
+        border-bottom: 0;
+      }
+
+      .studentRow.active {
+        background: #f1efe6;
+      }
+
+      .tag {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 3px 7px;
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .tag.returned {
+        color: #315f3b;
+        border-color: #9ec1a6;
+        background: var(--returned);
+      }
+
+      .main {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      .topbar {
+        min-height: 58px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.78);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 20px;
+      }
+
+      .crumbs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--warn);
+      }
+
+      .app.returned .dot {
+        background: #478155;
+      }
+
+      .workspace {
+        position: relative;
+        min-width: 0;
+        overflow: auto;
+        padding: 24px;
+      }
+
+      .compare {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+        gap: 28px;
+        align-items: start;
+        min-width: 760px;
+      }
+
+      .pane {
+        position: relative;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 6px 20px rgba(64, 56, 43, 0.08);
+        overflow: hidden;
+      }
+
+      .paneHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 46px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: #f7f4ea;
+      }
+
+      .paneHeader h2 {
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.2;
+      }
+
+      .paneHeader span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .paperBlock {
+        padding: 18px;
+        display: grid;
+        gap: 14px;
+        line-height: 1.48;
+        font-size: 15px;
+      }
+
+      .callout {
+        border-left: 4px solid var(--accent);
+        border-radius: 6px;
+        padding: 13px 14px;
+        background: var(--official);
+      }
+
+      .studentPane .callout {
+        background: var(--student);
+      }
+
+      .callout h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+
+      .math {
+        margin: 10px 0;
+        padding: 10px;
+        border: 1px solid rgba(39, 106, 119, 0.18);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.55);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+
+      .studentAnswer mark {
+        background: rgba(169, 75, 69, 0.16);
+        color: inherit;
+        padding: 0 2px;
+      }
+
+      .feedbackCard {
+        position: absolute;
+        right: 22px;
+        top: 255px;
+        width: min(300px, calc(100% - 44px));
+        border: 1px solid #d6a3ad;
+        border-radius: 8px;
+        background: var(--feedback);
+        color: #44232a;
+        padding: 12px 13px;
+        line-height: 1.36;
+        font-size: 13px;
+        box-shadow: 0 8px 18px rgba(90, 54, 58, 0.12);
+        transition: transform 0.25s ease, background 0.2s ease, border-color 0.2s ease;
+      }
+
+      .feedbackCard strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .app.returned .feedbackCard {
+        background: var(--returned);
+        border-color: #9ec1a6;
+        color: #263f2b;
+      }
+
+      .app.student-mode:not(.returned) .feedbackCard,
+      .app.student-mode:not(.returned) .alignmentArrow {
+        display: none;
+      }
+
+      .alignmentArrow {
+        position: absolute;
+        top: 202px;
+        left: calc(50% - 36px);
+        width: 132px;
+        height: 72px;
+        pointer-events: none;
+      }
+
+      .alignmentArrow svg {
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+
+      .alignmentArrow path {
+        fill: none;
+        stroke: var(--warn);
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .app.returned .alignmentArrow path {
+        stroke: #478155;
+      }
+
+      .studentPane.moved {
+        transform: translateY(72px);
+      }
+
+      .studentPane {
+        transition: transform 0.25s ease;
+      }
+
+      .studentPane.moved .feedbackCard {
+        transform: translateY(0);
+      }
+
+      .studentPane.moved + .movementNote {
+        opacity: 1;
+      }
+
+      .movementNote {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      .studentOnly,
+      .instructorOnly {
+        display: inline;
+      }
+
+      .app.student-mode .instructorOnly {
+        display: none;
+      }
+
+      .app:not(.student-mode) .studentOnly {
+        display: none;
+      }
+
+      @media (max-width: 860px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+          padding: 12px 16px;
+        }
+
+        .workspace {
+          padding: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app" id="app">
+      <aside class="sidebar">
+        <div class="title">
+          <h1>Homework 7 Review</h1>
+          <p>QTM 285 / homework/hw7-bias-two-groups.qmd</p>
+        </div>
+
+        <section class="controlGroup">
+          <div class="controlLabel">View</div>
+          <div class="segmented two" aria-label="View mode">
+            <button class="active" id="instructorMode" type="button">Instructor</button>
+            <button id="studentMode" type="button">Student</button>
+          </div>
+        </section>
+
+        <section class="controlGroup">
+          <div class="controlLabel">Layer</div>
+          <div class="segmented" aria-label="Layer picker">
+            <button class="active" id="layerCommon" type="button">Common</button>
+            <button id="layerMine" type="button">Mine</button>
+            <button id="layerStudent" type="button">Student</button>
+          </div>
+        </section>
+
+        <section class="controlGroup">
+          <label for="assignmentPicker">Assignment</label>
+          <select id="assignmentPicker">
+            <option>HW7: Bias with Two Groups</option>
+          </select>
+        </section>
+
+        <section class="controlGroup">
+          <div class="controlLabel">Submissions</div>
+          <div class="studentList">
+            <button class="studentRow active" type="button">
+              <span>Student A</span>
+              <span class="tag" id="studentRowStatus">draft mark</span>
+            </button>
+            <button class="studentRow" type="button">
+              <span>Student B</span>
+              <span class="tag">not opened</span>
+            </button>
+            <button class="studentRow" type="button">
+              <span>Student C</span>
+              <span class="tag">submitted</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="controlGroup instructorOnly">
+          <button class="actionButton primary" id="commitButton" type="button">
+            Commit attached feedback
+          </button>
+          <button class="actionButton" id="moveButton" type="button">Move student block</button>
+          <button class="actionButton" id="resetButton" type="button">Reset demo</button>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="crumbs">
+            <span>Problem 2A</span>
+            <span>/</span>
+            <span>official solution compared with submitted solution</span>
+          </div>
+          <div class="status">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="feedbackStatus">draft</span>
+            <span class="instructorOnly">feedback in instructor workspace</span>
+            <span class="studentOnly">returned feedback visible to student</span>
+          </div>
+        </header>
+
+        <section class="workspace">
+          <div class="compare">
+            <article class="pane officialPane" id="officialPane">
+              <div class="paneHeader">
+                <h2>Official solution</h2>
+                <span>callout-solution week=7</span>
+              </div>
+              <div class="paperBlock">
+                <p>
+                  Suppose mu(0) = 0.6 and mu(1) = 0.7, so the true difference is
+                  0.1. With nprior = 10 and N0 = N1 = 200, compare same-prior and
+                  different-prior regularization.
+                </p>
+                <div class="callout">
+                  <h3>Choice 1: Same prior, thetaprior = 0.5</h3>
+                  <p>Both biases are negative. Both group means get pulled down toward 0.5.</p>
+                  <div class="math">bias[mu_tilde(0)] = 10(0.5 - 0.6) / 210 = -0.0048
+bias[mu_tilde(1)] = 10(0.5 - 0.7) / 210 = -0.0095</div>
+                  <p>
+                    The bias of the difference is -0.0095 - (-0.0048) = -0.0048.
+                    Both means got pulled down, so the difference barely changed.
+                  </p>
+                </div>
+                <div class="callout">
+                  <h3>Choice 2: Different priors</h3>
+                  <p>
+                    The biases go in opposite directions. Group 0 gets pulled up,
+                    group 1 gets pulled down.
+                  </p>
+                  <div class="math">bias[mu_tilde(0)] = 10(0.7 - 0.6) / 210 = +0.0048
+bias[mu_tilde(1)] = 10(0.5 - 0.7) / 210 = -0.0095</div>
+                  <p>
+                    The bias of the difference is -0.0095 - (+0.0048) = -0.0143.
+                    The estimated difference got squeezed from both sides.
+                  </p>
+                </div>
+              </div>
+            </article>
+
+            <div class="alignmentArrow" id="alignmentArrow" aria-hidden="true">
+              <svg viewBox="0 0 132 72">
+                <defs>
+                  <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                    <path d="M0,0 L0,6 L7,3 z" fill="#a94b45"></path>
+                  </marker>
+                </defs>
+                <path d="M5 14 C46 8, 72 54, 126 46" marker-end="url(#arrowhead)"></path>
+              </svg>
+            </div>
+
+            <article class="pane studentPane" id="studentPane">
+              <div class="paneHeader">
+                <h2>Student A submission</h2>
+                <span>submitted qmd fixture</span>
+              </div>
+              <div class="paperBlock studentAnswer">
+                <p>
+                  The student copied the right setup but mixed up what happens when
+                  the group biases point in opposite directions.
+                </p>
+                <div class="callout">
+                  <h3>Student answer: Choice 1</h3>
+                  <p>Both groups are pulled down, so most of the bias cancels in the difference.</p>
+                  <div class="math">-0.0095 - (-0.0048) = -0.0047</div>
+                </div>
+                <div class="callout">
+                  <h3>Student answer: Choice 2</h3>
+                  <p>
+                    Group 0 is pulled up and group 1 is pulled down, so the errors
+                    <mark>cancel each other out</mark> and the difference is still close.
+                  </p>
+                  <div class="math">-0.0095 + (+0.0048) = -0.0047</div>
+                </div>
+              </div>
+              <aside class="feedbackCard" id="feedbackCard">
+                <strong>Check the sign here.</strong>
+                In the difference mu(1) - mu(0), an upward bias on group 0 is
+                subtracted. The two biases add; they do not cancel.
+              </aside>
+            </article>
+          </div>
+          <p class="movementNote" id="movementNote">
+            Student block moved; attached feedback stayed with the submitted solution.
+          </p>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const app = document.getElementById('app')
+      const instructorMode = document.getElementById('instructorMode')
+      const studentMode = document.getElementById('studentMode')
+      const feedbackStatus = document.getElementById('feedbackStatus')
+      const studentRowStatus = document.getElementById('studentRowStatus')
+      const commitButton = document.getElementById('commitButton')
+      const moveButton = document.getElementById('moveButton')
+      const resetButton = document.getElementById('resetButton')
+      const studentPane = document.getElementById('studentPane')
+
+      function setMode(mode) {
+        const student = mode === 'student'
+        app.classList.toggle('student-mode', student)
+        instructorMode.classList.toggle('active', !student)
+        studentMode.classList.toggle('active', student)
+      }
+
+      function setLayer(id) {
+        for (const button of document.querySelectorAll('.segmented[aria-label="Layer picker"] button')) {
+          button.classList.toggle('active', button.id === id)
+        }
+      }
+
+      function commitFeedback() {
+        app.classList.add('returned')
+        feedbackStatus.textContent = 'returned'
+        studentRowStatus.textContent = 'returned'
+        studentRowStatus.classList.add('returned')
+        setMode('student')
+        setLayer('layerStudent')
+      }
+
+      function moveStudentBlock() {
+        studentPane.classList.toggle('moved')
+      }
+
+      function resetDemo() {
+        app.classList.remove('returned', 'student-mode')
+        studentPane.classList.remove('moved')
+        feedbackStatus.textContent = 'draft'
+        studentRowStatus.textContent = 'draft mark'
+        studentRowStatus.classList.remove('returned')
+        setMode('instructor')
+        setLayer('layerCommon')
+      }
+
+      instructorMode.addEventListener('click', () => setMode('instructor'))
+      studentMode.addEventListener('click', () => setMode('student'))
+      commitButton.addEventListener('click', commitFeedback)
+      moveButton.addEventListener('click', moveStudentBlock)
+      resetButton.addEventListener('click', resetDemo)
+
+      for (const button of document.querySelectorAll('.segmented[aria-label="Layer picker"] button')) {
+        button.addEventListener('click', () => setLayer(button.id))
+      }
+    </script>
+  </body>
+</html>

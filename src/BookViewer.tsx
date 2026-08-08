@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Tldraw } from 'tldraw'
 import { SvgDocumentEditor } from './SvgDocument'
-import { createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
+import { createHtmlDocumentFromPageInfo, createSvgDocumentLayout, loadHtmlDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import type { SvgDocument } from './loaders/types'
@@ -33,7 +33,25 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
     try {
       let doc: SvgDocument
       if (HTML_PAGE_FORMATS.has(member.format || '')) {
-        doc = await loadHtmlDocument(member.key, member.basePath)
+        const compareDoc = new URLSearchParams(window.location.search).get('compareDoc')
+        if (compareDoc) {
+          const compareBasePath = `/docs/${encodeURIComponent(compareDoc)}/`
+          const [studentPages, solutionPages] = await Promise.all([
+            fetch(`${member.basePath}page-info.json`).then(response => response.json()),
+            fetch(`${compareBasePath}page-info.json`).then(response => {
+              if (!response.ok) throw new Error(`Comparison document ${compareDoc} is not ready`)
+              return response.json()
+            }),
+          ])
+          if (!studentPages[0] || !solutionPages[0]) throw new Error('Marked exercise documents need a rendered HTML page')
+          const pair = [
+            { ...studentPages[0], group: 'marked-exercise', url: member.basePath + studentPages[0].file },
+            { ...solutionPages[0], group: 'marked-exercise', url: compareBasePath + solutionPages[0].file },
+          ]
+          doc = createHtmlDocumentFromPageInfo(member.key, member.basePath, pair)
+        } else {
+          doc = await loadHtmlDocument(member.key, member.basePath)
+        }
       } else {
         // SVG: create layout immediately, pages fetched async after editor mounts
         doc = createSvgDocumentLayout(member.key, member.pages, member.basePath)

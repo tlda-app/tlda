@@ -9,6 +9,8 @@ import { IdentityPicker } from './IdentityPicker'
 import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
 import { subscribeChat } from './fleet/chat-subscription.mjs'
 import { convertChatEvent } from './fleet/convert-chat-event.mjs'
+import { GradebookWorkspace } from './classroom/GradebookWorkspace'
+import { MarkingLifecycle } from './classroom/MarkingLifecycle'
 import { STORE_HTTP } from './activeConfig'
 import { viewFormat } from '../shared/document-formats.mjs'
 import type { BookMember } from './BookContext'
@@ -37,8 +39,12 @@ import './shapes/fleet-chat.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()
-// Fetch auth level (presenter permission) — fire and forget, UI updates reactively
-fetchAuthLevel()
+function isStandaloneWorkspaceRoute() {
+  return new URLSearchParams(window.location.search).get('workspace') === 'classroom-gradebook'
+}
+// Fetch auth level (presenter permission) — fire and forget, UI updates reactively.
+// The standalone gradebook uses its classroom API request instead of viewer auth state.
+if (!isStandaloneWorkspaceRoute()) fetchAuthLevel()
 
 // Error boundary to prevent blank screen on errors
 class ErrorBoundary extends Component<
@@ -191,7 +197,7 @@ function parseInitialCamera(): { x: number; y: number; z: number; page?: string 
   }
 }
 
-function App() {
+function DocumentApp() {
   const [state, setState] = useState<State | null>(null)
   const [initialCamera] = useState(parseInitialCamera)
   const isDark = useFleetTheme()
@@ -493,6 +499,7 @@ function App() {
           <ErrorBoundary>
             <BookViewer bookName={state.bookName} members={state.members} />
           </ErrorBoundary>
+          <MarkingLifecycle />
         </div>
       )
     case 'svg':
@@ -503,6 +510,7 @@ function App() {
           <ErrorBoundary>
             <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
           </ErrorBoundary>
+          <MarkingLifecycle />
         </div>
       )
   }
@@ -1468,6 +1476,18 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       )}
     </div>
   )
+}
+
+function App() {
+  if (isStandaloneWorkspaceRoute()) {
+    return (
+      <ErrorBoundary>
+        <GradebookWorkspace />
+      </ErrorBoundary>
+    )
+  }
+
+  return <DocumentApp />
 }
 
 export default App

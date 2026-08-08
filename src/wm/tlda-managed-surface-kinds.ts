@@ -4,6 +4,7 @@ export const TLDA_MANAGED_SURFACE_KINDS = [
 	'page-column',
 	'page-column-handle',
 	'lightbox',
+	'homework-grading',
 ] as const
 
 export type TldaManagedSurfaceKind = typeof TLDA_MANAGED_SURFACE_KINDS[number]

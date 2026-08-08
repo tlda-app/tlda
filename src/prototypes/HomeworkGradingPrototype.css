@@ -1,0 +1,512 @@
+.homeworkPrototype {
+	min-height: 100vh;
+	display: grid;
+	grid-template-columns: 292px minmax(0, 1fr);
+	background: #f4f1e8;
+	color: #24211d;
+	font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.hpSidebar {
+	border-right: 1px solid #d8d1c3;
+	background: #e7e2d6;
+	padding: 18px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.hpTitle {
+	display: grid;
+	gap: 4px;
+}
+
+.hpTitle h1 {
+	margin: 0;
+	font-size: 18px;
+	line-height: 1.2;
+}
+
+.hpTitle p,
+.hpTopbar span,
+.hpStatus,
+.hpPaneHeader span,
+.hpSurfaceCard span,
+.hpFeedbackCard small {
+	color: #69635a;
+}
+
+.hpTitle p {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.35;
+}
+
+.hpControls,
+.hpActions {
+	display: grid;
+	gap: 8px;
+}
+
+.hpLabel {
+	color: #69635a;
+	font-size: 12px;
+	font-weight: 700;
+	text-transform: uppercase;
+}
+
+.hpSegmented,
+.hpLayerGrid {
+	display: grid;
+	border: 1px solid #d8d1c3;
+	border-radius: 7px;
+	overflow: hidden;
+	background: #f8f6ef;
+}
+
+.hpSegmented.hpTwo {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hpLayerGrid {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hpSegmented button,
+.hpLayerGrid button,
+.hpActions button {
+	min-height: 38px;
+	border: 0;
+	border-right: 1px solid #d8d1c3;
+	border-bottom: 1px solid #d8d1c3;
+	background: transparent;
+	color: #514c45;
+	cursor: pointer;
+	font: inherit;
+}
+
+.hpSegmented button:last-child,
+.hpLayerGrid button:nth-child(even) {
+	border-right: 0;
+}
+
+.hpLayerGrid button:nth-last-child(-n + 2) {
+	border-bottom: 0;
+}
+
+.hpSegmented button.active,
+.hpLayerGrid button.active {
+	background: #fffdf8;
+	color: #24211d;
+	font-weight: 700;
+}
+
+.hpStoreFlow {
+	display: grid;
+	gap: 7px;
+}
+
+.hpStoreFlow div,
+.hpSubmission,
+.hpStudentList button,
+.hpMarkRow {
+	border: 1px solid #d8d1c3;
+	border-radius: 7px;
+	background: #fffdf8;
+	padding: 9px 10px;
+	display: grid;
+	gap: 2px;
+}
+
+.hpStoreFlow span,
+.hpStudentList small,
+.hpMarkRow small {
+	color: #69635a;
+	font-size: 12px;
+}
+
+.hpSubmission {
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+}
+
+.hpStudentList,
+.hpMarkList,
+.hpNewFeedback {
+	display: grid;
+	gap: 7px;
+}
+
+.hpStudentList button {
+	position: relative;
+	width: 100%;
+	border: 1px solid #d8d1c3;
+	color: #24211d;
+	text-align: left;
+	font: inherit;
+	cursor: pointer;
+	padding-right: 78px;
+}
+
+.hpStudentList button.active {
+	border-color: rgba(39, 106, 119, 0.5);
+	background: #eef6f2;
+}
+
+.hpStudentList .hpTag {
+	position: absolute;
+	right: 8px;
+	top: 9px;
+}
+
+.hpMarkRow {
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: start;
+	cursor: pointer;
+}
+
+.hpMarkRow input {
+	margin-top: 3px;
+}
+
+.hpMarkRow small {
+	grid-column: 2;
+}
+
+.hpMarkRow.returned {
+	background: #e4f0e7;
+	border-color: #9ec1a6;
+}
+
+.hpNewFeedback input,
+.hpNewFeedback textarea {
+	width: 100%;
+	border: 1px solid #d8d1c3;
+	border-radius: 7px;
+	background: #fffdf8;
+	color: #24211d;
+	font: inherit;
+	padding: 8px 9px;
+	resize: vertical;
+}
+
+.hpNewFeedback button {
+	min-height: 36px;
+	border: 1px solid rgba(39, 106, 119, 0.45);
+	border-radius: 7px;
+	background: #e7f1f0;
+	color: #164f59;
+	font: inherit;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.hpTag {
+	border: 1px solid #d8d1c3;
+	border-radius: 999px;
+	padding: 3px 8px;
+	font-size: 11px;
+	color: #69635a;
+}
+
+.hpTag.returned {
+	border-color: #91bd9e;
+	background: #e4f0e7;
+	color: #315d3b;
+}
+
+.hpActions button {
+	border: 1px solid #d8d1c3;
+	border-radius: 7px;
+	background: #fffdf8;
+	text-align: left;
+	padding: 0 11px;
+}
+
+.hpActions button.primary {
+	border-color: rgba(39, 106, 119, 0.45);
+	background: #e7f1f0;
+	color: #164f59;
+	font-weight: 700;
+}
+
+.hpMain {
+	min-width: 0;
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.hpTopbar {
+	min-height: 58px;
+	border-bottom: 1px solid #d8d1c3;
+	background: rgba(255, 253, 248, 0.8);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 0 20px;
+}
+
+.hpTopbar div {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.hpStatus {
+	font-size: 13px;
+}
+
+.hpDot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #a94b45;
+}
+
+.homeworkPrototype.returned .hpDot {
+	background: #478155;
+}
+
+.hpWorkspace {
+	overflow: auto;
+	padding: 24px;
+}
+
+.hpCanvas {
+	position: relative;
+	min-width: 1060px;
+	min-height: 850px;
+}
+
+.hpPane {
+	position: absolute;
+	border: 1px solid #d8d1c3;
+	border-radius: 8px;
+	background: #fffdf8;
+	box-shadow: 0 6px 20px rgba(64, 56, 43, 0.08);
+	overflow: hidden;
+	transition: transform 0.25s ease, top 0.25s ease;
+}
+
+.hpOfficial {
+	left: 40px;
+	top: 70px;
+	width: 500px;
+}
+
+.hpStudent {
+	left: 620px;
+	top: 70px;
+	width: 500px;
+}
+
+.hpStudent.moved {
+	top: 142px;
+}
+
+.hpPaneHeader {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	min-height: 46px;
+	padding: 0 14px;
+	border-bottom: 1px solid #d8d1c3;
+	background: #f7f4ea;
+}
+
+.hpPaneHeader h2 {
+	margin: 0;
+	font-size: 14px;
+}
+
+.hpPaneHeader span {
+	font-size: 12px;
+}
+
+.hpPaper {
+	padding: 18px;
+	display: grid;
+	gap: 14px;
+	font-size: 15px;
+	line-height: 1.46;
+}
+
+.hpCallout {
+	border-left: 4px solid #276a77;
+	border-radius: 6px;
+	padding: 13px 14px;
+}
+
+.hpCallout.official {
+	background: #f8f1df;
+}
+
+.hpCallout.student {
+	background: #eaf5f2;
+}
+
+.hpCallout h3 {
+	margin: 0 0 8px;
+	font-size: 14px;
+}
+
+.hpCallout p {
+	margin: 8px 0;
+}
+
+.hpCallout pre {
+	white-space: pre-wrap;
+	margin: 10px 0;
+	border: 1px solid rgba(39, 106, 119, 0.18);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.58);
+	padding: 10px;
+	font: 13px/1.45 "SFMono-Regular", Consolas, monospace;
+}
+
+.hpCallout mark {
+	background: rgba(169, 75, 69, 0.16);
+	color: inherit;
+	padding: 0 2px;
+}
+
+.hpFeedbackCard {
+	position: absolute;
+	right: 22px;
+	top: 255px;
+	width: 320px;
+	border: 1px solid #d6a3ad;
+	border-radius: 8px;
+	background: #f5e7ea;
+	color: #44232a;
+	padding: 12px 13px;
+	line-height: 1.36;
+	font-size: 13px;
+	box-shadow: 0 8px 18px rgba(90, 54, 58, 0.12);
+	display: grid;
+	gap: 5px;
+}
+
+.homeworkPrototype.returned .hpFeedbackCard {
+	background: #e4f0e7;
+	border-color: #9ec1a6;
+	color: #263f2b;
+}
+
+.homeworkPrototype.studentMode .hpFeedbackCard.draft,
+.homeworkPrototype.studentMode .hpFeedbackCard.loose,
+.homeworkPrototype.studentMode.draft .hpArrow {
+	display: none;
+}
+
+.hpArrow {
+	position: absolute;
+	left: 520px;
+	top: 260px;
+	width: 150px;
+	height: 80px;
+	pointer-events: none;
+	z-index: 2;
+}
+
+.hpArrow svg {
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+}
+
+.hpArrow path {
+	fill: none;
+	stroke: #a94b45;
+	stroke-width: 3;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.hpArrow.returned path {
+	stroke: #478155;
+}
+
+.hpInspector {
+	border-top: 1px solid #d8d1c3;
+	background: #ebe7db;
+	padding: 12px 18px 16px;
+	display: grid;
+	gap: 10px;
+}
+
+.hpInspectorHeader {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.hpInspectorHeader span {
+	color: #69635a;
+	font-size: 13px;
+}
+
+.hpSurfaceGrid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.hpSurfaceCard {
+	border: 1px solid #d8d1c3;
+	border-radius: 7px;
+	background: #fffdf8;
+	padding: 10px;
+	display: grid;
+	gap: 4px;
+	font-size: 12px;
+	min-width: 0;
+}
+
+.hpSurfaceCard span,
+.hpSurfaceCard code {
+	overflow-wrap: anywhere;
+}
+
+.hpSurfaceCard code {
+	color: #164f59;
+}
+
+.hpTransferLog {
+	border: 1px solid #d8d1c3;
+	border-radius: 7px;
+	background: #fffdf8;
+	padding: 10px;
+	display: grid;
+	gap: 4px;
+	font-size: 12px;
+}
+
+.hpTransferLog span {
+	color: #69635a;
+}
+
+@media (max-width: 900px) {
+	.homeworkPrototype {
+		grid-template-columns: 1fr;
+	}
+
+	.hpSidebar {
+		border-right: 0;
+		border-bottom: 1px solid #d8d1c3;
+	}
+
+	.hpTopbar {
+		align-items: flex-start;
+		flex-direction: column;
+		padding: 12px 16px;
+	}
+
+	.hpSurfaceGrid {
+		grid-template-columns: 1fr;
+	}
+}

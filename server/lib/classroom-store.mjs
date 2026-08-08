@@ -1,0 +1,176 @@
+import Database from 'better-sqlite3'
+import crypto from 'crypto'
+import os from 'os'
+import path from 'path'
+import fs from 'fs'
+
+const DEFAULT_DB = process.env.TLDA_CLASSROOM_DB
+  || (process.env.TLDA_FLEET_DB ? path.join(path.dirname(process.env.TLDA_FLEET_DB), 'classroom.db') : null)
+  || path.join(os.homedir(), '.config', 'tlda', 'classroom.db')
+const STATUSES = new Set(['ungraded', 'graded', 'returned'])
+
+export function hashEnrollmentToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex')
+}
+
+export class ClassroomStore {
+  constructor(dbPath = DEFAULT_DB) {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    this.db = new Database(dbPath)
+    this.db.pragma('foreign_keys = ON')
+    this.db.pragma('journal_mode = WAL')
+    this.#migrate()
+  }
+
+  #migrate() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS courses (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS students (
+        id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+        display_name TEXT NOT NULL, enrollment_token_hash TEXT UNIQUE NOT NULL, active INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE TABLE IF NOT EXISTS assignments (
+        id TEXT PRIMARY KEY, course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+        title TEXT NOT NULL, due_at TEXT NOT NULL, solutions_doc_key TEXT,
+        solutions_version TEXT, template_doc_key TEXT, template_version TEXT
+      );
+      CREATE TABLE IF NOT EXISTS submissions (
+        assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+        student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+        content_ref TEXT NOT NULL, submitted_at TEXT NOT NULL,
+        grading_status TEXT NOT NULL DEFAULT 'ungraded' CHECK (grading_status IN ('ungraded','graded','returned')),
+        graded_at TEXT, returned_at TEXT,
+        PRIMARY KEY (assignment_id, student_id)
+      );
+      CREATE TABLE IF NOT EXISTS feedback_marks (
+        id TEXT PRIMARY KEY, assignment_id TEXT NOT NULL, student_id TEXT NOT NULL,
+        title TEXT NOT NULL, text TEXT NOT NULL, attached INTEGER NOT NULL DEFAULT 1,
+        visibility TEXT NOT NULL DEFAULT 'instructor-draft' CHECK (visibility IN ('instructor-draft','returned')),
+        created_at TEXT NOT NULL, returned_at TEXT,
+        FOREIGN KEY (assignment_id, student_id) REFERENCES submissions(assignment_id, student_id) ON DELETE CASCADE
+      );
+    `)
+    const assignmentColumns = new Set(this.db.pragma('table_info(assignments)').map(column => column.name))
+    if (!assignmentColumns.has('template_doc_key')) this.db.exec('ALTER TABLE assignments ADD COLUMN template_doc_key TEXT')
+  }
+
+  close() { this.db.close() }
+
+  upsertCourse({ id, title }) {
+    this.db.prepare(`INSERT INTO courses(id,title) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title`).run(id, title)
+    return this.getCourse(id)
+  }
+
+  getCourse(id) { return this.db.prepare('SELECT * FROM courses WHERE id=?').get(id) || null }
+
+  upsertStudent({ id, courseId, displayName, enrollmentToken, active = true }) {
+    const tokenHash = hashEnrollmentToken(enrollmentToken)
+    this.db.prepare(`INSERT INTO students(id,course_id,display_name,enrollment_token_hash,active) VALUES (?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id, display_name=excluded.display_name,
+      enrollment_token_hash=excluded.enrollment_token_hash, active=excluded.active`)
+      .run(id, courseId, displayName, tokenHash, active ? 1 : 0)
+    return this.getStudent(id)
+  }
+
+  getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, active FROM students WHERE id=?').get(id) || null }
+  studentForToken(token) {
+    if (!token) return null
+    return this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName FROM students
+      WHERE enrollment_token_hash=? AND active=1`).get(hashEnrollmentToken(token)) || null
+  }
+  listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
+
+  upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null }) {
+    this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version)
+      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id,title=excluded.title,due_at=excluded.due_at,
+      solutions_doc_key=excluded.solutions_doc_key,solutions_version=excluded.solutions_version,
+      template_doc_key=COALESCE(assignments.template_doc_key,excluded.template_doc_key),
+      template_version=COALESCE(assignments.template_version,excluded.template_version)`)
+      .run(id, courseId, title, dueAt, solutionsDocKey, solutionsVersion, templateDocKey, templateVersion)
+    return this.getAssignment(id)
+  }
+  getAssignment(id) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
+    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion FROM assignments WHERE id=?`).get(id) || null }
+  listAssignments(courseId) { return this.db.prepare(`SELECT id,course_id AS courseId,title,due_at AS dueAt,solutions_doc_key AS solutionsDocKey,
+    solutions_version AS solutionsVersion,template_doc_key AS templateDocKey,template_version AS templateVersion FROM assignments WHERE course_id=? ORDER BY due_at`).all(courseId) }
+
+  freezeTemplate(assignmentId, { templateDocKey, templateVersion }) {
+    if (!templateDocKey || !templateVersion) throw new Error('templateDocKey and templateVersion are required')
+    const assignment = this.getAssignment(assignmentId)
+    if (!assignment) throw new Error('assignment not found')
+    if (assignment.templateDocKey || assignment.templateVersion) {
+      if (assignment.templateDocKey === templateDocKey && assignment.templateVersion === templateVersion) return assignment
+      throw new Error('assignment template is already frozen')
+    }
+    this.db.prepare('UPDATE assignments SET template_doc_key=?,template_version=? WHERE id=?')
+      .run(templateDocKey, templateVersion, assignmentId)
+    return this.getAssignment(assignmentId)
+  }
+
+  submit({ assignmentId, studentId, contentRef, submittedAt = new Date().toISOString() }) {
+    this.db.prepare(`INSERT INTO submissions(assignment_id,student_id,content_ref,submitted_at,grading_status)
+      VALUES (?,?,?,?, 'ungraded') ON CONFLICT(assignment_id,student_id) DO UPDATE SET
+      content_ref=excluded.content_ref, submitted_at=excluded.submitted_at, grading_status='ungraded', graded_at=NULL, returned_at=NULL`)
+      .run(assignmentId, studentId, contentRef, submittedAt)
+    return this.getSubmission(assignmentId, studentId, { includeDrafts: true })
+  }
+
+  addFeedback({ id = crypto.randomUUID(), assignmentId, studentId, title, text, attached = true, createdAt = new Date().toISOString() }) {
+    this.db.prepare(`INSERT INTO feedback_marks(id,assignment_id,student_id,title,text,attached,visibility,created_at)
+      VALUES (?,?,?,?,?,?, 'instructor-draft',?)`).run(id, assignmentId, studentId, title, text, attached ? 1 : 0, createdAt)
+    return id
+  }
+
+  setStatus(assignmentId, studentId, status, now = new Date().toISOString()) {
+    if (!STATUSES.has(status)) throw new Error(`invalid grading status: ${status}`)
+    const result = this.db.prepare(`UPDATE submissions SET grading_status=?, graded_at=CASE WHEN ? IN ('graded','returned') THEN COALESCE(graded_at,?) ELSE graded_at END,
+      returned_at=CASE WHEN ?='returned' THEN ? ELSE returned_at END WHERE assignment_id=? AND student_id=?`)
+      .run(status, status, now, status, now, assignmentId, studentId)
+    if (!result.changes) throw new Error('submission not found')
+    return this.getSubmission(assignmentId, studentId, { includeDrafts: true })
+  }
+
+  returnFeedback(assignmentId, studentId, now = new Date().toISOString()) {
+    return this.db.transaction(() => {
+      this.db.prepare(`UPDATE feedback_marks SET visibility='returned', returned_at=?
+        WHERE assignment_id=? AND student_id=? AND attached=1 AND visibility='instructor-draft'`).run(now, assignmentId, studentId)
+      return this.setStatus(assignmentId, studentId, 'returned', now)
+    })()
+  }
+
+  getSubmission(assignmentId, studentId, { includeDrafts = false } = {}) {
+    const row = this.db.prepare(`SELECT assignment_id AS assignmentId,student_id AS studentId,content_ref AS contentRef,
+      submitted_at AS submittedAt,grading_status AS gradingStatus,graded_at AS gradedAt,returned_at AS returnedAt
+      FROM submissions WHERE assignment_id=? AND student_id=?`).get(assignmentId, studentId)
+    if (!row) return null
+    const marks = this.db.prepare(`SELECT id,title,text,attached,visibility,created_at AS createdAt,returned_at AS returnedAt
+      FROM feedback_marks WHERE assignment_id=? AND student_id=? ${includeDrafts ? '' : "AND visibility='returned'"} ORDER BY created_at`)
+      .all(assignmentId, studentId).map(mark => ({ ...mark, attached: !!mark.attached }))
+    return { ...row, feedback: marks }
+  }
+
+  status(courseId) {
+    const students = this.listStudents(courseId)
+    const assignments = this.listAssignments(courseId)
+    const lookup = this.db.prepare(`SELECT assignment_id AS assignmentId,student_id AS studentId,content_ref AS contentRef,
+      submitted_at AS submittedAt,grading_status AS gradingStatus FROM submissions
+      WHERE assignment_id IN (SELECT id FROM assignments WHERE course_id=?)`).all(courseId)
+    const byKey = new Map(lookup.map(row => [`${row.assignmentId}\0${row.studentId}`, row]))
+    const rows = students.map(student => ({
+      ...student,
+      assignments: assignments.map(assignment => {
+        const submission = byKey.get(`${assignment.id}\0${student.id}`)
+        return submission ? { assignmentId: assignment.id, state: submission.gradingStatus, ...submission } : { assignmentId: assignment.id, state: 'not-submitted' }
+      }),
+    }))
+    const cells = rows.flatMap(row => row.assignments)
+    return { course: this.getCourse(courseId), assignments, rows, counts: {
+      missing: cells.filter(x => x.state === 'not-submitted').length,
+      ungraded: cells.filter(x => x.state === 'ungraded').length,
+      graded: cells.filter(x => x.state === 'graded').length,
+      returned: cells.filter(x => x.state === 'returned').length,
+    } }
+  }
+}

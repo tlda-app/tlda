@@ -112,6 +112,12 @@ export const WM_EXTRACTION_MODULES = [
 		publicContract: 'Lightbox modal surface request adapter.',
 		remainingHostDependency: 'Chat/media source keys and modal payload semantics stay in tlda.',
 	},
+	{
+		path: 'src/wm/homework-grading-surface.ts',
+		classification: 'tlda-app-surface',
+		publicContract: 'Homework grading compare/workspace surface request adapter.',
+		remainingHostDependency: 'Assignment, student, problem, pane, and grading-layer semantics stay in tlda.',
+	},
 ] as const satisfies readonly WmExtractionModule[]
 
 export const WM_PACKAGE_ENTRY_CANDIDATES = WM_EXTRACTION_MODULES
