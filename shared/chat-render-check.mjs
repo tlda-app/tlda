@@ -5,19 +5,35 @@ import { normalizeChatDisplayMathDelimiters } from './chat-math-normalize.mjs'
 // Shared render-validity check for fleet chat markdown surfaces. Used by
 // outgoing chat() and by unquote/rechat so a markdown file gets the same
 // warning whether it was shared directly or exposed later by unquote.
+
+// One description of "the prose part of a message". Fenced blocks AND inline
+// code spans are removed, each replaced by a single space so stripping cannot
+// glue two words together and manufacture a `$` boundary warning.
+//
+// Before this, three checks each had their own idea of "code": the `$$` count
+// stripped fences only, the math extraction stripped nothing, so every `$...$`
+// inside a code block or an inline span was parsed as LaTeX. That is how a
+// shell snippet drew a "delimiter glued to text" warning, and how quoting a
+// paper macro as SOURCE drew "set your preamble".
+function proseOnly(message) {
+  return String(message || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/(`+)[\s\S]*?\1/g, ' ')
+}
+
 export function checkChatRender(message, macros = {}) {
   const validity = []
   const style = []
   const hasPaperMacros = Object.keys(macros).length > 0
   const renderMacros = { ...baseMacros, ...macros }
   let suggestedSetMacros = false
-  const normalizedMathMessage = normalizeChatDisplayMathDelimiters(message)
+  const normalizedMathMessage = normalizeChatDisplayMathDelimiters(proseOnly(message))
 
   const fenceCount = (String(message).match(/```/g) || []).length
   if (fenceCount % 2 !== 0) {
     validity.push('Unclosed code fence (odd number of ```) — everything after the open fence renders as a code block on Skip\'s screen. Close it, then re-chat with `amend_id` to fix it in place.')
   }
-  const messageNoCode = String(message).replace(/```[\s\S]*?```/g, '')
+  const messageNoCode = proseOnly(message)
   const displayDollarCount = (normalizeChatDisplayMathDelimiters(messageNoCode).match(/\$\$/g) || []).length
   if (displayDollarCount % 2 !== 0) {
     validity.push('Unclosed `$$` display-math block (odd number of `$$`) — the math will not render. Close the block, then re-chat with `amend_id`.')
