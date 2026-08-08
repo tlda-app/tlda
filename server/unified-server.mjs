@@ -65,7 +65,7 @@ import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler } from './routes/projects.mjs'
-import classroomRoutes from './routes/classroom.mjs'
+import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
@@ -4411,7 +4411,10 @@ app.use('/docs', (req, res, next) => {
 app.locals.fleetStore = fleetStore
 app.locals.sendDaemonEphemeral = sendDaemonEphemeral
 app.use('/api/projects', projectRoutes)
-app.use('/api/classroom', classroomRoutes)
+// Constructed here, not at import: a module-level router opened its database
+// as a side effect of being imported, which made any tool or test that touched
+// the module open one too — including several at once, which SQLite refuses.
+app.use('/api/classroom', createClassroomRouter())
 
 // Handwriting recognition (MyScript proxy)
 import recognizeRoutes from './routes/recognize.mjs'

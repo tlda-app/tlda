@@ -286,5 +286,3 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
 
   return router
 }
-
-export default createClassroomRouter()
