@@ -2676,9 +2676,9 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'proxy_status') {
       if (relay !== _deepgramWs) return
       _lastProxyTelemetry = { ...(msg.proxy || {}), receivedAt: Date.now() }
-      // The relay's drop counters had no durable sink — this updated a module
-      // variable read only by an in-memory perf snapshot, so "were his frames
-      // dropped before Deepgram heard them" was unanswerable from client.log.
+      // Skip's retained Fly session had no durable proxy records, even though
+      // live-perf ordinarily persists this snapshot. Logging receipt directly
+      // separates a missing sampler record from a missing proxy_status message.
       // The relay reports only while it is BUFFERING (before upstream opens) and
       // once on flush, so these are connect-window numbers, not steady state.
       const proxy = msg.proxy || {}
