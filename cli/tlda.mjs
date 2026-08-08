@@ -5039,7 +5039,7 @@ async function restartMcpAgents(rest) {
       try {
         const stored = mintStore.resolve(name)
         if (!stored) throw new Error(`no local agent found for "${name}"`)
-        await callLocalDaemonLifecycle('restart', { mint_id: stored.identifier })
+        await callLocalDaemonLifecycle('restart', { mint_id: stored.mintId, agent_id: stored.fleetId })
         console.log('ok')
         ok++
       } catch (e) {
