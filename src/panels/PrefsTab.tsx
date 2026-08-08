@@ -431,7 +431,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   }, [])
 
   return (
-    <div className="prefs-tab">
+    <div className="doc-panel-content prefs-tab">
       {prefs.loadError && (
         <div className="prefs-load-error">
           Preferences could not load; defaults are in use until preferences reconnect: {prefs.loadError}
