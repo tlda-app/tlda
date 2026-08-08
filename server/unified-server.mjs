@@ -964,7 +964,16 @@ async function reanimateAgent(agentQuery) {
   }
   const daemonKey = before.daemon_key || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
   if (!daemonKey) {
-    const err = new Error(`${before.friendly_name || before.id} has no daemon address`)
+    // "No daemon address" describes the symptom and hides the cause, which cost
+    // an hour of source reading to reconstruct. The server writes a route only
+    // when an agent is minted (performSpawnRelay), and it no longer accepts the
+    // daemon's 'agent-route' announcement, so a route that goes missing never
+    // comes back on its own. Say that, because the next step depends on it.
+    const err = new Error(
+      `${before.friendly_name || before.id} has no daemon route on the server. ` +
+      `A route is written only at mint and is never re-established, so this will ` +
+      `not recover on reconnect. The owning daemon may still hold the route.`
+    )
     err.status = 409
     throw err
   }
