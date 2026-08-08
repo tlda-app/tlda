@@ -7017,6 +7017,11 @@ async function handleFleetWsMessage(ws, msg) {
     const task = tasks[0] || await fleetStore.getTaskByAgent?.(agentId) || null
     const messages = await fleetStore.getInboxDeliveriesLimited?.(agentId, MY_TASK_DELIVERY_LIMIT) || []
     const messageCount = await fleetStore.getInboxDeliveryCount?.(agentId) ?? messages.length
+    // Only when the page is short of the backlog: the header's "newest unshown"
+    // has nothing to describe otherwise, and this is one extra query.
+    const newestUnreadAt = messageCount > messages.length
+      ? await fleetStore.getNewestUnreadAt?.(agentId) ?? null
+      : null
     reply({
       task,
       tasks: tasks.length ? tasks : (task ? [task] : []),
@@ -7028,6 +7033,7 @@ async function handleFleetWsMessage(ws, msg) {
         message_limit: MY_TASK_DELIVERY_LIMIT,
         tasks_truncated: taskCount > tasks.length,
         messages_truncated: messageCount > messages.length,
+        newest_unread_at: newestUnreadAt,
       },
     })
     return

@@ -1433,6 +1433,14 @@ export class FleetStore {
       SELECT COUNT(*) AS c FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
+    // Newest unread, for the page-limited header's "how far behind am I".
+    // No join: recipients carries its own timestamp, and
+    // idx_recipients_agent_ts(agent_id, timestamp DESC) makes this a seek to
+    // the first row rather than a scan of the unread set.
+    this._getNewestUnreadAt = this.db.prepare(`
+      SELECT MAX(timestamp) AS t FROM recipients WHERE agent_id = ? AND read = 0
+    `);
+
     // Incrementally bump last_active for the event's sender + every recipient.
     // The first two params are the event timestamp; MAX keeps the newest if
     // events arrive out of order. The third is a JSON array of participant ids,
@@ -4715,6 +4723,10 @@ export class FleetStore {
 
   getInboxDeliveryCount(agentId) {
     return this._getInboxDeliveryCount.get(agentId).c;
+  }
+
+  getNewestUnreadAt(agentId) {
+    return this._getNewestUnreadAt.get(agentId)?.t || null;
   }
 
   // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in

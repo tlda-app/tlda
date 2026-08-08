@@ -2037,6 +2037,42 @@ function pushInboxEntries(lines, rows, fmt) {
   });
 }
 
+// "50/256 unread" says there is more; it does not say you are four hours
+// behind. The span does, and the two ends answer different questions: the
+// oldest SHOWN is where this page starts, the newest UNSHOWN is how stale the
+// page is relative to what is waiting.
+//
+// Both numbers are real or absent. The oldest is read off the page; the newest
+// unshown comes from the server (counts.newest_unread_at) and is simply omitted
+// if the server did not send it, rather than approximated from the page -- a
+// header that understates how far behind you are would be worse than no header.
+function inboxRelativeAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+export function inboxAgeSpan(messages = [], counts = null, now = Date.now()) {
+  const shown = messages
+    .map(m => Date.parse(m?.timestamp))
+    .filter(Number.isFinite);
+  const bits = [];
+  // min rather than messages[0]: the page is oldest-first today, and this stays
+  // correct if that ever stops being true.
+  if (shown.length) {
+    const age = inboxRelativeAge(now - Math.min(...shown));
+    if (age) bits.push(`oldest shown ${age}`);
+  }
+  const newestUnshown = Date.parse(counts?.newest_unread_at);
+  if (Number.isFinite(newestUnshown)) {
+    const age = inboxRelativeAge(now - newestUnshown);
+    if (age) bits.push(`newest unshown ${age}`);
+  }
+  return bits.length ? bits.join(', ') : null;
+}
+
 export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now() }) {
   const activeTasks = normalizeInboxTasks({ task, tasks });
   const taskBlocks = inboxTaskBlocks(activeTasks);
@@ -2047,6 +2083,8 @@ export function formatInboxText({ mode, task, tasks, messages, counts = null, no
     const parts = [];
     if (counts.tasks_truncated) parts.push(`${activeTasks.length}/${counts.tasks} active tasks shown`);
     if (counts.messages_truncated) parts.push(`${messages.length}/${counts.messages} unread messages shown`);
+    const span = counts.messages_truncated ? inboxAgeSpan(messages, counts, now) : null;
+    if (span) parts.push(span);
     lines.push(`Page-limited: ${parts.join('; ')}.`);
   }
 
