@@ -120,7 +120,16 @@ export class ClassroomStore {
       content_ref=excluded.content_ref, submitted_at=excluded.submitted_at, grading_status='ungraded', graded_at=NULL, returned_at=NULL,
       answer_ids=excluded.answer_ids`)
       .run(assignmentId, studentId, contentRef, submittedAt, answerIds ? JSON.stringify(answerIds) : null)
-    return this.getSubmission(assignmentId, studentId, { includeDrafts: true })
+    // Deliberately without drafts. Submitting is student-callable and its
+    // return value goes straight back to them, so asking for his unreturned
+    // marks here handed them over in the response body — and re-uploading is
+    // not an edge case, the student guide tells them they may do it as often
+    // as they like before the deadline.
+    //
+    // Nothing needs them: the caller has just created a submission and there
+    // is nothing of his to show yet. Removing the flag from the path is
+    // stronger than getting each route that touches it right.
+    return this.getSubmission(assignmentId, studentId)
   }
 
   /**

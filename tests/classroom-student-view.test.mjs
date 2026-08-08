@@ -92,3 +92,38 @@ test('not submitted is an ordinary answer, not an error state', async t => {
   // And the solutions stay shut until they hand something in.
   assert.equal((await get('/assignments/hw')).body.solutionsDocKey, undefined)
 })
+
+test('no student-reachable route hands back an unreturned draft', async t => {
+  // The leak app-chief2 found was not on a read path — it was `submit()`
+  // returning drafts, straight out of a route a student calls. My five cases
+  // above all tested /mine, so all five encoded the same assumption: that the
+  // leak surface is where you go to read. It is wherever a submission body
+  // reaches a student.
+  //
+  // So this asserts the property rather than the function: whatever a student
+  // can call, none of it comes back carrying his unreturned working.
+  const { store, server, get } = await serve(); t.after(() => server.close())
+  seeded(store)
+  store.addFeedback({ assignmentId: 'hw', studentId: 'ada', title: 'draft', text: 'not sent yet' })
+
+  principal = { role: 'student', studentId: 'ada', courseId: 'c' }
+  const base = `http://127.0.0.1:${server.address().port}/api/classroom`
+
+  const bodies = [
+    (await get('/assignments/hw/mine')).body,
+    (await get('/assignments/hw/submissions/ada')).body,
+    (await get('/courses/c/assignments')).body,
+    // The one that was actually leaking: re-submitting.
+    await fetch(`${base}/assignments/hw/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentRef: 'sub-ada' }),
+    }).then(r => r.json()),
+  ]
+
+  for (const body of bodies) {
+    const text = JSON.stringify(body)
+    assert.ok(!text.includes('not sent yet'), `a draft reached the student in: ${text.slice(0, 160)}`)
+    assert.ok(!text.includes('instructor-draft'), `a draft marker reached the student in: ${text.slice(0, 160)}`)
+  }
+})
