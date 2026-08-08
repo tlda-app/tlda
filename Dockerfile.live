@@ -207,6 +207,11 @@ COPY server/package-lock.json* ./
 RUN npm install --production
 
 # --- server code ---
+# LOAD-BEARING: the COPY paths below are mirrored in SHIPPED_PATHS in the dev
+# bot's server-import-resolution.mjs, which checks that nothing on the boot path
+# imports a package missing from server/package.json or a file that never ships.
+# Add or remove a COPY here without updating that array and the check goes
+# quietly out of date, which is the failure it exists to catch.
 COPY server/lib/ ./server/lib/
 COPY server/routes/ ./server/routes/
 COPY server/unified-server.mjs ./server/
