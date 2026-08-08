@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, type ReactNode } from 'react'
+import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import {
   MAX_RADIO_SUBTITLE_DWELL_SEC,
   MIN_RADIO_SUBTITLE_DWELL_SEC,
@@ -325,6 +325,7 @@ function readAll() {
 }
 
 export function PrefsTab({ query = '' }: { query?: string }) {
+  const scrollRef = useRef<HTMLDivElement>(null)
   const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
@@ -332,6 +333,36 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
+
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root) return
+
+    // The canvas takes wheel input before Settings ever sees it, so the panel
+    // would not scroll on a touchpad and the Radio control sat below the fold —
+    // Skip could not turn off a popup he had asked about four times in nine
+    // hours. Capture phase and preventDefault are what keep the gesture here.
+    //
+    // `.prefs-tab` is the only scroller. It is a `.doc-panel-content`, which
+    // carries `overflow-y: auto` (DocumentPanel.css:732), and no `prefs-*`
+    // selector anywhere declares overflow, max-height or height — so no
+    // subsection can be a scroll container and there is no inner scroller to
+    // offer the gesture to first.
+    //
+    // deltaMode is deliberately not converted. Chrome on a Mac trackpad reports
+    // pixels, which is the surface this is for; a mouse wheel reporting
+    // DOM_DELTA_LINE would scroll a few pixels per notch instead of a few lines.
+    // Written down rather than handled, because nobody has reported it and a
+    // speculative unit conversion is a second thing to get wrong.
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      root.scrollTop += event.deltaY
+    }
+
+    root.addEventListener('wheel', onWheel, { capture: true, passive: false })
+    return () => root.removeEventListener('wheel', onWheel, true)
+  }, [])
 
   const toggleSource = useCallback((src: string) => {
     const next = prefs.sources.includes(src)
@@ -431,7 +462,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   }, [])
 
   return (
-    <div className="doc-panel-content prefs-tab">
+    <div ref={scrollRef} className="doc-panel-content prefs-tab">
       {prefs.loadError && (
         <div className="prefs-load-error">
           Preferences could not load; defaults are in use until preferences reconnect: {prefs.loadError}
