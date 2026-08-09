@@ -166,9 +166,9 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
     return `<div class="semantic-operation-body" data-semantic-operation="${json}"></div>`
   }
   return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
-    <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>
     ${inspectedHtml}
     <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
+    <div class="pretty-expand-btn thread-fold-open" data-semantic-collapsed-label="Open search results"></div>
   </div>`
 }
 
