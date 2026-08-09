@@ -120,8 +120,9 @@ const FLEET_API = DATABASE_HTTP
 // has to outlast the gap between two of them.
 const TOUCH_SCROLL_SETTLE_MS = 150
 // Finger travel that counts as a drag rather than a tap. A drag is the touch
-// analogue of a wheel event: the gesture proves reader intent by itself, the
-// way `enterReaderMode('wheel-up')` treats any upward wheel delta.
+// analogue of an upward wheel delta: enough of a gesture to ask the question.
+// Neither one answers it — enterReaderMode decides from where the scroller
+// ended up, so a drag or a tick that never left the bottom changes nothing.
 const TOUCH_READER_INTENT_PX = 8
 // Delay before the follow invariant repairs the tail. Also the re-arm interval
 // while an input gesture is in flight.
@@ -4341,6 +4342,17 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const enterReaderMode = useCallback((reason: string) => {
     if (hardLockedRef.current || userScrolledUpRef.current) return
+    // Reader mode means "I am looking at something above the tail". At the
+    // bottom there is nothing above to look at, so no gesture may enter it —
+    // and the test lives here, in the one entry, rather than in each caller,
+    // because every input device arrives at the same place by a different
+    // route: a trackpad's sub-pixel ticks and a mouse's ~100px notches both
+    // land on deltaY < 0, and a finger's rubber-band drag at the tail clears
+    // TOUCH_READER_INTENT_PX without revealing anything.
+    // Entering anyway strands the reader: resuming needs one scroll event over
+    // UP_JITTER_EPS and there is no room below the bottom to produce one.
+    const el = chatLogRef.current
+    if (el && isTrueBottomGap(el.scrollHeight - (el.scrollTop + el.clientHeight))) return
     goToTailRunRef.current += 1
     userScrolledUpRef.current = true
     setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
@@ -4348,6 +4360,28 @@ function FleetChatInner({ shape }: { shape: any }) {
       reason,
       bufferKey: chatEventBufferKey,
     })
+  }, [shape.id, chatEventBufferKey])
+
+  // The exit, and the sibling of enterReaderMode: a gesture that settles at
+  // the true bottom IS the reader returning. One rule; each device's settle
+  // detector calls it, because "input finished" means something different to a
+  // wheel (no ticks for 250ms) than to a finger (lifted, and the glide stopped).
+  const resumeFollowIfSettledAtBottom = useCallback((reason: string) => {
+    const el = chatLogRef.current
+    if (!el || !userScrolledUpRef.current) return
+    const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
+    if (!isTrueBottomGap(gap)) return
+    noteFollowTransition(String(shape.id), 'follow-on', {
+      reason,
+      top: el.scrollTop,
+      height: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      gap,
+      bufferKey: chatEventBufferKey,
+    })
+    userScrolledUpRef.current = false
+    viewportAnchorRef.current = null
+    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
   }, [shape.id, chatEventBufferKey])
 
   useEffect(() => {
@@ -4359,6 +4393,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       explicitScrollInputTimerRef.current = window.setTimeout(() => {
         explicitScrollInputTimerRef.current = 0
         explicitScrollInputRef.current = false
+        // Wheel and trackpad settle here. Touch does not: this timer counts
+        // from the last touchmove, and the momentum glide outlives it, so a
+        // finger settles through armSettle below instead.
+        if (!touchScrollActiveRef.current) resumeFollowIfSettledAtBottom('wheel-settle-at-bottom')
       }, 250)
     }
     const handleWheelCapture = (e: WheelEvent) => {
@@ -4370,10 +4408,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       markExplicitScrollInput()
       // Trackpad deltas commonly arrive below UP_JITTER_EPS one event at a
       // time. The wheel event itself proves reader intent, so enter reader
-      // mode before Virtuoso can follow a concurrently arriving row.
-      if (e.deltaY < 0) enterReaderMode('wheel-up')
+      // mode before Virtuoso can follow a concurrently arriving row — but
+      // scroll FIRST, because enterReaderMode's at-bottom test has to read
+      // where this tick landed, not where it started. Both statements run in
+      // one synchronous block, so Virtuoso still cannot interleave.
       el.scrollTop += e.deltaY
-      if (e.deltaY < 0) captureViewportAnchor()
+      if (e.deltaY < 0) {
+        enterReaderMode('wheel-up')
+        captureViewportAnchor()
+      }
     }
     // A touch-driven scroll runs past the release: the finger lifts and the
     // scroller keeps gliding. Treat it as in flight until scroll events stop
@@ -4386,27 +4429,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         settleTimer = 0
         if (!fingerDown) {
           touchScrollActiveRef.current = false
-          // The other half of touch intent, and it ships with the drag below or
-          // not at all: entering reader mode on a small drag would otherwise
-          // strand the reader at the bottom with follow off, because resuming
-          // needs a single scroll event over UP_JITTER_EPS that a slow drag back
-          // down never produces. A gesture that ends at the true bottom IS the
-          // reader returning.
-          const el = chatLogRef.current
-          const gap = el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : Number.POSITIVE_INFINITY
-          if (el && userScrolledUpRef.current && isTrueBottomGap(gap)) {
-            noteFollowTransition(String(shape.id), 'follow-on', {
-              reason: 'touch-settle-at-bottom',
-              top: el.scrollTop,
-              height: el.scrollHeight,
-              clientHeight: el.clientHeight,
-              gap,
-              bufferKey: chatEventBufferKey,
-            })
-            userScrolledUpRef.current = false
-            viewportAnchorRef.current = null
-            setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-          }
+          // Touch's settle detector. Same rule as the wheel's above.
+          resumeFollowIfSettledAtBottom('touch-settle-at-bottom')
           if (deferredGeometryReconcileRef.current) reconcileViewportGeometry()
         }
       }, TOUCH_SCROLL_SETTLE_MS)
@@ -4518,7 +4542,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       explicitScrollInputRef.current = false
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, checkFollowInvariant, enterReaderMode, reconcileViewportGeometry])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, checkFollowInvariant, enterReaderMode, resumeFollowIfSettledAtBottom, reconcileViewportGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {
