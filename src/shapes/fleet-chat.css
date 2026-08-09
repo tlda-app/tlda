@@ -3826,6 +3826,30 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: 15.6
   opacity: 0.55;
 }
 
+.fleet-chat-shape .fleet-composer-image-input {
+  display: none;
+}
+
+.fleet-chat-shape .fleet-composer-image-toggle {
+  order: 0;
+  pointer-events: auto;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.05;
+  transition: opacity 0.3s;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.fleet-chat-shape .fleet-composer-image-toggle:hover {
+  opacity: 0.55;
+}
+
 .fleet-chat-shape .fleet-terminal-icon {
   order: 1;
   pointer-events: auto;

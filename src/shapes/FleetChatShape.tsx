@@ -1238,6 +1238,70 @@ async function uploadMarkdownWithImages(
   return link
 }
 
+async function uploadFileAsChatLink(file: File): Promise<string> {
+  const formData = new FormData()
+  formData.append('file', file, file.name)
+  const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
+  if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+  const { url, name } = await resp.json()
+  return file.type.startsWith('image/')
+    ? `![${name}](${FLEET_API}${url})`
+    : `[${name}](${FLEET_API}${url})`
+}
+
+async function uploadEntriesAsChatLinks(entries: { file: File, path: string }[], isFlat: boolean): Promise<string[]> {
+  const links: string[] = []
+  const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
+  const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
+
+  for (const { file, path } of mdEntries) {
+    const companions = entries.filter(entry => entry.path !== path)
+    links.push(await uploadMarkdownWithImages(file, companions, path, isFlat))
+  }
+  for (const { file } of otherEntries) {
+    if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
+    links.push(await uploadFileAsChatLink(file))
+  }
+  return links
+}
+
+function insertIntoTextarea(ta: HTMLTextAreaElement, text: string) {
+  const pos = ta.selectionStart || ta.value.length
+  ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
+  ta.setSelectionRange(pos + text.length, pos + text.length)
+  ta.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+function dataTransferHasFiles(dataTransfer: DataTransfer | null | undefined): boolean {
+  if (!dataTransfer) return false
+  const types = [...(dataTransfer.types || [])]
+  if (types.includes('Files')) return true
+  if ([...(dataTransfer.items || [])].some(item => item.kind === 'file')) return true
+  return (dataTransfer.files?.length || 0) > 0
+}
+
+async function dataTransferEntries(dataTransfer: DataTransfer | null | undefined): Promise<{ entries: { file: File, path: string }[], isFlat: boolean }> {
+  const items = dataTransfer?.items ? [...dataTransfer.items] : []
+  let entries: { file: File, path: string }[] = []
+  let isFlat = true
+
+  if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry()
+      if (entry) {
+        if (entry.isDirectory) isFlat = false
+        entries.push(...await traverseDirectory(entry))
+      }
+    }
+  } else {
+    for (const file of [...(dataTransfer?.files || [])]) {
+      entries.push({ file, path: file.name })
+    }
+  }
+
+  return { entries, isFlat }
+}
+
 // --- Voice + trackpad input (global, one-time init) ---
 initVoice()
 
@@ -3768,27 +3832,28 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     function onDragOver(e: DragEvent) {
-      if (!e.dataTransfer?.types.includes('Files')) return
+      const dataTransfer = e.dataTransfer
+      if (!dataTransferHasFiles(dataTransfer) || !dataTransfer) return
       e.preventDefault()
       e.stopPropagation()
       if (overInput(e)) {
-        e.dataTransfer.dropEffect = 'copy'
+        dataTransfer.dropEffect = 'copy'
         // dataTransfer.items is only readable inside the event — snapshot the
         // per-file kind (image vs other) now so we can render ghost lozenges.
-        const kinds = [...(e.dataTransfer.items || [])]
+        const kinds = [...(dataTransfer.items || [])]
           .filter(it => it.kind === 'file')
           .map(it => (it.type.startsWith('image/') ? 'image' : 'file') as 'image' | 'file')
         setDragLozenges(kinds.length ? kinds : ['file'])
         if (dragClearTimerRef.current) clearTimeout(dragClearTimerRef.current)
         dragClearTimerRef.current = window.setTimeout(clearDrag, 250)
       } else {
-        e.dataTransfer.dropEffect = 'none'
+        dataTransfer.dropEffect = 'none'
         clearDrag()
       }
     }
 
     async function onDrop(e: DragEvent) {
-      if (!e.dataTransfer?.types.includes('Files')) return
+      if (!dataTransferHasFiles(e.dataTransfer)) return
       e.preventDefault()
       e.stopPropagation()
       const wasOverInput = overInput(e)
@@ -3796,56 +3861,15 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Only the input field accepts the drop; elsewhere on the shape, swallow it.
       if (!wasOverInput) return
 
-      // Use items API to support folder drops
-      const items = e.dataTransfer.items ? [...e.dataTransfer.items] : []
-      let entries: { file: File, path: string }[] = []
-      let isFlat = true
-
-      if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
-        for (const item of items) {
-          const entry = item.webkitGetAsEntry()
-          if (entry) {
-            if (entry.isDirectory) isFlat = false
-            entries.push(...await traverseDirectory(entry))
-          }
-        }
-      } else {
-        for (const f of [...(e.dataTransfer.files || [])]) {
-          entries.push({ file: f, path: f.name })
-        }
-      }
-
+      const { entries, isFlat } = await dataTransferEntries(e.dataTransfer)
       if (!entries.length) return
 
-      const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
-      const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
-
-      for (const { file, path } of mdEntries) {
-        try {
-          const companions = entries.filter(e => e.path !== path)
-          const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
-        } catch (err) {
-          console.error('[fleet-chat] folder-drag md upload error', err)
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
-        }
-      }
-      for (const { file } of otherEntries) {
-        if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
-        try {
-          const formData = new FormData()
-          formData.append('file', file, file.name)
-          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-          const { url, name } = await resp.json()
-          const link = file.type.startsWith('image/')
-            ? `![${name}](${FLEET_API}${url})`
-            : `[${name}](${FLEET_API}${url})`
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: link } }))
-        } catch (err) {
-          console.error('[fleet-chat] folder-drag file upload error', err)
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: `[${file.name}]` } }))
-        }
+      try {
+        const links = await uploadEntriesAsChatLinks(entries, isFlat)
+        if (links.length) chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: links.join('\n') } }))
+      } catch (err) {
+        console.error('[fleet-chat] folder-drag upload error', err)
+        chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: shape.id, text: entries.map(({ file }) => `[${file.name}]`).join('\n') } }))
       }
     }
 
@@ -4210,6 +4234,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // This panel's composer text survives any shape recreation. See composerDraftStore.
   const composerDraftKey = `chat:${shape.id}`
   const composerVoiceTargetSnapshotRef = useRef<(() => VoiceTargetHandle) | null>(null)
+  const imageFileInputRef = useRef<HTMLInputElement | null>(null)
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
@@ -5398,62 +5423,15 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ta = e.currentTarget
 
     // External file drops — upload to fleet server, insert markdown link
-    const dtItems = e.dataTransfer?.items ? [...e.dataTransfer.items] : []
-    let entries: { file: File, path: string }[] = []
-    let isFlat = true
-
-    if (dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
-      for (const item of dtItems) {
-        const entry = item.webkitGetAsEntry()
-        if (entry) {
-          if (entry.isDirectory) isFlat = false
-          entries.push(...await traverseDirectory(entry))
-        }
-      }
-    } else {
-      for (const f of [...(e.dataTransfer?.files || [])]) {
-        entries.push({ file: f, path: f.name })
-      }
-    }
+    const { entries, isFlat } = await dataTransferEntries(e.dataTransfer)
 
     if (entries.length > 0) {
-      const mdEntries = entries.filter(({ file: f }) => f.name.endsWith('.md') || f.type === 'text/markdown')
-      const otherEntries = entries.filter(({ file: f }) => !f.name.endsWith('.md') && f.type !== 'text/markdown')
-
-      for (const { file, path } of mdEntries) {
-        try {
-          const companions = entries.filter(en => en.path !== path)
-          const link = await uploadMarkdownWithImages(file, companions, path, isFlat)
-          const pos = ta.selectionStart || ta.value.length
-          ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
-          ta.dispatchEvent(new Event('input', { bubbles: true }))
-        } catch (err) {
-          console.error('[fleet-chat] file upload failed:', err)
-          const pos = ta.selectionStart || ta.value.length
-          ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
-          ta.dispatchEvent(new Event('input', { bubbles: true }))
-        }
-      }
-      for (const { file } of otherEntries) {
-        if (mdEntries.length > 0 && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(file.name)) continue
-        try {
-          const formData = new FormData()
-          formData.append('file', file, file.name)
-          const resp = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: formData })
-          if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-          const { url, name } = await resp.json()
-          const link = file.type.startsWith('image/')
-            ? `![${name}](${FLEET_API}${url})`
-            : `[${name}](${FLEET_API}${url})`
-          const pos = ta.selectionStart || ta.value.length
-          ta.value = ta.value.slice(0, pos) + link + ta.value.slice(pos)
-          ta.dispatchEvent(new Event('input', { bubbles: true }))
-        } catch (err) {
-          console.error('[fleet-chat] file upload failed:', err)
-          const pos = ta.selectionStart || ta.value.length
-          ta.value = ta.value.slice(0, pos) + `[${file.name}]` + ta.value.slice(pos)
-          ta.dispatchEvent(new Event('input', { bubbles: true }))
-        }
+      try {
+        const links = await uploadEntriesAsChatLinks(entries, isFlat)
+        if (links.length) insertIntoTextarea(ta, links.join('\n'))
+      } catch (err) {
+        console.error('[fleet-chat] file upload failed:', err)
+        insertIntoTextarea(ta, entries.map(({ file }) => `[${file.name}]`).join('\n'))
       }
       return
     }
@@ -5463,6 +5441,43 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (text) {
       const pos = ta.selectionStart || ta.value.length
       ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
+    }
+  }
+
+  const composerPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = [...(e.clipboardData?.items || [])]
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => !!file)
+    if (!imageFiles.length) return
+    e.preventDefault()
+    e.stopPropagation()
+    const ta = e.currentTarget
+    const entries = imageFiles.map((file, index) => ({
+      file: file.name ? file : new File([file], `pasted-image-${index + 1}.png`, { type: file.type || 'image/png' }),
+      path: file.name || `pasted-image-${index + 1}.png`,
+    }))
+    try {
+      const links = await uploadEntriesAsChatLinks(entries, true)
+      if (links.length) insertIntoTextarea(ta, links.join('\n'))
+    } catch (err) {
+      console.error('[fleet-chat] image paste upload failed:', err)
+      insertIntoTextarea(ta, entries.map(({ file }) => `[${file.name}]`).join('\n'))
+    }
+  }
+
+  const composerImagePick = async (files: FileList | null) => {
+    const imageFiles = [...(files || [])].filter(file => file.type.startsWith('image/'))
+    if (!imageFiles.length) return
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    const entries = imageFiles.map(file => ({ file, path: file.name }))
+    try {
+      const links = await uploadEntriesAsChatLinks(entries, true)
+      if (links.length) insertIntoTextarea(ta, links.join('\n'))
+    } catch (err) {
+      console.error('[fleet-chat] image picker upload failed:', err)
+      insertIntoTextarea(ta, entries.map(({ file }) => `[${file.name}]`).join('\n'))
     }
   }
 
@@ -6681,6 +6696,35 @@ function FleetChatInner({ shape }: { shape: any }) {
                 selectComposerTrafficMode(value as ComposerTrafficFilterMode)
               }}
             >
+            <input
+              ref={imageFileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="fleet-composer-image-input"
+              tabIndex={-1}
+              onChange={(e) => {
+                void composerImagePick(e.currentTarget.files)
+                e.currentTarget.value = ''
+              }}
+            />
+            <button
+              className="fleet-composer-image-toggle"
+              data-composer-rail-action="image"
+              data-composer-rail-label="Image"
+              onClick={(e) => {
+                e.stopPropagation()
+                imageFileInputRef.current?.click()
+              }}
+              title="Choose image"
+              aria-label="Choose image"
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" />
+                <circle cx="5.5" cy="6" r="1.3" fill="currentColor" stroke="none" />
+                <path d="M2 12 L6 8 L9 11 L11 9 L14 12" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
                     follow mode — you return to the bottom first, then it's a
@@ -6854,6 +6898,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               onKeyActivity={composerKeyActivity}
               onDrop={composerDrop}
               onDragOver={composerDragOver}
+              onPaste={composerPaste}
               inputRef={inputRef as any}
               isTouchDevice={_isTouchDevice}
               draftKey={composerDraftKey}
