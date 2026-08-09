@@ -55,11 +55,22 @@ export function unreturnedMarks(editor: Editor, submissionShapeId: TLShapeId): T
 export function returnMarks(editor: Editor, submissionShapeId: TLShapeId): number {
   const marks = unreturnedMarks(editor, submissionShapeId)
   if (!marks.length) return 0
-  editor.updateShapes(marks.map(shape => ({
-    id: shape.id,
-    type: shape.type,
-    meta: { ...shape.meta, [DRAFT]: false },
-  })))
+  for (const shape of marks) {
+    // Shape-level updates can be ignored for locked page children; store.update
+    // is the local pattern for metadata-only writes that must still land.
+    if (editor.store?.update) {
+      editor.store.update(shape.id, (current: TLShape) => ({
+        ...current,
+        meta: { ...current.meta, [DRAFT]: false },
+      }))
+    } else {
+      editor.updateShape({
+        id: shape.id,
+        type: shape.type,
+        meta: { ...shape.meta, [DRAFT]: false },
+      })
+    }
+  }
   return marks.length
 }
 

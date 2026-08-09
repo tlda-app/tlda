@@ -20,6 +20,8 @@ function fakeEditor(shapes) {
   return {
     getCurrentPageShapes: () => [...byId.values()],
     updateShapes: updates => { for (const u of updates) byId.set(u.id, { ...byId.get(u.id), ...u }) },
+    updateShape: update => byId.set(update.id, { ...byId.get(update.id), ...update }),
+    store: { update: (id, updater) => byId.set(id, updater(byId.get(id))) },
     _shapes: byId,
   }
 }
