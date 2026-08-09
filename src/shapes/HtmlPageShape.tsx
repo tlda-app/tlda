@@ -161,6 +161,29 @@ function isShapeRecord(record: unknown): record is TLShape {
   )
 }
 
+function htmlPageDocumentWidth(iframe: HTMLIFrameElement | null): number | null {
+  const doc = iframe?.contentDocument
+  if (!doc) return null
+  const width = Math.max(
+    doc.body?.scrollWidth || 0,
+    doc.body?.offsetWidth || 0,
+    doc.documentElement?.scrollWidth || 0,
+    doc.documentElement?.offsetWidth || 0,
+  )
+  return Number.isFinite(width) && width > 0 ? Math.ceil(width) : null
+}
+
+function htmlPageBoundsOnCurrentPage(editor: Editor, shapeId: TLShapeId, nextW: number, nextH: number): Box | null {
+  return editor.getCurrentPageShapes()
+    .filter((s: any) => s.type === 'html-page')
+    .reduce((acc: Box | null, s: any) => {
+      const w = s.id === shapeId ? nextW : s.props.w
+      const h = s.id === shapeId ? nextH : s.props.h
+      const box = new Box(s.x, s.y, w, h)
+      return acc ? acc.union(box) : box
+    }, null)
+}
+
 function getMermaidMeta(shape: TLShape) {
   return (shape.meta as MermaidShapeMeta).tldaMermaid
 }
@@ -1014,10 +1037,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const isSlideShape = current.props.url?.includes('_tldaDeck=1') || current.props.url?.includes('_tldaH=')
         const minH = isSlideShape ? current.props.h : 200
         const newH = Math.max(minH, 200, Math.round(e.data.height))
-        if (Math.abs(newH - current.props.h) > 5) {
+        const documentW = isSlideShape ? null : htmlPageDocumentWidth(iframeRef.current)
+        const newW = documentW ? Math.max(current.props.w, documentW) : current.props.w
+        if (Math.abs(newH - current.props.h) > 5 || Math.abs(newW - current.props.w) > 5) {
           editor.store.update(shape.id, (s: any) => ({
             ...s,
-            props: { ...s.props, h: newH },
+            props: { ...s.props, w: newW, h: newH },
           }))
           if (isSlideShape) {
             const slideShapes = editor.getCurrentPageShapes()
@@ -1038,6 +1063,22 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                   behavior: 'free',
                 },
               })
+            }
+          } else {
+            const bounds = htmlPageBoundsOnCurrentPage(editor, shape.id, newW, newH)
+            if (bounds) {
+              const cam = editor.getCamera()
+              editor.setCameraOptions({
+                constraints: {
+                  bounds,
+                  padding: { x: 100, y: 50 },
+                  origin: { x: 0.5, y: 0 },
+                  initialZoom: 'fit-x-100',
+                  baseZoom: 'default',
+                  behavior: 'free',
+                },
+              })
+              editor.setCamera({ x: cam.x, y: cam.y, z: cam.z })
             }
           }
         }

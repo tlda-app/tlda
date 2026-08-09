@@ -474,7 +474,7 @@ export function renderChatLine(m, ctx) {
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
       : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span>${recipientNicksHtml(recipients, ctx, m)}:</span>`
-    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-badge">term</span> ${nickHtml} ${text}</div>`
+    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-source-mark" title="from a terminal">${terminalGlyphHtml()}</span> ${nickHtml} ${text}</div>`
   }
 
   // --- Plan mode approval card ---
