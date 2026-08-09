@@ -3,12 +3,12 @@ import test from 'node:test'
 
 import { summarizeFleetRosterTruth } from './fleet-roster-truth.mjs'
 
-test('fleet table rows retain labels used by roster consumers', () => {
+test('fleet table rows expose bot category without duplicating friendly name as a label', () => {
   const result = summarizeFleetRosterTruth({
     roster: [{
       id: 'fleet:todd',
       friendly_name: 'todd',
-      labels: ['bot', 'todd'],
+      labels: ['bot'],
       last_seen: '2026-08-06T19:00:00.000Z',
       metadata: { model: 'todd', kind: 'bot' },
       runtime_status: { kind: 'ai', status: 'awake' },
@@ -16,7 +16,9 @@ test('fleet table rows retain labels used by roster consumers', () => {
     now: new Date('2026-08-06T19:01:00.000Z').getTime(),
   })
 
-  assert.deepEqual(result.agents[0].labels, ['bot', 'todd'])
+  assert.deepEqual(result.agents[0].labels, ['bot'])
+  assert.equal(result.agents[0].name, 'todd')
+  assert.equal(result.agents[0].model, 'todd')
 })
 
 test('fleet table rows retain human identity used by automation consumers', () => {

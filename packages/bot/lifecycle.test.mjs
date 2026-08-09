@@ -14,6 +14,7 @@ async function login(socket, assignedName, id = 'fleet:fixture') {
   assert.ok(request)
   assert.equal(request.kind, 'bot')
   assert.equal(request.metadata.model, 'fixture')
+  assert.deepEqual(request.labels, ['bot'])
   socket.reply(request, { ok: true, agent: { id, friendly_name: assignedName } })
   await turn()
   const subscription = socket.sent.find(message => message.type === 'subscribe-filter')
@@ -83,4 +84,25 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
   await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(transport.sockets.length, 2)
   await login(transport.sockets[1], 'fixture')
+})
+
+test('bot registration does not duplicate its friendly name as an explicit label', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'todd',
+    labels: ['bot', 'todd', 'bot'],
+    fleetId: 'fleet:todd-fixture',
+    pidFile: join(directory, 'todd.pid'),
+    idFile: join(directory, 'todd.id'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).start()
+  t.after(() => bot.stop())
+
+  await turn()
+  const reservation = transport.sockets[0].sent.find(message => message.type === 'reserve-shell')
+  assert.ok(reservation)
+  assert.equal(reservation.name, 'todd')
+  assert.deepEqual(reservation.labels, ['bot'])
 })
