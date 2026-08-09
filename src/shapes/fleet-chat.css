@@ -1365,6 +1365,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-pretty-thread .chat-line {
   /* Thread messages inherit normal chat-line styling */
 }
+/* A long message collapses at the "Threads" fold height so one agent's wall of
+   text cannot make the whole card enormous. The renderer marks every body and
+   the layout pass in FleetChatShape takes the mark back off the ones that
+   already fit, so a short message is never rendered as collapsed. */
+.fleet-chat-shape .tool-pretty-thread .pretty-msg-body.thread-msg-collapsed {
+  overflow: hidden;
+}
 .fleet-chat-shape .pretty-msg-body {
   font-size: 11px;
   margin-top: 1px;
