@@ -135,6 +135,13 @@ const _loaded = new Promise<void>(r => { _loadedResolve = r })
  * has a saved value. */
 export function whenPrefsLoaded(): Promise<void> { return _loaded }
 
+export function parseCsvPref(value: unknown): string[] {
+  return String(value || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
 function _notify() { _listeners.forEach(cb => cb()) }
 
 export function subscribePref(cb: () => void): () => void {

@@ -12,7 +12,7 @@
 
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
-import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
+import { getPref, normalizeRadioSubtitleDwellSec, parseCsvPref, subscribePref, whenPrefsLoaded } from './preferences.ts'
 import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, normalizeTranscriptText as normalizeDeepgramText, partitionAtCursor, pcmInputLevel, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
@@ -1732,13 +1732,6 @@ function targetLabel() {
   return targets
     .map(id => names[id] || id.replace('fleet:', ''))
     .join(', ')
-}
-
-function parseCsvPref(value) {
-  return String(value || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
 }
 
 function interactiveSinkChild(target) {
