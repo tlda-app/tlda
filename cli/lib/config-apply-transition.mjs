@@ -4,7 +4,7 @@ export function isOwnerCapableLaunchdManager(managerName) {
 
 export function assertOwnerCapableLaunchdManager(managerName) {
   if (isOwnerCapableLaunchdManager(managerName)) return
-  throw new Error('configuration is not applied: launchd configuration requires the owner GUI context')
+  throw new Error('configuration is not applied')
 }
 
 /**

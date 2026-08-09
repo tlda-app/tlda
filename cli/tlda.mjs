@@ -2491,6 +2491,7 @@ async function cmdBot() {
       }
       if (running) {
         console.log(yellow(`${bot.name}: running unsupervised`) + dim(` (${paths.label})`))
+        console.log(red('  Configuration fault: the bot process is running without its launchd supervisor.'))
         console.log(dim(`  Bot pid: ${pid}`))
         console.log(dim(`  Tmux: ${paths.tmuxSession}`))
         console.log(dim(`  Log: ${paths.logFile}`))

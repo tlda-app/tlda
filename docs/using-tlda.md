@@ -505,9 +505,9 @@ state. The command reports that configuration is not applied and does not offer
 an agent-shell repair command.
 
 `tlda bot status [name]` reports one of three states: `running + supervised`,
-`running unsupervised`, or `not running`. Ordinary agents also use named tmux
-sessions, but they are not launchd-supervised and remain stopped until an
-explicit daemon wake.
+`running unsupervised`, or `not running`. The unsupervised state is reported as
+a configuration fault. Ordinary agents also use named tmux sessions, but they
+are not launchd-supervised and remain stopped until an explicit daemon wake.
 
 For the first rollout, apply only the disposable testing bot from the owner's
 GUI session:

@@ -25,7 +25,7 @@ try {
 
   for (const command of ['launchctl', 'tmux']) {
     const path = join(fakeBin, command)
-    writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${command} '$* >> '${calls}'\nexit 0\n`, { mode: 0o755 })
+    writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${command} '$* >> '${calls}'\nif [ '${command}' = launchctl ] && [ "$1" = print ]; then\n  echo 'Could not find service' >&2\n  exit 1\nfi\nexit 0\n`, { mode: 0o755 })
   }
 
   for (const command of ['install', 'uninstall', 'start', 'restart', 'stop']) {
@@ -45,6 +45,21 @@ try {
 
   assert.equal(existsSync(calls) ? readFileSync(calls, 'utf8') : '', '', 'removed bot commands must not call launchctl or tmux')
   assert.equal(existsSync(join(taskHome, 'Library', 'LaunchAgents', 'com.tlda.bot.todd.plist')), false)
+
+  writeFileSync(join(configDir, 'todd.test.pid'), `${process.pid}\n`)
+  const statusResult = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), '--env', 'test', 'bot', 'status', 'todd'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: taskHome,
+      TLDA_CONFIG_DIR: configDir,
+      PATH: `${fakeBin}:${process.env.PATH || ''}`,
+    },
+  })
+  assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout)
+  assert.match(statusResult.stdout, /todd: running unsupervised/)
+  assert.match(statusResult.stdout, /Configuration fault:/)
 
   console.log('bot command supervision boundary: ok')
 } finally {

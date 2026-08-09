@@ -11,7 +11,7 @@ test('only the owner Aqua launchd manager may apply configuration', () => {
   assert.equal(isOwnerCapableLaunchdManager('Background\n'), false)
   assert.throws(
     () => assertOwnerCapableLaunchdManager('Background'),
-    /^Error: configuration is not applied:/,
+    /^Error: configuration is not applied$/,
   )
 })
 
