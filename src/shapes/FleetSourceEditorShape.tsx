@@ -11,7 +11,7 @@ import {
   useEditor,
 } from 'tldraw'
 import { fleetSourceEditorProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
+import { normalizeSourceManifest, referencedRootsFromPaths } from '../../shared/source-manifest.mjs'
 import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
@@ -158,21 +158,6 @@ function normalizeFile(file: string) {
 
 function basename(file: string) {
   return normalizeFile(file).replace(/^.*[\\/]/, '')
-}
-
-function referencedRootsForProjectInfo(projectInfo: any, knownPaths: string[]) {
-  const referenced = Array.isArray(projectInfo?.referencedSourcePaths) ? projectInfo.referencedSourcePaths : []
-  if (referenced.length === 0) return []
-  const known = [...new Set(knownPaths.map(normalizeFile).filter(Boolean))]
-  const roots = new Set<string>()
-  for (const sourcePath of referenced) {
-    if (typeof sourcePath !== 'string' || !sourcePath) continue
-    const normalized = sourcePath.replace(/\\/g, '/')
-    for (const rel of known) {
-      if (normalized === rel || normalized.endsWith(`/${rel}`)) roots.add(rel)
-    }
-  }
-  return [...roots]
 }
 
 function projectApiPath(projectName: string, path: string) {
@@ -868,7 +853,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     const projectInfo = projectInfoRef.current || {}
     const sourceManifest = normalizeSourceManifest(manifestPaths, {
       ...projectInfo,
-      referencedRoots: referencedRootsForProjectInfo(projectInfo, manifestPaths),
+      referencedRoots: referencedRootsFromPaths(projectInfo.referencedSourcePaths, manifestPaths),
     })
     const res = await fetch(projectApiPath(doc.projectName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',

@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync
 import { access, cp, mkdir, open as openFile, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join, relative, dirname } from 'path'
 import { createHash, randomUUID } from 'crypto'
-import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
+import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import {
   projectPartsManifestPath as partsManifestPathForRoot,
   readProjectPartsManifest as readPartsManifestForRoot,
@@ -391,36 +391,6 @@ export async function readProjectPartsManifest(name) {
  * not know where the tree lives. The client that holds the binding does that
  * and hands back project-relative paths.
  */
-/**
- * Chat references as project coordinates, given the paths the project already
- * speaks in.
- *
- * The manifest holds `/Users/skip/work/bregman-lower-bound/b4-outline.md` and
- * this server needs `b4-outline.md`. It cannot subtract the prefix — it strips
- * `sourceDir` from every shared project on purpose — so it matches on the tail
- * against paths already known to belong to the project. That can only ever
- * admit a path some other authority already named, which is why it is a lookup
- * and not a guess.
- *
- * `known` is the client's declared manifest, plus whatever a push in flight is
- * declaring: the first push of a newly-referenced file is the one moment the
- * path is not yet in the manifest, and it is the moment membership has to work.
- */
-export function referencedRootsFromPaths(referenced, known) {
-  const candidates = [...new Set([...(known || [])])]
-    .filter(p => typeof p === 'string' && p)
-    .map(p => p.replace(/\\/g, '/'))
-  const roots = new Set()
-  for (const abs of referenced || []) {
-    if (typeof abs !== 'string' || !abs) continue
-    const normalized = abs.replace(/\\/g, '/')
-    for (const rel of candidates) {
-      if (normalized === rel || normalized.endsWith(`/${rel}`)) roots.add(rel)
-    }
-  }
-  return [...roots]
-}
-
 export async function referencedSourcePaths(name) {
   const manifest = await readProjectPartsManifest(name)
   const paths = []

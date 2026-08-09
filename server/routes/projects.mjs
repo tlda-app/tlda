@@ -28,7 +28,7 @@ import {
   readProjectMeta,
   listSourceFiles, hashSourceFiles, readSourceFileAsync, writeSourceFileAsync, deleteSourceFileAsync, readBuildLogAsync, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarningsAsync, addBookMember, getProjectsDir, projectDir as getProjectDir,
-  projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest, referencedSourcePaths, referencedRootsFromPaths,
+  projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest, referencedSourcePaths,
   listDocumentAssociations,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
@@ -49,7 +49,7 @@ import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '..
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
-import { isSourceFilePath, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
+import { isSourceFilePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf, recoverProjectSourceTransactions, readOverleafLocalHead, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'

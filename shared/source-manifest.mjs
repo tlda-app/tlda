@@ -91,6 +91,29 @@ function referencedRootSet(roots) {
   return new Set(values.filter(p => typeof p === 'string' && p).map(normalizePath))
 }
 
+/**
+ * Chat references as project coordinates, given the paths the project already
+ * speaks in.
+ *
+ * The referenced paths may be absolute paths on the author's machine. The
+ * caller supplies paths already known to belong to the project, so this is a
+ * tail-match lookup rather than a path guess.
+ */
+export function referencedRootsFromPaths(referenced, known) {
+  const candidates = [...new Set([...(known || [])])]
+    .filter(p => typeof p === 'string' && p)
+    .map(p => p.replace(/\\/g, '/'))
+  const roots = new Set()
+  for (const abs of referenced || []) {
+    if (typeof abs !== 'string' || !abs) continue
+    const normalized = abs.replace(/\\/g, '/')
+    for (const rel of candidates) {
+      if (normalized === rel || normalized.endsWith(`/${rel}`)) roots.add(rel)
+    }
+  }
+  return [...roots]
+}
+
 export function sourceManifestContext(project = {}) {
   return {
     format: project?.format || 'svg',
