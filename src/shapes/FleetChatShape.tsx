@@ -2450,7 +2450,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
         const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
         if (btn) {
           if (!btn.dataset.semanticCollapsedLabel) btn.dataset.semanticCollapsedLabel = btn.textContent || 'Expand'
-          btn.textContent = 'collapse'
+          btn.textContent = ''
+          btn.classList.add('thread-fold-open')
         }
       }
     })
@@ -4857,7 +4858,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           semanticBody.style.display = wasExpanded ? 'none' : ''
           semanticOp.classList.toggle('semantic-operation-expanded', !wasExpanded)
           if (!wasExpanded) semanticBody.dispatchEvent(new Event('semantic-operation-expand'))
-          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : 'collapse'
+          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : ''
+          expandBtn.classList.toggle('thread-fold-open', !wasExpanded)
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           const semanticKey = semanticOp.getAttribute('data-semantic-key') || '0'
           if (itemKey) {
