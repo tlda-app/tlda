@@ -21,6 +21,7 @@ import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 import { ProjectContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
+import { clearChromeCondition, setChromeCondition } from '../chrome/conditions'
 import { htmlSourceLineAnchorAtCanvasY, type HtmlSourceLineAnchor } from '../htmlSourceAnchors'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { getPref, subscribePref } from '../preferences'
@@ -157,6 +158,21 @@ function normalizeFile(file: string) {
 
 function basename(file: string) {
   return normalizeFile(file).replace(/^.*[\\/]/, '')
+}
+
+function referencedRootsForProjectInfo(projectInfo: any, knownPaths: string[]) {
+  const referenced = Array.isArray(projectInfo?.referencedSourcePaths) ? projectInfo.referencedSourcePaths : []
+  if (referenced.length === 0) return []
+  const known = [...new Set(knownPaths.map(normalizeFile).filter(Boolean))]
+  const roots = new Set<string>()
+  for (const sourcePath of referenced) {
+    if (typeof sourcePath !== 'string' || !sourcePath) continue
+    const normalized = sourcePath.replace(/\\/g, '/')
+    for (const rel of known) {
+      if (normalized === rel || normalized.endsWith(`/${rel}`)) roots.add(rel)
+    }
+  }
+  return [...roots]
 }
 
 function projectApiPath(projectName: string, path: string) {
@@ -479,6 +495,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const [vimMode, setVimModeState] = useState('normal')
   const [status, setStatus] = useState<'loading' | 'ready' | 'dirty' | 'syncing' | 'synced' | 'error'>('loading')
   const [statusText, setStatusText] = useState('Loading source...')
+  const sourceErrorConditionId = useMemo(() => `source-editor:${shape.id}`, [shape.id])
   // Conflicts have a source. `serverConflictFiles` is what the project reports
   // (today: Overleaf's); `heldConflictFile` is the one this editor is holding
   // right now from its own rejected write. They are separate because the project
@@ -568,6 +585,19 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => { trackedAnchorRef.current = trackedAnchor }, [trackedAnchor])
   useEffect(() => { vimModeRef.current = vimMode }, [vimMode])
   useEffect(() => { conflictFilesRef.current = conflictFiles }, [conflictFiles])
+  useEffect(() => {
+    if (status !== 'error') {
+      clearChromeCondition(sourceErrorConditionId)
+      return
+    }
+    setChromeCondition({
+      id: sourceErrorConditionId,
+      topic: 'input',
+      severity: 'error',
+      text: statusText || 'Source editor failed',
+    })
+    return () => clearChromeCondition(sourceErrorConditionId)
+  }, [sourceErrorConditionId, status, statusText])
   useEffect(() => {
     sourceFilesRef.current = null
     sourceFilesPromiseRef.current = null
@@ -834,7 +864,12 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       const infoRes = await fetch(projectApiPath(doc.projectName, ''))
       if (infoRes.ok) projectInfoRef.current = await infoRes.json()
     }
-    const sourceManifest = normalizeSourceManifest([...await loadSourceFiles(), sourcePath], projectInfoRef.current || {})
+    const manifestPaths = [...await loadSourceFiles(), sourcePath]
+    const projectInfo = projectInfoRef.current || {}
+    const sourceManifest = normalizeSourceManifest(manifestPaths, {
+      ...projectInfo,
+      referencedRoots: referencedRootsForProjectInfo(projectInfo, manifestPaths),
+    })
     const res = await fetch(projectApiPath(doc.projectName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1395,7 +1430,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     writeTimerRef.current = null
     void writeSource(currentText, seq)
   }
-  const showStatusBar = status === 'dirty' || status === 'syncing' || status === 'error'
+  const showStatusBar = status === 'dirty' || status === 'syncing'
   const reserveStatusBar = useVim || showStatusBar
 
 	  return (
@@ -1422,9 +1457,6 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         </div>
       )}
       <div className="fleet-source-editor-body">
-        {status === 'error' && (
-          <div className="fleet-source-editor-error">{statusText}</div>
-        )}
         <div className={`fleet-source-editor-split${secondaryFile && sourceSplit ? ' fleet-source-editor-split-active' : ''}`}>
           <div
             ref={cmHostRef}
