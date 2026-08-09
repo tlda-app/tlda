@@ -5684,6 +5684,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
   const DRAG_THRESHOLD = 5
+  // UIKit's long-press recognizer defaults to 0.5s; Android's default long-press
+  // timeout is 500ms.
+  const TOUCH_DRAG_HOLD_MS = 500
   const dragRef = useRef<{
     pillId: string | null
     pillType: string
@@ -5700,6 +5703,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     captureEl: HTMLElement | null
     pointerId: number
     _onMain?: boolean
+    held?: boolean
   } | null>(null)
   // Set by the drag effect below so the unmount-only cleanup can reach the
   // current cancelDrag closure without taking the effect's deps.
@@ -5750,6 +5754,45 @@ function FleetChatInner({ shape }: { shape: any }) {
     // The element a drag-claim started on — so a no-move TAP on a draggable
     // chip/link can re-fire its click on touch/stylus (see onPointerUp).
     let downTargetEl: HTMLElement | null = null
+    let pendingDrag: typeof dragRef.current = null
+    let pendingHoldTimer: ReturnType<typeof window.setTimeout> | null = null
+    let heldTouchActionEl: HTMLElement | null = null
+    let heldTouchActionValue = ''
+    const isTouchLikePointer = (e: PointerEvent) => e.pointerType === 'touch' || e.pointerType === 'pen'
+
+    function clearPendingDrag() {
+      if (pendingHoldTimer !== null) {
+        window.clearTimeout(pendingHoldTimer)
+        pendingHoldTimer = null
+      }
+      pendingDrag = null
+      downTargetEl = null
+    }
+
+    function armHeldTouchAction(el: HTMLElement) {
+      heldTouchActionEl = el
+      heldTouchActionValue = el.style.touchAction
+      el.style.touchAction = 'none'
+    }
+
+    function restoreHeldTouchAction() {
+      if (!heldTouchActionEl) return
+      heldTouchActionEl.style.touchAction = heldTouchActionValue
+      heldTouchActionEl = null
+      heldTouchActionValue = ''
+    }
+
+    function claimDrag(drag: NonNullable<typeof dragRef.current>, target: HTMLElement, e: PointerEvent) {
+      clearPendingDrag()
+      e.stopImmediatePropagation()
+      e.preventDefault()
+      suppressSkillHoverDuringChatDrag()
+      dragRef.current = drag
+      downTargetEl = target
+
+      // Use shared drag coordinator instead of per-drag capture listeners
+      dragCoordinator.claim(onPointerMove, onPointerUp, cancelDrag)
+    }
 
     function onPointerDown(e: PointerEvent) {
       const target = e.target as HTMLElement
@@ -5774,6 +5817,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         editor.markEventAsHandled(e)
         return
       }
+      editor.markEventAsHandled(e)
 
       const names = agentNamesRef.current
       const exactNames = agentExactNamesRef.current
@@ -6032,19 +6076,44 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       if (!drag) return
 
-      e.stopImmediatePropagation()
-      e.preventDefault()
-      suppressSkillHoverDuringChatDrag()
-      dragRef.current = drag
-      downTargetEl = target
+      if (isTouchLikePointer(e)) {
+        pendingDrag = drag
+        downTargetEl = target
+        pendingHoldTimer = window.setTimeout(() => {
+          pendingHoldTimer = null
+          const heldDrag = pendingDrag
+          const heldTarget = downTargetEl
+          if (!heldDrag || !heldTarget) return
+          pendingDrag = null
+          downTargetEl = null
+          heldDrag.held = true
+          armHeldTouchAction(heldTarget)
+          claimDrag(heldDrag, heldTarget, e)
+        }, TOUCH_DRAG_HOLD_MS)
+        return
+      }
+      claimDrag(drag, target, e)
+    }
 
-      // Use shared drag coordinator instead of per-drag capture listeners
-      dragCoordinator.claim(onPointerMove, onPointerUp, cancelDrag)
+    function onPendingPointerMove(e: PointerEvent) {
+      const drag = pendingDrag
+      if (!drag || e.pointerId !== drag.pointerId) return
+      const dx = e.clientX - drag.startX
+      const dy = e.clientY - drag.startY
+      if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+      clearPendingDrag()
+    }
+
+    function clearPendingPointer(e: PointerEvent) {
+      const drag = pendingDrag
+      if (!drag || e.pointerId !== drag.pointerId) return
+      clearPendingDrag()
     }
 
     function cancelDrag() {
       const drag = dragRef.current
       dragRef.current = null
+      restoreHeldTouchAction()
       if (drag?.pillId) {
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
         const onMain = !!drag._onMain
@@ -6237,7 +6306,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
       if (shapeEl) shapeEl.style.boxShadow = ''
       dragRef.current = null
+      restoreHeldTouchAction()
       if (!drag.started) {
+        if (drag.held) {
+          downTargetEl = null
+          return
+        }
         // No drag happened = a TAP on a draggable chip/link. This handler claimed
         // the pointer (capture-phase stopImmediatePropagation on pointerdown), so
         // the element's own click handler may never run. Open the chip directly
@@ -6277,10 +6351,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     document.addEventListener('pointerdown', onPointerDown, { capture: true })
+    document.addEventListener('pointermove', onPendingPointerMove, { capture: true })
+    document.addEventListener('pointerup', clearPendingPointer, { capture: true })
+    document.addEventListener('pointercancel', clearPendingPointer, { capture: true })
     cancelDragRef.current = cancelDrag
 
     return () => {
+      clearPendingDrag()
+      restoreHeldTouchAction()
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      document.removeEventListener('pointermove', onPendingPointerMove, { capture: true })
+      document.removeEventListener('pointerup', clearPendingPointer, { capture: true })
+      document.removeEventListener('pointercancel', clearPendingPointer, { capture: true })
     }
   }, [addToast, chatLogEl, editor, viewportId, openMarkdownChipFromTarget, suppressSkillHoverDuringChatDrag])
 
