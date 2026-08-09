@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { createShapeId, type Editor, type TLShape } from 'tldraw'
-import { onReloadSignal, onSourceChangedSignal, onProjectPartsChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
+import { createShapeId, type Editor, type TLShape, type TLShapeId } from 'tldraw'
+import { onProjectPartsChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
@@ -8,6 +8,8 @@ import type { LookupData } from '../synctexLookup'
 import { reloadPages } from '../editorSetup'
 import type { ReloadResult } from '../editorSetup'
 import type { SvgDocument, DiffData } from '../svgDocumentLoader'
+import { getPageRenderHash, getSvgText } from '../stores'
+import { createDocVersionReloadObserver, docVersionHashFromRecord, hasRenderedPageMismatch } from './docVersionReload'
 // @ts-ignore — vanilla JS module
 import { getDeviceId, getHumanId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import {
@@ -57,6 +59,7 @@ export interface ScreenshotCaptureState {
 
 interface UseYjsSignalsParams {
   editorRef: React.MutableRefObject<Editor | null>
+  editorMounted: number
   document: SvgDocument
   diffDataRef: React.MutableRefObject<DiffData | null>
   setDiffFetchSeq: React.Dispatch<React.SetStateAction<number>>
@@ -70,7 +73,7 @@ interface UseYjsSignalsParams {
 }
 
 export function useYjsSignals({
-  editorRef, document,
+  editorRef, editorMounted, document,
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
   panelsLocalRef: _panelsLocalRef,
@@ -91,33 +94,40 @@ export function useYjsSignals({
     loadLookup(document.name).then(data => { lookupSnapshotRef.current = data })
   }, [hasSynctex, document.name])
 
-  // Subscribe to Yjs reload signals
-  useEffect(() => {
-    return onReloadSignal((signal) => {
-      const editor = editorRef.current
-      if (!editor) return
-
-      if (signal.type === 'partial') {
-        reloadPages(editor, document, signal.pages).then(result => {
-          onReloadResult?.(result)
-        })
-      } else {
-        clearLookupCache(document.name)
-        sourceMap.clear()
-        if (hasSynctex) sourceMap.load(document.name)
-        diffDataRef.current = null
-        setDiffFetchSeq(s => s + 1)
-        proofDataRef.current = null
-        setProofDataReady(false)
-        setProofFetchSeq(s => s + 1)
-        reloadPages(editor, document, null).then(async result => {
-          onReloadResult?.(result)
-          // Refresh lookup cache for future synctex queries
-          lookupSnapshotRef.current = hasSynctex ? await loadLookup(document.name) : null
-        })
-      }
+  const runFullDocumentReload = (editor: Editor) => {
+    clearLookupCache(document.name)
+    sourceMap.clear()
+    if (hasSynctex) sourceMap.load(document.name)
+    diffDataRef.current = null
+    setDiffFetchSeq(s => s + 1)
+    proofDataRef.current = null
+    setProofDataReady(false)
+    setProofFetchSeq(s => s + 1)
+    reloadPages(editor, document, null).then(async result => {
+      onReloadResult?.(result)
+      lookupSnapshotRef.current = hasSynctex ? await loadLookup(document.name) : null
+    }).catch((e) => {
+      const message = e instanceof Error ? e.message : String(e)
+      onReloadError?.(`The document changed, but the viewer could not reload it: ${message}`)
     })
-  }, [document, hasSynctex])
+  }
+
+  // The doc-version sentinel is durable Yjs state. When it advances past the
+  // build hash of already-rendered page text, swap the render through the same
+  // reload path the old transient signal used.
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor || editorMounted === 0) return
+    const observer = createDocVersionReloadObserver({
+      readHash: () => docVersionHashFromRecord(editor.store.get('shape:doc-version--sentinel' as TLShapeId)),
+      hasMismatchedRender: hash => {
+        if (document.format === 'slides' || HTML_PAGE_FORMATS.has(document.format || '')) return true
+        return hasRenderedPageMismatch(document.pages, hash, getSvgText, getPageRenderHash)
+      },
+      reload: () => runFullDocumentReload(editor),
+    })
+    return editor.store.listen(observer, { source: 'remote', scope: 'all' })
+  }, [editorMounted, document, hasSynctex])
 
   // Refresh only the pinned/shared markdown popup whose materialized part
   // actually changed. This avoids the old flicker bug from refreshing the
@@ -147,59 +157,6 @@ export function useYjsSignals({
       }
     })
   }, [document.name])
-
-  // Re-fetch visible pages when source files change — triggers the ensure system
-  // which rebuilds if source.stamp > build.stamp. The build then sends signal:reload.
-  useEffect(() => {
-    return onSourceChangedSignal(() => {
-      const editor = editorRef.current
-      if (!editor) return
-      reloadPages(editor, document, null)
-    })
-  }, [document])
-
-  // Poll for new builds as a fallback — catches stale content if the reload signal
-  // was missed (e.g. tldraw sync WebSocket died silently after a server restart).
-  useEffect(() => {
-    const projectName = document.name
-    let lastKnownBuild = ''
-    let reportedFailure = false
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}`)
-        if (!res.ok) return
-        const data = await res.json()
-        const buildTs = data.lastBuild || ''
-        if (!lastKnownBuild) { lastKnownBuild = buildTs; return }
-        if (buildTs && buildTs !== lastKnownBuild) {
-          lastKnownBuild = buildTs
-          const editor = editorRef.current
-          if (editor) {
-            console.log(`[Poll] New build detected (${buildTs}), reloading viewport pages`)
-            reloadPages(editor, document, null)
-              .then(result => {
-                reportedFailure = false
-                onReloadResult?.(result)
-              })
-              .catch((e) => {
-                if (reportedFailure) return
-                reportedFailure = true
-                const message = e instanceof Error ? e.message : String(e)
-                onReloadError?.(`The document changed, but the viewer could not reload it: ${message}`)
-              })
-          }
-        }
-      } catch (e) {
-        if (reportedFailure) return
-        reportedFailure = true
-        const message = e instanceof Error ? e.message : String(e)
-        onReloadError?.(`The viewer could not check for a newer build: ${message}`)
-      }
-    }
-    const timer = setInterval(poll, 30_000)
-    poll() // initial check
-    return () => clearInterval(timer)
-  }, [document])
 
   // Subscribe to Yjs forward sync signals (scroll, highlight from Claude)
   useEffect(() => {

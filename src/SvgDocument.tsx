@@ -106,7 +106,7 @@ import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { openInEditor } from './texsync'
-import { setupSvgEditor, anchorIdToLabel, reloadPages, type ReloadResult } from './editorSetup'
+import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useCameraLink } from './hooks/useCameraLink'
@@ -279,17 +279,14 @@ interface SvgDocumentEditorProps {
  */
 const MAX_VISIBLE_VERSIONS = 5
 
-function VersionStamp({ document, reloadCompletedAt }: { document: SvgDocument; reloadCompletedAt: number }) {
+function VersionStamp({ document }: { document: SvgDocument }) {
   const projectName = document.name
   const editor = useEditor()
   const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
   const [history, setHistory] = useState<Array<{ hash: string; timestamp: number }>>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [hovering, setHovering] = useState(false)
-  const lastReloadAtRef = useRef<number>(0)
-  const lastHtmlReloadAtRef = useRef<number>(0)
   const prevHashRef = useRef<string | null>(null)
-  const usesHtmlPages = HTML_PAGE_FORMATS.has(document.format || '')
 
   // Watch the Yjs sentinel — updates exactly when the shadow git commit completes.
   // Yjs is convergent: reconnecting always delivers the latest state.
@@ -304,8 +301,6 @@ function VersionStamp({ document, reloadCompletedAt }: { document: SvgDocument; 
     const v = read()
     if (v) {
       setSentinel(v)
-      // Baseline: treat current build as already-reloaded on first mount
-      if (lastReloadAtRef.current === 0) lastReloadAtRef.current = v.buildReadyAt
     }
     return editor.store.listen(() => {
       const v = read()
@@ -313,7 +308,7 @@ function VersionStamp({ document, reloadCompletedAt }: { document: SvgDocument; 
     }, { source: 'remote', scope: 'all' })
   }, [editor])
 
-  // When the commit hash changes: fetch version history + check for missed reload.
+  // When the commit hash changes, fetch version history for display.
   useEffect(() => {
     if (!sentinel?.commitHash || sentinel.commitHash === prevHashRef.current) return
     prevHashRef.current = sentinel.commitHash
@@ -324,22 +319,7 @@ function VersionStamp({ document, reloadCompletedAt }: { document: SvgDocument; 
         const data: Array<{ hash: string; timestamp: number }> = raw?.versions || raw
         if (data?.length > 0) { setHistory(data.slice(0, MAX_VISIBLE_VERSIONS)); setActiveIdx(0) }
       }).catch(e => console.warn('[viewer] shadow history fetch failed:', e.message))
-
-    // If SVGs were ready but we missed the reload signal, trigger a reload now.
-    if (lastReloadAtRef.current > 0 && sentinel.buildReadyAt > lastReloadAtRef.current + 5000) {
-      dispatchSignalDirect('signal:reload', { type: 'full', timestamp: Date.now() })
-    }
-    if (usesHtmlPages && sentinel.buildReadyAt > lastHtmlReloadAtRef.current) {
-      lastHtmlReloadAtRef.current = sentinel.buildReadyAt
-      reloadPages(editor, document, null)
-    }
-  }, [sentinel?.commitHash, projectName, document, editor, usesHtmlPages])
-
-  // A signal only requests a reload. Count it after the page fetches complete,
-  // otherwise a failed reload suppresses the sentinel recovery.
-  useEffect(() => {
-    if (reloadCompletedAt > 0) lastReloadAtRef.current = reloadCompletedAt
-  }, [reloadCompletedAt])
+  }, [sentinel?.commitHash, projectName])
 
   const handleClick = useCallback((idx: number) => {
     if (idx === 0) return
@@ -458,7 +438,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   // Remap/reload warnings from reload paths (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
   const [reloadWarnings, setReloadWarnings] = useState<BuildWarning[]>([])
-  const [reloadCompletedAt, setReloadCompletedAt] = useState(0)
 
   // Fleet playback — listen for BroadcastChannel and swap annotation shapes
   const playbackState = useSyncedPlayback(editorRef, projectName)
@@ -531,7 +510,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   useLongTaskProfileLog()
 
   useYjsSignals({
-    editorRef, document,
+    editorRef, editorMounted, document,
     diffDataRef, setDiffFetchSeq,
     proofDataRef, setProofDataReady, setProofFetchSeq,
     panelsLocalRef,
@@ -543,7 +522,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
         return
       }
       setReloadWarnings([])
-      if (result.failedPages.length === 0) setReloadCompletedAt(Date.now())
       if (result.remapResult && result.remapResult.failed > 0) {
         const { failed, total } = result.remapResult
         setRemapWarnings([{
@@ -1103,7 +1081,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   // AgentPill replaced by FleetIconPill in build-pills-row
   const agentPillContent = null
 
-  const versionStampContent = <VersionStamp document={document} reloadCompletedAt={reloadCompletedAt} />
+  const versionStampContent = <VersionStamp document={document} />
 
   return (
     <>
