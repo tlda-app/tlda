@@ -129,6 +129,7 @@ import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
 import { installFramePairBridge, installReturnMarksBridge } from './classroom/marking'
+import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -266,6 +267,7 @@ interface SvgDocumentEditorProps {
   roomId: string
   diffConfig?: { basePath: string }
   initialCamera?: { x: number; y: number; z: number; page?: string }
+  classroomMarking?: boolean
 }
 
 
@@ -405,7 +407,7 @@ function SlideNavWrapper({ document }: { document: SvgDocument }) {
   return <SlidesNavigator editor={editor} document={document} />
 }
 
-export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera, classroomMarking = false }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -1042,6 +1044,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
     <div className="bottom-panels">
+      {classroomMarking && editorRef.current && document.pages[0]?.shapeId && document.pages[1]?.shapeId && (
+        <ClassroomConnectorOverlay
+          editor={editorRef.current}
+          submissionShapeId={document.pages[0].shapeId}
+          solutionShapeId={document.pages[1].shapeId}
+        />
+      )}
       {screenshotCapture && editorRef.current && (
         <ScreenshotCapture
           mainEditor={editorRef.current}
