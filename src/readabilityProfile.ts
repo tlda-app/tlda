@@ -25,6 +25,7 @@ function cleanProfile(value: Partial<ReadabilityProfile> | undefined): Readabili
     fontSize: clamp(Number(p.fontSize) || base.fontSize, 8, 24),
     lineHeight: clamp(Number(p.lineHeight) || base.lineHeight, 1.15, 1.8),
     touchTarget: clamp(Number(p.touchTarget) || base.touchTarget, 24, 64),
+    faint: Boolean(p.faint),
     chromeOpacity: clamp(Number(p.chromeOpacity) || base.chromeOpacity, 0, 1.5),
     contentOpacity: clamp(Number(p.contentOpacity) || base.contentOpacity, 0, 1),
     layoutHeightFrac: clamp(Number(p.layoutHeightFrac) || base.layoutHeightFrac, 0.1, 1),

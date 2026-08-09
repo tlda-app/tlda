@@ -2,6 +2,7 @@ export type ReadabilityProfile = {
   fontSize: number
   lineHeight: number
   touchTarget: number
+  faint: boolean
   chromeOpacity: number
   contentOpacity: number
   layoutHeightFrac: number
@@ -17,6 +18,7 @@ export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
   fontSize: 11,
   lineHeight: 1.5,
   touchTarget: 28,
+  faint: false,
   chromeOpacity: 1,
   contentOpacity: 1,
   layoutHeightFrac: 0.7,
