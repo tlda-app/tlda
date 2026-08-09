@@ -11,6 +11,11 @@ test('Preferences renders inside the document panel scroll container', () => {
 test('Radio has one discoverable persistent off control in Preferences', () => {
   assert.match(prefsTabSource, /setPref\('radio-subtitles-enabled', e\.target\.checked\)/)
   assert.equal(prefsTabSource.match(/radio-subtitles-enabled/g)?.length, 2)
-  assert.match(prefsTabSource, /<PrefSubsection title="Radio">[\s\S]*<input type="checkbox" checked=\{prefs\.radioSubtitlesEnabled\}/)
+  assert.match(prefsTabSource, /<CollapsiblePrefsSection[\s\S]*id="radio"[\s\S]*title="Radio"[\s\S]*<PrefSubsection title="Radio">[\s\S]*<input type="checkbox" checked=\{prefs\.radioSubtitlesEnabled\}/)
   assert.match(prefsTabSource, /<span>Agent subtitles<\/span>/)
+})
+
+test('Appearance exposes the document panel hover-region width', () => {
+  assert.match(prefsTabSource, /<ZoneWidthThumbControl className="prefs-zone-width-slider" \/>/)
+  assert.match(prefsTabSource, /<span className="prefs-num-label">ToC hover region<\/span>/)
 })
