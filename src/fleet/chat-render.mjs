@@ -16,12 +16,15 @@
 //   tldaToken:      string | null,
 //   renderMarkdown: (escapedHtml) => html,
 //   sendTargets:    string[]   // the panel's default target labels
+//   previousMessageTimestamp?: string | null
 // }
 
 import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { uniqueLiveAgentForLabel } from './send-target-binding.mjs'
 import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 import { terminalGlyphHtml } from './terminal-glyph.mjs'
+
+const BIG_CHAT_GAP_SECONDS = 1800
 
 // The agents a message was addressed to. Group send made this a SET carried by
 // ONE event: a one-recipient message is an array of length 1, and there is no
@@ -84,6 +87,15 @@ function chipifyMarkdownApiFileLinks(html) {
 // (Previously this function converted them to <a> links, but that caused
 // chipification of quoted URLs. Plain <code> is selectable and copyable.)
 function linkifyCodeUrls(html) { return html }
+
+function bigGapClass(m, ctx) {
+  const prev = ctx?.previousMessageTimestamp
+  if (!prev || !m?.timestamp) return ''
+  const prevMs = new Date(prev).getTime()
+  const currMs = new Date(m.timestamp).getTime()
+  if (!Number.isFinite(prevMs) || !Number.isFinite(currMs)) return ''
+  return (currMs - prevMs) / 1000 >= BIG_CHAT_GAP_SECONDS ? ' chat-line-gap-before' : ''
+}
 
 function recipientAttachmentProjectRef(message, idx) {
   const ref = recipientAttachmentRef(message, idx)
@@ -474,7 +486,8 @@ export function renderChatLine(m, ctx) {
     const nickHtml = isFromUser
       ? `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${esc(nick)}:</span></span>`
       : `<span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}"${nowTitle(m.from, m.fromNameNow)}>${fromPrettyGlyph}${esc(nick)}</span><span class="chat-arrow">&rarr;</span>${recipientNicksHtml(recipients, ctx, m)}:</span>`
-    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-source-mark" title="from a terminal">${terminalGlyphHtml()}</span> ${nickHtml} ${text}</div>`
+    const gapClass = bigGapClass(m, ctx)
+    return `<div class="chat-line terminal-msg ${dimClass}${isFromUser ? ' from-user' : ''}${gapClass}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts" draggable="true">${ts}</span> <span class="terminal-source-mark" title="from a terminal">${terminalGlyphHtml()}</span> ${nickHtml} ${text}</div>`
   }
 
   // --- Plan mode approval card ---
@@ -806,7 +819,7 @@ export function renderChatLine(m, ctx) {
     const since = thinkingAgents?.get?.(id)
     return since && msgTs >= since
   })
-  const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}${isQueued ? ' chat-queued' : ''}`
+  const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}${isQueued ? ' chat-queued' : ''}${bigGapClass(m, ctx)}`
   // Delegation arrows
   const activeTasks = getTasks().filter(t => t.status !== 'done')
   const isDelegator = activeTasks.some(t => t.delegated_by === m.from && recipients.includes(t.agent))

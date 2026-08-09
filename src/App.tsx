@@ -1036,12 +1036,17 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
       .sort((a, b) => fleetEventTimestamp(a) - fleetEventTimestamp(b))
       .slice(-24)
   }, [selectedAgent, selectedChatEvents])
-  const renderedChatRows = useMemo(() => (
-    selectedChatRows.map((event, index) => ({
-      key: event.id || event._tempId || `${event.timestamp}-${index}`,
-      html: renderChatLine(event, chatRenderContext),
-    }))
-  ), [chatRenderContext, selectedChatRows])
+  const renderedChatRows = useMemo(() => {
+    let previousMessageTimestamp: string | null = null
+    return selectedChatRows.map((event, index) => {
+      const html = renderChatLine(event, { ...chatRenderContext, previousMessageTimestamp })
+      if (html && event.timestamp) previousMessageTimestamp = event.timestamp
+      return {
+        key: event.id || event._tempId || `${event.timestamp}-${index}`,
+        html,
+      }
+    })
+  }, [chatRenderContext, selectedChatRows])
 
   useEffect(() => {
     const log = indexChatLogRef.current
