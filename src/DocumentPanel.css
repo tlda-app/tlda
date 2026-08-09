@@ -2047,10 +2047,6 @@ body.phone-mode.phone-bar-visible .tlui-layout__bottom {
   display: flex !important;
 }
 
-/* Also hide watermark and agent pill on phone — save space */
-body.phone-mode [class*="watermark"] {
-  display: none !important;
-}
 
 /* TOC toggle button — top right, small */
 .phone-toc-btn {

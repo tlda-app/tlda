@@ -168,10 +168,6 @@ body.fleet-hud-open .fleet-hud-wrap {
 .fleet-hud-wrap .fleet-report-artifact-frame {
   pointer-events: auto !important;
 }
-/* Hide the tldraw watermark in the HUD's copy-store tldraw instance */
-.fleet-hud-wrap [class*="watermark"] {
-  display: none !important;
-}
 /* Let tldraw's DPR zoom fix (zoom:2 on Retina) apply normally — the old
    HUD had its own scaling that conflicted, but the full-viewport overlay
    doesn't. Overriding to zoom:1 caused a DPR-proportional offset between
