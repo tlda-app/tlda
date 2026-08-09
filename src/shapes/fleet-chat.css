@@ -4114,31 +4114,8 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   width: max-content;
 }
 
-/* Lightbox backscroll: one continuous capture (real tmux history flowing into
-   the current screen). Static (write-once) so the body scrolls it natively. */
-.fleet-chat-shape .fleet-terminal-hover-history {
-  width: max-content;
-}
-
 .fleet-chat-shape .fleet-terminal-hover-body .xterm-viewport {
   overflow: hidden !important;
-}
-
-/* Lightbox: pinned terminal pops out to natural (readable) size when the input
-   is focused — i.e. when you actually intend to drive the terminal. Bottom-
-   anchored (top/bottom/height set inline) so it grows UPWARD and to the right,
-   keeping the input bar fixed instead of pushing it off the bottom of the screen. */
-.fleet-chat-shape .fleet-terminal-hover-pane-lightboxed {
-  right: auto;
-  width: min(840px, 92vw);
-  z-index: 60;
-  border: 1px solid rgba(80, 80, 110, 0.5);
-  border-radius: 4px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
-}
-
-.fleet-chat-shape .fleet-terminal-hover-pane-lightboxed .fleet-terminal-hover-body {
-  overflow: auto;
 }
 
 /* Full-width field; the prompt and ^C float INSIDE it (terminal-style) rather
