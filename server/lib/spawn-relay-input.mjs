@@ -12,16 +12,15 @@ export function normalizeSpawnRelayInput(msg = {}) {
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
     permissionRequest, enroll, routeAgent,
-    iLikeToLiveDangerously, mailboxTarget, pretty_name, labels,
+    iLikeToLiveDangerously, mailboxTarget, pretty_name,
   } = msg || {}
-  // `labels` must be reserved: every unreserved key falls through to
-  // modelOptions below, which would ship it to the daemon as a model option
-  // instead of applying it to the minted agent.
   const spawnReservedKeys = new Set([
     'type', 'name', 'agent', 'model', 'doc', 'cwd', 'respawn', 'fresh', 'refresh',
     'effort', 'mode', 'permissionRequest',
     'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'mailboxTarget',
     'pretty_name',
+    // Ignored, not accepted: prevent a stale mint caller from forwarding labels
+    // to the daemon as model options.
     'labels',
     'modelOptions',
   ])
@@ -49,7 +48,6 @@ export function normalizeSpawnRelayInput(msg = {}) {
     iLikeToLiveDangerously,
     mailboxTarget,
     pretty_name,
-    labels,
     modelOptions,
   }
 }
