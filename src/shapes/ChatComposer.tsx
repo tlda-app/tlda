@@ -44,6 +44,7 @@ export function ChatComposer({
   onKeyActivity,
   onDrop,
   onDragOver,
+  onPaste,
   inputRef: externalRef,
   className,
   placeholder = '',
@@ -59,6 +60,7 @@ export function ChatComposer({
   onKeyActivity?: () => void
   onDrop?: (e: React.DragEvent<HTMLTextAreaElement>) => void
   onDragOver?: (e: React.DragEvent<HTMLTextAreaElement>) => void
+  onPaste?: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void
   inputRef?: React.RefObject<HTMLTextAreaElement | null>
   className?: string
   placeholder?: string
@@ -250,6 +252,7 @@ export function ChatComposer({
       }}
       onDrop={onDrop}
       onDragOver={onDragOver}
+      onPaste={onPaste}
       style={style}
     />
   )
