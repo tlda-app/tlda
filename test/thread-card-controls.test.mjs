@@ -80,12 +80,29 @@ test('the hidden middle is present, not another ellipsis', () => {
 // Skip, on the card that clipped itself and expanded on a click: "there's no
 // fucking expand button... It's literally click to expand to something you can
 // expand." One expand, and it is the gap marker.
+//
+// The clip and the card's onclick were ONE mechanism, not two rules: a clipped
+// card plus click-to-unclip is what produced the invisible first expand. So what
+// this forbids is the CARD carrying a bound or a click -- not the string
+// `max-height` anywhere. A bound on a message body is a different thing and is
+// allowed; Skip, 8/09 01:36:15: "it does seem like agents send really really
+// long messages sometimes, and that just makes the thread view super
+// disruptive."
 test('the card has no height bound and no click of its own', () => {
   for (const thread of [0, 16]) {
     const html = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread } })
-    assert.doesNotMatch(html, /max-height/)
+    const cardTag = html.slice(0, html.indexOf('>') + 1)
+
+    assert.match(cardTag, /tool-pretty-thread/)
+    assert.doesNotMatch(cardTag, /max-height/)
     assert.doesNotMatch(html, /onclick=/)
     assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
+
+    // Whatever the preference bounds, it bounds a message body -- never the
+    // card, and never the gap marker, which is the one expand.
+    for (const tag of html.match(/<[^>]*max-height[^>]*>/g) || []) {
+      assert.match(tag, /pretty-msg-body/)
+    }
   }
 })
 
@@ -108,16 +125,33 @@ test('a thread card carries no semantic-operation shell', () => {
   assert.match(html, /semantic-operation-body/)
 })
 
-// The renderer test above cannot see the React control wrapped around its HTML.
-// That was the exact hole which let a green suite ship Collapse on every
-// collapsed card. Pin the component boundary too: the floating control exists
-// only in the open-middle branch.
+// The renderer test above cannot see the control wrapped around its HTML. That
+// was the exact hole which let a green suite ship Collapse on every collapsed
+// card. Skip, 8/02 12:25:11 PM EDT, correcting himself on the next line: "your
+// collapse button should be invisible when the card isn't collapsed." / "When
+// the card is collapsed,"
+//
+// Pin the mechanism that ships. Visibility is a CSS rule keyed on
+// `thread-middle-open`, set on the shell by the expand click, the restore pass
+// and the collapse itself (2a05017cd). 7020b5117 added a SECOND mechanism for
+// the same fact -- a `middleOpen` React state -- and 45d25909c deleted it
+// because the re-render landed on DOM the click handler had already mutated, so
+// the card snapped shut and left Collapse floating beside a collapsed card:
+// the very thing this test exists to prevent. Asserting the React branch would
+// require that duplicate back, so assert the rule and the class it keys on.
 test('a collapsed thread does not render the floating collapse control', () => {
   const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
   const start = source.indexOf('function ThreadChatOperationView(')
   const end = source.indexOf('\nfunction SemanticChatOperationView(', start)
   const component = source.slice(start, end)
+  const css = readFileSync(new URL('../src/shapes/fleet-chat.css', import.meta.url), 'utf8')
 
-  assert.match(component, /\{middleOpen \? <button[^>]+semantic-operation-collapse/)
+  // One control, and it lives on the thread shell the CSS rule selects.
   assert.equal((component.match(/semantic-operation-collapse/g) || []).length, 1)
+  assert.match(component, /thread-shell/)
+  // Hidden on a thread card by default; drawn only while the middle is open.
+  assert.match(css, /\.thread-shell > \.semantic-operation-collapse\s*\{\s*display:\s*none/)
+  assert.match(css, /\.thread-shell\.thread-middle-open > \.semantic-operation-collapse\s*\{\s*display:\s*block/)
+  // And that class is actually toggled, or the rule above is decoration.
+  assert.match(component, /thread-middle-open/)
 })
