@@ -16,5 +16,6 @@ export function bindOptimisticEcho(events, serverEventId, match) {
   ev._dbId = serverEventId
   delete ev._tempId
   delete ev._failed // it actually went through — drop the "not sent" mark
+  delete ev._queued
   return true
 }

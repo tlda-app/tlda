@@ -111,6 +111,7 @@ export function makeEventStore(opts = {}) {
           opt._dbId = dbId
           delete opt._tempId
           delete opt._failed // it actually went through
+          delete opt._queued
           byKey.set('db:' + dbId, opt)
           return { event: opt, isNew: false, evicted }
         }
@@ -175,6 +176,7 @@ export function makeEventStore(opts = {}) {
     opt._dbId = dbId
     delete opt._tempId
     delete opt._failed
+    delete opt._queued
     if (Array.isArray(recipients) && recipients.length) opt.recipients = recipients
 
     // If the broadcast echo already created a db entry, fold into it (keep one).

@@ -1070,6 +1070,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 /* Resend control on a failed ("not sent") message — subtle until hovered. */
 .fleet-chat-shape .chat-resend-btn,
+.fleet-chat-shape .chat-resend-all-btn,
 .fleet-chat-shape .chat-dismiss-failed-btn {
   background: none;
   border: none;
@@ -1081,8 +1082,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .chat-resend-btn:hover,
+.fleet-chat-shape .chat-resend-all-btn:hover,
 .fleet-chat-shape .chat-dismiss-failed-btn:hover {
   opacity: 1;
+}
+.fleet-chat-shape .chat-failed-actions {
+  opacity: 0.75;
 }
 .fleet-chat-shape .chat-dismiss-failed-btn {
   color: var(--text-dim);

@@ -1222,21 +1222,28 @@ function ConversationView({
     })
     wasNearBottomRef.current = true
     setTimeout(scrollToBottom, 0)
-    const sendWithRetry = (attempt: number) => {
-      Promise.all([sendMessage(to, text, { _tempId: tempId })])
-        .then((results: { ok: boolean; event_id: number | null; permanent?: boolean }[]) => {
-          if (results.every((r) => r.ok)) return
-          // A permanent failure (target matched no recipient) can't succeed on
-          // retry — fail visibly now instead of masking it through the retries.
-          const permanent = results.some((r) => !r.ok && r.permanent)
-          if (permanent || attempt >= 3) updateOptimisticEvent(tempId, { _failed: true })
-          else setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-        })
-        .catch(() => {
-          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-          else updateOptimisticEvent(tempId, { _failed: true })
-        })
-    }
+	    const sendWithRetry = (attempt: number) => {
+	      Promise.all([sendMessage(to, text, { _tempId: tempId })])
+	        .then((results: { ok: boolean; queued?: boolean; event_id: number | null; permanent?: boolean }[]) => {
+	          if (results.some((r) => r.queued)) {
+	            updateOptimisticEvent(tempId, { _failed: false, _queued: true })
+	            return
+	          }
+	          if (results.every((r) => r.ok)) {
+	            updateOptimisticEvent(tempId, { _failed: false, _queued: false })
+	            return
+	          }
+	          // A permanent failure (target matched no recipient) can't succeed on
+	          // retry — fail visibly now instead of masking it through the retries.
+	          const permanent = results.some((r) => !r.ok && r.permanent)
+	          if (permanent || attempt >= 3) updateOptimisticEvent(tempId, { _failed: true, _queued: false })
+	          else setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+	        })
+	        .catch(() => {
+	          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+	          else updateOptimisticEvent(tempId, { _failed: true, _queued: false })
+	        })
+	    }
     sendWithRetry(1)
   }, [scrollToBottom, thread.partnerId])
 

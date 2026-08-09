@@ -774,10 +774,15 @@ export function renderChatLine(m, ctx) {
       attachHtml = ' ' + attachHtml
     }
   }
+  // Queued local messages reached the durable outbox and will deliver on
+  // reconnect. They are not resendable failures.
+  if (m._queued) {
+    return `<div class="chat-line from-user chat-queued" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}" data-queued-tempid="${esc(m._tempId || '')}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-queued-text">waiting for connection</span></div>`
+  }
   // Failed local messages
   if (m._failed) {
     const tempId = esc(m._tempId || '')
-    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(recipients.join('|'))}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${tempId}" title="Resend">\u21BB</button><button class="chat-dismiss-failed-btn" data-dismiss-tempid="${tempId}" title="Dismiss failed message" aria-label="Dismiss failed message">&times;</button></div>`
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}" data-msg-id="${esc(String(m._dbId || ''))}" data-failed-tempid="${tempId}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="agent-nick ${fromCls}" data-agent-id="${esc(m.from)}">${esc(nick)}:</span></span> ${displayText} <span class="chat-warning">\u26A0 not sent</span> <button class="chat-resend-btn" data-resend-to="${esc(recipients.join('|'))}" data-resend-text="${esc(m.text || '')}" data-resend-tempid="${tempId}" title="Resend">\u21BB</button><button class="chat-dismiss-failed-btn" data-dismiss-tempid="${tempId}" title="Dismiss failed message" aria-label="Dismiss failed message">&times;</button></div>`
   }
   // Voicemail
   if (m._voicemail) {
