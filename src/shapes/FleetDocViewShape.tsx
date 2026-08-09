@@ -26,7 +26,7 @@ import {
   useValue,
 } from 'tldraw'
 import { fleetDocviewProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import type { Editor } from 'tldraw'
+import type { Editor, TLShapeId } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
@@ -136,7 +136,21 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
   }, [editor])
 
-  const { w, h, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds } = shape.props
+  const {
+    w,
+    h,
+    sources: sourcesRaw,
+    label,
+    page,
+    yTop,
+    yBottom,
+    title,
+    targetShapeId: targetShapeIdRaw,
+    useFullBounds: useFullBoundsRaw,
+  } = shape.props
+  const targetShapeId = (typeof targetShapeIdRaw === 'string' ? targetShapeIdRaw : '') as TLShapeId | ''
+  const useFullBounds = useFullBoundsRaw === true
+  const normalizedProps = { ...shape.props, targetShapeId, useFullBounds }
   const sources = parseSources(sourcesRaw)
 
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
@@ -468,7 +482,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                   mainEditor.updateShape({
                     id: shape.id, type: shape.type,
                     props: {
-                      ...shape.props,
+                      ...normalizedProps,
                       sources: JSON.stringify(newSources),
                       targetShapeId: '',
                       useFullBounds: false,
@@ -502,7 +516,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
               props: { w: w / 2 - 5, h, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds },
             })
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-            mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, w: w / 2 - 5 } })
+            mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...normalizedProps, w: w / 2 - 5 } })
           }}
           title="Split vertical"
         >⬒</button>
@@ -518,7 +532,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
               props: { w, h: h / 2 - 5, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds },
             })
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-            mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, h: h / 2 - 5 } })
+            mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...normalizedProps, h: h / 2 - 5 } })
           }}
           title="Split horizontal"
         >⬓</button>
@@ -557,7 +571,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                 setHistoryIdx(newIdx)
                 suppressNextPushRef.current = true
                 if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-                mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, ...entry } })
+                mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...normalizedProps, ...entry } })
               }}
               title="Back"
             >←</button>
@@ -572,7 +586,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                 setHistoryIdx(newIdx)
                 suppressNextPushRef.current = true
                 if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-                mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, ...entry } })
+                mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...normalizedProps, ...entry } })
               }}
               title="Forward"
             >→</button>
