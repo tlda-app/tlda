@@ -688,9 +688,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Age-based opacity --- */
 /* Multiply content-alpha by age-fade so both prefs have independent effect. */
+/* A light "this is old" signal, not a legibility cost. Skip, 2026-08-09: "i guess a
+   light 'this is old' signal". It was 0.2/0.4, which is why Dan — the first person to
+   use this who is neither Skip nor an agent — could not read the chat at all and asked
+   the agent "are you writing in light grey?". Secondary text is separately muted via
+   --text-dim at 50-60%, and these multiply on top of that, so an old dimmed element was
+   landing near a third strength. Keep these small enough that the oldest line is still
+   fully readable on its own. */
 .fleet-chat-shape .chat-line-recent { opacity: var(--fleet-content-alpha, 1); }
-.fleet-chat-shape .chat-line-mid { opacity: calc(var(--fleet-content-alpha, 1) * (1 - var(--fleet-age-fade, 1) * 0.2)); }
-.fleet-chat-shape .chat-line-old { opacity: calc(var(--fleet-content-alpha, 1) * (1 - var(--fleet-age-fade, 1) * 0.4)); }
+.fleet-chat-shape .chat-line-mid { opacity: calc(var(--fleet-content-alpha, 1) * (1 - var(--fleet-age-fade, 1) * 0.06)); }
+.fleet-chat-shape .chat-line-old { opacity: calc(var(--fleet-content-alpha, 1) * (1 - var(--fleet-age-fade, 1) * 0.12)); }
 
 /* --- Receipt / delivery indicator --- */
 .fleet-chat-shape .chat-receipt {
