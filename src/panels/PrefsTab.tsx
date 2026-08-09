@@ -42,16 +42,6 @@ const SOURCE_LABELS: Record<(typeof ALL_SOURCES)[number], string> = {
 
 const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
 
-const FLEET_SHAPE_OPTIONS = [
-  ['fleet-agents', 'Agents'],
-  ['fleet-chat', 'Chat'],
-  ['fleet-search', 'Search'],
-  ['fleet-docview', 'Doc view'],
-  ['fleet-source-editor', 'Source editor'],
-  ['fleet-inbox', 'Inbox'],
-  ['fleet-notifications', 'Notifications'],
-] as const
-
 type PrefsSectionId = 'account' | 'appearance' | 'voice' | 'radio' | 'input' | 'bots'
 const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
   account: 'account user identity devices switch device name',
@@ -65,14 +55,6 @@ type VoiceBackendOption = { value: string; label: string; available: boolean }
 type SpeechRecognitionWindow = Window & {
   SpeechRecognition?: unknown
   webkitSpeechRecognition?: unknown
-}
-
-function csvToSet(value: string): Set<string> {
-  return new Set(value.split(',').map(s => s.trim()).filter(Boolean))
-}
-
-function setToCsv(value: Set<string>): string {
-  return [...value].join(', ')
 }
 
 function labelsFor(agent: any): string[] {
@@ -290,7 +272,6 @@ function readAll() {
     voiceBackend: getPref('voice-backend'),
     voiceHudMeter: getPref('voice-hud-meter'),
     voiceSubmitWords: getPref('voice-submit-words'),
-    voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
     radioSubtitlesEnabled: getPref('radio-subtitles-enabled'),
     radioSubtitleDwellSec: normalizeRadioSubtitleDwellSec(getPref('radio-subtitle-dwell-sec')),
     voiceIdleCutoffMs: getPref('voice-idle-cutoff-ms'),
@@ -377,13 +358,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
     setPref('docview-sources', next)
   }, [prefs.sources])
 
-  const toggleVoiceSink = useCallback((shapeType: string) => {
-    const next = csvToSet(prefs.voiceSinkShapeTypes)
-    if (next.has(shapeType)) next.delete(shapeType)
-    else next.add(shapeType)
-    setPref('voice-sink-shape-types', setToCsv(next))
-  }, [prefs.voiceSinkShapeTypes])
-
   const handleVoiceColor = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setPref('voice-note-color', e.target.value)
   }, [])
@@ -396,7 +370,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
     setPref('prefs-open-sections', next)
   }, [prefs.openSections])
 
-  const sinkShapes = csvToSet(prefs.voiceSinkShapeTypes)
   const runningBots = agents.filter(isRunningBot)
   // Only demote the stored backend to Off once a real list says it is not
   // there. While the list is unknown, showing "Off" would report a setting he
@@ -687,17 +660,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           <div className="prefs-num-row">
             <span className="prefs-color-label">Submit</span>
             <input className="prefs-num" style={{ width: 170, textAlign: 'left' }} value={prefs.voiceSubmitWords} onChange={e => setPref('voice-submit-words', e.target.value)} placeholder="send, send it" />
-          </div>
-        </PrefSubsection>
-
-        <PrefSubsection title="Voice ignored in">
-          <div className="prefs-source-checks">
-            {FLEET_SHAPE_OPTIONS.map(([value, label]) => (
-              <label key={value} className="prefs-check">
-                <input type="checkbox" checked={sinkShapes.has(value)} onChange={() => toggleVoiceSink(value)} />
-                <span>{label}</span>
-              </label>
-            ))}
           </div>
         </PrefSubsection>
 

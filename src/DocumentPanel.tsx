@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
 import { setStopRecordingCallback, setFinishPlacementCallback } from './tools/VoiceNoteTool'
-import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
@@ -1185,20 +1185,9 @@ function VoiceTargetFollowsSelection() {
   return null
 }
 
-function VoiceSinkShapeTapTarget() {
-  useEffect(() => {
-    const onPointerDown = (event: PointerEvent) => {
-      maybeHandleVoiceSinkPointerDown(event)
-    }
-    document.addEventListener('pointerdown', onPointerDown, true)
-    return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [])
-  return null
-}
-
 export function VoiceTargetFollower() {
   if (typeof window === 'undefined') return null
-  return <><VoiceTargetFollowsSelection /><VoiceSinkShapeTapTarget /></>
+  return <VoiceTargetFollowsSelection />
 }
 
 export function VoiceNoteButton() {

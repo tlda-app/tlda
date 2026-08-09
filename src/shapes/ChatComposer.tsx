@@ -20,7 +20,7 @@ import { getPref, subscribePref } from '../preferences'
 import { getComposerDraft, saveComposerDraft, flushComposerDraft, clearComposerDraft } from '../stores/composerDraftStore'
 
 export type ComposerSend = (text: string, targets: string[]) => void
-type VoiceTargetHandle = {
+export type VoiceTargetHandle = {
   sendTargets: string[]
   agentNames: Record<string, string>
   getSendTargets: () => string[]
@@ -50,6 +50,7 @@ export function ChatComposer({
   isTouchDevice = false,
   style,
   draftKey,
+  voiceTargetSnapshotRef,
 }: {
   sendTargets: string[]
   agentNames: Record<string, string>
@@ -66,6 +67,7 @@ export function ChatComposer({
   /** Identifies this composer's unsent text across unmounts — `chat:<shape.id>`,
    *  `inbox:<partnerId>`. Omit and the draft is not preserved. */
   draftKey?: string
+  voiceTargetSnapshotRef?: React.MutableRefObject<(() => VoiceTargetHandle) | null>
 }) {
   const localRef = useRef<HTMLTextAreaElement>(null)
   const inputRef = externalRef ?? localRef
@@ -109,6 +111,15 @@ export function ChatComposer({
   })
   voiceTargetRef.current.sendTargets = sendTargets
   voiceTargetRef.current.agentNames = agentNames
+  if (voiceTargetSnapshotRef) {
+    voiceTargetSnapshotRef.current = () => ({
+      sendTargets: [...voiceTargetRef.current.sendTargets],
+      agentNames: { ...voiceTargetRef.current.agentNames },
+      getSendTargets() { return this.sendTargets },
+      getAgentNames() { return this.agentNames },
+      submitCurrent(submittedText) { return submitCurrentRef.current(submittedText) },
+    })
+  }
 
   /** Persist what is in the field right now. Called from every path that changes
    *  `.value`, including the ones that bypass the input event (Escape, history). */

@@ -32,7 +32,7 @@ import { renderActivityGroup, renderThreadRows, scheduleTimeLabel } from '../fle
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
-import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
+import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording, dumpVoiceTarget } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
@@ -69,7 +69,7 @@ import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
 import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { ChatComposer } from './ChatComposer'
+import { ChatComposer, type VoiceTargetHandle } from './ChatComposer'
 import { PersistentCornerButtonSlider } from '../CornerButtonSlider'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
@@ -4210,6 +4210,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // This panel's composer text survives any shape recreation. See composerDraftStore.
   const composerDraftKey = `chat:${shape.id}`
+  const composerVoiceTargetSnapshotRef = useRef<(() => VoiceTargetHandle) | null>(null)
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
@@ -5575,20 +5576,24 @@ function FleetChatInner({ shape }: { shape: any }) {
     const ta = inputRef.current as HTMLTextAreaElement | null
     if (!ta) return
     if (ta.value !== '') {
-      stashClearedComposerDraft(composerDraftKey, ta.value)
+      stashClearedComposerDraft(composerDraftKey, {
+        text: ta.value,
+        voiceTarget: composerVoiceTargetSnapshotRef.current?.() ?? null,
+      })
       ta.value = ''
       ta.style.height = ''
       ta.dispatchEvent(new Event('input', { bubbles: true }))
-      ta.focus()
+      dumpVoiceTarget()
       return
     }
     const draft = takeClearedComposerDraft(composerDraftKey)
-    if (!draft) return
-    ta.value = draft
+    if (!draft?.text) return
+    ta.value = draft.text
     resizeComposerTextarea(ta)
     ta.dispatchEvent(new Event('input', { bubbles: true }))
     ta.focus()
     ta.setSelectionRange(ta.value.length, ta.value.length)
+    if (draft.voiceTarget) setVoiceTarget(ta, draft.voiceTarget as VoiceTargetHandle)
   }
 
   const deadTargetAgent = useMemo(() => {
@@ -6852,6 +6857,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               inputRef={inputRef as any}
               isTouchDevice={_isTouchDevice}
               draftKey={composerDraftKey}
+              voiceTargetSnapshotRef={composerVoiceTargetSnapshotRef}
               placeholder=""
               style={{
                 width: '100%',
