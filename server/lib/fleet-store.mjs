@@ -1422,8 +1422,19 @@ export class FleetStore {
     // general event-history query, and the bounded join runs inside the store
     // worker.
     // Newest unread first, then reversed by the caller so the page still reads
-    // oldest-to-newest. Every messaging surface works this way: the window is
-    // the recent end, the order inside it is chronological.
+    // oldest-to-newest. The WINDOW is the recent end; the ORDER inside it is
+    // chronological, and that separation is the whole design.
+    //
+    // Skip settled this himself on 2026-08-09, and the first sentence he said
+    // is not the one that governs. 01:45:49 "change the default view of inbox
+    // to be newest first". Then 01:46:46 "there wasn't a problem with inbox";
+    // 01:47:04 "there was a problem that it fetched a finite page"; 01:47:16
+    // "you understand how confusing it is when agents are reading things not in
+    // historical order. It's gonna be chaos".
+    //
+    // So: the finite page was the defect, and historical order must not break.
+    // Do NOT make the page newest-first inside itself -- that is the thing he
+    // calls chaos, and it is what acting on 01:45:49 alone produces.
     //
     // This used to order by `e.timestamp ASC`, which handed an agent the oldest
     // fifty of its unread -- the least useful page precisely when it was behind.
@@ -4790,6 +4801,10 @@ export class FleetStore {
   // exact size. Always return at least one row: an oversized message must still
   // be deliverable, or it would sit at the head of the unread set forever and
   // wedge the inbox behind it.
+  //
+  // The budget walks from the NEWEST end, so what gets dropped is the oldest of
+  // the window -- then the page is reversed, so the reader gets the most recent
+  // rows that fit, in historical order.
   getInboxDeliveriesLimited(agentId, limit = 50, charBudget = 24000) {
     const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
     const newestFirst = this._query(this._getInboxDeliveriesLimited, agentId, n);
