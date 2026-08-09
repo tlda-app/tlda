@@ -1421,11 +1421,24 @@ export class FleetStore {
     // state. Read through that projection only: callers cannot use this as a
     // general event-history query, and the bounded join runs inside the store
     // worker.
+    // Newest unread first, then reversed by the caller so the page still reads
+    // oldest-to-newest. Every messaging surface works this way: the window is
+    // the recent end, the order inside it is chronological.
+    //
+    // This used to order by `e.timestamp ASC`, which handed an agent the oldest
+    // fifty of its unread -- the least useful page precisely when it was behind.
+    // Ordering on the joined table also could not use idx_recipients_agent_ts;
+    // `r.timestamp` can, the same way _getOldestUnreadAt below does.
+    //
+    // The evidence: of 518 times an agent left its inbox for history, 509
+    // (98.3%) asked with a `since:` bound. Recency is not a regrouping of the
+    // rows an agent was handed, it is a different set of rows, so no view could
+    // produce it.
     this._getInboxDeliveriesLimited = this.db.prepare(`
       SELECT ${this._EVTE} FROM recipients r
       JOIN events e ON e.id = r.event_id
       WHERE r.agent_id = ? AND r.read = 0
-      ORDER BY e.timestamp ASC
+      ORDER BY r.timestamp DESC
       LIMIT ?
     `);
 
@@ -1433,12 +1446,18 @@ export class FleetStore {
       SELECT COUNT(*) AS c FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
-    // Newest unread, for the page-limited header's "how far behind am I".
+    // Oldest unread, for the page-limited header's "how far behind am I". The
+    // page holds the recent end now, so what an agent cannot see is the OLD
+    // end, and the useful number is how far back the backlog reaches. This was
+    // MAX(timestamp) while the page was oldest-first; under that ordering the
+    // newest was the unshown one. Both cannot be right at once.
+    //
     // No join: recipients carries its own timestamp, and
-    // idx_recipients_agent_ts(agent_id, timestamp DESC) makes this a seek to
-    // the first row rather than a scan of the unread set.
-    this._getNewestUnreadAt = this.db.prepare(`
-      SELECT MAX(timestamp) AS t FROM recipients WHERE agent_id = ? AND read = 0
+    // idx_recipients_agent_ts(agent_id, timestamp DESC) covers this agent's
+    // range, so it is a walk to the end of that range rather than a scan of
+    // the unread set.
+    this._getOldestUnreadAt = this.db.prepare(`
+      SELECT MIN(timestamp) AS t FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
     // Incrementally bump last_active for the event's sender + every recipient.
@@ -4716,17 +4735,42 @@ export class FleetStore {
 
   // ---- Message/event queries ----
 
-  getInboxDeliveriesLimited(agentId, limit = 50) {
+  // A row count is not a size. Fifty ordinary rows read fine; fifty long ones
+  // came to 83,000 characters, which no agent could take in -- and because the
+  // fifty-row cap was not reached, nothing said the read was page-limited. The
+  // read that failed hardest reported no problem at all.
+  //
+  // So bound the page by characters as well. Bounding here rather than in the
+  // renderer is what makes it safe: the MCP acks exactly the rows it was sent
+  // (`data.messages`), so a row left out of this page stays unread and comes
+  // back on the next call, while a row dropped at render time would be acked
+  // and lost. Fetch less, never render less.
+  //
+  // `text` is the bulk of a rendered row but not all of it -- chips and
+  // attachments resolve in the MCP afterwards -- so this is a bound, not an
+  // exact size. Always return at least one row: an oversized message must still
+  // be deliverable, or it would sit at the head of the unread set forever and
+  // wedge the inbox behind it.
+  getInboxDeliveriesLimited(agentId, limit = 50, charBudget = 24000) {
     const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
-    return this._query(this._getInboxDeliveriesLimited, agentId, n);
+    const newestFirst = this._query(this._getInboxDeliveriesLimited, agentId, n);
+    const budget = Math.max(1, Number.parseInt(String(charBudget), 10) || 24000);
+    const page = [];
+    let used = 0;
+    for (const row of newestFirst) {
+      if (page.length && used + (row?.text?.length || 0) > budget) break;
+      used += row?.text?.length || 0;
+      page.push(row);
+    }
+    return page.reverse();
   }
 
   getInboxDeliveryCount(agentId) {
     return this._getInboxDeliveryCount.get(agentId).c;
   }
 
-  getNewestUnreadAt(agentId) {
-    return this._getNewestUnreadAt.get(agentId)?.t || null;
+  getOldestUnreadAt(agentId) {
+    return this._getOldestUnreadAt.get(agentId)?.t || null;
   }
 
   // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in

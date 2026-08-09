@@ -5,20 +5,23 @@ import { formatInboxText, inboxAgeSpan } from '../mcp-server/fleet-tools.mjs'
 const NOW = Date.parse('2026-08-08T18:00:00.000Z')
 const at = iso => ({ id: Math.random(), kind: 'message', line: 'x', timestamp: iso })
 const page = [at('2026-08-08T14:00:00Z'), at('2026-08-08T14:30:00Z'), at('2026-08-08T15:10:00Z')]
-const truncated = { messages: 256, tasks: 0, messages_truncated: true, newest_unread_at: '2026-08-08T17:58:00Z' }
+// The page is recency-ordered, so what an agent cannot see is the OLD end and
+// the second number is how far back the backlog reaches. It reported the NEWEST
+// unshown while the page was oldest-first; both cannot be right at once.
+const truncated = { messages: 256, tasks: 0, messages_truncated: true, oldest_unread_at: '2026-08-05T18:00:00Z' }
 
 const header = out => out.split('\n').find(l => l.startsWith('Page-limited:'))
 
 test('the span reports both ends, in real units', () => {
   const out = formatInboxText({ mode: 'default', messages: page, counts: truncated, now: NOW })
-  assert.equal(header(out), 'Page-limited: 3/256 unread messages shown; oldest shown 4h ago, newest unshown 2m ago.')
+  assert.equal(header(out), 'Page-limited: 3/256 unread messages shown; oldest shown 4h ago, backlog reaches 3d ago.')
 })
 
-test('without newest_unread_at it reports only what it knows — no invented number', () => {
-  const counts = { ...truncated, newest_unread_at: null }
+test('without oldest_unread_at it reports only what it knows — no invented number', () => {
+  const counts = { ...truncated, oldest_unread_at: null }
   const out = formatInboxText({ mode: 'default', messages: page, counts, now: NOW })
   assert.equal(header(out), 'Page-limited: 3/256 unread messages shown; oldest shown 4h ago.')
-  assert.doesNotMatch(header(out), /unshown/)
+  assert.doesNotMatch(header(out), /backlog/)
 })
 
 test('an untruncated inbox gains no header', () => {
@@ -36,7 +39,7 @@ test('a truncated inbox is byte-identical apart from the added span', () => {
   const out = header(formatInboxText({ mode: 'default', messages: page, counts: truncated, now: NOW }))
   const shipped = 'Page-limited: 3/256 unread messages shown.'
   assert.notEqual(out, shipped, 'the span must actually change the output')
-  assert.equal(out.replace('; oldest shown 4h ago, newest unshown 2m ago', ''), shipped)
+  assert.equal(out.replace('; oldest shown 4h ago, backlog reaches 3d ago', ''), shipped)
 })
 
 test('age thresholds: just now / m / h / d', () => {

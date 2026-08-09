@@ -688,6 +688,10 @@ const _refTokens = new Map();
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;
 let _inboxStatus = 'available';
+// Task id -> the brief text this process has already rendered for it, so a
+// second inbox() read shows what changed rather than the whole brief again.
+// See inboxTaskBlocks. Per process, so a fresh wake reads its brief in full.
+const _inboxBriefSeen = new Map();
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
@@ -1888,10 +1892,32 @@ function normalizeInboxTasks({ task, tasks }) {
   return task ? [task] : [];
 }
 
-function inboxTaskBlocks(tasks) {
+// The brief is rebuilt from task state on EVERY inbox() call, so a long working
+// session pays for it once per call. Asked what they could not ask their inbox,
+// four agents answered independently and all four named this first -- ~10, ~15
+// and ~30 calls each, against briefs of 1000-1500 words, to reach the two new
+// lines underneath. One named the second cost: "a brief that reprints is a
+// brief that keeps arguing", after a stale coordinate in one re-asserted itself
+// thirty times.
+//
+// A task block is not a delivery. It is not in `messages`, it is never acked,
+// and it is rebuilt from current state on every call -- so unlike a message
+// row, rendering it once is not a lost delivery. It comes back the moment the
+// brief actually changes, and `briefSeen` lives for one MCP process, so an
+// agent waking with fresh context still reads its brief in full.
+//
+// Callers that want every page whole -- `drain`, which writes a file -- pass no
+// map and keep the unchanged behaviour.
+function inboxTaskBlocks(tasks, briefSeen = null) {
   return tasks.map(t => {
     const summary = inboxTaskSummary(t);
-    return t?.message ? `${summary}\n\n${t.message}` : summary;
+    if (!t?.message) return summary;
+    if (!briefSeen || !t.id) return `${summary}\n\n${t.message}`;
+    if (briefSeen.get(t.id) === t.message) {
+      return `${summary}\nBrief unchanged since this session read it — full text: thread({ task_id: "${t.id}" })`;
+    }
+    briefSeen.set(t.id, t.message);
+    return `${summary}\n\n${t.message}`;
   }).filter(Boolean);
 }
 
@@ -2037,15 +2063,19 @@ function pushInboxEntries(lines, rows, fmt) {
   });
 }
 
-// "50/256 unread" says there is more; it does not say you are four hours
-// behind. The span does, and the two ends answer different questions: the
-// oldest SHOWN is where this page starts, the newest UNSHOWN is how stale the
-// page is relative to what is waiting.
+// "50/256 unread" says there is more; it does not say how far back the rest
+// reaches. The span does, and the two ends answer different questions: the
+// oldest SHOWN is where this page starts, the oldest UNSHOWN is how deep the
+// backlog behind it goes.
 //
-// Both numbers are real or absent. The oldest is read off the page; the newest
-// unshown comes from the server (counts.newest_unread_at) and is simply omitted
-// if the server did not send it, rather than approximated from the page -- a
-// header that understates how far behind you are would be worse than no header.
+// Both ends flipped when the page became recency-ordered. It used to report the
+// NEWEST unshown, because an oldest-first page left the new mail out of view;
+// now the page holds the recent end and what an agent cannot see is old.
+//
+// Both numbers are real or absent. The oldest shown is read off the page; the
+// oldest unshown comes from the server (counts.oldest_unread_at) and is simply
+// omitted if the server did not send it, rather than approximated from the page
+// -- a header that understates the backlog would be worse than no header.
 function inboxRelativeAge(ms) {
   if (!Number.isFinite(ms) || ms < 0) return null;
   if (ms < 60_000) return 'just now';
@@ -2059,23 +2089,23 @@ export function inboxAgeSpan(messages = [], counts = null, now = Date.now()) {
     .map(m => Date.parse(m?.timestamp))
     .filter(Number.isFinite);
   const bits = [];
-  // min rather than messages[0]: the page is oldest-first today, and this stays
-  // correct if that ever stops being true.
+  // min rather than messages[0]: it does not depend on the page's order, which
+  // has already changed once.
   if (shown.length) {
     const age = inboxRelativeAge(now - Math.min(...shown));
     if (age) bits.push(`oldest shown ${age}`);
   }
-  const newestUnshown = Date.parse(counts?.newest_unread_at);
-  if (Number.isFinite(newestUnshown)) {
-    const age = inboxRelativeAge(now - newestUnshown);
-    if (age) bits.push(`newest unshown ${age}`);
+  const oldestUnshown = Date.parse(counts?.oldest_unread_at);
+  if (Number.isFinite(oldestUnshown)) {
+    const age = inboxRelativeAge(now - oldestUnshown);
+    if (age) bits.push(`backlog reaches ${age}`);
   }
   return bits.length ? bits.join(', ') : null;
 }
 
-export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now() }) {
+export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now(), briefSeen = null }) {
   const activeTasks = normalizeInboxTasks({ task, tasks });
-  const taskBlocks = inboxTaskBlocks(activeTasks);
+  const taskBlocks = inboxTaskBlocks(activeTasks, briefSeen);
   const lines = [];
   const count = messages.length;
   lines.push(`**INBOX MODE:** ${mode}`);
@@ -3734,7 +3764,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       resolveTheoremRefs,
       resolveImages: resolveInboxImages,
     })));
-    let text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages, counts: data.counts || null });
+    let text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages, counts: data.counts || null, briefSeen: _inboxBriefSeen });
     if (!args?.peek && data.messages?.length) {
       try {
         await mcpFleetTransport.ephemeral('ack-inbox', {
