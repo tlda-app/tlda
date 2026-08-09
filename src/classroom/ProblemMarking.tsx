@@ -131,7 +131,13 @@ export function ProblemMarking() {
 
   return <>
     {document
-      ? <SvgDocumentEditor key={`${problem.problemId}:${answer?.studentId}`} document={document} roomId={`doc-${answer?.contentRef}`} />
+      // Keyed by the document alone. Including the problem in the key made
+      // choosing one tear the editor down and build a new one, which lands at
+      // its default camera — so the navigation fired into an editor that was
+      // being destroyed and the replacement opened at the top. Changing student
+      // is a different document and should remount; changing problem is a move
+      // within the same one.
+      ? <SvgDocumentEditor key={answer?.contentRef} document={document} roomId={`doc-${answer?.contentRef}`} />
       : <main className="classroomWorkspace"><p className={error ? 'classroomError' : undefined}>{error || `${answer?.displayName} did not answer this one.`}</p></main>}
     <aside className="markingLifecycle" aria-label="Marking">
       <select value={problem.problemId} onChange={e => { setProblemIndex(problemOptions.indexOf(e.target.value)); setStudentIndex(0) }}>
