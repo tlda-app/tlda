@@ -952,7 +952,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   let project = await readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, sourceManifest, priorityPages, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
+  const { files, deletedFiles, sourceManifest, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
 
   const recoveries = await recoverProjectSourceTransactions(name)
   const unresolved = recoveries.find(item => item.state === 'recovery-required')
@@ -1502,7 +1502,6 @@ router.post('/:name/build', requireRw, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const { priorityPages } = req.body || {}
   const clean = req.query.clean === '1'
 
   // Clean build: delete aux/biber cache files before rebuilding
@@ -1540,7 +1539,7 @@ router.post('/:name/build', requireRw, async (req, res) => {
   res.json({ ok: true, building: true, clean })
 
   try {
-    await dispatchBuild(req.params.name, { priorityPages })
+    await dispatchBuild(req.params.name)
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
   }
