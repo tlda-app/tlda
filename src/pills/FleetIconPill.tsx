@@ -16,7 +16,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
+import { currentFleetAgents, useAwakeFleetAgentCount, useFleetConnection, useFleetIdentity } from '../fleet-data-adapter'
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { createFleetLayoutDetailed, getDocumentPageBounds, isFleetShapeForOwnerKey, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
@@ -26,6 +26,7 @@ import { isUsableIdentityName, sanitizeIdentityName } from '../fleet/identity-pe
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
 import { isPhoneFleetDefaultViewport, selectAutoFleetDefaultLayout } from './fleet-phone-default'
 import { chromeConditionClass, useChromeConditionSeverity } from '../chrome/useChromeConditions'
+import { clearChromeCondition, setChromeCondition } from '../chrome/conditions'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -38,6 +39,8 @@ const BASESTAR_PATHS = (
     <path d="M591 337 c-6 -35 -11 -68 -11 -73 0 -16 180 -175 191 -169 5 4 9 13 9 21 0 17 -161 284 -171 284 -4 0 -12 -28 -18 -63z"/>
   </>
 )
+
+const FLEET_DISCONNECTED_CONDITION = 'fleet-socket-disconnected'
 
 const DRAG_THRESHOLD = 6   // px before drag activates
 const ITEM_W = 44          // px width of each preset tile
@@ -302,6 +305,22 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
 
   const aliveCount = useAwakeFleetAgentCount()
   const conditionSeverity = useChromeConditionSeverity('fleet')
+  const fleetConnected = useFleetConnection()
+
+  // The fleet socket carries chat and every fleet panel's updates. Yjs already
+  // says so bottom-left when its own connection drops; this is the same
+  // statement for the fleet socket, on the button that owns it. Clearing on
+  // reconnect is the effect cleanup, so there is one path in and one out.
+  useEffect(() => {
+    if (fleetConnected) return
+    setChromeCondition({
+      id: FLEET_DISCONNECTED_CONDITION,
+      topic: 'fleet',
+      severity: 'error',
+      text: 'Connection lost — chat and fleet updates paused',
+    })
+    return () => clearChromeCondition(FLEET_DISCONNECTED_CONDITION)
+  }, [fleetConnected])
 
   // Refs for closure-stable drag state (used inside window listeners)
   const justDraggedRef = useRef(false)
