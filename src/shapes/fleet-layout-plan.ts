@@ -215,7 +215,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         id: makeSlotId('docview'),
         x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', sources: '["ref"]' },
       }, myId, myDevice),
     )
   } else {
@@ -247,7 +247,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
         id: makeSlotId('docview'),
         x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
         isLocked: false,
-        props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
+        props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '', sources: '["ref"]' },
       }, myId, myDevice),
       // Two-margin layout: the right margin holds the source editor sheet.
       panelShape('fleet-source-editor', {

@@ -6,7 +6,7 @@
  * Priority: errors > ref > proof (proof is continuous/background).
  *
  * Sources:
- *   - 'ref':    fired when user clicks a cross-reference in the document
+ *   - 'ref':    fired when user clicks a reference target
  *   - 'proof':  auto-tracks the theorem statement for the currently visible proof
  *   - 'errors': shows the error region when a build has errors
  *
@@ -36,7 +36,6 @@ import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { getPref } from '../preferences'
 import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
@@ -45,6 +44,7 @@ import { optionalJson } from '../optionalJson'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
+const DEFAULT_REF_SOURCES = '["ref"]'
 
 const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
 type Source = typeof ALL_SOURCES[number]
@@ -82,7 +82,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = fleetDocviewProps
 
   getDefaultProps() {
-    return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '' }
+    return { w: DEFAULT_W, h: DEFAULT_H, sources: DEFAULT_REF_SOURCES, label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '', targetShapeId: '', useFullBounds: false }
   }
 
   override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
@@ -136,10 +136,24 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
   }, [editor])
 
-  const { w, h, sources: sourcesRaw, label, page, yTop, yBottom, title } = shape.props
+  const { w, h, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds } = shape.props
   const sources = parseSources(sourcesRaw)
 
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
+  const targetShapeBounds = useValue('docview-target-shape-bounds', (): ClipBounds | null => {
+    if (!mainEditor || !targetShapeId) return null
+    const bounds = mainEditor.getShapePageBounds(targetShapeId)
+    if (!bounds) return null
+    if (useFullBounds) {
+      return { x: bounds.x - 20, y: bounds.y - 20, w: bounds.w + 40, h: bounds.h + 40 }
+    }
+    return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+  }, [mainEditor, targetShapeId, useFullBounds])
+  const targetShapePageBounds = useValue('docview-target-shape-page-bounds', (): ClipBounds | null => {
+    if (!mainEditor || !targetShapeId) return null
+    const bounds = mainEditor.getShapePageBounds(targetShapeId)
+    return bounds ? { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h } : null
+  }, [mainEditor, targetShapeId])
 
   // --- Return button: save camera before Go, restore on Return ---
   const [savedCamera, setSavedCamera] = useState<{ x: number; y: number; z: number } | null>(null)
@@ -248,6 +262,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       return item?.bounds ?? null
     }
 
+    if (targetShapeBounds) return targetShapeBounds
     if (!doc?.pages?.length) return null
 
     // Ref: pinned region from last click
@@ -323,7 +338,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
 
     // Only ref, no proof source
     return refBounds
-  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex])
+  }, [doc, sources, label, page, yTop, yBottom, proofInfo, mainEditor, mainViewportY, resolvedErrors, errorIndex, targetShapeBounds])
 
   // Prefetch SVG for the page the bounds point to — the clip panel needs it
   // loaded in svgTextStore even if the page is outside the main viewport.
@@ -379,7 +394,21 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
   const docviewSurface = useMemo<FleetDocviewSurfaceState | null>(() => {
-    if (!mainEditor || !bounds || boundsPageIdx < 0 || !doc?.pages?.[boundsPageIdx]) return null
+    if (!mainEditor || !bounds) return null
+    if (targetShapeId && targetShapePageBounds) {
+      return createFleetDocviewSurface({
+        wm: getEditorWMCore(mainEditor),
+        shapeId: shape.id,
+        bounds,
+        pageBounds: targetShapePageBounds,
+        panelWidth: w,
+        panelHeight: panelH,
+        userId: shape.props.userId,
+        deviceId: shape.props.deviceId,
+        source: 'target',
+      })
+    }
+    if (boundsPageIdx < 0 || !doc?.pages?.[boundsPageIdx]) return null
     const pageBounds = doc.pages[boundsPageIdx].bounds
     return createFleetDocviewSurface({
       wm: getEditorWMCore(mainEditor),
@@ -392,7 +421,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       deviceId: shape.props.deviceId,
       source: activeSource,
     })
-  }, [mainEditor, shape.id, shape.props.userId, shape.props.deviceId, bounds, boundsPageIdx, doc, w, panelH, activeSource])
+  }, [mainEditor, shape.id, shape.props.userId, shape.props.deviceId, bounds, targetShapeId, targetShapePageBounds, boundsPageIdx, doc, w, panelH, activeSource])
 
   const docviewSurfaceRef = useRef<FleetDocviewSurfaceState | null>(null)
   docviewSurfaceRef.current = docviewSurface
@@ -403,7 +432,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     }
   }, [])
 
-  if (!mainEditor || !doc) {
+  if (!mainEditor || (!doc && !targetShapeBounds)) {
     return (
       <div style={{ width: w, height: h, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.3, fontSize: 11 }}>
         No document
@@ -438,7 +467,12 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
                   if (s?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
                   mainEditor.updateShape({
                     id: shape.id, type: shape.type,
-                    props: { ...shape.props, sources: JSON.stringify(newSources) },
+                    props: {
+                      ...shape.props,
+                      sources: JSON.stringify(newSources),
+                      targetShapeId: '',
+                      useFullBounds: false,
+                    },
                   })
                 }}
               />
@@ -465,7 +499,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             mainEditor.createShape({
               id: newId, type: 'fleet-docview' as any,
               x: shape.x + w / 2 + 5, y: shape.y, isLocked: false,
-              props: { w: w / 2 - 5, h, sources: sourcesRaw, label, page, yTop, yBottom, title },
+              props: { w: w / 2 - 5, h, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds },
             })
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
             mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, w: w / 2 - 5 } })
@@ -481,7 +515,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             mainEditor.createShape({
               id: newId, type: 'fleet-docview' as any,
               x: shape.x, y: shape.y + h / 2 + 5, isLocked: false,
-              props: { w, h: h / 2 - 5, sources: sourcesRaw, label, page, yTop, yBottom, title },
+              props: { w, h: h / 2 - 5, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds },
             })
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
             mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...shape.props, h: h / 2 - 5 } })
@@ -650,7 +684,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         className="fleet-docview-body"
         style={{ height: panelH }}
       >
-        {bounds && docviewSurface && mainEditor && svgReady ? (
+        {bounds && docviewSurface && mainEditor && (targetShapeId || svgReady) ? (
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
@@ -662,6 +696,8 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             readOnly
             viewportId={docviewSurface.viewportId}
             wmSurface={{ wm: docviewSurface.wm, surfaceId: docviewSurface.surfaceId, layerId: docviewSurface.layerId }}
+            requestedShapeIds={targetShapeId ? [targetShapeId] : undefined}
+            unboundedPanning={!!targetShapeId}
           />
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.15, fontSize: 11 }}>

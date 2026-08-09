@@ -3527,7 +3527,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     // Update docview shape directly if one exists
     const mainEd = (window as any).__tldraw_editor__
     if (mainEd) {
-      const dvShape = mainEd.getCurrentPageShapes().find((s: any) => s.type === 'fleet-docview')
+      const dvShape = mainEd.getCurrentPageShapes()
+        .filter((s: any) => s.type === 'fleet-docview')
+        .find((s: any) => {
+          try { return JSON.parse(s.props?.sources || '["ref"]').includes('ref') } catch { return true }
+        })
       if (dvShape) {
         const lbl = target.dataset.refLabel || ''
         const dvTitle = lbl || `p.${resolved.page}`
@@ -5697,6 +5701,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     sourceAgent?: string
     filePath?: string
     fileUrl?: string
+    markdownChip?: boolean
     startX: number
     startY: number
     started: boolean
@@ -5956,7 +5961,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           drag = {
             pillId: null, pillType: 'doc' as any, value,
             displayName: name, color: '#63a0db', content: filePath,
-            filePath,
+            filePath, markdownChip: true,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -6153,6 +6158,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
             ...(drag.filePath ? { filePath: drag.filePath } : {}),
             ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
+            ...(drag.markdownChip ? { markdownChip: true } : {}),
           },
         })
         drag.pillId = pillId as unknown as string
@@ -6235,6 +6241,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
                 ...(drag.filePath ? { filePath: drag.filePath } : {}),
                 ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
+                ...(drag.markdownChip ? { markdownChip: true } : {}),
               },
             })
             drag._onMain = true
