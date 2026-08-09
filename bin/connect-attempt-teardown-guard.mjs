@@ -70,8 +70,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const failures = []
 
 class FakeWebSocket extends EventEmitter {
-  constructor(url) { super(); this.url = url; this.readyState = 0 }
-  send() {} close() { this.readyState = 3 } terminate() { this.readyState = 3 }
+  constructor(url) { super(); this.url = url; this.readyState = 0; this.throwOnSend = false }
+  send() { if (this.throwOnSend) throw new Error('send failed') }
+  close() { this.readyState = 3 } terminate() { this.readyState = 3 }
   fakeOpen() { this.readyState = 1; this.emit('open') }
   fakeClose(code = 1000) { this.readyState = 3; this.emit('close', code, '') }
   fakeError(e) { this.emit('error', e) }
@@ -106,7 +107,7 @@ const CASES = [
   ['error during handshake — never opened', async (h) => { h.rws.connect(); h.created[0].fakeError(new Error('ECONNREFUSED')) }, false],
   ['close during handshake — never opened', async (h) => { h.rws.connect(); h.created[0].fakeClose(1006) }, false],
   ['established, then remote close', async (h) => { h.rws.connect(); h.created[0].fakeOpen(); h.created[0].fakeClose(1006) }, true],
-  ['established, then heartbeat timeout', async (h) => { h.rws.connect(); h.created[0].fakeOpen(); await wait(45) }, true],
+  ['established, then send failure', async (h) => { h.rws.connect(); h.created[0].fakeOpen(); h.created[0].throwOnSend = true; h.rws.send({ type: 'probe' }) }, true],
   ['established, then manual reconnect', async (h) => { h.rws.connect(); h.created[0].fakeOpen(); h.rws.reconnect() }, true],
 ]
 

@@ -2366,7 +2366,7 @@ export async function handleFleetTool(name, args, context = {}) {
     if (name === 'login') {
       return { content: [{ type: 'text', text: `Login could not resolve this native thread's fleet identity: ${error.message}` }], isError: true };
     }
-    throw error;
+    process.stderr.write(`[fleet] native child identity lookup failed before ${name}; using local MCP identity: ${error.message}\n`);
   }
   return TOOL_IDENTITY.run({
     agentId: nativeBinding?.child_agent_id || BASE_AGENT_ID,
@@ -2393,8 +2393,6 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
   reportStatus('tool_call', name);
 
   try {
-    await flushFleetTransportOpportunistically(name);
-
   // ==== Registration & Identity ====
 
   // ---- login ----
@@ -5188,7 +5186,7 @@ const mcpFleetTransport = createFleetOperationTransport({
   name: 'mcp-fleet',
   sendEphemeral: (operation, payload, options = {}) =>
     sendFleetRequestAttempt(operation, payload, {
-      deadlineMs: Number.isFinite(options.deadlineMs) ? options.deadlineMs : null,
+      deadlineMs: Number.isFinite(options.deadlineMs) ? options.deadlineMs : FLEET_TOOL_READ_WAIT_MS,
       idleTimeoutMs: Number.isFinite(options.idleTimeoutMs) ? options.idleTimeoutMs : null,
     }),
   sendDurable: sendDurableFleet,
@@ -5201,15 +5199,6 @@ const mcpFleetTransport = createFleetOperationTransport({
     }
   },
 })
-
-async function flushFleetTransportOpportunistically(toolName) {
-  if (!activeAgentId() || toolName === 'login') return;
-  try {
-    await flushFleetTransport({ limit: 20, deadlineMs: 1500 });
-  } catch (e) {
-    process.stderr.write(`[fleet-transport] opportunistic flush before ${toolName} failed: ${e.message}\n`);
-  }
-}
 
 let _channelHasOpened = false;
 

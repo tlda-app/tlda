@@ -13,8 +13,11 @@ class FakeWebSocket extends EventEmitter {
     this.url = url
     this.opts = opts
     this.readyState = 0 // CONNECTING
+    this.throwOnSend = false
   }
-  send() {}
+  send() {
+    if (this.throwOnSend) throw new Error('send failed')
+  }
   close() { this.readyState = 3 } // CLOSED
   terminate() { this.readyState = 3 } // CLOSED, without waiting for a handshake
   fakeOpen() { this.readyState = 1; this.emit('open') } // OPEN
@@ -107,15 +110,16 @@ test('error+close on one socket yields exactly one onClose transition', () => {
   }
 })
 
-test('heartbeat-timeout and manual-reconnect reasons are distinct from close/error', async () => {
+test('missed heartbeat does not close an otherwise-open socket', async () => {
   const { rws, created, events } = makeHarness({ heartbeatTimeoutMs: 10 })
   try {
     rws.connect()
     created[0].fakeOpen()
-    assert.equal(await waitFor(() => events.some(e => e[0] === 'onClose')), true)
-    const closeEvents = events.filter(e => e[0] === 'onClose')
-    assert.equal(closeEvents.length, 1)
-    assert.equal(closeEvents[0][1], 'heartbeat-timeout')
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(created.length, 1)
+    assert.equal(rws.connected, true)
+    assert.equal(events.filter(e => e[0] === 'onClose').length, 0)
+    assert.equal(events.filter(e => e[0] === 'retryScheduled').length, 0)
   } finally {
     rws.close()
   }
@@ -143,15 +147,17 @@ test('queued liveness after a starved heartbeat timer keeps the same OPEN genera
   }
 })
 
-test('genuinely silent OPEN socket still reconnects after heartbeat timeout', async () => {
+test('send failure on an OPEN socket reconnects with send-error reason', async () => {
   const { rws, created, events } = makeHarness({ heartbeatTimeoutMs: 10 })
   try {
     rws.connect()
     created[0].fakeOpen()
+    created[0].throwOnSend = true
+    assert.equal(rws.send({ type: 'probe' }), false)
     assert.equal(await waitFor(() => created.length === 2), true)
     assert.equal(created.length, 2)
     assert.equal(rws.attemptId, '2')
-    assert.ok(events.some(e => e[0] === 'onClose' && e[1] === 'heartbeat-timeout' && e[2] === '1'))
+    assert.ok(events.some(e => e[0] === 'onClose' && e[1] === 'send-error' && e[2] === '1'))
     assert.ok(events.some(e => e[0] === 'retryScheduled' && e[1] === '1'))
   } finally {
     rws.close()

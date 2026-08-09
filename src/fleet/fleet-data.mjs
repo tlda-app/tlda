@@ -657,24 +657,13 @@ let _reconnectDelay = 1000
 let _connected = false
 let _disconnectedAt = 0
 let _heartbeatInterval = null
-let _receiveWatchdogInterval = null
-// Force a reconnect if the socket produces no inbound traffic for this long. A
-// healthy socket yields a message at least every 10s (the id'd heartbeat reply
-// below, plus deltas), so 30s of total silence = 3 missed cycles → half-open/dead.
-// Detection is ~30-35s (timeout + one check tick). This sits BELOW the server's
-// 60s heartbeat grace: harmless, because a client that reconnects while the server
-// still holds the old socket just opens a fresh one and backfills — the server
-// reaps the abandoned socket at 60s, and no message is lost across the gap.
-const WS_RECEIVE_TIMEOUT_MS = 30_000
-const WS_RECEIVE_CHECK_MS = 5_000
 // A socket that never reaches OPEN fires no open, no close, and no error, so
-// nothing above ever runs: the receive watchdog returns immediately because it
-// only looks at readyState 1, and connect() refuses to redial because `_ws` is
-// non-null. That is a permanent deafness with a working composer and no error,
-// and it is what a deploy produces — the edge accepts the TCP connection while
-// no backend is there to answer the upgrade. A healthy connect to the live
-// server was measured at ~329ms, so this ceiling is generous by an order of
-// magnitude: it catches wedged, not slow.
+// connect() refuses to redial because `_ws` is non-null. That is permanent
+// deafness with a working composer and no error, and it is what a deploy
+// produces — the edge accepts the TCP connection while no backend is there to
+// answer the upgrade. A healthy connect to the live server was measured at
+// ~329ms, so this ceiling is generous by an order of magnitude: it catches
+// never-opened, not slow.
 const WS_CONNECT_TIMEOUT_MS = 5_000
 let _connectAttemptTimer = null
 let _lastWsOpenAt = 0
@@ -826,52 +815,17 @@ function _startHeartbeat() {
   if (_heartbeatInterval) clearInterval(_heartbeatInterval)
   _heartbeatInterval = setInterval(() => {
     if (_humanId && _ws && _ws.readyState === 1) {
-      // Send the heartbeat as a REQUEST (with an id) so the server's reply()
-      // sends a frame back. That inbound frame is what resets the receive
-      // watchdog every 10s on a healthy socket. A raw id-less heartbeat gets
-      // NO reply — the server's reply() no-ops without an id — so a
-      // quiet-but-healthy connection would produce zero inbound and the
-      // watchdog would false-reconnect every cycle. The reply is fire-and-forget
-      // here (we only need the inbound frame); a half-open socket gets no reply,
-      // so the watchdog still fires.
+      // Fire-and-forget application heartbeat. The server reply is useful
+      // activity telemetry, but silence here is not evidence that the socket is
+      // dead: an overloaded server can delay replies while the browser socket is
+      // still valid. Destructive recovery is left to real close/error paths.
       browserFleetTransport.ephemeral('heartbeat', { agent: _humanId }).catch(() => {})
     }
   }, 10_000)
-  _startReceiveWatchdog()
 }
 
-// Receive-side watchdog. The heartbeat above only SENDS; on its own it can't
-// notice a socket that went half-open (Wi-Fi sleep, network change, backgrounded
-// tab) where `onclose` never fires. A half-open socket sits at readyState===1
-// forever, so no reconnect runs and new chat events silently stop arriving —
-// the "reload over and over to see anything" failure. This is the browser-native
-// equivalent of ResilientWS's heartbeat-timeout (shared/resilient-ws.mjs): a live
-// socket produces inbound traffic at least every 10s (the server replies to our
-// heartbeat, plus agents-delta/chat), so if we've heard NOTHING for 3 heartbeat
-// cycles (30s) we assume the socket is dead and force-close it. That close
-// fires `onclose`, which runs the existing reconnect + reconnect-backfill path.
-function _startReceiveWatchdog() {
-  if (_receiveWatchdogInterval) clearInterval(_receiveWatchdogInterval)
-  // Seed activity so a stale timestamp from a prior dead socket can't fire
-  // immediately after a fresh open.
-  _lastWsActivityAt = Date.now()
-  _receiveWatchdogInterval = setInterval(() => {
-    if (!_ws || _ws.readyState !== 1) return
-    const silentForMs = Date.now() - _lastWsActivityAt
-    if (silentForMs > WS_RECEIVE_TIMEOUT_MS) {
-      log.warn('fleet-data', 'receive watchdog: no inbound activity — forcing reconnect', { silentForMs })
-      try { _ws.close() } catch { /* onclose still fires the reconnect path */ }
-    }
-  }, WS_RECEIVE_CHECK_MS)
-}
-
-function _stopReceiveWatchdog() {
-  if (_receiveWatchdogInterval) { clearInterval(_receiveWatchdogInterval); _receiveWatchdogInterval = null }
-}
-
-// The receive watchdog above only inspects an OPEN socket, so it cannot see a
-// socket that never opened. This covers that window, and only that window: it is
-// armed when the socket is constructed and cleared the moment it opens.
+// This covers a socket that never opened, and only that window: it is armed when
+// the socket is constructed and cleared the moment it opens.
 function _armConnectTimeout(ws) {
   _clearConnectTimeout()
   _connectAttemptTimer = setTimeout(() => {
@@ -1058,15 +1012,20 @@ export function connect() {
     const storedName = urlName || readStoredIdentity()
     if (storedName) {
       _identifyPending = true
-      _humanName = storedName
-      notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+      const hasCurrentStoredIdentity = !!_humanId && _humanName === storedName
+      if (!hasCurrentStoredIdentity) {
+        _humanName = storedName
+        notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+      }
       login(storedName).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
         // or mask the browser's chosen identity with a generated temporary human:
         // the stored name is the durable "who I am" claim, so keep retrying it.
         if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
           _identifyPending = true
-          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+          if (!_humanId || _humanName !== storedName) {
+            notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+          }
           retryStoredIdentity(storedName)
           return
         }
@@ -1075,7 +1034,9 @@ export function connect() {
         // manual switch or temporary identity.
         registerHuman(storedName, { persist: !urlName }).catch(() => {
           _identifyPending = true
-          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+          if (!_humanId || _humanName !== storedName) {
+            notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+          }
         })
       })
     } else {
@@ -1095,7 +1056,6 @@ export function connect() {
     _connected = false
     _disconnectedAt = _disconnectedAt || Date.now()
     if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null }
-    _stopReceiveWatchdog()
     notify('connection', { type: 'connection', connected: false })
     setTimeout(connect, _reconnectDelay)
     _reconnectDelay = Math.min(_reconnectDelay * 2, 15000) // cap at 15s, not 30s

@@ -336,25 +336,10 @@ function VersionStamp({ document, reloadCompletedAt }: { document: SvgDocument; 
   }, [sentinel?.commitHash, projectName, document, editor, usesHtmlPages])
 
   // A signal only requests a reload. Count it after the page fetches complete,
-  // otherwise a failed reload suppresses both the sentinel recovery and watchdog.
+  // otherwise a failed reload suppresses the sentinel recovery.
   useEffect(() => {
     if (reloadCompletedAt > 0) lastReloadAtRef.current = reloadCompletedAt
   }, [reloadCompletedAt])
-
-  // Watchdog: periodically re-check staleness in case the one-shot guard was consumed
-  // without a successful reload (rapid builds, WS reconnect with same hash).
-  const sentinelBuildReadyAt = sentinel?.buildReadyAt ?? 0
-  useEffect(() => {
-    if (!sentinelBuildReadyAt) return
-    const id = setInterval(() => {
-      if (lastReloadAtRef.current === 0) return
-      if (sentinelBuildReadyAt > lastReloadAtRef.current + 10_000) {
-        console.log('[viewer] watchdog: stale by', sentinelBuildReadyAt - lastReloadAtRef.current, 'ms — triggering reload')
-        dispatchSignalDirect('signal:reload', { type: 'full', timestamp: Date.now() })
-      }
-    }, 30_000)
-    return () => clearInterval(id)
-  }, [sentinelBuildReadyAt])
 
   const handleClick = useCallback((idx: number) => {
     if (idx === 0) return

@@ -25,7 +25,7 @@ export class ResilientWS {
    *   message and the immutable attempt id of the socket generation it arrived on
    * @param {(reason: string, attemptId: string|null, meta: { established: boolean }) => void} [options.onClose] —
    *   called on connection loss (before retry); reason is one of
-   *   'close' | 'error' | 'heartbeat-timeout' | 'connect-timeout' | 'manual-reconnect'; attemptId is the id minted
+   *   'close' | 'error' | 'send-error' | 'connect-timeout' | 'manual-reconnect'; attemptId is the id minted
    *   for the socket that just ended (null if it ended before any socket was ever created,
    *   e.g. a URL-resolution failure).
    *   `meta.established` is true only if this socket reached OPEN. Anything you
@@ -90,8 +90,14 @@ export class ResilientWS {
 
   send(obj) {
     if (!this.connected) return false
-    try { this._ws.send(JSON.stringify(obj)); return true }
-    catch (e) { this._log(`[${this._label}] send error: ${e.message}`); return false }
+    const ws = this._ws
+    const attemptId = this._lastAttemptId
+    try { ws.send(JSON.stringify(obj)); return true }
+    catch (e) {
+      this._log(`[${this._label}] send error: ${e.message}`)
+      if (this._cleanup(ws, 'send-error', attemptId)) this._scheduleRetry(attemptId)
+      return false
+    }
   }
 
   connect() {
@@ -159,15 +165,10 @@ export class ResilientWS {
       })
 
       // A protocol-level ping is liveness evidence just like an application
-      // message, so it resets the watchdog too. The server's WS heartbeat
-      // (unified-server.mjs WS_HEARTBEAT_INTERVAL_MS = 30_000) pings every 30s
-      // even when there's no app traffic, so this keeps an idle-but-healthy
-      // connection from being falsely torn down. COUPLING: that 30s interval
-      // must stay below every consumer's heartbeatTimeoutMs (fleet daemon 90s,
-      // MCP fleet-channel 45s) — if anyone raises the server ping interval past
-      // a consumer's timeout, that consumer will false-reconnect. Purely
-      // additive: a reset only ever pushes the deadline later, so it can never
-      // shorten an existing reconnect.
+      // message, so it refreshes the "last heard from server" timer. Missing
+      // pings are not evidence of death by themselves; the timer logs silence,
+      // while teardown/reconnect waits for close/error/connect-timeout or a real
+      // send failure.
       ws.on('ping', () => {
         this._resetHeartbeat(ws, attemptId)
         this._onActivity?.('ping')
@@ -270,9 +271,7 @@ export class ResilientWS {
         if (ws._tldaActivityGeneration !== activityGeneration) return
         const openState = this._WebSocketImpl.OPEN ?? WebSocket.OPEN
         if (ws.readyState !== openState) return
-        this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${attemptId})`)
-        try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) }
-        if (this._cleanup(ws, 'heartbeat-timeout', attemptId)) this._scheduleRetry(attemptId)
+        this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms (attempt ${attemptId}); waiting for close/error/send failure`)
       })
     }, this._heartbeatTimeoutMs)
   }
