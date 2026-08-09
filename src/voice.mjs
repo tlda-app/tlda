@@ -1734,26 +1734,6 @@ function targetLabel() {
     .join(', ')
 }
 
-function interactiveSinkChild(target) {
-  if (!target || !target.closest) return false
-  return !!target.closest('button, input, textarea, select, option, a, [role="button"], [contenteditable="true"], .cm-editor')
-}
-
-export function isVoiceSinkShapeType(shapeType) {
-  if (!shapeType) return false
-  return parseCsvPref(getPref('voice-sink-shape-types')).includes(shapeType)
-}
-
-export function maybeHandleVoiceSinkPointerDown(event) {
-  const target = event?.target
-  if (interactiveSinkChild(target)) return false
-  const shapeEl = target?.closest?.('[data-shape-type]')
-  const shapeType = shapeEl?.getAttribute?.('data-shape-type')
-  if (!isVoiceSinkShapeType(shapeType)) return false
-  enterVoiceSink()
-  return true
-}
-
 // Second click on the <nowhere> shape: wipe ONLY the in-flight interim from the
 // last real field voice was dictating into (the chat/text field) — left + right
 // (committed text + anything after the cursor) stay untouched. Targets the field

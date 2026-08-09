@@ -37,7 +37,6 @@ const DEFAULTS = {
   'voice-backend': '' as string,
   'voice-hud-meter': 'background' as string,
   'voice-submit-words': 'send, send it, sent' as string,
-  'voice-sink-shape-types': 'fleet-agents' as string,
   'radio-subtitles-enabled': true as boolean,
   'radio-subtitle-dwell-sec': DEFAULT_RADIO_SUBTITLE_DWELL_SEC as number,
   // Voice→Deepgram conservation feel (sent to the bridge on connect). Idle cutoff

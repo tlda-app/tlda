@@ -11,8 +11,8 @@
  *
  * - The DRAFT is what he has typed and not sent. Survives remount AND reload,
  *   so it is mirrored to localStorage.
- * - The CLEARED buffer backs the composer's ✕/↺ pair — text he explicitly threw
- *   away and may want back. Memory only: a ↺ button offering to restore text
+ * - The CLEARED buffer backs the composer's ✕/↺ pair — state he explicitly threw
+ *   away and may want back. Memory only: a ↺ button offering to restore state
  *   from a session two days ago is a surprise, not a rescue.
  */
 
@@ -22,9 +22,10 @@ const MAX_ENTRIES = 50
 const WRITE_DEBOUNCE_MS = 300
 
 type StoredDraft = { text: string; ts: number }
+export type ClearedComposerDraft = { text: string; voiceTarget?: unknown }
 
 const drafts = new Map<string, StoredDraft>()
-const cleared = new Map<string, string>()
+const cleared = new Map<string, ClearedComposerDraft>()
 let hydrated = false
 let writeTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -101,21 +102,21 @@ export function clearComposerDraft(key: string) {
 }
 
 /** ✕ — stash what he threw away so ↺ can put it back. Memory only. */
-export function stashClearedComposerDraft(key: string, text: string) {
-  if (text) cleared.set(key, text)
+export function stashClearedComposerDraft(key: string, entry: ClearedComposerDraft) {
+  if (entry.text) cleared.set(key, entry)
   else cleared.delete(key)
 }
 
 /** Is there anything for ↺ to restore? */
-export function peekClearedComposerDraft(key: string): string | null {
+export function peekClearedComposerDraft(key: string): ClearedComposerDraft | null {
   return cleared.get(key) ?? null
 }
 
 /** ↺ — hand back what ✕ took, and forget it. */
-export function takeClearedComposerDraft(key: string): string | null {
-  const text = cleared.get(key) ?? null
+export function takeClearedComposerDraft(key: string): ClearedComposerDraft | null {
+  const entry = cleared.get(key) ?? null
   cleared.delete(key)
-  return text
+  return entry
 }
 
 /** He typed again, so the cleared text is no longer what ↺ should offer. */
