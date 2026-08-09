@@ -128,7 +128,7 @@ import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
-import { installReturnMarksBridge } from './classroom/marking'
+import { installFramePairBridge, installReturnMarksBridge } from './classroom/marking'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -511,7 +511,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     const editor = editorRef.current
     const submissionShapeId = document.pages[0]?.shapeId
     if (!editorMounted || !editor || !submissionShapeId) return
-    return installReturnMarksBridge(editor, submissionShapeId)
+    const teardown = [installReturnMarksBridge(editor, submissionShapeId)]
+    // Both panes of the compare view, so framing can bring the pair back on
+    // screen after a navigation has centred one of them.
+    const pairShapeIds = document.pages.slice(0, 2).map(page => page.shapeId)
+    if (pairShapeIds.length === 2) teardown.push(installFramePairBridge(editor, pairShapeIds))
+    return () => teardown.forEach(off => off())
   }, [document, editorMounted])
 
 

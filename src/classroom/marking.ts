@@ -68,6 +68,7 @@ export function returnMarks(editor: Editor, submissionShapeId: TLShapeId): numbe
 // `tlda-navigate`, `fleet-open-doc` — so this uses the same idiom rather than
 // threading an editor reference through the tree.
 
+export const FRAME_PAIR_EVENT = 'classroom-frame-pair'
 export const RETURN_MARKS_EVENT = 'classroom-return-marks'
 export const MARKS_RETURNED_EVENT = 'classroom-marks-returned'
 
@@ -78,4 +79,39 @@ export function installReturnMarksBridge(editor: Editor, submissionShapeId: TLSh
   }
   window.addEventListener(RETURN_MARKS_EVENT, onReturn)
   return () => window.removeEventListener(RETURN_MARKS_EVENT, onReturn)
+}
+
+/**
+ * Bring both panes into view after moving to a problem.
+ *
+ * Navigating to an anchor centres one shape, because in a single document that
+ * is what it means. Here there are two, so it centred the submission and pushed
+ * his own solution off the right edge — headings cut mid-word, on the surface
+ * where he is comparing them.
+ *
+ * A pan, deliberately, not a zoom-to-fit: the pair already fits at the current
+ * zoom, and rescaling would shrink his solution every time he changed problem.
+ * Vertical position is left exactly as navigation set it, since that is the
+ * part that put the right problem on screen.
+ */
+export function framePair(editor: Editor, shapeIds: TLShapeId[]): boolean {
+  const bounds = shapeIds
+    .map(id => editor.getShapePageBounds(id))
+    .filter((b): b is NonNullable<typeof b> => !!b)
+  if (bounds.length < 2) return false
+
+  const left = Math.min(...bounds.map(b => b.x))
+  const right = Math.max(...bounds.map(b => b.x + b.w))
+  const camera = editor.getCamera()
+  const viewportWidth = editor.getViewportScreenBounds().w
+  // screen = (page + camera) * z, so centring the pair's midpoint is one solve.
+  const midpoint = (left + right) / 2
+  editor.setCamera({ ...camera, x: viewportWidth / (2 * camera.z) - midpoint })
+  return true
+}
+
+export function installFramePairBridge(editor: Editor, shapeIds: TLShapeId[]): () => void {
+  const onFrame = () => framePair(editor, shapeIds)
+  window.addEventListener(FRAME_PAIR_EVENT, onFrame)
+  return () => window.removeEventListener(FRAME_PAIR_EVENT, onFrame)
 }

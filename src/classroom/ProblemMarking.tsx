@@ -3,7 +3,7 @@ import { SvgDocumentEditor } from '../SvgDocument'
 import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
 import { classroomApi, type ProblemsView } from './api'
-import { MARKS_RETURNED_EVENT, RETURN_MARKS_EVENT } from './marking'
+import { FRAME_PAIR_EVENT, MARKS_RETURNED_EVENT, RETURN_MARKS_EVENT } from './marking'
 import './ClassroomWorkspace.css'
 
 // The assignment as Skip marks it: "that would just be the homework assignment
@@ -92,6 +92,9 @@ export function ProblemMarking() {
     const headingAnchor = problem.problemId.replace(/^ans-/, '')
     const timer = setTimeout(() => {
       window.postMessage({ type: 'tlda-navigate', anchor: headingAnchor, shapeId }, '*')
+      // Navigation centres the one shape it was given, which pushes his
+      // solution off the right edge. Frame the pair once it has landed.
+      setTimeout(() => window.dispatchEvent(new CustomEvent(FRAME_PAIR_EVENT)), 400)
     }, 200)
     return () => clearTimeout(timer)
   }, [document, problem, answer])
