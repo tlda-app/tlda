@@ -219,7 +219,7 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, enqueueDaemonMessage, hasOpenFleetSocketForAgent = () => false, hasOwnClientSocketForAgent = null, reanimateAgent, requireOperationRead }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, enqueueDaemonMessage, hasOpenFleetSocketForAgent = () => false, reanimateAgent, requireOperationRead }) {
   const router = Router()
 
   router.get('/api/fleet/operations/:operationId', requireOperationRead, async (req, res) => {
@@ -574,7 +574,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         }
       }
 
-      const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now, hasOwnClientSocket: hasOwnClientSocketForAgent })
+      const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now })
       res.json({
         resolved_elsewhere: resolvedElsewhere,
         totals: { ...summary.totals, pending: pendingShells.length },
