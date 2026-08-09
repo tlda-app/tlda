@@ -4,7 +4,6 @@ export type ReadabilityProfile = {
   touchTarget: number
   chromeOpacity: number
   contentOpacity: number
-  ageFade: boolean
   layoutHeightFrac: number
   railAspect: number
   chatAspect: number
@@ -20,7 +19,6 @@ export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
   touchTarget: 28,
   chromeOpacity: 1,
   contentOpacity: 1,
-  ageFade: true,
   layoutHeightFrac: 0.7,
   railAspect: 0.54,
   chatAspect: 0.66,

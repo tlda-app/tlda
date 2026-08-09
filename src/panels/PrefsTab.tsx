@@ -288,7 +288,6 @@ function readAll() {
     marginGap: getPref('layout-margin-gap'),
     chromeOpacity: getPref('fleet-chrome-opacity'),
     contentOpacity: getPref('fleet-content-opacity'),
-    ageFade: getPref('fleet-age-fade'),
     foldBash: getPref('fold-bash-lines'),
     foldThread: getPref('fold-thread-lines'),
     threadFront: getPref('thread-front-messages'),
@@ -512,10 +511,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <input type="number" min={0} max={100} step={5} value={Math.round(activeReadability.contentOpacity * 100)} onChange={e => setReadability('contentOpacity', Number(e.target.value) / 100)} className="prefs-num" />
             <span className="prefs-num-unit">%</span>
           </div>
-          <label className="prefs-check">
-            <input type="checkbox" checked={activeReadability.ageFade} onChange={e => setReadability('ageFade', e.target.checked)} />
-            <span>Age fade</span>
-          </label>
           <div className="prefs-num-row">
             <span className="prefs-num-label">Layout height</span>
             <input type="number" min={10} max={100} step={5} value={Math.round(activeReadability.layoutHeightFrac * 100)} onChange={e => setReadability('layoutHeightFrac', Number(e.target.value) / 100)} className="prefs-num" />

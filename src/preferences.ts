@@ -66,7 +66,6 @@ const DEFAULTS = {
   'layout-margin-gap': 40 as number,
   'fleet-chrome-opacity': 1.0 as number,
   'fleet-content-opacity': 1.0 as number,
-  'fleet-age-fade': true as boolean,
   // Per-tool fold heights for monitoring/tool-call content (lines). 0 = never fold.
   // Communication (messages, images) is never folded and has no pref here.
   'fold-bash-lines': 10 as number,

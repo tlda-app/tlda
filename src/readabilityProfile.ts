@@ -27,7 +27,6 @@ function cleanProfile(value: Partial<ReadabilityProfile> | undefined): Readabili
     touchTarget: clamp(Number(p.touchTarget) || base.touchTarget, 24, 64),
     chromeOpacity: clamp(Number(p.chromeOpacity) || base.chromeOpacity, 0, 1.5),
     contentOpacity: clamp(Number(p.contentOpacity) || base.contentOpacity, 0, 1),
-    ageFade: !!p.ageFade,
     layoutHeightFrac: clamp(Number(p.layoutHeightFrac) || base.layoutHeightFrac, 0.1, 1),
     railAspect: clamp(Number(p.railAspect) || base.railAspect, 0.2, 2),
     chatAspect: clamp(Number(p.chatAspect) || base.chatAspect, 0.2, 2),
@@ -56,7 +55,6 @@ export function readabilityStyleVars(deviceId?: string): CSSProperties {
     '--fleet-touch-target': `${p.touchTarget}px`,
     '--fleet-chrome-alpha': String(p.chromeOpacity),
     '--fleet-content-alpha': String(p.contentOpacity),
-    '--fleet-age-fade': p.ageFade ? '1' : '0',
   } as CSSProperties
 }
 

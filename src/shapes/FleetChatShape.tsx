@@ -321,7 +321,6 @@ function getFleetStyleVars(): React.CSSProperties {
     '--fleet-base-font': `${getPref('fleet-font-size')}px`,
     '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
     '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
-    '--fleet-age-fade': getPref('fleet-age-fade') ? '1' : '0',
   } as React.CSSProperties
 }
 
