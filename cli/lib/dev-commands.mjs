@@ -41,8 +41,11 @@ Other commands:
                      or derives a Tailscale URL for --port). Never prints
                      localhost as a share URL.
   deploy             Build, restart the server, verify the SPA renders
-  restart-mcp [name…]  Reload an agent's fleet MCP (drives /mcp → Reconnect).
-                     No args = your own; names = those agents; --all [--except …].
-                     Only needed when developing the MCP server itself.
+  restart-mcp <name…>  Reload an agent's fleet MCP by hibernating and waking it
+                     through the daemon. Names = those agents; --all [--except …].
+                     Run it on yourself — the daemon outlives your shell and
+                     finishes the wake; session and conversation survive.
+                     Needed when developing the MCP server, and to recover an
+                     agent whose MCP client has wedged.
 
 These live only under \`tlda-dev\` (the developer app) — not in the user-facing \`tlda\`.`
