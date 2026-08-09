@@ -82,8 +82,16 @@ export function ProblemMarking() {
     if (!shapeId) return
     // After the editor has mounted the page; the same message the table of
     // contents and cross-member links already use.
+    // The anchor is the EXERCISE id, not the answer id. Quarto anchors headings
+    // by `data-anchor-id`, and `## Problem 1 {#exr-hearts}` gives `exr-hearts`,
+    // while the answer block inside it is `#ans-exr-hearts`. Navigation looks up
+    // heading positions, so posting the answer id matches nothing and moves
+    // nothing — silently, because a navigation that finds no target just
+    // returns. The handout names answers after their exercise, so dropping the
+    // prefix is the derivation, not a guess.
+    const headingAnchor = problem.problemId.replace(/^ans-/, '')
     const timer = setTimeout(() => {
-      window.postMessage({ type: 'tlda-navigate', anchor: problem.problemId, shapeId }, '*')
+      window.postMessage({ type: 'tlda-navigate', anchor: headingAnchor, shapeId }, '*')
     }, 200)
     return () => clearTimeout(timer)
   }, [document, problem, answer])
