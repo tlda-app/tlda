@@ -547,7 +547,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .tool-ref,
 .fleet-chat-shape .md-file-card {
   cursor: default;
-  touch-action: none;
+  touch-action: pan-y;
   user-select: none;
 }
 
@@ -665,7 +665,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .agent-nick {
   cursor: grab;
   user-select: none;
-  touch-action: none;
+  touch-action: pan-y;
 }
 
 /* --- Nick colors --- */
@@ -1172,7 +1172,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: 10px;
   color: var(--blue);
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-y;
 }
 .fleet-chat-shape .md-file-chip {
   font-weight: 500;
@@ -1406,7 +1406,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text-dim);
   font-size: 9px;
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-y;
   user-select: none;
   min-width: 55px;
 }
