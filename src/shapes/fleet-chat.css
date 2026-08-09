@@ -6,7 +6,7 @@
   --bg: #0f0f1a;
   --surface: #161625;
   --text: #a8a8c0;
-  --text-dim: #f4f4ff;
+  --text-dim: #9999b2;
   --fleet-dim-alpha-85: 1;
   --fleet-dim-alpha-80: 1;
   --fleet-dim-alpha-75: 1;
@@ -531,7 +531,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   --bg: #fafafa;
   --surface: #f0f0f5;
   --text: #444;
-  --text-dim: #000;
+  --text-dim: #555;
   --text-bright: #222;
   --border: #ddd;
   --accent: #7c8aff;
