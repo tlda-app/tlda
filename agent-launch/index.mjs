@@ -304,10 +304,10 @@ export async function launchMintProcess(params) {
   applyNormalizedOptions(params, modelSpec)
   const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
   const model = modelResolved.model
-  const tmuxSession = await (params._deps?.uniqueSessionName || uniqueSessionName)(
-    params.tmuxSession || params.tmux_session || `fleet-${sanitizeSessionName(name)}`,
-    { tmuxSocket: params.tmuxSocket },
-  )
+  const requestedTmuxSession = params.tmuxSession || params.tmux_session || `fleet-${sanitizeSessionName(name)}`
+  const tmuxSession = params.exactTmuxSession
+    ? requestedTmuxSession
+    : await (params._deps?.uniqueSessionName || uniqueSessionName)(requestedTmuxSession, { tmuxSocket: params.tmuxSocket })
   const dnsAlias = await (params._deps?.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
     permissionGrant: params.permissionGrant,

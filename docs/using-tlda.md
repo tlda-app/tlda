@@ -481,28 +481,48 @@ Each bot has a script and may select a machine. Optional environment values are
 passed to its process. The `environments` map selects which bots run in each
 named environment. Relative scripts resolve from the installed tlda root.
 
-Manage their services with:
+Inspect and enlist configured bots with:
 
 ```bash
 tlda bot list
-tlda bot install [name]
 tlda bot enlist [name]
-tlda bot start [name]
-tlda bot restart [name]
-tlda bot stop [name]
 tlda bot status [name]
 tlda bot log [name]
-tlda bot uninstall [name]
 ```
 
-The machine daemon does not start configured bots. On macOS these commands
-manage each bot's launchd service, tmux session, log, and pid paths. A bot logs
-in to the fleet like an agent. After changing a managed bot's code or declared
-environment, `tlda bot restart [name]` refreshes its launch recipe and restarts
-the already-loaded service. Use `tlda config apply` only when adding, removing,
-or changing the launchd declaration itself. `tlda bot stop` refuses rather than
-unloading a supervised job that an agent shell cannot bootstrap again; use
-`restart` for routine maintenance or `uninstall` to remove the service.
+On macOS launchd supervises configured bots. Each launchd job wakes the durable
+agent through the machine daemon, which creates or reuses the bot's exact named
+tmux session. The bot process signals the launchd wrapper when it exits, and
+launchd starts it again. Killing a bot process is therefore the routine restart
+operation; launchctl is not.
+
+`tlda config apply` is the only operation that adds, changes, or removes bot and
+daemon launchd jobs. Run it from the machine owner's GUI session after changing
+`bots.yaml` or daemon configuration. It refuses before changing files or jobs
+when launchd reports a background manager. Each changed label is validated and
+applied separately; a failed transition restores the prior plist and loaded
+state. The command reports that configuration is not applied and does not offer
+an agent-shell repair command.
+
+`tlda bot status [name]` reports one of three states: `running + supervised`,
+`running unsupervised`, or `not running`. Ordinary agents also use named tmux
+sessions, but they are not launchd-supervised and remain stopped until an
+explicit daemon wake.
+
+For the first rollout, apply only the disposable testing bot from the owner's
+GUI session:
+
+```bash
+tlda config apply --only com.tlda.bot.nobody.testing
+tlda --env testing bot status nobody
+```
+
+The status must show `running + supervised` and the tmux session
+`fleet-bot-nobody_testing`. Kill the pid recorded in
+`~/.config/tlda/nobody.testing.pid`, then check status again: the pid must change,
+the tmux name must remain the same, and the state must still be
+`running + supervised`. If apply fails, stop at its reported rollback result and
+inspect that output before applying any other label.
 
 Ordinary CLI preferences such as browser selection live in
 `~/.config/tlda/cli.yaml`. Before changing local configuration, confirm the

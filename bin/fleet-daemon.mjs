@@ -853,12 +853,8 @@ const wakeMint = createDaemonWakeCore({
   processAlive: async facts => {
     const tmuxSession = facts.processState?.tmux_session
     if (!tmuxSession) return false
-    try {
-      await tmux('has-session', '-t', tmuxSession)
-      return true
-    } catch {
-      return false
-    }
+    const state = await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })
+    return state.runtime
   },
   processDaemonKey: async facts => {
     const tmuxSession = facts.processState?.tmux_session
@@ -894,6 +890,7 @@ const wakeMint = createDaemonWakeCore({
       activeEnvName: ACTIVE_ENV,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
+      exactTmuxSession: true,
     })
     await bindMintSeat({ ...facts, processState: processFact }, processFact, 'daemon-wake')
     return processFact
