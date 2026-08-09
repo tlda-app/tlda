@@ -1422,34 +1422,37 @@ export class FleetStore {
     // general event-history query, and the bounded join runs inside the store
     // worker.
     // Newest unread first, then reversed by the caller so the page still reads
-    // oldest-to-newest. The WINDOW is the recent end; the ORDER inside it is
-    // chronological, and that separation is the whole design.
+    // OLDEST FIRST, and this is not a preference. Skip, 2026-08-09:
+    // "this is how agents read my messages" / "If they're reading them out of
+    // order, they're gonna be fucking confused we won't be able to work
+    // together."
     //
-    // Skip settled this himself on 2026-08-09, and the first sentence he said
-    // is not the one that governs. 01:45:49 "change the default view of inbox
-    // to be newest first". Then 01:46:46 "there wasn't a problem with inbox";
-    // 01:47:04 "there was a problem that it fetched a finite page"; 01:47:16
-    // "you understand how confusing it is when agents are reading things not in
-    // historical order. It's gonna be chaos".
+    // The mechanism, which is why the obvious improvement is wrong. Reading
+    // acks the page, so the next call returns the next unacked page. Order this
+    // DESC and a behind agent reads in reverse blocks -- with 12 unread and a
+    // page of 4 it sees 9,10,11,12 then 5,6,7,8 then 1,2,3,4. He dictates in
+    // bursts, eighteen messages in twenty-five minutes on the night this was
+    // written, so that is his argument served backwards. Chronological within a
+    // page does not save it; the blocks themselves march backwards.
     //
-    // So: the finite page was the defect, and historical order must not break.
-    // Do NOT make the page newest-first inside itself -- that is the thing he
-    // calls chaos, and it is what acting on 01:45:49 alone produces.
+    // ASC has no such failure at any backlog depth. This was briefly changed to
+    // `r.timestamp DESC` for the recency argument below and changed straight
+    // back. Do not do it again to `default`.
     //
-    // This used to order by `e.timestamp ASC`, which handed an agent the oldest
-    // fifty of its unread -- the least useful page precisely when it was behind.
-    // Ordering on the joined table also could not use idx_recipients_agent_ts;
-    // `r.timestamp` can, the same way _getOldestUnreadAt below does.
+    // The recency argument is real and belongs in its OWN named view: of 518
+    // times an agent left its inbox for history, 509 (98.3%) asked with a
+    // `since:` bound. Skip's answer to that was "then have a view that you
+    // don't have to read to the end" -- a view, not a change to what every
+    // agent gets by default.
     //
-    // The evidence: of 518 times an agent left its inbox for history, 509
-    // (98.3%) asked with a `since:` bound. Recency is not a regrouping of the
-    // rows an agent was handed, it is a different set of rows, so no view could
-    // produce it.
+    // Ordered on `r.timestamp` rather than the joined `e.timestamp` so it can
+    // walk idx_recipients_agent_ts; the two carry the same value, and delivery
+    // time is the right key for a delivery queue anyway.
     this._getInboxDeliveriesLimited = this.db.prepare(`
       SELECT ${this._EVTE} FROM recipients r
       JOIN events e ON e.id = r.event_id
       WHERE r.agent_id = ? AND r.read = 0
-      ORDER BY r.timestamp DESC
+      ORDER BY r.timestamp ASC
       LIMIT ?
     `);
 
@@ -1457,18 +1460,20 @@ export class FleetStore {
       SELECT COUNT(*) AS c FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
-    // Oldest unread, for the page-limited header's "how far behind am I". The
-    // page holds the recent end now, so what an agent cannot see is the OLD
-    // end, and the useful number is how far back the backlog reaches. This was
-    // MAX(timestamp) while the page was oldest-first; under that ordering the
-    // newest was the unshown one. Both cannot be right at once.
+    // Newest unread, for the page-limited header's "how far behind am I".
+    //
+    // This number is tied to the page's direction and has been changed twice in
+    // one night chasing it, so state the rule rather than the value: the header
+    // reports the end an agent CANNOT see. The page is oldest-first, so what it
+    // cannot see is the new mail, so this is MAX. If the page order ever
+    // changes, this changes with it -- and a header that quietly means its
+    // opposite is worse than no header.
     //
     // No join: recipients carries its own timestamp, and
-    // idx_recipients_agent_ts(agent_id, timestamp DESC) covers this agent's
-    // range, so it is a walk to the end of that range rather than a scan of
-    // the unread set.
-    this._getOldestUnreadAt = this.db.prepare(`
-      SELECT MIN(timestamp) AS t FROM recipients WHERE agent_id = ? AND read = 0
+    // idx_recipients_agent_ts(agent_id, timestamp DESC) makes this a seek to
+    // the first row rather than a scan of the unread set.
+    this._getNewestUnreadAt = this.db.prepare(`
+      SELECT MAX(timestamp) AS t FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
     // Raised and unacknowledged, fleet-wide -- the "oh fuck" view.
@@ -4802,29 +4807,29 @@ export class FleetStore {
   // be deliverable, or it would sit at the head of the unread set forever and
   // wedge the inbox behind it.
   //
-  // The budget walks from the NEWEST end, so what gets dropped is the oldest of
-  // the window -- then the page is reversed, so the reader gets the most recent
-  // rows that fit, in historical order.
+  // The budget walks forward from the oldest, so what gets dropped is the
+  // newer tail of the window -- which is the correct end to drop, because
+  // those rows stay unread and arrive on the next call in order.
   getInboxDeliveriesLimited(agentId, limit = 50, charBudget = 24000) {
     const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
-    const newestFirst = this._query(this._getInboxDeliveriesLimited, agentId, n);
+    const rows = this._query(this._getInboxDeliveriesLimited, agentId, n);
     const budget = Math.max(1, Number.parseInt(String(charBudget), 10) || 24000);
     const page = [];
     let used = 0;
-    for (const row of newestFirst) {
+    for (const row of rows) {
       if (page.length && used + (row?.text?.length || 0) > budget) break;
       used += row?.text?.length || 0;
       page.push(row);
     }
-    return page.reverse();
+    return page;
   }
 
   getInboxDeliveryCount(agentId) {
     return this._getInboxDeliveryCount.get(agentId).c;
   }
 
-  getOldestUnreadAt(agentId) {
-    return this._getOldestUnreadAt.get(agentId)?.t || null;
+  getNewestUnreadAt(agentId) {
+    return this._getNewestUnreadAt.get(agentId)?.t || null;
   }
 
   // See _getUnreadRaisedFleetWide. Reading this never marks anything read: it

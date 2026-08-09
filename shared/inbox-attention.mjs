@@ -2,6 +2,15 @@ export const INBOX_STATUSES = ['available', 'busy', 'dnd']
 // 'oh fuck' is Skip's name for it and it is kept deliberately: it names the
 // moment rather than the data. A view called `urgent` drifts into meaning
 // `recent`, which is the thing this one must not become.
+//
+// Two more views are specified and unbuilt, both his, both deliberately left
+// for whoever actually hits the problem they solve. A recent-end view -- "then
+// have a view that you don't have to read to the end" -- and a threaded one,
+// keyed on the participant set. The threaded design is written up with his
+// words and its constraints in
+// scratch/threaded-inbox-view-design-2026-08-09.md. Neither belongs in
+// `default`; that is the mistake that was made and reverted the night they
+// were specified.
 export const INBOX_VIEWS = ['default', 'review', 'monitoring', 'current-task', 'all', 'oh fuck']
 export const MESSAGE_PRIORITIES = ['normal', 'important', 'urgent']
 export const DELIVERY_CHANNELS = ['channel', 'tmux']

@@ -1465,7 +1465,7 @@ export function getFleetTools() {
           },
           drain: {
             type: 'boolean',
-            description: 'Read EVERY page instead of one, acknowledging as it goes, and write the whole thing to a markdown file. Returns the file path and a count. Use when you need the whole backlog rather than the current end of it — a normal read gives you the newest page, so the old end of a deep inbox is what this reaches. Ignored with peek.',
+            description: 'Read EVERY page instead of one, acknowledging as it goes, and write the whole thing to a markdown file. Returns the file path and a count. Use when the inbox is deep enough that one page is useless — paging is oldest-first, so a large backlog otherwise hides everything recent behind days of older mail. Ignored with peek.',
           },
         },
       },
@@ -2074,23 +2074,25 @@ function pushInboxEntries(lines, rows, fmt) {
   });
 }
 
-// "50/256 unread" says there is more; it does not say how far back the rest
-// reaches. The span does, and the two ends answer different questions: the
-// oldest SHOWN is how far down this page goes, the oldest UNSHOWN is how deep
-// the backlog below it goes.
+// "50/256 unread" says there is more; it does not say you are four hours
+// behind. The span does, and the two ends answer different questions: the
+// oldest SHOWN is where this page starts, the newest UNSHOWN is how stale the
+// page is relative to what is waiting.
 //
-// This string has been wrong twice in one night, both times because the page's
-// direction changed under it and nobody re-read it. It reported the NEWEST
-// unshown while the page was oldest-first; the page then became recency-ordered
-// and the newest was exactly what you could see. So: BOTH numbers here are
-// order-independent by construction -- a minimum over the page and a minimum
-// over the unread set -- and they stay true whichever way the page is printed.
-// Keep it that way rather than reading either end off a position.
+// THE RULE, because this string changed direction three times in one night and
+// was briefly wrong each way: the second number is the end the agent CANNOT
+// see. The page is oldest-first, so the unseen end is the new mail, so it is
+// the newest unshown. If the page order is ever changed, this changes with it.
+// A header that quietly means its opposite is worse than no header, and it
+// survives redesigns because nobody re-reads a string that still parses.
+//
+// The first number is deliberately immune: a minimum over the page rather than
+// an end of it, so it stays true whichever way the page is printed.
 //
 // Both numbers are real or absent. The oldest shown is read off the page; the
-// oldest unshown comes from the server (counts.oldest_unread_at) and is simply
+// newest unshown comes from the server (counts.newest_unread_at) and is simply
 // omitted if the server did not send it, rather than approximated from the page
-// -- a header that understates the backlog would be worse than no header.
+// -- a header that understates how far behind you are would be worse than none.
 function inboxRelativeAge(ms) {
   if (!Number.isFinite(ms) || ms < 0) return null;
   if (ms < 60_000) return 'just now';
@@ -2104,16 +2106,16 @@ export function inboxAgeSpan(messages = [], counts = null, now = Date.now()) {
     .map(m => Date.parse(m?.timestamp))
     .filter(Number.isFinite);
   const bits = [];
-  // min rather than messages[0] or messages.at(-1): the page's order has
-  // changed twice tonight and this must not care.
+  // min rather than messages[0] or messages.at(-1): the page's order changed
+  // three times tonight and this must not care.
   if (shown.length) {
     const age = inboxRelativeAge(now - Math.min(...shown));
     if (age) bits.push(`oldest shown ${age}`);
   }
-  const oldestUnshown = Date.parse(counts?.oldest_unread_at);
-  if (Number.isFinite(oldestUnshown)) {
-    const age = inboxRelativeAge(now - oldestUnshown);
-    if (age) bits.push(`backlog reaches ${age}`);
+  const newestUnshown = Date.parse(counts?.newest_unread_at);
+  if (Number.isFinite(newestUnshown)) {
+    const age = inboxRelativeAge(now - newestUnshown);
+    if (age) bits.push(`newest unshown ${age}`);
   }
   return bits.length ? bits.join(', ') : null;
 }
@@ -3723,12 +3725,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
     // drain: page through the whole backlog rather than the first page.
     //
-    // One page is the only unit an agent can acknowledge, so a deep inbox is
-    // not clearable by the agent that owns it -- the page now holds the recent
-    // end, so what a backlogged agent cannot reach this way is the old end.
-    // This walks every page, acknowledges each, and writes the lot to a
-    // markdown file so the result is readable without returning megabytes
-    // through the tool.
+    // Paging is oldest-first, so an agent a thousand messages behind is shown a
+    // window from days ago and nothing recent — the fuller the inbox, the more
+    // useless the read. One page is also the only unit an agent can acknowledge,
+    // so a deep inbox is not clearable by the agent that owns it. This walks
+    // every page, acknowledges each, and writes the lot to a markdown file so
+    // the result is readable without returning megabytes through the tool.
     if (args?.drain && !args?.peek) {
       const agentId = activeAgentId();
       const sections = [];
