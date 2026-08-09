@@ -38,8 +38,15 @@ export async function fetchCachedSvgPage(
   buildHash?: string | null,
   init?: FetchCachedSvgPageOptions,
 ): Promise<string | null> {
+  // No version, no cache. `versionedSvgPageUrl` returns the URL unchanged when the
+  // build hash is missing or 'unknown', so caching under that key stores a page
+  // nothing can ever invalidate: the stamp moves, the key does not, and the tab
+  // serves its own stale copy forever. Skip hit exactly that within an hour of this
+  // shipping — "my pages are stale despite stamp". A page fetched before the version
+  // is known is fetched live every time.
+  const versioned = Boolean(buildHash) && buildHash !== 'unknown'
   const url = versionedSvgPageUrl(rawUrl, buildHash)
-  const cached = await readCachedSvgPage(url)
+  const cached = versioned ? await readCachedSvgPage(url) : null
   if (cached !== null) return cached
 
   const hotKey = `${init?.method || 'GET'} hot ${url}`
@@ -55,7 +62,7 @@ export async function fetchCachedSvgPage(
   const promise = fetch(fetchUrl, fetchInit)
     .then(async (response) => {
       if (!response.ok) return null
-      await writeCachedSvgPage(url, response.clone())
+      if (versioned) await writeCachedSvgPage(url, response.clone())
       return response.text()
     })
     .catch((error) => {
