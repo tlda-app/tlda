@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useLayoutEffect, useRef, useState } from 'react'
 import { PrettyName } from './PrettyName'
 import {
   type FleetAgentDirectoryRowModel,
@@ -134,18 +134,52 @@ function FleetAgentLabelChipView({
   onLabelPointerDown?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
   onLabelPointerUp?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
 }) {
+  const chipRef = useRef<HTMLSpanElement>(null)
+  const contentRef = useRef<HTMLSpanElement>(null)
+  const [compactScale, setCompactScale] = useState(1)
+  const compactScaleRef = useRef(1)
+  compactScaleRef.current = compactScale
+
+  useLayoutEffect(() => {
+    if (!compact) return
+    const chipEl = chipRef.current
+    const contentEl = contentRef.current
+    if (!chipEl || !contentEl) return
+
+    const measure = () => {
+      const styles = getComputedStyle(chipEl)
+      const horizontalPadding =
+        (parseFloat(styles.paddingLeft) || 0) +
+        (parseFloat(styles.paddingRight) || 0)
+      const available = Math.max(1, chipEl.clientWidth - horizontalPadding)
+      const needed = contentEl.scrollWidth / compactScaleRef.current
+      const nextScale = needed > available ? available / needed : 1
+      setCompactScale((current) => Math.abs(current - nextScale) > 0.01 ? nextScale : current)
+    }
+
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(chipEl)
+    observer.observe(contentEl)
+    return () => observer.disconnect()
+  }, [chip.glyph, chip.value, compact])
+
   return (
     <span
+      ref={chipRef}
       className={`fleet-agents-detail-label-chip${chip.special ? ' is-folder-label' : ''}${compact ? ' compact' : ''}`}
       data-label={chip.label}
       data-mode="agent"
       title={chip.title}
       aria-label={chip.title}
+      style={compact ? { '--fleet-compact-label-scale': compactScale } as React.CSSProperties : undefined}
       onPointerDown={(e) => onLabelPointerDown?.(e, chip.label, row)}
       onPointerUp={(e) => onLabelPointerUp?.(e, chip.label, row)}
     >
-      {chip.glyph && <span className="fleet-agents-detail-label-glyph" aria-hidden="true">{chip.glyph}</span>}
-      <span>{chip.value}</span>
+      <span ref={contentRef} className="fleet-agents-detail-label-content">
+        {chip.glyph && <span className="fleet-agents-detail-label-glyph" aria-hidden="true">{chip.glyph}</span>}
+        <span>{chip.value}</span>
+      </span>
     </span>
   )
 }
@@ -259,7 +293,11 @@ export function FleetAgentDirectoryRow({
           {row.activityHealth && <span className="fleet-agents-health">{row.activityHealth}</span>}
           <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
-        <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
+        <span
+          className="fleet-agents-col-labels"
+          data-compact-label-count={compactLabels.length}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
           {compactLabels.map((chip) => (
             <FleetAgentLabelChipView
               key={chip.label}

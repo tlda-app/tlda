@@ -2108,10 +2108,18 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   touch-action: none;
 }
 .fleet-agents-shape .fleet-agents-detail-label-chip.compact {
+  flex: 0 1 auto;
   max-width: 96px;
   line-height: 14px;
   font-size: 8px;
   opacity: 0.78;
+}
+.fleet-agents-shape .fleet-agents-detail-label-chip.compact .fleet-agents-detail-label-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  font-size: calc(1em * var(--fleet-compact-label-scale, 1));
 }
 .fleet-agents-shape .fleet-agents-detail-label-chip.is-folder-label {
   color: rgba(255, 236, 210, 0.86);
@@ -2151,12 +2159,22 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
 }
 
 .fleet-agents-shape .fleet-agents-col-labels {
+  width: 88px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 3px;
-  max-width: 110px;
+  justify-content: flex-end;
+  max-width: 88px;
   overflow: hidden;
+}
+.fleet-agents-shape .fleet-agents-col-labels[data-compact-label-count="1"] .fleet-agents-detail-label-chip.compact {
+  max-width: 100%;
+}
+.fleet-agents-shape .fleet-agents-col-labels[data-compact-label-count="2"] .fleet-agents-detail-label-chip.compact {
+  flex: 1 1 0;
+  width: 0;
+  max-width: none;
 }
 
 .fleet-agents-shape .fleet-agents-col-seen {
