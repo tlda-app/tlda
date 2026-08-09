@@ -289,6 +289,36 @@ They present the same collaboration surface even when their underlying
 capabilities differ. An idle agent hibernates; sending chat is the normal wake
 mechanism.
 
+### Restarting an agent's process
+
+`tlda-dev restart-mcp <agent…>` hibernates and wakes an agent through the daemon.
+There is no separate procedure per harness, and no menu driving: the daemon does
+the kill and the wake, which is what lets an agent restart *itself* — hibernating
+from your own shell kills the terminal your command is running in, so the process
+that would issue the wake dies first.
+
+Two facts the command cannot tell you, both of which have produced false
+successes:
+
+- **A restart is only as good as its wake.** The daemon reports failure when the
+  kill did not happen or the wake did not complete, but a wake is dispatched
+  asynchronously, so its own kickoff can still fail afterwards. Confirm the agent
+  is awake and producing rather than reading the exit status.
+- **An agent the daemon cannot place cannot be restarted at all.** Terminal
+  operations resolve an agent's tmux session from the daemon's ledger; an agent
+  missing from it is unreachable by kill, restart, or send-text. Recovery is
+  outside the daemon: `tmux kill-session -t fleet-<name>`, then an operator wake.
+
+### Code under `mcp-server/` reaches an agent only when its process restarts
+
+An agent's MCP client is loaded at process start. Merging a fix and deploying it
+changes nothing for agents already running, and `/api/build-info` cannot see the
+difference, because it reports the server's build rather than any agent's client.
+
+This is why a bug in the MCP client can persist for hours after it is fixed, in
+exactly the agents best placed to notice it. When a change under `mcp-server/`
+is meant to take effect, restart the affected agents; a deploy is not enough.
+
 ## A full research setup
 
 The smallest setup is intentionally small. A sustained research environment can
