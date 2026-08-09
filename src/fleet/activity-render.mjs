@@ -280,13 +280,36 @@ function threadCounts(ctx) {
 // One thread row. `msg` is an ordinary message ({ timestamp, from, to, body }),
 // a tool-activity event ({ timestamp, activity }) whose `activity` is a
 // renderActivityGroup item, or an unparsed blob ({ raw }).
+// THE HEIGHT BOUND IS ON THE MESSAGE, NOT THE CARD. Skip, 2026-08-09 01:36:
+// "it does seem like agents send really really long messages sometimes, and that
+// just makes the thread view super disruptive." The card's bound is a count --
+// front + tail messages -- and a count does not bound height: five six-hundred-word
+// messages is an enormous card however few rows it is.
+//
+// Not on the card, deliberately. The card's one expand is the gap marker in the
+// middle of the rows, so a card-level bound hides its own control, which is
+// exactly what he rejected on 8/01: "It's literally click to expand to something
+// you can expand. And the fucking first expand is invisible." Bounding the row
+// leaves the marker where the picture puts it and needs no new control -- the
+// card is the picture, and you go to the message to read the message.
+//
+// 1.5 is `.chat-line`'s line-height in fleet-chat.css, which is what a thread row
+// is. `fold-thread-lines` is the number; it already exists and is already the
+// "Threads" row in Settings, where until now it was read and never applied.
+function threadBodyFold(ctx) {
+  const lines = Number(ctx?.foldHeights?.thread)
+  if (!Number.isFinite(lines) || lines <= 0) return { cls: '', style: '' }
+  return { cls: ' thread-msg-collapsed', style: ` style="max-height:${(lines * 1.5).toFixed(1)}em"` }
+}
+
 function renderThreadMsg(msg, ctx) {
   if (msg.activity) {
     return `<div class="pretty-thread-activity">${renderActivityGroup([msg.activity], ctx)}</div>`
   }
   if (msg.raw != null) {
     const rawText = String(msg.raw)
-    return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div></div>`
+    const rawFold = threadBodyFold(ctx)
+    return `<div class="chat-line"><div class="pretty-msg-body${rawFold.cls}"${rawFold.style}>${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div></div>`
   }
   const from = String(msg.from ?? '')
   const to = String(msg.to ?? '')
@@ -304,12 +327,13 @@ function renderThreadMsg(msg, ctx) {
   const bodyHtml = ctx.renderMarkdown ? ctx.renderMarkdown(esc(body)) : esc(body)
   const isFromUser = from === 'skip' || from === 'Skip'
   const userClass = isFromUser ? ' from-user' : ''
+  const fold = threadBodyFold(ctx)
   return `<div class="chat-line${userClass}" data-msg-from="${esc(from)}">
       <span class="chat-ts">${esc(shortTs)}${verHtml}</span>
       <span class="chat-nick ${fromCls}">${agentNameHtml(from)}</span>
       <span class="chat-arrow">→</span>
       <span class="chat-nick ${toCls}">${agentNameHtml(to)}</span>
-      <div class="pretty-msg-body">${bodyHtml}</div>
+      <div class="pretty-msg-body${fold.cls}"${fold.style}>${bodyHtml}</div>
     </div>`
 }
 
