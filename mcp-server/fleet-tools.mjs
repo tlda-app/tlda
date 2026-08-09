@@ -1977,6 +1977,13 @@ export async function resolveInboxMessage(message, resolvers) {
     id: message.id,
     from: message.from,
     fromLabel,
+    // Carried through because two readers need it and neither could see it:
+    // inboxAgeSpan's "oldest shown", which silently rendered nothing in
+    // production because this object dropped the field, and the "oh fuck"
+    // view's "raised Nm ago". The header's test constructs its own rows with a
+    // timestamp on them, so it passed against a build where the real path had
+    // no timestamp to read.
+    timestamp: message.timestamp,
     kind: inboxMessageKind(message, readerId),
     priority: message.metadata?.priority || 'normal',
     inboxDelivery: subscriptionDelivery?.delivery || recipientDelivery?.delivery || 'notified',
