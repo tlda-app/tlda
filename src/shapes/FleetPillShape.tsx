@@ -51,6 +51,8 @@ const CHAT_W = 400
 const CHAT_H = 600
 const REPORT_ARTIFACT_W = 520
 const REPORT_ARTIFACT_H = 360
+const MARKDOWN_DOCVIEW_W = 650
+const MARKDOWN_DOCVIEW_H = 450
 const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
 const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_W = 800
@@ -285,6 +287,55 @@ async function createReportArtifactShapeFromPill(
     title,
     ...(pill?.props?.value ? { sourceEventId: String(pill.props.value) } : {}),
     generatedAt: new Date().toISOString(),
+  })
+  return true
+}
+
+async function createMarkdownDocviewShapeFromPill(
+  editor: Editor,
+  pagePoint: { x: number; y: number },
+  pill: FleetPillRecord,
+  content?: string,
+  showError?: (message: string) => void,
+) {
+  const value = typeof pill.props.value === 'string' ? pill.props.value : ''
+  const valuePath = value.startsWith('file:') ? value.slice('file:'.length) : undefined
+  const filePath = typeof pill.meta.filePath === 'string' ? pill.meta.filePath : valuePath
+  const fileUrl = typeof pill.meta.fileUrl === 'string' ? pill.meta.fileUrl : undefined
+  const displayName = typeof pill.props.displayName === 'string' ? pill.props.displayName : undefined
+  const title = displayName || filePath?.split('/').pop() || 'Markdown chip'
+  const candidate = `${reportArtifactNameCandidate(fileUrl, filePath, title)} `
+  const isMarkdownChip = pill.meta.markdownChip === true ||
+    /\.(?:md|markdown)(?:$|[?#\s])/i.test(candidate)
+  if (!isMarkdownChip) return false
+
+  let markdown = content
+  if (!markdown || markdown === filePath || markdown === value) {
+    const fetchUrl = fileUrl || (filePath ? `/api/read-file?path=${encodeURIComponent(filePath)}` : '')
+    if (!fetchUrl) {
+      showError?.('This Markdown file cannot be opened here.')
+      return true
+    }
+    const sourceRes = await fetch(fetchUrl)
+    if (!sourceRes.ok) throw new Error(`markdown docview read failed: ${sourceRes.status}`)
+    markdown = await sourceRes.text()
+  }
+
+  const materialized = await createTemporaryMarkdownColumn(editor, pagePoint, title, markdown, {
+    ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
+  })
+  if (!materialized?.shapeId) return true
+  await createFleetShape(editor, 'fleet-docview', pagePoint.x, pagePoint.y, {
+    w: MARKDOWN_DOCVIEW_W,
+    h: MARKDOWN_DOCVIEW_H,
+    sources: '[]',
+    label: '',
+    page: 0,
+    yTop: 0,
+    yBottom: 0,
+    title,
+    targetShapeId: String(materialized.shapeId),
+    useFullBounds: true,
   })
   return true
 }
@@ -546,6 +597,10 @@ export async function dropPillOnTarget(
   } else {
     const pill: unknown = editor.getShape(pillId)
     const pillType = isFleetPillRecord(pill) ? pill.props.pillType : undefined
+    if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
+        await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, pill, content, showError)) {
+      return
+    }
     const reportDropScreenPoint = hitEditor.pageToScreen(targetPagePoint)
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
         await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill, content, showError)) {

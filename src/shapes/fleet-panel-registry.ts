@@ -23,7 +23,7 @@ export const FLEET_PANEL_DEFINITIONS = defineHostedPanelApps([
   { type: 'fleet-chat', defaultSize: { w: 400, h: 600 }, defaultProps: { filter: [] } },
   { type: 'fleet-agents', defaultSize: { w: 400, h: 500 } },
   { type: 'fleet-search', defaultSize: { w: 400, h: 300 } },
-  { type: 'fleet-docview', defaultSize: { w: 400, h: 300 } },
+  { type: 'fleet-docview', defaultSize: { w: 400, h: 300 }, defaultProps: { sources: '["ref"]' } },
   { type: 'fleet-source-editor', defaultSize: { w: 560, h: 520 }, defaultProps: { file: '', line: 1, title: 'Source' } },
   { type: 'fleet-inbox', defaultSize: { w: 360, h: 560 } },
   { type: 'fleet-notifications', defaultSize: { w: 360, h: 220 } },

@@ -40,6 +40,8 @@ export const fleetDocviewProps = {
   yBottom: T.number,
   title: T.string,
   sources: T.optional(T.string),
+  targetShapeId: T.optional(T.string),
+  useFullBounds: T.optional(T.boolean),
 }
 
 export const fleetSourceEditorProps = {
