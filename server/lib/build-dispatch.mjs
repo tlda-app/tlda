@@ -3,7 +3,7 @@
 // the event loop), relays the worker's side-effects to the live rooms, and
 // coalesces/serializes per project so rapid saves collapse to one build.
 
-import { broadcastSignal, putShape, updateShape, emitGlobalEvent, getLastSignal } from './sync-rooms.mjs'
+import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
@@ -80,17 +80,8 @@ export function createDispatcherWithOptions(transport, options = {}) {
     },
   }, options)
 
-  async function dispatchBuild(name, { priorityPages, kind = 'build' } = {}) {
-    // Resolve the camera/viewport priority HERE (the worker has no live rooms),
-    // so the worker never needs a round-trip back for it.
-    if (!priorityPages || priorityPages.length === 0) {
-      try {
-        const vp = getLastSignal(`doc-${name}`, 'signal:viewport')
-        if (vp?.pages?.length > 0) priorityPages = vp.pages
-      } catch { priorityPages = priorityPages || undefined } // no viewport signal yet → no priority
-    }
-
-    return queue.dispatchBuild(name, { priorityPages, kind })
+  async function dispatchBuild(name, { kind = 'build' } = {}) {
+    return queue.dispatchBuild(name, { kind })
   }
 
   return { ...queue, dispatchBuild }

@@ -104,7 +104,7 @@ process.on('message', async (msg) => {
         // months without ever recording one.
         await recordBuildVersion({ name: msg.name })
       } else {
-        await runBuild(msg.name, { priorityPages: msg.priorityPages })
+        await runBuild(msg.name)
       }
     }
     process.send?.({ t: 'done', ok: true })

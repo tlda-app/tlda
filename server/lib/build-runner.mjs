@@ -176,26 +176,6 @@ function convertScratchMarkdown(srcDir, addLog) {
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
-/**
- * Hash SVG content for change detection. Strips non-deterministic parts:
- * - <style> blocks (WOFF2 font data varies between dvisvgm runs)
- * - xlink:href attributes (contain temp build dir paths)
- */
-function hashSvgContent(svgText) {
-  const stripped = svgText
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/g, '')
-    .replace(/xlink:href='[^']*'/g, '')
-  return createHash('md5').update(stripped).digest('hex')
-}
-
-/** Strip leading zeros from dvisvgm page numbers: page-01.svg → page-1.svg */
-function normalizeSvgNames(dir) {
-  for (const f of readdirSync(dir)) {
-    const m = f.match(/^page-0+(\d+\.svg)$/)
-    if (m) renameSync(join(dir, f), join(dir, `page-${m[1]}`))
-  }
-}
-
 /** Atomically publish a file: copy to dest.tmp, then rename into place. */
 function publishFile(src, dest) {
   const tmp = dest + '.tmp'
@@ -268,19 +248,6 @@ function findSvgFigures(dir) {
     }
   } catch (e) { console.warn(`[build] SVG figure discovery I/O error in ${dir}: ${e.message}`) }
   return results
-}
-
-/** Hash the actual published SVGs on disk — no cached JSON that can drift. */
-function loadPageHashes(outDir) {
-  const hashes = {}
-  try {
-    for (const f of readdirSync(outDir)) {
-      if (/^page-\d+\.svg$/.test(f)) {
-        hashes[f] = hashSvgContent(readFileSync(join(outDir, f), 'utf8'))
-      }
-    }
-  } catch (e) { if (e.code !== 'ENOENT') console.warn(`[build] page hash loading error in ${outDir}: ${e.message}`) }
-  return hashes
 }
 
 // ─── Build state management ──────────────────────────────────────────────────
@@ -743,128 +710,6 @@ async function compileLaTeX(ctx) {
     if (m) expectedPages = parseInt(m[1])
   }
   return { expectedPages }
-}
-
-/**
- * Phase 2: SVG conversion + incremental publish.
- * Converts DVI pages, patches image placeholders, hashes to detect changes,
- * publishes only changed pages, and signals partial/full reload.
- *
- * Returns { pageCount, newHashes }.
- */
-async function convertSvgs(ctx, priorityPages, oldHashes, expectedPages) {
-  const { name, srcDir, outDir, buildDir, texBase, addLog, run } = ctx
-  const dviFile = join(buildDir, `${texBase}.dvi`)
-  const svgDir = join(buildDir, 'svg')
-  mkdirSync(svgDir, { recursive: true })
-
-  // Priority pages: convert, patch, publish only if changed
-  if (priorityPages?.length > 0) {
-    const pageSpec = priorityPages.join(',')
-    addLog(`Converting priority pages [${pageSpec}]...`)
-    await run(
-      `dvisvgm --page=${pageSpec} --font-format=woff2 --bbox=papersize --linkmark=none ` +
-      `--output="${svgDir}/page-%p.svg" "${dviFile}"`,
-      { cwd: srcDir },
-    )
-    normalizeSvgNames(svgDir)
-    try {
-      await run(
-        `node "${join(SCRIPTS_DIR, 'patch-svg-images.mjs')}" "${svgDir}" "${srcDir}"`,
-        { cwd: PROJECT_ROOT, timeout: 60000 },
-      )
-    } catch (e) {
-      addLog(`Image patching failed (non-fatal): ${e.message.split('\n')[0]}`)
-    }
-    const changedPriority = []
-    for (const p of priorityPages) {
-      const f = `page-${p}.svg`
-      const svgPath = join(svgDir, f)
-      if (!existsSync(svgPath)) continue
-      const hash = hashSvgContent(readFileSync(svgPath, 'utf8'))
-      if (hash !== oldHashes[f]) {
-        publishFile(svgPath, join(outDir, f))
-        changedPriority.push(p)
-      }
-    }
-    if (changedPriority.length > 0) {
-      signalBuildProgress(name, 'hot', `${changedPriority.length === 1 ? 'page' : 'pages'} ${changedPriority.join(',')}`)
-      signalReload(name, changedPriority)
-      addLog(`Priority: ${changedPriority.length}/${priorityPages.length} pages changed`)
-    } else {
-      addLog(`Priority: 0/${priorityPages.length} pages changed, skipping reload`)
-    }
-  }
-
-  // All pages
-  addLog('Converting all pages...')
-  const svgStart = Date.now()
-  await run(
-    `dvisvgm --page=1- --font-format=woff2 --bbox=papersize --linkmark=none ` +
-    `--output="${svgDir}/page-%p.svg" "${dviFile}"`,
-    { cwd: srcDir, timeout: 300000 },
-  )
-  normalizeSvgNames(svgDir)
-  addLog(`SVG conversion done in ${((Date.now() - svgStart) / 1000).toFixed(1)}s`)
-
-  const allPageFiles = readdirSync(svgDir).filter(f => /^page-\d+\.svg$/.test(f))
-  const pageCount = allPageFiles.length
-
-  if (expectedPages && pageCount < expectedPages) {
-    addLog(`WARNING: dvisvgm produced ${pageCount}/${expectedPages} pages — ${expectedPages - pageCount} pages missing`)
-    signalBuildProgress(name, 'converting', `${expectedPages - pageCount} pages missing`)
-  }
-
-  // Patch all image placeholders (fast, ~70ms)
-  addLog('Patching image placeholders...')
-  try {
-    const { stdout: patchStdout } = await run(
-      `node "${join(SCRIPTS_DIR, 'patch-svg-images.mjs')}" "${svgDir}" "${srcDir}"`,
-      { cwd: PROJECT_ROOT, timeout: 60000 },
-    )
-    const patchOutput = (patchStdout || '').trim()
-    if (patchOutput) addLog(patchOutput.split('\n').pop())
-  } catch (e) {
-    addLog(`Image patching failed (non-fatal): ${e.message.split('\n')[0]}`)
-  }
-
-  // Hash patched SVGs to detect which pages actually changed
-  const newHashes = {}
-  for (const f of allPageFiles) {
-    newHashes[f] = hashSvgContent(readFileSync(join(svgDir, f), 'utf8'))
-  }
-
-  const changedPageFiles = allPageFiles.filter(f => newHashes[f] !== oldHashes[f])
-  const changedPageNums = changedPageFiles.map(f => parseInt(f.match(/page-(\d+)\.svg/)[1]))
-  const changedSet = new Set(changedPageNums)
-
-  addLog(`${changedPageFiles.length}/${pageCount} pages changed`)
-
-  // Publish only changed page SVGs
-  for (const f of allPageFiles) {
-    const pageNum = parseInt(f.match(/page-(\d+)\.svg/)[1])
-    if (changedSet.has(pageNum)) {
-      publishFile(join(svgDir, f), join(outDir, f))
-    }
-  }
-  if (changedPageFiles.length < pageCount) {
-    addLog(`Published ${changedPageFiles.length}/${pageCount} pages`)
-  }
-
-  // Remove stale pages beyond new page count
-  for (const f of readdirSync(outDir)) {
-    const m = f.match(/^page-(\d+)\.svg$/)
-    if (m && parseInt(m[1]) > pageCount) unlinkSync(join(outDir, f))
-  }
-
-  // Signal reload — partial if only some pages changed
-  if (changedPageFiles.length > 0 && changedPageFiles.length < allPageFiles.length) {
-    signalReload(name, changedPageNums)
-  } else {
-    signalReload(name, null)
-  }
-
-  return { pageCount, newHashes, changedPages: changedPageNums }
 }
 
 /** Phase 3: Extract macros from preamble. */
@@ -1863,7 +1708,7 @@ async function finalizeBuildVersion({
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
+export async function runBuild(name) {
   // Serialize builds per project: wait for any in-flight build to finish before starting.
   while (_buildLocks.has(name)) {
     // Kill the running build so we don't wait for it to complete naturally.
@@ -1881,7 +1726,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   const previousActiveBuild = activeBuilds.get(name)
 
   try {
-    return await _runBuildInner(name, { priorityPages: explicitPriority })
+    return await _runBuildInner(name)
   } catch (e) {
     // _runBuildInner marks the project building before validating its inputs.
     // Its own catch starts later, after the active-build record is created, so
@@ -1902,21 +1747,7 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   }
 }
 
-async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
-  let priorityPages = explicitPriority
-  if (!priorityPages) {
-    try {
-      const { getLastSignal } = await import('./sync-rooms.mjs')
-      const viewport = getLastSignal(`doc-${name}`, 'signal:viewport')
-      if (viewport?.pages?.length > 0) {
-        priorityPages = viewport.pages
-      }
-    } catch {}
-  }
-  if (!priorityPages || priorityPages.length === 0) {
-    priorityPages = [1]
-  }
-
+async function _runBuildInner(name) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
   const myVersion = (buildVersion.get(name) || 0) + 1

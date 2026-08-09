@@ -7,7 +7,7 @@ export function createBuildQueue({
   const maxConcurrency = Math.max(1, Number(options.maxConcurrency || 1) || 1)
   const buildPriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 10
   const _inFlight = new Map() // jobKey(name, kind) -> { handle, waiters }
-  const _queued = new Map()   // jobKey(name, kind) -> { name, kind, priorityPages, waiters }
+  const _queued = new Map()   // jobKey(name, kind) -> { name, kind, waiters }
   const _pending = new Map()  // jobKey(name, kind) -> latest queued rebuild behind the in-flight job
   let _activeCount = 0
 
@@ -20,12 +20,11 @@ export function createBuildQueue({
     return [...map.keys()].filter(key => key.startsWith(prefix))
   }
 
-  async function dispatchBuild(name, { priorityPages, kind = 'build' } = {}) {
+  async function dispatchBuild(name, { kind = 'build' } = {}) {
     const key = jobKey(name, kind)
     if (_inFlight.has(key)) {
       return new Promise((resolve, reject) => {
-        const pending = _pending.get(key) || { name, priorityPages: null, kind, waiters: [] }
-        pending.priorityPages = priorityPages || null
+        const pending = _pending.get(key) || { name, kind, waiters: [] }
         pending.kind = kind
         pending.waiters.push({ resolve, reject })
         _pending.set(key, pending)
@@ -35,14 +34,13 @@ export function createBuildQueue({
     if (_queued.has(key)) {
       return new Promise((resolve, reject) => {
         const queued = _queued.get(key)
-        queued.priorityPages = priorityPages || null
         queued.kind = kind
         queued.waiters.push({ resolve, reject })
       })
     }
 
     return new Promise((resolve, reject) => {
-      _enqueue({ name, priorityPages, kind, waiters: [{ resolve, reject }] })
+      _enqueue({ name, kind, waiters: [{ resolve, reject }] })
     })
   }
 
@@ -79,7 +77,7 @@ export function createBuildQueue({
   }
 
   function _runWorker(job) {
-    const { name, priorityPages, kind } = job
+    const { name, kind } = job
     const key = jobKey(name, kind)
     let relays = Promise.resolve()
     // The worker's own verdict on the build. It sends `{t: 'done', ok, error}`
@@ -148,7 +146,7 @@ export function createBuildQueue({
 
     _activeCount++
     const handle = transport.start(
-      { name, priorityPages, kind, projectsDir: getProjectsDir(), priority: buildPriority },
+      { name, kind, projectsDir: getProjectsDir(), priority: buildPriority },
       { onMessage: relay, onError, onExit },
     )
     _inFlight.set(key, {

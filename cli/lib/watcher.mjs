@@ -4,9 +4,8 @@
  * Watches source files and pushes changes to the server.
  * The server handles building — the watcher only detects and uploads.
  *
- * Also connects to the signal SSE stream for:
- *   - Viewport tracking (priority pages for partial rebuilds)
- *   - Reverse sync (open Zed at the line the user clicked)
+ * Also connects to the signal SSE stream for reverse sync: open Zed at the
+ * line the user clicked.
  */
 
 import { watch, existsSync } from 'fs'
@@ -79,10 +78,9 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
     expectedRevision = authority.currentRevision
   }
 
-  // Signal SSE stream for viewport + reverse sync
-  let cachedViewportPages = null
+  // Signal SSE stream for reverse sync
   try {
-    setupSignalStream(server, name, authHeaders, dir, (pages) => { cachedViewportPages = pages })
+    setupSignalStream(server, name, authHeaders, dir)
   } catch (e) {
     console.log(`[watch] Signal stream failed (non-fatal): ${e.message}`)
   }
@@ -134,7 +132,6 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       files.push({ path: relPath, ...readForUpload(fullPath) })
     }
 
-    const priorityPages = cachedViewportPages || undefined
     const sourceManifest = normalizeSourceManifest(Object.keys(collectSourceHashes(dir, sourceContext)), sourceContext)
 
     // Detect deleted files
@@ -150,7 +147,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       const res = await fetch(`${server}/api/projects/${name}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ files: addedOrChanged, deletedFiles, sourceManifest, priorityPages, expectedRevision }),
+        body: JSON.stringify({ files: addedOrChanged, deletedFiles, sourceManifest, expectedRevision }),
         signal: AbortSignal.timeout(60000),
       })
       if (!res.ok) {
@@ -263,10 +260,10 @@ async function fetchSourceContext(server, name, authHeaders) {
 }
 
 /**
- * Connect to the signal SSE stream for viewport updates + reverse sync.
+ * Connect to the signal SSE stream for reverse sync.
  * Replaces the old Yjs WebSocket connection — signals now go through HTTP.
  */
-function setupSignalStream(server, name, authHeaders, texDir, onViewportUpdate) {
+function setupSignalStream(server, name, authHeaders, texDir) {
   let lastReverseTs = 0
   const url = `${server}/api/projects/${name}/signal/stream`
 
@@ -274,9 +271,6 @@ function setupSignalStream(server, name, authHeaders, texDir, onViewportUpdate) 
     url,
     headers: authHeaders,
     onEvent(signal) {
-      if (signal.key === 'signal:viewport' && signal.pages) {
-        onViewportUpdate(signal.pages)
-      }
       if (signal.key === 'signal:reverse-sync' && signal.line && signal.file) {
         if (signal.timestamp && signal.timestamp <= lastReverseTs) return
         lastReverseTs = signal.timestamp || Date.now()
@@ -293,10 +287,4 @@ function setupSignalStream(server, name, authHeaders, texDir, onViewportUpdate) 
       setTimeout(() => sse.reconnect(), 5000)
     },
   })
-
-  // Seed viewport from cached signal
-  fetch(`${server}/api/projects/${name}/signal/${encodeURIComponent('signal:viewport')}`, { headers: authHeaders })
-    .then(r => r.ok ? r.json() : null)
-    .then(sig => { if (sig?.pages) onViewportUpdate(sig.pages) })
-    .catch(e => console.warn(`[watch] viewport signal fetch failed: ${e.message}`))
 }
