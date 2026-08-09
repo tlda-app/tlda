@@ -8,7 +8,7 @@
  */
 
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
@@ -27,6 +27,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
+import { assertOwnerCapableLaunchdManager, transitionLaunchdJob } from './lib/config-apply-transition.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import {
   bootstrapLaunchdJob,
@@ -213,7 +214,7 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|install|enlist|uninstall|start|restart|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement. Restart refreshes its launch recipe from current configuration and restarts an already-loaded service. Stop refuses because unloading a supervised job from an agent shell strands it; use restart or uninstall.',
+  bot:     'tlda bot [list|enlist|status|log] [name]\n\n  Inspect configured fleet bots and record an existing bot fleet id for wake. Launchd configuration is reconciled only by the owner-run config apply operation. A supervised bot restarts when its process exits.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
@@ -1675,46 +1676,53 @@ function writeLaunchdJob(job) {
   if (!existsSync(dirname(job.plist))) mkdirSync(dirname(job.plist), { recursive: true })
   const logPath = job.content.match(/<key>StandardOutPath<\/key>\s*<string>([^<]+)/)?.[1]
   if (logPath && !existsSync(dirname(logPath))) mkdirSync(dirname(logPath), { recursive: true })
-  writeFileSync(job.plist, job.content)
+  const pending = `${job.plist}.pending-${process.pid}`
+  writeFileSync(pending, job.content)
+  try {
+    execFileSync('/usr/bin/plutil', ['-lint', pending], { stdio: ['ignore', 'pipe', 'pipe'] })
+    renameSync(pending, job.plist)
+  } catch (error) {
+    if (existsSync(pending)) unlinkSync(pending)
+    const detail = error?.stderr?.toString?.().trim() || error?.message || String(error)
+    throw new Error(`invalid launchd plist for ${job.label}: ${detail}`)
+  }
 }
 
 async function applyLaunchdOperation(job, operation) {
-  const target = daemonLaunchdTarget(job.label)
-  const bootoutIfLoaded = async () => {
+  const bootoutIfLoaded = async targetJob => {
     try {
-      await runLaunchctl(['bootout', target])
+      await runLaunchctl(['bootout', daemonLaunchdTarget(targetJob.label)])
     } catch (e) {
       const text = e?.message || String(e)
       if (/No such process/i.test(text) || /Could not find service/i.test(text)) return
       throw e
     }
   }
-  const bootstrapAndKickstart = async () => {
+  const bootstrapAndKickstart = async targetJob => {
     await bootstrapLaunchdJob({
-      plist: job.plist,
-      label: job.label,
+      plist: targetJob.plist,
+      label: targetJob.label,
       domain: daemonLaunchdDomain(),
       runLaunchctl,
     })
   }
   try {
-    if (operation === 'add') {
-      writeLaunchdJob(job)
-      await bootstrapAndKickstart()
-    } else if (operation === 'update') {
-      writeLaunchdJob(job)
-      await bootoutIfLoaded()
-      await bootstrapAndKickstart()
-    } else if (operation === 'remove') {
-      await bootoutIfLoaded()
-      if (existsSync(job.plist)) unlinkSync(job.plist)
-    } else {
-      throw new Error(`unknown launchd apply operation: ${operation}`)
-    }
-    return { ok: true }
+    return await transitionLaunchdJob(job, operation, {
+      install: async targetJob => writeLaunchdJob(targetJob),
+      remove: async targetJob => {
+        if (existsSync(targetJob.plist)) unlinkSync(targetJob.plist)
+      },
+      bootout: bootoutIfLoaded,
+      bootstrap: bootstrapAndKickstart,
+    })
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }
   }
+}
+
+async function requireOwnerLaunchdConfigurationContext() {
+  const managerName = await runLaunchctl(['managername'])
+  assertOwnerCapableLaunchdManager(managerName)
 }
 
 function printApplyGroup(title, jobs) {
@@ -1765,6 +1773,20 @@ async function cmdConfigApply() {
 
   if (dryRun) return
 
+  const hasChanges = plan.add.length || plan.update.length || plan.remove.length
+  if (!hasChanges) {
+    console.log(green('tlda config apply complete.'))
+    return
+  }
+
+  try {
+    await requireOwnerLaunchdConfigurationContext()
+    await probeDaemonLaunchdStartCapability()
+  } catch (error) {
+    console.error(red(error?.message || String(error)))
+    process.exit(1)
+  }
+
   for (const job of plan.add) {
     const result = await applyLaunchdOperation(job, 'add')
     if (result.ok) console.log(green(`Added ${job.label}`))
@@ -1794,69 +1816,6 @@ async function cmdConfigApply() {
   }
 
   console.log(green('tlda config apply complete.'))
-}
-
-async function bootstrapBot(bot) {
-  const paths = botServicePaths(bot.name)
-  const target = daemonLaunchdTarget(paths.label)
-  try {
-    await runLaunchctl(['print', target])
-    await runLaunchctl(['kickstart', `-k`, target])
-    return
-  } catch {
-    // A missing target must go through bootstrap below.
-  }
-  await bootstrapLaunchdJob({
-    plist: paths.plist,
-    label: paths.label,
-    domain: daemonLaunchdDomain(),
-    runLaunchctl,
-  })
-}
-
-async function bootoutBot(bot) {
-  const paths = botServicePaths(bot.name)
-  await runLaunchctl(['bootout', daemonLaunchdTarget(paths.label)], { ignoreFailure: true })
-}
-
-async function restartLoadedBot(bot) {
-  const paths = botServicePaths(bot.name)
-  const target = daemonLaunchdTarget(paths.label)
-  try {
-    await runLaunchctl(['print', target])
-  } catch (e) {
-    throw new Error(`${paths.label} is not loaded; register it once with \`tlda config apply\` before using routine restart: ${e?.message || String(e)}`)
-  }
-  await enlistBot(bot)
-
-  const previousPid = existsSync(paths.pidFile) ? readFileSync(paths.pidFile, 'utf8').trim() : ''
-  const tmuxTarget = exactTmuxTarget(paths.tmuxSession)
-  const hasRuntime = spawnSync('tmux', ['has-session', '-t', tmuxTarget], { stdio: 'ignore' }).status === 0
-  if (hasRuntime) {
-    execFileSync('tmux', ['kill-session', '-t', tmuxTarget], { stdio: 'ignore' })
-    execFileSync('tmux', ['wait-for', '-S', paths.waitChannel], { stdio: 'ignore' })
-  } else {
-    await runLaunchctl(['kickstart', '-k', target])
-  }
-
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    const currentPid = existsSync(paths.pidFile) ? readFileSync(paths.pidFile, 'utf8').trim() : ''
-    const pid = Number(currentPid)
-    let alive = false
-    if (Number.isInteger(pid) && pid > 0) {
-      try {
-        process.kill(pid, 0)
-        alive = true
-      } catch {
-        // A fresh pidfile is not readiness when its process has already exited.
-      }
-    }
-    const sessionReady = spawnSync('tmux', ['has-session', '-t', tmuxTarget], { stdio: 'ignore' }).status === 0
-    if (currentPid !== previousPid && alive && sessionReady) return { paths, pid: currentPid }
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  throw new Error(`${paths.label} did not restart through its loaded launchd supervisor`)
 }
 
 function printBotPlan(bot) {
@@ -2310,7 +2269,7 @@ async function cmdFleetWatch(sub) {
       await runLaunchctl(['print', daemonLaunchdTarget()])
     } catch (e) {
       console.error(red(`Fleet daemon launchd job is not loaded: ${FLEET_DAEMON_LABEL}`))
-      console.error(dim('  Register it once with `tlda config apply`; routine restarts do not bootstrap jobs.'))
+      console.error(dim('  Configuration is not applied; routine restart does not bootstrap launchd jobs.'))
       process.exit(1)
     }
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
@@ -2483,30 +2442,9 @@ async function cmdFleetWatch(sub) {
 async function cmdBot() {
   const sub = getPositional(0) || 'list'
   const name = getPositional(1)
-  const dryRun = hasFlag('dry-run')
 
   if (sub === 'list') {
     for (const bot of configuredBots()) printBotPlan(bot)
-    return
-  }
-
-  if (sub === 'install') {
-    const bots = findConfiguredBot(name)
-    if (!dryRun) requireLaunchd()
-    for (const bot of bots) {
-      if (dryRun) {
-        console.log('Would install bot service:')
-        printBotPlan(bot)
-        continue
-      }
-      const paths = writeBotPlist(bot)
-      console.log(`Installed ${paths.plist}`)
-      console.log(`  Label: ${paths.label}`)
-      console.log(`  Script: ${resolveBotScriptForCli(bot.script)}`)
-      console.log(`  Tmux: ${paths.tmuxSession}`)
-      console.log(`  Log: ${paths.logFile}`)
-    }
-    if (!dryRun) console.log('\nRun `tlda bot start <name>` to start now.')
     return
   }
 
@@ -2521,80 +2459,45 @@ async function cmdBot() {
     return
   }
 
-  if (sub === 'uninstall') {
-    const bots = findConfiguredBot(name)
-    requireLaunchd()
-    for (const bot of bots) {
-      const paths = botServicePaths(bot.name)
-      await bootoutBot(bot)
-      if (existsSync(paths.plist)) unlinkSync(paths.plist)
-      console.log(green(`Uninstalled ${paths.label}.`))
-    }
-    return
-  }
-
-  if (sub === 'start') {
-    const bots = findConfiguredBot(name)
-    if (!dryRun) requireLaunchd()
-    for (const bot of bots) {
-      const candidatePaths = botServicePaths(bot.name)
-      if (dryRun) {
-        console.log('Would start bot service:')
-        printBotPlan(bot)
-        continue
-      }
-      readBotFleetId(candidatePaths)
-      const paths = existsSync(candidatePaths.plist) ? candidatePaths : writeBotPlist(bot)
-      await bootstrapBot(bot)
-      console.log(green(`Started ${paths.label}.`))
-      console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-      console.log(dim(`  Log: ${paths.logFile}`))
-    }
-    return
-  }
-
-  if (sub === 'restart') {
-    const bots = findConfiguredBot(name)
-    if (!dryRun) requireLaunchd()
-    for (const bot of bots) {
-      if (dryRun) {
-        console.log('Would refresh the bot launch recipe and restart its loaded service:')
-        printBotPlan(bot)
-        continue
-      }
-      const result = await restartLoadedBot(bot)
-      console.log(green(`Restarted ${result.paths.label}.`))
-      console.log(dim(`  Bot pid: ${result.pid}`))
-      console.log(dim(`  Log: ${result.paths.logFile}`))
-    }
-    return
-  }
-
-  if (sub === 'stop') {
-    requireLaunchd()
-    console.error(red('Refusing to unload supervised bot services.'))
-    console.error(dim('  An agent/background shell cannot bootstrap them again. Use `tlda bot restart [name]` for routine maintenance or `tlda bot uninstall [name]` to remove a service.'))
-    process.exit(1)
-  }
-
   if (sub === 'status') {
     const bots = findConfiguredBot(name)
     for (const bot of bots) {
       const paths = botServicePaths(bot.name)
-      if (process.platform === 'darwin' && existsSync(paths.plist)) {
+      if (process.platform === 'darwin') {
         try {
           const out = await runLaunchctl(['print', daemonLaunchdTarget(paths.label)])
           const pidLine = out.split('\n').find(line => line.trim().startsWith('pid ='))
           const stateLine = out.split('\n').find(line => line.trim().startsWith('state ='))
-          console.log(green(`${bot.name} service loaded`) + dim(` (${paths.label})`))
+          console.log(green(`${bot.name}: running + supervised`) + dim(` (${paths.label})`))
           if (stateLine) console.log(dim(`  ${stateLine.trim()}`))
           if (pidLine) console.log(dim(`  ${pidLine.trim()}`))
           console.log(dim(`  Tmux: ${paths.tmuxSession}`))
           console.log(dim(`  Log: ${paths.logFile}`))
           continue
-        } catch {}
+        } catch (error) {
+          const detail = error?.message || String(error)
+          if (!/Could not find service|No such process|service not found/i.test(detail)) throw error
+        }
       }
-      console.log(red(`${bot.name} service not running`) + dim(` (${paths.label})`))
+      const pid = existsSync(paths.pidFile) ? Number(readFileSync(paths.pidFile, 'utf8').trim()) : 0
+      let running = false
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0)
+          running = true
+        } catch (error) {
+          if (error?.code !== 'ESRCH') throw error
+        }
+      }
+      if (running) {
+        console.log(yellow(`${bot.name}: running unsupervised`) + dim(` (${paths.label})`))
+        console.log(red('  Configuration fault: the bot process is running without its launchd supervisor.'))
+        console.log(dim(`  Bot pid: ${pid}`))
+        console.log(dim(`  Tmux: ${paths.tmuxSession}`))
+        console.log(dim(`  Log: ${paths.logFile}`))
+      } else {
+        console.log(red(`${bot.name}: not running`) + dim(` (${paths.label})`))
+      }
     }
     return
   }
@@ -2611,7 +2514,7 @@ async function cmdBot() {
   }
 
   console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|install|enlist|uninstall|start|restart|stop|status|log] [name] [--dry-run]')
+  console.error('Usage: tlda bot [list|enlist|status|log] [name]')
   process.exit(1)
 }
 

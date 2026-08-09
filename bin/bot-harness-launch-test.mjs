@@ -5,7 +5,7 @@ import { launchMintProcess } from '../agent-launch/index.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 
 let captured = null
-let requestedSessionBase = null
+let requestedUniqueSession = false
 
 const result = await launchMintProcess({
   mintId: 'mint-bot-test',
@@ -20,6 +20,7 @@ const result = await launchMintProcess({
   botHeartbeatFile: '/tmp/tlda-bot-test/todd.heartbeat',
   botWaitChannel: 'fleet-bot-todd-test-exit',
   tmuxSession: 'fleet-bot-todd_testing',
+  exactTmuxSession: true,
   permissionGrant: { profile: 'test' },
   permissionSet: {
     name: 'test',
@@ -35,9 +36,9 @@ const result = await launchMintProcess({
   machineId: 'mini',
   _deps: {
     resolveApi: () => ({ base: 'https://example.invalid' }),
-    uniqueSessionName: async base => {
-      requestedSessionBase = base
-      return base
+    uniqueSessionName: async () => {
+      requestedUniqueSession = true
+      throw new Error('durable bot wake must not allocate a different tmux name')
     },
     resolveDnsAlias: async () => null,
     spawnTmux: async (tmuxSession, cwd, cmd, options) => {
@@ -51,7 +52,7 @@ assert.equal(result.harness, 'bot')
 assert.equal(result.model, 'bot')
 assert.equal(result.tmux_session, 'fleet-bot-todd_testing')
 assert.equal(result.daemon_key, 'mini:testing')
-assert.equal(requestedSessionBase, 'fleet-bot-todd_testing')
+assert.equal(requestedUniqueSession, false)
 assert.equal(captured.tmuxSession, 'fleet-bot-todd_testing')
 assert.match(captured.cmd, /FLEET_ID=.*fleet:bot-test/)
 assert.match(captured.cmd, /FLEET_NAME=.*sodd/)
