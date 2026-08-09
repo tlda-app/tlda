@@ -1479,6 +1479,16 @@ export class FleetStore {
     // Delivered means it has recipients at all; unacknowledged means no
     // recipient row is read. Bounded by a time window and a row cap because
     // this is a fleet-wide scan -- idx_events_ts makes the window a seek.
+    //
+    // Keep this a PULL against the store. Do not rebuild it on top of a
+    // notification, and do not "improve" it by having something push alerts
+    // to a view. Most health checking here rides the same transport it is
+    // checking, so it goes quiet in exactly the conditions worth hearing
+    // about: the dev bot suppressed 1,087 failure notices between 2026-07-25
+    // and 2026-08-08 without sending any of them, 753 for `ws not connected`.
+    // A reader that asks the database a question survives that; a reader
+    // waiting to be told does not. That independence is most of what this view
+    // is worth, and it is the property to preserve if it is ever reworked.
     this._getUnreadRaisedFleetWide = this.db.prepare(`
       SELECT ${this._EVTE} FROM events e
       WHERE e.timestamp >= ?
