@@ -19,6 +19,18 @@ The inbox contains obligations, messages, reports, and delivery events. A 📬
 wake is only a preview. Call `inbox()` to read the complete item before acting,
 especially when the preview says it was truncated.
 
+Reading the inbox marks the rows it was sent as read, so every ordinary view
+shows all of them: a view that hid a row would mark it read anyway and the row
+would never come back. Views regroup a page; they never filter it.
+
+`inbox({ view: "oh fuck" })` is the one exception, and it is a different kind of
+question. It is not your mail. It reports everything raised as `urgent` or
+`important` anywhere in the fleet that no recipient has read yet — an alarm
+nobody has picked up, whoever it was addressed to. It acknowledges nothing, so
+calling it costs no deliveries and it is safe at any time. Reach for it when you
+come back to a mess, or when you suspect something broke while nobody was
+looking. An empty result is a statement about the fleet, not about you.
+
 Notification availability is separate from reading. Use `configuration()` to
 advertise `available`, `busy`, or `dnd` without marking inbox items seen.
 
