@@ -11,7 +11,12 @@ import {
 import { setBackend as setVoiceBackend } from '../voice.mjs'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
-import { SchemeToggle, ThemeFamilyToggle, VimModeToggle } from './TocTab'
+import {
+  SchemeToggle,
+  ThemeFamilyToggle,
+  VimModeToggle,
+  ZoneWidthThumbControl,
+} from './TocTab'
 import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getDeviceId } from '../fleet/fleet-data.mjs'
@@ -47,11 +52,12 @@ const FLEET_SHAPE_OPTIONS = [
   ['fleet-notifications', 'Notifications'],
 ] as const
 
-type PrefsSectionId = 'account' | 'appearance' | 'voice' | 'input' | 'bots'
+type PrefsSectionId = 'account' | 'appearance' | 'voice' | 'radio' | 'input' | 'bots'
 const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
   account: 'account user identity devices switch device name',
-  appearance: 'appearance theme readability font line height opacity layout chat margin tool output document viewer sources note color ribbon provenance slides',
-  voice: 'voice backend meter radio subtitles submit phrases ignored deepgram idle cutoff preroll endpointing',
+  appearance: 'appearance theme readability font line height opacity layout chat margin hover region table of contents toc tool output document viewer sources note color ribbon provenance slides',
+  voice: 'voice backend meter submit phrases ignored deepgram idle cutoff preroll endpointing',
+  radio: 'radio agent subtitles card dwell',
   input: 'input highlighter edge zone corner controls voice slider response curve editor vim',
   bots: 'bots self check countdown model',
 }
@@ -519,6 +525,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <span className="prefs-num-unit">px</span>
           </div>
           <div className="prefs-num-row">
+            <span className="prefs-num-label">ToC hover region</span>
+            <ZoneWidthThumbControl className="prefs-zone-width-slider" />
+          </div>
+          <div className="prefs-num-row">
             <span className="prefs-num-label">Chrome opacity</span>
             <input type="number" min={0} max={150} step={5} value={Math.round(activeReadability.chromeOpacity * 100)} onChange={e => setReadability('chromeOpacity', Number(e.target.value) / 100)} className="prefs-num" />
             <span className="prefs-num-unit">%</span>
@@ -673,27 +683,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           </select>
         </PrefSubsection>
 
-        <PrefSubsection title="Radio">
-          <label className="prefs-check">
-            <input type="checkbox" checked={prefs.radioSubtitlesEnabled} onChange={e => setPref('radio-subtitles-enabled', e.target.checked)} />
-            <span>Agent subtitles</span>
-          </label>
-          <div className="prefs-num-row">
-            <label className="prefs-num-label" htmlFor="radio-subtitle-dwell">Card dwell</label>
-            <input
-              id="radio-subtitle-dwell"
-              type="number"
-              min={MIN_RADIO_SUBTITLE_DWELL_SEC}
-              max={MAX_RADIO_SUBTITLE_DWELL_SEC}
-              step={1}
-              value={prefs.radioSubtitleDwellSec}
-              onChange={e => setPref('radio-subtitle-dwell-sec', normalizeRadioSubtitleDwellSec(e.target.value))}
-              className="prefs-num"
-            />
-            <span className="prefs-num-unit">sec</span>
-          </div>
-        </PrefSubsection>
-
         <PrefSubsection title="Submit phrases">
           <div className="prefs-num-row">
             <span className="prefs-color-label">Submit</span>
@@ -732,6 +721,35 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             ))}
           </PrefSubsection>
         )}
+      </CollapsiblePrefsSection>}
+
+      {sectionVisible('radio') && <CollapsiblePrefsSection
+        id="radio"
+        title="Radio"
+        summary={prefs.radioSubtitlesEnabled ? 'Agent subtitles on' : 'Agent subtitles off'}
+        open={prefs.openSections.includes('radio')}
+        onToggle={toggleSection}
+      >
+        <PrefSubsection title="Radio">
+          <label className="prefs-check">
+            <input type="checkbox" checked={prefs.radioSubtitlesEnabled} onChange={e => setPref('radio-subtitles-enabled', e.target.checked)} />
+            <span>Agent subtitles</span>
+          </label>
+          <div className="prefs-num-row">
+            <label className="prefs-num-label" htmlFor="radio-subtitle-dwell">Card dwell</label>
+            <input
+              id="radio-subtitle-dwell"
+              type="number"
+              min={MIN_RADIO_SUBTITLE_DWELL_SEC}
+              max={MAX_RADIO_SUBTITLE_DWELL_SEC}
+              step={1}
+              value={prefs.radioSubtitleDwellSec}
+              onChange={e => setPref('radio-subtitle-dwell-sec', normalizeRadioSubtitleDwellSec(e.target.value))}
+              className="prefs-num"
+            />
+            <span className="prefs-num-unit">sec</span>
+          </div>
+        </PrefSubsection>
       </CollapsiblePrefsSection>}
 
       {sectionVisible('input') && <CollapsiblePrefsSection

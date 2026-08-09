@@ -278,6 +278,14 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   background: rgba(255, 255, 255, 0.55);
 }
 
+.prefs-zone-width-slider {
+  position: relative;
+  flex: 1;
+  height: 14px;
+  min-width: 64px;
+  pointer-events: all;
+}
+
 /* Tabs and content ghost when idle — slow fade in on hover */
 .doc-panel-tabs,
 .doc-panel-content,

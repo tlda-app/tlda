@@ -85,6 +85,9 @@ const DEFAULTS = {
   'semantic-operation-page-size': 40 as number,
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,
+  // Document panel hover trigger width. This is the same value the old ToC
+  // bottom thumb adjusted; default preserves the historical 60px strip.
+  'toc-hover-zone-width': 60 as number,
   // Bottom-right corner rail: one vertical rail with Marking, Voice, and Fleet rows.
   'corner-rail-enabled': false as boolean,
   // 0 = automatic per device: current corner button size * 4/3, with the
@@ -113,7 +116,7 @@ const DEFAULTS = {
   'source-write-idle-sec': 4 as number,
   // Preferences panel disclosure state. Kept server-backed so touch-only
   // devices don't need localStorage access to recover usable panel space.
-  'prefs-open-sections': ['account', 'appearance', 'voice'] as string[],
+  'prefs-open-sections': ['account', 'appearance', 'voice', 'radio'] as string[],
 }
 
 export type PrefKey = keyof typeof DEFAULTS

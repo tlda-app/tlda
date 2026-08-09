@@ -19,6 +19,7 @@ import {
 } from '../livekit/liveSession'
 import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-utils'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
+import { getPref, setPref, subscribePref } from '../preferences'
 import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, type TocLevel, type TocEntry } from './helpers'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
@@ -732,21 +733,37 @@ export function DarkModeToggle() {
 
 const ZONE_WIDTH_KEY = 'zone-width'
 const ZONE_WIDTH_EVENT = 'zone-width-change'
-const ZONE_WIDTH_DEFAULT = 60
-const ZONE_WIDTH_MIN = 20
-const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
+export const ZONE_WIDTH_DEFAULT = 60
+export const ZONE_WIDTH_MIN = 20
+export const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
+
+export function normalizeZoneWidth(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return ZONE_WIDTH_DEFAULT
+  return Math.round(Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, parsed)))
+}
 
 export function getZoneWidth(): number {
+  const pref = normalizeZoneWidth(getPref('toc-hover-zone-width'))
+  if (pref !== ZONE_WIDTH_DEFAULT) return pref
   const stored = parseInt(localStorage.getItem(ZONE_WIDTH_KEY) || '')
-  if (isNaN(stored)) return ZONE_WIDTH_DEFAULT
-  return Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, stored))
+  if (isNaN(stored)) return pref
+  return normalizeZoneWidth(stored)
 }
 
 export function applyZoneWidth(w: number) {
   document.documentElement.style.setProperty('--zone-width', w + 'px')
 }
 
-export function ZoneWidthSlider() {
+export function setZoneWidthPref(next: number) {
+  const v = normalizeZoneWidth(next)
+  localStorage.setItem(ZONE_WIDTH_KEY, String(v))
+  setPref('toc-hover-zone-width', v)
+  applyZoneWidth(v)
+  window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))
+}
+
+export function ZoneWidthThumbControl({ className = 'toc-zone-width-slider' }: { className?: string }) {
   const [width, setWidth] = useState(getZoneWidth)
   const [dragging, setDragging] = useState(false)
   const railRef = useRef<HTMLDivElement>(null)
@@ -758,14 +775,19 @@ export function ZoneWidthSlider() {
     applyZoneWidth(width)
   }, [])
 
+  useEffect(() => subscribePref(() => {
+    const next = getZoneWidth()
+    widthRef.current = next
+    setWidth(next)
+    applyZoneWidth(next)
+  }), [])
+
   const setZoneWidth = useCallback((next: number) => {
     const v = Math.round(Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, next)))
     if (v === widthRef.current) return
     widthRef.current = v
     setWidth(v)
-    localStorage.setItem(ZONE_WIDTH_KEY, String(v))
-    applyZoneWidth(v)
-    window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))
+    setZoneWidthPref(v)
   }, [])
 
   const updateFromClientX = useCallback((clientX: number) => {
@@ -799,7 +821,7 @@ export function ZoneWidthSlider() {
   const thumbLeft = `${((ZONE_WIDTH_MAX - width) / (ZONE_WIDTH_MAX - ZONE_WIDTH_MIN)) * 100}%`
 
   return (
-    <div className="toc-zone-width-slider" ref={railRef} aria-hidden="true">
+    <div className={className} ref={railRef} aria-hidden="true">
       <div
         className={`toc-zone-width-thumb${dragging ? ' dragging' : ''}`}
         style={{ left: thumbLeft }}
@@ -810,4 +832,8 @@ export function ZoneWidthSlider() {
       />
     </div>
   )
+}
+
+export function ZoneWidthSlider() {
+  return <ZoneWidthThumbControl />
 }
