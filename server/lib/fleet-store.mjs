@@ -1460,6 +1460,35 @@ export class FleetStore {
       SELECT MIN(timestamp) AS t FROM recipients WHERE agent_id = ? AND read = 0
     `);
 
+    // Raised and unacknowledged, fleet-wide -- the "oh fuck" view.
+    //
+    // The borrowed language is alerting, and it answers the three questions
+    // this view otherwise has to invent answers to. An alert fires until some
+    // responder acknowledges it, so this is NOT scoped to the caller: an alarm
+    // someone else already picked up is not an "oh fuck" any more, and one
+    // nobody picked up is, whoever it was addressed to. That is the case it
+    // exists for -- a bot reported an agent deaf for twelve hours into a room
+    // where every inbox was full, so the failure and the silence about it were
+    // the same event.
+    //
+    // Severity is the emitter's, exactly as an alert's is: `priority` is
+    // already set by the sender at send time, so nothing here has to judge what
+    // counts as bad. Reusing it is what keeps this view from drifting into
+    // meaning "recent", which is what a view called `urgent` would have done.
+    //
+    // Delivered means it has recipients at all; unacknowledged means no
+    // recipient row is read. Bounded by a time window and a row cap because
+    // this is a fleet-wide scan -- idx_events_ts makes the window a seek.
+    this._getUnreadRaisedFleetWide = this.db.prepare(`
+      SELECT ${this._EVTE} FROM events e
+      WHERE e.timestamp >= ?
+        AND json_extract(e.metadata, '$.priority') IN ('urgent', 'important')
+        AND EXISTS (SELECT 1 FROM recipients r WHERE r.event_id = e.id)
+        AND NOT EXISTS (SELECT 1 FROM recipients r2 WHERE r2.event_id = e.id AND r2.read = 1)
+      ORDER BY e.timestamp DESC
+      LIMIT ?
+    `);
+
     // Incrementally bump last_active for the event's sender + every recipient.
     // The first two params are the event timestamp; MAX keeps the newest if
     // events arrive out of order. The third is a JSON array of participant ids,
@@ -4771,6 +4800,14 @@ export class FleetStore {
 
   getOldestUnreadAt(agentId) {
     return this._getOldestUnreadAt.get(agentId)?.t || null;
+  }
+
+  // See _getUnreadRaisedFleetWide. Reading this never marks anything read: it
+  // is a question about the fleet, not a delivery to the caller, and the caller
+  // is usually not the recipient. Answering it must not consume the alert.
+  getUnreadRaisedFleetWide(sinceIso, limit = 40) {
+    const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 40, 100));
+    return this._query(this._getUnreadRaisedFleetWide, String(sinceIso), n);
   }
 
   // Return agent IDs that used editor tools (Edit/Write/NotebookEdit) on files in

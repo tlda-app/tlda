@@ -1453,7 +1453,11 @@ export function getFleetTools() {
           view: {
             type: 'string',
             enum: INBOX_VIEWS,
-            description: 'Read-time inbox view. default = bounded NOW/BATCHED/BACKGROUND; review = reports/gates/missing evidence; monitoring = blockers/stale/incident/release gates; current-task = active task/thread first; all = broad grouped view.',
+            description: 'Read-time inbox view. default = bounded NOW/BATCHED/BACKGROUND; review = reports/gates/missing evidence; monitoring = blockers/stale/incident/release gates; current-task = active task/thread first; all = broad grouped view. "oh fuck" is different in kind from the rest: fleet-wide, not your own mail — everything raised as urgent or important, anywhere, that NO recipient has read yet. Use it when you come back to a mess or suspect something broke while nobody was looking. It acknowledges nothing, so it is safe to call any time and it will not consume your inbox.',
+          },
+          hours: {
+            type: 'number',
+            description: 'Window for the "oh fuck" view, in hours. Default 24, max 168. Ignored by every other view.',
           },
           peek: {
             type: 'boolean',
@@ -2101,6 +2105,32 @@ export function inboxAgeSpan(messages = [], counts = null, now = Date.now()) {
     if (age) bits.push(`backlog reaches ${age}`);
   }
   return bits.length ? bits.join(', ') : null;
+}
+
+// The "oh fuck" view: raised and unacknowledged, fleet-wide.
+//
+// "Clear" here means something the other views cannot say. They report on the
+// caller's own unread, so an empty one only means this agent is caught up. This
+// one is fleet-wide and read by anyone, so an empty result means nothing is
+// both raised and unpicked-up anywhere -- and a non-empty one names things that
+// may be addressed to someone else entirely. Say which it is, because an agent
+// reading its own name in none of the rows should still act.
+export function formatRaisedUnreadText(rows = [], data = null, now = Date.now()) {
+  const hours = data?.window_hours || 24;
+  const lines = ['**INBOX MODE:** oh fuck'];
+  lines.push(`Raised and unread by anyone, fleet-wide, last ${hours}h. Reading this acknowledges nothing.`);
+  if (!rows.length) {
+    lines.push('');
+    lines.push(`- Nothing raised in the last ${hours}h is sitting unread. This is a statement about the fleet, not about your inbox.`);
+    return lines.join('\n');
+  }
+  lines.push('');
+  lines.push(`## RAISED, NOBODY HAS READ IT (${rows.length})`);
+  pushInboxEntries(lines, rows, m => {
+    const age = inboxRelativeAge(now - Date.parse(m?.timestamp));
+    return `${m.line}${inboxPriorityHint(m)}${age ? ` [raised ${age}]` : ''}`;
+  });
+  return lines.join('\n');
 }
 
 export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now(), briefSeen = null }) {
@@ -3661,14 +3691,33 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     if (!activeAgentId()) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const view = inboxViewForArgs(args);
 
+    // The "oh fuck" view is a query, not a delivery, so it returns before any
+    // of the delivery machinery below and NEVER acks. That is not a courtesy:
+    // the other five views are exhaustive over the rows they were sent because
+    // reading acks every fetched row, so a view that shows a subset would mark
+    // the rest read and destroy them. This one is a subset by construction, and
+    // it is safe only because it consumes nothing. Non-acking by construction
+    // rather than by the caller passing `peek` -- a view whose correctness
+    // depends on remembering a second argument will eat an inbox the first time
+    // somebody forgets.
+    if (view === 'oh fuck') {
+      const data = await mcpFleetTransport.ephemeral('raised-unread', { hours: args?.hours, limit: args?.limit });
+      const rows = await Promise.all((data.messages || []).map(m => resolveInboxMessage(m, {
+        resolveChipTokens: resolveInboxChipTokens,
+        resolveTheoremRefs,
+        resolveImages: resolveInboxImages,
+      })));
+      return { content: formatInboxContent({ text: formatRaisedUnreadText(rows, data), messages: rows }) };
+    }
+
     // drain: page through the whole backlog rather than the first page.
     //
-    // Paging is oldest-first, so an agent a thousand messages behind is shown a
-    // window from days ago and nothing recent — the fuller the inbox, the more
-    // useless the read. One page is also the only unit an agent can acknowledge,
-    // so a deep inbox is not clearable by the agent that owns it. This walks
-    // every page, acknowledges each, and writes the lot to a markdown file so
-    // the result is readable without returning megabytes through the tool.
+    // One page is the only unit an agent can acknowledge, so a deep inbox is
+    // not clearable by the agent that owns it -- the page now holds the recent
+    // end, so what a backlogged agent cannot reach this way is the old end.
+    // This walks every page, acknowledges each, and writes the lot to a
+    // markdown file so the result is readable without returning megabytes
+    // through the tool.
     if (args?.drain && !args?.peek) {
       const agentId = activeAgentId();
       const sections = [];

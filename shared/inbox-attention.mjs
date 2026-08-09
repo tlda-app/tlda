@@ -1,5 +1,8 @@
 export const INBOX_STATUSES = ['available', 'busy', 'dnd']
-export const INBOX_VIEWS = ['default', 'review', 'monitoring', 'current-task', 'all']
+// 'oh fuck' is Skip's name for it and it is kept deliberately: it names the
+// moment rather than the data. A view called `urgent` drifts into meaning
+// `recent`, which is the thing this one must not become.
+export const INBOX_VIEWS = ['default', 'review', 'monitoring', 'current-task', 'all', 'oh fuck']
 export const MESSAGE_PRIORITIES = ['normal', 'important', 'urgent']
 export const DELIVERY_CHANNELS = ['channel', 'tmux']
 export const DEFAULT_SUBSCRIPTION_BATCH_MS = 5 * 60 * 1000

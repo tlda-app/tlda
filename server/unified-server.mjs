@@ -7098,6 +7098,17 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // The "oh fuck" view. Deliberately separate from `my-task`: that one is a
+  // delivery and is acked, this is a question about the fleet and must not be.
+  // Nothing here marks anything read.
+  if (type === 'raised-unread') {
+    const hours = Math.max(1, Math.min(Number.parseInt(String(msg.hours), 10) || 24, 168))
+    const since = new Date(Date.now() - hours * 3600_000).toISOString()
+    const rows = await fleetStore.getUnreadRaisedFleetWide?.(since, msg.limit) || []
+    reply({ messages: rows, window_hours: hours, since })
+    return
+  }
+
   if (type === 'ack-inbox') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }

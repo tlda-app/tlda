@@ -82,6 +82,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getLiveAgentsByFriendlyName',
   'getLiveHumanByFriendlyName',
   'getOldestUnreadAt',
+  'getUnreadRaisedFleetWide',
   'getOrCreateLineage',
   'getPendingNativeSubagentNotifications',
   'getQaAgentIds',
