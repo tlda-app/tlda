@@ -3629,6 +3629,7 @@ export async function runFleetSpawn(spawnArgs, {
   const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
   const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
+  const explicitModelArg = flagFromRaw(spawnArgs, 'model') || undefined
   // A named --permissions profile must be one the operator actually configured in
   // daemon.yaml. Unknown profile → loud error listing the real ones, never a
   // silent fallback. Checked here so it covers wake as well: the wake branch
@@ -3718,10 +3719,12 @@ export async function runFleetSpawn(spawnArgs, {
         identifier: stored.mintId,
         agentId: stored.fleetId || null,
         cwd: stored.launchRecipe?.cwd || null,
+        model: stored.launchRecipe?.model || null,
       }
     } finally {
       mintStore.close()
     }
+    assertWakeModelMatchesRecipe({ name, requestedModel: explicitModelArg, recipeModel: restored.model })
     // The daemon has taken `permissionGrant` on wake since wake-permission-profile
     // existed; this call is the wire that was never connected, so `--permissions`
     // on wake resolved to nothing at all. The daemon writes the ledger from what
@@ -3768,6 +3771,7 @@ export async function runFleetSpawn(spawnArgs, {
           stored,
           explicitCwd,
           explicitPermissionArg,
+          explicitModelArg,
         })
         cwd = restored.cwd
         wakeLocalAgentId = restored.localAgentId
@@ -3911,6 +3915,7 @@ export function resolveWakeRecipeFields({
   stored,
   explicitCwd = false,
   explicitPermissionArg = undefined,
+  explicitModelArg = undefined,
 } = {}) {
   const label = name || stored?.friendlyName || stored?.serverAgentId || stored?.localAgentId || '(unknown)'
   if (explicitCwd) {
@@ -3925,6 +3930,7 @@ export function resolveWakeRecipeFields({
   if (!stored.serverAgentId || !stored.serverAgentId.startsWith('fleet:')) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no fleet_id binding`)
   }
+  assertWakeModelMatchesRecipe({ name: label, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
   const permissionArg = explicitPermissionArg || stored.process.permissionGrant || undefined
   return {
     cwd: resolve(stored.process.cwd),
@@ -3932,6 +3938,17 @@ export function resolveWakeRecipeFields({
     agentId: stored.serverAgentId,
     permissionArg,
     permissionRequest: explicitPermissionArg || undefined,
+  }
+}
+
+function assertWakeModelMatchesRecipe({ name, requestedModel, recipeModel } = {}) {
+  if (!requestedModel) return
+  const label = name || '(unknown)'
+  if (!recipeModel) {
+    throw new Error(`wake refused: local durable recipe for "${label}" has no model; cannot assert --model ${requestedModel}`)
+  }
+  if (String(recipeModel) !== String(requestedModel)) {
+    throw new Error(`wake refused: --model ${requestedModel} does not match local durable recipe model ${recipeModel} for "${label}"`)
   }
 }
 
@@ -4405,7 +4422,7 @@ Usage:
   tlda agent list [--limit N]
   tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
   tlda agent enlist --kind <codex|claude> <session-id> [name] [--permissions <profile>]
-  tlda agent wake <agent> [--permissions <profile>]
+  tlda agent wake <agent> [--model model] [--permissions <profile>]
   tlda agent reanimate <agent>
   tlda agent move <agent> [name@][box:]env
   tlda agent set-mint-machine <agent-or-user> <machine>
