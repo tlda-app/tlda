@@ -297,6 +297,7 @@ function readAll() {
     foldMd: getPref('fold-md-lines'),
     foldDiff: getPref('fold-diff-lines'),
     semanticOperationPageSize: getPref('semantic-operation-page-size'),
+    documentStingyMode: getPref('document-stingy-mode'),
     hlZone: getPref('hl-zone-enabled'),
     cornerRail: getPref('corner-rail-enabled'),
     cornerSize: getPref('corner-control-size'),
@@ -572,6 +573,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
         </PrefSubsection>
 
         <PrefSubsection title="Doc viewer sources">
+          <label className="prefs-check">
+            <input type="checkbox" checked={prefs.documentStingyMode} onChange={e => setPref('document-stingy-mode', e.target.checked)} />
+            <span>Stingy mode</span>
+          </label>
           <div className="prefs-source-checks">
             {ALL_SOURCES.map(src => (
               <label key={src} className="prefs-check">
