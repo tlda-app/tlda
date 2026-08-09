@@ -4145,7 +4145,7 @@ app.use('/docs', (req, res, next) => {
     }
     try {
       const { buildCurrentPage } = await import('./lib/shadow-repo.mjs')
-      const built = await buildCurrentPage(name, pageNum, texBase)
+      const built = await buildCurrentPage(name, pageNum, texBase, { coldPageRender: req.query._tldaCold === '1' })
       res.set('Cache-Control', 'no-cache')
       return res.sendFile(resolve(built), { dotfiles: 'allow' })
     } catch (e) {

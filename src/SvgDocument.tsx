@@ -52,6 +52,7 @@ import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { ToolNameHud } from './overlays/ToolNameHud'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, dismissAllChanges, changedPages } from './stores'
+import { fetchSvgPagesAsync } from './editorSetup'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
 import { SoftAxisHandTool } from './tools/SoftAxisHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
@@ -1223,8 +1224,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
           // Signal that pages are ready (still used by some listeners)
           window.dispatchEvent(new CustomEvent('tldraw-pages-ready'))
 
-          // SVG page content is fetched lazily by each SvgPageShape when it
-          // enters the viewport — no bulk fetch needed here.
+          void fetchSvgPagesAsync(editor, document)
 
           // Default drawing style: purple, 70% opacity, small size
           editor.setStyleForNextShapes(DefaultColorStyle, 'violet')

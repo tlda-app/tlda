@@ -24,6 +24,8 @@ import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import { htmlIframeElements } from './htmlIframeRegistry'
 import { FORMATS_WITH_OWN_PAGE_INFO, HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
 import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
+import { getPref } from './preferences'
+import { fetchCachedSvgPage } from './pageSvgCache'
 import {
   getVisibilityMode, subscribeVisibility,
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
@@ -245,24 +247,39 @@ async function fetchPage(
   page: SvgDocument['pages'][number],
   basePath: string,
   index: number,
+  buildHash?: string | null,
 ): Promise<{ index: number; svgDoc: Document } | null> {
   const pageBasePath = page.targetBasePath || basePath
   const pageNum = page.pageInTarget || (index + 1)
   const url = `${pageBasePath}page-${pageNum}.svg`
-  try {
-    let resp = await fetch(url)
-    if (!resp.ok) {
-      // Retry once after 1s — page may still be building
-      await new Promise(r => setTimeout(r, 1000))
-      resp = await fetch(`${pageBasePath}page-${pageNum}.svg?t=${Date.now()}`)
-      if (!resp.ok) return null
+  const svgText = await fetchCachedSvgPage(url, buildHash, { cold: true })
+  if (svgText === null) return null
+  const svgDoc = processPage(page, svgText)
+  return { index, svgDoc }
+}
+
+function pageFetchOrder(pages: SvgDocument['pages'], viewTop: number, viewBottom: number) {
+  const priorityIndices: number[] = []
+  const deferredIndices: number[] = []
+  for (let i = 0; i < pages.length; i++) {
+    const b = pages[i].bounds
+    const pageBottom = b.y + b.height
+    if (b.y < viewBottom && pageBottom > viewTop) {
+      priorityIndices.push(i)
+    } else {
+      deferredIndices.push(i)
     }
-    const svgText = await resp.text()
-    const svgDoc = processPage(page, svgText)
-    return { index, svgDoc }
-  } catch {
-    return null
   }
+  if (deferredIndices.length > 0 && priorityIndices.length > 0) {
+    priorityIndices.push(deferredIndices.shift()!)
+  }
+  const focusY = (viewTop + viewBottom) / 2
+  const distanceToFocus = (index: number) => {
+    const b = pages[index].bounds
+    return Math.abs((b.y + b.height / 2) - focusY)
+  }
+  deferredIndices.sort((a, b) => distanceToFocus(a) - distanceToFocus(b))
+  return { priorityIndices, deferredIndices }
 }
 
 /**
@@ -280,36 +297,22 @@ export async function fetchSvgPagesAsync(
   // At load, the laid-out page set is the build's page set.
   setBuiltPageCount(pages.length)
 
-  // Determine which pages are visible in the initial viewport.
-  // Fetch those first for fast first-paint, then the rest in parallel.
   const vp = editor.getViewportScreenBounds()
   const cam = editor.getCamera()
   const viewHeight = vp.h / cam.z
   const viewTop = -cam.y
   const viewBottom = viewTop + viewHeight
 
-  const priorityIndices: number[] = []
-  const deferredIndices: number[] = []
-  for (let i = 0; i < pages.length; i++) {
-    const b = pages[i].bounds
-    const pageBottom = b.y + b.height
-    if (b.y < viewBottom && pageBottom > viewTop) {
-      priorityIndices.push(i)
-    } else {
-      deferredIndices.push(i)
-    }
-  }
-  // Always include at least one page beyond visible for smooth scrolling
-  if (deferredIndices.length > 0 && priorityIndices.length > 0) {
-    priorityIndices.push(deferredIndices.shift()!)
-  }
+  const { priorityIndices, deferredIndices } = pageFetchOrder(pages, viewTop, viewBottom)
+  const buildHash = currentBuiltHash(editor)
+  const stingy = getPref('document-stingy-mode')
 
   console.log(`[FetchAsync] Loading ${pages.length} pages (${priorityIndices.length} priority, ${deferredIndices.length} deferred)`)
 
   // Phase 1: fetch priority pages — visible content appears ASAP
   const svgDocs: Array<{ index: number; svgDoc: Document }> = []
   const priorityResults = await Promise.all(
-    priorityIndices.map(i => fetchPage(pages[i], basePath, i))
+    priorityIndices.map(i => fetchPage(pages[i], basePath, i, buildHash))
   )
   for (const r of priorityResults) {
     if (r) svgDocs.push(r)
@@ -317,10 +320,9 @@ export async function fetchSvgPagesAsync(
 
   console.log(`[FetchAsync] ${svgDocs.length} priority pages rendered`)
 
-  // Phase 2: fetch remaining pages in parallel
-  if (deferredIndices.length > 0) {
+  if (!stingy) {
     const deferredResults = await Promise.all(
-      deferredIndices.map(i => fetchPage(pages[i], basePath, i))
+      deferredIndices.map(i => fetchPage(pages[i], basePath, i, buildHash))
     )
     for (const r of deferredResults) {
       if (r) svgDocs.push(r)

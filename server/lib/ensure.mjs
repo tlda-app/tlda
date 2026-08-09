@@ -37,10 +37,27 @@ import {
 } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
+import { availableParallelism } from 'os'
 
 import { projectDir, outputDir, sourceDir, readProject } from './project-store.mjs'
 
 const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts')
+const COLD_SVG_RENDER_LIMIT = Math.max(1, availableParallelism() - 1)
+let coldSvgActive = 0
+const coldSvgWaiters = []
+
+async function withColdSvgRenderSlot(fn) {
+  while (coldSvgActive >= COLD_SVG_RENDER_LIMIT) {
+    await new Promise(resolve => coldSvgWaiters.push(resolve))
+  }
+  coldSvgActive++
+  try {
+    return await fn()
+  } finally {
+    coldSvgActive = Math.max(0, coldSvgActive - 1)
+    coldSvgWaiters.shift()?.()
+  }
+}
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
@@ -338,6 +355,15 @@ async function buildHistoricalDvi(ctx) {
 
 /** Run dvisvgm for one page → ctx.outDir/<texBase>-page-N.svg. */
 async function buildSvgPage(ctx, pageNum, target) {
+  if (ctx.coldPageRender) {
+    // Cold prefetch can ask for many pages at once. Keep one core free for
+    // ordinary visible-page requests, which do not go through this cap.
+    return withColdSvgRenderSlot(() => buildSvgPageNow(ctx, pageNum, target))
+  }
+  return buildSvgPageNow(ctx, pageNum, target)
+}
+
+async function buildSvgPageNow(ctx, pageNum, target) {
   const { texBase } = decodeTarget(target)
   const dviFile = artifactPath(ctx, `${texBase}.dvi`)
   const svgFile = artifactPath(ctx, target)

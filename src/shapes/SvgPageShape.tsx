@@ -21,6 +21,7 @@ import { isPhoneViewport } from '../phoneViewport'
 import { ProjectContext } from '../PanelContext'
 import { SPATIAL_MAP_ZOOM } from '../spatialDocumentWorld'
 import { getOptionalVisibilityViewport, useVisibilityViewportId } from './useIsInViewport'
+import { fetchCachedSvgPage } from '../pageSvgCache'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -270,12 +271,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const builtHash = sentinel?.type === 'doc-version' && typeof sentinel.props?.commitHash === 'string'
       ? sentinel.props.commitHash
       : undefined
-    const versionedUrl = builtHash && builtHash !== 'unknown'
-      ? `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(builtHash)}`
-      : url
-    fetch(versionedUrl, { signal: controller.signal }).then(async res => {
-      if (!res.ok) return
-      const newText = await res.text()
+    fetchCachedSvgPage(url, builtHash, { signal: controller.signal }).then(newText => {
+      if (newText === null) return
       if (newText !== svgText) setSvgText(shape.id as string, newText)
       if (builtHash && builtHash !== 'unknown') {
         setPageRenderHash(shape.id as string, String(builtHash).slice(0, 7))

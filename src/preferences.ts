@@ -82,6 +82,10 @@ const DEFAULTS = {
   'thread-front-messages': 3 as number,
   'thread-tail-messages': 2 as number,
   'semantic-operation-page-size': 40 as number,
+  // Stingy mode fetches only displayed document pages. Default off: normal
+  // reading prefetches pages so they are already browser-local; stingy exists
+  // so the Fly server does not render pages nobody opens.
+  'document-stingy-mode': false as boolean,
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,
   // Document panel hover trigger width. This is the same value the old ToC

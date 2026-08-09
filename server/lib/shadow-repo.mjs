@@ -839,12 +839,12 @@ export async function buildShadowPage(name, hash7, pageNum) {
   return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
 
-export async function buildCurrentPage(name, pageNum, texBase) {
+export async function buildCurrentPage(name, pageNum, texBase, options = {}) {
   const { ensure, currentCtx } = await import('./ensure.mjs')
   if (!texBase) {
     const project = await readProject(name)
     texBase = basename(project?.mainFile || 'main.tex', '.tex')
   }
-  const ctx = currentCtx(name, texBase)
+  const ctx = { ...currentCtx(name, texBase), coldPageRender: options.coldPageRender === true }
   return ensure(ctx, `${texBase}-page-${pageNum}.svg`)
 }
