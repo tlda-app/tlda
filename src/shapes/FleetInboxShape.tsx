@@ -1297,17 +1297,21 @@ function ConversationView({
         }}
         style={{ touchAction: 'pan-y' }}
       >
-        {thread.messages.map((m, i) => {
-          const key = m._dbId || m.id || String(i)
-          const lineHtml = renderChatLine(m, lineCtx)
-          if (!lineHtml) return null
-          const mine = m.from === myId
-          return (
-            <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
-              <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-            </div>
-          )
-        })}
+        {(() => {
+          let previousMessageTimestamp: string | null = null
+          return thread.messages.map((m, i) => {
+            const key = m._dbId || m.id || String(i)
+            const lineHtml = renderChatLine(m, { ...lineCtx, previousMessageTimestamp })
+            if (!lineHtml) return null
+            if (m.timestamp) previousMessageTimestamp = m.timestamp
+            const mine = m.from === myId
+            return (
+              <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
+                <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
+              </div>
+            )
+          })
+        })()}
       </div>
       <div className="fleet-inbox-composer-slot" onPointerDown={(e) => stopEventPropagation(e)}>
         <ChatComposer

@@ -3023,6 +3023,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       return true
     }
 
+    let previousChatLineTimestamp: string | null = null
     for (let i = 0; i < chatMessages.length; i++) {
       const m = chatMessages[i]
       if (m._activity) {
@@ -3147,26 +3148,28 @@ function FleetChatInner({ shape }: { shape: any }) {
           .join('|')
         const instrumentedLineCtx = {
           ...lineCtx,
+          previousMessageTimestamp: previousChatLineTimestamp,
           renderMarkdown: (input: string) => {
             recordChatRenderProbe('markdown-render', String(itemKey), { inputLength: input.length })
             return lineCtx.renderMarkdown(input)
           },
         }
-	        const cacheKey = [
-	          contentRenderKey,
-	          thinkingKey,
-	          sendTargetsKey,
-	          itemKey,
-	          participantRenderKey,
-	          renderM.text || '',
-	          renderM._amendStepper || '',
-	          renderM._failed ? 'failed' : '',
-	          renderM._queued ? 'queued' : '',
-	          senderPreambleDoc || '',
-	          lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
-	          JSON.stringify(renderM.metadata?.source || null),
-	          chatLineAttachmentRenderSignature(renderM),
-	        ].join('::')
+        const cacheKey = [
+          contentRenderKey,
+          thinkingKey,
+          sendTargetsKey,
+          itemKey,
+          participantRenderKey,
+          renderM.text || '',
+          renderM._amendStepper || '',
+          renderM._failed ? 'failed' : '',
+          renderM._queued ? 'queued' : '',
+          senderPreambleDoc || '',
+          lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
+          previousChatLineTimestamp || '',
+          JSON.stringify(renderM.metadata?.source || null),
+          chatLineAttachmentRenderSignature(renderM),
+        ].join('::')
         let html = msgLineCache.current.get(cacheKey)
         const t0 = probe.isEnabled('chat') ? performance.now() : 0
         const cached = !!html
@@ -3186,6 +3189,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             textLength: String(renderM.text || '').length,
           })
         }
+        if (html && renderM.timestamp) previousChatLineTimestamp = renderM.timestamp
         chatLineCount++
         if (probe.isEnabled('chat')) {
           const dt = performance.now() - t0

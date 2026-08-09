@@ -699,6 +699,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   background: rgba(100, 140, 255, 0.04);
 }
 
+/* --- Time gap marker --- */
+.fleet-chat-shape .chat-line-gap-before {
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+
 /* --- Timestamp --- */
 .fleet-chat-shape .chat-ts {
   color: var(--text-dim);
