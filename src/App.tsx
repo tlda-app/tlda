@@ -19,6 +19,7 @@ import type { BookMember } from './BookContext'
 import { LOG_AGE_CURVE, SpaceTimeDots, type ChangelogCommit } from './overlays/SpaceTimeDots'
 import { useFleetTheme } from './hooks/useFleetTheme'
 import { ChatComposer } from './shapes/ChatComposer'
+import { getPref, parseCsvPref, subscribePref } from './preferences'
 // @ts-ignore — vanilla JS module
 import { attachIndexChatTail } from './index-chat-tail.mjs'
 // @ts-ignore — vanilla JS module
@@ -51,6 +52,11 @@ function isStandaloneWorkspaceRoute() {
 // Fetch auth level (presenter permission) — fire and forget, UI updates reactively.
 // The standalone gradebook uses its classroom API request instead of viewer auth state.
 if (!isStandaloneWorkspaceRoute()) fetchAuthLevel()
+
+function composerPlaceholder(agentName: string, submitWordsPref: string) {
+  const [submitWord] = parseCsvPref(submitWordsPref)
+  return submitWord ? `Message ${agentName} · say “${submitWord}” to send` : `Message ${agentName}`
+}
 
 // Error boundary to prevent blank screen on errors
 class ErrorBoundary extends Component<
@@ -824,6 +830,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const [telemetryUrl, setTelemetryUrl] = useState<string | null>(null)
   const [recording, setRecording] = useState(() => isRecording())
   useEffect(() => onRecordingChange(setRecording), [])
+  const [voiceSubmitWords, setVoiceSubmitWords] = useState(() => getPref('voice-submit-words') as string)
+  useEffect(() => subscribePref(() => setVoiceSubmitWords(getPref('voice-submit-words') as string)), [])
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [starredKeys, setStarredKeys] = useState<Set<string>>(new Set(
     Object.entries(manifest).filter(([, config]) => config.starred).map(([key]) => key)
@@ -1044,6 +1052,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   const composerAgentNames = useMemo(() => (
     selectedAgent ? { [selectedAgent.exactName]: selectedAgent.displayName, [selectedAgent.id]: selectedAgent.displayName } : {}
   ), [selectedAgent])
+  const chromeComposerPlaceholder = selectedAgent ? composerPlaceholder(selectedAgent.displayName, voiceSubmitWords) : ''
   useEffect(() => {
     const projectNames = (visibleProjectKey ? visibleProjectKey.split('\n') : [])
       .filter(name => !requestedHistoriesRef.current.has(name))
@@ -1324,7 +1333,7 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
           agentNames={composerAgentNames}
           onSend={sendChromeChat}
           isTouchDevice={_isTouchDevice}
-          placeholder={selectedAgent ? `Message ${selectedAgent.displayName} · say “send” to send` : ''}
+          placeholder={chromeComposerPlaceholder}
         />
         {chatSendError && <div className="index-top-chat-error">{chatSendError}</div>}
       </div>
