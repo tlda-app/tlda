@@ -497,6 +497,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <input type="number" min={24} max={64} step={2} value={activeReadability.touchTarget} onChange={e => setReadability('touchTarget', Number(e.target.value))} className="prefs-num" />
             <span className="prefs-num-unit">px</span>
           </div>
+          <label className="prefs-toggle-row">
+            <input type="checkbox" checked={activeReadability.faint} onChange={e => setReadability('faint', e.target.checked)} />
+            <span>Faint</span>
+          </label>
           <div className="prefs-num-row">
             <span className="prefs-num-label">ToC hover region</span>
             <ZoneWidthThumbControl className="prefs-zone-width-slider" />

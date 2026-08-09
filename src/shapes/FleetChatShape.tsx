@@ -22,6 +22,7 @@ import { createRoot } from 'react-dom/client'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { probe } from '../perf-probe'
 import { isPhoneViewport } from '../phoneViewport'
+import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature } from '../fleet/chat-render.mjs'
@@ -317,11 +318,7 @@ const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPo
 const _isPhone = isPhoneViewport()
 
 function getFleetStyleVars(): React.CSSProperties {
-  return {
-    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
-    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
-    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
-  } as React.CSSProperties
+  return readabilityStyleVars() as React.CSSProperties
 }
 
 function useFleetStyleVars() {
@@ -1531,7 +1528,7 @@ function ContextBadge({ percent }: { percent?: number }) {
   if (percent == null) return null
   const color = percent <= 15 ? '#e57373' : percent <= 30 ? '#ffb74d' : '#81c784'
   return (
-    <span style={{ fontSize: 10, color, opacity: 0.8, flexShrink: 0, marginLeft: 8 }}>
+    <span style={{ fontSize: 'calc(var(--fleet-base-font, 11px) * 0.909091)', color, opacity: 0.8, flexShrink: 0, marginLeft: 8 }}>
       {percent}%
     </span>
   )
@@ -1619,7 +1616,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
   return (
     <div style={{
       padding: '0 8px',
-      fontSize: 11,
+      fontSize: 'var(--fleet-base-font, 11px)',
       flexShrink: 0,
       // One row of reserved height, always — the anti-bounce floor.
       minHeight: 'calc(var(--fleet-base-font, 11px) * 1.5 + 4px)',
@@ -2522,6 +2519,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const doc = useContext(ProjectContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
+  const [readabilityProfile, setReadabilityProfile] = useState(getReadabilityProfile)
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
   const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
@@ -2546,6 +2544,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const prevAgentNamesRef = useRef<Record<string, string>>({})
 
   const activeBullets = useSyncExternalStore(subscribeBulletContext, getBulletContexts)
+  useEffect(() => subscribePref(() => setReadabilityProfile(getReadabilityProfile())), [])
 
   // DNF filter: [[[role,label],...],...]  — OR of AND-groups of [role, label] tuples
   const dnfFilter = filter.length > 0 ? filter : null
@@ -6441,7 +6440,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     >
       <div
         ref={shapeContainerRef}
-        className="fleet-shape fleet-chat-shape"
+        className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}`}
         style={{
           ...fleetStyleVars,
           width: '100%',
@@ -6449,7 +6448,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           display: 'flex',
           flexDirection: 'column',
           borderRadius: 0,
-          fontSize: 11,
+          fontSize: 'var(--fleet-base-font, 11px)',
           overflow: 'visible',
           fontFamily: "'Helvetica Neue', 'Helvetica', 'Arial', sans-serif",
           fontWeight: 300,
@@ -6569,7 +6568,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     pointerEvents: 'none',
                     opacity: isImpossibleFilter ? 0.6 : 0.3,
                     textAlign: 'center',
-                    fontSize: 10,
+                    fontSize: 'calc(var(--fleet-base-font, 11px) * 0.909091)',
                     color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
                   }}
                 >
@@ -7598,7 +7597,7 @@ export function FleetChatFilterMode({
         /* Normal edit mode */
         <>
           <div className="fleet-filter-mode-header">
-            <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
+            <span style={{ fontSize: 'calc(var(--fleet-base-font, 11px) * 0.818182)', opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
           </div>
           {filter.length === 0 ? (
             <div className="fleet-filter-empty">
