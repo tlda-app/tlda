@@ -1465,7 +1465,7 @@ export function getFleetTools() {
           },
           drain: {
             type: 'boolean',
-            description: 'Read EVERY page instead of one, acknowledging as it goes, and write the whole thing to a markdown file. Returns the file path and a count. Use when the inbox is deep enough that one page is useless — paging is oldest-first, so a large backlog otherwise hides everything recent. Ignored with peek.',
+            description: 'Read EVERY page instead of one, acknowledging as it goes, and write the whole thing to a markdown file. Returns the file path and a count. Use when you need the whole backlog rather than the current end of it — a normal read gives you the newest page, so the old end of a deep inbox is what this reaches. Ignored with peek.',
           },
         },
       },
@@ -2076,12 +2076,16 @@ function pushInboxEntries(lines, rows, fmt) {
 
 // "50/256 unread" says there is more; it does not say how far back the rest
 // reaches. The span does, and the two ends answer different questions: the
-// oldest SHOWN is where this page starts, the oldest UNSHOWN is how deep the
-// backlog behind it goes.
+// oldest SHOWN is how far down this page goes, the oldest UNSHOWN is how deep
+// the backlog below it goes.
 //
-// Both ends flipped when the page became recency-ordered. It used to report the
-// NEWEST unshown, because an oldest-first page left the new mail out of view;
-// now the page holds the recent end and what an agent cannot see is old.
+// This string has been wrong twice in one night, both times because the page's
+// direction changed under it and nobody re-read it. It reported the NEWEST
+// unshown while the page was oldest-first; the page then became recency-ordered
+// and the newest was exactly what you could see. So: BOTH numbers here are
+// order-independent by construction -- a minimum over the page and a minimum
+// over the unread set -- and they stay true whichever way the page is printed.
+// Keep it that way rather than reading either end off a position.
 //
 // Both numbers are real or absent. The oldest shown is read off the page; the
 // oldest unshown comes from the server (counts.oldest_unread_at) and is simply
@@ -2100,8 +2104,8 @@ export function inboxAgeSpan(messages = [], counts = null, now = Date.now()) {
     .map(m => Date.parse(m?.timestamp))
     .filter(Number.isFinite);
   const bits = [];
-  // min rather than messages[0]: it does not depend on the page's order, which
-  // has already changed once.
+  // min rather than messages[0] or messages.at(-1): the page's order has
+  // changed twice tonight and this must not care.
   if (shown.length) {
     const age = inboxRelativeAge(now - Math.min(...shown));
     if (age) bits.push(`oldest shown ${age}`);
