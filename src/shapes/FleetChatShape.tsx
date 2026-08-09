@@ -5757,6 +5757,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     let heldTouchActionEl: HTMLElement | null = null
     let heldTouchActionValue = ''
     const isTouchLikePointer = (e: PointerEvent) => e.pointerType === 'touch' || e.pointerType === 'pen'
+    const immediateTouchDragSelector = '.drag-handle, .chat-ts, .pretty-search-ts, .agent-nick, .tool-ref, .md-file-card, .ref-chip'
 
     function clearPendingDrag() {
       if (pendingHoldTimer !== null) {
@@ -6074,7 +6075,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       if (!drag) return
 
-      if (isTouchLikePointer(e)) {
+      if (isTouchLikePointer(e) && !target.closest(immediateTouchDragSelector)) {
         pendingDrag = drag
         downTargetEl = target
         pendingHoldTimer = window.setTimeout(() => {
