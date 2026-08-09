@@ -843,6 +843,7 @@ const pendingPlanApprovals = new Map()
 // Chat idempotency cache: _tempId → { eventIds, recipients, receipts, ts }
 // Prevents duplicate DB rows when the browser retries a timed-out send.
 const _chatTempIds = new Map()
+const _chatTempInflight = new Map()
 const CHAT_TEMPID_TTL_MS = 60_000
 setInterval(() => {
   const cutoff = Date.now() - CHAT_TEMPID_TTL_MS
@@ -6321,35 +6322,41 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'received',
       detail: { from: rawFrom, to: rawTo, temp_id: msg._tempId },
     })
-    // Idempotency: if the client retries with the same _tempId, return the
-    // previously inserted event IDs instead of creating duplicates.
-    if (msg._tempId && _chatTempIds.has(msg._tempId)) {
-      const prev = _chatTempIds.get(msg._tempId)
-      controlPlaneTraces.append({
-        trace_id: traceId,
-        component: 'server',
-        operation: 'chat.idempotency',
-        status: 'memory-hit',
-        detail: { temp_id: msg._tempId, event_ids: prev.eventIds },
-      })
-      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId, trace_id: traceId })
-      return
+    const finishChat = (result) => {
+      if (!msg._fleetReplied) reply(result)
+      return result
     }
-    if (msg._tempId) {
-      const prev = await fleetStore.getChatTempIdResult?.(msg._tempId)
-      if (prev) {
-        _chatTempIds.set(msg._tempId, { ...prev, ts: Date.now() })
+    const runChatInsert = async () => {
+      // Idempotency: if the client retries with the same _tempId, return the
+      // previously inserted event IDs instead of creating duplicates.
+      if (msg._tempId && _chatTempIds.has(msg._tempId)) {
+        const prev = _chatTempIds.get(msg._tempId)
         controlPlaneTraces.append({
           trace_id: traceId,
           component: 'server',
           operation: 'chat.idempotency',
-          status: 'db-hit',
+          status: 'memory-hit',
           detail: { temp_id: msg._tempId, event_ids: prev.eventIds },
         })
-        reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId, trace_id: traceId })
-        return
+        return { ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId, trace_id: traceId }
       }
+      if (msg._tempId) {
+        const prev = await fleetStore.getChatTempIdResult?.(msg._tempId)
+        if (prev) {
+          _chatTempIds.set(msg._tempId, { ...prev, ts: Date.now() })
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'chat.idempotency',
+            status: 'db-hit',
+            detail: { temp_id: msg._tempId, event_ids: prev.eventIds },
+          })
+          return { ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId, trace_id: traceId }
+        }
+      }
+      return insertChatEvent()
     }
+    const insertChatEvent = async () => {
     const resolveSingle = async (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
       const a = await fleetStore?.findAgent(id); return a ? a.id : null
@@ -6599,7 +6606,8 @@ async function handleFleetWsMessage(ws, msg) {
     // Cache _tempId for idempotent retries
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
-    reply({ ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null, trace_id: traceId })
+    const result = { ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null, trace_id: traceId }
+    reply(result)
     for (const ev of insertedEvents) {
       const { materializableAttachments: _materializableAttachments, ...broadcastEv } = ev
       broadcastEvent('fleet-event', broadcastEv)
@@ -6647,6 +6655,23 @@ async function handleFleetWsMessage(ws, msg) {
         }
       }
     }
+    return result
+    }
+    if (msg._tempId) {
+      const existing = _chatTempInflight.get(msg._tempId)
+      if (existing) {
+        existing.then(finishChat, error)
+        return
+      }
+      const promise = runChatInsert()
+      _chatTempInflight.set(msg._tempId, promise)
+      promise.catch(() => {}).finally(() => {
+        if (_chatTempInflight.get(msg._tempId) === promise) _chatTempInflight.delete(msg._tempId)
+      })
+      promise.then(finishChat, error)
+      return
+    }
+    runChatInsert().then(finishChat, error)
     return
   }
 

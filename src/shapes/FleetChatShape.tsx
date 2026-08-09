@@ -3088,19 +3088,21 @@ function FleetChatInner({ shape }: { shape: any }) {
             return lineCtx.renderMarkdown(input)
           },
         }
-        const cacheKey = [
-          contentRenderKey,
-          thinkingKey,
-          sendTargetsKey,
-          itemKey,
-          participantRenderKey,
-          renderM.text || '',
-          renderM._amendStepper || '',
-          senderPreambleDoc || '',
-          lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
-          JSON.stringify(renderM.metadata?.source || null),
-          chatLineAttachmentRenderSignature(renderM),
-        ].join('::')
+	        const cacheKey = [
+	          contentRenderKey,
+	          thinkingKey,
+	          sendTargetsKey,
+	          itemKey,
+	          participantRenderKey,
+	          renderM.text || '',
+	          renderM._amendStepper || '',
+	          renderM._failed ? 'failed' : '',
+	          renderM._queued ? 'queued' : '',
+	          senderPreambleDoc || '',
+	          lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
+	          JSON.stringify(renderM.metadata?.source || null),
+	          chatLineAttachmentRenderSignature(renderM),
+	        ].join('::')
         let html = msgLineCache.current.get(cacheKey)
         const t0 = probe.isEnabled('chat') ? performance.now() : 0
         const cached = !!html
@@ -3147,8 +3149,15 @@ function FleetChatInner({ shape }: { shape: any }) {
         }
       }
     }
-    flushActivity()
-    if (probe.isEnabled('chat')) {
+	    flushActivity()
+	    const firstFailedIdx = items.findIndex(item => item.html.includes('chat-resend-btn'))
+	    if (firstFailedIdx >= 0) {
+	      items.splice(firstFailedIdx, 0, {
+	        key: 'resend-all-failed',
+	        html: '<div class="chat-line from-user chat-failed-actions"><button class="chat-resend-all-btn" title="Resend all not sent messages">resend all</button></div>',
+	      })
+	    }
+	    if (probe.isEnabled('chat')) {
       const dt = performance.now() - rawItemsT0
       const detail = {
         messageCount: chatMessages.length,
@@ -4460,27 +4469,50 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => { el.removeEventListener('mouseover', onOver); el.removeEventListener('mouseout', onOut) }
   }, [chatLogEl])
 
-  useEffect(() => {
-    if (!chatLogEl) return
-    return installChatImageRetry(chatLogEl)
-  }, [chatLogEl])
+	  useEffect(() => {
+	    if (!chatLogEl) return
+	    return installChatImageRetry(chatLogEl)
+	  }, [chatLogEl])
 
-  // Lightbox: click on chat-image opens full-size overlay
-  useEffect(() => {
-    const logEl = chatLogEl
-    if (!logEl) return
-    let suppressResendClickUntil = 0
-    const resendFailedMessage = (resendBtn: HTMLElement) => {
-      const to = resendBtn.dataset.resendTo
-      const text = resendBtn.dataset.resendText
-      const tempId = resendBtn.dataset.resendTempid
-      if (!to || !text || !tempId) return
-      updateOptimisticEvent(tempId, { _failed: false }, chatEventBufferKey)
-      sendMessage(to, text, { _tempId: tempId })
-        .then((result: any) => { if (!result?.ok) throw new Error('resend failed') })
-        .catch(() => updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey))
-    }
-    function onClick(e: Event) {
+	  const sendWithFailedRetry = useCallback((to: string, text: string, tempId: string, opts: any = {}, attempt = 1) => {
+	    sendMessage(to, text, { ...opts, _tempId: tempId }).then((result: any) => {
+	      if (result?.queued) {
+	        updateOptimisticEvent(tempId, { _failed: false, _queued: true }, chatEventBufferKey)
+	        return
+	      }
+	      if (result?.ok) {
+	        updateOptimisticEvent(tempId, { _failed: false, _queued: false }, chatEventBufferKey)
+	        return
+	      }
+	      throw new Error('send failed')
+	    }).catch(() => {
+	      if (attempt < 3) {
+	        setTimeout(() => sendWithFailedRetry(to, text, tempId, opts, attempt + 1), 2000 * attempt)
+	      } else {
+	        updateOptimisticEvent(tempId, { _failed: true, _queued: false }, chatEventBufferKey)
+	      }
+	    })
+	  }, [chatEventBufferKey])
+
+	  // Lightbox: click on chat-image opens full-size overlay
+	  useEffect(() => {
+	    const logEl = chatLogEl
+	    if (!logEl) return
+	    const resendRoot = logEl
+	    let suppressResendClickUntil = 0
+	    const resendFailedMessage = (resendBtn: HTMLElement) => {
+	      const to = resendBtn.dataset.resendTo
+	      const text = resendBtn.dataset.resendText
+	      const tempId = resendBtn.dataset.resendTempid
+	      if (!to || !text || !tempId) return
+	      const line = resendBtn.closest('.chat-line') as HTMLElement | null
+	      if (!line || line.dataset.failedTempid !== tempId || line.dataset.msgId) return
+	      if (resendBtn.dataset.resending === 'true') return
+	      resendBtn.dataset.resending = 'true'
+	      updateOptimisticEvent(tempId, { _failed: false, _queued: false }, chatEventBufferKey)
+	      sendWithFailedRetry(to, text, tempId)
+	    }
+	    function onClick(e: Event) {
       // Amend version stepper ◀▶ — step through a message's versions in place.
       const amendArrow = (e.target as HTMLElement).closest('.amend-arrow') as HTMLElement | null
       if (amendArrow) {
@@ -4502,12 +4534,18 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Resend a failed ("not sent") message — re-send with the same _tempId so
       // the existing optimistic-echo reconcile clears it on success; re-mark
       // failed if it fails again.
-      const resendBtn = (e.target as HTMLElement).closest('.chat-resend-btn') as HTMLElement
-      if (resendBtn) {
-        e.stopPropagation()
-        if (Date.now() >= suppressResendClickUntil) resendFailedMessage(resendBtn)
-        return
-      }
+	      const resendBtn = (e.target as HTMLElement).closest('.chat-resend-btn') as HTMLElement
+	      if (resendBtn) {
+	        e.stopPropagation()
+	        if (Date.now() >= suppressResendClickUntil) resendFailedMessage(resendBtn)
+	        return
+	      }
+	      const resendAllBtn = (e.target as HTMLElement).closest('.chat-resend-all-btn') as HTMLElement
+	      if (resendAllBtn) {
+	        e.stopPropagation()
+	        resendRoot.querySelectorAll<HTMLElement>('.chat-resend-btn').forEach(resendFailedMessage)
+	        return
+	      }
       const dismissFailedBtn = (e.target as HTMLElement).closest('.chat-dismiss-failed-btn') as HTMLElement
       if (dismissFailedBtn) {
         e.stopPropagation()
@@ -4816,7 +4854,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       logEl.removeEventListener('pointerup', onTapUp)
       logEl.removeEventListener('click', onClick)
     }
-  }, [chatLogEl])
+	  }, [chatLogEl, chatEventBufferKey, sendWithFailedRetry])
 
   // Unquote: double-click on <code> spans inside chat messages.
   // TLDraw intercepts the native dblclick event in its capture-phase handler on .tl-canvas,
@@ -5190,20 +5228,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       // ONE send for the whole target set. `to` is a filter expression, so the
       // union of the targets is the expression that ORs them — one message, one
       // event, every recipient, instead of N independent sends nothing rejoins.
-      const sendWithRetry = (attempt: number) => {
-        sendMessage(targets.join('|'), text, sendOpts).then((result) => {
-          if (!result.ok) throw new Error('send failed')
-        }).catch(() => {
-          if (attempt < 3) {
-            setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
-          } else {
-            updateOptimisticEvent(tempId, { _failed: true }, chatEventBufferKey)
-          }
-        })
-      }
-      sendWithRetry(1)
-    })()
-  }
+	      sendWithFailedRetry(targets.join('|'), text, tempId, sendOpts)
+	    })()
+	  }
 
   const composerCommand = (text: string, targets: string[], ta: HTMLTextAreaElement): boolean => {
     const termMatch = text.match(/^\/terminal\s*(.*)$/i)
