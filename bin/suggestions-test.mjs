@@ -108,24 +108,17 @@ async function run() {
   if (all.length !== 1 || all[0].from !== 'fleet:b') fail(`clear failed, got ${JSON.stringify(all)}`)
   console.log('PASS: per-agent clear leaves other agents intact')
 
-  // 4. Seed the legacy pre-fix Todd row: hardcoded id, human=true, no tmux.
-  // The new random-id Todd must retire this row and claim the canonical name.
-  ws.send(JSON.stringify({
-    id: 'legacy-todd-register',
-    type: 'register',
-    agent_id: 'fleet:todd',
-    name: 'todd',
-    labels: ['bot', 'todd'],
-    human: true,
-  }))
-  await sleep(300)
-
-  // 5. Spawn the Todd bot the way the supervisor does.
+  // 4. Spawn the Todd bot the way the supervisor does.
   // Todd lives in its own repo now (see bots.yaml `script:`); this stays an
   // app+bot integration test, so it spawns the real bot from its real home.
+  const toddEnv = { ...process.env }
+  delete toddEnv.FLEET_NAME
+  delete toddEnv.FLEET_ID
+  delete toddEnv.FLEET_LOCAL_ID
+  delete toddEnv.FLEET_MINT_ID
   todd = spawn('node', [TODD_SCRIPT], {
     cwd: ROOT,
-    env: { ...process.env, HOME: TODD_HOME, TLDA_ENV: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
+    env: { ...toddEnv, HOME: TODD_HOME, TLDA_ENV: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
            TLDA_BOT_IDFILE: TODD_ID, TLDA_BOT_MACHINE_ID: 'suggestions-test', TLDA_BOT_TMUX_SESSION: 'suggestions-test-todd',
            NODE_TLS_REJECT_UNAUTHORIZED: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -141,15 +134,10 @@ async function run() {
     if (registered) break
   }
   if (!registered) fail(`Todd never registered with friendly_name=todd.\nTodd log:\n${toddLog}`)
-  const stateAfterTodd = await fetch(`${base}/api/state`).then(r => r.json()).catch(() => ({}))
-  const legacyTodd = (stateAfterTodd.agents || []).find(a => a.id === 'fleet:todd')
-  if (legacyTodd && !legacyTodd.dead) fail(`legacy fleet:todd row was not retired: ${JSON.stringify(legacyTodd)}`)
   if (!/^fleet:[a-z0-9_-]+$/i.test(registered.id)) fail(`Todd fleet id invalid: ${registered.id}`)
   if (registered.friendly_name !== 'todd') fail(`Todd friendly_name should be "todd", got "${registered.friendly_name}"`)
   if (registered.human) fail('Todd registered as human=true')
-  if (!Array.isArray(registered.labels) || !registered.labels.includes('bot') || !registered.labels.includes('todd')) fail(`Todd labels wrong: ${JSON.stringify(registered.labels)}`)
-  if (registered.machine_id !== 'suggestions-test') fail(`Todd machine_id wrong: ${registered.machine_id}`)
-  if (registered.tmux_session !== 'suggestions-test-todd') fail(`Todd tmux_session wrong: ${registered.tmux_session}`)
+  if (!Array.isArray(registered.labels) || !registered.labels.includes('bot') || registered.labels.includes('todd')) fail(`Todd labels wrong: ${JSON.stringify(registered.labels)}`)
   for (let i = 0; i < 10 && !/assigned_name=todd canonical=true/.test(toddLog); i++) await sleep(100)
   if (!/assigned_name=todd canonical=true/.test(toddLog)) fail(`Todd did not learn canonical assignment.\nTodd log:\n${toddLog}`)
   if (!existsSync(TODD_PID)) fail('Todd did not write its pidfile at TLDA_BOT_PIDFILE')

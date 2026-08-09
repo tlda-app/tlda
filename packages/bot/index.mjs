@@ -43,6 +43,15 @@ function loadOrCreateFleetId(file, fallback = null, bestEffort = false) {
   return id;
 }
 
+function registrationLabels(labels, key) {
+  const out = [];
+  for (const label of Array.isArray(labels) ? labels : []) {
+    if (!label || label === key || out.includes(label)) continue;
+    out.push(label);
+  }
+  return out;
+}
+
 async function confirmRegisteredFromRoster(server, id, timeoutMs = 10_000) {
   const url = new URL('/api/agents/lookup', server);
   url.searchParams.set('ids', id);
@@ -69,6 +78,7 @@ export function createBot({
   const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null;
   const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null;
   const id = loadOrCreateFleetId(ID_FILE, fleetId, bestEffortIdentity);
+  const explicitLabels = registrationLabels(labels, key);
   const allowSet = allow ? new Set(allow) : null;
   const registry = createCommandRegistry(commands);
 
@@ -174,7 +184,7 @@ export function createBot({
       name: key,
       pretty_name,
       cwd,
-      labels,
+      labels: explicitLabels,
       human,
       kind: human ? undefined : 'bot',
       machine_id: MACHINE_ID || undefined,
