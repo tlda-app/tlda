@@ -833,6 +833,11 @@ daemonMintCore = createDaemonMintCore({
 const wakeMint = createDaemonWakeCore({
   store: mintStore,
   targetDaemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+  retryPolicy: facts => ({
+    attempts: 6,
+    delayMs: 100,
+    confirmExisting: (facts.processState?.harness || facts.launchRecipe?.kind) === 'bot',
+  }),
   // Wake and tell are one call, so the injection happens here rather than the
   // server following up on an answer it got back. A terminal that cannot take
   // the text must not fail the wake: the agent is up either way, and the caller

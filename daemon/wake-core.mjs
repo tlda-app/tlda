@@ -16,6 +16,8 @@ export function createDaemonWakeCore({
   targetDaemonKey = null,
   resumeSession,
   notifyAgent = null,
+  retryPolicy = null,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
   return async function wake(input) {
     const params = input && typeof input === 'object' ? input : { fleet_id: input }
@@ -41,7 +43,21 @@ export function createDaemonWakeCore({
       })
     }
 
-    const alive = await processAlive(facts)
+    const retry = retryPolicy?.(facts) || {}
+    const attempts = Math.max(1, Number(retry.attempts) || 1)
+    const delayMs = Math.max(0, Number(retry.delayMs) || 0)
+    const wait = async () => {
+      if (delayMs > 0) await sleep(delayMs)
+    }
+
+    let alive = await processAlive(facts)
+    if (alive && retry.confirmExisting) {
+      for (let attempt = 1; attempt < attempts; attempt += 1) {
+        await wait()
+        alive = await processAlive(facts)
+        if (!alive) break
+      }
+    }
     if (alive) {
       if (!params.takeover_existing) {
         const notified = await tell(false)
@@ -65,7 +81,29 @@ export function createDaemonWakeCore({
         throw new Error(`mint ${facts.mintId} takeover left ${liveDaemonKey} alive`)
       }
     }
-    const resumed = await resumeSession(facts, params)
+    let resumed = null
+    let resumeError = null
+    let runtimeConfirmed = false
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const attemptResult = await resumeSession(facts, params)
+        if (!resumed) resumed = attemptResult
+        resumeError = null
+      } catch (error) {
+        resumeError = error
+      }
+      runtimeConfirmed = await processAlive(facts)
+      if (runtimeConfirmed) break
+      if (attempt + 1 < attempts) await wait()
+    }
+    if (!runtimeConfirmed) {
+      const detail = resumeError?.message ? `: ${resumeError.message}` : ''
+      throw new Error(`wake did not produce a live runtime for ${facts.mintId}${detail}`)
+    }
+    if (!resumed) {
+      const notified = await tell(false)
+      return { ok: true, alreadyAlive: true, ...facts, ...(notified ? { notified: true } : {}) }
+    }
     const current = store.updateProcessState(facts.mintId, resumed)
     const notified = await tell(true)
     return {

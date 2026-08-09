@@ -5,6 +5,7 @@ import { runtimeStateFromProcessList } from '../agent-launch/tmux.mjs'
 
 let receivedFacts = null
 let receivedParams = null
+let baseResumed = false
 
 const wake = createDaemonWakeCore({
   store: {
@@ -21,10 +22,11 @@ const wake = createDaemonWakeCore({
       processState,
     }),
   },
-  processAlive: async () => false,
+  processAlive: async () => baseResumed,
   resumeSession: async (facts, params) => {
     receivedFacts = facts
     receivedParams = params
+    baseResumed = true
     return { resumed: true }
   },
 })
@@ -62,7 +64,7 @@ const takeoverWake = createDaemonWakeCore({
     updateProcessState: (mintId, processState) => ({ mintId, processState }),
   },
   targetDaemonKey: 'mini:testing',
-  processAlive: async () => replaced === 0,
+  processAlive: async () => replaced === 0 || resumed > 0,
   processDaemonKey: async () => liveDaemonKey,
   replaceProcess: async () => {
     replaced += 1
@@ -92,5 +94,55 @@ const alreadyOwned = await takeoverWake({
 assert.equal(alreadyOwned.alreadyAlive, true)
 assert.equal(replaced, 0)
 assert.equal(resumed, 0)
+
+let runtimeChecks = 0
+let handoffResumes = 0
+const handoffWake = createDaemonWakeCore({
+  store: {
+    resolve: () => ({
+      mintId: 'mint-handoff',
+      fleetId: 'fleet:handoff',
+      sessionId: 'session-handoff',
+      processState: { tmux_session: 'fleet-handoff', harness: 'bot' },
+    }),
+    updateProcessState: (mintId, processState) => ({ mintId, processState }),
+  },
+  processAlive: async () => {
+    runtimeChecks += 1
+    return runtimeChecks === 1 || runtimeChecks >= 4
+  },
+  resumeSession: async () => {
+    handoffResumes += 1
+    return { tmux_session: 'fleet-handoff', harness: 'bot' }
+  },
+  retryPolicy: () => ({ attempts: 4, delayMs: 1, confirmExisting: true }),
+  sleep: async () => {},
+})
+
+const handoff = await handoffWake({ fleet_id: 'fleet:handoff' })
+assert.equal(handoff.resumed, true)
+assert.equal(handoff.alreadyAlive, undefined)
+assert.equal(handoffResumes, 2)
+
+let failedResumeAttempts = 0
+const failedWake = createDaemonWakeCore({
+  store: {
+    resolve: () => ({ mintId: 'mint-failed', fleetId: 'fleet:failed', sessionId: 'session-failed' }),
+    updateProcessState: () => assert.fail('an unverified wake must not update process state'),
+  },
+  processAlive: async () => false,
+  resumeSession: async () => {
+    failedResumeAttempts += 1
+    return { tmux_session: 'fleet-failed' }
+  },
+  retryPolicy: () => ({ attempts: 3, delayMs: 1 }),
+  sleep: async () => {},
+})
+
+await assert.rejects(
+  failedWake({ fleet_id: 'fleet:failed' }),
+  /wake did not produce a live runtime for mint-failed/,
+)
+assert.equal(failedResumeAttempts, 3)
 
 console.log('wake core params regression: ok')
