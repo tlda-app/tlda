@@ -424,11 +424,6 @@ function createManagedSurfaceProofMessage(targetShapeId: string) {
 // the xterm grid has to be the same width or every frame garbles.
 const PEEK_COLS = 120
 const PEEK_ROWS = 40
-// Lightbox height. When lightboxed the pane is bottom-anchored so it grows
-// UPWARD from the (fixed) input bar instead of pushing the input off-screen.
-const LIGHTBOX_H = 480
-// Lines of real tmux scrollback to fetch for lightbox backscroll.
-const HISTORY_LINES = 500
 
 const TERM_FONT = "'SF Mono', 'Fira Code', Menlo, monospace"
 const TERM_THEME = {
@@ -477,11 +472,6 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
           ? prev
           : { left: r.left, top: r.bottom, width: r.width })
       }
-      // Track the pinned pane's bottom edge while NOT lightboxed so the lightbox
-      // can anchor its bottom-left there (keeping it fixed as it grows up + right).
-      if (!lightboxedRef.current && paneRef.current) {
-        paneBottomRef.current = paneRef.current.getBoundingClientRect().bottom
-      }
       raf = requestAnimationFrame(measure)
     }
     raf = requestAnimationFrame(measure)
@@ -496,7 +486,6 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [height, setHeight] = useState(210)
   const [terminalInputAllowed, setTerminalInputAllowed] = useState(advertisedTerminalInputAllowed === true)
-  const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
   // The peek renders a fixed grid sized to the agent's REAL tmux window width
   // (reported by the daemon via a 'size' message), then CSS-scales it to fit the
@@ -510,81 +499,11 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   useEffect(() => { gridRowsRef.current = gridRows }, [gridRows])
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
   const paneRef = useRef<HTMLDivElement>(null)
-  // Viewport-y of the pinned pane's bottom edge, frozen as the lightbox anchor so
-  // the bottom-left corner stays put when the lightbox grows up + right.
-  const paneBottomRef = useRef(0)
-  const lightboxedRef = useRef(lightboxed)
-  // Real tmux scrollback shown as one continuous capture when lightboxed.
-  const [historyText, setHistoryText] = useState<string | null>(null)
-  // Bumped to re-pull the capture (e.g. after sending a command) since the
-  // lightbox capture is a snapshot, not the live attach stream.
-  const [historyTick, setHistoryTick] = useState(0)
-  const historyContainerRef = useRef<HTMLDivElement>(null)
-  const historyTermRef = useRef<Terminal | null>(null)
-  const refreshHistory = useCallback(() => {
-    if (!lightboxedRef.current) return
-    setTimeout(() => setHistoryTick(t => t + 1), 400)
-    setTimeout(() => setHistoryTick(t => t + 1), 1200)
-  }, [])
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
   useEffect(() => {
     setTerminalInputAllowed(advertisedTerminalInputAllowed === true)
   }, [advertisedTerminalInputAllowed])
-  useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
-
-  // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
-  // the daemon). The live attach stream only carries the current screen, so this
-  // is what makes backscroll meaningful. Snapshot — refetched each time you open.
-  useEffect(() => {
-    if (!lightboxed) { setHistoryText(null); return }
-    let cancelled = false
-    ;(async () => {
-      try {
-        const { pane } = await fleetEphemeral('capture-pane', { agent: agentId, lines: HISTORY_LINES })
-        if (!cancelled && typeof pane === 'string') setHistoryText(pane)
-      } catch (e) {
-        if (!cancelled) {
-          const message = e instanceof Error ? e.message : String(e)
-          setHistoryText(`Failed to load terminal scrollback: ${message}`)
-        }
-      }
-    })()
-    return () => { cancelled = true }
-  }, [lightboxed, agentId, historyTick])
-
-  // Render the scrollback snapshot into a static, full-height xterm stacked above
-  // the live screen. The body scrolls through [history][live] natively, so the
-  // wheel moves smoothly (no xterm line-stepping), and the live screen stays live.
-  useEffect(() => {
-    const host = historyContainerRef.current
-    if (!lightboxed || !historyText || !host) {
-      if (historyTermRef.current) { historyTermRef.current.dispose(); historyTermRef.current = null }
-      return
-    }
-    const text = historyText.replace(/\r?\n/g, '\r\n')
-    const rows = Math.max(1, Math.min(historyText.split('\n').length, 2000))
-    const term = new Terminal({
-      cols: gridCols,
-      rows,
-      fontSize: 11,
-      fontFamily: TERM_FONT,
-      theme: TERM_THEME,
-      scrollback: 0,
-      cursorBlink: false,
-      disableStdin: true,
-    })
-    term.open(host)
-    term.write(text)
-    historyTermRef.current = term
-    // After the history renders, drop the body to the bottom so the live screen
-    // is what's showing; scroll up to read history.
-    requestAnimationFrame(() => {
-      const body = bodyRef.current
-      if (body) body.scrollTop = body.scrollHeight
-    })
-    return () => { term.dispose(); historyTermRef.current = null }
-  }, [lightboxed, historyText, gridCols])
 
   // Create at the PEEK_COLS×PEEK_ROWS fallback, then resize to the agent's real
   // tmux window size when the 'size' message arrives (see the WS handler below).
@@ -619,8 +538,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
     }
   }, [])
 
-  // Scale the fixed-grid terminal to fit the pane width. Peek/pinned shrink it
-  // to fit (no horizontal scroll); the lightbox renders it at natural size.
+  // Scale the fixed-grid terminal to fit the pane width (no horizontal scroll).
   useEffect(() => {
     let raf = 0
     const measure = () => {
@@ -629,44 +547,13 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
       if (!inner || !body) return
       const natW = inner.offsetWidth
       if (!natW) { raf = requestAnimationFrame(measure); return }
-      setScale(lightboxed ? 1 : Math.min(1, body.clientWidth / natW))
+      setScale(Math.min(1, body.clientWidth / natW))
     }
     raf = requestAnimationFrame(measure)
     const ro = new ResizeObserver(() => measure())
     if (bodyRef.current) ro.observe(bodyRef.current)
     return () => { cancelAnimationFrame(raf); ro.disconnect() }
-  }, [lightboxed, height, status, gridCols])
-
-  // Leaving pinned mode also leaves the lightbox.
-  useEffect(() => { if (!pinned) setLightboxed(false) }, [pinned])
-
-  // On lightbox, scroll the body to the bottom so the live (cursor) region of
-  // the terminal is what's visible, not the top of the screen.
-  useEffect(() => {
-    if (!lightboxed) return
-    requestAnimationFrame(() => {
-      const body = bodyRef.current
-      if (body) body.scrollTop = body.scrollHeight
-    })
-  }, [lightboxed])
-
-  // xterm installs its own wheel handler and preventDefault()s it, and its
-  // viewport is overflow:hidden — so the wheel never reaches the scroll
-  // container. Intercept it in the CAPTURE phase (before either xterm sees it)
-  // and scroll the container ourselves, so backscroll works over both the
-  // history block and the live screen.
-  useEffect(() => {
-    if (!lightboxed) return
-    const body = bodyRef.current
-    if (!body) return
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      body.scrollTop += e.deltaY
-    }
-    body.addEventListener('wheel', onWheel, { capture: true, passive: false })
-    return () => body.removeEventListener('wheel', onWheel, { capture: true } as any)
-  }, [lightboxed, historyText])
+  }, [height, status, gridCols])
 
   useEffect(() => {
     if (!agentId) return
@@ -783,21 +670,15 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   const sendInput = (data: string) => {
     if (!terminalInputAllowed) return
     terminalTransportRef.current?.input(data)
-    // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
-    // command's effect shows up.
-    refreshHistory()
   }
 
   const submitInput = (text: string) => {
     if (!terminalInputAllowed) return
     terminalTransportRef.current?.submit(text)
-    // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
-    // command's effect shows up.
-    refreshHistory()
   }
 
   const interruptTerminal = () => {
-    fleetEphemeral('interrupt', { agent: agentId }).then(refreshHistory).catch((e: unknown) => {
+    fleetEphemeral('interrupt', { agent: agentId }).catch((e: unknown) => {
       setStatus('error')
       const message = e instanceof Error ? e.message : String(e)
       termRef.current?.write(`\r\nInterrupt failed: ${message}\r\n`)
@@ -809,7 +690,7 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
   // scrollback being jumped out of belongs to tmux, not to the program inside
   // it. Ctrl+End has to arrive as a tmux key, which is what send-key does.
   const jumpToBottom = () => {
-    sendKey(agentId, 'C-End').then(refreshHistory).catch((e: unknown) => {
+    sendKey(agentId, 'C-End').catch((e: unknown) => {
       // A control that silently does nothing is the complaint that started
       // this, so a failed jump has to be visible in the pane.
       setStatus('error')
@@ -889,27 +770,14 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
     <div className="fleet-chat-shape" style={{ display: 'contents' }}>
     <div
       ref={paneRef}
-      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
+      className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}`}
       style={{
         position: 'fixed',
         left: anchor?.left ?? 0,
+        top: anchor?.top ?? 0,
+        width: anchor?.width ?? 0,
+        right: 'auto',
         visibility: anchor ? 'visible' : 'hidden',
-        ...(lightboxed
-          // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
-          // Width comes from the lightbox CSS (min(840px,92vw)); height is fixed.
-          ? {
-              top: 'auto',
-              bottom: (typeof window !== 'undefined' ? window.innerHeight : 0) - paneBottomRef.current,
-              height: LIGHTBOX_H,
-            }
-          // Peek/pinned: top-anchored to the input's bottom edge at the chat's
-          // width. Height is auto, so pinning ADDS the input bar below and the
-          // terminal you saw on hover stays in place (pane grows downward).
-          : {
-              top: anchor?.top ?? 0,
-              width: anchor?.width ?? 0,
-              right: 'auto',
-            }),
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
@@ -931,22 +799,12 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
       <div
         ref={bodyRef}
         className="fleet-terminal-hover-body"
-        style={lightboxed ? undefined : { height, flex: 'none' }}
+        style={{ height, flex: 'none' }}
       >
-        {lightboxed && historyText && (
-          <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
-        )}
-        {/* Live scaled screen for the hover/pinned peek. In the lightbox we show
-            the single continuous capture instead (history + current screen as one
-            block), so the live wrapper is hidden once the capture has loaded —
-            but stays mounted so the live term resumes when you leave the lightbox. */}
+        {/* Live scaled screen for the hover/pinned peek. */}
         <div
           className="fleet-terminal-hover-scale"
-          style={
-            lightboxed && historyText ? { display: 'none' }
-            : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
-            : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
-          }
+          style={{ transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }}
         >
           <div ref={containerRef} />
         </div>
@@ -966,14 +824,9 @@ function TerminalHoverPane({ agentId, agentName, pinned, terminalInputAllowed: a
                 rows={1}
                 onKeyDown={handleInputKeyDown}
                 onKeyUp={(e) => stopEventPropagation(e as any)}
-                // Skip's ask: clicking into the pinned-terminal field must just focus
-                // it so he can type — it must NOT auto-pop the lightbox (the "blowing
-                // up on my screen"). The lightbox was historically spec'd to open on
-                // field-tap; he asked for that removed and made manual. Focus only
-                // here; do not setLightboxed(true).
                 onPointerDown={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
                 onFocus={(e) => { stopEventPropagation(e); registerVoice(e.currentTarget) }}
-                onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = ''; setLightboxed(false) }}
+                onBlur={(e) => { clearVoiceTarget(e.currentTarget); e.currentTarget.style.boxShadow = '' }}
                 // The pane can now be pinned by a terminal-card notification for an
                 // agent this panel is not addressing, so it has to say whose
                 // terminal this is. Carried in the existing placeholder — which
