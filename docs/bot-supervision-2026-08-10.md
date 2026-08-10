@@ -9,6 +9,12 @@ the process table found 6 of 11 configured bot jobs with a live bot process.
 `tlda bot status`, launchd, and the roster were not sufficient evidence because
 they could report a stranded launchd waiter as healthy.
 
+The transferable rule is that bot liveness must be read from the bot process,
+not from the supervisor. The sharpest example in this survey was
+`chat-lint.stable`: `tlda bot status` reported `running + supervised` while the
+job had no identity file or pidfile and launchd was only supervising a stranded
+waiter.
+
 Dead at that check:
 
 - `chat-lint.stable`
@@ -43,5 +49,7 @@ Bootstrap failed: 5: Input/output error
 ```
 
 The same command later succeeded for `nobody.testing` when run again from Skip's
-terminal. Treat this as a known launchd bootout/bootstrap race unless a retry in
-the same session also fails.
+terminal, and five more jobs applied cleanly from that terminal without hitting
+the error. The source of the flakiness is unexplained; the working operational
+rule is to retry once rather than treating the first failure as evidence that
+the generated plist is bad.
