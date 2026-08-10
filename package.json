@@ -15,6 +15,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "deploy:live": "node scripts/live-deploy.mjs",
+    "test": "node bin/run-test-suite.mjs",
     "test:live-perf-upload": "node bin/live-perf-probe-upload-test.mjs",
     "lint": "node bin/lineage-name-derivation-guard.mjs && node bin/sync-on-event-loop-guard.mjs && node bin/await-fleet-store-guard.mjs && node bin/async-cascade-guard.mjs && node bin/connect-attempt-teardown-guard.mjs && node bin/websocket-boundary-guard.mjs && node bin/test-import-guard.mjs && node scripts/eslint-ratchet.mjs",
     "lint:report": "eslint .",
