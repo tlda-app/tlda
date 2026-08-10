@@ -2265,10 +2265,10 @@ html[data-theme="dark"] .phone-toc-modal .toc-diff-hint {
   padding: 0;
   transition: background 0.15s, opacity 0.15s;
   touch-action: none;
-  opacity: 0.15;
+  opacity: var(--ui-tone-dormant);
 }
 .phone-hl-btn:hover {
-  opacity: 0.5;
+  opacity: var(--ui-tone-active);
 }
 
 body.phone-mode .phone-hl-btn {
@@ -2276,7 +2276,7 @@ body.phone-mode .phone-hl-btn {
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-dormant);
 }
 
 /* Nothing about the corner controls belongs to touch-toc-mode. Skip: "I don't
@@ -2357,7 +2357,7 @@ body.phone-mode .phone-hl-btn.active::before {
   box-shadow: none;
   pointer-events: none;
   gap: 2px;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 
 .phone-hl-slot {
@@ -2416,7 +2416,7 @@ body.phone-mode .phone-hl-btn.active::before {
   box-shadow: none;
   pointer-events: none;
   gap: 4px;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 
 .corner-button-slider-slot {
@@ -2543,9 +2543,9 @@ body.warm-mode [data-shape-id] svg {
   padding: 0;
   transition: background 0.15s, opacity 0.15s, box-shadow 0.15s;
   touch-action: none;
-  opacity: 0.15;
+  opacity: var(--ui-tone-dormant);
 }
-.voice-note-btn:hover { opacity: 0.5; }
+.voice-note-btn:hover { opacity: var(--ui-tone-active); }
 
 
 body.phone-mode .voice-note-btn {
@@ -2553,7 +2553,7 @@ body.phone-mode .voice-note-btn {
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-dormant);
 }
 
 html[data-theme="dark"] .voice-note-btn {
@@ -2580,17 +2580,17 @@ html[data-theme="dark"] .voice-note-btn {
   padding: 0;
   transition: background 0.15s, opacity 0.15s, box-shadow 0.15s, color 0.15s;
   touch-action: none;
-  opacity: 0.15;
+  opacity: var(--ui-tone-dormant);
 }
 .mic-toggle-btn { bottom: 82px; }
-.mic-toggle-btn:hover { opacity: 0.5; }
+.mic-toggle-btn:hover { opacity: var(--ui-tone-active); }
 
 body.phone-mode .mic-toggle-btn {
   bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-dormant);
 }
 
 html[data-theme="dark"] .mic-toggle-btn {
