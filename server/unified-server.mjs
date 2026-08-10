@@ -6793,6 +6793,10 @@ async function handleFleetWsMessage(ws, msg) {
         fromAgentId: from || null,
         toAgentId: resolved.id,
         message: taskMsg,
+        // `delegate` has always accepted `description`; on this branch it was
+        // silently dropped, so a caller restating a standing task got its old
+        // headline back. Absent, the existing description stands.
+        description,
         delegatedAt: now,
         eventMetadata: delegateMetadata,
         eventOptions: { unread: atMs <= nowMs },
