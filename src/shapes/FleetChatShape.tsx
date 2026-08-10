@@ -2287,6 +2287,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess,
   itemKey,
   expandedRowsRef,
+  collapsedRowsRef,
   semanticRenderCtx,
   semanticOperationPageSize,
   currentProject,
@@ -2295,6 +2296,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess: (html: string) => string
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
+  collapsedRowsRef: React.RefObject<Set<string>>
   semanticRenderCtx: any
   semanticOperationPageSize: number
   currentProject?: string
@@ -2332,6 +2334,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     const expanded = expandedRowsRef.current
+    const collapsed = collapsedRowsRef.current
     // A thread's rows arrive after its read resolves, so the same restore runs
     // again once the view has drawn them.
     const restorePrettyExpansions = (root: HTMLElement) => {
@@ -2357,7 +2360,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
       // collapsed. Restoring only remembered keys would close every thread the
       // moment its row re-rendered.
       const startsOpen = op?.classList.contains('semantic-chat-operation-open')
-      if (expanded.has(key) || (startsOpen && body.style.display !== 'none')) {
+      if (expanded.has(key) || (startsOpen && !collapsed.has(key) && body.style.display !== 'none')) {
         body.style.display = ''
         body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
         const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
@@ -2418,14 +2421,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return () => {
       for (const root of semanticRoots) root.unmount()
     }
-  }, [processed, itemKey, expandedRowsRef, semanticRenderCtx, semanticOperationPageSize, currentProject])
+  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, semanticOperationPageSize, currentProject])
 
   return (
     <>
       <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
     </>
   )
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx)
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx)
 
 function FleetChatInner({ shape }: { shape: any }) {
   const { addToast } = useToasts()
@@ -4140,6 +4143,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
+  const collapsedRowsRef = useRef<Set<string>>(new Set())
   // Hard lock is an explicit preference orthogonal to reader mode.
   const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
   const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
@@ -4785,8 +4789,13 @@ function FleetChatInner({ shape }: { shape: any }) {
           const semanticKey = semanticOp.getAttribute('data-semantic-key') || '0'
           if (itemKey) {
             const key = `${itemKey}:semantic:${semanticKey}`
-            if (wasExpanded) expandedRowsRef.current.delete(key)
-            else expandedRowsRef.current.add(key)
+            if (wasExpanded) {
+              expandedRowsRef.current.delete(key)
+              collapsedRowsRef.current.add(key)
+            } else {
+              expandedRowsRef.current.add(key)
+              collapsedRowsRef.current.delete(key)
+            }
           }
           return
         }
@@ -6444,6 +6453,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     postProcess={postProcess}
                     itemKey={item.key}
                     expandedRowsRef={expandedRowsRef}
+                    collapsedRowsRef={collapsedRowsRef}
                     semanticRenderCtx={ctx}
                     semanticOperationPageSize={semanticOperationPageSize}
                     currentProject={doc?.projectName}
