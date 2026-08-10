@@ -3,7 +3,10 @@ import type { Editor, TLShapeId } from 'tldraw'
 type ShapeLike = {
   id?: TLShapeId
   type?: string
-  meta?: { temporaryMarkdownColumn?: unknown }
+  meta?: {
+    temporaryMarkdownColumn?: unknown
+    foreignDocumentPage?: unknown
+  }
 }
 
 function asShapeLike(value: unknown): ShapeLike {
@@ -14,7 +17,14 @@ export function isDocumentPageShape(s: unknown): boolean {
   const shape = asShapeLike(s)
   const type = shape.type
   if (type !== 'svg-page' && type !== 'html-page') return false
-  return !shape.meta?.temporaryMarkdownColumn
+  if (shape.meta?.temporaryMarkdownColumn) return false
+  if (shape.meta?.foreignDocumentPage) return false
+  // Auto-opened foreign pages predate the meta flag and still sit in live rooms;
+  // do not migrate them in place, because writing to that room is what this fix
+  // avoids. Matched narrowly on the -p<N> suffix useDocAutoOpen writes, so a
+  // real project named foreign-* keeps its own -page-<N> pages.
+  if (/^shape:foreign-.+-p\d+$/.test(String(shape.id || ''))) return false
+  return true
 }
 
 export function isCanvasPageShape(s: unknown): boolean {
