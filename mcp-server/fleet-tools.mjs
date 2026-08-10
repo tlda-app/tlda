@@ -5202,6 +5202,120 @@ const mcpFleetTransport = createFleetOperationTransport({
 
 let _channelHasOpened = false;
 
+const _deliveredChannelIds = new Set();
+const CHANNEL_DEDUP_TTL_MS = 60_000;
+
+function inboxCallText(action = 'see it') {
+  return `call inbox() to ${action}.`;
+}
+
+function previewForChannel(raw, max = 120) {
+  const s = String(raw || '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+function directRecipients(data = {}) {
+  return [
+    ...(Array.isArray(data.recipients) ? data.recipients : []),
+    data.recipient,
+    data.to,
+    data.to_id,
+  ].filter(Boolean);
+}
+
+function channelEventId(msg, data) {
+  return data?.id || data?.event_id || data?.metadata?.sourceEventId || data?.metadata?.sourceTaskId || null;
+}
+
+async function deliverChannelNotice(content, meta = {}) {
+  if (!content) return false;
+  if (harnessFromEnv().channelNudge) {
+    const sess = process.env.FLEET_TMUX_SESSION;
+    if (!sess) {
+      process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for harness nudge\n');
+      return false;
+    }
+    return tmuxSendText(sess, content);
+  }
+  try {
+    await Promise.race([
+      server.notification({
+        method: 'notifications/claude/channel',
+        params: { content, meta },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
+    ]);
+    return true;
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
+    return false;
+  }
+}
+
+async function _flushUnread() {
+  const agentId = activeAgentId();
+  if (!agentId || !_channelRWS?.connected) return;
+  try {
+    const data = await mcpFleetTransport.ephemeral('my-task', {
+      agent: agentId,
+      peek: true,
+      notification_flush: true,
+    }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
+    const msgs = (data?.messages || []).filter(m => !m.read);
+    if (msgs.length === 0) return;
+    const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
+    await deliverChannelNotice(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`, { event_type: 'flush' });
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] unread flush notification failed: ${e.message}\n`);
+  }
+}
+
+async function handleChannelMessage(msg) {
+  const agentId = activeAgentId();
+  if (!agentId) return;
+
+  const eventType = msg.event === 'fleet-event' || msg.event === 'event-update'
+    ? (msg.data?.type || '')
+    : msg.event === 'channel-notification'
+      ? 'channel-notification'
+      : '';
+  if (!eventType) return;
+  if (!['channel-notification', 'task_done', 'timer'].includes(eventType)) return;
+
+  const data = msg.data || {};
+  const eventId = channelEventId(msg, data);
+  if (eventId && _deliveredChannelIds.has(eventId)) return;
+
+  const wiretapCc = data.metadata?.wiretap_cc || [];
+  const isDirectTarget = directRecipients(data).includes(agentId);
+  const isWiretapTarget = wiretapCc.includes(agentId);
+  if (!isDirectTarget && !isWiretapTarget) return;
+
+  const fromId = data.from || data.from_id || '';
+  if (fromId === agentId && eventType !== 'timer') return;
+  if (data.metadata?.source === 'terminal') return;
+
+  let content = '';
+  if (eventType === 'channel-notification') {
+    content = data.text || data.content || '';
+  } else if (eventType === 'task_done') {
+    const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
+    content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} update from ${fromLabel}: ${previewForChannel(data.description || data.text || 'Task update')} — ${inboxCallText('see it')}`;
+  } else if (eventType === 'timer' && data.metadata?.state === 'fired') {
+    content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} timer: ${previewForChannel(data.text || data.message || data.metadata?.message || 'Timer fired')} — ${inboxCallText('triage')}`;
+  }
+  if (!content) return;
+
+  const delivered = await deliverChannelNotice(content, {
+    event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
+    from: fromId,
+  });
+  if (delivered && eventId) {
+    _deliveredChannelIds.add(eventId);
+    setTimeout(() => _deliveredChannelIds.delete(eventId), CHANNEL_DEDUP_TTL_MS).unref?.();
+  }
+}
+
 function startChannelWS({ bootstrap = false } = {}) {
   if (!activeAgentId() && !bootstrap) return;
   if (_channelRWS) return;
@@ -5218,6 +5332,7 @@ function startChannelWS({ bootstrap = false } = {}) {
       _reconnectBuffer.resolveConnected();
       const reconnect = _channelHasOpened;
       _channelHasOpened = true;
+      if (activeAgentId()) setTimeout(_flushUnread, 500).unref?.();
       if (!activeAgentId() || !reconnect) return;
       const loginBody = {
         agent_id: activeAgentId(),
@@ -5253,6 +5368,9 @@ function startChannelWS({ bootstrap = false } = {}) {
         }
         return;
       }
+      handleChannelMessage(msg).catch(e => {
+        process.stderr.write(`[fleet-channel] message handling failed: ${e.message}\n`);
+      });
     },
     onClose: () => {
       rejectWsRequests(_wsPending, ({ type }) => new Error(`WS connection closed (type=${type})`));

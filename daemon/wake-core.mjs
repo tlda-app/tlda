@@ -1,13 +1,7 @@
-// Waking an agent and telling it something are one call.
-//
-// The server used to ask "did you start a process?", get an answer back, and
-// then decide whether to prepend the return notice on a second call. That put a
-// question across the boundary, and the answer was read under the wrong name for
-// a month — every message to a paused agent arrived with "You were away as
-// hibernating" on the front. Skip's ruling, 8/1: *"the server says to the demon,
-// wake this guy. Did you wake them? If so, inject this in their fucking
-// terminal."* So the caller sends both texts and the daemon, which is the only
-// party that knows whether it started anything, chooses.
+// Waking an agent is daemon-owned because the daemon knows whether it started a
+// process. User-visible notification is channel-owned; daemon-local notify_text
+// support remains for explicit terminal RPC callers, not as the fleet notice
+// path.
 export function createDaemonWakeCore({
   store,
   processAlive,

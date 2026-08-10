@@ -4,25 +4,27 @@ import test from 'node:test'
 import { createDaemonWakeCore } from '../../daemon/wake-core.mjs'
 import { runWakeRouteLifecycle } from './wake-route-lifecycle.mjs'
 
-// Wake and tell are one call, and the daemon decides whether the return notice
-// goes on the front. So these drive a real wake-core with the server's own
-// arguments and read what reached the terminal, rather than asserting against a
-// hand-written reply — the previous version wrote `{ already: true }`, a key the
-// daemon has never sent, and stayed green while every paused agent was told it
-// had been away.
+// Wake and notify are separate again: the daemon answers whether it started a
+// process, then the channel gets the notice. These still drive wake-core so the
+// server cannot invent the daemon's response shape.
 function rig({ alive }) {
-  const injected = []
+  const channel = []
+  const wakeParams = []
+  let running = alive
   const wake = createDaemonWakeCore({
     store: {
       resolve: () => ({ mintId: 'mint-1', sessionId: 'session-1', fleetId: 'fleet:test' }),
       updateProcessState: () => ({}),
     },
-    processAlive: async () => alive,
-    resumeSession: async () => ({ pid: 4242 }),
-    notifyAgent: async ({ text }) => { injected.push(text); return { ok: true } },
+    processAlive: async () => running,
+    resumeSession: async () => {
+      running = true
+      return { pid: 4242 }
+    },
   })
   return {
-    injected,
+    channel,
+    wakeParams,
     args: {
       agentId: 'fleet:test',
       agent: { id: 'fleet:test' },
@@ -30,28 +32,41 @@ function rig({ alive }) {
       ownerDaemon: { readyState: 1 },
       nudgeText: '📬 Available message arrived: No. — call inbox() to read and respond.',
       returnNoticeText: '💻 You were away as hibernating for one minute.',
-      sendDaemonDurable: async (_key, _op, params) => wake(params),
+      sendDaemonDurable: async (_key, _op, params) => {
+        wakeParams.push(params)
+        return wake(params)
+      },
+      sendWakeNudge: async (_daemonKey, _agent, text, phase) => {
+        channel.push({ text, phase })
+        return { ok: true }
+      },
       getAgentDaemonRoute: async () => ({ daemon_key: 'mini' }),
     },
   }
 }
 
-test('an agent whose process never stopped is not told it was away', async () => {
-  const { args, injected } = rig({ alive: true })
+test('an agent whose process never stopped gets the channel nudge without a return notice', async () => {
+  const { args, channel, wakeParams } = rig({ alive: true })
 
   const result = await runWakeRouteLifecycle(args)
 
   assert.equal(result.spawnResult.alreadyAlive, true)
-  assert.deepEqual(injected, ['📬 Available message arrived: No. — call inbox() to read and respond.'])
+  assert.deepEqual(wakeParams, [{ fleet_id: 'fleet:test' }])
+  assert.deepEqual(channel, [{
+    text: '📬 Available message arrived: No. — call inbox() to read and respond.',
+    phase: 'already-awake',
+  }])
 })
 
-test('the return notice goes on the front only when the daemon started a process', async () => {
-  const { args, injected } = rig({ alive: false })
+test('the channel return notice goes on the front only when the daemon started a process', async () => {
+  const { args, channel, wakeParams } = rig({ alive: false })
 
   const result = await runWakeRouteLifecycle(args)
 
   assert.equal(result.spawnResult.resumed, true)
-  assert.deepEqual(injected, [
-    '💻 You were away as hibernating for one minute.\n\n📬 Available message arrived: No. — call inbox() to read and respond.',
-  ])
+  assert.deepEqual(wakeParams, [{ fleet_id: 'fleet:test' }])
+  assert.deepEqual(channel, [{
+    text: '💻 You were away as hibernating for one minute.\n\n📬 Available message arrived: No. — call inbox() to read and respond.',
+    phase: 'post-respawn',
+  }])
 })
