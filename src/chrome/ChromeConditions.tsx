@@ -12,36 +12,10 @@ import {
 import { useChromeConditions } from './useChromeConditions'
 import './conditions.css'
 
-/** Warning and error each get their own glyph; severe reuses the error glyph,
- * because severe IS an error — what makes it severe is the button going red,
- * not a third mark to learn. */
-function ConditionGlyph({ severity }: { severity: ConditionSeverity }) {
-  if (severity === 'warning') {
-    return (
-      <svg viewBox="0 0 24 24" width={16} height={16} aria-hidden="true" style={{ display: 'block' }}>
-        <path
-          d="M12 3.2 22 20.4H2Z"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinejoin="round"
-        />
-        <path d="M12 9.4v4.6" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />
-        <circle cx="12" cy="17.2" r="1.15" fill="currentColor" />
-      </svg>
-    )
-  }
-  return (
-    <svg viewBox="0 0 24 24" width={16} height={16} aria-hidden="true" style={{ display: 'block' }}>
-      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth={2} />
-      <path
-        d="M8.9 8.9 15.1 15.1M15.1 8.9 8.9 15.1"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-      />
-    </svg>
-  )
+/** Chrome conditions use the same glyph vocabulary as the build pills. Severe
+ * is still an error; the red base button carries the escalation. */
+function ConditionGlyph() {
+  return <span aria-hidden="true">⚠</span>
 }
 
 function severityLabel(severity: ConditionSeverity): string {
@@ -121,9 +95,12 @@ function ConditionDetail({
   conditions: ChromeCondition[]
   rect: DOMRect
 }) {
+  const listClass = conditions.some((condition) => condition.severity !== 'warning')
+    ? 'build-error-list'
+    : 'build-warning-list'
   return (
     <div
-      className="chrome-condition-detail"
+      className={`chrome-condition-detail ${listClass}`}
       style={{
         bottom: `${window.innerHeight - rect.top + 8}px`,
         right: `${Math.max(window.innerWidth - rect.right, 8)}px`,
@@ -133,10 +110,12 @@ function ConditionDetail({
       {conditions.map((condition) => (
         <div
           key={condition.id}
-          className={`chrome-condition-detail-row chrome-condition--${condition.severity}`}
+          className={`chrome-condition-detail-row ${
+            condition.severity === 'warning' ? 'build-warning-item' : 'build-error-item'
+          } chrome-condition--${condition.severity}`}
         >
           <span className="chrome-condition-detail-glyph">
-            <ConditionGlyph severity={condition.severity} />
+            <ConditionGlyph />
           </span>
           <span className="chrome-condition-detail-text">{condition.text}</span>
         </div>
@@ -182,7 +161,9 @@ function TopicConditions({
           <button
             key={condition.id}
             type="button"
-            className={`chrome-condition-icon chrome-condition--${condition.severity}`}
+            className={`chrome-condition-icon ${
+              condition.severity === 'warning' ? 'build-warning-badge' : 'build-error-badge'
+            } chrome-condition--${condition.severity}`}
             aria-label={`${severityLabel(condition.severity)}: ${condition.text}`}
             aria-expanded={shown}
             onPointerDown={stopEventPropagation}
@@ -194,7 +175,7 @@ function TopicConditions({
               onToggle()
             }}
           >
-            <ConditionGlyph severity={condition.severity} />
+            <ConditionGlyph />
           </button>
         ))}
       </div>
