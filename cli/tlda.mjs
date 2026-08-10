@@ -1450,7 +1450,9 @@ function botWakeCommand(bot, paths) {
   return [
     `fleet_id=$(cat ${shellQuote(paths.idFile)})`,
     `env ${envPrefix} tlda agent wake "$fleet_id" >> ${shellQuote(paths.logFile)} 2>&1`,
-    `tmux wait-for ${shellQuote(paths.waitChannel)}`,
+    `pane_pid=$(tmux display-message -p -t ${shellQuote(paths.tmuxSession)} '#{pane_pid}' 2>/dev/null || true)`,
+    `if [[ -z "$pane_pid" ]]; then exit 1; fi`,
+    `while kill -0 "$pane_pid" 2>/dev/null; do sleep 1; done`,
   ].join('; ')
 }
 
