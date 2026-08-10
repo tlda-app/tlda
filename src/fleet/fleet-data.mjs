@@ -33,16 +33,16 @@ import {
   applyFilterEvents,
   patchFleetEventInStores,
 } from './fleet-data.ts'
-import { log } from '../logger'
+import { log } from '../logger.ts'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
 import { dispatchFilterEvent, dispatchFilterEvents, setChatSubscriptionTransport, refreshChatSubscriptionIdentity, resubscribeAll } from './chat-subscription.mjs'
-import { probe } from '../perf-probe'
-import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
+import { probe } from '../perf-probe.ts'
+import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig.ts'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { resetWsRequestIdleTimers, startWsRequest, WsReconnectBuffer } from '../../shared/fleet-browser-transport.mjs'
 import { createFleetOperationTransport } from '../../shared/fleet-operation-transport.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { checkAppShellFreshness } from '../appShellFreshness'
+import { checkAppShellFreshness } from '../appShellFreshness.ts'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
 // config's DATABASE, read directly from the server-injected config. No fetch, no

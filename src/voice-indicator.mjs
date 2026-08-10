@@ -61,6 +61,20 @@ function transcriptWordTokens(text) {
   return tokens.filter(token => token.norm)
 }
 
+export function reclaimVoiceInterim(left, pendingInterim) {
+  const value = String(left || '')
+  const pending = normalizeTranscriptText(pendingInterim).split(' ').filter(Boolean)
+  if (!pending.length) return { left: value, staleLen: 0 }
+  const tokens = transcriptWordTokens(value)
+  if (tokens.length < pending.length) return { left: value, staleLen: 0 }
+  const start = tokens.length - pending.length
+  for (let i = 0; i < pending.length; i++) {
+    if (tokens[start + i].norm !== pending[i]) return { left: value, staleLen: 0 }
+  }
+  const cutAt = tokens[start].start
+  return { left: value.slice(0, cutAt), staleLen: value.length - cutAt }
+}
+
 export function trimSubmittedPrefixFromDeepgramText(text, submittedNorm) {
   const submitted = normalizeTranscriptText(submittedNorm)
   if (!submitted) return { text, droppedWords: 0 }

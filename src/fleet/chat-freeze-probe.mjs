@@ -21,7 +21,7 @@
 // that becomes its own performance complaint is a bad trade. Nothing here emits
 // on a steady state; a healthy panel is silent.
 
-import { log } from '../logger'
+import { log } from '../logger.ts'
 
 const NS = 'chat-freeze'
 
