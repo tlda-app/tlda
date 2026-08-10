@@ -162,6 +162,46 @@ reference another table. The trigger writes the `dead` label when the column
 changes. So `dead` is a label backed by a column — an implementation detail of the
 constraint, not an exception to the model.
 
+### What marking an agent dead means, and what it must not destroy
+
+**Death is a statement about liveness and nothing else.** `dead = 1` says this
+agent is not currently running. It frees the friendly name — that is the whole
+point of `idx_agents_live_name` being partial — and it stops delivery. It is
+**not** a statement that the agent never existed, and it is not a licence to
+discard facts about it.
+
+**The rule: death may clear only what death makes untrue.**
+
+A fact stays true through death if it describes *where the agent is* rather than
+*whether it is running*:
+
+| fact | survives death? | because |
+|---|---|---|
+| `dead` flag, delivery, name occupancy | **no** — that is what death is | the agent is not running |
+| **daemon route** (`agent_daemon_routes`) | **yes** | it records which machine owns the agent, which is still true |
+| events, tasks, label history | **yes** | history is not conditional on being alive |
+
+**The daemon route is the sharp case, and it is the one that was wrong.** Until
+2026-08-10 `markDead` deleted the route in the same transaction as the death,
+`markAlive` never restored it, and `setAgentDaemonRoute` is called from exactly
+one place in the server — at mint. So death destroyed routing information that
+**nothing could rebuild**: the daemon key lives in that daemon's own mint ledger,
+which the server cannot read. Any agent that had ever been marked dead was
+alive-but-unreachable permanently.
+
+It could not even be diagnosed from one place, because every repair verb failed
+differently — `wake` reported success and did nothing, `enlist` said *already
+enrolled*, `reanimate` said *"a route is written only at mint and is never
+re-established"*, and `chat` to the name and to the bare id both said *no
+recipients matched*. Six call sites reach `markDead`, including a reaper and a
+sweep, so it took one of them being wrong once.
+
+**Test before you clear something on death: can it be rebuilt afterwards?** If
+the answer is no, it is not death's to delete — mark the agent dead and leave the
+fact alone. Liveness checks are cheap and explicit; lost identity is neither.
+This is why `agentRouteOrError` now tests `dead` directly rather than inferring
+it from a missing route.
+
 ## Why label history is lexical
 
 A historical label filter joins `label_history` spans and requires the agent to
