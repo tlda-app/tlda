@@ -117,6 +117,14 @@ design.
 
 ### The migration question, which is why nobody should run it yet
 
+**The backport on its own does not fix three bots. It changes how they fail.**
+Give `grammar` a fresh random id and the old `fleet:grammar` row still holds the
+name `grammar` on stable — a hibernating row occupies its name — so the new mint
+rotates to something else and goes inert, exactly as `teacher.stable` does today.
+Three name-collision failures become three name-rotation failures: the same dead
+bots, for a more confusing reason. **The old rows have to be disposed of in the
+same operation, which is why the sequence matters more than the diff.**
+
 Changing the derivation changes the identity a bot gets **on its next start**,
 and the six live testing bots are running under the current ids right now. Before
 anyone applies this, answer:
