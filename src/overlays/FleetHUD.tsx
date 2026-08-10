@@ -14,7 +14,7 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } f
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes } from '../shapes/fleet-utils'
 import { currentVisibleViewportSize, FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
 import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isDocumentPageShape } from '../shapes/document-pages'
@@ -609,10 +609,6 @@ export function FleetHUD({
       if (cancelled) return
       await adoptLegacyFleetShapes(mainEditor)
       if (cancelled) return
-      // Self-heal accumulation: if my layout overlaps another owner (e.g. shapes
-      // placed under the old hash that collided), slide my whole layout into a free
-      // lane so different owners' shapes never overlap. Only moves MY shapes.
-      ensureMyLaneDisjoint(mainEditor, getHumanId(), getDeviceId())
       setFleetBounds(resetFleetBoundsTracker())
     })
     return () => { cancelled = true }
