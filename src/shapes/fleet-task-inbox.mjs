@@ -8,6 +8,7 @@ export function projectOwnedFleetTasks(tasks, myId) {
       status: String(task.status || 'pending'),
       delegatedAt: String(task.delegated_at || ''),
       delegatedBy: String(task.delegated_by || ''),
+      message: String(task.message || task.description || ''),
       criteria: Array.isArray(task.success_criteria) ? task.success_criteria.map(String) : [],
     }))
 }

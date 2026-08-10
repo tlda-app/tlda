@@ -26,6 +26,7 @@ export type VoiceTargetHandle = {
   getSendTargets: () => string[]
   getAgentNames: () => Record<string, string>
   submitCurrent: (submittedText?: string) => boolean
+  submitAlternate?: (submittedText?: string) => boolean
 }
 /** Pre-send command hook (e.g. /terminal). Gets the textarea so it can clear (or
  *  not) exactly as the original did. Return true if it consumed the input — the
@@ -52,6 +53,7 @@ export function ChatComposer({
   style,
   draftKey,
   voiceTargetSnapshotRef,
+  onAlternateSend,
 }: {
   sendTargets: string[]
   agentNames: Record<string, string>
@@ -70,6 +72,7 @@ export function ChatComposer({
    *  `inbox:<partnerId>`. Omit and the draft is not preserved. */
   draftKey?: string
   voiceTargetSnapshotRef?: React.MutableRefObject<(() => VoiceTargetHandle) | null>
+  onAlternateSend?: ComposerSend
 }) {
   const localRef = useRef<HTMLTextAreaElement>(null)
   const inputRef = externalRef ?? localRef
@@ -104,6 +107,7 @@ export function ChatComposer({
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
   const submitCurrentRef = useRef<(submittedText?: string) => boolean>(() => false)
+  const submitAlternateRef = useRef<(submittedText?: string) => boolean>(() => false)
   const voiceTargetRef = useRef<VoiceTargetHandle>({
     sendTargets: [],
     agentNames: {},
@@ -113,6 +117,9 @@ export function ChatComposer({
   })
   voiceTargetRef.current.sendTargets = sendTargets
   voiceTargetRef.current.agentNames = agentNames
+  voiceTargetRef.current.submitAlternate = onAlternateSend
+    ? (submittedText) => submitAlternateRef.current(submittedText)
+    : undefined
   if (voiceTargetSnapshotRef) {
     voiceTargetSnapshotRef.current = () => ({
       sendTargets: [...voiceTargetRef.current.sendTargets],
@@ -120,6 +127,7 @@ export function ChatComposer({
       getSendTargets() { return this.sendTargets },
       getAgentNames() { return this.agentNames },
       submitCurrent(submittedText) { return submitCurrentRef.current(submittedText) },
+      ...(onAlternateSend ? { submitAlternate(submittedText?: string) { return submitAlternateRef.current(submittedText) } } : {}),
     })
   }
 
@@ -154,6 +162,21 @@ export function ChatComposer({
     return true
   }
   submitCurrentRef.current = submitCurrent
+  submitAlternateRef.current = (submittedText?: string) => {
+    if (!onAlternateSend) return false
+    const ta = inputRef.current
+    const text = ta?.value.trim() || ''
+    if (!ta || !text || sendTargets.length === 0) return false
+    onAlternateSend(text, sendTargets)
+    ta.value = ''
+    if (draftKey) clearComposerDraft(draftKey)
+    ta.style.height = ''
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    completeMessageSend(submittedText ?? text)
+    sentHistoryRef.current = [...sentHistoryRef.current, text]
+    historyIndexRef.current = -1
+    return true
+  }
 
   return (
     <textarea

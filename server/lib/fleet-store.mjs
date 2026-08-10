@@ -1707,6 +1707,9 @@ export class FleetStore {
     this._getDelegateEventForTask = this.db.prepare(`
       SELECT ${this._EVT} FROM events WHERE task_id = ? AND type = 'delegate' ORDER BY id DESC LIMIT 1
     `);
+    this._getEventsForTask = this.db.prepare(`
+      SELECT ${this._EVT} FROM events WHERE task_id = ? ORDER BY id ASC LIMIT ?
+    `);
     this._getUnreadForEvent = this.db.prepare('SELECT event_id, agent_id, read FROM recipients WHERE event_id = ? AND agent_id = ?');
     // Retract/retire clears the obligation by marking it read. It must not
     // delete the row: the row is the record that the message was addressed to
@@ -4267,6 +4270,10 @@ export class FleetStore {
       unreadPending: hasUnread && !read,
       exposed: !!recipientExposed || read || (event ? !hasUnread : false),
     };
+  }
+
+  getEventsForTask(taskId, limit = 200) {
+    return FleetStore.hydrateEvents(this._getEventsForTask.all(taskId, Math.min(Math.max(limit, 1), 500)));
   }
 
   retractTask(taskOrId, { recipientExposed = false, retractedBy = null } = {}) {

@@ -29,8 +29,9 @@ import { fleetTaskDropBus } from './FleetPillShape'
 // @ts-ignore — vanilla JS module
 import { inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
 import { ChatComposer } from './ChatComposer'
+import type { VoiceTargetHandle } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent, fleetEphemeral } from '../fleet-data-adapter'
 import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
@@ -173,6 +174,7 @@ interface OwnedFleetTask {
   status: string
   delegatedAt: string
   delegatedBy: string
+  message: string
   criteria: string[]
 }
 
@@ -207,9 +209,12 @@ type InboxItem =
   | { kind: 'message'; key: string; time: number; thread: Thread }
 
 type DetailItem =
+  | { kind: 'fleet-task'; key: string; task: OwnedFleetTask }
   | { kind: 'task'; key: string; task: RibbonTask }
   | { kind: 'node'; key: string; node: NodeTask }
   | { kind: 'note'; key: string; note: DocNote }
+
+type PaperDetailItem = Exclude<DetailItem, { kind: 'fleet-task' }>
 
 type SortMode = 'time' | 'type' | 'graph'
 
@@ -693,11 +698,12 @@ function FleetInboxInner({ shape }: { shape: any }) {
   }, [editor, shape])
 
   const openableItems = useMemo<DetailItem[]>(() => [
+    ...ownedFleetTasks.map((task): DetailItem => ({ kind: 'fleet-task', key: `fleet-task:${task.id}`, task })),
     ...proofTasks.direct.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
     ...proofTasks.cascade.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
     ...proofTasks.spanTasks.map((t): DetailItem => ({ kind: 'task', key: `task:${t.id}`, task: t })),
     ...docNotes.map((n: DocNote): DetailItem => ({ kind: 'note', key: `note:${n.id}`, note: n })),
-  ], [proofTasks, docNotes])
+  ], [ownedFleetTasks, proofTasks, docNotes])
 
   const visibleDirectNodes = proofTasks.direct
   const visibleCascadeNodes = proofTasks.cascade
@@ -715,7 +721,9 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   const activeTitle = activeThread
     ? activeThread.partnerName
-    : activeItem?.kind === 'node'
+    : activeItem?.kind === 'fleet-task'
+      ? activeItem.task.description
+      : activeItem?.kind === 'node'
       ? activeItem.node.title
       : activeItem?.kind === 'task'
         ? `lines ${activeItem.task.lo}-${activeItem.task.hi}`
@@ -824,6 +832,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
             myId={myId}
             myName={myName}
           />
+        ) : activeItem?.kind === 'fleet-task' ? (
+          <FleetTaskDetail task={activeItem.task} myId={myId} />
         ) : activeItem ? (
           <div className="fleet-inbox-modal-pop-wrap">
             <ItemDetail item={activeItem} onApprove={approveNode} />
@@ -903,9 +913,9 @@ function TaskRow({ t, onOpen }: { t: RibbonTask; onOpen?: () => void }) {
   )
 }
 
-function FleetTaskRow({ task, inboxShapeId }: { task: OwnedFleetTask; inboxShapeId: string }) {
+function FleetTaskRow({ task, inboxShapeId, onOpen }: { task: OwnedFleetTask; inboxShapeId: string; onOpen?: () => void }) {
   return (
-    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId}>
+    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId} onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-task-row">
         <span className="fleet-inbox-task-icon">●</span>
         <span className="fleet-inbox-task-text">{task.description}</span>
@@ -1035,7 +1045,7 @@ function InboxList(props: InboxListProps) {
   const empty = fleetTasks.length === 0 && threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
-    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} inboxShapeId={inboxShapeId} />
+    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} inboxShapeId={inboxShapeId} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} />
@@ -1066,7 +1076,7 @@ function InboxList(props: InboxListProps) {
           {(fleetTasks.length > 0 || directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
-              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} inboxShapeId={inboxShapeId} />)}
+              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} inboxShapeId={inboxShapeId} onOpen={() => onOpenItem(`fleet-task:${task.id}`)} />)}
               {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onOpen={() => onOpenItem(`node:${t.id}`)} />)}
               {spanTasks.map((t) => <TaskRow key={t.id} t={t} onOpen={() => onOpenItem(`task:${t.id}`)} />)}
             </div>
@@ -1095,7 +1105,7 @@ function InboxList(props: InboxListProps) {
   )
 }
 
-function ItemDetail({ item, onApprove }: { item: DetailItem; onApprove: (t: NodeTask) => void }) {
+function ItemDetail({ item, onApprove }: { item: PaperDetailItem; onApprove: (t: NodeTask) => void }) {
   const detailRef = useRef<HTMLDivElement>(null)
   useWheelScroll(detailRef)
 
@@ -1320,6 +1330,100 @@ function ConversationView({
           className="fleet-inbox-composer-textarea"
           style={COMPOSER_STYLE}
         />
+      </div>
+    </>
+  )
+}
+
+interface TaskLedgerEvent {
+  id: number
+  type: string
+  timestamp: string
+  from?: string
+  text?: string
+  metadata?: string | Record<string, unknown> | null
+}
+
+function FleetTaskDetail({ task, myId }: { task: OwnedFleetTask; myId: string | null }) {
+  const [events, setEvents] = useState<TaskLedgerEvent[]>([])
+  const [error, setError] = useState('')
+  const [sending, setSending] = useState(false)
+  const voiceTargetSnapshotRef = useRef<(() => VoiceTargetHandle) | null>(null)
+
+  const loadEvents = useCallback(async () => {
+    try {
+      const result = await fleetEphemeral('task-events', { task_id: task.id })
+      setEvents(Array.isArray(result?.events) ? result.events : [])
+      setError('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [task.id])
+
+  useEffect(() => { void loadEvents() }, [loadEvents])
+
+  const report = useCallback(async (text: string, close: boolean) => {
+    if (!myId || !text || sending) return
+    setSending(true)
+    setError('')
+    try {
+      await fleetDurable('report-close', {
+        agent: myId,
+        task_id: task.id,
+        summary: text,
+        close,
+        operation_id: crypto.randomUUID(),
+      })
+      if (!close) await loadEvents()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSending(false)
+    }
+  }, [loadEvents, myId, sending, task.id])
+
+  const sendTargets = useMemo(() => [task.id], [task.id])
+  const agentNames = useMemo(() => ({ [task.id]: task.description }), [task.description, task.id])
+
+  return (
+    <>
+      <div className="fleet-inbox-conv fleet-inbox-task-ledger">
+        <div className="fleet-inbox-task-ledger-entry">
+          <div className="fleet-inbox-task-ledger-kind">task</div>
+          <div>{task.message || task.description}</div>
+          {task.criteria.length > 0 && (
+            <ul>{task.criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul>
+          )}
+        </div>
+        {events.map((event) => (
+          <div key={event.id} className="fleet-inbox-task-ledger-entry">
+            <div className="fleet-inbox-task-ledger-kind">{event.type} · {timeShort(event.timestamp)}</div>
+            {event.text && <div>{event.text}</div>}
+          </div>
+        ))}
+        {error && <div className="fleet-inbox-task-ledger-error">{error}</div>}
+      </div>
+      <div className="fleet-inbox-composer-slot fleet-inbox-task-composer" onPointerDown={(e) => stopEventPropagation(e)}>
+        <ChatComposer
+          sendTargets={sendTargets}
+          agentNames={agentNames}
+          onSend={(text) => { void report(text, false) }}
+          onAlternateSend={(text) => { void report(text, true) }}
+          voiceTargetSnapshotRef={voiceTargetSnapshotRef}
+          isTouchDevice={_isTouchDevice}
+          draftKey={`inbox-task:${task.id}`}
+          className="fleet-inbox-composer-textarea"
+          placeholder="report"
+          style={COMPOSER_STYLE}
+        />
+        <button
+          className="fleet-inbox-task-report-close"
+          disabled={sending}
+          onPointerUp={(e) => {
+            stopEventPropagation(e)
+            voiceTargetSnapshotRef.current?.().submitAlternate?.()
+          }}
+        >report + close</button>
       </div>
     </>
   )

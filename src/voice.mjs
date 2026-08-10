@@ -2654,6 +2654,16 @@ function splitSendMagicWord(text) {
   return text.trim().slice(0, match.index).trim()
 }
 
+function splitSendAndCloseMagicWord(text) {
+  const words = parseCsvPref(getPref('voice-submit-words'))
+  if (words.length === 0) return null
+  const body = words.sort((a, b) => b.length - a.length).map(escapeRegExp).join('|')
+  const re = new RegExp(`(?:${body})\\s+and\\s+close\\s*[.!,]?\\s*$`, 'i')
+  const match = text.trim().match(re)
+  if (!match) return null
+  return text.trim().slice(0, match.index).trim()
+}
+
 function replaceTextareaValue(text) {
   const ta = _activeTextarea
   if (!ta) return false
@@ -2673,6 +2683,11 @@ function submitTextareaViaMagicWord(cleanText, submittedText) {
 }
 
 function handleSendMagicWord(leftTrimmed) {
+  const closeText = splitSendAndCloseMagicWord(leftTrimmed)
+  if (closeText !== null && _activeTextarea && _activeTargetHandle?.submitAlternate) {
+    replaceTextareaValue(closeText)
+    return _activeTargetHandle.submitAlternate(leftTrimmed)
+  }
   const cleanText = splitSendMagicWord(leftTrimmed)
   if (cleanText === null) return false
 

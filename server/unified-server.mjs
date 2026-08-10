@@ -5979,6 +5979,15 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'task-events') {
+    if (!msg.task_id) {
+      error('task-events requires task_id')
+      return
+    }
+    reply({ events: await fleetStore.getEventsForTask(msg.task_id) })
+    return
+  }
+
   if (type === 'active-task-by-agent') {
     if (!msg.agent) {
       error('active-task-by-agent requires agent')

@@ -730,6 +730,45 @@
   border-top: 1px solid rgba(128, 128, 128, 0.12);
   background: rgba(128, 128, 128, 0.03);
 }
+.fleet-inbox-task-composer {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+.fleet-inbox-task-composer .fleet-inbox-composer-textarea {
+  flex: 1;
+}
+.fleet-inbox-task-report-close {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  opacity: 0.65;
+  padding: 5px 2px;
+}
+.fleet-inbox-task-report-close:disabled {
+  opacity: 0.3;
+}
+.fleet-inbox-task-ledger-entry {
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+  white-space: pre-wrap;
+}
+.fleet-inbox-task-ledger-entry ul {
+  margin: 5px 0 0;
+  padding-left: 18px;
+}
+.fleet-inbox-task-ledger-kind {
+  font-size: 9px;
+  opacity: 0.5;
+  margin-bottom: 2px;
+}
+.fleet-inbox-task-ledger-error {
+  padding: 7px 10px;
+  color: #c06060;
+}
 
 @media (max-width: 600px) {
   .fleet-inbox-composer-textarea {
