@@ -3799,7 +3799,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   transform: translateY(-50%);
   border-radius: 999px;
   background: rgba(122, 158, 200, 0.30);
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.15s;
   pointer-events: none;
 }
@@ -3808,7 +3808,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    moving (main.tsx), so a rail you hovered and held still on went dark under
    your own cursor. Pointer capability is the actual question here. */
 @media (hover: hover) {
-  .fleet-chat-shape .fleet-composer-gutter:hover::before { opacity: 1; }
+  .fleet-chat-shape .fleet-composer-gutter:hover::before { opacity: var(--ui-tone-full); }
 }
 .fleet-chat-shape .fleet-composer-gutter.rail-dragging::before {
   opacity: 1;
@@ -3858,11 +3858,11 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 @keyframes fleet-composer-rail-lift {
   from {
-    opacity: 0;
+    opacity: var(--ui-tone-hidden);
     transform: translateX(-50%) translateY(3px) scale(0.92);
   }
   to {
-    opacity: 1;
+    opacity: var(--ui-tone-full);
     transform: translateX(-50%) translateY(-2px) scale(1);
   }
 }
@@ -3874,7 +3874,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.05;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 4px;
   display: flex;
@@ -3883,7 +3883,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
 }
 .fleet-chat-shape .fleet-hardlock-toggle:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-active);
 }
 /* Active = hard-locked: keep visible even without hover */
 .fleet-chat-shape .fleet-hardlock-toggle[title*="Hard-locked"] {
@@ -3906,7 +3906,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.05;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 4px;
   display: flex;
@@ -3915,7 +3915,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
 }
 .fleet-chat-shape .fleet-composer-image-toggle:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-chat-shape .fleet-terminal-icon {
@@ -3926,7 +3926,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.05;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 4px;
   display: flex;
@@ -3935,7 +3935,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
 }
 .fleet-chat-shape .fleet-terminal-icon:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .fleet-terminal-icon.unavailable {
   /* No cursor change. Skip: "It gives me a fucking question mark. I don't want
@@ -3964,7 +3964,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.22;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 6px;
   display: inline-flex;
@@ -3991,7 +3991,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.12;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 5px;
   display: flex;
@@ -4008,7 +4008,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:hover,
 .fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {
-  opacity: 0.65;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:disabled {
   cursor: default;
