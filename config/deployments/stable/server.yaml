@@ -8,6 +8,16 @@
 # everywhere.
 deepgramBridgeUrl: ws://tlda-voice.internal:8180
 
+# How THE BROWSER reaches the same box, over the tailnet. Handed to the client so
+# its audio socket terminates on the voice box instead of on this server.
+#
+# Absent, the browser falls back to the same-origin proxy — this machine — so
+# deploying the app cut Skip off mid-sentence, which is the exact thing the
+# separate box exists to prevent. It was absent everywhere, so the browser had
+# never used the box at all: `directUrl` came back empty from every deployment
+# and every byte of his audio was proxied through the app server.
+deepgramDirectUrl: wss://tlda-voice.cormorant-matrix.ts.net
+
 # The server is gated at the NETWORK layer by Tailscale — only tailnet devices
 # can reach it — so it runs open inside the tailnet. The tailnet IS the auth.
 authDisabled: true
