@@ -2276,7 +2276,6 @@ body.phone-mode .phone-hl-btn {
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
-  opacity: var(--ui-tone-dormant);
 }
 
 /* Nothing about the corner controls belongs to touch-toc-mode. Skip: "I don't
@@ -2553,7 +2552,6 @@ body.phone-mode .voice-note-btn {
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
-  opacity: var(--ui-tone-dormant);
 }
 
 html[data-theme="dark"] .voice-note-btn {
@@ -2590,7 +2588,6 @@ body.phone-mode .mic-toggle-btn {
   right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
-  opacity: var(--ui-tone-dormant);
 }
 
 html[data-theme="dark"] .mic-toggle-btn {
