@@ -822,7 +822,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .terminal-msg {
   border-left: 2px solid var(--text-dim);
   padding-left: 6px;
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
 }
 /* Provenance mark on a chat message typed into a terminal. Same glyph as the
    composer's terminal button and the voice HUD, in the dim text colour. */
@@ -1007,11 +1007,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 1px 6px;
   font-size: var(--fleet-base-font, 11px);
   cursor: pointer;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s;
 }
-.fleet-chat-shape .lifecycle-card .lc-approve-btn:hover { opacity: 1; }
-.fleet-chat-shape .lifecycle-card .lc-deny-btn:hover { opacity: 1; }
+.fleet-chat-shape .lifecycle-card .lc-approve-btn:hover { opacity: var(--ui-tone-full); }
+.fleet-chat-shape .lifecycle-card .lc-deny-btn:hover { opacity: var(--ui-tone-full); }
 .fleet-chat-shape .lifecycle-card .lc-approve-btn {
   background: rgba(0, 200, 100, 0.15);
   color: #00c864;
@@ -1093,7 +1093,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-ref-preview {
   /* Hover-intent: stays hidden until the cursor rests on the ref for 0.3s, so a
      passthrough never pops it. opacity/visibility (not display) so it's delayable. */
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   visibility: hidden;
   pointer-events: none;
   transition: opacity 0.12s ease, visibility 0s linear 0.12s;
@@ -1116,7 +1116,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   line-height: 1.5;
 }
 .fleet-chat-shape .tool-ref:hover .tool-ref-preview {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   visibility: visible;
   transition: opacity 0.12s ease 0.6s, visibility 0s linear 0.6s;
 }
@@ -1136,16 +1136,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   font-size: var(--fleet-base-font, 11px);
   padding: 0 2px;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .chat-resend-btn:hover,
 .fleet-chat-shape .chat-resend-all-btn:hover,
 .fleet-chat-shape .chat-dismiss-failed-btn:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .fleet-chat-shape .chat-failed-actions {
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .chat-dismiss-failed-btn {
   color: var(--text-dim);
@@ -1171,7 +1171,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border: none;
   border-top: 1px solid var(--text-dim);
   margin: 8px 0;
-  opacity: 0.18;
+  opacity: var(--ui-tone-dormant);
 }
 
 /* --- Chat images --- */
@@ -1267,7 +1267,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Ambient messages --- */
 .fleet-chat-shape .ambient {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 
 /* --- Syntax highlighting tokens --- */
@@ -1305,14 +1305,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .code-block-copy {
   margin-left: auto;
   cursor: pointer;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   font-size: calc(var(--fleet-base-font, 11px) * 1.272727);
   user-select: none;
   transition: opacity 0.1s, color 0.1s;
   padding: 0 2px;
 }
 .fleet-chat-shape .code-block-copy:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .fleet-chat-shape .code-block-copy-success {
   opacity: 1;
@@ -1437,7 +1437,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-family: var(--mono);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   color: var(--accent, #7a9ec8);
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   margin-left: 2px;
 }
 /* Search results — alternating stripes with clear separation */
@@ -1491,9 +1491,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--accent, #7a9ec8);
   padding: 4px 0;
   cursor: pointer;
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
 }
-.fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+.fleet-chat-shape .pretty-expand-btn:hover { opacity: var(--ui-tone-full); }
 /* Open, the marker is not a control any more -- it is the fold line, marking
    where the card was folded. Skip: "the expand doesn't flip to collapse when
    expanded but almost vanishes. perhaps just a faint line running from spine
@@ -1551,7 +1551,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   text-align: center;
   cursor: pointer;
   /* Skip: "you can't really see it is the problem." */
-  opacity: 0.9;
+  opacity: var(--ui-tone-full);
   z-index: 3;
   width: 52px;
   margin: 0;
@@ -1562,7 +1562,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   user-select: none !important;
   -webkit-user-select: none !important;
 }
-.fleet-chat-shape .semantic-operation-collapse:hover { opacity: 1; }
+.fleet-chat-shape .semantic-operation-collapse:hover { opacity: var(--ui-tone-full); }
 /* On a thread card the collapse exists only while the middle is open -- that is
    the only state where it does anything. Skip: "your collapse button should be
    invisible when the card is collapsed." The search card's collapse is
@@ -1592,9 +1592,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   padding: 5px 0;
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
 }
-.fleet-chat-shape .semantic-operation-more:hover { opacity: 1; }
+.fleet-chat-shape .semantic-operation-more:hover { opacity: var(--ui-tone-full); }
 /* Schedule / timer cards */
 .fleet-chat-shape .tool-pretty-schedule {
   display: flex;
@@ -1678,7 +1678,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .chat-activity-card .activity-signal {
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   line-height: 1;
 }
 .fleet-chat-shape .chat-activity-card .activity-header .activity-signal { margin-left: auto; }
@@ -1703,7 +1703,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .chat-activity-card .activity-text-block {
   color: var(--text, #8888a0);
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
   font-size: var(--fleet-base-font, 11px);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1757,12 +1757,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .diff-new { background: rgba(95, 165, 110, 0.08); }
 .fleet-chat-shape .diff-label {
   font-weight: 600;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   margin-right: 4px;
 }
 .fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
 .fleet-chat-shape .diff-side code { font-size: calc(var(--fleet-base-font, 11px) * 0.909091); }
-.fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: 0.6; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); }
+.fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: var(--ui-tone-rest); font-size: calc(var(--fleet-base-font, 11px) * 0.909091); }
 .fleet-chat-shape .edit-unified-diff {
   margin: 0;
   padding: 4px 6px;
@@ -1774,7 +1774,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .edit-unified-diff .diff-line { display: block; min-height: 1.2em; }
 .fleet-chat-shape .edit-unified-diff .diff-add { background: rgba(95, 165, 110, 0.12); }
 .fleet-chat-shape .edit-unified-diff .diff-del { background: rgba(190, 95, 95, 0.12); }
-.fleet-chat-shape .edit-unified-diff .diff-hunk { opacity: 0.7; font-weight: 600; }
+.fleet-chat-shape .edit-unified-diff .diff-hunk { opacity: var(--ui-tone-active); font-weight: 600; }
 
 /* Location + scope header above an edit diff (which file, line, ± size).
    Mirrors the dim, small .code-block-header convention. */
@@ -1785,22 +1785,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px 6px 0;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
 }
-.fleet-chat-shape .edit-diff-path { font-family: monospace; opacity: 0.55; }
-.fleet-chat-shape .edit-diff-stat { opacity: 0.4; font-variant-numeric: tabular-nums; }
+.fleet-chat-shape .edit-diff-path { font-family: monospace; opacity: var(--ui-tone-rest); }
+.fleet-chat-shape .edit-diff-stat { opacity: var(--ui-tone-dormant); font-variant-numeric: tabular-nums; }
 /* "tentative" marker for a not-yet-applied (proposed) edit — subtle, like
    .build-warning-badge: present but quiet. */
 .fleet-chat-shape .edit-diff-tentative {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 
 /* Compact apply line: "✓ edit applied  <proposal-ref>" */
 .fleet-chat-shape .tool-apply-line { display: flex; align-items: center; gap: 6px; }
-.fleet-chat-shape .apply-check { opacity: 0.6; }
-.fleet-chat-shape .apply-text { opacity: 0.7; }
-.fleet-chat-shape .apply-ref { font-family: monospace; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); opacity: 0.45; }
+.fleet-chat-shape .apply-check { opacity: var(--ui-tone-rest); }
+.fleet-chat-shape .apply-text { opacity: var(--ui-tone-active); }
+.fleet-chat-shape .apply-ref { font-family: monospace; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); opacity: var(--ui-tone-rest); }
 
 /* --- Code cards (inside activity) --- */
 .fleet-chat-shape .code-block-wrap {
@@ -1815,7 +1815,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   gap: 6px;
   padding: 2px 6px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .code-block-wrap pre {
   margin: 0;
@@ -1838,7 +1838,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition: opacity 0.15s;
 }
 .fleet-chat-shape .doc-link:hover {
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .doc-link-unresolved {
   color: inherit;
