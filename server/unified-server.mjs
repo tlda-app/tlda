@@ -2797,9 +2797,29 @@ async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment
   })
 }
 
+// A recipient with no daemon route cannot materialize anything, now or ever:
+// the file has to land on a machine, and there is no machine. That is a fact
+// about the recipient, not about this message, so it will fail identically for
+// every attachment anyone ever sends it.
+//
+// Raising it as `important` per message is what emptied the fleet-wide "what's
+// broken" view: one routeless recipient receiving a message a minute produced
+// 40 important raises an hour, 100% of the channel, so nothing else could be
+// seen there. The condition itself is already owned and reported by the
+// misconfigured-agents check, which reports it once per agent rather than once
+// per message.
+//
+// The notification still goes out and the attachment is still recorded failed —
+// only the escalation is withheld, and only when every failure in the batch is
+// structural.
+function isStructuralMaterializationFailure({ record = {} }) {
+  return /has no daemon route/.test(String(record.error || ''))
+}
+
 function notifyRecipientMaterializationFailures({ eventId, recipientId, failures }) {
   const text = formatMaterializationFailureNotification({ eventId, failures })
   if (!recipientId || !eventId || !text) return
+  const structural = failures.length > 0 && failures.every(isStructuralMaterializationFailure)
   deliverTldaFeedbackChat({
     from: 'tlda-materializer',
     to: recipientId,
@@ -2810,7 +2830,7 @@ function notifyRecipientMaterializationFailures({ eventId, recipientId, failures
       attachment_id: null,
       failed_attachment_ids: failures.map(({ attachment }) => String(attachment.id)),
       state: 'failed',
-      priority: 'important',
+      ...(structural ? {} : { priority: 'important' }),
     },
   })
 }
