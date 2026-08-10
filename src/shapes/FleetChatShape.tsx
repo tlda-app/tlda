@@ -49,6 +49,7 @@ import {
   FLEET_TEAM_FROM_ROLE,
   FLEET_TEAM_TO_ROLE,
   classifyFleetComposerTrafficMode,
+  fleetSearchResultAgentChatFilter,
   fleetFilterSendTargets,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
@@ -67,7 +68,7 @@ import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
-import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, createFleetShape, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer, type VoiceTargetHandle } from './ChatComposer'
@@ -111,6 +112,7 @@ import {
   sortFleetAgentDirectoryRowsByRecency,
 } from './FleetAgentDirectoryRow'
 import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
+import { FleetSearchResultsView } from './FleetSearchResultsView'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -1837,13 +1839,6 @@ function decodeSemanticOperation(el: HTMLElement): any | null {
   try { return JSON.parse(raw) } catch { return null }
 }
 
-function eventFromSearchResult(result: any) {
-  const text = result.text ?? result.snippet ?? ''
-  return result.source === 'session'
-    ? { type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: result.agentId, recipients: [], text, timestamp: result.timestamp, id: result.id }
-    : { ...result, text, id: result.id }
-}
-
 // `since`/`until` are relative to when the thread call ran, not to now: "2h"
 // meant two hours before the agent read it. Anchor the shorthand on the
 // descriptor's own timestamp so re-reading reproduces the window it asked for.
@@ -2141,108 +2136,76 @@ function ThreadChatOperationView({
 function SemanticChatOperationView({
   descriptor,
   renderCtx,
-  pageSize,
   currentProject,
   host,
+  hostShapeId,
+  pageSize,
 }: {
   descriptor: any
   renderCtx: any
-  pageSize: number
   currentProject?: string
   host: HTMLElement
+  hostShapeId: TLShapeId
+  pageSize: number
 }) {
+  const editor = useEditor()
   const [results, setResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [before, setBefore] = useState<string | null>(null)
+  const [searched, setSearched] = useState(false)
   const [hasMore, setHasMore] = useState(true)
+  const [expandedSearchGroups, setExpandedSearchGroups] = useState<Record<string, boolean>>({})
   const [collapseTop, setCollapseTop] = useState('50%')
   const loadedRef = useRef(false)
   const searchVisibleLimitRef = useRef(pageSize)
 
-  const loadPage = useCallback(async (reset = false) => {
-    const cursor = reset ? null : before
+  const loadSearch = useCallback(async (reset = false) => {
     setLoading(true)
     setError('')
+    setSearched(true)
     try {
-      const effectiveDescriptor = descriptor
-      const displayLimit = descriptor?.kind === 'search'
-        ? (reset ? pageSize : searchVisibleLimitRef.current + pageSize)
-        : pageSize
-      if (descriptor?.kind === 'search') searchVisibleLimitRef.current = displayLimit
-      let requestLimit = displayLimit + 1
-      let request = semanticSearchRequest(
-        effectiveDescriptor,
-        requestLimit,
-        currentProject,
-        descriptor?.kind === 'thread' ? cursor : null,
-      )
-      let fetched = await searchFleet(request.query, request.limit, request.filters)
-      while (
-        descriptor?.kind === 'thread'
-        && fetched.length === requestLimit
-        && fetched[displayLimit - 1]?.timestamp
-        && fetched[fetched.length - 1]?.timestamp === fetched[displayLimit - 1]?.timestamp
-        && requestLimit < 10_000
-      ) {
-        requestLimit = Math.min(10_000, requestLimit * 2)
-        request = semanticSearchRequest(effectiveDescriptor, requestLimit, currentProject, cursor)
-        fetched = await searchFleet(request.query, request.limit, request.filters)
-      }
-      let pageEnd = Math.min(displayLimit, fetched.length)
-      const boundaryTimestamp = fetched[pageEnd - 1]?.timestamp
-      if (descriptor?.kind === 'thread') {
-        while (pageEnd < fetched.length && fetched[pageEnd]?.timestamp === boundaryTimestamp) pageEnd += 1
-      }
-      const page = fetched.slice(0, pageEnd)
-      const ordered = descriptor?.kind === 'thread'
-        ? page.slice().sort((a: any, b: any) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')))
-        : rankSearchResults(page, request.query)
-      setResults(prev => {
-        const combined = reset || descriptor?.kind === 'search'
-          ? ordered
-          : descriptor?.kind === 'thread'
-            ? [...ordered, ...prev]
-            : [...prev, ...ordered]
-        const seen = new Set<string>()
-        return combined.filter((result: any) => {
-          const key = `${result.source || ''}:${result.id || `${result.timestamp || ''}:${result.text || result.snippet || ''}`}`
-          if (seen.has(key)) return false
-          seen.add(key)
-          return true
-        })
-      })
-      setHasMore(fetched.length > pageEnd)
-      const oldest = page
-        .map((r: any) => r.timestamp)
-        .filter(Boolean)
-        .sort()[0] || null
-      setBefore(oldest)
+      const displayLimit = reset ? pageSize : searchVisibleLimitRef.current + pageSize
+      searchVisibleLimitRef.current = displayLimit
+      const request = semanticSearchRequest(descriptor, displayLimit + 1, currentProject, null)
+      const fetched = await searchFleet(request.query, request.limit, request.filters)
+      const page = fetched.slice(0, displayLimit)
+      const ordered = rankSearchResults(page, request.query)
+      const seen = new Set<string>()
+      setResults(ordered.filter((result: any) => {
+        const key = `${result.source || ''}:${result.id || `${result.timestamp || ''}:${result.text || result.snippet || ''}`}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }))
+      setHasMore(fetched.length > displayLimit)
+      setExpandedSearchGroups({})
     } catch (err: any) {
       setError(err?.message || 'search failed')
     } finally {
       setLoading(false)
     }
-  }, [before, currentProject, descriptor, pageSize])
+  }, [currentProject, descriptor, pageSize])
 
   useEffect(() => {
     setResults([])
-    setBefore(null)
+    setSearched(false)
+    setError('')
     setHasMore(true)
+    setExpandedSearchGroups({})
     loadedRef.current = false
     searchVisibleLimitRef.current = pageSize
-  }, [descriptor?.semanticKey, pageSize, currentProject])
+  }, [descriptor?.semanticKey, currentProject, pageSize])
 
   useEffect(() => {
     const load = () => {
       if (loadedRef.current) return
       loadedRef.current = true
-      void loadPage(true)
+      void loadSearch(true)
     }
     host.addEventListener('semantic-operation-expand', load)
     if (host.style.display !== 'none') load()
     return () => host.removeEventListener('semantic-operation-expand', load)
-  }, [host, loadPage])
+  }, [host, loadSearch])
 
   useLayoutEffect(() => {
     const scroller = host.closest('.fleet-chat-log') as HTMLElement | null
@@ -2261,18 +2224,38 @@ function SemanticChatOperationView({
     btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
   }, [host])
 
+  const openChatForResult = useCallback(async (result: any) => {
+    const agents = renderCtx.getAgents?.() || []
+    const filter = fleetSearchResultAgentChatFilter(result, { agents }) as [string, string][][]
+    if (!filter.length) return
+    const rec = editor.getShape(hostShapeId) as { x: number; y: number; props: { w: number; h: number } } | undefined
+    if (!rec) return
+    const newId = await createFleetShape(editor, 'fleet-chat', rec.x, rec.y, {
+      w: rec.props.w,
+      h: rec.props.h,
+      filter,
+    })
+    if (newId) editor.bringToFront([newId as TLShapeId])
+  }, [editor, hostShapeId, renderCtx])
+
   return (
     <div className="semantic-operation-expanded-shell">
       <button type="button" className="semantic-operation-collapse" style={{ top: collapseTop }} onPointerUp={collapse}>Collapse</button>
       <div className="semantic-operation-view">
-        {error ? <div className="semantic-operation-status">{error} <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); loadedRef.current = true; void loadPage(true) }}>Retry</button></div> : null}
-        {!error && results.length === 0 && !loading ? <div className="semantic-operation-status">no results</div> : null}
-        {results.map((result, i) => {
-          const html = renderChatLine(convertChatEvent(eventFromSearchResult(result)), renderCtx)
-          return <div key={`${result.id || result.timestamp || i}:${i}`} className="semantic-operation-result" dangerouslySetInnerHTML={{ __html: html }} />
-        })}
-        {loading ? <div className="semantic-operation-status">loading...</div> : null}
-        {!loading && hasMore ? <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void loadPage(false) }}>More</button> : null}
+        <FleetSearchResultsView
+          results={results}
+          loading={loading}
+          searched={searched}
+          queryError={error}
+          expandedSearchGroups={expandedSearchGroups}
+          setExpandedSearchGroups={setExpandedSearchGroups}
+          ctx={renderCtx}
+          agents={renderCtx.getAgents?.() || []}
+          onOpenChatForResult={openChatForResult}
+        />
+        {!loading && !error && hasMore ? (
+          <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void loadSearch(false) }}>More</button>
+        ) : null}
       </div>
     </div>
   )
@@ -2289,8 +2272,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
   expandedRowsRef,
   collapsedRowsRef,
   semanticRenderCtx,
-  semanticOperationPageSize,
   currentProject,
+  hostShapeId,
+  semanticOperationPageSize,
 }: {
   html: string
   postProcess: (html: string) => string
@@ -2298,8 +2282,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
   expandedRowsRef: React.RefObject<Set<string>>
   collapsedRowsRef: React.RefObject<Set<string>>
   semanticRenderCtx: any
-  semanticOperationPageSize: number
   currentProject?: string
+  hostShapeId: TLShapeId
+  semanticOperationPageSize: number
 }) {
   recordChatRenderProbe('row-render', itemKey, { htmlLength: html.length })
   const processed = useMemo(() => probe.time('chat', 'chat-row-postprocess', () => postProcess(html), {
@@ -2387,9 +2372,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
           : <SemanticChatOperationView
             descriptor={descriptor}
             renderCtx={semanticRenderCtx}
-            pageSize={semanticOperationPageSize}
             currentProject={currentProject}
             host={body}
+            hostShapeId={hostShapeId}
+            pageSize={semanticOperationPageSize}
           />,
       )
       semanticRoots.push(root)
@@ -2421,14 +2407,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return () => {
       for (const root of semanticRoots) root.unmount()
     }
-  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, semanticOperationPageSize, currentProject])
+  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize])
 
   return (
     <>
       <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
     </>
   )
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx)
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize)
 
 function FleetChatInner({ shape }: { shape: any }) {
   const { addToast } = useToasts()
@@ -6455,8 +6441,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                     expandedRowsRef={expandedRowsRef}
                     collapsedRowsRef={collapsedRowsRef}
                     semanticRenderCtx={ctx}
-                    semanticOperationPageSize={semanticOperationPageSize}
                     currentProject={doc?.projectName}
+                    hostShapeId={shape.id}
+                    semanticOperationPageSize={semanticOperationPageSize}
                   />
                 )}
               </div>
