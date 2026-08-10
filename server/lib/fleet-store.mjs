@@ -3702,9 +3702,29 @@ export class FleetStore {
     return !!ev;
   }
 
+  // The route is NOT deleted here, and that is the point.
+  //
+  // A route records which machine owns this agent. That does not stop being
+  // true when the agent dies, and the server cannot reconstruct it: the daemon
+  // key lives in the daemon's own mint ledger and `setAgentDaemonRoute` is
+  // called from exactly one place in the server, at mint. So deleting the route
+  // on death threw away the only copy, and `markAlive` never rebuilt it —
+  // death destroyed the route, resurrection restored only the flag.
+  //
+  // The result was an agent that is alive, running, and permanently
+  // unreachable, with no operation available to repair it: `wake` reports
+  // success and changes nothing, `enlist` refuses ("already enrolled"), and
+  // `reanimate` refuses with "a route is written only at mint and is never
+  // re-established". Six call sites reach markDead, including a reaper and a
+  // sweep, so this needed one of them to be wrong once.
+  //
+  // Keeping the row required making one implicit test explicit: `agentRouteOrError`
+  // relied on the route's absence to reject dead agents, so it now checks `dead`
+  // itself. Roster and chat-recipient resolution already filtered on `dead`
+  // directly and are unaffected. A route to a dead agent therefore still routes
+  // nothing — it only means that if the agent comes back, it is reachable again.
   markDead(id) {
     this.db.transaction(() => {
-      this._deleteAgentDaemonRoute.run(id);
       this._markAgentDead.run(id);
     })();
     this.retireTasksForGoneAgent(id, 'agent marked dead');

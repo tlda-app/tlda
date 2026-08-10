@@ -2648,8 +2648,15 @@ function agentDaemonAddress(agent) {
   return daemonAddress(agent?.machine_id, agent?.env_name)
 }
 
+// Liveness is checked here, explicitly, rather than inferred from the absence of
+// a route. It used to be implicit: markDead deleted the route, so a dead agent
+// fell out through the `!seat` branch. That coupling is what made agent death
+// destroy routing information the server could not rebuild, so the route now
+// survives death (see fleetStore.markDead) and the liveness test is stated.
 async function agentRouteOrError(agent) {
-  const seat = agent?.id ? await fleetStore?.getAgentDaemonRoute?.(agent.id) : null
+  if (!agent?.id) return { error: 'agent has no daemon route' }
+  if (agent.dead) return { error: 'agent is dead' }
+  const seat = await fleetStore?.getAgentDaemonRoute?.(agent.id)
   if (!seat) return { error: 'agent has no daemon route' }
   return { seat }
 }
