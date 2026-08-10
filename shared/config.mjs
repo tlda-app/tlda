@@ -109,11 +109,7 @@ export function loadServerConfig() {
  * caller restates the rule.
  */
 export function loadServerRuntimeConfig() {
-  const config = loadServerConfig()
-  if (!config.deepgramBridgeUrl) {
-    throw new Error(`${SERVER_FILE}: "deepgramBridgeUrl" is required — the Deepgram bridge has one address and no fallback`)
-  }
-  return config
+  return loadServerConfig()
 }
 
 export function loadCliConfig() {
@@ -314,12 +310,7 @@ jsonlTailIdleSeconds: 600
 `
 
 /**
- * The starter server.yaml. `deepgramBridgeUrl` is the one key a SERVER cannot
- * start without (see loadServerRuntimeConfig), so it is written out with the
- * real address rather than left as a comment someone has to discover from a
- * stack trace.
- *
- * The options are documented HERE, on the keys, rather than in a doc/ file:
+ * The starter server.yaml options are documented HERE, on the keys, rather than in a doc/ file:
  * this is the file someone is looking at when they want to change one of these
  * values, and a separate document describing it would rot unread.
  */
@@ -339,10 +330,11 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 # config/environment-variables.md.
 
 # How THIS SERVER reaches the one Deepgram bridge, which runs on its own machine
-# (the tlda-voice box) over Fly's private network. REQUIRED — there is no second
-# bridge and no fallback. This was an environment variable until leaving it unset
-# silently removed Deepgram from the voice picker with no error anywhere.
-deepgramBridgeUrl: ws://tlda-voice.internal:8180
+# (the tlda-voice box) over Fly's private network. Absent = Deepgram is not
+# configured here and does not appear in the voice picker. When present, the
+# picker follows this configuration only; bridge liveness is checked at connect
+# time, not used to decide whether the option exists.
+# deepgramBridgeUrl: ws://tlda-voice.internal:8180
 
 # How THE BROWSER reaches that same bridge, if it can reach it directly (the
 # tailnet name, wss://tlda-voice.<tailnet>.ts.net). Connecting direct keeps the

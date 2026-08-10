@@ -3091,7 +3091,7 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 // when you want to know where Skip's audio goes.
 //   deepgramBridgeUrl — how THIS SERVER reaches it (Fly 6PN,
 //                       ws://tlda-voice.internal:8180), used by the proxy.
-//                       REQUIRED; there is no second bridge to fall back to.
+//                       Absent means Deepgram is not configured here.
 //   deepgramDirectUrl — how THE BROWSER reaches it (the tailnet name,
 //                       wss://tlda-voice.<tailnet>.ts.net), handed to the client
 //                       so its audio socket does not terminate on this machine
@@ -3123,19 +3123,18 @@ app.get('/api/voice/backends', async (req, res) => {
       { value: '', label: 'Off', available: true },
       { value: 'chrome', label: 'Browser', available: true },
     ]
-    // Deepgram is always offered. `deepgramBridgeUrl` is required and this
-    // process refuses to start without it, so the backend is configured by
-    // construction and there is nothing here to discover. Asking the bridge
-    // whether it is up *right now* answers a different question — liveness —
-    // and a miss on that question presented itself as "Deepgram does not
-    // exist", which is the same silent drop that requiring the address was
-    // meant to end. Observed on stable at 2026-07-31T07:44:10Z: one 800ms probe
-    // missed, the option vanished, and a minute later the same handshake
-    // measured 4ms. Liveness belongs at connect time, where
-    // /api/voice/deepgram-sdk/start already answers 503 with a message.
+    // Deepgram presence follows configuration only. No bridge URL means this
+    // server has no Deepgram backend to offer; a configured URL means the option
+    // exists even if the bridge is unreachable right now. Asking the bridge
+    // whether it is up answers a different question — liveness — and a miss on
+    // that question presented itself as "Deepgram does not exist". Observed on
+    // stable at 2026-07-31T07:44:10Z: one 800ms probe missed, the option
+    // vanished, and a minute later the same handshake measured 4ms. Liveness
+    // belongs at connect time, where /api/voice/deepgram-sdk/start already
+    // answers 503 with a message.
     // Whisper below is a different question and keeps its probe: it is a local
     // process that genuinely may not be running.
-    backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
+    if (DEEPGRAM_SDK_BRIDGE_URL) backends.push({ value: 'deepgram-sdk', label: 'Deepgram', available: true })
     if (await isBridgeUp(WHISPER_BRIDGE_URL)) backends.push({ value: 'whisper', label: 'Whisper', available: true })
     res.json({ backends })
   } catch (err) {
@@ -3145,6 +3144,10 @@ app.get('/api/voice/backends', async (req, res) => {
 
 app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
   try {
+    if (!DEEPGRAM_SDK_BRIDGE_URL) {
+      res.status(503).json({ ok: false, started: false, remote: '', directUrl: '', error: 'deepgram bridge unconfigured' })
+      return
+    }
     // The bridge is always-on and not ours to start. Answer with whether it is
     // actually reachable rather than reporting a start we did not perform.
     const up = await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)
@@ -3167,7 +3170,7 @@ app.post('/api/voice/deepgram-sdk/stop', async (req, res) => {
   // one tab turning voice off must not take it away from everyone. The client
   // already ends its own upstream session by closing this socket, which is what
   // the bridge's `stop` handling acts on.
-  res.json({ ok: true, stopped: false, remote: DEEPGRAM_SDK_BRIDGE_URL })
+  res.json({ ok: true, stopped: false, remote: DEEPGRAM_SDK_BRIDGE_URL || '' })
 })
 
 // Whether the one deepgram bridge is reachable. Used by the /voice/deepgram-sdk WS
@@ -3177,6 +3180,10 @@ app.post('/api/voice/deepgram-sdk/stop', async (req, res) => {
 // caller surface it — quietly switching Skip to another backend mid-sentence is
 // exactly what voice being explicitly opt-in exists to prevent.
 async function ensureDeepgramSdkBridge() {
+  if (!DEEPGRAM_SDK_BRIDGE_URL) {
+    console.error('[voice] deepgram bridge unconfigured')
+    return false
+  }
   if (await isBridgeUp(DEEPGRAM_SDK_BRIDGE_URL)) return true
   console.error(`[voice] deepgram bridge unreachable at ${DEEPGRAM_SDK_BRIDGE_URL}`)
   return false
