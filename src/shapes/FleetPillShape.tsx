@@ -26,6 +26,7 @@ import {
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES, placeFleetShapeAtScreenPoint } from './fleet-utils'
+import { materializeMarkdownChip } from './markdown-chip-materialize'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
   applyFilterPreviewWithIntent,
@@ -321,9 +322,22 @@ async function createMarkdownDocviewShapeFromPill(
     markdown = await sourceRes.text()
   }
 
+  const projectName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
+  if (!projectName) {
+    showError?.('This Markdown file cannot be attached without an open document.')
+    return true
+  }
+  const materializedPart = await materializeMarkdownChip({ markdown, title, sourcePath: filePath })
+  if (!materializedPart.ok || !materializedPart.outputFile) {
+    showError?.(materializedPart.error || 'This Markdown file could not be attached to the project.')
+    return true
+  }
+  const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
   const materialized = await createTemporaryMarkdownColumn(editor, pagePoint, title, markdown, {
+    materializedDoc: projectName,
+    materializedFile: materializedPart.outputFile,
     ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
-  })
+  }, url)
   if (!materialized?.shapeId) return true
   await createFleetShape(editor, 'fleet-docview', pagePoint.x, pagePoint.y, {
     w: MARKDOWN_DOCVIEW_W,
@@ -418,7 +432,6 @@ export async function createTemporaryMarkdownColumn(
   await whenDeviceReady()
   const userId = getHumanId()
   const deviceId = getDeviceId()
-  if (!userId || !deviceId) return
   const surface = createTemporaryMarkdownSurfaceRequest({
     shapeId,
     bounds,

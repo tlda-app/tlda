@@ -371,9 +371,22 @@ function SpatialLodHtmlPage({ shape }: { shape: any }) {
     [editor, shape.id, viewportId],
   )
   if (mapLevel) {
-    return <HTMLContainer><div style={{ width: shape.props.w, height: shape.props.h }} /></HTMLContainer>
+    return <HTMLContainer><MapPagePlaceholder shape={shape} /></HTMLContainer>
   }
   return <HtmlPageComponent shape={shape} />
+}
+
+function MapPagePlaceholder({ shape }: { shape: any }) {
+  return (
+    <div
+      style={{
+        width: shape.props.w,
+        height: shape.props.h,
+        background: 'color-mix(in srgb, var(--tlda-canvas-background, #f8fafb) 35%, white)',
+        boxShadow: 'inset 0 0 0 1px color-mix(in srgb, currentColor 14%, transparent)',
+      }}
+    />
+  )
 }
 
 function HtmlPageBackground({ shape: _shape }: { shape: any }) {

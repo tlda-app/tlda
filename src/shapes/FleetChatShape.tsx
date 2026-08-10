@@ -5860,10 +5860,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (mdCard) {
           const filePath = mdCard.dataset.path || ''
           const name = mdCard.querySelector('.md-file-chip')?.textContent || mdCard.textContent?.trim() || filePath.split('/').pop() || 'file'
+          const wrap = mdCard.closest('.code-block-wrap')
+          const source = wrap?.querySelector('template.code-block-copy-source') as HTMLTemplateElement | null
+          const markdown = source?.content.textContent || filePath
           const value = `file:${filePath}`
           drag = {
             pillId: null, pillType: 'doc' as any, value,
-            displayName: name, color: '#63a0db', content: filePath,
+            displayName: name, color: '#63a0db', content: markdown,
             filePath, markdownChip: true,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,

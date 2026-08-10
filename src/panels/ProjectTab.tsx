@@ -135,8 +135,7 @@ function ProjectMapViewport({
           className="project-map-viewport-clip"
           readOnly
           shapePredicate={isProjectMapShape}
-          interactionMode="preview"
-          unboundedPanning
+          interactionMode="pinned"
           fitBounds
         />
       )}
