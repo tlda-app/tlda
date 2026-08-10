@@ -791,12 +791,13 @@ async function spawnRespawn(params) {
     params.explicitPermissionRequest ||
     params.permissionRequest
   )
-  const runtimeState = deps.sessionRuntimeState
-    ? await deps.sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
+  const readRuntimeState = () => deps.sessionRuntimeState
+    ? deps.sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
     : deps.sessionHasRuntime
-      ? { runtime: await deps.sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket }), mcp: true }
-      : await sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
-  if (runtimeState.runtime) {
+      ? deps.sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })
+        .then(runtime => ({ runtime, mcp: true }))
+      : sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
+  const liveRuntimeResult = runtimeState => {
     if (explicitRelaunch) {
       throw new SpawnError(
         'launch-failed',
@@ -818,6 +819,8 @@ async function spawnRespawn(params) {
     }
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   }
+  const runtimeState = await readRuntimeState()
+  if (runtimeState.runtime) return liveRuntimeResult(runtimeState)
   let handle = null
   const identityOptions = {
     identityConfigDir: params.identityConfigDir,
@@ -905,9 +908,24 @@ async function spawnRespawn(params) {
     harnessOptions: launchPolicy.harnessOptions,
     config,
     env: spawnEnv(params),
+    botScript: params.botScript || params.bot_script || facts.launchRecipe?.botScript || facts.launchRecipe?.bot_script || facts.launchRecipe?.script || null,
+    botName: params.botName || params.bot_name || facts.launchRecipe?.botName || facts.launchRecipe?.bot_name || null,
+    botIdFile: params.botIdFile || params.bot_id_file || facts.launchRecipe?.botIdFile || facts.launchRecipe?.bot_id_file || null,
+    botPidFile: params.botPidFile || params.bot_pid_file || facts.launchRecipe?.botPidFile || facts.launchRecipe?.bot_pid_file || null,
+    botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || facts.launchRecipe?.botHeartbeatFile || facts.launchRecipe?.bot_heartbeat_file || null,
+    botWaitChannel: params.botWaitChannel || params.bot_wait_channel || facts.launchRecipe?.botWaitChannel || facts.launchRecipe?.bot_wait_channel || null,
+    botEnv: params.botEnv || params.bot_env || facts.launchRecipe?.botEnv || facts.launchRecipe?.bot_env || null,
   })
   const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
-  if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
+  if (!launched) {
+    const occupiedRuntimeState = await readRuntimeState()
+    if (occupiedRuntimeState.runtime) return liveRuntimeResult(occupiedRuntimeState)
+    throw new SpawnError(
+      'launch-failed',
+      `Wake did not produce a live runtime for ${friendlyName} (${fleetId}): tmux session ${tmuxSession} exists but has no live runtime; wake declined to replace it.`,
+      { fleetId, tmuxSession },
+    )
+  }
   if (requestedKind === 'codex') {
     const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
     if (!injected) {

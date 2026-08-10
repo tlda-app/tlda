@@ -69,7 +69,8 @@ export function runtimeStateFromProcessList(panePids, psText) {
     if (seen.has(pid)) continue
     seen.add(pid)
     const args = argsByPid.get(pid) || ''
-    if (/(?:^|\s|[/\\])(claude|codex|goose)(?:\.exe)?(?:\s|$)/.test(args)) {
+    if (/(?:^|\s|[/\\])(claude|codex|goose)(?:\.exe)?(?:\s|$)/.test(args)
+      || /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?\.mjs\b/.test(args)) {
       const envValue = name => {
         const match = args.match(
           new RegExp(`(?:^|\\s)(?:mcp_servers\\.tlda\\.env\\.)?${name}=(?:"([^"]+)"|'([^']+)'|([^\\s]+))`),
