@@ -6,8 +6,20 @@
 // rested on an L that is no longer that L, so P is invalidated. That propagates
 // transitively along the edges.
 //
-// Data source: proof-info.json `pairs[]` (id = label, statementLines,
-// proofLines, dependencies[].label), produced by scripts/compute-proof-pairing.mjs.
+// Data source: proof-info.json `pairs[]` (id = label, statementAnchor,
+// proofDependencies[].label), produced by scripts/compute-proof-pairing.mjs.
+//
+// NOT `dependencies[]`, which looks like the same thing and is not: it is
+// derived over the STATEMENT range with a pattern that cannot see \Cref, and it
+// prunes anything on a nearby page. That is correct for what it feeds — the
+// reader-facing off-page dependency thumbnails — and empty for this. Measured on
+// bregman-lower-bound.tex, `dependencies[]` yields 0 invalidation edges across
+// all 59 theorem/proof pairs; `proofDependencies[]` yields 90.
+//
+// Line coordinates are file-relative, via each pair's `statementAnchor`.
+// `statementLines` are indices into the \input-EXPANDED document — 1873 lines
+// off for lem:duality-general in that paper — so an edit range from any caller
+// that knows a real file would silently anchor to the wrong result.
 
 import { readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
@@ -32,7 +44,7 @@ function normRange(range) {
 export function buildReverseGraph(pairs) {
   const reverse = new Map()
   for (const p of pairs) {
-    for (const d of p.dependencies || []) {
+    for (const d of p.proofDependencies || []) {
       if (!d?.label) continue
       if (!reverse.has(d.label)) reverse.set(d.label, [])
       const arr = reverse.get(d.label)
@@ -44,16 +56,25 @@ export function buildReverseGraph(pairs) {
 
 /**
  * Entry nodes for an edit: pairs whose statement source range intersects the
- * edited range. Statement, not proof, because the statement is what others
- * depend on. Changing a node's proof invalidates only its own vetting, not its
- * dependents. v1 treats statementLines as main-file-relative.
+ * edited range, in the given file. Statement, not proof, because the statement
+ * is what others depend on. Changing a node's proof invalidates only its own
+ * vetting, not its dependents.
+ *
+ * `file` is the project-relative path the edit touched, or null for the main
+ * file — matching `statementAnchor.file`, which is null for the main file and
+ * "body.tex" for an \input'd one. A pair with no anchor is skipped rather than
+ * matched against the wrong file: this parser cannot place it, and a wrong
+ * answer here is worse than a missing one.
  */
-export function entryLabelsForEdit(pairs, fromLine, toLine) {
+export function entryLabelsForEdit(pairs, fromLine, toLine, file = null) {
   const lo = Math.min(fromLine, toLine)
   const hi = Math.max(fromLine, toLine)
   const out = []
   for (const p of pairs) {
-    const r = normRange(p.statementLines)
+    const anchor = p.statementAnchor
+    if (!anchor) continue
+    if ((anchor.file || null) !== (file || null)) continue
+    const r = normRange([anchor.startLine, anchor.endLine])
     if (!r) continue
     if (overlaps(r[0], r[1], lo, hi)) out.push(p.id)
   }
@@ -98,6 +119,7 @@ function summarize(pair) {
     type: pair.type,
     title: pair.title,
     statementLines: pair.statementLines,
+    statementAnchor: pair.statementAnchor || null,
     proofLines: pair.proofLines,
   }
 }
@@ -105,17 +127,18 @@ function summarize(pair) {
 /**
  * Dry-run the structural invalidation of a proposed edit.
  * @param {object} proofInfo  parsed proof-info.json ({ pairs, ... })
- * @param {number} fromLine   1-indexed start of the edited range
- * @param {number} toLine     1-indexed end of the edited range
+ * @param {number} fromLine   1-indexed start of the edited range, in `file`
+ * @param {number} toLine     1-indexed end of the edited range, in `file`
+ * @param {string|null} file  project-relative path edited; null = main file
  * @returns {{ directlyStale: object[], cascadeStale: object[] }}
  *   directlyStale: nodes whose own statement the edit touched
  *   cascadeStale:  transitively dependent nodes (with depth + via), sorted by depth
  */
-export function dryRunInvalidation(proofInfo, fromLine, toLine) {
+export function dryRunInvalidation(proofInfo, fromLine, toLine, file = null) {
   const pairs = proofInfo?.pairs || []
   const pairsById = new Map(pairs.map((p) => [p.id, p]))
   const reverse = buildReverseGraph(pairs)
-  const entry = entryLabelsForEdit(pairs, fromLine, toLine)
+  const entry = entryLabelsForEdit(pairs, fromLine, toLine, file)
   const directlyStale = entry.map((id) => summarize(pairsById.get(id))).filter(Boolean)
   const cascadeStale = cascade(entry, reverse, pairsById)
     .sort((a, b) => a.depth - b.depth)
