@@ -118,6 +118,7 @@ import './fleet-chat.css'
 const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
+let consumedShareTargetToken: string | null = null
 // Quiet period after the last scroll event before a touch-driven scroll counts
 // as finished. A momentum glide emits scroll events continuously, so this only
 // has to outlast the gap between two of them.
@@ -1122,6 +1123,19 @@ function insertIntoTextarea(ta: HTMLTextAreaElement, text: string) {
   ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos)
   ta.setSelectionRange(pos + text.length, pos + text.length)
   ta.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+function shareTargetTokenFromLocation(): string | null {
+  if (typeof window === 'undefined') return null
+  return new URL(window.location.href).searchParams.get('shareTarget')
+}
+
+function clearShareTargetTokenFromLocation() {
+  if (typeof window === 'undefined') return
+  const url = new URL(window.location.href)
+  if (!url.searchParams.has('shareTarget')) return
+  url.searchParams.delete('shareTarget')
+  window.history.replaceState(window.history.state, '', url.toString())
 }
 
 function dataTransferHasFiles(dataTransfer: DataTransfer | null | undefined): boolean {
@@ -5356,6 +5370,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       insertIntoTextarea(ta, entries.map(({ file }) => `[${file.name}]`).join('\n'))
     }
   }
+
+  useEffect(() => {
+    const token = shareTargetTokenFromLocation()
+    if (!token || consumedShareTargetToken === token) return
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    consumedShareTargetToken = token
+    let cancelled = false
+    fetch(`${FLEET_API}/api/share-target/${encodeURIComponent(token)}`)
+      .then(resp => {
+        if (!resp.ok) throw new Error(`share target fetch failed: ${resp.status}`)
+        return resp.json()
+      })
+      .then(({ markdown }) => {
+        if (cancelled || !markdown) return
+        const current = inputRef.current as HTMLTextAreaElement | null
+        if (!current) return
+        insertIntoTextarea(current, markdown)
+        setComposerDraftVersion(v => v + 1)
+        expireClearedComposerDraft()
+      })
+      .catch(err => console.error('[fleet-chat] share target consume failed:', err))
+      .finally(clearShareTargetTokenFromLocation)
+    return () => { cancelled = true }
+  }, [])
 
   const agentRouteName = useCallback((agent: any) => (
     agent?.friendly_name || agent?.name || agent?.id || ''
