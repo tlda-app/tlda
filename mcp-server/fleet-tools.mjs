@@ -1542,8 +1542,8 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'Agent selector. Equivalent to filter="agent:<selector>" and resolved by the unified fleet search grammar. Required unless task_id or filter is given.' },
-          filter: { type: 'string', description: 'Unified message filter expression, e.g. "from:tabby", "tabby <> permfix", or "from:(chief | tabby) & type:chat".' },
+          agent: { type: 'string', description: 'The agent whose conversation with you to read. This is shorthand for filter="me <> <agent>" and returns messages between you and that agent in both directions. Use filter instead when you want that agent\'s conversations with other people or any broader message set. Required unless task_id or filter is given.' },
+          filter: { type: 'string', description: 'Explicit unified message filter for non-dyadic or otherwise custom reads, e.g. "from:tabby", "tabby <> permfix", or "from:(chief | tabby) & type:chat".' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
           since: { type: 'string', description: 'ISO timestamp or relative shorthand — "30s", "20m", "2h", "1d". Only messages after this time. An unreadable value is an error, not an unbounded read; weeks and months are query-only, so write 7d or 90d here.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or the literal "now" — only messages before this time.' },
@@ -4398,7 +4398,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           const agentId = agent?.id || args.agent;
           if (agent) resolvedAgents.set(agent.id, agent);
           primaryId = agentId;
-          await fetchEventsForAgent(agentId);
+          await fetchEventsForFilter(`me <> ${agentId}`);
         } else {
           const rawThreadFilter = args.filter;
           let filterExpression;
