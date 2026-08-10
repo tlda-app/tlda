@@ -256,12 +256,9 @@ function writePreviewConfig(branch, base, { realFleet = false } = {}) {
   // corrupt the real daemon's authority surface and violate the app-dev fence.
   const dir = previewConfigDir(branch)
   mkdirSync(dir, { recursive: true })
-  // A preview server runs the same startup path as a real one, so it needs the
-  // keys that path REQUIRES — an empty server.yaml stopped being valid the
-  // moment deployment config moved out of environment variables and
-  // loadServerRuntimeConfig began throwing on a missing deepgramBridgeUrl.
-  // There is one bridge and no fallback, so the preview reaches the same one
-  // this machine already reaches rather than declaring an address of its own.
+  // A preview server runs the same backend-list path as a real one. Copy the
+  // configured Deepgram bridge when this machine has one, and leave it absent
+  // otherwise so the preview picker follows configuration the same way.
   const { deepgramBridgeUrl } = loadServerConfig()
   writeFileSync(join(dir, 'server.yaml'), deepgramBridgeUrl
     ? `deepgramBridgeUrl: ${JSON.stringify(deepgramBridgeUrl)}\n`

@@ -97,21 +97,6 @@ export function loadServerConfig() {
   }
 }
 
-/**
- * The subset of server.yaml a SERVER cannot start without — as opposed to
- * `loadServerConfig`, which the daemon, the CLI, and display-time also call and
- * which must stay permissive for them.
- *
- * It lives here, next to the loader, because two processes need the same answer:
- * unified-server itself, and `tlda server start`, which reads the authorities in
- * the PARENT so a fresh install fails immediately with a usable error instead of
- * surfacing 90 seconds later as "Server failed to start, check the log". Neither
- * caller restates the rule.
- */
-export function loadServerRuntimeConfig() {
-  return loadServerConfig()
-}
-
 export function loadCliConfig() {
   if (!existsSync(CLI_FILE)) return {}
   const value = parseYaml(readFileSync(CLI_FILE, 'utf8')) || {}

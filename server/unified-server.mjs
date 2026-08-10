@@ -44,7 +44,7 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, loadServerRuntimeConfig, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat } from '../shared/document-formats.mjs'
@@ -3098,8 +3098,9 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 //                       and therefore does not die when this machine is
 //                       deployed. Absent means the browser uses the same-origin
 //                       proxy, which is the route that ships today.
-const DEEPGRAM_SDK_BRIDGE_URL = loadServerRuntimeConfig().deepgramBridgeUrl
-const BROWSER_VOICE_BRIDGE_URL = loadServerRuntimeConfig().deepgramDirectUrl || ''
+const serverRuntimeConfig = loadServerConfig()
+const DEEPGRAM_SDK_BRIDGE_URL = serverRuntimeConfig.deepgramBridgeUrl
+const BROWSER_VOICE_BRIDGE_URL = serverRuntimeConfig.deepgramDirectUrl || ''
 const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
 
 async function isBridgeUp(bridgeUrl) {
