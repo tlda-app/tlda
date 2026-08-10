@@ -92,9 +92,45 @@ The rotation is the design working; the wrong id in the file is not.
 
 **Writing identity files by hand does not fix this.** The bot rewrites the file
 from `fleet:${BOT_KEY}` whenever it bootstraps without one, so a hand-seeded id
-survives only until the next cold start. The fix belongs in the id derivation —
-the environment is available to the bot as `TLDA_ENV` and as
-`TLDA_BOT_IDFILE`'s own path — not in the files it generates.
+survives only until the next cold start — and for `chat-lint` it would revert to
+`fleet:chat-lint`, recreating grammar's collision exactly.
+
+### The fix already exists in `todd`; it was never backported
+
+`todd/todd.mjs:93` is the same function with the last line changed:
+
+```js
+const id = `fleet:${randomUUID().slice(0, 8)}`   // todd/todd.mjs:108
+```
+
+Random, not name-derived, so two environments cannot collide. It also validates
+an existing file and throws on a malformed id instead of accepting it.
+
+**That is why `todd.stable` is the one stable bot alive.** Not configuration —
+its identity derivation was fixed and the others' were not. Verified using the
+name-derived form: `tlda-bots/lint/lint-bot.mjs:71` (this is `chat-lint`) and
+`tlda-bots/dev/dev-bot.mjs`. `grammar`, `nobody`, and `teacher` do not derive an
+id themselves and take whichever one they are handed.
+
+So the change is a backport of a pattern already running in production, not a new
+design.
+
+### The migration question, which is why nobody should run it yet
+
+Changing the derivation changes the identity a bot gets **on its next start**,
+and the six live testing bots are running under the current ids right now. Before
+anyone applies this, answer:
+
+- What happens to the existing `fleet:chat-lint` and `fleet:grammar` rows on each
+  server once no process claims them — orphaned, dismissed, or left hibernating
+  to hold their names? Note that a hibernating row still occupies its name, which
+  is what makes `teacher.stable` inert today.
+- What happens the next time a bot Skip is using restarts — does it come back as
+  the same agent, or arrive as a new one and lose its thread?
+- Does anything else key off the deterministic ids? `fleet:chat-lint` is guessable
+  by construction and may be referenced somewhere as a literal.
+
+None of that is answerable from this repository; the bots live in `tlda-bots`.
 
 ## `tlda config apply` cannot be run by an agent, ever
 
