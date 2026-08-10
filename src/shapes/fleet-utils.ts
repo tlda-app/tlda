@@ -53,7 +53,7 @@ export {
   getDocumentPageBounds,
   type DocumentPageBounds,
 } from './fleet-layout-context'
-export { ensureMyLaneDisjoint, laneDy, layoutOffset } from './fleet-layout-geometry'
+export { laneDy, layoutOffset } from './fleet-layout-geometry'
 export { planFleetLayoutShapes, type FleetLayoutPlan, type FleetLayoutShapePlan, type FleetLayoutVariant } from './fleet-layout-plan'
 export { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
 
