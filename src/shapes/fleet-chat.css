@@ -3521,7 +3521,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .cluster-updated {
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-rest);
 }
 
 .cluster-refresh-btn {
@@ -3532,11 +3532,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   padding: 0 2px;
   line-height: 1;
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s;
 }
 .cluster-refresh-btn:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 
 .cluster-body {
@@ -3643,7 +3643,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.681818);
   margin-bottom: 3px;
-  opacity: var(--fleet-dim-alpha-60, 0.6);
+  opacity: var(--ui-tone-rest);
 }
 
 .cluster-section-header {
@@ -3654,15 +3654,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   cursor: pointer;
-  opacity: var(--fleet-dim-alpha-60, 0.6);
+  opacity: var(--ui-tone-rest);
   border-top: 1px solid var(--border);
   margin-top: 2px;
 }
 .cluster-section-header:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .cluster-section-count {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 
 .cluster-row-done {
@@ -3703,11 +3703,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   flex-shrink: 0;
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: var(--fleet-dim-alpha-10, 0.1);
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
 }
 .cluster-shape:hover .cluster-footer {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 
 /* --- HUD Container (transient layout mode container) --- */
@@ -4248,11 +4248,11 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   height: 18px;
   padding: 0 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.2s;
   background: var(--glass-bg, rgba(30,30,30,0.7));
 }
-.fleet-docview:hover .fleet-docview-nav { opacity: 0.8; }
+.fleet-docview:hover .fleet-docview-nav { opacity: var(--ui-tone-active); }
 .fleet-source-editor {
   position: relative;
   overflow: hidden;
@@ -4279,7 +4279,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   color: var(--text-dim, #8888a0);
   font: calc(var(--fleet-base-font, 11px) * 0.909091)/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
   pointer-events: none;
-  opacity: var(--fleet-dim-alpha-24, 0.24);
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-source-editor-vim {
   color: inherit;
@@ -4343,14 +4343,14 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   gap: 6px;
   padding: 1px 10px;
   color: var(--text-dim, #8888a0);
-  opacity: var(--fleet-dim-alpha-20, 0.2);
+  opacity: var(--ui-tone-dormant);
   font: calc(var(--fleet-base-font, 11px) * 0.727273)/1.2 ui-monospace, "SF Mono", Monaco, monospace;
   pointer-events: none;
   user-select: none;
   transition: opacity 0.2s;
 }
 .fleet-source-editor-seam:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-source-editor-seam span {
   white-space: nowrap;
@@ -4358,7 +4358,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 .fleet-source-editor-seam div {
   height: 1px;
   background: currentColor;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-source-editor:has(.cm-vim-panel) .fleet-source-editor-status {
   visibility: hidden;
@@ -4374,7 +4374,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: var(--text-dim, #8888a0);
   font: calc(var(--fleet-base-font, 11px) * 0.909091)/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
-  opacity: var(--fleet-dim-alpha-56, 0.56);
+  opacity: var(--ui-tone-rest);
 }
 .fleet-source-editor .cm-vim-panel {
   min-height: 16px;
@@ -4419,9 +4419,9 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   font-size: var(--fleet-base-font, 11px);
   cursor: pointer;
   padding: 0 3px;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
-.docview-nav-btn:hover { opacity: 1; }
+.docview-nav-btn:hover { opacity: var(--ui-tone-full); }
 .docview-nav-btn:disabled { opacity: 0.2; cursor: default; }
 .docview-nav-title {
   flex: 1;
@@ -4473,7 +4473,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   cursor: pointer;
   padding: 0 4px;
 }
-.docview-sources-back:hover { opacity: 0.8; }
+.docview-sources-back:hover { opacity: var(--ui-tone-active); }
 .docview-source-row {
   display: flex;
   align-items: center;
