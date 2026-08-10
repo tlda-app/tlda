@@ -566,39 +566,33 @@ async function loadLocallyBoundProjects() {
   return loaded
 }
 
-function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
+// Linking is a clone, so the history goes with it. This working copy has been
+// receiving that history on every build; the server being linked to has none.
+//
+// Awaited, and failures are not caught. If this working copy holds history and
+// it cannot be delivered, the link fails — a link that half-succeeds and leaves
+// the paper starting from version one is the old broken behaviour wearing a
+// success message.
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
   const result = sourceSync.bindSource(project, sourceDir)
   if (projectMetadata?.name === project) {
     serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
   }
   applyProjectWorldOwnership('local-source-link')
-  // Linking is a clone, so the history goes with it. This working copy has been
-  // receiving that history on every build, and the server being linked to has
-  // none — so offer it now rather than wait to be asked. We push because we are
-  // the side that knows there is something to send, and because the daemon
-  // opened this connection: the server never has to reach this machine.
-  //
-  // Deliberately not awaited. A link must not fail, or hang, because the
-  // history could not be sent — the paper still links and still builds, it just
-  // starts its versions over, which is exactly today's behaviour.
-  offerShadowHistoryToServer(project).catch(e => {
-    log.warn(`shadow history offer for ${project} failed: ${e.message}`)
-  })
-  return result
-}
 
-async function offerShadowHistoryToServer(project) {
   const exported = await shadowMirror.exportShadowBundle({ project })
-  if (!exported || exported.empty) return
-  sendMsg({
-    type: 'adopt-shadow-history',
-    project,
-    head: exported.head,
-    bundleBase64: exported.bundleBase64,
-    machine_id: MACHINE_ID,
-  })
-  log.info(`offered ${project}@${exported.head.slice(0, 7)} shadow history to the server`)
+  if (!exported.empty) {
+    sendMsg({
+      type: 'adopt-shadow-history',
+      project,
+      head: exported.head,
+      bundleBase64: exported.bundleBase64,
+      machine_id: MACHINE_ID,
+    })
+    log.info(`sent ${project}@${exported.head.slice(0, 7)} history to the server`)
+  }
+  return result
 }
 
 function rpcUnlinkProjectSource({ project, sourceDir }) {

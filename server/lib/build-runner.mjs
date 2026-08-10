@@ -142,14 +142,17 @@ export function setShadowMirrorHandler(handler) {
  * receiving that history on every build. We clone what the previous server
  * mirrored out; the two servers never talk.
  *
- * Refuses when the project already has history — re-linking a paper to the
- * environment it already lives on must not replace its versions with a copy.
- * Returns whether it adopted.
+ * A project that already has history is not this operation. Reconciling two
+ * histories is a different thing with different rules — which of them wins,
+ * whether they share ancestry — and quietly doing nothing here would hide that
+ * an offer arrived and was dropped. So it throws rather than skipping.
  */
 export async function adoptShadowHistory({ name, bundleBase64, head }) {
-  if (!name || !bundleBase64) return false
+  if (!name || !bundleBase64) throw new Error('adoptShadowHistory requires a project name and a bundle')
   const shadowDir = join(projectDir(name), 'shadow-repo')
-  if (existsSync(join(shadowDir, '.git'))) return false
+  if (existsSync(join(shadowDir, '.git'))) {
+    throw new Error(`${name} already has version history on this server; adopting another copy is a different operation`)
+  }
 
   const bundlePath = join(tmpdir(), `tlda-shadow-adopt-${name}-${String(head || '').slice(0, 7)}.bundle`)
   try {
