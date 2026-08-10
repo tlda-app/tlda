@@ -1,32 +1,44 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { execFile as execFileCallback } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { promisify } from 'node:util'
 
 import { gitCommitRecords } from './overleaf-sync.mjs'
 
-const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+const execFile = promisify(execFileCallback)
+const gitEnv = { ...process.env }
+for (const key of Object.keys(gitEnv)) {
+  if (key.startsWith('GIT_AUTHOR_') || key.startsWith('GIT_COMMITTER_')) {
+    delete gitEnv[key]
+  }
+}
+
+async function git(cwd, ...args) {
+  const { stdout } = await execFile('git', args, { cwd, encoding: 'utf8', env: gitEnv })
+  return stdout.trim()
+}
 
 test('git commit records keep record boundaries across multiple authors', async t => {
-  const repo = mkdtempSync(path.join(tmpdir(), 'tlda-overleaf-history-'))
-  t.after(() => execFileSync('rm', ['-rf', repo]))
-  git(repo, 'init', '--initial-branch=main')
-  git(repo, 'config', 'user.name', 'first author')
-  git(repo, 'config', 'user.email', 'first@example.test')
-  writeFileSync(path.join(repo, 'main.tex'), 'first\n')
-  git(repo, 'add', 'main.tex')
-  git(repo, 'commit', '--author', 'first author <first@example.test>', '-m', 'first')
-  const first = git(repo, 'rev-parse', 'HEAD')
+  const repo = await mkdtemp(path.join(tmpdir(), 'tlda-overleaf-history-'))
+  t.after(() => rm(repo, { recursive: true, force: true }))
+  await git(repo, 'init', '--initial-branch=main')
+  await git(repo, 'config', 'user.name', 'first author')
+  await git(repo, 'config', 'user.email', 'first@example.test')
+  await writeFile(path.join(repo, 'main.tex'), 'first\n')
+  await git(repo, 'add', 'main.tex')
+  await git(repo, 'commit', '--author', 'first author <first@example.test>', '-m', 'first')
+  const first = await git(repo, 'rev-parse', 'HEAD')
 
-  git(repo, 'config', 'user.name', 'chieffff')
-  git(repo, 'config', 'user.email', 'chief@example.test')
-  writeFileSync(path.join(repo, 'main.tex'), 'second\n')
-  writeFileSync(path.join(repo, 'refs.bib'), 'entry\n')
-  git(repo, 'add', 'main.tex', 'refs.bib')
-  git(repo, 'commit', '-m', 'second')
-  const second = git(repo, 'rev-parse', 'HEAD')
+  await git(repo, 'config', 'user.name', 'chieffff')
+  await git(repo, 'config', 'user.email', 'chief@example.test')
+  await writeFile(path.join(repo, 'main.tex'), 'second\n')
+  await writeFile(path.join(repo, 'refs.bib'), 'entry\n')
+  await git(repo, 'add', 'main.tex', 'refs.bib')
+  await git(repo, 'commit', '-m', 'second')
+  const second = await git(repo, 'rev-parse', 'HEAD')
 
   const records = await gitCommitRecords(repo, 'HEAD')
   assert.deepEqual(records.map(record => record.hash), [first, second])

@@ -15,6 +15,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "deploy:live": "node scripts/live-deploy.mjs",
+    "test": "node bin/run-test-suite.mjs",
     "test:live-perf-upload": "node bin/live-perf-probe-upload-test.mjs",
     "lint": "node bin/lineage-name-derivation-guard.mjs && node bin/sync-on-event-loop-guard.mjs && node bin/await-fleet-store-guard.mjs && node bin/async-cascade-guard.mjs && node bin/connect-attempt-teardown-guard.mjs && node bin/websocket-boundary-guard.mjs && node bin/test-import-guard.mjs && node scripts/eslint-ratchet.mjs",
     "lint:report": "eslint .",
@@ -79,7 +80,8 @@
     "wink-eng-lite-web-model": "^1.8.1",
     "wink-nlp": "^2.4.0",
     "xterm": "^5.3.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@babel/plugin-proposal-decorators": "^7.29.7",
