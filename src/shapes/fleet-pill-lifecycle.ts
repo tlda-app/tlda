@@ -11,14 +11,8 @@ export type FleetPillSnapState = {
   expanded: boolean
 }
 
-type FleetPillLifecycleEditor = FleetPillDeletingEditor & {
-  user: {
-    updateUserPreferences: (preferences: { isSnapMode: boolean }) => void
-  }
-}
-
 export function finishFleetPillTranslation(
-  editor: FleetPillLifecycleEditor,
+  editor: FleetPillDeletingEditor,
   pillId: TLShapeId,
   snapState: FleetPillSnapState,
   options: { deferDelete?: boolean } = {},

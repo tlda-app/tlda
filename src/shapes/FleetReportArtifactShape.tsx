@@ -7,7 +7,6 @@ import {
 } from 'tldraw'
 import { fleetReportArtifactProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import './fleet-report-artifact.css'
 
 const DEFAULT_W = 520
@@ -25,9 +24,6 @@ export class FleetReportArtifactShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
-  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
-  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
-  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
 
   component(shape: any) {
     return <FleetReportArtifactComponent shape={shape} />

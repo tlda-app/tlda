@@ -8,7 +8,6 @@ import { fleetNotificationsProps } from '../../shared/shapes/fleet-panel-schema.
 import { useEffect, useRef, type SyntheticEvent } from 'react'
 import { dismissItem, sendMessage, useItems, type Item, type ItemAction } from '../fleet-data-adapter'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import './fleet-notifications.css'
 
 const DEFAULT_W = 360
@@ -26,9 +25,6 @@ export class FleetNotificationsShapeUtil extends BaseBoxShapeUtil<any> {
   override canResize = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
-  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
-  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
-  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
 
   component(shape: any) {
     return <FleetNotificationsComponent shape={shape} />
