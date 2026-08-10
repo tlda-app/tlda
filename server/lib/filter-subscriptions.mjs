@@ -127,13 +127,20 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
     return id
   }
 
-  function subscribe(conn, subId, filter, { humanId = null, humanName = null } = {}) {
+  function subscribe(conn, subId, filter, { humanId = null, humanName = null, eventTypes = null } = {}) {
     if (!conn || !subId) return null
-    const key = filterKey(filter)
+    const normalizedEventTypes = Array.isArray(eventTypes)
+      ? [...new Set(eventTypes.filter(type => typeof type === 'string' && type))].sort()
+      : []
+    const baseKey = filterKey(filter)
+    const key = normalizedEventTypes.length
+      ? `${baseKey}\u0000${normalizedEventTypes.join(',')}`
+      : baseKey
     let entry = byFilter.get(key)
     if (!entry) {
       entry = {
         filter,
+        eventTypes: new Set(normalizedEventTypes),
         subs: new Map(),
         temporal: new TemporalMembership(filter),
         deliveries: 0,
@@ -258,6 +265,7 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
     let eventAgents = null
     for (const entry of byFilter.values()) {
       if (entry.subs.size === 0) continue
+      if (entry.eventTypes.size && !entry.eventTypes.has(event?.type)) continue
       if (eventAgents === null) {
         eventAgents = Array.isArray(event?._filter_agents)
           ? event._filter_agents

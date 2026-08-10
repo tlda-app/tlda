@@ -7806,7 +7806,11 @@ async function handleFleetWsMessage(ws, msg) {
       if (!subId) return error('subscribe-filter requires subId')
       const humanId = msg.humanId || ws._tldaAgentId || null
       const humanName = msg.humanName || null
-      filterSubscriptions.subscribe(ws, subId, filter || null, { humanId, humanName })
+      filterSubscriptions.subscribe(ws, subId, filter || null, {
+        humanId,
+        humanName,
+        eventTypes: msg.eventTypes,
+      })
       reply({ ok: true, ...filterSubscriptions.stats() })
 
       const window = Math.min(Math.max(parseInt(msg.window) || 0, 0), 500)
