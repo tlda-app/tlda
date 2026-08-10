@@ -99,6 +99,12 @@ const END_PROOF_RE = /\\end\{proof\}/
 const REF_RE = /\\ref\{([^}]+)\}/g
 const EQREF_RE = /\\eqref\{([^}]+)\}/g
 const BODY_REF_RE = /\\(?:eq)?ref\{([^}]+)\}/g
+// Citation commands for the INVALIDATION graph, which is a different relation
+// from the reader-facing `dependencies[]` below. cleveref is case-significant
+// and the plural forms take a comma-separated label list, so callers split the
+// capture. `bregman-lower-bound.tex` is written almost entirely in \Cref, which
+// BODY_REF_RE cannot see.
+const CITE_REF_RE = /\\(?:eqref|ref|[Cc]refs?)\{([^}]+)\}/g
 
 // Equation-like environments (including starred variants)
 const EQUATION_ENVS = ['equation', 'align', 'gather', 'multline', 'flalign', 'alignat']
@@ -318,6 +324,75 @@ function scanRefsInRange(startLine, endLine) {
   return refs
 }
 
+/**
+ * Labels cited from a line range under CITE_REF_RE, deduped, comma-lists split.
+ * Separate from scanRefsInRange because that one feeds the reader-facing
+ * dependency thumbnails and must keep its narrower pattern.
+ */
+function scanCitationsInRange(startLine, endLine) {
+  const seen = new Set()
+  for (let line = startLine - 1; line < endLine && line < texLines.length; line++) {
+    const re = new RegExp(CITE_REF_RE.source, 'g')
+    let m
+    while ((m = re.exec(texLines[line])) !== null) {
+      for (const label of m[1].split(',')) {
+        const trimmed = label.trim()
+        if (trimmed) seen.add(trimmed)
+      }
+    }
+  }
+  return [...seen]
+}
+
+/**
+ * Dependencies for the INVALIDATION graph: labels this pair's PROOF cites.
+ *
+ * Deliberately different from resolveDependencies() in three ways, each of which
+ * is wrong for one of the two consumers and right for the other:
+ *   - scans the proof range, not the statement range — invalidation flows along
+ *     "this proof rested on that result", which is what a proof cites;
+ *   - uses CITE_REF_RE, so \Cref is visible;
+ *   - does no page-distance pruning — a proof on the same page as the lemma it
+ *     cites is still invalidated when that lemma changes. The thumbnails skip
+ *     those because the reader can already see them; invalidation cannot.
+ */
+function resolveProofDependencies(proof, statement, globalLabels) {
+  const excludeTypes = new Set(['section', 'figure', 'table', 'unknown'])
+  const deps = []
+  for (const ref of scanCitationsInRange(proof.startLine, proof.endLine)) {
+    if (ref === statement.label) continue
+    const info = globalLabels.get(ref)
+    if (!info || excludeTypes.has(info.type)) continue
+    deps.push({ label: ref, type: info.type })
+  }
+  return deps
+}
+
+/**
+ * File-relative anchor for an expanded-document line range.
+ *
+ * texLines is the \input-expanded document, so its indices are not line numbers
+ * in any file that exists on disk — in bregman-lower-bound.tex the offset
+ * reaches 1873 lines. lineToKey already carries the mapping this parser used for
+ * synctex lookups ("body.tex:412" for included files, "412" for the main file);
+ * emitting it is what lets a consumer anchor an edit it knows in file
+ * coordinates. Returns null when a range spans more than one file, which no
+ * theorem statement does.
+ */
+function fileAnchor(startLine, endLine) {
+  const parse = (line) => {
+    const key = lineToKey[line - 1]
+    if (key == null) return null
+    const match = String(key).match(/^(?:(.+):)?(\d+)$/)
+    if (!match) return null
+    return { file: match[1] || null, line: Number(match[2]) }
+  }
+  const lo = parse(startLine)
+  const hi = parse(endLine)
+  if (!lo || !hi || lo.file !== hi.file) return null
+  return { file: lo.file, startLine: lo.line, endLine: hi.line }
+}
+
 /** Short type abbreviations for display */
 const TYPE_ABBREV = {
   theorem: 'thm', lemma: 'lem', proposition: 'prop', corollary: 'cor',
@@ -515,6 +590,11 @@ for (const { statement, proof } of matched) {
     proofRegions,
     samePage,
     dependencies,
+    // For the invalidation graph — see resolveProofDependencies/fileAnchor.
+    // statementLines above are expanded-document indices; statementAnchor is the
+    // same range in coordinates a file on disk actually has.
+    proofDependencies: resolveProofDependencies(proof, statement, globalLabels),
+    statementAnchor: fileAnchor(statement.startLine, statement.endLine),
   })
 }
 

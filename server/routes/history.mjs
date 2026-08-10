@@ -737,12 +737,12 @@ router.post('/ribbon-stale', requireRead, async (req, res) => {
  *   cascadeStale:  nodes that transitively depend on a changed node (with depth + via)
  *
  * Pure graph + interval logic over proof-info.json — no git needed, because the
- * proposed range IS the change. (file is accepted but v1 treats statementLines as
- * main-file-relative; multi-file anchoring is a follow-up.)
+ * proposed range IS the change. Line numbers are relative to `file` (omit it for
+ * the project's main file), matched against each pair's `statementAnchor`.
  */
 router.post('/invalidation/dry-run', requireRead, async (req, res) => {
   const { name } = req.params
-  const { fromLine, toLine } = req.body ?? {}
+  const { fromLine, toLine, file } = req.body ?? {}
 
   const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
@@ -751,11 +751,17 @@ router.post('/invalidation/dry-run', requireRead, async (req, res) => {
   if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < 1 || hi < 1) {
     return res.status(400).json({ error: 'fromLine and toLine must be positive integers' })
   }
+  if (file != null && typeof file !== 'string') {
+    return res.status(400).json({ error: 'file must be a string' })
+  }
+  // The main file is addressable both ways: omitted, or named explicitly the way
+  // a source-edit event names it. statementAnchor.file is null for the main file.
+  const anchorFile = !file || file === project.mainFile ? null : file
 
   const proofInfo = loadProofInfo(outputDir(name))
   if (!proofInfo) return res.json({ directlyStale: [], cascadeStale: [], reason: 'no-proof-info' })
 
-  res.json(dryRunInvalidation(proofInfo, lo, hi))
+  res.json(dryRunInvalidation(proofInfo, lo, hi, anchorFile))
 })
 
 export default router
