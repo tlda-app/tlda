@@ -214,7 +214,7 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|enlist|status|log] [name]\n\n  Inspect configured fleet bots and record an existing bot fleet id for wake. Launchd configuration is reconciled only by the owner-run config apply operation. A supervised bot restarts when its process exits.',
+  bot:     'tlda bot [list|status|log] [name]\n\n  Inspect configured fleet bots. Launchd configuration is reconciled only by the owner-run config apply operation. A supervised bot restarts when its process exits.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
@@ -1863,71 +1863,6 @@ function botPermissionFacts() {
   }
 }
 
-async function enlistBot(bot) {
-  const configName = bot.environment || getActiveEnvName()
-  const paths = botServicePaths(bot.name, { configName })
-  const fleetId = readBotFleetId(paths)
-  const mintId = `bot:${configName}:${bot.name}`
-  const script = resolveBotScriptForCli(bot.script)
-  const grant = botPermissionFacts()
-  const mintStore = new MintStore(join(CONFIG_DIR, 'daemon-mints.sqlite'))
-  try {
-    mintStore.ensure(mintId)
-    mintStore.setFact(mintId, 'fleet_id', fleetId)
-    mintStore.setFact(mintId, 'friendly_name', bot.name)
-    mintStore.setFact(mintId, 'metadata', { bot: bot.name, source: 'bot-enlist' })
-    mintStore.updateLaunchRecipe(mintId, {
-      name: bot.name,
-      kind: 'bot',
-      model: 'bot',
-      modelSpec: { alias: 'bot', id: 'bot', model: 'bot', harness: 'bot', kind: 'bot', provider: 'bot' },
-      cwd: FLEET_DAEMON_MAIN_ROOT,
-      botName: bot.name,
-      botScript: script,
-      botIdFile: paths.idFile,
-      botPidFile: paths.pidFile,
-      botHeartbeatFile: paths.heartbeatFile,
-      botWaitChannel: paths.waitChannel,
-      botEnv: bot.env || {},
-      tmuxSession: paths.tmuxSession,
-      permissionGrant: grant.permissionGrant,
-      permissionSet: grant.permissionSet,
-      acknowledgeNoSecurity: true,
-    })
-    mintStore.updateProcessState(mintId, {
-      fleet_id: fleetId,
-      name: bot.name,
-      tmux_session: paths.tmuxSession,
-      cwd: FLEET_DAEMON_MAIN_ROOT,
-      harness: 'bot',
-      model: 'bot',
-      permission_grant: grant.permissionGrant,
-      permission_set: grant.permissionSet,
-      alive: false,
-    })
-    mintStore.setFact(mintId, 'session_id', mintId)
-  } finally {
-    mintStore.close()
-  }
-
-  // Record the grant in the permission ledger, not only in the mint recipe.
-  // ensureAgentWakeGrant reads the agent's metadata or the LEDGER, so without
-  // this an enlisted bot still cannot be woken — it fails with "no recorded
-  // permission grant", which is what enlist exists to prevent. The mint path
-  // does the equivalent write after a spawn; enlist is the same act for a bot
-  // that already exists, so it belongs here too.
-  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(
-    readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR)),
-    CONFIG_DIR,
-  ))
-  try {
-    await ledger.set(fleetId, { permissionGrant: grant.permissionGrant, source: 'bot-enlist' })
-  } finally {
-    await ledger.close()
-  }
-
-  return { paths, fleetId, mintId }
-}
 
 function sandboxDaemonConfig(configDir, label) {
   const source = resolveConfig()
@@ -2448,17 +2383,6 @@ async function cmdBot() {
     return
   }
 
-  if (sub === 'enlist') {
-    const bots = findConfiguredBot(name)
-    for (const bot of bots) {
-      const result = await enlistBot(bot)
-      console.log(green(`Enlisted ${result.paths.label}.`))
-      console.log(dim(`  Fleet id: ${result.fleetId}`))
-      console.log(dim(`  Mint id: ${result.mintId}`))
-    }
-    return
-  }
-
   if (sub === 'status') {
     const bots = findConfiguredBot(name)
     for (const bot of bots) {
@@ -2514,7 +2438,7 @@ async function cmdBot() {
   }
 
   console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|enlist|status|log] [name]')
+  console.error('Usage: tlda bot [list|status|log] [name]')
   process.exit(1)
 }
 
