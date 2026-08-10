@@ -83,3 +83,18 @@ shape started the bot and produced a fresh heartbeat.
 Proposed fix shape, not applied here: a shell-only existing session should be a
 wake failure, not `alreadyAlive: true`. `alreadyAlive` should require a confirmed
 runtime process.
+
+## Wake failure after the liveness fix
+
+Commit `902cdd270` made that proposed shape current behavior. A wake that finds
+an existing tmux session with no live runtime now fails with an explicit
+"exists but has no live runtime; wake declined to replace it" error instead of
+returning `alreadyAlive: true`.
+
+For launchd-supervised bots, the consequence is a visible retry loop rather than
+a silent death: wake exits, launchd restarts the job, and the next launchd pass
+tries wake again. That is the intended non-destructive trade for this patch.
+
+The alternative is for wake to tear down the dead tmux session and replace it,
+which would self-heal instead of looping. That is a design change, not a repair:
+wake is deliberately non-destructive today.
