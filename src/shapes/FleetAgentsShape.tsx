@@ -16,7 +16,7 @@ import {
   type TLShapeId,
 } from 'tldraw'
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext, type CSSProperties } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget, fleetTaskDropBus } from './FleetPillShape'
@@ -32,6 +32,8 @@ import { fleetTaskDropTarget } from './fleet-task-inbox.mjs'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { ProjectContext } from '../PanelContext'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
+import { subscribePref } from '../preferences'
+import { readabilityStyleVars } from '../readabilityProfile'
 import {
   FleetAgentDirectoryRow,
   fleetAgentCategory,
@@ -211,6 +213,16 @@ const FLEET_AGENTS_VIRTUOSO_COMPONENTS = { Scroller: FleetAgentsScroller }
 
 // agentDisplayLabel imported from ./fleet-utils — single source of truth so the
 // panel and the chat target chip can't drift.
+
+function getFleetStyleVars(): CSSProperties {
+  return readabilityStyleVars() as CSSProperties
+}
+
+function useFleetStyleVars() {
+  const [vars, setVars] = useState(getFleetStyleVars)
+  useEffect(() => subscribePref(() => setVars(getFleetStyleVars())), [])
+  return vars
+}
 
 // --- Shape definition ---
 
@@ -392,6 +404,7 @@ export function usePillDrag() {
 function FleetAgentsInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
+  const styleVars = useFleetStyleVars()
   const containerRef = useRef<HTMLDivElement>(null)
   const isSelectedRef = useRef(false)
   isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
@@ -706,12 +719,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
         ref={containerRef}
         className="fleet-shape fleet-agents-shape"
         style={{
+          ...styleVars,
           width: '100%',
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
           borderRadius: 0,
-          fontSize: 9,
+          fontSize: 'calc(var(--fleet-base-font, 11px) * 0.818182)',
           overflow: 'hidden',
           fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
           position: 'relative',
