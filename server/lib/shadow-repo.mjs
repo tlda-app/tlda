@@ -101,6 +101,45 @@ export async function createShadowBundleBase64(name, hash) {
  *
  * Throws on failure. Returns the path of the new shadow repo.
  */
+/**
+ * Seed a project's shadow from a bundle of another environment's shadow —
+ * the import half of `mirrorShadow`, which has always produced these bundles
+ * (`git bundle create --all`) and had nothing on the other side to read them.
+ * That gap is why moving a project between environments arrived with one
+ * version: the source and render were pushed, and the history had no carrier.
+ *
+ * This is not a second way to build a shadow. A bundle and a repo are the same
+ * kind of thing to `git clone`, so this is the same clone as
+ * `initShadowFromProjectRepo` with a different origin — and no filter, because
+ * a shadow bundle is already scoped to the paper.
+ */
+export async function initShadowFromBundle(name, bundlePath) {
+  if (!existsSync(bundlePath)) {
+    throw new Error(`Shadow bundle not found: ${bundlePath}`)
+  }
+  const repoDir = shadowRepoDir(name)
+  if (existsSync(repoDir)) {
+    throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
+  }
+
+  await execAsync(`git clone "${bundlePath}" "${repoDir}"`, { timeout: 120000 })
+
+  await execAsync('git config user.email "tlda@local"', { cwd: repoDir, timeout: 5000 })
+  await execAsync('git config user.name "tlda"', { cwd: repoDir, timeout: 5000 })
+  // The bundle is the origin; nothing should keep fetching from a temp file that
+  // is about to be deleted.
+  try {
+    await execAsync('git remote remove origin', { cwd: repoDir, timeout: 5000 })
+  } catch {
+    // no origin to remove — git errors when the remote is absent, and absent is
+    // the state we are trying to reach, so there is nothing to recover from.
+  }
+
+  await installShadowGuards(repoDir, name)
+
+  return repoDir
+}
+
 export async function initShadowFromProjectRepo(name, projectRepoPath, paperScope) {
   if (!existsSync(join(projectRepoPath, '.git'))) {
     throw new Error(`Project repo has no .git: ${projectRepoPath}`)
