@@ -8581,6 +8581,35 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  // Every agent launch announces where it landed: agent-launch/agent-launch.mjs
+  // calls bindAgentRoute and emits { agent_id, daemon_key } over this socket,
+  // durable-FIFO. The consumer for it was deleted on 2026-07-28 in "Remove server
+  // agent route surface", so since then the server has recorded a route in
+  // exactly one place — at mint — and dropped every re-announcement on the floor,
+  // logging `no handler for daemon message type "agent-route" ... dropping`.
+  //
+  // That is what made a lost route unrecoverable: reanimate's own error says "a
+  // route is written only at mint and is never re-established". Re-establishment
+  // is what this message IS, and the daemon never stopped sending it.
+  //
+  // Recording it here does not restore server-owned route authority, which is
+  // what that commit set out to remove. The daemon still decides where the agent
+  // is; the server is told, and writes down what it is told.
+  if (type === 'agent-route') {
+    if (!fleetStore) return
+    const routeAgentId = msg.agent_id
+    const routeDaemonKey = ws._daemonKey || msg.daemon_key
+    if (!routeAgentId || !routeDaemonKey) return
+    try {
+      await fleetStore.setAgentDaemonRoute(routeAgentId, routeDaemonKey)
+      broadcastState([routeAgentId])
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'agent-route-write', e)
+      throw e
+    }
+    return
+  }
+
   if (type === 'spawn-startup-failed') {
     if (!fleetStore) return
     const { agent_id, agent_name, harness, model, respawn, code, reason, snippet } = msg
