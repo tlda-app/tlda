@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { react } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLShapeId, TLStateNodeConstructor } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLShapeId, TLStateNodeConstructor, TLViewportId } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -90,6 +90,11 @@ declare global {
  * not a position and is ignored. Bump this whenever the placement rule changes.
  */
 const ANCHOR_RULE = 'flow-axis-1'
+const HUD_ANCHOR_METRIC_NS = 'fleet-hud-anchor'
+const HUD_CAMERA_DIVERGENCE_PX = 8
+const HUD_CAMERA_DIVERGENCE_Z = 0.001
+
+type CameraLike = { x: number; y: number; z: number }
 
 function anchorMeta(meta: any): { panOffset: number; cameraY: number } | null {
   if (!meta || meta.panOffset === undefined || meta.rule !== ANCHOR_RULE) return null
@@ -98,10 +103,22 @@ function anchorMeta(meta: any): { panOffset: number; cameraY: number } | null {
 
 function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   const t0 = probe.isEnabled('hud') ? performance.now() : 0
+  const humanId = getHumanId()
+  const deviceReady = isDeviceReady()
+  const deviceId = getDeviceId()
   // Never persist a HUD anchor without a resolved identity — getMyAnchorId()
   // falls back to the bare `shape:fleet-hud-anchor` id, which becomes a global
   // orphan shared across users.
-  if (!getHumanId() || !isDeviceReady()) return
+  if (!humanId || !deviceReady) {
+    log.metric(HUD_ANCHOR_METRIC_NS, 'save skipped: identity/device not ready', {
+      hasHumanId: !!humanId,
+      deviceReady,
+      deviceId,
+      panOffset,
+      cameraY,
+    })
+    return
+  }
   const anchorId = getMyAnchorId()
   // Pure UI bookkeeping — the anchor stores pan/camera offsets, not document
   // content. Keep it off the user's undo stack (run with history:'ignore').
@@ -129,9 +146,57 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
       })
     }
   }, { history: 'ignore' })
+  log.metric(HUD_ANCHOR_METRIC_NS, 'save', {
+    anchorId,
+    humanId,
+    deviceReady,
+    deviceId,
+    panOffset,
+    cameraY,
+  })
   if (probe.isEnabled('hud')) {
     probe.record('hud', 'hud-save-anchor', performance.now() - t0, { panOffset, cameraY })
   }
+}
+
+function readAnchorShapeForTelemetry(
+  editor: Editor,
+  site: string,
+  shouldLog: (signature: string) => boolean = () => true,
+) {
+  const humanId = getHumanId()
+  const deviceReady = isDeviceReady()
+  const deviceId = getDeviceId()
+  const anchorId = getMyAnchorId()
+  const anchor = editor.getShape(anchorId as TLShapeId)
+  const saved = anchorMeta(anchor?.meta)
+  const signature = JSON.stringify({
+    site,
+    anchorId,
+    humanId: humanId || '',
+    deviceReady,
+    deviceId,
+    found: !!anchor,
+    saved,
+  })
+  if (shouldLog(signature)) log.metric(HUD_ANCHOR_METRIC_NS, 'read saved anchor', {
+    site,
+    anchorId,
+    usedBareAnchorId: anchorId === 'shape:fleet-hud-anchor',
+    hasHumanId: !!humanId,
+    deviceReady,
+    deviceId,
+    found: !!anchor,
+    saved,
+  })
+  return { anchor, saved }
+}
+
+function cameraDiff(a: CameraLike, b: CameraLike) {
+  const dx = Math.abs(a.x - b.x)
+  const dy = Math.abs(a.y - b.y)
+  const dz = Math.abs(a.z - b.z)
+  return { dx, dy, dz, maxPan: Math.max(dx, dy) }
 }
 
 interface FleetHUDProps {
@@ -415,8 +480,49 @@ export function FleetHUD({
   const hudAnchorRef = useRef<FleetHudAnchor | null>(null)
   const hudBaseCameraRef = useRef<{ x: number; y: number; z: number }>(mainEditor.getCamera())
   const lastHudDiagSigRef = useRef('')
+  const lastHudAnchorStateSigRef = useRef('')
+  const hudCameraDivergedRef = useRef(false)
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+
+  const logHudAnchorStateChange = useCallback((site: string, flowAxis: Axis | null) => {
+    const humanId = getHumanId()
+    const ready = isDeviceReady()
+    const deviceId = getDeviceId()
+    const signature = JSON.stringify({
+      hasHumanId: !!humanId,
+      deviceReady: ready,
+      deviceId,
+      docShapesReady,
+      flowAxis,
+    })
+    if (signature === lastHudAnchorStateSigRef.current) return
+    lastHudAnchorStateSigRef.current = signature
+    log.metric(HUD_ANCHOR_METRIC_NS, 'state changed', {
+      site,
+      hasHumanId: !!humanId,
+      deviceReady: ready,
+      deviceId,
+      docShapesReady,
+      flowAxis,
+    })
+  }, [docShapesReady])
+
+  useEffect(() => {
+    logHudAnchorStateChange('hud-state-effect', docShapesReady ? documentPageFlowAxis(mainEditor) : null)
+  }, [docShapesReady, identityId, deviceReady, mainEditor, logHudAnchorStateChange])
+
+  useEffect(() => {
+    const isDocumentPageRecord = (record: any) => record?.typeName === 'shape' && isDocumentPageShape(record)
+    return mainEditor.store.listen(({ changes }) => {
+      const pageChanged =
+        Object.values(changes.added).some(isDocumentPageRecord) ||
+        Object.values(changes.removed).some(isDocumentPageRecord) ||
+        Object.values(changes.updated).some(([from, to]: any) => isDocumentPageRecord(from) || isDocumentPageRecord(to))
+      if (!pageChanged) return
+      logHudAnchorStateChange('document-page-change', documentPageFlowAxis(mainEditor))
+    }, { source: 'all', scope: 'document' })
+  }, [mainEditor, logHudAnchorStateChange])
 
   useEffect(() => {
     if (deviceReady) return
@@ -594,13 +700,17 @@ export function FleetHUD({
   // invisible anchor shape in Yjs (survives across sessions/devices).
   const TOP_PAD = FLEET_HUD_DEFAULT_TOP_PAD_PX
   const ignoreSavedAnchorRef = useRef(false)
+  const lastAnchorReadMetricRef = useRef('')
   // True once the user has deliberately panned this session. Guards the
   // adopt-anchor-on-late-arrival listener so a late-syncing anchor can't
   // snap the HUD back after the user has intentionally moved it.
   const userPannedRef = useRef(false)
   if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
-    const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
-    const saved = anchorMeta(anchor?.meta)
+    const { saved } = readAnchorShapeForTelemetry(mainEditor, 'render-initial-saved-anchor', signature => {
+      if (signature === lastAnchorReadMetricRef.current) return false
+      lastAnchorReadMetricRef.current = signature
+      return true
+    })
     if (saved) applyHudAnchor(saved, { syncViewport: false })
   }
   const activeTopPad = TOP_PAD
@@ -758,8 +868,8 @@ export function FleetHUD({
       if (hasPage) {
         setDocShapesReady(true)
         // Only force recompute if we don't have a saved position
-        const anchor = mainEditor.getShape(getMyAnchorId() as any) as any
-        if (!anchorMeta(anchor?.meta)) {
+        const { saved } = readAnchorShapeForTelemetry(mainEditor, 'doc-shape-arrival')
+        if (!saved) {
           hudAnchorRef.current = null
           hudBaseCameraRef.current = mainEditor.getCamera()
         }
@@ -882,9 +992,17 @@ export function FleetHUD({
     let lastViewportCamera: { x: number; y: number; z: number } | null = null
 
     const syncViewportIfChanged = (camera: { x: number; y: number; z: number }) => {
-      if (lastViewportCamera && lastViewportCamera.x === camera.x && lastViewportCamera.y === camera.y && lastViewportCamera.z === camera.z) return
+      if (lastViewportCamera && lastViewportCamera.x === camera.x && lastViewportCamera.y === camera.y && lastViewportCamera.z === camera.z) return true
       lastViewportCamera = { x: camera.x, y: camera.y, z: camera.z }
-      syncCanvasClipPanelViewportCamera(viewportId, camera)
+      return syncCanvasClipPanelViewportCamera(viewportId, camera)
+    }
+
+    const readViewportCamera = (): CameraLike | null => {
+      try {
+        return mainEditor.getViewport(viewportId as TLViewportId).camera
+      } catch {
+        return null
+      }
     }
 
     const updateFromCamera = (cam: { x: number; y: number; z: number }) => {
@@ -903,14 +1021,42 @@ export function FleetHUD({
             hudBaseCameraRef.current = cam
           }
         }
+        const flowAxis = documentPageFlowAxis(mainEditor)
+        logHudAnchorStateChange('camera-update', flowAxis)
         configureFleetHudOverlayLayer(hudWm, {
-          flowAxis: documentPageFlowAxis(mainEditor),
+          flowAxis,
           panOffset: hudAnchorRef.current.panOffset,
           cameraY: hudAnchorRef.current.cameraY,
           mainCamera: cam,
           baseCamera: hudBaseCameraRef.current,
         })
-        syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
+        const overlayCamera = readFleetHudOverlayLayer(hudWm).camera
+        const viewportSyncRegistered = syncViewportIfChanged(overlayCamera)
+        const viewportCamera = readViewportCamera()
+        const divergence = viewportCamera ? cameraDiff(overlayCamera, viewportCamera) : null
+        const cameraDiverged = !viewportSyncRegistered || !viewportCamera || !!(
+          divergence &&
+          (divergence.maxPan > HUD_CAMERA_DIVERGENCE_PX || divergence.dz > HUD_CAMERA_DIVERGENCE_Z)
+        )
+        if (cameraDiverged !== hudCameraDivergedRef.current) {
+          hudCameraDivergedRef.current = cameraDiverged
+          log.metric(HUD_ANCHOR_METRIC_NS, cameraDiverged ? 'camera divergence' : 'camera divergence cleared', {
+            mainCamera: cam,
+            lastCamera: lastCam,
+            baseCamera: hudBaseCameraRef.current,
+            expectedViewportCamera: overlayCamera,
+            actualViewportCamera: viewportCamera,
+            divergence,
+            viewportSyncRegistered,
+            hudCameraAnchor: readHudCameraAnchor(),
+            cameraRestored,
+            suppressCameraTracking,
+            flowAxis,
+            rideAxis,
+            deliberateReposition: cam.z === lastCam.z && isDeliberateReposition(cam, lastCam),
+            userPanned: userPannedRef.current,
+          })
+        }
         const hudCameraAnchor = readHudCameraAnchor()
         if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking && isDeliberateReposition(cam, lastCam)) {
           userPannedRef.current = true
@@ -944,7 +1090,7 @@ export function FleetHUD({
       window.removeEventListener('camera-restored', onCameraRestored)
       clearTimeout(fallbackTimer)
     }
-  }, [activeTopPad, docShapesReady, fleetBounds, mainEditor, expanded, hudWm, readHudCameraAnchor, readMaintainedFleetBounds, viewportId])
+  }, [activeTopPad, docShapesReady, fleetBounds, mainEditor, expanded, hudWm, logHudAnchorStateChange, readHudCameraAnchor, readMaintainedFleetBounds, viewportId])
 
   // Adopt the saved anchor when it arrives in the store — even if the WM anchor
   // is already set to a provisional recomputed default. In large multi-machine
@@ -1213,12 +1359,9 @@ export function FleetHUD({
       // Before the HUD has ever been expanded the anchor exists only as the
       // saved shape. It has to be shifted too, or opening the HUD after a
       // navigation reads an anchor that belongs to the document you left.
-      const saved = mainEditor.getShape(getMyAnchorId() as TLShapeId)
-      const savedAnchor = saved?.meta as { panOffset?: number; cameraY?: number } | undefined
+      const { saved: savedAnchor } = readAnchorShapeForTelemetry(mainEditor, 'wrap')
       const base = readHudCameraAnchor()
-        ?? (savedAnchor?.panOffset !== undefined && savedAnchor.cameraY !== undefined
-          ? { panOffset: savedAnchor.panOffset, cameraY: savedAnchor.cameraY }
-          : null)
+        ?? savedAnchor
       if (!base) return
       const next = {
         panOffset: base.panOffset - detail.dx,
