@@ -2772,7 +2772,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-weight: 400;
   line-height: 14px;
-  opacity: 0.58;
+  opacity: var(--ui-tone-rest);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2782,7 +2782,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    colour, less presence — it has to read as part of the expression while still
    being visibly not yours. */
 .fleet-search-query-chip-implied {
-  opacity: 0.45;
+  opacity: var(--ui-tone-dormant);
 }
 
 .fleet-search-autocomplete {
@@ -2825,7 +2825,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-search-autocomplete-detail {
   flex-shrink: 0;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
 }
 
 .fleet-search-section-header {
@@ -2844,7 +2844,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-weight: 600;
 }
 .fleet-search-section-count {
-  opacity: 0.58;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-search-section-detail {
   min-width: 0;
@@ -2854,7 +2854,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   white-space: nowrap;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   text-transform: none;
-  opacity: 0.42;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-search-results-summary {
   padding: 4px 10px;
@@ -2924,15 +2924,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-search-document-title {
   font-weight: 500;
-  opacity: 0.82;
+  opacity: var(--ui-tone-active);
 }
 .fleet-search-document-where {
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.46;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-search-document-snippet {
   margin-top: 2px;
-  opacity: 0.72;
+  opacity: var(--ui-tone-active);
 }
 .fleet-search-result mark {
   background: rgba(255, 220, 80, 0.25);
@@ -2945,7 +2945,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   top: 4px;
   right: 6px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   pointer-events: auto;
   cursor: pointer;
   line-height: 1;
@@ -2954,7 +2954,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   -webkit-user-select: none !important;
 }
 .fleet-search-result:hover .search-result-open {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-search-result.expanded {
   background: rgba(100, 140, 255, 0.04);
@@ -2968,7 +2968,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-search-context-header {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 3px;
@@ -2993,12 +2993,12 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   font-family: inherit;
   color: inherit;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   cursor: pointer;
   transition: opacity 0.15s;
 }
 .fleet-search-chat-back:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-full);
 }
 
 /* Highlight a chat line when scrolled to from search */
@@ -3016,20 +3016,20 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    chip — slightly dimmer/lighter than the filename so it reads as secondary. */
 .fleet-chat-shape .src-chip .src-chip-section {
   margin-left: 3px;
-  opacity: 0.65;
+  opacity: var(--ui-tone-rest);
   font-weight: 400;
 }
 
 .fleet-chat-shape .ref-chip-pending {
   border-style: dashed;
-  opacity: 0.88;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-chat-shape .chat-attachment-footnote {
   margin-top: 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   line-height: 1.25;
-  opacity: 0.72;
+  opacity: var(--ui-tone-active);
 }
 
 /* Amend version stepper (V{n} ◀▶) — subtle, reveals on row hover. Present only
@@ -3040,15 +3040,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   gap: 2px;
   margin-left: 5px;
   vertical-align: baseline;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.2s;
   user-select: none;
 }
-.fleet-chat-shape .chat-line:hover .amend-versions { opacity: 0.65; }
+.fleet-chat-shape .chat-line:hover .amend-versions { opacity: var(--ui-tone-rest); }
 .fleet-chat-shape .amend-vlabel {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   letter-spacing: 0.03em;
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .amend-arrow {
   background: none;
@@ -3059,9 +3059,9 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   line-height: 1;
   cursor: pointer;
   color: inherit;
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
 }
-.fleet-chat-shape .amend-arrow:hover:not([disabled]) { opacity: 1; }
+.fleet-chat-shape .amend-arrow:hover:not([disabled]) { opacity: var(--ui-tone-full); }
 .fleet-chat-shape .amend-arrow[disabled] { opacity: 0.2; cursor: default; }
 
 .fleet-chat-shape .ref-chip {
@@ -3185,7 +3185,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-chat-shape .ref-chip-version {
   margin-left: 4px;
-  opacity: 0.62;
+  opacity: var(--ui-tone-rest);
   font-size: 0.86em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -3240,7 +3240,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-chat-shape .ref-chip-loc {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   margin-left: 2px;
 }
 
@@ -3281,17 +3281,17 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-chat-shape .md-expand-title {
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   font-weight: 600;
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-chat-shape .md-expand-close {
   cursor: pointer;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .md-expand-close:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-full);
 }
 
 .fleet-chat-shape .md-expand-body {
@@ -3345,7 +3345,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-chat-shape .md-expand-loading,
 .fleet-chat-shape .md-expand-error {
   padding: 8px 10px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   font-style: italic;
 }
