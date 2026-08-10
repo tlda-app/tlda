@@ -40,6 +40,78 @@ Dead at that check:
 These are repair items, not rollout steps. The four stable jobs do not share one
 cause.
 
+## They mostly do share one cause: the fallback fleet id has no environment in it
+
+Re-examined at 10:10 UTC against both servers' agent rows, which the account
+above did not consult. Three of the four descriptions are incomplete and one is
+wrong.
+
+A bot with no identity file and no `FLEET_ID` in its environment invents one:
+
+```js
+const BOT_KEY = (process.env.TLDA_BOT_REQUESTED_NAME || process.env.TLDA_BOT_NAME || 'lint').toLowerCase()
+const id = `fleet:${BOT_KEY}`      // tlda-bots/lint/lint-bot.mjs:71
+```
+
+`BOT_KEY` is the bot's name alone. **The environment is not in it**, although
+every path beside it is environment-scoped — `chat-lint.stable.fleet-id`,
+`chat-lint.testing.fleet-id`. So the same bot in two environments derives the
+same id, and the daemon's mint ledger is machine-wide and keyed by fleet id.
+Whichever environment minted first owns the mapping.
+
+The agent rows show it directly:
+
+| name | on `testing` | on `stable` |
+| --- | --- | --- |
+| `grammar` | `fleet:grammar` | `fleet:grammar` — same id, two servers |
+| `chat-lint` | `fleet:chat-lint` | no row |
+| `todd` | `fleet:f1e9c0be` | `fleet:c3d5e4ff` — distinct, and it works |
+| `nobody` | `fleet:848885b2` | no row |
+| `teacher` | `fleet:91e5a81b` | `fleet:bd3541fd` |
+
+The bots that work got random ids from a supplied `FLEET_ID`; the ones that
+collide fell through to the deterministic branch.
+
+**So `grammar.stable.fleet-id` is not "the testing bot's identity".** Stable has
+its own `grammar` row and its id genuinely is `fleet:grammar`. The file is
+correct for the server and unusable on the machine: waking it resolves through
+the local ledger to `bot:testing:grammar`, whose tmux session is live, and the
+wake is refused —
+
+```text
+Error: wake did not produce a live runtime for bot:testing:grammar:
+tmux session fleet-bot-grammar_testing already has a live harness runtime
+```
+
+**`teacher.stable` is also mis-described.** Its identity `fleet:d0722d34` is, on
+the stable server, the agent named **`seacher`** — the rotated name from a
+previous collision. Stable's actual `teacher` row is `fleet:bd3541fd`. The name
+`teacher` is held by that row, which is hibernating and therefore not dead, so a
+fresh mint rotates again and the bot goes inert exactly as `AGENTS.md` describes.
+The rotation is the design working; the wrong id in the file is not.
+
+**Writing identity files by hand does not fix this.** The bot rewrites the file
+from `fleet:${BOT_KEY}` whenever it bootstraps without one, so a hand-seeded id
+survives only until the next cold start. The fix belongs in the id derivation —
+the environment is available to the bot as `TLDA_ENV` and as
+`TLDA_BOT_IDFILE`'s own path — not in the files it generates.
+
+## `tlda config apply` cannot be run by an agent, ever
+
+`assertOwnerCapableLaunchdManager` (`cli/lib/config-apply-transition.mjs:6`)
+requires `launchctl managername` to return **`Aqua`**. Every agent session on
+this machine reports **`Background`**, so the command prints its whole plan and
+then stops with:
+
+```text
+configuration is not applied
+```
+
+This is not flakiness and retrying does not help. `tlda config apply` runs from
+Skip's own terminal or not at all. Scope it when you hand it over — bare
+`config apply` is all-or-nothing across every managed job, so a stable-only
+repair is `tlda config apply --only stable`.
+
 ## Launchd apply note
 
 During this rollout, `tlda config apply` sometimes failed with:
