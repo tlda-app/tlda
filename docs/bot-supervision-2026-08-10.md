@@ -53,3 +53,33 @@ terminal, and five more jobs applied cleanly from that terminal without hitting
 the error. The source of the flakiness is unexplained; the working operational
 rule is to retry once rather than treating the first failure as evidence that
 the generated plist is bad.
+
+## Wake false success on shell-only sessions
+
+`todd.testing` exposed a second false-success path after the launchd waiter fix
+landed. Its launchd job moved to the new pane-pid waiter, but todd still did not
+write a fresh heartbeat. The blocking state was:
+
+- `fleet-bot-todd_testing` existed.
+- Its pane process was a bare `zsh`, not a bot runtime.
+- `~/.config/tlda/todd.testing.pid` pointed at a dead process.
+- `~/.config/tlda/todd.testing.heartbeat` was still stale.
+
+The wake path reported success because `spawnTmux()` treats an existing
+shell-only session as a non-destructive no-op:
+
+- `agent-launch/tmux.mjs:132`: `spawnTmux()` tries `tmux respawn-pane`; when
+  that fails and the tmux session exists, it returns `false`.
+- `agent-launch/index.mjs:910`: `spawnRespawn()` treats that as success:
+  `if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }`
+
+So `tlda agent wake fleet:f1e9c0be` printed `Woke ...` even though no todd bot
+process started.
+
+The control was `nobody.testing`: during the pilot, its tmux session was killed
+before wake. With no shell-only session blocking launch, the same wake command
+shape started the bot and produced a fresh heartbeat.
+
+Proposed fix shape, not applied here: a shell-only existing session should be a
+wake failure, not `alreadyAlive: true`. `alreadyAlive` should require a confirmed
+runtime process.
