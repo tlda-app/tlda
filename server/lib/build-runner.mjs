@@ -1475,8 +1475,9 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
   if (!existsSync(join(sourceDir, '.git'))) return
 
   const shadowDir = join(projectDir(name), 'shadow-repo')
-  // Already has real history? Skip (defined as: at least 2 commits, since the
-  // blank initShadowRepo seeds an "init" commit with .gitignore).
+  // Already has real history? Skip. The >1 test dates from when a blank
+  // `git init` shadow seeded a lone "init" commit; such shadows still exist in
+  // deployed stores, so the test stays until they age out.
   if (existsSync(join(shadowDir, '.git'))) {
     try {
       const { stdout: cntOut } = await _execAsync('git rev-list --count HEAD 2>/dev/null', {
@@ -1576,7 +1577,7 @@ export async function recordBuildVersion({
     // recorded, so it goes on the surfaces someone actually reads: the build
     // log, the server log, the event stream, and — because the viewer must not
     // show a version it does not have — the doc's own warnings in the sentinel.
-    if (result.status === 'no-scope') {
+    if (result.status === 'no-scope' || result.status === 'no-shadow') {
       const message = `No version recorded for this build: ${result.reason}`
       console.error(`[build:${name}] ${message}`)
       ctx.addLog(message)
