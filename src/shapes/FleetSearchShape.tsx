@@ -20,7 +20,7 @@ import { beginFleetDragWithoutSnap, createFleetShape, agentDisplayLabel, endFlee
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
-import { flushSync } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { searchFleet, useFleetAgents, useFleetProjects, useFleetTasks } from '../fleet-data-adapter'
 import { fleetSearchResultAgentChatFilter } from '../../shared/filter-semantics.mjs'
 import katex from 'katex'
@@ -50,6 +50,13 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 360
 const DEFAULT_H = 500
+const SEARCH_AUTOCOMPLETE_GAP = 4
+
+type SearchAutocompleteAnchor = {
+  left: number
+  bottom: number
+  width: number
+}
 
 function copySourceTemplate(text: string): string {
   return `<template class="code-block-copy-source">${esc(text)}</template>`
@@ -350,6 +357,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
   const [autocomplete, setAutocomplete] = useState(SEARCH_AUTOCOMPLETE_INITIAL_VIEW_STATE)
+  const [autocompleteAnchor, setAutocompleteAnchor] = useState<SearchAutocompleteAnchor | null>(null)
   const autocompleteRef = useRef(autocomplete)
   const autocompleteApiRef = useRef<ReturnType<typeof autocompleteCore.createAutocomplete<SearchAutocompleteSuggestion, React.SyntheticEvent, React.MouseEvent, React.KeyboardEvent>> | null>(null)
   const [results, setResults] = useState<any[]>([])
@@ -379,6 +387,48 @@ function FleetSearchInner({ shape }: { shape: any }) {
   useEffect(() => {
     autocompleteRef.current = autocomplete
   }, [autocomplete])
+
+  useEffect(() => {
+    if (autocomplete.status !== 'open') {
+      setAutocompleteAnchor(null)
+      return
+    }
+    let raf = 0
+    const update = () => {
+      const input = inputRef.current
+      if (!input) {
+        setAutocompleteAnchor(null)
+        return
+      }
+      const rect = input.getBoundingClientRect()
+      const next = {
+        left: Math.round(rect.left),
+        bottom: Math.round(window.innerHeight - rect.top + SEARCH_AUTOCOMPLETE_GAP),
+        width: Math.round(rect.width),
+      }
+      setAutocompleteAnchor(prev => (
+        prev && prev.left === next.left && prev.bottom === next.bottom && prev.width === next.width
+          ? prev
+          : next
+      ))
+    }
+    const tick = () => {
+      update()
+      raf = window.requestAnimationFrame(tick)
+    }
+    tick()
+    const observer = new ResizeObserver(update)
+    if (inputRef.current) observer.observe(inputRef.current)
+    if (containerRef.current) observer.observe(containerRef.current)
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [autocomplete.status])
 
   const closeChat = useCallback(() => {
     if (chatShapeId) {
@@ -673,6 +723,49 @@ function FleetSearchInner({ shape }: { shape: any }) {
     () => visibleFleetSearchResultCount(resultGroups, expandedSearchGroups),
     [expandedSearchGroups, resultGroups],
   )
+  const autocompleteList = autocomplete.status === 'open' && autocompleteAnchor && typeof document !== 'undefined'
+    ? createPortal((
+      <div className="fleet-chat-shape" style={{ display: 'contents' }}>
+        <div
+          id={autocompleteId}
+          className="fleet-search-autocomplete"
+          role="listbox"
+          style={{
+            position: 'fixed',
+            left: autocompleteAnchor.left,
+            right: 'auto',
+            top: 'auto',
+            bottom: autocompleteAnchor.bottom,
+            width: autocompleteAnchor.width,
+          }}
+          onPointerDown={(e) => stopEventPropagation(e)}
+        >
+          {autocomplete.suggestions.map((suggestion, index) => (
+            <div
+              key={suggestion.id}
+              id={`${autocompleteId}-${index}`}
+              className={`fleet-search-autocomplete-option${index === autocomplete.highlightedIndex ? ' active' : ''}`}
+              role="option"
+              aria-selected={index === autocomplete.highlightedIndex}
+              onPointerEnter={() => {
+                const next = { ...autocompleteRef.current, highlightedIndex: index }
+                autocompleteRef.current = next
+                setAutocomplete(next)
+              }}
+              onPointerDown={(e) => {
+                stopEventPropagation(e)
+                e.preventDefault()
+                acceptAutocompleteSuggestion(suggestion)
+              }}
+            >
+              <span className="fleet-search-autocomplete-label">{suggestion.label}</span>
+              {suggestion.detail && <span className="fleet-search-autocomplete-detail">{suggestion.detail}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+    ), document.body)
+    : null
 
   return (
     <HTMLContainer
@@ -770,37 +863,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
               fontFamily: 'inherit',
             }}
           />
-          {autocomplete.status === 'open' && (
-            <div
-              id={autocompleteId}
-              className="fleet-search-autocomplete"
-              role="listbox"
-              onPointerDown={(e) => stopEventPropagation(e)}
-            >
-              {autocomplete.suggestions.map((suggestion, index) => (
-                <div
-                  key={suggestion.id}
-                  id={`${autocompleteId}-${index}`}
-                  className={`fleet-search-autocomplete-option${index === autocomplete.highlightedIndex ? ' active' : ''}`}
-                  role="option"
-                  aria-selected={index === autocomplete.highlightedIndex}
-                  onPointerEnter={() => {
-                    const next = { ...autocompleteRef.current, highlightedIndex: index }
-                    autocompleteRef.current = next
-                    setAutocomplete(next)
-                  }}
-                  onPointerDown={(e) => {
-                    stopEventPropagation(e)
-                    e.preventDefault()
-                    acceptAutocompleteSuggestion(suggestion)
-                  }}
-                >
-                  <span className="fleet-search-autocomplete-label">{suggestion.label}</span>
-                  {suggestion.detail && <span className="fleet-search-autocomplete-detail">{suggestion.detail}</span>}
-                </div>
-              ))}
-            </div>
-          )}
+          {autocompleteList}
           {queryReadout.length > 0 && (
             <div className="fleet-search-query-readout" aria-label="Parsed search query">
               {queryReadout.map((chip, i) => (
