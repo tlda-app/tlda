@@ -143,16 +143,6 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   const kind = semanticOperationKind(toolName)
   const descriptor = semanticOperationDescriptor(toolName, input, arg, ts)
   if (!descriptor) return null
-  const inspectedPages = [descriptor.inspected || {}, ...(Array.isArray(input?._semanticInspectedPages) ? input._semanticInspectedPages : [])]
-    .filter(page => page && Object.keys(page).length > 0)
-  const inspected = inspectedPages[0] || {}
-  const inspectedParts = Object.entries(inspected)
-    .filter(([, value]) => value != null && value !== '')
-    .map(([key, value]) => `${key}: ${String(value)}`)
-  if (inspectedPages.length > 1) inspectedParts.push(`${inspectedPages.length - 1} continuation${inspectedPages.length === 2 ? '' : 's'}`)
-  const inspectedHtml = inspectedParts.length
-    ? `<div class="semantic-operation-inspected">inspected ${esc(inspectedParts.join('; '))}</div>`
-    : ''
   const json = esc(JSON.stringify(descriptor))
   const key = esc(descriptor.semanticKey)
   // A thread is drawn as the thread visualization and nothing else. Skip: "they
@@ -167,7 +157,6 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   }
   return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
     <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>
-    ${inspectedHtml}
     <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
   </div>`
 }

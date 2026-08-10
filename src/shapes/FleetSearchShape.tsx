@@ -22,20 +22,15 @@ import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { flushSync } from 'react-dom'
 import { searchFleet, useFleetAgents, useFleetProjects, useFleetTasks } from '../fleet-data-adapter'
-import { fleetSearchResultAgentChatFilter, fleetSearchResultParticipantLabel } from '../../shared/filter-semantics.mjs'
+import { fleetSearchResultAgentChatFilter } from '../../shared/filter-semantics.mjs'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
-import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
-// @ts-ignore — vanilla JS module
-import { renderActivityGroup } from '../fleet/activity-render.mjs'
+import { esc } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
-// @ts-ignore — vanilla JS module
-import { convertChatEvent } from '../fleet/fleet-data.mjs'
-import { appendToken } from '../authToken'
-import { buildFleetSearchFilters, groupFleetSearchResults, parseSearchQuery, rankSearchResults, type FleetSearchResultGroup } from '../fleet/search-query'
+import { buildFleetSearchFilters, groupFleetSearchResults, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import {
   SEARCH_AUTOCOMPLETE_INITIAL_VIEW_STATE,
   applySearchAutocompleteSuggestion,
@@ -50,6 +45,7 @@ import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { dragCoordinator } from './dragCoordinator'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { FleetSearchResultsView, visibleFleetSearchResultCount } from './FleetSearchResultsView'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -208,69 +204,6 @@ function usePillDrag() {
   return { startDrag }
 }
 
-function searchResultMessageDrag(result: any, text: string, ctx: ReturnType<typeof makeChatCtx>, agents: any[]) {
-  const fromId = result.from || result.agentId || result.agent || ''
-  const label = fleetSearchResultParticipantLabel(result, fromId, { agents }) || ctx.agentLabel(fromId)
-  const ts = result.timestamp || ''
-  const time = ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
-  const id = result.source === 'session'
-    ? (result.id ? `session:${result.id}` : `session:${fromId}:${ts}`)
-    : (result.id ? `msg:${result.id}` : `msg:${fromId}:${ts}`)
-  // The pill's identity is `id`; this is the prose a person reads once the pill
-  // lands in the composer, so it gets the reader's own clock rather than the
-  // raw UTC stamp the API returned.
-  const stamped = ts ? new Date(ts) : null
-  const readableTs = stamped && !Number.isNaN(stamped.getTime()) ? stamped.toLocaleString() : ts
-  const content = [
-    ts ? `[${readableTs}]` : '',
-    label ? `${label}:` : '',
-    text,
-  ].filter(Boolean).join(' ')
-  return {
-    value: id,
-    displayName: `${label} ${time} search`.trim(),
-    color: '#8888a0',
-    content,
-  }
-}
-
-function renderProjectAgentSearchLine(result: any, ctx: ReturnType<typeof makeChatCtx>, agents: any[]) {
-  const agentId = result.agentId || result.agent_id || result.from || ''
-  const label = fleetSearchResultParticipantLabel(result, agentId, { agents }) || ctx.agentLabel(agentId)
-  const cls = ctx.getNickClass(agentId)
-  const latest = result.latest_activity || {}
-  const ts = result.latest_relevant_at || result.timestamp || ''
-  const latestType = latest.type || result.type || 'activity'
-  const summary = latest.summary || result.snippet || result.text || result.cwd || ''
-  const body = summary ? searchRenderMarkdown(esc(summary)) : esc(result.cwd || '')
-  return `<div class="chat-line" data-msg-ts="${esc(ts)}" data-msg-from="${esc(agentId)}">
-    <span class="chat-ts" draggable="true">${timeShort(ts)}</span>
-    <span class="chat-nick"><span class="agent-nick ${cls}" data-agent-id="${esc(agentId)}">${esc(label)}:</span></span>
-    <span class="pretty-search-source">${esc(latestType)}</span>
-    <span class="pretty-search-snippet">${body}</span>
-  </div>`
-}
-
-function renderDocumentContentSearchLine(result: any) {
-  const project = result.project || result.doc || ''
-  const title = result.title || project || 'document'
-  const where = [
-    project,
-    result.page ? `page ${result.page}` : '',
-    result.label && result.label !== result.file ? result.label : '',
-    result.file || '',
-  ].filter(Boolean).join(' · ')
-  const snippet = result.snippet || result.text || ''
-  return `<div class="chat-line fleet-search-document-line">
-    <span class="pretty-search-source">doc</span>
-    <span class="pretty-search-snippet">
-      <span class="fleet-search-document-title">${esc(title)}</span>
-      ${where ? `<span class="fleet-search-document-where">${esc(where)}</span>` : ''}
-      ${snippet ? `<span class="fleet-search-document-snippet">${searchRenderMarkdown(esc(snippet))}</span>` : ''}
-    </span>
-  </div>`
-}
-
 function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
@@ -305,8 +238,6 @@ function makeChatCtx(agents: any[], tasks: any[]) {
 }
 
 const CHAT_HEADER_H = 30
-const SEARCH_GROUP_INITIAL_LIMIT = 6
-
 type ReadoutSegment = { text: string; implied: boolean }
 
 function searchQueryReadout(query: string): ReadoutSegment[][] {
@@ -448,19 +379,6 @@ function FleetSearchInner({ shape }: { shape: any }) {
   useEffect(() => {
     autocompleteRef.current = autocomplete
   }, [autocomplete])
-
-  const agentFilterName = useCallback((id: string) => {
-    if (!id) return 'unknown'
-    const a = agents.find((a: any) => a.id === id)
-    if (a) return a.friendly_name || (a.id || '').replace('fleet:', '')
-    return id.replace('fleet:', '')
-  }, [agents])
-  const agentName = useCallback((id: string) => {
-    if (!id) return 'unknown'
-    const a = agents.find((a: any) => a.id === id)
-    if (a) return agentDisplayLabel(a)
-    return id.replace('fleet:', '')
-  }, [agents])
 
   const closeChat = useCallback(() => {
     if (chatShapeId) {
@@ -750,69 +668,11 @@ function FleetSearchInner({ shape }: { shape: any }) {
       return []
     }
   }, [query])
-  const resultGroups = useMemo<FleetSearchResultGroup[]>(() => groupFleetSearchResults(results), [results])
-  const visibleResultCount = useMemo(() => resultGroups.reduce((total, group) => {
-    if (expandedSearchGroups[group.id]) return total + group.results.length
-    return total + Math.min(group.results.length, SEARCH_GROUP_INITIAL_LIMIT)
-  }, 0), [expandedSearchGroups, resultGroups])
-  const renderResult = useCallback((r: any, i: number, groupId: string) => {
-    // text comes from new server; fall back to snippet for old server
-    const text = r.text ?? r.snippet ?? ''
-    // Build a proper event object for renderChatLine
-    const rawEvent = r.source === 'session'
-      ? { type: r.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: r.agentId, to: null, text, timestamp: r.timestamp, id: r.id }
-      : { ...r, text, id: r.id }
-    const lineHtml = r.type === 'project_agent'
-      ? renderProjectAgentSearchLine(r, ctx, agents)
-      : r.type === 'document_content'
-        ? renderDocumentContentSearchLine(r)
-        : renderChatLine(convertChatEvent(rawEvent), ctx)
-    if (!lineHtml) return null
-    const openDocument = r.type === 'document_content'
-      ? () => window.open(appendToken(`${window.location.origin}/?project=${encodeURIComponent(r.project || r.doc)}`), '_blank')
-      : null
-    return (
-      <div
-        key={`${groupId}-${r.source || 'result'}-${r.type || r.role || 'row'}-${r.id || i}`}
-        className={`fleet-search-result fleet-search-result-${groupId}`}
-        title={r.type === 'document_content' ? 'Open document' : undefined}
-        onPointerDown={(e) => {
-          stopEventPropagation(e)
-          if (openDocument) return
-          // Delegate nick drags to startDrag
-          const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
-          if (nick) {
-            const agentId = nick.dataset.agentId || ''
-            const historicalName = fleetSearchResultParticipantLabel(r, agentId, { agents })
-            const value = historicalName || agentFilterName(agentId)
-            const name = historicalName || agentName(agentId)
-            const color = ctx.getAgentColor(agentId)
-            startDrag(e, 'agent', value, name, color)
-            return
-          }
-          const tsEl = (e.target as HTMLElement).closest('.chat-ts, .pretty-search-ts, .pretty-ts') as HTMLElement | null
-          if (tsEl) {
-            const drag = searchResultMessageDrag(r, text, ctx, agents)
-            startDrag(e, 'msg', drag.value, drag.displayName, drag.color, drag.content)
-          }
-        }}
-        onPointerUp={(e) => {
-          if (!openDocument) return
-          stopEventPropagation(e)
-          openDocument()
-        }}
-      >
-        <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
-        {r.type !== 'document_content' && (
-          <span
-            className="search-result-open"
-            onPointerUp={(e) => { e.stopPropagation(); openChatForResult(r) }}
-            title="Open in chat"
-          >↗</span>
-        )}
-      </div>
-    )
-  }, [agentFilterName, agentName, agents, ctx, openChatForResult, startDrag])
+  const resultGroups = useMemo(() => groupFleetSearchResults(results), [results])
+  const visibleResultCount = useMemo(
+    () => visibleFleetSearchResultCount(resultGroups, expandedSearchGroups),
+    [expandedSearchGroups, resultGroups],
+  )
 
   return (
     <HTMLContainer
@@ -982,59 +842,18 @@ function FleetSearchInner({ shape }: { shape: any }) {
             scrollbarColor: 'rgba(255,255,255,0.1) transparent',
           }}
         >
-          {loading && (
-            <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
-              searching…
-            </div>
-          )}
-          {!loading && queryError && (
-            <div style={{ padding: '12px 10px', opacity: 0.55, textAlign: 'center', fontSize: 10, color: 'var(--color-accent, #c8956a)' }}>
-              {queryError}
-            </div>
-          )}
-          {!loading && searched && results.length === 0 && (
-            <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
-              no results
-            </div>
-          )}
-          {results.length > 0 && (
-            <div className="fleet-search-results-summary">
-              {results.length} ranked result{results.length !== 1 ? 's' : ''} across {resultGroups.length} type{resultGroups.length !== 1 ? 's' : ''}
-            </div>
-          )}
-          {!loading && !searched && (
-            <div style={{ padding: '20px 10px', opacity: 0.4, textAlign: 'center', fontSize: 10 }}>
-              type to search fleet history
-            </div>
-          )}
-          {resultGroups.map((group) => {
-            const expanded = !!expandedSearchGroups[group.id]
-            const visible = expanded ? group.results : group.results.slice(0, SEARCH_GROUP_INITIAL_LIMIT)
-            const hidden = group.results.length - visible.length
-            return (
-              <section key={group.id} className={`fleet-search-result-group fleet-search-result-group-${group.id}`}>
-                <div className="fleet-search-section-header">
-                  <span className="fleet-search-section-label">{group.label}</span>
-                  <span className="fleet-search-section-count">{group.results.length}</span>
-                  <span className="fleet-search-section-detail">{group.detail}</span>
-                </div>
-                {visible.map((r: any, i: number) => renderResult(r, i, group.id))}
-                {hidden > 0 && (
-                  <button
-                    type="button"
-                    className="fleet-search-group-more"
-                    onPointerDown={(e) => stopEventPropagation(e)}
-                    onPointerUp={(e) => {
-                      stopEventPropagation(e)
-                      setExpandedSearchGroups(prev => ({ ...prev, [group.id]: true }))
-                    }}
-                  >
-                    Show {hidden} more {group.label.toLowerCase()}
-                  </button>
-                )}
-              </section>
-            )
-          })}
+          <FleetSearchResultsView
+            results={results}
+            loading={loading}
+            searched={searched}
+            queryError={queryError}
+            expandedSearchGroups={expandedSearchGroups}
+            setExpandedSearchGroups={setExpandedSearchGroups}
+            ctx={ctx}
+            agents={agents}
+            onOpenChatForResult={openChatForResult}
+            onStartDrag={startDrag}
+          />
         </div>
         )}
 
