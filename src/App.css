@@ -14,6 +14,11 @@
   --tlda-z-top-control-popover: 11001;
   --tlda-z-modal: 12000;
   --tlda-canvas-background: #fff;
+  --ui-tone-hidden: 0;
+  --ui-tone-dormant: 0.2;
+  --ui-tone-rest: 0.55;
+  --ui-tone-active: 0.85;
+  --ui-tone-full: 1;
 }
 
 .tl-theme__dark {
