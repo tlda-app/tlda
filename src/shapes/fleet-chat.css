@@ -121,7 +121,7 @@
   display: flex;
   align-items: center;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: calc(0.25 * var(--fleet-chrome-alpha, 1));
+  opacity: var(--ui-tone-dormant);
   /* Takes pointers because it is the interrupt slider: drag up a line for soft,
      two for hard, three for kill. It is a small target at the right end of the
      top line, so the text it overlays is only unreachable there. */
@@ -158,22 +158,22 @@
   gap: 0;
   border-radius: 4px;
   z-index: 20;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 2s;
 }
 html.mousemove .fleet-shape:has(.fleet-chat-log:hover, .fleet-search-results:hover) .fleet-btn-group,
 html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hover .fleet-btn-group {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   transition: opacity 2s;
 }
 /* Filter mode replaces the chat body, so the :has(:hover) selector above won't fire — show buttons explicitly */
 .fleet-shape:has(.fleet-filter-mode) .fleet-btn-group {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   transition: none;
 }
 /* Hovering directly on the button panel keeps it visible regardless of motion */
 .fleet-btn-group:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   background: rgba(128, 128, 128, 0.12);
 }
 /* Phone: no button panels. You can't move, resize, or delete a panel in the fixed
@@ -185,7 +185,7 @@ body.phone-mode .fleet-btn-group {
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group {
   display: flex;
-  opacity: 0.7;
+  opacity: var(--ui-tone-full);
   visibility: visible;
   pointer-events: auto;
   transition: none;
@@ -196,7 +196,6 @@ body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn {
   width: 40px;
   height: 40px;
-  opacity: 0.55;
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
   width: 20px;
@@ -219,13 +218,13 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   font-size: calc(var(--fleet-base-font, 11px) * 1.090909);
   line-height: 1;
   cursor: pointer;
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s, font-weight 0.1s;
   padding: 0;
   font-family: inherit;
 }
 .fleet-btn-group button:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   font-weight: bold;
 }
 .fleet-btn-group .fleet-filter-btn svg {
@@ -236,11 +235,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   letter-spacing: -1px;
 }
 .fleet-shape .fleet-layout-btn:hover {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   background: rgba(128, 128, 128, 0.15);
 }
 .fleet-shape:hover .fleet-layout-btn {
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
 }
 
 /* --- Filter mode --- */
@@ -344,14 +343,14 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 .fleet-chat-shape .fleet-filter-chip-ghost,
 .fleet-inbox-shape .fleet-filter-chip-ghost {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   border-style: dashed;
 }
 .fleet-chat-shape .fleet-filter-chip-role,
 .fleet-inbox-shape .fleet-filter-chip-role {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   margin-right: 2px;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .fleet-filter-chip-label,
 .fleet-inbox-shape .fleet-filter-chip-label {
@@ -360,13 +359,13 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .fleet-filter-term-x,
 .fleet-inbox-shape .fleet-filter-term-x {
   cursor: pointer;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   margin-left: 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
 }
 .fleet-chat-shape .fleet-filter-term-x:hover,
 .fleet-inbox-shape .fleet-filter-term-x:hover {
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
   color: var(--red, #e55);
 }
 /* --- Filter drop panes (pill hover: to/from preview) --- */
@@ -406,13 +405,13 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   font-size: calc(var(--fleet-base-font, 11px) * 0.636364);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-rest);
   margin-bottom: 1px;
 }
 .fleet-chat-shape .fleet-filter-replace-sep,
 .fleet-inbox-shape .fleet-filter-replace-sep {
   font-size: calc(var(--fleet-base-font, 11px) * 0.636364);
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-chat-shape .fleet-filter-drop-pane,
 .fleet-inbox-shape .fleet-filter-drop-pane {
@@ -448,12 +447,12 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-rest);
   margin-bottom: 6px;
 }
 .fleet-chat-shape .fleet-filter-empty,
 .fleet-inbox-shape .fleet-filter-empty {
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   padding: 20px 0;
   text-align: center;
@@ -467,12 +466,12 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .fleet-filter-clear,
 .fleet-inbox-shape .fleet-filter-clear {
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   cursor: pointer;
 }
 .fleet-chat-shape .fleet-filter-clear:hover,
 .fleet-inbox-shape .fleet-filter-clear:hover {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .fleet-filter-choices {
   display: flex;
@@ -612,7 +611,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .drag-handle {
   cursor: grab;
   touch-action: none;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 2s;
   flex-shrink: 0;
   display: flex;
@@ -629,11 +628,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 html.mousemove .fleet-chat-shape .chat-activity-card:hover > .drag-handle,
 html.mousemove .fleet-chat-shape .code-block-header:hover > .drag-handle,
 html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .drag-handle:hover {
-  opacity: 0.5 !important;
+  opacity: var(--ui-tone-rest) !important;
   transition: none;
 }
 
@@ -661,7 +660,7 @@ html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
   z-index: 1;
 }
 html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.2s;
 }
 /* Inside tool-line (flex row): fixed-size flex child */
@@ -2299,14 +2298,6 @@ body.phone-mode .fleet-agents-col-task,
 body.phone-mode .fleet-agents-col-ctx,
 body.phone-mode .fleet-agents-col-labels {
   touch-action: none;
-}
-
-/* --- Phone: the fleet panels sit at a semi-transparent RESTING opacity that only
-   reveals to full on mouse hover. Phone has no hover, so the panels (and their
-   text) stay washed out — "way more washed out on phone than other devices."
-   Pin them to full opacity on the phone surface. (Skip.) --- */
-body.phone-mode .fleet-hud-wrap .tl-shape {
-  opacity: 1 !important;
 }
 
 /* --- Phone: bigger touch targets + a real scrollbar in the agents panel ---
