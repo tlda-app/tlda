@@ -43,6 +43,8 @@ const UPLOAD_DIR = loadServerConfig().uploadDir ||
 export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_DELIVERY_LIMIT = 50
+const pendingShareTargetUploads = new Map()
+const SHARE_TARGET_TTL_MS = 5 * 60 * 1000
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first
@@ -76,6 +78,32 @@ function extractFirstFilePart(body, boundary) {
     pos = next
   }
   return null
+}
+
+function parseMultipartParts(body, boundary) {
+  const dashBoundary = Buffer.from(`--${boundary}`)
+  const crlfCrlf = Buffer.from('\r\n\r\n')
+  const parts = []
+  let pos = body.indexOf(dashBoundary)
+  while (pos !== -1) {
+    const afterBoundary = pos + dashBoundary.length
+    if (body.slice(afterBoundary, afterBoundary + 2).toString('utf8') === '--') break
+    const headerStart = afterBoundary + 2
+    const headerEnd = body.indexOf(crlfCrlf, headerStart)
+    if (headerEnd === -1) break
+    const headers = body.slice(headerStart, headerEnd).toString('utf8')
+    const contentStart = headerEnd + crlfCrlf.length
+    const nextBoundary = body.indexOf(dashBoundary, contentStart)
+    if (nextBoundary === -1) break
+    const contentEnd = Math.max(contentStart, nextBoundary - 2)
+    const disposition = headers.match(/Content-Disposition:([^\r\n]+)/i)?.[1] || ''
+    const name = disposition.match(/name="([^"]*)"/i)?.[1] || ''
+    const filename = disposition.match(/filename="([^"]*)"/i)?.[1] || ''
+    const contentType = headers.match(/Content-Type:\s*([^\r\n]+)/i)?.[1]?.trim() || ''
+    parts.push({ name, filename, contentType, content: body.slice(contentStart, contentEnd) })
+    pos = nextBoundary
+  }
+  return parts
 }
 
 // Decide-and-persist for POST /api/upload. Given the fully-buffered request body
@@ -119,6 +147,16 @@ export function persistUpload({ body, contentType = '', xFilename = null, upload
   const filePath = path.join(uploadDir, name)
   fs.writeFileSync(filePath, body)
   return { value: { name, path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` } }
+}
+
+function rememberShareTargetMarkdown(markdown) {
+  const token = randomUUID()
+  pendingShareTargetUploads.set(token, {
+    markdown,
+    createdAt: Date.now(),
+  })
+  setTimeout(() => pendingShareTargetUploads.delete(token), SHARE_TARGET_TTL_MS).unref?.()
+  return token
 }
 
 function formatNameCollisions(collisions = []) {
@@ -1024,6 +1062,86 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         res.json(result.value)
       } catch (e) { fail(500, e.message) }
     })
+  })
+
+  router.post('/api/share-target', (req, res) => {
+    const chunks = []
+    let settled = false
+    const fail = (code, error) => {
+      if (settled) return
+      settled = true
+      res.status(code).json({ error })
+    }
+    req.on('aborted', () => fail(400, 'share target upload aborted before completion'))
+    req.on('error', (e) => fail(400, `share target upload stream error: ${e.message}`))
+    req.on('data', chunk => chunks.push(chunk))
+    req.on('end', () => {
+      if (settled) return
+      try {
+        const body = Buffer.concat(chunks)
+        const contentType = req.headers['content-type'] || ''
+        if (!String(contentType).startsWith('multipart/form-data')) {
+          fail(415, 'share target requires multipart/form-data')
+          return
+        }
+        const boundary = String(contentType).match(/boundary="?([^";]+)"?/)?.[1]
+        if (!boundary) {
+          fail(400, 'multipart boundary missing')
+          return
+        }
+        const parts = parseMultipartParts(body, boundary)
+        const lines = []
+        for (const part of parts) {
+          if (!part.filename) continue
+          if (!String(part.contentType).startsWith('image/')) continue
+          const result = persistUpload({
+            body: part.content,
+            contentType: part.contentType,
+            xFilename: part.filename,
+            uploadDir: UPLOAD_DIR,
+          })
+          if (result.error) {
+            fail(result.status, result.error)
+            return
+          }
+          const { name, url } = result.value
+          lines.push(`![${name}](${url})`)
+        }
+
+        const textFields = new Map()
+        for (const part of parts) {
+          if (part.filename || !part.name) continue
+          const value = part.content.toString('utf8').trim()
+          if (value) textFields.set(part.name, value)
+        }
+        const title = textFields.get('title')
+        const text = textFields.get('text')
+        const url = textFields.get('url')
+        if (title) lines.push(title)
+        if (text) lines.push(text)
+        if (url) lines.push(url)
+
+        if (lines.length === 0) {
+          fail(422, 'share target contained no usable image or text')
+          return
+        }
+
+        const token = rememberShareTargetMarkdown(lines.join('\n'))
+        settled = true
+        res.redirect(303, `/?shareTarget=${encodeURIComponent(token)}`)
+      } catch (e) { fail(500, e.message) }
+    })
+  })
+
+  router.get('/api/share-target/:token', (req, res) => {
+    const token = String(req.params.token || '')
+    const entry = pendingShareTargetUploads.get(token)
+    if (!entry) {
+      res.status(404).json({ error: 'shared upload not found or expired' })
+      return
+    }
+    pendingShareTargetUploads.delete(token)
+    res.json({ markdown: entry.markdown })
   })
 
   // --- POST /api/unquote-file ---
