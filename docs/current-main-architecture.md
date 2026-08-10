@@ -82,6 +82,31 @@ operations such as source synchronization, agent lifecycle, terminal access,
 and artifact materialization. If the owning daemon route is unavailable, the
 operation fails. The server does not fall back to processing a local lookalike.
 
+### Which environment owns a checkout is decided by the binding files
+
+`~/.config/tlda/source-bindings.<environment>.json` is the authority. A daemon
+watches the checkouts bound in its own environment's file, so `tlda --env
+<name> project link` and `tlda --env <name> project unlink` are the operations
+that move a project between environments.
+
+`~/.config/tlda/project-worlds.json` maps a checkout path to one environment
+name and looks like it decides the same thing. **It does not. It is inert**,
+and editing it to unstick a move accomplishes nothing:
+
+- `writeProjectWorld` in `shared/project-worlds.mjs` is exported and has no
+  caller in the repository, so nothing maintains the file.
+- `projectBelongsToWorld` returns `true` whenever `project.sourceDir` is falsy.
+  The projects it filters come from `loadLocallyBoundProjects`, which builds
+  them from the server's `/api/projects/<name>`, and that payload carries no
+  `sourceDir`.
+- The daemon logs the filter's result on every application, and it is always
+  N/N — `project ownership applied (daemon-welcome): 16/16 projects in
+  testing`. It has never excluded a project.
+
+What the file still does is raise `invalid-project-source-environment-owner`
+when it names an environment that `daemon.yaml` does not configure. That
+warning is real; the ownership filter behind it is not.
+
 ## Persistent state and transient signals
 
 Document shapes use Yjs. State that must still be correct after a disconnect
