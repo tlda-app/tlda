@@ -4,7 +4,7 @@ import 'katex/dist/katex.min.css'
 // Node.js tests, SSR, and the brief window before the CDN script loads.
 import { marked as _markedFallback } from 'marked'
 import { getAgents, getAgent } from './fleet-data.mjs'
-import { getActiveMacros } from '../katexMacros'
+import { getActiveMacros } from '../katexMacros.ts'
 import { baseMacros } from '../../shared/katex-base-macros.mjs'
 import { myTldaUrl } from './tldaUrl.mjs'
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'

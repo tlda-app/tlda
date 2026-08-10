@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isPriorFinalSuffixEcho, normalizeTranscriptText, trimSubmittedPrefixFromDeepgramText } from '../src/voice-indicator.mjs'
+import { isPriorFinalSuffixEcho, normalizeTranscriptText, reclaimVoiceInterim, trimSubmittedPrefixFromDeepgramText } from '../src/voice-indicator.mjs'
 
 test('drops a final that only repeats the suffix of the preceding final', () => {
   assert.equal(isPriorFinalSuffixEcho('on the quotient', 'quotient', false), true)
+})
+
+test('reclaims voice-painted interim from a re-partitioned textarea tail', () => {
+  assert.deepEqual(
+    reclaimVoiceInterim(
+      'Cool. So a couple of things to be aware of is, like, the project tab,',
+      'the project tab',
+    ),
+    {
+      left: 'Cool. So a couple of things to be aware of is, like, ',
+      staleLen: 'the project tab,'.length,
+    },
+  )
 })
 
 test('keeps revised and newly-interimmed finals', () => {

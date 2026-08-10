@@ -26,7 +26,7 @@
 // time as, like, a just running test." It watches production and stays quiet
 // when the two agree.
 
-import { log } from '../logger'
+import { log } from '../logger.ts'
 
 const NS = 'filter-equivalence'
 

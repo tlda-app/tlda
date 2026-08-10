@@ -15,7 +15,7 @@
 // chat that sent it, keyed by that chat's own id. That is not a filter
 // decision, and it must never become one.
 
-import { log } from '../logger'
+import { log } from '../logger.ts'
 import { noteServerDelivery } from './filter-equivalence.mjs'
 
 const NS = 'chat-subscription'

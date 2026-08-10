@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, parseCsvPref, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, normalizeTranscriptText as normalizeDeepgramText, partitionAtCursor, pcmInputLevel, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
+import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, normalizeTranscriptText as normalizeDeepgramText, partitionAtCursor, pcmInputLevel, reclaimVoiceInterim, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
@@ -1407,6 +1407,8 @@ function vtail(s, n = 48) {
   return str.length > n ? '…' + str.slice(-n) : str
 }
 
+let _pendingVoiceInterim = ''
+
 function enterEdit(trigger = 'unknown') {
   if (_state === 'edit') return
   const { origin, inputTrusted } = describeEditTrigger(trigger)
@@ -1449,6 +1451,7 @@ function enterEdit(trigger = 'unknown') {
   }
   if (_backend === 'deepgram') {
     _dgTrickleFlush()
+    _pendingVoiceInterim = _interim || ''
     _deepgramInterim = ''
     _dgTrickleWords = []
     _dgTrickleShown = 0
@@ -2571,6 +2574,7 @@ export function stripCommittedEchoPrefix(text, committedNorm) {
 function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false, preserveSubmittedCarry = false } = {}) {
   _deepgramInterim = ''
   _dgHasSeenInterim = false
+  _pendingVoiceInterim = ''
   if (!preserveUtteranceGuard) {
     _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
     _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
@@ -2871,8 +2875,6 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       // and releasing on it is what keeps a later "bro" — a whole utterance
       // that happens to be a suffix of the last one — from being swallowed.
       releaseSubmittedCarry('speech started')
-      _dgLastFinalNorm = ''
-      _dgLastFinalAt = 0
       vlog('speech started')
       return
     }
@@ -2999,10 +3001,13 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _state = 'speech'
       const ta = _activeTextarea
       const partition = partitionAtCursor(ta?.value, ta?.selectionStart, ta?.selectionEnd)
-      _left = partition.left
+      const reclaimed = reclaimVoiceInterim(partition.left, _pendingVoiceInterim)
+      _pendingVoiceInterim = ''
+      _left = reclaimed.left
       _interim = partition.interim
       _right = partition.right
       beginVoiceSpan()
+      _span.interimLen = reclaimed.staleLen
       resetDeepgramTextState({ preserveSubmittedCarry: true })
       // THE SUSPECTED DOUBLING ENGINE. _left is re-seeded from what is already on
       // screen — which includes the interim words just displayed — and a final carrying
@@ -3019,6 +3024,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         stateWas: _asmStateBefore,
         absorbedTail: vtail(_left),
         rightLen: (_right || '').length,
+        reclaimedInterim: reclaimed.staleLen,
         incoming: vtail(msg.text, 60),
         final: !!msg.is_final,
       })
@@ -4094,6 +4100,7 @@ export const __test = {
   forceDeepgram() { _backend = 'deepgram' },
   setRecording(value) { _recording = !!value },
   deepgramMessage(message) { onDeepgramMessage({ data: JSON.stringify(message) }, _deepgramWs) },
+  enterEdit(trigger) { enterEdit(trigger) },
   boundaryTelemetry() { return { ..._voiceBoundaryTelemetry } },
   state() {
     return {
