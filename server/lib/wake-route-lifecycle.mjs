@@ -25,10 +25,10 @@ export async function runWakeRouteLifecycle({
   ownerDaemon,
   nudgeText = null,
   returnNoticeText = null,
-  enterDelayMs = 0,
   traceId = null,
   sendDaemonDurable,
   appendControlTrace = () => {},
+  sendWakeNudge = null,
   getAgentDaemonRoute,
   insertWakeLifecycleEvent = async () => {},
 }) {
@@ -44,23 +44,24 @@ export async function runWakeRouteLifecycle({
 
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
-  // One call: wake this agent if it is sleeping, and tell it this. The daemon is
-  // the only party that knows whether it started a process, so it is the one
-  // that decides whether the return notice goes on the front — the server never
-  // asks. The previous shape asked, and read the answer under a name the daemon
-  // does not send, which put "You were away as hibernating" in front of every
-  // message to a paused agent for a month.
-  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', {
-    fleet_id: agentId,
-    notify_text: nudgeText,
-    return_notice: returnNoticeText,
-    enter_delay_ms: enterDelayMs,
-  })
+  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: agentId })
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
   const nextSeat = await getAgentDaemonRoute?.(agentId)
   if (!nextSeat?.daemon_key) throw new Error(`wake for ${agentId} did not retain a daemon route`)
+  const deliveredNudge = spawnResult.alreadyAlive
+    ? nudgeText
+    : [returnNoticeText, nudgeText].filter(Boolean).join('\n\n')
+  if (sendWakeNudge && deliveredNudge) {
+    await sendWakeNudge(
+      nextSeat.daemon_key,
+      agent,
+      deliveredNudge,
+      spawnResult.alreadyAlive ? 'already-awake' : 'post-respawn',
+      'wake-route',
+    )
+  }
   if (traceId) {
     appendControlTrace({
       trace_id: traceId,

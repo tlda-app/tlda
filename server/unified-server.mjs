@@ -868,21 +868,20 @@ function wakeBreakerBackoffMs(fails, baseMs, capMs) {
   return Math.min(baseMs * 2 ** (Math.max(1, fails) - 1), capMs)
 }
 
-// Codex needs a beat between the text landing and Enter, or the line is sent
-// before it has been taken.
-function wakeEnterDelayMs(agent) {
-  return agent?.metadata?.kind === 'codex' ? 400 : 0
-}
-
-// Injecting text on its own, for a caller that already knows a process started —
-// `reanimate` is the one, and it asks unconditionally. The wake path does not
-// use this: waking and telling are one call there, made by the daemon.
 async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
   if (!nudgeText) return
-  await sendDaemonDurable(daemonKey, 'notify-agent', {
-    agent_id: agent.id,
-    text: nudgeText,
-    enter_delay_ms: wakeEnterDelayMs(agent),
+  broadcastFleet({
+    event: 'channel-notification',
+    data: {
+      recipient: agent.id,
+      text: nudgeText,
+      metadata: {
+        type: 'wake_nudge',
+        phase,
+        logTag,
+        daemonKey,
+      },
+    },
   })
 }
 
@@ -5281,13 +5280,11 @@ async function drainWakeQueue() {
         daemonKey,
         ownerDaemon: daemonConnections.get(daemonKey),
         nudgeText,
-        // Only the notice. The daemon composes it onto the message when it
-        // actually started something.
         returnNoticeText: agentReturnNotice(agent),
-        enterDelayMs: wakeEnterDelayMs(agent),
         traceId,
         sendDaemonDurable,
         appendControlTrace: (event) => controlPlaneTraces.append(event),
+        sendWakeNudge,
         getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),
         insertWakeLifecycleEvent: async () => {
           const wakeTs = new Date().toISOString()
