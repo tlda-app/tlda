@@ -58,7 +58,7 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
-import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromBundle, listVersions, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -134,6 +134,40 @@ let mirrorShadowSnapshot = null
 
 export function setShadowMirrorHandler(handler) {
   mirrorShadowSnapshot = typeof handler === 'function' ? handler : null
+}
+
+/**
+ * The inbound half of the mirror. A daemon offers us a project's history
+ * because the paper was just linked here and its working copy has been
+ * receiving that history on every build. We clone what the previous server
+ * mirrored out; the two servers never talk.
+ *
+ * Refuses when the project already has history — re-linking a paper to the
+ * environment it already lives on must not replace its versions with a copy.
+ * Returns whether it adopted.
+ */
+export async function adoptShadowHistory({ name, bundleBase64, head }) {
+  if (!name || !bundleBase64) return false
+  const shadowDir = join(projectDir(name), 'shadow-repo')
+  if (existsSync(join(shadowDir, '.git'))) return false
+
+  const bundlePath = join(tmpdir(), `tlda-shadow-adopt-${name}-${String(head || '').slice(0, 7)}.bundle`)
+  try {
+    writeFileSync(bundlePath, Buffer.from(bundleBase64, 'base64'))
+    await initShadowFromBundle(name, bundlePath)
+    // Confirm history actually landed rather than trusting that the import did
+    // not throw. It didn't throw the first time either, and produced a repo with
+    // no commits — "adopted" while the paper still showed no versions.
+    const landed = (await listVersions(name, { limit: 1 })).length > 0
+    if (!landed) throw new Error(`adopted bundle for ${name} produced no versions`)
+    return true
+  } finally {
+    try { rmSync(bundlePath, { force: true }) } catch (e) {
+      // Best-effort cleanup of a temp file: the history has already been adopted
+      // or not, and a leftover bundle must not turn that into a failure.
+      console.warn(`[shadow] temporary adopt bundle cleanup failed for ${name}: ${e.message}`)
+    }
+  }
 }
 
 export async function mirrorShadow(name, hash) {
@@ -1577,7 +1611,7 @@ export async function recordBuildVersion({
     // recorded, so it goes on the surfaces someone actually reads: the build
     // log, the server log, the event stream, and — because the viewer must not
     // show a version it does not have — the doc's own warnings in the sentinel.
-    if (result.status === 'no-scope' || result.status === 'no-shadow') {
+    if (result.status === 'no-scope') {
       const message = `No version recorded for this build: ${result.reason}`
       console.error(`[build:${name}] ${message}`)
       ctx.addLog(message)
