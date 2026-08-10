@@ -15,7 +15,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   z-index: var(--tlda-z-top-control);
 }
 
@@ -44,7 +44,6 @@
     height: 44px;
     bottom: 20px;
     right: 20px;
-    opacity: 0.6;
   }
 }
 
@@ -242,14 +241,14 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   left: 0;
   right: 0;
   height: 14px;
-  opacity: 0.25;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   z-index: 1;
   pointer-events: none;
 }
 
 .toc-zone-width-slider:hover {
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
 }
 
 .toc-zone-width-thumb {
@@ -633,13 +632,13 @@ body.touch-toc-mode select {
   color: inherit;
   cursor: pointer;
   font-size: 10px;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
   padding: 2px 7px;
 }
 .prefs-segment:hover,
 .prefs-segment.active {
   background: rgba(128, 128, 128, 0.12);
-  opacity: 0.95;
+  opacity: var(--ui-tone-full);
 }
 .prefs-btn {
   font-size: 11px;
@@ -809,7 +808,7 @@ body.touch-toc-mode select {
   border-radius: 4px;
   margin: 4px 8px;
   padding: 4px 8px;
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
   pointer-events: none;
 }
 
@@ -862,7 +861,7 @@ html[data-theme="dark"] .toc-drop-hint {
   font: inherit;
   font-size: 9px;
   line-height: 1;
-  opacity: 0.12;
+  opacity: var(--ui-tone-dormant);
   cursor: pointer;
   transition: opacity 0.15s;
 }
@@ -870,7 +869,7 @@ html[data-theme="dark"] .toc-drop-hint {
 .toc-item:hover .toc-row-center,
 .toc-row-center:hover,
 .toc-row-center:focus-visible {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 
 .toc-title {
@@ -1024,7 +1023,7 @@ html[data-theme="dark"] .toc-drop-hint {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
 }
 
 .search-result {
@@ -1042,7 +1041,7 @@ html[data-theme="dark"] .toc-drop-hint {
 }
 
 .search-result .line-num {
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-size: 9px;
   margin-right: 2px;
 }
@@ -1054,7 +1053,7 @@ html[data-theme="dark"] .toc-drop-hint {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
 }
 
 .change-item {
@@ -1081,7 +1080,7 @@ html[data-theme="dark"] .toc-drop-hint {
 .change-snippet {
   width: 100%;
   font-size: 8.5px;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
   padding-left: 4px;
   line-height: 1.3;
   white-space: nowrap;
@@ -1093,7 +1092,7 @@ html[data-theme="dark"] .toc-drop-hint {
 .change-summary {
   width: 100%;
   font-size: 9px;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   padding-left: 4px;
   line-height: 1.3;
   white-space: pre-line;
@@ -1105,12 +1104,12 @@ html[data-theme="dark"] .toc-drop-hint {
 }
 
 .change-old {
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-size: 10px;
 }
 
 .change-new {
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-size: 9px;
   font-style: italic;
 }
@@ -1125,7 +1124,7 @@ html[data-theme="dark"] .toc-drop-hint {
 .status-dot {
   cursor: pointer;
   font-size: 9px;
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.15s;
   line-height: 1;
   padding: 0 1px;
@@ -1162,7 +1161,7 @@ html[data-theme="dark"] .toc-drop-hint {
 
 .doc-panel:hover .status-dot,
 .doc-panel-open .status-dot {
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 
 .status-dot:hover {
@@ -1191,7 +1190,7 @@ html[data-theme="dark"] .toc-drop-hint {
 .changes-hint {
   padding: 8px 8px 4px;
   font-size: 9px;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   text-align: center;
   line-height: 1.4;
 }
@@ -1216,7 +1215,7 @@ html[data-theme="dark"] .toc-drop-hint {
 
 .note-item .note-meta {
   font-size: 9px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
 }
 
 .note-undone-btn {
@@ -1415,7 +1414,7 @@ html[data-theme="dark"] .note-doc-badge {
   font-size: 9px;
   text-align: right;
   white-space: nowrap;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
 }
 
 .notes-table-section td {
@@ -1462,14 +1461,14 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 
 .note-thread-order {
   font-size: 8px;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   margin-right: 4px;
   font-family: -apple-system, sans-serif;
 }
 
 .note-thread-toggle {
   font-size: 7px;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   margin-right: 3px;
   cursor: pointer;
   user-select: none;
@@ -1477,7 +1476,7 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 
 .note-reply-count {
   font-size: 9px;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   margin-left: 4px;
 }
 
@@ -1525,7 +1524,7 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 
 .panel-empty {
   padding: 12px 8px;
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   text-align: center;
   font-size: 10px;
 }
@@ -1596,19 +1595,19 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   color: #b45309;
 }
 
 .recent-changes-dismiss {
   font-size: 8px;
-  opacity: 0.25;
+  opacity: var(--ui-tone-dormant);
   cursor: pointer;
   transition: opacity 0.15s;
 }
 
 .recent-changes-dismiss:hover {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 
 .recent-changes-pages {
@@ -1655,12 +1654,12 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
   cursor: pointer;
   padding: 0 1px;
   line-height: 1;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   flex-shrink: 0;
 }
 
 .snapshot-step:hover {
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
 }
 
 .snapshot-step:disabled {
@@ -1690,7 +1689,7 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 
 .snapshot-label {
   font-size: 7px;
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1700,7 +1699,7 @@ html[data-theme="dark"] .doc-panel-open .notes-table-section td {
 }
 
 .snapshot-position {
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1756,7 +1755,7 @@ html[data-theme="dark"] .history-compare-btn.active {
 .toc-diff-hint {
   padding: 6px 8px;
   font-size: 9px;
-  opacity: 0.2;
+  opacity: var(--ui-tone-dormant);
   cursor: pointer;
   transition: opacity 0.2s;
   display: flex;
@@ -1809,11 +1808,11 @@ html[data-theme="dark"] .history-compare-btn.active {
 
 .doc-panel:hover .toc-diff-hint,
 .doc-panel-open .toc-diff-hint {
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
 }
 
 .toc-diff-hint:hover {
-  opacity: 0.6 !important;
+  opacity: var(--ui-tone-rest) !important;
   background: rgba(0, 0, 0, 0.05);
 }
 
@@ -1824,7 +1823,7 @@ html[data-theme="dark"] .history-compare-btn.active {
   margin-right: 4px;
   font-family: monospace;
   font-size: 8px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 
 .toc-toggle-icon {
@@ -1864,7 +1863,7 @@ html[data-theme="dark"] .history-compare-btn.active {
 }
 
 .proof-pages {
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-size: 9px;
   flex-shrink: 0;
   white-space: nowrap;
@@ -2001,7 +2000,7 @@ html[data-theme="dark"] .snapshot-range::-webkit-slider-thumb {
 }
 
 html[data-theme="dark"] .snapshot-label {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 
 /* Iframe interaction ribbons — visible on hover */
@@ -2073,7 +2072,7 @@ body.touch-toc-mode .phone-toc-btn {
   pointer-events: all;
   padding: 0;
   line-height: 1;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.2s, background-color 0.2s;
 }
 
@@ -2082,7 +2081,7 @@ body.phone-mode .phone-toc-btn:active,
 body.touch-toc-mode .phone-toc-btn:hover,
 body.touch-toc-mode .phone-toc-btn:active {
   background: rgba(255, 255, 255, 0.08);
-  opacity: 0.62;
+  opacity: var(--ui-tone-active);
 }
 
 /* phone-bar-btn removed — merged into single ☰ menu button */
@@ -2162,7 +2161,7 @@ body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
   width: 22px;
   height: 22px;
   margin-right: 5px;
-  opacity: 0.25;
+  opacity: var(--ui-tone-dormant);
 }
 
 .phone-toc-modal .toc-item.section {
@@ -2178,7 +2177,7 @@ body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
 .phone-toc-modal .toc-diff-hint {
   padding: 7px 12px;
   color: rgba(0, 0, 0, 0.5);
-  opacity: 0.72;
+  opacity: var(--ui-tone-active);
 }
 
 .phone-toc-modal .toc-bottom-controls {
@@ -2191,7 +2190,7 @@ body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
 }
 
 .phone-toc-modal .toc-diff-hint:hover {
-  opacity: 0.9 !important;
+  opacity: var(--ui-tone-full) !important;
 }
 
 .phone-toc-modal .search-input {
