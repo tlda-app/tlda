@@ -214,3 +214,35 @@ tries wake again. That is the intended non-destructive trade for this patch.
 The alternative is for wake to tear down the dead tmux session and replace it,
 which would self-heal instead of looping. That is a design change, not a repair:
 wake is deliberately non-destructive today.
+
+## One of the three migration questions is now answered: yes, something keys off the deterministic ids
+
+Checked 2026-08-10 by searching for the literals rather than reasoning about them.
+The question was *"Does anything else key off the deterministic ids? `fleet:chat-lint`
+is guessable by construction and may be referenced somewhere as a literal."*
+
+**It does, and the sharpest case is `fleet:teacher` in the server itself:**
+
+```js
+// server/unified-server.mjs — the drill-card path
+await fleetStore.share({
+  type: 'chat', from: 'fleet:teacher', to: agentId, text: chat,
+  metadata: { kind: 'drill-card', drill, gradient, pass },
+})
+```
+
+Every drill card is posted **from a hardcoded `fleet:teacher`**. Give `teacher` a
+random id and that sender stops corresponding to the bot — the cards keep being
+written, from an id nothing owns.
+
+Two more, both non-fatal but worth knowing:
+
+- `tlda-bots/todd/todd.mjs` and `tlda-bots/disposition/disposition.mjs` carry
+  `fleet:teacher` (and `fleet:todd`) in self-check/ignore sets. A rotated id
+  silently drops out of those sets, so a bot starts reacting to a bot.
+- `tlda-bots/grammar/grammar-bot.test.mjs` fixes `fleet:grammar` throughout, and
+  `test/bot-harness-env.test.mjs` uses `fleet:dev`. Tests only.
+
+**So the backport needs `fleet:teacher` given a real home before it runs**, not just
+the old rows disposed of. That is a fourth item on the migration, and it is in the
+server rather than in `tlda-bots`.
