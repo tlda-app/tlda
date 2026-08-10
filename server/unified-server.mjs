@@ -3139,7 +3139,14 @@ async function isBridgeUp(bridgeUrl) {
       ws = new WS(bridgeUrl, { rejectUnauthorized: false })
       ws.on('open', () => finish(true))
       ws.on('error', () => finish(false))
-      setTimeout(() => finish(false), 800)
+      // 800ms was too tight for a cross-app 6PN connect and reported the box as
+      // unreachable while it was up: three probes in ten seconds from stable gave
+      // false, true, true. That reads as "the voice box is down", which is the
+      // most alarming thing this endpoint can say and sent one investigation
+      // after a fault that did not exist. A refusal still resolves immediately
+      // via the error handler, so this bound is only what a slow-but-fine
+      // connect is allowed to take.
+      setTimeout(() => finish(false), 3000)
     } catch { resolve(false) }
   })
 }
