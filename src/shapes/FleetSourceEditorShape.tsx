@@ -38,7 +38,6 @@ import { shouldReuseTrackedSourceAnchor } from '../sourceCursorTracking'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { clearVoiceAccumulator, notifyAccumulatorCursorMoved, setVoiceAccumulator } from '../voice.mjs'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import './fleet-chat.css'
 
 const DEFAULT_W = 560
@@ -128,9 +127,6 @@ export class FleetSourceEditorShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
-  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
-  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
-  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true

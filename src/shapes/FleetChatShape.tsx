@@ -68,7 +68,7 @@ import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
-import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, createFleetShape, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, createFleetShape, isFleetShapeForOwnerKey } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer, type VoiceTargetHandle } from './ChatComposer'
@@ -1404,9 +1404,6 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
-  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
-  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
-  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
