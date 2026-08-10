@@ -688,6 +688,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           fromAgentId: from,
           toAgentId: agentId,
           message,
+          description,
           delegatedAt: now,
           eventMetadata: metadata,
         })

@@ -55,6 +55,7 @@ export async function transferTaskLifecycle({
   fromAgentId = null,
   toAgentId,
   message,
+  description,
   delegatedAt = new Date().toISOString(),
   eventMetadata,
   eventOptions,
@@ -69,6 +70,9 @@ export async function transferTaskLifecycle({
   const transferredTask = {
     ...task,
     agent: toAgentId,
+    // A re-delegation may restate the task, not only append to it. Omitting
+    // `description` keeps the existing one, which is what a plain hand-off wants.
+    description: description ?? task.description,
     message: appendDelegationMessage(task, { fromAgentId, toAgentId, message, delegatedAt }),
   }
   if (taskMetadataPatch) {
