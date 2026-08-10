@@ -6575,6 +6575,16 @@ function FleetChatInner({ shape }: { shape: any }) {
             <PersistentCornerButtonSlider
               className="fleet-composer-gutter"
               onSelect={(action, value) => {
+                // A button that carries data-composer-rail-action is ON the rail, so
+                // press-drag-release must do the same thing its click does. The image
+                // button declared the attribute without being handled here, so sliding
+                // to it highlighted it and then did nothing — Skip: "it doesn't work
+                // properly as a button on the slider". Any new rail action must be
+                // handled here too, or it is not a real slider element.
+                if (action === 'image') {
+                  imageFileInputRef.current?.click()
+                  return
+                }
                 if (action !== 'traffic' || !composerAgentLabel) return
                 selectComposerTrafficMode(value as ComposerTrafficFilterMode)
               }}

@@ -3895,7 +3895,11 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 
 .fleet-chat-shape .fleet-composer-image-toggle {
-  order: 0;
+  /* Attach is a rare action, so it does not get an end slot. On touch the ends
+     are the cheap positions — a slide lands there without aiming — and they
+     belong to the controls Skip uses constantly. Swapped inward with the
+     terminal icon on his instruction, 2026-08-09. */
+  order: 1;
   pointer-events: auto;
   height: 100%;
   border: none;
@@ -3915,7 +3919,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 
 .fleet-chat-shape .fleet-terminal-icon {
-  order: 1;
+  order: 0;
   pointer-events: auto;
   height: 100%;
   border: none;
