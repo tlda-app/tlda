@@ -131,6 +131,7 @@ export function useDocAutoOpen(
         y,
         isLocked: true,
         opacity: FOREIGN_DOC_OPACITY,
+        meta: { foreignDocumentPage: true },
         props: {
           w: width,
           h: height,
