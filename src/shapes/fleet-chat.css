@@ -104,7 +104,7 @@
 }
 .fleet-search-shape input::placeholder {
   color: var(--text-dim, #8888a0);
-  opacity: var(--fleet-dim-alpha-60, 0.6);
+  opacity: var(--ui-tone-rest);
 }
 
 
@@ -121,7 +121,7 @@
   display: flex;
   align-items: center;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: calc(0.25 * var(--fleet-chrome-alpha, 1));
+  opacity: var(--ui-tone-dormant);
   /* Takes pointers because it is the interrupt slider: drag up a line for soft,
      two for hard, three for kill. It is a small target at the right end of the
      top line, so the text it overlays is only unreachable there. */
@@ -158,22 +158,22 @@
   gap: 0;
   border-radius: 4px;
   z-index: 20;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 2s;
 }
 html.mousemove .fleet-shape:has(.fleet-chat-log:hover, .fleet-search-results:hover) .fleet-btn-group,
 html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hover .fleet-btn-group {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   transition: opacity 2s;
 }
 /* Filter mode replaces the chat body, so the :has(:hover) selector above won't fire — show buttons explicitly */
 .fleet-shape:has(.fleet-filter-mode) .fleet-btn-group {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   transition: none;
 }
 /* Hovering directly on the button panel keeps it visible regardless of motion */
 .fleet-btn-group:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   background: rgba(128, 128, 128, 0.12);
 }
 /* Phone: no button panels. You can't move, resize, or delete a panel in the fixed
@@ -185,7 +185,7 @@ body.phone-mode .fleet-btn-group {
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group {
   display: flex;
-  opacity: 0.7;
+  opacity: var(--ui-tone-full);
   visibility: visible;
   pointer-events: auto;
   transition: none;
@@ -196,7 +196,6 @@ body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn {
   width: 40px;
   height: 40px;
-  opacity: 0.55;
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
   width: 20px;
@@ -219,13 +218,13 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   font-size: calc(var(--fleet-base-font, 11px) * 1.090909);
   line-height: 1;
   cursor: pointer;
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s, font-weight 0.1s;
   padding: 0;
   font-family: inherit;
 }
 .fleet-btn-group button:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   font-weight: bold;
 }
 .fleet-btn-group .fleet-filter-btn svg {
@@ -236,11 +235,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   letter-spacing: -1px;
 }
 .fleet-shape .fleet-layout-btn:hover {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   background: rgba(128, 128, 128, 0.15);
 }
 .fleet-shape:hover .fleet-layout-btn {
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
 }
 
 /* --- Filter mode --- */
@@ -344,14 +343,14 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 .fleet-chat-shape .fleet-filter-chip-ghost,
 .fleet-inbox-shape .fleet-filter-chip-ghost {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   border-style: dashed;
 }
 .fleet-chat-shape .fleet-filter-chip-role,
 .fleet-inbox-shape .fleet-filter-chip-role {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   margin-right: 2px;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .fleet-filter-chip-label,
 .fleet-inbox-shape .fleet-filter-chip-label {
@@ -360,13 +359,13 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .fleet-filter-term-x,
 .fleet-inbox-shape .fleet-filter-term-x {
   cursor: pointer;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   margin-left: 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
 }
 .fleet-chat-shape .fleet-filter-term-x:hover,
 .fleet-inbox-shape .fleet-filter-term-x:hover {
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
   color: var(--red, #e55);
 }
 /* --- Filter drop panes (pill hover: to/from preview) --- */
@@ -406,13 +405,13 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   font-size: calc(var(--fleet-base-font, 11px) * 0.636364);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-rest);
   margin-bottom: 1px;
 }
 .fleet-chat-shape .fleet-filter-replace-sep,
 .fleet-inbox-shape .fleet-filter-replace-sep {
   font-size: calc(var(--fleet-base-font, 11px) * 0.636364);
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-chat-shape .fleet-filter-drop-pane,
 .fleet-inbox-shape .fleet-filter-drop-pane {
@@ -448,12 +447,12 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-rest);
   margin-bottom: 6px;
 }
 .fleet-chat-shape .fleet-filter-empty,
 .fleet-inbox-shape .fleet-filter-empty {
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   padding: 20px 0;
   text-align: center;
@@ -467,12 +466,12 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .fleet-filter-clear,
 .fleet-inbox-shape .fleet-filter-clear {
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   cursor: pointer;
 }
 .fleet-chat-shape .fleet-filter-clear:hover,
 .fleet-inbox-shape .fleet-filter-clear:hover {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .fleet-filter-choices {
   display: flex;
@@ -612,7 +611,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-shape .drag-handle {
   cursor: grab;
   touch-action: none;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 2s;
   flex-shrink: 0;
   display: flex;
@@ -629,11 +628,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 html.mousemove .fleet-chat-shape .chat-activity-card:hover > .drag-handle,
 html.mousemove .fleet-chat-shape .code-block-header:hover > .drag-handle,
 html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .drag-handle:hover {
-  opacity: 0.5 !important;
+  opacity: var(--ui-tone-rest) !important;
   transition: none;
 }
 
@@ -661,7 +660,7 @@ html.mousemove .fleet-chat-shape .tool-line:hover > .drag-handle {
   z-index: 1;
 }
 html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.2s;
 }
 /* Inside tool-line (flex row): fixed-size flex child */
@@ -823,7 +822,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .terminal-msg {
   border-left: 2px solid var(--text-dim);
   padding-left: 6px;
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
 }
 /* Provenance mark on a chat message typed into a terminal. Same glyph as the
    composer's terminal button and the voice HUD, in the dim text colour. */
@@ -1008,11 +1007,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 1px 6px;
   font-size: var(--fleet-base-font, 11px);
   cursor: pointer;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s;
 }
-.fleet-chat-shape .lifecycle-card .lc-approve-btn:hover { opacity: 1; }
-.fleet-chat-shape .lifecycle-card .lc-deny-btn:hover { opacity: 1; }
+.fleet-chat-shape .lifecycle-card .lc-approve-btn:hover { opacity: var(--ui-tone-full); }
+.fleet-chat-shape .lifecycle-card .lc-deny-btn:hover { opacity: var(--ui-tone-full); }
 .fleet-chat-shape .lifecycle-card .lc-approve-btn {
   background: rgba(0, 200, 100, 0.15);
   color: #00c864;
@@ -1094,7 +1093,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .tool-ref-preview {
   /* Hover-intent: stays hidden until the cursor rests on the ref for 0.3s, so a
      passthrough never pops it. opacity/visibility (not display) so it's delayable. */
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   visibility: hidden;
   pointer-events: none;
   transition: opacity 0.12s ease, visibility 0s linear 0.12s;
@@ -1117,7 +1116,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   line-height: 1.5;
 }
 .fleet-chat-shape .tool-ref:hover .tool-ref-preview {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   visibility: visible;
   transition: opacity 0.12s ease 0.6s, visibility 0s linear 0.6s;
 }
@@ -1137,16 +1136,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   font-size: var(--fleet-base-font, 11px);
   padding: 0 2px;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .chat-resend-btn:hover,
 .fleet-chat-shape .chat-resend-all-btn:hover,
 .fleet-chat-shape .chat-dismiss-failed-btn:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .fleet-chat-shape .chat-failed-actions {
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .chat-dismiss-failed-btn {
   color: var(--text-dim);
@@ -1172,7 +1171,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border: none;
   border-top: 1px solid var(--text-dim);
   margin: 8px 0;
-  opacity: 0.18;
+  opacity: var(--ui-tone-dormant);
 }
 
 /* --- Chat images --- */
@@ -1268,7 +1267,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 /* --- Ambient messages --- */
 .fleet-chat-shape .ambient {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 
 /* --- Syntax highlighting tokens --- */
@@ -1306,14 +1305,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .code-block-copy {
   margin-left: auto;
   cursor: pointer;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   font-size: calc(var(--fleet-base-font, 11px) * 1.272727);
   user-select: none;
   transition: opacity 0.1s, color 0.1s;
   padding: 0 2px;
 }
 .fleet-chat-shape .code-block-copy:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .fleet-chat-shape .code-block-copy-success {
   opacity: 1;
@@ -1365,16 +1364,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 .fleet-chat-shape .tool-linenum {
   color: var(--text-dim);
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
   min-width: 16px;
 }
 .fleet-chat-shape .tool-name { color: var(--text); }
-.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: var(--fleet-dim-alpha-40, 0.4); }
-.fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: var(--fleet-dim-alpha-70, 0.7); }
+.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: var(--ui-tone-dormant); }
+.fleet-chat-shape .tool-arg { color: var(--text-dim); opacity: var(--ui-tone-active); }
 .fleet-chat-shape .tool-count { color: var(--text-dim); font-size: calc(var(--fleet-base-font, 11px) * 0.818182); }
-.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: var(--fleet-dim-alpha-40, 0.4); }
+.fleet-chat-shape .tool-sep { color: var(--text-dim); opacity: var(--ui-tone-dormant); }
 .fleet-chat-shape .tool-copy { display: none; }
-.fleet-chat-shape .tool-detail { color: var(--text-dim); opacity: var(--fleet-dim-alpha-50, 0.5); font-size: calc(var(--fleet-base-font, 11px) * 0.818182); }
+.fleet-chat-shape .tool-detail { color: var(--text-dim); opacity: var(--ui-tone-rest); font-size: calc(var(--fleet-base-font, 11px) * 0.818182); }
 .fleet-chat-shape .tool-pretty-result {
   margin: 6px 0 6px 0;
   padding: 4px 0;
@@ -1438,7 +1437,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-family: var(--mono);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   color: var(--accent, #7a9ec8);
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   margin-left: 2px;
 }
 /* Search results — alternating stripes with clear separation */
@@ -1492,9 +1491,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--accent, #7a9ec8);
   padding: 4px 0;
   cursor: pointer;
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
 }
-.fleet-chat-shape .pretty-expand-btn:hover { opacity: 1; }
+.fleet-chat-shape .pretty-expand-btn:hover { opacity: var(--ui-tone-full); }
 /* Open, the marker is not a control any more -- it is the fold line, marking
    where the card was folded. Skip: "the expand doesn't flip to collapse when
    expanded but almost vanishes. perhaps just a faint line running from spine
@@ -1512,7 +1511,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .semantic-operation-inspected {
   color: var(--text-dim, #666);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-active);
   padding: 2px 6px;
 }
 .fleet-chat-shape .semantic-operation-body {
@@ -1552,7 +1551,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   text-align: center;
   cursor: pointer;
   /* Skip: "you can't really see it is the problem." */
-  opacity: 0.9;
+  opacity: var(--ui-tone-full);
   z-index: 3;
   width: 52px;
   margin: 0;
@@ -1563,7 +1562,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   user-select: none !important;
   -webkit-user-select: none !important;
 }
-.fleet-chat-shape .semantic-operation-collapse:hover { opacity: 1; }
+.fleet-chat-shape .semantic-operation-collapse:hover { opacity: var(--ui-tone-full); }
 /* On a thread card the collapse exists only while the middle is open -- that is
    the only state where it does anything. Skip: "your collapse button should be
    invisible when the card is collapsed." The search card's collapse is
@@ -1583,7 +1582,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .semantic-operation-status {
   color: var(--text-dim, #666);
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-active);
   padding: 6px 2px;
 }
 .fleet-chat-shape .semantic-operation-more {
@@ -1593,9 +1592,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: pointer;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   padding: 5px 0;
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
 }
-.fleet-chat-shape .semantic-operation-more:hover { opacity: 1; }
+.fleet-chat-shape .semantic-operation-more:hover { opacity: var(--ui-tone-full); }
 /* Schedule / timer cards */
 .fleet-chat-shape .tool-pretty-schedule {
   display: flex;
@@ -1626,7 +1625,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .schedule-reason {
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   color: var(--text-dim);
-  opacity: var(--fleet-dim-alpha-80, 0.8);
+  opacity: var(--ui-tone-active);
 }
 
 /* --- Activity cards --- */
@@ -1675,11 +1674,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-activity-card .activity-ctx {
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   color: var(--text-dim, #666);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .chat-activity-card .activity-signal {
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   line-height: 1;
 }
 .fleet-chat-shape .chat-activity-card .activity-header .activity-signal { margin-left: auto; }
@@ -1692,19 +1691,19 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   float: right;
   font-size: var(--fleet-base-font, 11px);
   color: var(--text-dim, #666);
-  opacity: var(--fleet-dim-alpha-60, 0.6);
+  opacity: var(--ui-tone-rest);
   margin-left: 8px;
 }
 .fleet-chat-shape .chat-activity-card .activity-badge .activity-agent { font-weight: 500; }
 .fleet-chat-shape .chat-activity-card .activity-count {
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   color: var(--text-dim, #666);
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
   margin-left: 2px;
 }
 .fleet-chat-shape .chat-activity-card .activity-text-block {
   color: var(--text, #8888a0);
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
   font-size: var(--fleet-base-font, 11px);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1758,12 +1757,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .diff-new { background: rgba(95, 165, 110, 0.08); }
 .fleet-chat-shape .diff-label {
   font-weight: 600;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   margin-right: 4px;
 }
 .fleet-chat-shape .diff-side pre { margin: 0; white-space: pre-wrap; }
 .fleet-chat-shape .diff-side code { font-size: calc(var(--fleet-base-font, 11px) * 0.909091); }
-.fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: 0.6; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); }
+.fleet-chat-shape .diff-tex-raw { font-family: monospace; opacity: var(--ui-tone-rest); font-size: calc(var(--fleet-base-font, 11px) * 0.909091); }
 .fleet-chat-shape .edit-unified-diff {
   margin: 0;
   padding: 4px 6px;
@@ -1775,7 +1774,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .edit-unified-diff .diff-line { display: block; min-height: 1.2em; }
 .fleet-chat-shape .edit-unified-diff .diff-add { background: rgba(95, 165, 110, 0.12); }
 .fleet-chat-shape .edit-unified-diff .diff-del { background: rgba(190, 95, 95, 0.12); }
-.fleet-chat-shape .edit-unified-diff .diff-hunk { opacity: 0.7; font-weight: 600; }
+.fleet-chat-shape .edit-unified-diff .diff-hunk { opacity: var(--ui-tone-active); font-weight: 600; }
 
 /* Location + scope header above an edit diff (which file, line, ± size).
    Mirrors the dim, small .code-block-header convention. */
@@ -1786,22 +1785,22 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px 6px 0;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
 }
-.fleet-chat-shape .edit-diff-path { font-family: monospace; opacity: 0.55; }
-.fleet-chat-shape .edit-diff-stat { opacity: 0.4; font-variant-numeric: tabular-nums; }
+.fleet-chat-shape .edit-diff-path { font-family: monospace; opacity: var(--ui-tone-rest); }
+.fleet-chat-shape .edit-diff-stat { opacity: var(--ui-tone-dormant); font-variant-numeric: tabular-nums; }
 /* "tentative" marker for a not-yet-applied (proposed) edit — subtle, like
    .build-warning-badge: present but quiet. */
 .fleet-chat-shape .edit-diff-tentative {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 
 /* Compact apply line: "✓ edit applied  <proposal-ref>" */
 .fleet-chat-shape .tool-apply-line { display: flex; align-items: center; gap: 6px; }
-.fleet-chat-shape .apply-check { opacity: 0.6; }
-.fleet-chat-shape .apply-text { opacity: 0.7; }
-.fleet-chat-shape .apply-ref { font-family: monospace; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); opacity: 0.45; }
+.fleet-chat-shape .apply-check { opacity: var(--ui-tone-rest); }
+.fleet-chat-shape .apply-text { opacity: var(--ui-tone-active); }
+.fleet-chat-shape .apply-ref { font-family: monospace; font-size: calc(var(--fleet-base-font, 11px) * 0.909091); opacity: var(--ui-tone-rest); }
 
 /* --- Code cards (inside activity) --- */
 .fleet-chat-shape .code-block-wrap {
@@ -1816,7 +1815,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   gap: 6px;
   padding: 2px 6px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .code-block-wrap pre {
   margin: 0;
@@ -1839,7 +1838,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   transition: opacity 0.15s;
 }
 .fleet-chat-shape .doc-link:hover {
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .doc-link-unresolved {
   color: inherit;
@@ -1858,7 +1857,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-bottom: 1px solid rgba(128, 128, 128, 0.08);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-weight: 500;
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   letter-spacing: 0.3px;
   text-transform: uppercase;
   flex-shrink: 0;
@@ -1867,14 +1866,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-sort-toggle {
   margin-left: auto;
   cursor: pointer;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   user-select: none;
   transition: opacity 0.2s;
   padding: 0 2px;
 }
 .fleet-agents-shape .fleet-agents-sort-toggle:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-agents-shape .fleet-agents-body {
@@ -1888,7 +1887,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 
 .fleet-agents-shape .fleet-agents-empty {
   padding: 20px 8px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   text-align: center;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
 }
@@ -1902,13 +1901,13 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 2px 8px;
   border-top: 1px solid rgba(128, 128, 128, 0.08);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   flex-shrink: 0;
   transition: opacity 0.3s;
 }
 
 .fleet-agents-shape:hover .fleet-agents-health {
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 
 .fleet-health-dot-item {
@@ -1933,7 +1932,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 .fleet-health-label {
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 
 .fleet-agents-shape .fleet-agents-footer {
@@ -1944,14 +1943,14 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   justify-content: space-between;
   border-top: 1px solid rgba(128, 128, 128, 0.08);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   flex-shrink: 0;
   transition: opacity 0.2s;
   position: relative;
   overflow: visible;
 }
 .fleet-agents-shape:hover .fleet-agents-footer {
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-footer:has(.fleet-agents-spawn-btns.is-open) {
   opacity: 1;
@@ -2022,12 +2021,12 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
 .fleet-agents-shape .fleet-agents-detail-task {
   grid-column: 4;
   min-width: 0;
-  opacity: 0.72;
+  opacity: var(--ui-tone-rest);
   white-space: normal;
   overflow-wrap: anywhere;
 }
 .fleet-agents-shape .fleet-agents-detail-message {
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-style: italic;
   white-space: nowrap;
   overflow: hidden;
@@ -2037,7 +2036,7 @@ body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-foote
 .fleet-agents-shape .fleet-agents-detail-health,
 .fleet-agents-shape .fleet-agents-health {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
   color: #d79a62;
   background: rgba(215, 154, 98, 0.12);
   border-radius: 2px;
@@ -2087,7 +2086,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   max-width: 70px;
   line-height: 14px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.78;
+  opacity: var(--ui-tone-active);
 }
 .fleet-agents-shape .fleet-agents-metadata-chip[data-kind="model"],
 .fleet-agents-shape .fleet-agents-metadata-chip[data-kind="option"] {
@@ -2133,7 +2132,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   flex: 0 0 10px;
   width: 10px;
   text-align: center;
-  opacity: 0.72;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-agents-shape .fleet-agents-metadata-value {
   min-width: 0;
@@ -2170,7 +2169,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   max-width: 96px;
   line-height: 14px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.78;
+  opacity: var(--ui-tone-active);
 }
 .fleet-agents-shape .fleet-agents-detail-label-chip.compact .fleet-agents-detail-label-content {
   display: inline-flex;
@@ -2186,7 +2185,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
 }
 .fleet-agents-shape .fleet-agents-detail-label-glyph {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 
 /* --- Column widths --- */
@@ -2207,7 +2206,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   flex: 1;
   min-width: 0;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
   display: flex;
   align-items: baseline;
   gap: 4px;
@@ -2240,7 +2239,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   flex-shrink: 0;
   text-align: right;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   margin-right: 8px;
   white-space: nowrap;
 }
@@ -2250,7 +2249,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   flex-shrink: 0;
   text-align: right;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
   margin-right: 6px;
 }
 
@@ -2273,7 +2272,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   white-space: nowrap;
   cursor: grab;
   touch-action: none;
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
 }
 
 /* --- Phone: hide the TLDraw toolbar (eats screen; its tools aren't used in this
@@ -2300,23 +2299,6 @@ body.phone-mode .fleet-agents-col-ctx,
 body.phone-mode .fleet-agents-col-labels {
   touch-action: none;
 }
-
-/* --- Phone: the fleet panels sit at a semi-transparent RESTING opacity that only
-   reveals to full on mouse hover. Phone has no hover, so the panels (and their
-   text) stay washed out — "way more washed out on phone than other devices."
-   Pin them to full opacity on the phone surface. (Skip.) --- */
-body.phone-mode .fleet-hud-wrap .tl-shape {
-  opacity: 1 !important;
-}
-
-/* --- Phone: bump contrast — the faint dark-on-dark metadata is hard to read on
-   a small screen. Modest opacity lifts, scoped to .phone-mode. (Skip.) --- */
-body.phone-mode .fleet-agents-col-task { opacity: 0.85; }
-body.phone-mode .fleet-agents-col-seen { opacity: 0.8; }
-body.phone-mode .fleet-agents-col-ctx { opacity: 0.9; }
-body.phone-mode .fleet-agents-metadata-chip { opacity: 0.9; }
-body.phone-mode .fleet-agents-empty { opacity: 0.7; }
-body.phone-mode .fleet-agents-sort-toggle { opacity: 0.75; }
 
 /* --- Phone: bigger touch targets + a real scrollbar in the agents panel ---
    On phone the 9px/8px rows are too small to grab with a thumb, and the list
@@ -2361,7 +2343,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   padding: 2px 8px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-weight: 600;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   letter-spacing: 0.5px;
   text-transform: uppercase;
   border-top: 1px solid rgba(128, 128, 128, 0.06);
@@ -2373,7 +2355,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.636364);
 }
 .fleet-agents-shape .fleet-agents-section-count {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 
 /* --- Respawn button --- */
@@ -2399,7 +2381,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-kill-btn {
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.2s;
   cursor: pointer;
   font-size: calc(var(--fleet-base-font, 11px) * 1.272727);
@@ -2423,7 +2405,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   line-height: 22px;
   font-size: calc(var(--fleet-base-font, 11px) * 1.772727);
   cursor: grab;
-  opacity: 0.72;
+  opacity: var(--ui-tone-active);
   border-radius: 3px;
 }
 .fleet-filter-replace-zone-disabled {
@@ -2432,18 +2414,18 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-fold-btn,
 .fleet-agents-shape .fleet-agents-row:hover .fleet-agents-kill-btn {
-  opacity: 0.78;
+  opacity: var(--ui-tone-active);
 }
 .fleet-agents-shape .fleet-agents-fold-btn:hover {
-  opacity: 1 !important;
+  opacity: var(--ui-tone-full) !important;
   background: rgba(255, 255, 255, 0.08);
 }
 .fleet-agents-shape .fleet-agents-kill-btn:hover {
-  opacity: 1 !important;
+  opacity: var(--ui-tone-full) !important;
   color: #e88;
 }
 .fleet-agents-shape .fleet-agents-respawn-btn:hover {
-  opacity: 1 !important;
+  opacity: var(--ui-tone-full) !important;
 }
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-respawn-btn,
 .fleet-agents-shape .fleet-agents-row.dimmed .fleet-agents-fold-btn,
@@ -2469,15 +2451,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 /* Dismiss button (×) — same slot as kill-btn; subtle until hovered */
 .fleet-agents-shape .fleet-agents-opt-dismiss {
-  opacity: 0.1;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   color: rgba(232, 136, 136, 0.9);
 }
 .fleet-agents-shape .fleet-agents-row--spawn-error:hover .fleet-agents-opt-dismiss {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-agents-shape .fleet-agents-opt-dismiss:hover {
-  opacity: 1 !important;
+  opacity: var(--ui-tone-full) !important;
 }
 /* Error icon */
 .fleet-agents-shape .fleet-agents-opt-error-icon {
@@ -2491,16 +2473,16 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   padding: 0 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   font-family: inherit;
-  opacity: 0.1;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   cursor: pointer;
   color: rgba(122, 180, 122, 0.9);
 }
 .fleet-agents-shape .fleet-agents-row--spawn-error:hover .fleet-agents-opt-retry {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-agents-shape .fleet-agents-opt-retry:hover {
-  opacity: 1 !important;
+  opacity: var(--ui-tone-full) !important;
 }
 /* Touch targets: coarse pointer (iPad/phone) needs 44×44 minimum */
 @media (pointer: coarse) {
@@ -2569,7 +2551,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   background: var(--surface);
   border-top: 1px solid var(--border);
   box-shadow: 0 -4px 12px var(--shadow-lg, rgba(0,0,0,0.3));
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .fleet-agents-shape .fleet-agents-mint-fields {
   display: flex;
@@ -2591,7 +2573,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-mint-field {
   min-height: 26px;
   padding: 4px 7px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-agents-shape .fleet-agents-mint-field.is-active {
   background: var(--glass-4);
@@ -2611,7 +2593,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   min-height: 24px;
   padding: 4px 7px;
   background: rgba(128,128,128,0.06);
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-agents-shape .fleet-agents-mint-choice:hover,
 .fleet-agents-shape .fleet-agents-mint-choice.is-active {
@@ -2622,7 +2604,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-agents-shape .fleet-agents-mint-empty {
   padding: 5px 7px;
   color: var(--text-dim);
-  opacity: var(--fleet-dim-alpha-65, 0.65);
+  opacity: var(--ui-tone-rest);
 }
 @media (pointer: coarse) {
   .fleet-agents-shape .fleet-agents-mint-field,
@@ -2688,7 +2670,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-family: inherit;
   color: var(--text-dim);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-active);
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
@@ -2719,7 +2701,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-dim);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-active);
 }
 .fleet-agents-shape .fleet-agents-spawn-dropdown-item {
   padding: 2px 6px;
@@ -2745,11 +2727,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   padding: 0 5px;
   line-height: 16px;
   cursor: pointer;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   flex-shrink: 0;
 }
 .fleet-agents-shape .fleet-agents-spawn-btn:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   border-color: rgba(128,128,128,0.4);
 }
 .fleet-agents-shape .fleet-agents-spawn-btn.is-disabled {
@@ -2790,7 +2772,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-weight: 400;
   line-height: 14px;
-  opacity: 0.58;
+  opacity: var(--ui-tone-rest);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2800,7 +2782,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    colour, less presence — it has to read as part of the expression while still
    being visibly not yours. */
 .fleet-search-query-chip-implied {
-  opacity: 0.45;
+  opacity: var(--ui-tone-dormant);
 }
 
 .fleet-search-autocomplete {
@@ -2843,7 +2825,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-search-autocomplete-detail {
   flex-shrink: 0;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
 }
 
 .fleet-search-section-header {
@@ -2862,7 +2844,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-weight: 600;
 }
 .fleet-search-section-count {
-  opacity: 0.58;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-search-section-detail {
   min-width: 0;
@@ -2872,7 +2854,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   white-space: nowrap;
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   text-transform: none;
-  opacity: 0.42;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-search-results-summary {
   padding: 4px 10px;
@@ -2942,15 +2924,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-search-document-title {
   font-weight: 500;
-  opacity: 0.82;
+  opacity: var(--ui-tone-active);
 }
 .fleet-search-document-where {
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.46;
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-search-document-snippet {
   margin-top: 2px;
-  opacity: 0.72;
+  opacity: var(--ui-tone-active);
 }
 .fleet-search-result mark {
   background: rgba(255, 220, 80, 0.25);
@@ -2963,7 +2945,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   top: 4px;
   right: 6px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   pointer-events: auto;
   cursor: pointer;
   line-height: 1;
@@ -2972,7 +2954,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   -webkit-user-select: none !important;
 }
 .fleet-search-result:hover .search-result-open {
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-search-result.expanded {
   background: rgba(100, 140, 255, 0.04);
@@ -2986,7 +2968,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-search-context-header {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 3px;
@@ -3011,12 +2993,12 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   font-family: inherit;
   color: inherit;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   cursor: pointer;
   transition: opacity 0.15s;
 }
 .fleet-search-chat-back:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-full);
 }
 
 /* Highlight a chat line when scrolled to from search */
@@ -3034,20 +3016,20 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    chip — slightly dimmer/lighter than the filename so it reads as secondary. */
 .fleet-chat-shape .src-chip .src-chip-section {
   margin-left: 3px;
-  opacity: 0.65;
+  opacity: var(--ui-tone-rest);
   font-weight: 400;
 }
 
 .fleet-chat-shape .ref-chip-pending {
   border-style: dashed;
-  opacity: 0.88;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-chat-shape .chat-attachment-footnote {
   margin-top: 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   line-height: 1.25;
-  opacity: 0.72;
+  opacity: var(--ui-tone-active);
 }
 
 /* Amend version stepper (V{n} ◀▶) — subtle, reveals on row hover. Present only
@@ -3058,15 +3040,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   gap: 2px;
   margin-left: 5px;
   vertical-align: baseline;
-  opacity: 0.3;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.2s;
   user-select: none;
 }
-.fleet-chat-shape .chat-line:hover .amend-versions { opacity: 0.65; }
+.fleet-chat-shape .chat-line:hover .amend-versions { opacity: var(--ui-tone-rest); }
 .fleet-chat-shape .amend-vlabel {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   letter-spacing: 0.03em;
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .amend-arrow {
   background: none;
@@ -3077,9 +3059,9 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   line-height: 1;
   cursor: pointer;
   color: inherit;
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
 }
-.fleet-chat-shape .amend-arrow:hover:not([disabled]) { opacity: 1; }
+.fleet-chat-shape .amend-arrow:hover:not([disabled]) { opacity: var(--ui-tone-full); }
 .fleet-chat-shape .amend-arrow[disabled] { opacity: 0.2; cursor: default; }
 
 .fleet-chat-shape .ref-chip {
@@ -3203,7 +3185,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-chat-shape .ref-chip-version {
   margin-left: 4px;
-  opacity: 0.62;
+  opacity: var(--ui-tone-rest);
   font-size: 0.86em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -3258,7 +3240,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 }
 .fleet-chat-shape .ref-chip-loc {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   margin-left: 2px;
 }
 
@@ -3299,17 +3281,17 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-chat-shape .md-expand-title {
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   font-weight: 600;
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-chat-shape .md-expand-close {
   cursor: pointer;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   transition: opacity 0.2s;
 }
 .fleet-chat-shape .md-expand-close:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-full);
 }
 
 .fleet-chat-shape .md-expand-body {
@@ -3363,7 +3345,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-chat-shape .md-expand-loading,
 .fleet-chat-shape .md-expand-error {
   padding: 8px 10px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   font-style: italic;
 }
@@ -3539,7 +3521,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .cluster-updated {
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: var(--fleet-dim-alpha-70, 0.7);
+  opacity: var(--ui-tone-rest);
 }
 
 .cluster-refresh-btn {
@@ -3550,11 +3532,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   padding: 0 2px;
   line-height: 1;
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s;
 }
 .cluster-refresh-btn:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 
 .cluster-body {
@@ -3661,7 +3643,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.681818);
   margin-bottom: 3px;
-  opacity: var(--fleet-dim-alpha-60, 0.6);
+  opacity: var(--ui-tone-rest);
 }
 
 .cluster-section-header {
@@ -3672,15 +3654,15 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   cursor: pointer;
-  opacity: var(--fleet-dim-alpha-60, 0.6);
+  opacity: var(--ui-tone-rest);
   border-top: 1px solid var(--border);
   margin-top: 2px;
 }
 .cluster-section-header:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 .cluster-section-count {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 
 .cluster-row-done {
@@ -3721,11 +3703,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   flex-shrink: 0;
   color: var(--text-dim);
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
-  opacity: var(--fleet-dim-alpha-10, 0.1);
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
 }
 .cluster-shape:hover .cluster-footer {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 
 /* --- HUD Container (transient layout mode container) --- */
@@ -3799,7 +3781,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   transform: translateY(-50%);
   border-radius: 999px;
   background: rgba(122, 158, 200, 0.30);
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.15s;
   pointer-events: none;
 }
@@ -3808,21 +3790,21 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
    moving (main.tsx), so a rail you hovered and held still on went dark under
    your own cursor. Pointer capability is the actual question here. */
 @media (hover: hover) {
-  .fleet-chat-shape .fleet-composer-gutter:hover::before { opacity: 1; }
+  .fleet-chat-shape .fleet-composer-gutter:hover::before { opacity: var(--ui-tone-full); }
 }
 .fleet-chat-shape .fleet-composer-gutter.rail-dragging::before {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 /* Skip: "the hover would highlight a strip in the center and also all the tools.
    And the current one would just be highlighted more." The tools sit at 0.05–0.22
    at rest so they stay out of the way; touching the rail brings the whole set up
    together, which is what says they are one control. */
 @media (hover: hover) {
-  .fleet-chat-shape .fleet-composer-gutter:hover [data-composer-rail-action] { opacity: 0.5; }
-  .fleet-chat-shape .fleet-composer-gutter [data-composer-rail-action]:hover { opacity: 1; }
+  .fleet-chat-shape .fleet-composer-gutter:hover [data-composer-rail-action] { opacity: var(--ui-tone-rest); }
+  .fleet-chat-shape .fleet-composer-gutter [data-composer-rail-action]:hover { opacity: var(--ui-tone-full); }
 }
 .fleet-chat-shape .fleet-composer-gutter.rail-dragging [data-composer-rail-action] {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 /* Bigger marks are a phone want, not a desktop one. Skip, after seeing 1.5x and
    then 1.25x on a desktop: "honestly, regarding making them bigger, I don't
@@ -3858,11 +3840,11 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 @keyframes fleet-composer-rail-lift {
   from {
-    opacity: 0;
+    opacity: var(--ui-tone-hidden);
     transform: translateX(-50%) translateY(3px) scale(0.92);
   }
   to {
-    opacity: 1;
+    opacity: var(--ui-tone-full);
     transform: translateX(-50%) translateY(-2px) scale(1);
   }
 }
@@ -3874,7 +3856,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.05;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 4px;
   display: flex;
@@ -3883,7 +3865,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
 }
 .fleet-chat-shape .fleet-hardlock-toggle:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-active);
 }
 /* Active = hard-locked: keep visible even without hover */
 .fleet-chat-shape .fleet-hardlock-toggle[title*="Hard-locked"] {
@@ -3906,7 +3888,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.05;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 4px;
   display: flex;
@@ -3915,7 +3897,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
 }
 .fleet-chat-shape .fleet-composer-image-toggle:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-active);
 }
 
 .fleet-chat-shape .fleet-terminal-icon {
@@ -3926,7 +3908,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.05;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 4px;
   display: flex;
@@ -3935,7 +3917,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
 }
 .fleet-chat-shape .fleet-terminal-icon:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .fleet-terminal-icon.unavailable {
   /* No cursor change. Skip: "It gives me a fucking question mark. I don't want
@@ -3964,7 +3946,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.22;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 6px;
   display: inline-flex;
@@ -3991,7 +3973,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0.12;
+  opacity: var(--ui-tone-dormant);
   transition: opacity 0.3s;
   padding: 0 5px;
   display: flex;
@@ -4008,7 +3990,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:hover,
 .fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {
-  opacity: 0.65;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:disabled {
   cursor: default;
@@ -4266,11 +4248,11 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   height: 18px;
   padding: 0 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.2s;
   background: var(--glass-bg, rgba(30,30,30,0.7));
 }
-.fleet-docview:hover .fleet-docview-nav { opacity: 0.8; }
+.fleet-docview:hover .fleet-docview-nav { opacity: var(--ui-tone-active); }
 .fleet-source-editor {
   position: relative;
   overflow: hidden;
@@ -4297,7 +4279,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   color: var(--text-dim, #8888a0);
   font: calc(var(--fleet-base-font, 11px) * 0.909091)/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
   pointer-events: none;
-  opacity: var(--fleet-dim-alpha-24, 0.24);
+  opacity: var(--ui-tone-dormant);
 }
 .fleet-source-editor-vim {
   color: inherit;
@@ -4361,14 +4343,14 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   gap: 6px;
   padding: 1px 10px;
   color: var(--text-dim, #8888a0);
-  opacity: var(--fleet-dim-alpha-20, 0.2);
+  opacity: var(--ui-tone-dormant);
   font: calc(var(--fleet-base-font, 11px) * 0.727273)/1.2 ui-monospace, "SF Mono", Monaco, monospace;
   pointer-events: none;
   user-select: none;
   transition: opacity 0.2s;
 }
 .fleet-source-editor-seam:hover {
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-source-editor-seam span {
   white-space: nowrap;
@@ -4376,7 +4358,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 .fleet-source-editor-seam div {
   height: 1px;
   background: currentColor;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-source-editor:has(.cm-vim-panel) .fleet-source-editor-status {
   visibility: hidden;
@@ -4392,7 +4374,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   background: transparent;
   color: var(--text-dim, #8888a0);
   font: calc(var(--fleet-base-font, 11px) * 0.909091)/1.2 "SF Mono", Menlo, Monaco, "Courier New", monospace;
-  opacity: var(--fleet-dim-alpha-56, 0.56);
+  opacity: var(--ui-tone-rest);
 }
 .fleet-source-editor .cm-vim-panel {
   min-height: 16px;
@@ -4437,9 +4419,9 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   font-size: var(--fleet-base-font, 11px);
   cursor: pointer;
   padding: 0 3px;
-  opacity: 0.6;
+  opacity: var(--ui-tone-rest);
 }
-.docview-nav-btn:hover { opacity: 1; }
+.docview-nav-btn:hover { opacity: var(--ui-tone-full); }
 .docview-nav-btn:disabled { opacity: 0.2; cursor: default; }
 .docview-nav-title {
   flex: 1;
@@ -4491,7 +4473,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   cursor: pointer;
   padding: 0 4px;
 }
-.docview-sources-back:hover { opacity: 0.8; }
+.docview-sources-back:hover { opacity: var(--ui-tone-active); }
 .docview-source-row {
   display: flex;
   align-items: center;
@@ -4797,14 +4779,14 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   line-height: 1;
   margin: 0 2px;
   vertical-align: middle;
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
   transition: opacity 0.15s;
 }
 .fleet-chat-shape .plan-mode-badge.plan-badge-click {
   cursor: pointer;
 }
 .fleet-chat-shape .plan-mode-badge.plan-badge-click:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 
 /* --- Doc Clip Shape --- */
@@ -4847,17 +4829,17 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   border: none;
   color: inherit;
   cursor: pointer;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.2s;
   padding: 0 2px;
 }
 
 .doc-clip-shape:hover .doc-clip-close {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 
 .doc-clip-close:hover {
-  opacity: 1 !important;
+  opacity: var(--ui-tone-full) !important;
   color: #e88;
 }
 
@@ -4905,12 +4887,12 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 }
 .fleet-chat-shape .bullet-card-author {
   font-weight: 400;
-  opacity: 0.7;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .bullet-card-depth {
   font-family: 'SF Mono', 'Menlo', monospace;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   margin-left: 4px;
 }
 .fleet-chat-shape .bullet-card-go {
@@ -4922,10 +4904,10 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   font-size: calc(var(--fleet-base-font, 11px) * 1.181818);
   padding: 0 3px;
   line-height: 1;
-  opacity: var(--fleet-dim-alpha-50, 0.5);
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .bullet-card-go:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   color: var(--text-bright);
 }
 .fleet-chat-shape .bullet-card-body {
@@ -4942,7 +4924,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   padding: 2px 8px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   color: var(--text-dim);
-  opacity: var(--fleet-dim-alpha-80, 0.8);
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .fleet-dead-reanimate {
   color: var(--accent);
@@ -4951,7 +4933,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   text-underline-offset: 2px;
 }
 .fleet-chat-shape .fleet-dead-reanimate:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   color: var(--text-bright);
 }
 
@@ -4968,7 +4950,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   white-space: nowrap;
 }
 .fleet-chat-shape .suggestion-chip-label {
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   cursor: pointer;
   transition: opacity 0.2s;
   /* Cap each label so a long one can't blow out the row — the full label +
@@ -4981,24 +4963,24 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   vertical-align: bottom;
 }
 .fleet-chat-shape .suggestion-chip-label:hover {
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .suggestion-group-sep {
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
 }
 /* Dismiss ✕ on the LEFT of the group — invisible at rest, fades in on group hover. */
 .fleet-chat-shape .suggestion-chip-x {
   margin-right: 4px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   cursor: pointer;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.15s;
 }
 .fleet-chat-shape .suggestion-group:hover .suggestion-chip-x {
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-chat-shape .suggestion-chip-x:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
 }
 
 /* The tooltip is its own object rendered ABOVE the shapes in the HUD layer
@@ -5059,17 +5041,17 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   margin-bottom: 5px;
 }
-.fleet-skill-hover-empty { opacity: 0.4; font-style: italic; }
+.fleet-skill-hover-empty { opacity: var(--ui-tone-dormant); font-style: italic; }
 .fleet-skill-hover-section { margin-bottom: 5px; }
 .fleet-skill-hover-section:last-child { margin-bottom: 0; }
 .fleet-skill-hover-label {
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
   margin-bottom: 2px;
 }
 .fleet-skill-hover-label.owed { color: rgba(235, 170, 70, 0.9); opacity: 0.85; }
@@ -5088,4 +5070,4 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 .fleet-skill-chip.dismissed { color: rgba(210, 160, 210, 0.9); background: rgba(200, 130, 200, 0.1); border-color: rgba(200, 130, 200, 0.2); }
 .fleet-skill-chip.read { color: rgba(150, 210, 175, 0.85); }
 .fleet-skill-dismissed-row { display: flex; align-items: baseline; gap: 4px; margin-bottom: 2px; flex-wrap: wrap; }
-.fleet-skill-reason { font-style: italic; opacity: 0.55; font-size: calc(var(--fleet-base-font, 11px) * 0.818182); }
+.fleet-skill-reason { font-style: italic; opacity: var(--ui-tone-rest); font-size: calc(var(--fleet-base-font, 11px) * 0.818182); }

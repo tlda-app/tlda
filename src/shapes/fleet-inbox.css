@@ -23,7 +23,7 @@
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-inbox-filter-btn {
   width: 18px;
@@ -34,7 +34,7 @@
   border: none;
   background: none;
   color: inherit;
-  opacity: 0.38;
+  opacity: var(--ui-tone-dormant);
   padding: 0;
   cursor: pointer;
   transition: opacity 0.15s, background 0.15s;
@@ -56,7 +56,7 @@
   border-radius: 7px;
   background: rgba(120, 160, 220, 0.1);
   color: var(--text, #cdd);
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -68,12 +68,12 @@
   font-size: 9px;
   font-family: inherit;
   color: inherit;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   cursor: pointer;
   transition: opacity 0.15s;
 }
 .fleet-inbox-back:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-active);
 }
 .fleet-inbox-thread-name {
   font-size: 11px;
@@ -85,7 +85,7 @@
 .fleet-inbox-detail-title {
   font-size: 11px;
   font-weight: 500;
-  opacity: 0.78;
+  opacity: var(--ui-tone-active);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -97,11 +97,11 @@
   display: inline-flex;
   gap: 1px;
   font-size: 9px;
-  opacity: 0.5;
+  opacity: var(--ui-tone-rest);
   transition: opacity 0.15s;
 }
 .fleet-inbox-header:hover .fleet-inbox-sort {
-  opacity: 0.8;
+  opacity: var(--ui-tone-active);
 }
 .fleet-inbox-sort-btn {
   background: none;
@@ -110,13 +110,13 @@
   font-family: inherit;
   font-size: 9px;
   color: inherit;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
   cursor: pointer;
   border-radius: 3px;
   transition: opacity 0.12s, background 0.12s;
 }
 .fleet-inbox-sort-btn:hover {
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
 }
 .fleet-inbox-sort-btn.active {
   opacity: 1;
@@ -132,7 +132,7 @@
 }
 .fleet-inbox-empty {
   padding: 20px 10px;
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   text-align: center;
   font-size: 10px;
 }
@@ -167,7 +167,7 @@
 .fleet-inbox-thread-time {
   margin-left: auto;
   font-size: 9px;
-  opacity: 0.35;
+  opacity: var(--ui-tone-dormant);
   flex-shrink: 0;
 }
 .fleet-inbox-thread-badge {
@@ -178,7 +178,7 @@
   border-radius: 7px;
   background: rgba(120, 160, 220, 0.1);
   color: var(--text, #cdd);
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -195,7 +195,7 @@
 }
 .fleet-inbox-thread-preview {
   font-size: 10px;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -220,13 +220,13 @@
   color: inherit;
   font: inherit;
   font-size: 9px;
-  opacity: 0.74;
+  opacity: var(--ui-tone-rest);
   cursor: pointer;
   touch-action: manipulation;
 }
 .fleet-inbox-markdown-chip:hover,
 .fleet-inbox-markdown-chip:active {
-  opacity: 0.95;
+  opacity: var(--ui-tone-active);
   background: rgba(99, 160, 219, 0.2);
   border-color: rgba(99, 160, 219, 0.38);
 }
@@ -234,7 +234,7 @@
   flex: 0 0 auto;
   font-size: 8px;
   text-transform: uppercase;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-inbox-markdown-chip-label {
   min-width: 0;
@@ -247,7 +247,7 @@
   inset-block: 0;
   width: 74%;
   pointer-events: none;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transform: scaleX(0);
   transition: opacity 0.08s, transform 0.08s;
   display: flex;
@@ -278,7 +278,7 @@
   height: 6px;
   border-radius: 999px;
   background: currentColor;
-  opacity: 0.55;
+  opacity: var(--ui-tone-rest);
   transform: translateY(-50%);
 }
 .fleet-inbox-thread-action::after {
@@ -289,7 +289,7 @@
   height: 20px;
   border-top: 6px solid currentColor;
   border-left: 6px solid currentColor;
-  opacity: 0.58;
+  opacity: var(--ui-tone-rest);
 }
 .fleet-inbox-thread-action-stack::before {
   left: 20px;
@@ -313,7 +313,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.95;
+  opacity: var(--ui-tone-active);
   position: relative;
   z-index: 1;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -386,7 +386,7 @@
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
   padding: 6px 10px 2px;
 }
 .fleet-inbox-task {
@@ -404,7 +404,7 @@
 }
 .fleet-inbox-task-icon {
   font-size: 10px;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
   color: #c8965a;
   flex-shrink: 0;
 }
@@ -414,7 +414,7 @@
 }
 .fleet-inbox-task-sub {
   font-size: 10px;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   margin-top: 1px;
   padding-left: 16px;
   overflow: hidden;
@@ -429,7 +429,7 @@
   border-radius: 7px;
   background: rgba(200, 150, 70, 0.14);
   color: #c8965a;
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -464,7 +464,7 @@
 }
 .fleet-inbox-node-icon {
   font-size: 10px;
-  opacity: 0.7;
+  opacity: var(--ui-tone-rest);
   color: #c8965a;
   flex-shrink: 0;
 }
@@ -480,7 +480,7 @@
 }
 .fleet-inbox-node-sub {
   font-size: 10px;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   margin-top: 1px;
   padding-left: 16px;
   overflow: hidden;
@@ -499,14 +499,14 @@
   padding: 1px 6px;
   border-radius: 3px;
   cursor: pointer;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.15s, background 0.12s;
 }
 .fleet-inbox-node-direct:hover .fleet-inbox-node-approve {
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
 }
 .fleet-inbox-node-approve:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   background: rgba(200, 150, 70, 0.14);
 }
 
@@ -532,7 +532,7 @@
 }
 .fleet-inbox-note-dot {
   font-size: 8px;
-  opacity: 0.65;
+  opacity: var(--ui-tone-rest);
   color: #7a9ec8;
   flex-shrink: 0;
 }
@@ -545,7 +545,7 @@
 }
 .fleet-inbox-note-sub {
   font-size: 10px;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   margin-top: 1px;
   padding-left: 14px;
   overflow: hidden;
@@ -568,7 +568,7 @@
   padding: 24px 12px;
   text-align: center;
   font-size: 10px;
-  opacity: 0.4;
+  opacity: var(--ui-tone-dormant);
 }
 .cascade-graph-node {
   box-sizing: border-box;
@@ -603,7 +603,7 @@
 .cascade-graph-node-approve {
   font-size: 8.5px;
   color: #c8965a;
-  opacity: 0;
+  opacity: var(--ui-tone-hidden);
   transition: opacity 0.12s;
 }
 .cascade-graph-node.root:hover .cascade-graph-node-approve {
@@ -618,7 +618,7 @@
   border-radius: 7px;
   background: rgba(120, 160, 220, 0.14);
   color: #7a9ec8;
-  opacity: 0.85;
+  opacity: var(--ui-tone-active);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -645,34 +645,34 @@
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  opacity: 0.38;
+  opacity: var(--ui-tone-dormant);
   margin-bottom: 8px;
 }
 .fleet-inbox-detail-heading {
   font-size: 13px;
   font-weight: 550;
   line-height: 1.3;
-  opacity: 0.9;
+  opacity: var(--ui-tone-active);
   margin-bottom: 4px;
 }
 .fleet-inbox-detail-body {
   font-size: 12px;
   line-height: 1.45;
-  opacity: 0.86;
+  opacity: var(--ui-tone-active);
 }
 .fleet-inbox-detail-body p {
   margin: 0 0 8px;
 }
 .fleet-inbox-detail-meta {
   font-size: 10px;
-  opacity: 0.45;
+  opacity: var(--ui-tone-rest);
   margin-top: 8px;
   overflow-wrap: anywhere;
 }
 .fleet-inbox-detail-copy {
   font-size: 11px;
   line-height: 1.45;
-  opacity: 0.62;
+  opacity: var(--ui-tone-rest);
   margin-top: 10px;
 }
 /* The expanded detail is the inbox's recovery/reading surface — a user must be
@@ -700,11 +700,11 @@
   padding: 3px 8px;
   border-radius: 3px;
   cursor: pointer;
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
   transition: opacity 0.15s, background 0.12s;
 }
 .fleet-inbox-detail-approve:hover {
-  opacity: 1;
+  opacity: var(--ui-tone-full);
   background: rgba(200, 150, 70, 0.14);
 }
 
