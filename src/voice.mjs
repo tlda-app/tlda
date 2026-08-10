@@ -88,11 +88,39 @@ const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:817
 // before opening this socket. Empty means no voice box is configured.
 let _directBridgeUrl = ''
 
+// The voice box address, remembered across reloads.
+//
+// The start request that carries this address goes to the APP server, and the
+// same-origin fallback below is also the app server. So an app deploy took voice
+// down with it: restart the app, reload the page, module state is empty, the
+// start request fails against the restarting server, and voice then falls back
+// to that same restarting server instead of the voice box — which is the one
+// thing the separate voice box exists to prevent. Remembering the address is
+// what lets a reload during a deploy still reach it.
+const VOICE_BOX_URL_KEY = 'tlda.voiceBoxUrl'
+
+function rememberVoiceBoxUrl(url) {
+  try {
+    if (url) localStorage.setItem(VOICE_BOX_URL_KEY, url)
+    else localStorage.removeItem(VOICE_BOX_URL_KEY)
+  } catch { /* private mode or storage disabled — in-memory value still works this session */ }
+}
+
+function rememberedVoiceBoxUrl() {
+  try { return localStorage.getItem(VOICE_BOX_URL_KEY) || '' } catch { return '' }
+}
+
 // Record the voice-box address the server advertises. Logged on change, because
 // which machine his audio goes to is exactly the thing that must never quietly
 // differ from what we think it is.
+//
+// Only a reply reaches here — the callers do not call this when the request
+// throws, so a failed start leaves both the live value and the remembered one
+// alone. A reply that names no voice box still means there is none, and clears
+// the remembered address, or a decommissioned box would be reached forever.
 function setDirectBridgeUrl(url) {
   const next = typeof url === 'string' ? url : ''
+  rememberVoiceBoxUrl(next)
   if (next === _directBridgeUrl) return
   _directBridgeUrl = next
   console.log(next
@@ -106,6 +134,14 @@ function deepgramBridgeUrl() {
   // the app cannot cut Skip off mid-sentence. Reachability is by tailnet
   // membership, which is the whole auth posture - no token is appended.
   if (_directBridgeUrl) return _directBridgeUrl
+  // The server did not tell us this session — typically because it is mid-deploy,
+  // which is exactly when falling back to it is wrong. Use the box we reached last
+  // time. Logged, never silent: this is a claim about where his audio is going.
+  const remembered = rememberedVoiceBoxUrl()
+  if (remembered) {
+    console.log(`voice: server unreachable for the voice box address - using the one from last session at ${remembered}`)
+    return remembered
+  }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return appendToken(`${proto}://${location.host}/voice/deepgram-sdk`)
 }
