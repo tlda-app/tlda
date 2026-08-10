@@ -30,7 +30,7 @@
   border-radius: 7px;
   background: rgba(120, 160, 220, 0.12);
   font-size: 9px;
-  opacity: 0.75;
+  opacity: var(--ui-tone-active);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -83,7 +83,7 @@
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  opacity: 0.45;
+  opacity: var(--ui-tone-dormant);
 }
 
 .fleet-notification-dismiss {
@@ -101,7 +101,7 @@
 }
 
 .fleet-notification-dismiss:hover {
-  opacity: 0.9;
+  opacity: var(--ui-tone-active);
   background: rgba(128, 128, 128, 0.12);
 }
 
@@ -134,10 +134,10 @@
   font-family: inherit;
   font-size: 10px;
   padding: 3px 7px;
-  opacity: 0.72;
+  opacity: var(--ui-tone-rest);
 }
 
 .fleet-notification-actions button:hover {
   background: rgba(128, 128, 128, 0.16);
-  opacity: 0.95;
+  opacity: var(--ui-tone-active);
 }
