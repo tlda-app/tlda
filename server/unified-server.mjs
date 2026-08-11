@@ -890,7 +890,7 @@ function wakeNotifyDelayMs(agent) {
 }
 
 function wakeNotifyReadyTimeoutMs(agent) {
-  return wakeHarnessKind(agent) === 'claude' ? 30_000 : 0
+  return wakeHarnessKind(agent) === 'claude' ? 90_000 : 0
 }
 
 async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {

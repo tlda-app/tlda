@@ -866,13 +866,16 @@ const wakeMint = createDaemonWakeCore({
   notifyAgent: async ({ agentId, text, enterDelayMs, readyTimeoutMs, clearBeforeText }) => {
     if (!agentId) return null
     try {
-      return await terminalRpc.handlers['notify-agent']({
+      const result = await terminalRpc.handlers['notify-agent']({
         agent_id: agentId,
         text,
         enter_delay_ms: enterDelayMs,
         ready_timeout_ms: readyTimeoutMs,
         clear_before_text: clearBeforeText,
       })
+      const level = result?.ok ? 'info' : 'warn'
+      log[level](`wake notify result for ${agentId}: ok=${!!result?.ok} via=${result?.via || 'none'} reason=${result?.reason || 'none'} ready_timeout_ms=${readyTimeoutMs ?? 'none'}`)
+      return result
     } catch (e) {
       log.warn(`wake notify failed for ${agentId}: ${e.message}`)
       return null

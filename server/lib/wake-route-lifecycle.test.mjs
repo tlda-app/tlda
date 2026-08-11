@@ -6,7 +6,7 @@ import { runWakeRouteLifecycle } from './wake-route-lifecycle.mjs'
 
 // Wake and tell are one call: the daemon is the only side that knows whether it
 // started a process, so it decides whether the return notice goes on the front.
-function rig({ alive, notifyDelayMs = 400, notifyReadyTimeoutMs = 30000 }) {
+function rig({ alive, notifyDelayMs = 400, notifyReadyTimeoutMs = 90000 }) {
   const injected = []
   const wakeParams = []
   const sleeps = []
@@ -62,7 +62,7 @@ test('an agent whose process never stopped gets the nudge without a return notic
     return_notice: '💻 You were away as hibernating for one minute.',
     enter_delay_ms: 400,
     notify_delay_ms: 400,
-    notify_ready_timeout_ms: 30000,
+    notify_ready_timeout_ms: 90000,
   }])
   assert.deepEqual(injected, [{
     text: '📬 Available message arrived: No. — call inbox() to read and respond.',
@@ -85,12 +85,12 @@ test('the return notice goes on the front only when the daemon started a process
     return_notice: '💻 You were away as hibernating for one minute.',
     enter_delay_ms: 400,
     notify_delay_ms: 400,
-    notify_ready_timeout_ms: 30000,
+    notify_ready_timeout_ms: 90000,
   }])
   assert.deepEqual(injected, [{
     text: '💻 You were away as hibernating for one minute.\n\n📬 Available message arrived: No. — call inbox() to read and respond.',
     enterDelayMs: 400,
-    readyTimeoutMs: 30000,
+    readyTimeoutMs: 90000,
     clearBeforeText: true,
   }])
   assert.deepEqual(sleeps, [400])
@@ -109,12 +109,12 @@ test('a return notice without a nudge is still delivered on restart', async () =
     notify_text: 'Your MCP was restarted. Call login(), then inbox().',
     enter_delay_ms: 400,
     notify_delay_ms: 400,
-    notify_ready_timeout_ms: 30000,
+    notify_ready_timeout_ms: 90000,
   }])
   assert.deepEqual(injected, [{
     text: 'Your MCP was restarted. Call login(), then inbox().',
     enterDelayMs: 400,
-    readyTimeoutMs: 30000,
+    readyTimeoutMs: 90000,
     clearBeforeText: true,
   }])
   assert.deepEqual(sleeps, [400])
