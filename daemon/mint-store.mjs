@@ -73,9 +73,7 @@ export function resolveMintFacts(file, identifier, { envName = null } = {}) {
     return mintRow(
       db.prepare('SELECT * FROM daemon_mints WHERE mint_id = ?').get(identifier)
       || db.prepare('SELECT * FROM daemon_mints WHERE fleet_id = ?').get(identifier)
-      || (envName
-        ? db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name = ? ORDER BY created_at DESC LIMIT 1').get(identifier, envName)
-        : db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name IS NULL ORDER BY created_at DESC LIMIT 1').get(identifier))
+      || (envName ? db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name = ? ORDER BY created_at DESC LIMIT 1').get(identifier, envName) : null)
     )
   } finally {
     db.close()
@@ -130,13 +128,7 @@ export class MintStore {
   }
 
   getByFriendlyName(name, envName = this.defaultEnvName) {
-    if (!envName) {
-      const row = this.db.prepare(`
-        SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name IS NULL
-        ORDER BY created_at DESC LIMIT 1
-      `).get(name)
-      return mintRow(row)
-    }
+    if (!envName) throw new Error('mint friendly-name lookup requires env_name')
     const row = this.db.prepare(`
       SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name = ?
       ORDER BY created_at DESC LIMIT 1
@@ -148,7 +140,7 @@ export class MintStore {
     if (!identifier) return null
     return this.get(identifier)
       || this.getByFleetId(identifier)
-      || this.getByFriendlyName(identifier, envName)
+      || (envName ? this.getByFriendlyName(identifier, envName) : null)
   }
 
   updateProcessState(mintId, processState, now = new Date().toISOString()) {

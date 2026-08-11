@@ -3249,7 +3249,7 @@ export async function attachToAgent(name, {
   spawnSyncImpl = null,
   log = console,
   exitImpl = code => process.exit(code),
-  openLedger = () => new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite')),
+  openLedger = () => new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() }),
 } = {}) {
   if (!name) {
     log.error('Usage: tlda agent attach <name>')
@@ -4151,7 +4151,7 @@ async function hibernateAgent(name) {
 
 async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   const { spawnSync } = await import('child_process')
-  const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'))
+  const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
   let stored
   try {
     stored = mintStore.resolve(name)
@@ -4435,7 +4435,7 @@ export async function waitForMovedAgentRuntime(agentId, {
   timeoutMs = 60_000,
   pollMs = 250,
   configDir = CONFIG_DIR,
-  openMintStore = () => new MintStore(resolve(configDir, 'daemon-mints.sqlite')),
+  openMintStore = () => new MintStore(resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: envName }),
   inspectRuntime = sessionRuntimeState,
   sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms)),
 } = {}) {
@@ -4617,7 +4617,7 @@ export async function moveAgentToEnvironment({
     if (alreadyOnTarget || (!sourceHibernated && !addressMoved)) throw moveError
     const rollbackErrors = []
     const targetSession = targetRuntime?.tmuxSession || (() => {
-      const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'))
+      const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
       try { return mintStore.resolve(agent.id)?.processState?.tmux_session || null } finally { mintStore.close() }
     })()
     if (targetSession) {
@@ -4893,7 +4893,7 @@ async function restartMcpAgents(rest) {
   // agent restart ITSELF: hibernating from your own shell kills the tmux session
   // your CLI is running in, so the process that would have issued the wake dies
   // first and you never come back. The daemon outlives you and finishes the job.
-  const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'))
+  const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
   let ok = 0, fail = 0
   try {
     for (const name of targets) {

@@ -8,7 +8,7 @@ import { MintFactConflictError, MintStore, readMintFacts, resolveLoginFleetId } 
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-mint-core-'))
-const store = new MintStore(path.join(dir, 'mint.sqlite'))
+const store = new MintStore(path.join(dir, 'mint.sqlite'), { defaultEnvName: 'testing' })
 const events = []
 let releaseProcess
 let releaseSeat

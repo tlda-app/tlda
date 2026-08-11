@@ -701,7 +701,7 @@ function recordDoctorYoloMintFacts({
   model,
   metadata = {},
 }) {
-  const store = new MintStore(mintStorePath || defaultMintStorePath())
+  const store = new MintStore(mintStorePath || defaultMintStorePath(), { defaultEnvName: activeEnvName() })
   try {
     store.ensure(localAgentId)
     if (fleetId) store.setFact(localAgentId, 'fleet_id', fleetId)
@@ -730,7 +730,7 @@ async function spawnRespawn(params) {
   const name = params.name || params.agentId || params.agent_id
   const fleetId = params.agentId || params.agent_id || (String(name || '').startsWith('fleet:') ? name : null)
   if (!fleetId) throw new SpawnError('launch-failed', 'wake requires literal fleet_id', { name })
-  const facts = resolveMintFacts(params.mintStorePath || defaultMintStorePath(), fleetId)
+  const facts = resolveMintFacts(params.mintStorePath || defaultMintStorePath(), fleetId, { envName: activeEnvName() })
   if (!facts) {
     throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: no daemon mint facts`, { fleetId })
   }
