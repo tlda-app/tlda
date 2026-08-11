@@ -4738,6 +4738,17 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
+        if (expandBtn.classList.contains('pretty-msg-body-more')) {
+          const body = expandBtn.previousElementSibling instanceof HTMLElement
+            ? expandBtn.previousElementSibling
+            : null
+          if (body?.classList.contains('pretty-msg-body')) {
+            body.classList.remove('thread-msg-collapsed')
+            body.style.maxHeight = ''
+            expandBtn.style.display = 'none'
+          }
+          return
+        }
         // A gap marker owns the rows next to it. Check that first: inside a
         // thread card the marker sits within the semantic operation, and
         // treating it as the card's own toggle would close the thread instead

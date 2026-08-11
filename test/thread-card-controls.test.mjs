@@ -96,7 +96,7 @@ test('the card has no height bound and no click of its own', () => {
     assert.match(cardTag, /tool-pretty-thread/)
     assert.doesNotMatch(cardTag, /max-height/)
     assert.doesNotMatch(html, /onclick=/)
-    assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
+    assert.equal((html.match(/… 11 messages …/g) || []).length, 1)
 
     // Whatever the preference bounds, it bounds a message body -- never the
     // card, and never the gap marker, which is the one expand.
@@ -104,6 +104,26 @@ test('the card has no height bound and no click of its own', () => {
       assert.match(tag, /pretty-msg-body/)
     }
   }
+})
+
+test('a clamped thread message has its own more affordance', () => {
+  const html = renderThreadRows(threadRows(1, 2), { ...ctx, foldHeights: { thread: 16 } })
+
+  assert.match(html, /pretty-msg-body thread-msg-collapsed/)
+  assert.match(html, /pretty-msg-body-more/)
+  assert.match(html, />\[more\]</)
+})
+
+test('the thread message more affordance is handled before semantic operation toggles', () => {
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+  const moreBranch = source.indexOf("expandBtn.classList.contains('pretty-msg-body-more')")
+  const semanticBranch = source.indexOf("expandBtn.closest('.semantic-chat-operation')")
+
+  assert.notEqual(moreBranch, -1)
+  assert.notEqual(semanticBranch, -1)
+  assert.ok(moreBranch < semanticBranch)
+  assert.match(source.slice(moreBranch, semanticBranch), /thread-msg-collapsed/)
+  assert.match(source.slice(moreBranch, semanticBranch), /style\.maxHeight = ''/)
 })
 
 // The search card's shell -- its open/collapse button and its "inspected" line
