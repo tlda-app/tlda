@@ -816,16 +816,13 @@ async function persistAgentPreambleDoc(ref) {
 
 async function getStoredAgentPreambleDoc() {
   if (_agentPreambleLoaded) return _agentPreambleDoc;
+  _agentPreambleLoaded = true;
   const agent = activeAgentId();
-  if (!agent) {
-    _agentPreambleLoaded = true;
-    return _agentPreambleDoc;
-  }
+  if (!agent) return _agentPreambleDoc;
   try {
     const rows = await mcpFleetTransport.ephemeral('store-agents-by-ids', { ids: [agent] }, { deadlineMs: 2000 });
     const stored = normalizeAgentPreamble(rows?.[0]?.metadata?.chatPreamble);
     if (stored) _agentPreambleDoc = stored;
-    _agentPreambleLoaded = true;
   } catch (e) {
     process.stderr.write(`[fleet] preamble metadata lookup failed for ${agent}: ${e.message}\n`);
   }
@@ -858,10 +855,6 @@ async function getMacrosForAgent() {
 }
 
 export const checkChatRender = checkSharedChatRender;
-
-function isMissingPreambleMacroIssue(issue) {
-  return /macros that aren't loaded/.test(String(issue || ''));
-}
 
 export function checkLaunderChatLint(message, recipients = [], { paperContext = false } = {}) {
   const result = classifyLaunder({
@@ -2917,9 +2910,8 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const fileRenderIssues = sharedMarkdownFile ? renderCheck.validity : [];
     const styleHints = renderCheck.style;
 
-    const blockingRenderIssues = renderIssues.filter(isMissingPreambleMacroIssue);
-    if (blockingRenderIssues.length > 0 && args.amend_id == null) {
-      return { content: [{ type: 'text', text: `Message NOT sent — paper macros are unavailable for this chat:\n${blockingRenderIssues.map(l => `- ${l}`).join('\n')}` }], isError: true };
+    if (renderIssues.length > 0 && args.amend_id == null) {
+      return { content: [{ type: 'text', text: `Message NOT sent — chat render check failed (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}):\n${renderIssues.map(l => `- ${l}`).join('\n')}` }], isError: true };
     }
 
     // ---- amend branch: edit an already-sent message in place ----
