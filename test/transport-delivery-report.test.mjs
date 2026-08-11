@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { FleetTransportOutbox, isRetryableTransportError } from '../shared/fleet-transport-outbox.mjs'
-import { durableDelivery, describeDurableOutcome } from '../mcp-server/fleet-tools.mjs'
+import {
+  durableDelivery,
+  describeDurableOutcome,
+  shouldRescheduleDeferredFleetTransportFlush,
+} from '../mcp-server/fleet-tools.mjs'
 
 function outbox() {
   return new FleetTransportOutbox(new Database(':memory:'))
@@ -65,4 +69,10 @@ test('exhausted retries go dead and report unknown, not failure', () => {
 test('the two deadline strings are classified oppositely — the whole point', () => {
   assert.equal(isRetryableTransportError(clientDeadline), true)
   assert.equal(isRetryableTransportError(serverRefusal), false)
+})
+
+test('a skipped background flush is re-armed when an env-scoped tool is active', () => {
+  assert.equal(shouldRescheduleDeferredFleetTransportFlush({ activeToolEnv: 'testing', operationId: null }), true)
+  assert.equal(shouldRescheduleDeferredFleetTransportFlush({ activeToolEnv: 'testing', operationId: 'op-1' }), false)
+  assert.equal(shouldRescheduleDeferredFleetTransportFlush({ activeToolEnv: null, operationId: null }), false)
 })

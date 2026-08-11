@@ -5078,9 +5078,18 @@ function scheduleFleetTransportFlush(delayMs = 1000, agentId = activeAgentId()) 
   _fleetTransportFlushTimers.set(agentId, timer);
 }
 
+export function shouldRescheduleDeferredFleetTransportFlush({ activeToolEnv, operationId } = {}) {
+  return !!activeToolEnv && !operationId;
+}
+
 async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = null, agentId = activeAgentId() } = {}) {
   if (!agentId) return null;
-  if (_activeToolEnv) return null;
+  if (_activeToolEnv) {
+    if (shouldRescheduleDeferredFleetTransportFlush({ activeToolEnv: _activeToolEnv, operationId })) {
+      scheduleFleetTransportFlush(1000, agentId);
+    }
+    return null;
+  }
   if (_fleetTransportFlushesInFlight.has(agentId) && !operationId) {
     return _fleetTransportFlushesInFlight.get(agentId);
   }
