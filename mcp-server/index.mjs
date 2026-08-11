@@ -3834,7 +3834,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Point this agent's preamble at the document. From now on this agent's chat
     // math is linted with `doc`'s macros, and every message it sends carries
     // preambleRef:{doc,version} so readers render it with `doc`'s preamble.
-    setAgentPreambleDoc(doc, version);
+    try {
+      await setAgentPreambleDoc(doc, version, { persist: true });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Preamble was not set: could not persist it for this agent (${e.message}).` }], isError: true };
+    }
     const count = Object.keys(macros).length;
     const vnote = version ? ` (version "${version}" stored but not yet used for resolution)` : '';
     return { content: [{ type: 'text', text: `Preamble set to document "${doc}"${vnote} — ${count} macro(s) available. Your chat math now renders and lints with ${doc}'s preamble; physics-package commands are always available too.` }] };
