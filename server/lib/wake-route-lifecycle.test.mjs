@@ -67,8 +67,8 @@ test('an agent whose process never stopped gets the nudge without a return notic
   assert.deepEqual(injected, [{
     text: '📬 Available message arrived: No. — call inbox() to read and respond.',
     enterDelayMs: 400,
-    readyTimeoutMs: undefined,
-    clearBeforeText: false,
+    readyTimeoutMs: 90000,
+    clearBeforeText: true,
   }])
   assert.deepEqual(sleeps, [])
 })
@@ -118,4 +118,21 @@ test('a return notice without a nudge is still delivered on restart', async () =
     clearBeforeText: true,
   }])
   assert.deepEqual(sleeps, [400])
+})
+
+test('notification failure fact is sent to the daemon wake payload', async () => {
+  const { args, wakeParams } = rig({ alive: true })
+  args.notificationFailure = {
+    channel: 'mcp',
+    reason: 'mcp-ack-timeout',
+    deadline_ms: 2000,
+  }
+
+  await runWakeRouteLifecycle(args)
+
+  assert.deepEqual(wakeParams[0].notification_failure, {
+    channel: 'mcp',
+    reason: 'mcp-ack-timeout',
+    deadline_ms: 2000,
+  })
 })

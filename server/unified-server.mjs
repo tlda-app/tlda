@@ -890,7 +890,7 @@ function wakeNotifyDelayMs(agent) {
 }
 
 function wakeNotifyReadyTimeoutMs(agent) {
-  return wakeHarnessKind(agent) === 'claude' ? 90_000 : 0
+  return 90_000
 }
 
 async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
@@ -1606,6 +1606,10 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
     if (client !== exceptWs && client._tldaAgentId === agentId && client.readyState === 1) return true
   }
   return false
+}
+
+function openFleetSocketsForAgent(agentId) {
+  return [...wsFleetClients].filter(client => client._tldaAgentId === agentId && client.readyState === 1)
 }
 
 
@@ -5197,31 +5201,98 @@ let _wakeDraining = false
 // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
 const _wakeFailWarned = new Map() // agentId → last-warned ms
 const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
-const _pendingWakeAcks = new Map()
-function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
-  if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
-  const timer = setTimeout(async () => {
-    const pending = _pendingWakeAcks.get(traceId)
-    if (!pending) return
-    _pendingWakeAcks.delete(traceId)
-    broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
-    if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
-  }, WAKE_ACK_DEADLINE_MS)
-  timer.unref?.()
-  _pendingWakeAcks.set(traceId, { agentId, timer })
-}
-function acknowledgeWakeTrace(traceId, agentId) {
-  const pending = _pendingWakeAcks.get(traceId)
+const WAKE_MCP_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_MCP_ACK_DEADLINE_MS || 2_000)
+const _pendingMcpWakeAcks = new Map()
+
+function acknowledgeMcpWakeNotification(ackId, agentId) {
+  const pending = _pendingMcpWakeAcks.get(ackId)
   if (!pending || pending.agentId !== agentId) return false
-  clearTimeout(pending.timer)
-  _pendingWakeAcks.delete(traceId)
+  pending.resolve({ ok: true })
   return true
+}
+
+async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}) {
+  if (!nudgeText) return { ok: false, reason: 'no-notification-text' }
+  const sockets = openFleetSocketsForAgent(agent.id)
+  if (!sockets.length) return { ok: false, reason: 'no-open-mcp-socket' }
+  const ackId = `${traceId || createTraceId('wake')}:mcp:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+  const payload = JSON.stringify({
+    event: 'channel-notification',
+    data: {
+      recipient: agent.id,
+      text: nudgeText,
+      metadata: {
+        type: 'wake_nudge',
+        delivery: 'mcp',
+        wake_ack_id: ackId,
+        trace_id: traceId || null,
+        sourceEventId: source.sourceEventId || null,
+      },
+    },
+  })
+  const sentSockets = []
+  let done = false
+  let timer = null
+  const cleanup = () => {
+    if (timer) clearTimeout(timer)
+    for (const ws of sentSockets) {
+      ws.off?.('close', onClose)
+      ws.off?.('error', onClose)
+    }
+    _pendingMcpWakeAcks.delete(ackId)
+  }
+  const finish = (result) => {
+    if (done) return
+    done = true
+    cleanup()
+    resolver(result)
+  }
+  let resolver
+  const promise = new Promise(resolve => { resolver = resolve })
+  const onClose = () => {
+    if (sentSockets.every(ws => ws.readyState !== 1)) finish({ ok: false, reason: 'mcp-socket-closed' })
+  }
+  _pendingMcpWakeAcks.set(ackId, { agentId: agent.id, resolve: finish })
+  for (const ws of sockets) {
+    try {
+      ws.send(payload)
+      sentSockets.push(ws)
+      ws.on?.('close', onClose)
+      ws.on?.('error', onClose)
+    } catch {
+      // Other open sockets may still ACK; if none do, the timer takes the daemon path.
+    }
+  }
+  if (!sentSockets.length) {
+    _pendingMcpWakeAcks.delete(ackId)
+    return { ok: false, reason: 'mcp-send-failed' }
+  }
+  timer = setTimeout(() => finish({ ok: false, reason: 'mcp-ack-timeout' }), Math.max(0, WAKE_MCP_ACK_DEADLINE_MS))
+  timer.unref?.()
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'wake.mcp-notify',
+      status: 'sent',
+      detail: { agent: agent.id, ack_id: ackId, sockets: sentSockets.length, deadline_ms: WAKE_MCP_ACK_DEADLINE_MS },
+    })
+  }
+  const result = await promise
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'wake.mcp-notify',
+      status: result.ok ? 'acknowledged' : 'fallback',
+      detail: { agent: agent.id, ack_id: ackId, reason: result.reason || null },
+    })
+  }
+  return result
 }
 async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
   const agent = await fleetStore.getAgent(agentId)
   if (!agent || agent.dead || agent.human) return
-  const deliveryChannel = normalizeDeliveryChannel(agent.metadata?.deliveryChannel)
   if (isReservedShellAgent(agent)) {
     spawnLibrarian.observeLiveness({
       type: 'agent-liveness',
@@ -5241,18 +5312,23 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     }
     return
   }
-  if (deliveryChannel !== 'tmux' && hasOpenFleetSocketForAgent(agentId)) {
+  const mcpDelivery = await attemptMcpWakeNotification(agent, nudgeText, traceId, source)
+  if (mcpDelivery.ok) {
     if (traceId) {
       controlPlaneTraces.append({
         trace_id: traceId,
         component: 'server',
         operation: 'wake.request',
-        status: 'agent-channel-open',
+        status: 'agent-channel-acked',
         detail: { agent: agentId },
       })
     }
-    awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     return
+  }
+  const notificationFailure = {
+    channel: 'mcp',
+    reason: mcpDelivery.reason || 'not-acknowledged',
+    deadline_ms: WAKE_MCP_ACK_DEADLINE_MS,
   }
   if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
     if (traceId) {
@@ -5276,6 +5352,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     askers: [...askers],
     asker: asker || prev?.asker || null,
     traceId: traceId || prev?.traceId || null,
+    notificationFailure: notificationFailure || prev?.notificationFailure || null,
     source: Object.keys(source || {}).length ? source : (prev?.source || {}),
   })
   if (traceId) {
@@ -5314,6 +5391,7 @@ async function drainWakeQueue() {
     }
     const asker = wakeEntry?.asker || null
     const traceId = wakeEntry?.traceId || null
+    const notificationFailure = wakeEntry?.notificationFailure || null
     const source = wakeEntry?.source || {}
     const agent = await fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) {
@@ -5357,6 +5435,7 @@ async function drainWakeQueue() {
         enterDelayMs: wakeEnterDelayMs(agent),
         notifyDelayMs: wakeNotifyDelayMs(agent),
         notifyReadyTimeoutMs: wakeNotifyReadyTimeoutMs(agent),
+        notificationFailure,
         traceId,
         sendDaemonDurable,
         appendControlTrace: (event) => controlPlaneTraces.append(event),
@@ -5374,7 +5453,6 @@ async function drainWakeQueue() {
         },
       })
       if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
-      awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     } catch (e) {
       const b = _wakeBreaker.get(agentId) || { fails: 0 }
       b.fails += 1
@@ -7200,17 +7278,22 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'channel-notification-ack') {
+    const agentId = msg.agent
+    const ackId = msg.ack_id
+    if (!agentId || !ackId) { error('channel-notification-ack requires agent and ack_id'); return }
+    if (ws._tldaAgentId !== agentId) { error('channel-notification-ack agent does not match this connection'); return }
+    const acknowledged = acknowledgeMcpWakeNotification(ackId, agentId)
+    reply({ ok: true, acknowledged })
+    return
+  }
+
   if (type === 'ack-inbox') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
     const eventIds = Array.isArray(msg.event_ids) ? msg.event_ids : []
     const readIds = await fleetStore.markEventsRead?.(agentId, eventIds) || []
     await fleetStore.updateHeartbeat?.(agentId)
-    for (const eventId of readIds) {
-      const event = await fleetStore.getEventById?.(Number(eventId))
-      const traceId = event?.metadata?.trace_id || null
-      if (traceId) acknowledgeWakeTrace(traceId, agentId)
-    }
     if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     reply({ ok: true, event_ids: readIds })
     return

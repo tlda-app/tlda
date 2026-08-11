@@ -28,6 +28,7 @@ export async function runWakeRouteLifecycle({
   enterDelayMs = 0,
   notifyDelayMs = 0,
   notifyReadyTimeoutMs = 0,
+  notificationFailure = null,
   traceId = null,
   sendDaemonDurable,
   appendControlTrace = () => {},
@@ -47,6 +48,7 @@ export async function runWakeRouteLifecycle({
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
   const wakePayload = { fleet_id: agentId }
+  if (notificationFailure) wakePayload.notification_failure = notificationFailure
   if (nudgeText) {
     wakePayload.notify_text = nudgeText
     if (returnNoticeText) wakePayload.return_notice = returnNoticeText

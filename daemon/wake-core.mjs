@@ -30,13 +30,16 @@ export function createDaemonWakeCore({
       const text = started && params.return_notice
         ? `${params.return_notice}\n\n${params.notify_text}`
         : params.notify_text
+      const readyTimeoutMs = Number(params.notify_ready_timeout_ms) > 0
+        ? params.notify_ready_timeout_ms
+        : undefined
       return notifyAgent({
         facts,
         agentId: facts.fleetId || params.fleet_id || params.fleetId || null,
         text,
         enterDelayMs: params.enter_delay_ms,
-        readyTimeoutMs: started ? params.notify_ready_timeout_ms : undefined,
-        clearBeforeText: started && Number(params.notify_ready_timeout_ms) > 0,
+        readyTimeoutMs,
+        clearBeforeText: !!readyTimeoutMs,
         started,
       })
     }

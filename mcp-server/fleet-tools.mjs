@@ -5343,6 +5343,17 @@ async function handleChannelMessage(msg) {
     event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
     from: fromId,
   });
+  const wakeAckId = data.metadata?.wake_ack_id || null;
+  if (delivered && wakeAckId && isDirectTarget) {
+    try {
+      await mcpFleetTransport.ephemeral('channel-notification-ack', {
+        agent: agentId,
+        ack_id: wakeAckId,
+      }, { deadlineMs: 1000 });
+    } catch (e) {
+      process.stderr.write(`[fleet-channel] channel notification ack failed: ${e.message}\n`);
+    }
+  }
   if (delivered && eventId) {
     _deliveredChannelIds.add(eventId);
     setTimeout(() => _deliveredChannelIds.delete(eventId), CHANNEL_DEDUP_TTL_MS).unref?.();

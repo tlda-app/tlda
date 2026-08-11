@@ -41,14 +41,14 @@ export function normalizeMessagePriority(priority) {
   return MESSAGE_PRIORITIES.includes(p) ? p : 'normal'
 }
 
-export function normalizeDeliveryChannel(channel) {
-  const c = String(channel || 'channel').trim().toLowerCase()
-  return DELIVERY_CHANNELS.includes(c) ? c : 'channel'
-}
-
 export function validateDeliveryChannel(channel) {
   const c = String(channel || '').trim().toLowerCase()
   return DELIVERY_CHANNELS.includes(c) ? c : null
+}
+
+export function normalizeDeliveryChannel(channel) {
+  const c = String(channel || 'channel').trim().toLowerCase()
+  return DELIVERY_CHANNELS.includes(c) ? c : 'channel'
 }
 
 export function parsePriorityPhrase(text) {
