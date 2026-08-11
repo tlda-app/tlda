@@ -5769,6 +5769,10 @@ async function handleFleetWsMessage(ws, msg) {
         error(e.message)
         return
       }
+      if (type === 'mint-shell' && fail_if_not_fresh && requestedName && assignedName !== requestedName) {
+        error(`Spawn name "${requestedName}" is unavailable: mint-shell assigned "${assignedName || '(none)'}" instead. Wake the existing agent.`)
+        return
+      }
     }
     const agent = {
       id: agentId,

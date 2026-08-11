@@ -118,7 +118,7 @@ import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
 import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
-import { wsMintShell } from '../agent-launch/register.mjs'
+import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
@@ -952,6 +952,16 @@ async function rpcMint(params = {}) {
   if (mintClampLine) {
     log.warn(`mint ${params.friendly_name || params.name || '(unnamed)'}: ${mintClampLine}`)
   }
+  const failIfNotFresh = !!params.failIfNotFresh || !!params.fail_if_not_fresh
+  let preReservedBotFleetId = null
+  const cleanupPreReservedBotSeat = async reason => {
+    if (!preReservedBotFleetId) return
+    try {
+      await markAgentDead(preReservedBotFleetId)
+    } catch (e) {
+      log.warn(`mint ${params.friendly_name || params.name || '(unnamed)'}: could not mark pre-reserved bot shell ${preReservedBotFleetId} dead after ${reason}: ${e.message}`)
+    }
+  }
   if (explicitKind === 'bot' && !(params.fleet_id || params.agent_id)) {
     const requestedName = params.friendly_name || params.name || null
     const mintId = params.mint_id || randomUUID()
@@ -963,7 +973,7 @@ async function rpcMint(params = {}) {
       model: 'bot',
       kind: 'bot',
       metadata: params.metadata || null,
-      failIfNotFresh: !!params.failIfNotFresh || !!params.fail_if_not_fresh,
+      failIfNotFresh,
       machineId: MACHINE_ID,
       envName: ACTIVE_ENV,
       daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
@@ -971,6 +981,11 @@ async function rpcMint(params = {}) {
     const assignedFleetId = botSeat?.fleet_id || botSeat?.server_agent_id || botSeat?.agent?.id || null
     if (!assignedFleetId) throw new Error('bot mint returned no fleet_id')
     const assignedName = botSeat?.friendly_name || botSeat?.assigned_name || botSeat?.agent?.friendly_name || requestedName
+    preReservedBotFleetId = assignedFleetId
+    if (failIfNotFresh && requestedName && assignedName !== requestedName) {
+      await cleanupPreReservedBotSeat(`name changed to ${assignedName || '(none)'}`)
+      throw new Error(`Spawn name "${requestedName}" is unavailable: mint-shell assigned "${assignedName || '(none)'}" instead. Wake the existing agent.`)
+    }
     params = {
       ...params,
       mint_id: mintId,
@@ -979,34 +994,40 @@ async function rpcMint(params = {}) {
       botName: params.botName || params.bot_name || requestedName,
     }
   }
-  const facts = await daemonMintCore.mint({
-    mint_id: params.mint_id || null,
-    fleet_id: params.fleet_id || params.agent_id || null,
-    name: params.friendly_name || params.name || null,
-    metadata: params.metadata || null,
-    request_seat: !(params.fleet_id || params.agent_id),
-    fail_if_not_fresh: !!params.failIfNotFresh || !!params.fail_if_not_fresh,
-    launch: {
+  let facts
+  try {
+    facts = await daemonMintCore.mint({
+      mint_id: params.mint_id || null,
+      fleet_id: params.fleet_id || params.agent_id || null,
       name: params.friendly_name || params.name || null,
-      model: params.model,
-      modelSpec,
-      config: spawnConfig,
-      kind: params.kind || modelSpec.harness,
-      botScript: params.botScript || params.bot_script || params.script || null,
-      botName: params.botName || params.bot_name || null,
-      botPidFile: params.botPidFile || params.bot_pid_file || null,
-      botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
-      botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
-      cwd,
-      effort: params.effort,
-      mode: params.mode,
-      permissionRequest: params.permissionRequest,
-      permissionGrant: grant.permissionGrant,
-      permissionSet: grant.permissionSet,
-      acknowledgeNoSecurity: params.acknowledgeNoSecurity,
-      requester: params.requester,
-    },
-  })
+      metadata: params.metadata || null,
+      request_seat: !(params.fleet_id || params.agent_id),
+      fail_if_not_fresh: failIfNotFresh,
+      launch: {
+        name: params.friendly_name || params.name || null,
+        model: params.model,
+        modelSpec,
+        config: spawnConfig,
+        kind: params.kind || modelSpec.harness,
+        botScript: params.botScript || params.bot_script || params.script || null,
+        botName: params.botName || params.bot_name || null,
+        botPidFile: params.botPidFile || params.bot_pid_file || null,
+        botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
+        botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
+        cwd,
+        effort: params.effort,
+        mode: params.mode,
+        permissionRequest: params.permissionRequest,
+        permissionGrant: grant.permissionGrant,
+        permissionSet: grant.permissionSet,
+        acknowledgeNoSecurity: params.acknowledgeNoSecurity,
+        requester: params.requester,
+      },
+    })
+  } catch (e) {
+    await cleanupPreReservedBotSeat(e.message || 'launch failed')
+    throw e
+  }
   if ((params.failIfNotFresh || params.fail_if_not_fresh) && facts.registrationError) {
     throw new Error(facts.registrationError)
   }
