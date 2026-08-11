@@ -408,6 +408,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     })
   })
 
+  router.get('/api/events/:type/:id', async (req, res) => {
+    const id = Number(req.params.id)
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'event id must be a positive integer' })
+    const event = await fleetStore.getEventById(id)
+    if (!event || event.type !== req.params.type) return res.status(404).json({ error: 'event not found' })
+    res.json({ event })
+  })
+
   // --- GET /api/human ---
   // Returns the server owner's identity. Used by MCP agents and CLI tools
   // to know who the "local human" is. Browser users log in via WS 'login'.

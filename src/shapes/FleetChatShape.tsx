@@ -66,6 +66,8 @@ import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counter
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent, searchFleet } from '../fleet-data-adapter'
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
+// @ts-ignore — vanilla JS module
+import { CANONICAL_EVENT_REFERENCE_SOURCE, canonicalEventReference, parseCanonicalEventReference } from '../../shared/canonical-references.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -3197,6 +3199,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
   // for visible items, so the cost scales with the viewport not the message count.
   const postProcess = useCallback((html: string): string => {
+    html = transformNonCode(html, (text) => text.replace(
+      new RegExp(CANONICAL_EVENT_REFERENCE_SOURCE, 'g'),
+      (reference) => `<span class="ref-chip" data-canonical-event-ref="${reference}" data-token="${reference}">${reference}</span>`,
+    ))
     // Turn «type:label» reference tokens into chips — only in non-code regions
     // and not when immediately preceded by a quote character (quoted = literal).
     html = transformNonCode(html, (text) => text.replace(/(?<!["'])«(.+?)»/g, (_match, inner) => {
@@ -3514,6 +3520,33 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (dragCoordinator.isActive || hasActiveFleetPill()) return
       if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
+      const canonicalEvent = parseCanonicalEventReference(chip.dataset.canonicalEventRef || token)
+      if (canonicalEvent) {
+        let matchEvent = liveEvents.find((ev: any) =>
+          Number(ev._dbId ?? ev.id) === canonicalEvent.id && ev.type === canonicalEvent.type,
+        )
+        if (!matchEvent) {
+          const response = await fetch(`/api/events/${encodeURIComponent(canonicalEvent.type)}/${canonicalEvent.id}`)
+          if (!response.ok) return
+          matchEvent = (await response.json()).event
+          if (matchEvent) matchEvent._dbId = matchEvent.id
+        }
+        if (!matchEvent || !chip.matches(':hover')) return
+        document.querySelector('.chip-hover-popover')?.remove()
+        const popover = document.createElement('div')
+        popover.className = 'chip-hover-popover fleet-chat-shape'
+        popover.innerHTML = ctxRef.current
+          ? renderChatLine(matchEvent, ctxRef.current)
+          : `<div class="chat-line">${matchEvent.text || '(no content)'}</div>`
+        const chipRect = chip.getBoundingClientRect()
+        popover.style.position = 'fixed'
+        popover.style.left = `${chipRect.left}px`
+        popover.style.bottom = `${window.innerHeight - chipRect.top + 4}px`
+        popover.style.zIndex = '10000'
+        popover.style.maxWidth = `${w}px`
+        document.body.appendChild(popover)
+        return
+      }
       const refId = token.replace(/^«/, '').replace(/»$/, '').split('#')[1]
       if (!refId) return
       // Proposal ref (apply line): the full diff is on the propose card already in
@@ -5784,6 +5817,11 @@ function FleetChatInner({ shape }: { shape: any }) {
 
       const names = agentNamesRef.current
       const exactNames = agentExactNamesRef.current
+      const eventReference = (id: string, fallbackType: string) => {
+        if (!id) return null
+        const event = liveEvents.find((candidate: any) => String(candidate._dbId ?? candidate.id) === id)
+        return canonicalEventReference(event?.type || fallbackType, id)
+      }
 
       let drag: typeof dragRef.current = null
 
@@ -5800,7 +5838,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const lcTime = lcTs ? new Date(lcTs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
           const lcTitle = lcCard.querySelector('.lc-title')?.textContent || lcType
           drag = {
-            pillId: null, pillType: 'msg', value: lcDbId ? `msg:${lcDbId}` : `msg:${lcFrom}:${lcTs}`,
+            pillId: null, pillType: 'msg', value: eventReference(lcDbId, lcType) || `msg:${lcFrom}:${lcTs}`,
             displayName: `${lcNick} ${lcTime} ${lcTitle}`.trim(),
             color: '#c8b060', content: lcCard.textContent?.slice(0, 300)?.trim() || '',
             startX: e.clientX, startY: e.clientY,
@@ -5821,7 +5859,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             const text = line.textContent?.slice(0, 200)?.trim() || ''
             const nick = from ? (names[from] || from.replace('fleet:', '')) : ''
             drag = {
-              pillId: null, pillType: 'msg', value: dbId ? `msg:${dbId}` : `msg:${from}:${ts}`,
+              pillId: null, pillType: 'msg', value: eventReference(dbId, 'chat') || `msg:${from}:${ts}`,
               displayName: `${nick} ${tsEl.textContent || ''} chat`.trim(),
               color: '#8888a0', content: text,
               startX: e.clientX, startY: e.clientY,
@@ -5841,12 +5879,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           // Get DB ID from the parent activity card + line number for highlighting
           const activityCard = toolLine.closest('.chat-activity-card') as HTMLElement
           const toolDbId = activityCard?.dataset.msgId || ''
-          const lineNum = toolLine.dataset.line || ''
           const toolTs = activityCard?.dataset.ts || ''
           const toolNick = names[activityCard?.dataset.agent || ''] || ''
           const toolTime = toolTs ? new Date(toolTs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
           drag = {
-            pillId: null, pillType: 'tool', value: toolDbId ? `activity:${toolDbId}:line${lineNum}` : `tool:unknown`,
+            pillId: null, pillType: 'tool', value: eventReference(toolDbId, 'activity') || `tool:unknown`,
             displayName: `${toolNick} ${toolTime} ${toolName}`.trim(),
             color: '#c8b060', content: toolArg ? `${toolName}: ${toolArg}` : toolName,
             startX: e.clientX, startY: e.clientY,
@@ -5866,7 +5903,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const nick = names[agentId] || agentId.replace('fleet:', '')
           const actTime = ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
           drag = {
-            pillId: null, pillType: 'activity', value: actDbId ? `activity:${actDbId}` : `activity:${agentId}:${ts}`,
+            pillId: null, pillType: 'activity', value: eventReference(actDbId, 'activity') || `activity:${agentId}:${ts}`,
             displayName: `${nick} ${actTime} activity`.trim(),
             color: '#c8b060', content: text,
             startX: e.clientX, startY: e.clientY,
@@ -7614,7 +7651,7 @@ function InputHighlightUnderlay({ inputRef }: { inputRef: React.RefObject<HTMLIn
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
       const highlighted = escaped.replace(
-        /(«.+?»)/g,
+        new RegExp(`(«.+?»|${CANONICAL_EVENT_REFERENCE_SOURCE})`, 'g'),
         '<span class="ref-chip-underlay">$1</span>'
       )
       setHtml(highlighted)
