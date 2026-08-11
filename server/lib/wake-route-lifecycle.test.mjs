@@ -6,9 +6,10 @@ import { runWakeRouteLifecycle } from './wake-route-lifecycle.mjs'
 
 // Wake and tell are one call: the daemon is the only side that knows whether it
 // started a process, so it decides whether the return notice goes on the front.
-function rig({ alive }) {
+function rig({ alive, notifyDelayMs = 400 }) {
   const injected = []
   const wakeParams = []
+  const sleeps = []
   let running = alive
   const wake = createDaemonWakeCore({
     store: {
@@ -24,10 +25,12 @@ function rig({ alive }) {
       injected.push({ text, enterDelayMs })
       return { ok: true }
     },
+    sleep: async (ms) => { sleeps.push(ms) },
   })
   return {
     injected,
     wakeParams,
+    sleeps,
     args: {
       agentId: 'fleet:test',
       agent: { id: 'fleet:test' },
@@ -36,6 +39,7 @@ function rig({ alive }) {
       nudgeText: '📬 Available message arrived: No. — call inbox() to read and respond.',
       returnNoticeText: '💻 You were away as hibernating for one minute.',
       enterDelayMs: 400,
+      notifyDelayMs,
       sendDaemonDurable: async (_key, _op, params) => {
         wakeParams.push(params)
         return wake(params)
@@ -45,8 +49,8 @@ function rig({ alive }) {
   }
 }
 
-test('an agent whose process never stopped gets the nudge without a return notice', async () => {
-  const { args, injected, wakeParams } = rig({ alive: true })
+test('an agent whose process never stopped gets the nudge without a return notice or startup wait', async () => {
+  const { args, injected, wakeParams, sleeps } = rig({ alive: true })
 
   const result = await runWakeRouteLifecycle(args)
 
@@ -56,15 +60,17 @@ test('an agent whose process never stopped gets the nudge without a return notic
     notify_text: '📬 Available message arrived: No. — call inbox() to read and respond.',
     return_notice: '💻 You were away as hibernating for one minute.',
     enter_delay_ms: 400,
+    notify_delay_ms: 400,
   }])
   assert.deepEqual(injected, [{
     text: '📬 Available message arrived: No. — call inbox() to read and respond.',
     enterDelayMs: 400,
   }])
+  assert.deepEqual(sleeps, [])
 })
 
 test('the return notice goes on the front only when the daemon started a process', async () => {
-  const { args, injected, wakeParams } = rig({ alive: false })
+  const { args, injected, wakeParams, sleeps } = rig({ alive: false })
 
   const result = await runWakeRouteLifecycle(args)
 
@@ -74,15 +80,17 @@ test('the return notice goes on the front only when the daemon started a process
     notify_text: '📬 Available message arrived: No. — call inbox() to read and respond.',
     return_notice: '💻 You were away as hibernating for one minute.',
     enter_delay_ms: 400,
+    notify_delay_ms: 400,
   }])
   assert.deepEqual(injected, [{
     text: '💻 You were away as hibernating for one minute.\n\n📬 Available message arrived: No. — call inbox() to read and respond.',
     enterDelayMs: 400,
   }])
+  assert.deepEqual(sleeps, [400])
 })
 
 test('a return notice without a nudge is still delivered on restart', async () => {
-  const { args, injected, wakeParams } = rig({ alive: false })
+  const { args, injected, wakeParams, sleeps } = rig({ alive: false })
   args.nudgeText = null
   args.returnNoticeText = 'Your MCP was restarted. Call login(), then inbox().'
 
@@ -93,9 +101,11 @@ test('a return notice without a nudge is still delivered on restart', async () =
     fleet_id: 'fleet:test',
     notify_text: 'Your MCP was restarted. Call login(), then inbox().',
     enter_delay_ms: 400,
+    notify_delay_ms: 400,
   }])
   assert.deepEqual(injected, [{
     text: 'Your MCP was restarted. Call login(), then inbox().',
     enterDelayMs: 400,
   }])
+  assert.deepEqual(sleeps, [400])
 })

@@ -26,6 +26,7 @@ export async function runWakeRouteLifecycle({
   nudgeText = null,
   returnNoticeText = null,
   enterDelayMs = 0,
+  notifyDelayMs = 0,
   traceId = null,
   sendDaemonDurable,
   appendControlTrace = () => {},
@@ -49,9 +50,11 @@ export async function runWakeRouteLifecycle({
     wakePayload.notify_text = nudgeText
     if (returnNoticeText) wakePayload.return_notice = returnNoticeText
     if (enterDelayMs != null) wakePayload.enter_delay_ms = enterDelayMs
+    if (notifyDelayMs != null) wakePayload.notify_delay_ms = notifyDelayMs
   } else if (returnNoticeText) {
     wakePayload.notify_text = returnNoticeText
     if (enterDelayMs != null) wakePayload.enter_delay_ms = enterDelayMs
+    if (notifyDelayMs != null) wakePayload.notify_delay_ms = notifyDelayMs
   }
   const spawnResult = await sendDaemonDurable(daemonKey, 'wake', wakePayload)
   if (!spawnResult?.ok) {

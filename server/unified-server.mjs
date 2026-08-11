@@ -877,8 +877,16 @@ function wakeBreakerBackoffMs(fails, baseMs, capMs) {
   return Math.min(baseMs * 2 ** (Math.max(1, fails) - 1), capMs)
 }
 
+function wakeHarnessKind(agent) {
+  return agent?.metadata?.kind || agent?.metadata?.harness || agent?.kind || agent?.harness || null
+}
+
 function wakeEnterDelayMs(agent) {
-  return agent?.metadata?.kind === 'codex' ? 400 : 0
+  return wakeHarnessKind(agent) === 'codex' ? 400 : 0
+}
+
+function wakeNotifyDelayMs(agent) {
+  return wakeHarnessKind(agent) === 'claude' ? 2000 : 0
 }
 
 async function sendWakeNudge(daemonKey, agent, nudgeText, phase, logTag = 'wake-nudge') {
@@ -5341,6 +5349,7 @@ async function drainWakeQueue() {
         nudgeText,
         returnNoticeText: agentReturnNotice(agent),
         enterDelayMs: wakeEnterDelayMs(agent),
+        notifyDelayMs: wakeNotifyDelayMs(agent),
         traceId,
         sendDaemonDurable,
         appendControlTrace: (event) => controlPlaneTraces.append(event),
@@ -7509,6 +7518,7 @@ async function handleFleetWsMessage(ws, msg) {
         nudgeText: null,
         returnNoticeText: 'Your MCP was restarted. Call login(), then inbox().',
         enterDelayMs: wakeEnterDelayMs(agent),
+        notifyDelayMs: wakeNotifyDelayMs(agent),
         sendDaemonDurable,
         appendControlTrace: (event) => controlPlaneTraces.append(event),
         getAgentDaemonRoute: (id) => fleetStore.getAgentDaemonRoute(id),

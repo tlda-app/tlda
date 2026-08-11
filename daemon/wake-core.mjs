@@ -25,6 +25,8 @@ export function createDaemonWakeCore({
     // agent that never stopped gets the message and nothing else.
     const tell = async (started) => {
       if (!notifyAgent || !params.notify_text) return null
+      const notifyDelayMs = Math.max(0, Number(params.notify_delay_ms) || 0)
+      if (started && notifyDelayMs > 0) await sleep(notifyDelayMs)
       const text = started && params.return_notice
         ? `${params.return_notice}\n\n${params.notify_text}`
         : params.notify_text
