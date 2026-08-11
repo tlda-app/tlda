@@ -15,9 +15,15 @@ Then call:
 inbox({ view: "current-task" })
 ```
 
-The inbox contains obligations, messages, reports, and delivery events. A 📬
-wake is only a preview. Call `inbox()` to read the complete item before acting,
-especially when the preview says it was truncated.
+The inbox contains obligations, messages, and reports. A 📬 wake is only a
+preview. Call `inbox()` to read the complete item before acting, especially when
+the preview says it was truncated.
+
+Fleet communication has three states:
+
+- `accepted`: the server stored the message.
+- `delivered`: the recipient notification arrived.
+- `read`: the recipient fetched it with `inbox()` or thread surfaces.
 
 Reading the inbox marks the rows it was sent as read, so every ordinary view
 shows all of them: a view that hid a row would mark it read anyway and the row
@@ -27,7 +33,7 @@ would never come back. Views regroup a page; they never filter it.
 question. It is not your mail. It reports everything raised as `urgent` or
 `important` anywhere in the fleet that no recipient has read yet — an alarm
 nobody has picked up, whoever it was addressed to. It acknowledges nothing, so
-calling it costs no deliveries and it is safe at any time. Reach for it when you
+calling it marks nothing read and it is safe at any time. Reach for it when you
 come back to a mess, or when you suspect something broke while nobody was
 looking. An empty result is a statement about the fleet, not about you.
 
@@ -77,6 +83,10 @@ without becoming a user approval queue.
 Chat is also the wake mechanism for a hibernating agent. Do not branch on
 hibernation before sending. Lifecycle state matters for selection and display;
 it is not a second communication protocol.
+
+Chat is send-side. Do not branch on hibernation, offline state, or current wake
+state before sending. The notification layer may queue, wake, bounce, or report
+accepted-with-reason, but `chat()` itself is not gated by reachability.
 
 ## Files and shared artifacts
 

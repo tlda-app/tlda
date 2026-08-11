@@ -1455,7 +1455,7 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message — or, with `amend_id`, edit one you already sent. `to` is an agent-set expression matching agent name/id/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit `to` to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `selector` — select markdown from a file using CSS structural selection. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the selected markdown. Bare heading ids are accepted as shorthand, e.g. `selector: "the-plan"` means `#the-plan`. The referenced selection is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has `.suggest`, e.g. `## Pick one {.suggest}` followed by pure Markdown list items like `- **label** — optional hover text *optional command*`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit one of your messages in place instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the file, then chat the same `file`+`selector` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. Sending is allowed to offline or hibernating agents. The result may report accepted, delivered, and read states separately; do not treat `accepted` as `delivered`. `to` is an agent-set expression matching agent name/id/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit `to` to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `selector` — select markdown from a file using CSS structural selection. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the selected markdown. Bare heading ids are accepted as shorthand, e.g. `selector: "the-plan"` means `#the-plan`. The referenced selection is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has `.suggest`, e.g. `## Pick one {.suggest}` followed by pure Markdown list items like `- **label** — optional hover text *optional command*`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit one of your messages in place instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the file, then chat the same `file`+`selector` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1537,7 +1537,7 @@ export function getFleetTools() {
           agent: { type: 'string', description: 'Optional managed agent target. Omit for yourself.' },
           status: { type: 'string', enum: INBOX_STATUSES, description: 'Visible notification status.' },
           tag: { type: 'string', description: 'Optional short notification-status context.' },
-          channel: { type: 'string', enum: DELIVERY_CHANNELS, description: 'Wake delivery channel.' },
+          channel: { type: 'string', enum: DELIVERY_CHANNELS, description: 'Notification channel used by the MCP/harness layer; this is not proof a message was delivered.' },
           project: { type: 'string', description: 'Document project whose macros should become this agent\'s chat preamble.' },
           version: { type: 'string', description: 'Optional document shadow version.' },
         },
@@ -1565,7 +1565,7 @@ export function getFleetTools() {
     },
     {
       name: 'lifecycle',
-      description: 'Change an agent lifecycle state.',
+      description: 'Wake hibernating agents, hibernate/kill running sessions, or reanimate dead agents. `reanimate` is only for `dead`; use `wake` for hibernating.',
       inputSchema: {
         type: 'object',
         properties: {
