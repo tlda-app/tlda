@@ -5221,6 +5221,7 @@ function acknowledgeWakeTrace(traceId, agentId) {
 async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
   const agent = await fleetStore.getAgent(agentId)
   if (!agent || agent.dead || agent.human) return
+  const deliveryChannel = normalizeDeliveryChannel(agent.metadata?.deliveryChannel)
   if (isReservedShellAgent(agent)) {
     spawnLibrarian.observeLiveness({
       type: 'agent-liveness',
@@ -5240,7 +5241,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     }
     return
   }
-  if (hasOpenFleetSocketForAgent(agentId)) {
+  if (deliveryChannel !== 'tmux' && hasOpenFleetSocketForAgent(agentId)) {
     if (traceId) {
       controlPlaneTraces.append({
         trace_id: traceId,
@@ -5250,6 +5251,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
         detail: { agent: agentId },
       })
     }
+    awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     return
   }
   if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
@@ -5372,6 +5374,7 @@ async function drainWakeQueue() {
         },
       })
       if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
+      awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     } catch (e) {
       const b = _wakeBreaker.get(agentId) || { fails: 0 }
       b.fails += 1
@@ -7203,6 +7206,11 @@ async function handleFleetWsMessage(ws, msg) {
     const eventIds = Array.isArray(msg.event_ids) ? msg.event_ids : []
     const readIds = await fleetStore.markEventsRead?.(agentId, eventIds) || []
     await fleetStore.updateHeartbeat?.(agentId)
+    for (const eventId of readIds) {
+      const event = await fleetStore.getEventById?.(Number(eventId))
+      const traceId = event?.metadata?.trace_id || null
+      if (traceId) acknowledgeWakeTrace(traceId, agentId)
+    }
     if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     reply({ ok: true, event_ids: readIds })
     return

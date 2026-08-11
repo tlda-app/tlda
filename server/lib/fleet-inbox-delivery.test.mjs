@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import https from 'node:https'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -38,6 +39,28 @@ async function waitForServer(child) {
   }
 }
 
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { rejectUnauthorized: false }, res => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', chunk => { body += chunk })
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode}: ${body}`))
+          return
+        }
+        try {
+          resolve(JSON.parse(body))
+        } catch (e) {
+          reject(e)
+        }
+      })
+    })
+    req.on('error', reject)
+  })
+}
+
 function request(ws, id, type, payload) {
   return new Promise((resolve, reject) => {
     const onMessage = raw => {
@@ -51,6 +74,8 @@ function request(ws, id, type, payload) {
     ws.send(JSON.stringify({ id, type, ...payload }))
   })
 }
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 test('the inbox delivery projection returns and acknowledges direct chat', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-inbox-delivery-'))
@@ -229,6 +254,162 @@ test('my-task delivers unread messages and ack-inbox clears only returned ids', 
   } finally {
     child.kill('SIGTERM')
     await new Promise(resolve => child.once('exit', resolve))
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('tmux delivery does not stop at an open MCP channel', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-tmux-delivery-open-channel-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  const now = new Date().toISOString()
+  await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
+  await store.upsertAgent({
+    id: 'fleet:recipient',
+    friendly_name: 'recipient',
+    labels: [],
+    registered_at: now,
+    last_seen: now,
+    metadata: { deliveryChannel: 'tmux' },
+  })
+  await store.ensureSubscription({
+    owner: 'fleet:recipient',
+    query: 'to:me',
+    notificationPolicy: 'immediate',
+  })
+  store.close()
+
+  const port = await unusedPort()
+  const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
+    cwd: join(import.meta.dirname, '..', '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      PROJECTS_DIR: join(dir, 'projects'),
+      TLDA_FLEET_DB: dbPath,
+      TLDA_DEV_SERVER: '1',
+      TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let recipientWs
+  let senderWs
+  try {
+    await waitForServer(child)
+    recipientWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      recipientWs.once('open', resolve)
+      recipientWs.once('error', reject)
+    })
+    await request(recipientWs, 1, 'login', { agent_id: 'fleet:recipient' })
+
+    senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      senderWs.once('open', resolve)
+      senderWs.once('error', reject)
+    })
+    const sent = await request(senderWs, 2, 'chat', {
+      from: 'fleet:sender',
+      to: 'recipient',
+      message: 'urgent tmux delivery proof',
+      metadata: { priority: 'urgent', trace_id: 'tmux-open-channel-proof' },
+      _tempId: 'tmux-open-channel-proof',
+    })
+    assert.equal(sent.ok, true)
+
+    const traces = await getJson(`https://127.0.0.1:${port}/api/diagnostics/control-plane-traces?trace_id=tmux-open-channel-proof`)
+    const wakeStatuses = traces.trace.events
+      .filter(entry => entry.operation === 'wake.request' || entry.operation === 'wake.defer')
+      .map(entry => entry.status)
+    assert.deepEqual(wakeStatuses, ['queued', 'no-daemon'])
+  } finally {
+    recipientWs?.close()
+    senderWs?.close()
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ack-inbox clears pending urgent wake acknowledgment', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-wake-ack-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  const now = new Date().toISOString()
+  await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
+  await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
+  await store.ensureSubscription({
+    owner: 'fleet:recipient',
+    query: 'to:me',
+    notificationPolicy: 'immediate',
+  })
+  store.close()
+
+  const port = await unusedPort()
+  const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
+    cwd: join(import.meta.dirname, '..', '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      PROJECTS_DIR: join(dir, 'projects'),
+      TLDA_FLEET_DB: dbPath,
+      TLDA_DEV_SERVER: '1',
+      TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+      TLDA_WAKE_ACK_DEADLINE_MS: '100',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let recipientWs
+  let senderWs
+  try {
+    await waitForServer(child)
+    recipientWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      recipientWs.once('open', resolve)
+      recipientWs.once('error', reject)
+    })
+    await request(recipientWs, 1, 'login', { agent_id: 'fleet:recipient' })
+
+    senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      senderWs.once('open', resolve)
+      senderWs.once('error', reject)
+    })
+    const sent = await request(senderWs, 2, 'chat', {
+      from: 'fleet:sender',
+      to: 'recipient',
+      message: 'urgent wake ack proof',
+      metadata: { priority: 'urgent', trace_id: 'ack-clears-wake-proof' },
+      _tempId: 'ack-clears-wake-proof',
+    })
+
+    const inbox = await request(recipientWs, 3, 'my-task', { agent: 'fleet:recipient', peek: true })
+    assert.deepEqual(inbox.messages.map(message => message.id), sent.event_ids)
+    await request(recipientWs, 4, 'ack-inbox', {
+      agent: 'fleet:recipient',
+      event_ids: sent.event_ids,
+    })
+
+    await sleep(250)
+  } finally {
+    recipientWs?.close()
+    senderWs?.close()
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+  }
+
+  const check = new FleetStore(dbPath, { taskDoc: false })
+  try {
+    const rows = check.db.prepare(`
+      SELECT id FROM events
+      WHERE json_extract(metadata, '$.type') = 'wake_ack_timeout'
+        AND json_extract(metadata, '$.trace_id') = 'ack-clears-wake-proof'
+    `).all()
+    assert.deepEqual(rows, [])
+  } finally {
+    check.close()
     rmSync(dir, { recursive: true, force: true })
   }
 })
