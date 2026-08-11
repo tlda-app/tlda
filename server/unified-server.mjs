@@ -5224,6 +5224,18 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     }
     return
   }
+  if (hasOpenFleetSocketForAgent(agentId)) {
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'wake.request',
+        status: 'agent-channel-open',
+        detail: { agent: agentId },
+      })
+    }
+    return
+  }
   if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
     if (traceId) {
       controlPlaneTraces.append({

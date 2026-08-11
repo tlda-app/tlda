@@ -60,7 +60,7 @@ import { applyNonClaudeRolePack } from '../shared/task-role-routing.mjs';
 import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
-import { harnessFromEnv } from './lib/harness-adapters.mjs';
+import { harnessFromEnv, harnessKindFromEnv } from './lib/harness-adapters.mjs';
 import { timerSetEventIdFromAck, timerSetMessage } from './lib/timer-protocol.mjs';
 import WebSocket from 'ws';
 import {
@@ -1297,17 +1297,14 @@ export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) 
 
 // ---- tmux helpers ----
 
-// Wake a non-Claude fleet agent by typing a nudge into its tmux pane. Those
-// harnesses don't act on Claude's `notifications/claude/channel`, so the adapter
-// decides whether to also deliver via send-keys and whether Enter needs a settle
-// delay. Single-lined so an embedded newline can't submit the prompt early.
+// Terminal-notification fallback for harnesses without a first-class channel.
+// Single-lined so an embedded newline can't submit the prompt early.
 // execFileSync (args array) avoids any shell-escaping of the message content.
-function tmuxSendText(sessionName, text) {
+function tmuxSendText(sessionName, text, settleMs = 0) {
   try {
     const line = String(text || '').replace(/\s*\n\s*/g, ' · ').trim();
     if (!line) return false;
     execFileSync('tmux', ['send-keys', '-t', sessionName, '--', line], { timeout: 5000 });
-    const settleMs = harnessFromEnv().nudgeSettleMs || 0;
     if (settleMs > 0) {
       try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, settleMs); } catch {}
     }
@@ -1317,6 +1314,31 @@ function tmuxSendText(sessionName, text) {
     process.stderr.write(`[fleet-harness-nudge] send-keys failed for ${sessionName}: ${e.message}\n`);
     return false;
   }
+}
+
+async function notifyOverClaudeChannel(content, meta = {}) {
+  try {
+    await Promise.race([
+      server.notification({
+        method: 'notifications/claude/channel',
+        params: { content, meta },
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
+    ]);
+    return true;
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
+    return false;
+  }
+}
+
+function typeNotificationIntoPane(content, settleMs = 0) {
+  const sess = process.env.FLEET_TMUX_SESSION;
+  if (!sess) {
+    process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for terminal notification\n');
+    return false;
+  }
+  return tmuxSendText(sess, content, settleMs);
 }
 
 function tmuxIsIdle(text) {
@@ -5229,26 +5251,16 @@ function channelEventId(msg, data) {
 
 async function deliverChannelNotice(content, meta = {}) {
   if (!content) return false;
-  if (harnessFromEnv().channelNudge) {
-    const sess = process.env.FLEET_TMUX_SESSION;
-    if (!sess) {
-      process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for harness nudge\n');
-      return false;
-    }
-    return tmuxSendText(sess, content);
-  }
-  try {
-    await Promise.race([
-      server.notification({
-        method: 'notifications/claude/channel',
-        params: { content, meta },
-      }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
-    ]);
-    return true;
-  } catch (e) {
-    process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
-    return false;
+  const kind = harnessKindFromEnv();
+  switch (kind) {
+    case 'claude':
+      return notifyOverClaudeChannel(content, meta);
+    case 'codex':
+      return typeNotificationIntoPane(content, 400);
+    case 'goose':
+      return typeNotificationIntoPane(content, 0);
+    default:
+      throw new Error(`Unhandled harness kind: ${kind}`);
   }
 }
 
@@ -5280,9 +5292,13 @@ async function handleChannelMessage(msg) {
       ? 'channel-notification'
       : '';
   if (!eventType) return;
-  if (!['channel-notification', 'task_done', 'timer'].includes(eventType)) return;
+  if (!['channel-notification', 'chat', 'delegate', 'task_done', 'timer'].includes(eventType)) return;
 
   const data = msg.data || {};
+  const isTimerFire = eventType === 'timer' && data.metadata?.state === 'fired';
+  if (msg.event === 'event-update' && !isTimerFire) return;
+  if (eventType === 'timer' && !isTimerFire) return;
+
   const eventId = channelEventId(msg, data);
   if (eventId && _deliveredChannelIds.has(eventId)) return;
 
@@ -5298,6 +5314,14 @@ async function handleChannelMessage(msg) {
   let content = '';
   if (eventType === 'channel-notification') {
     content = data.text || data.content || '';
+  } else if (eventType === 'chat') {
+    const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
+    const rawText = data.text || data.message || '';
+    const docHint = formatViewingHint(data.metadata?.context, { terse: true });
+    content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} message from ${fromLabel}${docHint}: ${previewForChannel(rawText)} — ${inboxCallText('read and respond')}`;
+  } else if (eventType === 'delegate') {
+    const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
+    content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} task from ${fromLabel}: ${previewForChannel(data.description || data.text || '')} — ${inboxCallText('see it')}`;
   } else if (eventType === 'task_done') {
     const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
     content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} update from ${fromLabel}: ${previewForChannel(data.description || data.text || 'Task update')} — ${inboxCallText('see it')}`;

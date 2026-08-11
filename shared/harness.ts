@@ -2,8 +2,6 @@ export type Kind = 'claude' | 'codex' | 'goose'
 
 export interface HarnessOps {
   kind: Kind
-  channelNudge: boolean
-  nudgeSettleMs: number
   educationGate: boolean
   requiresClaudeSession: boolean
   filtersSkillSections: boolean
@@ -26,8 +24,6 @@ function normalize(value: unknown): string {
 export const HARNESS: Record<Kind, HarnessOps> = {
   claude: {
     kind: 'claude',
-    channelNudge: false,
-    nudgeSettleMs: 0,
     educationGate: false,
     requiresClaudeSession: true,
     filtersSkillSections: false,
@@ -35,8 +31,6 @@ export const HARNESS: Record<Kind, HarnessOps> = {
   },
   codex: {
     kind: 'codex',
-    channelNudge: true,
-    nudgeSettleMs: 400,
     educationGate: true,
     requiresClaudeSession: false,
     filtersSkillSections: true,
@@ -44,8 +38,6 @@ export const HARNESS: Record<Kind, HarnessOps> = {
   },
   goose: {
     kind: 'goose',
-    channelNudge: true,
-    nudgeSettleMs: 0,
     educationGate: true,
     requiresClaudeSession: false,
     filtersSkillSections: true,
