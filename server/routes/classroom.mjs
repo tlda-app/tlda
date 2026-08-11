@@ -67,6 +67,30 @@ export async function classroomTemplateVersion(templateDocKey) {
   return crypto.createHash('sha256').update(JSON.stringify(hashes)).digest('hex')
 }
 
+/**
+ * The handout this assignment's students started from, or null.
+ *
+ * Only the frozen template counts: the archive check compares against it to tell
+ * an answer typed under the box from the document's own narrative, and comparing
+ * against a handout that has been edited since would report the edit as the
+ * student's mistake. An assignment with no frozen template simply does not get
+ * that check — see `strayAnswers`, which makes no claim without one.
+ */
+async function frozenTemplateSource(store, assignmentId) {
+  const assignment = store.getAssignment(assignmentId)
+  if (!assignment?.templateDocKey) return null
+  const project = await readProject(assignment.templateDocKey)
+  if (!project?.mainFile) return null
+  try {
+    return await readFile(join(sourceDir(assignment.templateDocKey), project.mainFile), 'utf8')
+  } catch (error) {
+    // A template that cannot be read must not block a hand-in. The check is
+    // skipped and the reason reaches the log rather than the student.
+    console.error(`[classroom] could not read template for ${assignmentId}:`, error)
+    return null
+  }
+}
+
 export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion } = {}) {
   const router = Router()
   router.use((req, res, next) => {
@@ -254,7 +278,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       const archive = Buffer.concat(chunks)
       if (!archive.length) return fail(422, { error: 'The upload was empty — no file bytes arrived.' })
 
-      const inspection = inspectSubmissionArchive(archive)
+      const inspection = inspectSubmissionArchive(archive, { template: await frozenTemplateSource(store, assignmentId) })
       if (!inspection.ok) return fail(422, { error: 'This archive cannot be marked yet.', problems: inspection.errors })
 
       const contentRef = `submission-${assignmentId}-${studentId}`

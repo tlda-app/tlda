@@ -15,15 +15,76 @@ const MARKDOWN_IMAGE = /!\[[^\]]*\]\(\s*<?([^)>\s]+)>?[^)]*\)/g
 // Answer blocks carry the exercise id that problem-by-problem marking groups by.
 const ANSWER_ID = /:::\s*\{[^}]*#(ans-[A-Za-z0-9_-]+)[^}]*\}/g
 const REMOTE = /^(https?:|data:|mailto:|#)/i
+// What a blanked answer block holds before anyone types in it, from his own
+// bin/make-handout.py.
+const PLACEHOLDER = /^\s*\*?\(?your answer here\)?\*?\s*$/i
+
+/**
+ * Answers written underneath the box instead of inside it.
+ *
+ * A student who types under the closing fence gets a perfect preview and an
+ * empty extraction, and Quarto reports nothing: it is valid markup, just not an
+ * answer. His documents are narrative sections with several exercises inside
+ * each, so a heading is not a problem boundary — the exercise is.
+ *
+ * **It needs the template the student started from, and without one it makes no
+ * claim.** An earlier version guessed from shape alone — an unanswered block
+ * with prose under it — and on his week 0 handout, untouched, it refused four
+ * blocks: the prose and `{r}` chunks under them are his own narrative. Nothing
+ * about their shape distinguishes them from a misplaced answer, because there is
+ * nothing to distinguish. **Refusing a correct hand-in is the worse failure** —
+ * a stray answer costs a mark, while a student who cannot submit is stuck before
+ * a deadline, told to move text that is not theirs.
+ *
+ * Against the template it is exact rather than heuristic: text under an
+ * unanswered block that is not in the handout is text the student put there.
+ */
+export function strayAnswers(source, template) {
+  if (!template) return []
+  const templateLines = new Set(template.split('\n').map(line => line.trim()).filter(Boolean))
+  const lines = source.split('\n')
+  const found = []
+  let i = 0
+  while (i < lines.length) {
+    const open = lines[i].match(/^:::+\s*\{[^}]*#(ans-[A-Za-z0-9_-]+)[^}]*\}/)
+    if (!open) { i++; continue }
+    let j = i + 1
+    const body = []
+    while (j < lines.length && !/^:::+\s*$/.test(lines[j])) { body.push(lines[j]); j++ }
+    const answered = body.some(line => line.trim() && !PLACEHOLDER.test(line))
+    let k = j + 1
+    const after = []
+    while (k < lines.length && !/^:::+/.test(lines[k]) && !/^#{1,6}\s/.test(lines[k])) { after.push(lines[k]); k++ }
+    const stray = after.map(line => line.trim()).filter(line => line && !templateLines.has(line))
+    if (!answered && stray.length) found.push({ id: open[1], firstLine: stray[0].slice(0, 60) })
+    i = j + 1
+  }
+  return found
+}
 
 function isUnsafeEntry(name) {
   if (path.isAbsolute(name) || /^[A-Za-z]:/.test(name)) return true
   return name.split('/').includes('..')
 }
 
+/**
+ * The document with code removed, for asking what it *refers to*.
+ *
+ * An image written inside backticks is being shown to the reader, not included:
+ * his week 0 handout tells students to write `![](my-photo.png)`, and reading
+ * that as a real reference refuses every hand-in for that assignment over a
+ * photo nobody ever had. Fenced blocks go too — an `{r}` chunk that prints
+ * markdown is the same situation.
+ */
+function withoutCode(source) {
+  return source
+    .replace(/^[ \t]*(```+|~~~+)[^\n]*\n[\s\S]*?^[ \t]*\1[^\n]*$/gm, '')
+    .replace(/`[^`\n]*`/g, '')
+}
+
 export function parseQmdReferences(source) {
   const images = []
-  for (const match of source.matchAll(MARKDOWN_IMAGE)) {
+  for (const match of withoutCode(source).matchAll(MARKDOWN_IMAGE)) {
     const target = decodeURIComponent(match[1].trim())
     if (!REMOTE.test(target)) images.push(target)
   }
@@ -38,7 +99,7 @@ export function parseQmdReferences(source) {
  * sentences naming what to fix, because that list is what the student reads.
  * A bad archive is a reported error, never a thrown one.
  */
-export function inspectSubmissionArchive(bytes) {
+export function inspectSubmissionArchive(bytes, { template = null } = {}) {
   const errors = []
   let unpacked
   try {
@@ -77,6 +138,9 @@ export function inspectSubmissionArchive(bytes) {
 
   if (missing.length) {
     errors.push(`${qmdPath} references ${missing.length === 1 ? 'an image that is not' : 'images that are not'} in the archive: ${missing.join(', ')}. Add ${missing.length === 1 ? 'it' : 'them'} next to the .qmd and zip it again.`)
+  }
+  for (const stray of strayAnswers(strFromU8(unpacked[qmdPath]), template)) {
+    errors.push(`Your answer to ${stray.id.replace(/^ans-/, '')} is underneath the answer box rather than inside it, so it would not be marked — "${stray.firstLine}…". Move it between the \`:::\` lines.`)
   }
   if (answerIds.length === 0) {
     errors.push(`${qmdPath} has no answer blocks. Write your answers inside the blanked solution callouts from the template rather than replacing them.`)
