@@ -1999,6 +1999,27 @@ function isIndeterminateSpawnOutcome(value) {
     || /outcome is indeterminate after process restart/i.test(message)
 }
 
+function loginDaemonRouteProof(msg = {}) {
+  const machineId = msg.machine_id || null
+  const envName = msg.env_name || null
+  const daemonKey = msg.daemon_key || (machineId && envName ? daemonAddress(machineId, envName) : null)
+  if (!daemonKey) return null
+  const keyParts = daemonKey.split(':')
+  const resolvedMachineId = machineId || keyParts[0] || null
+  const resolvedEnvName = envName || keyParts.slice(1).join(':') || null
+  if (!resolvedMachineId || !resolvedEnvName) return null
+  if (machineId && envName && daemonKey !== daemonAddress(machineId, envName)) {
+    const err = new Error(`login daemon route mismatch: daemon_key ${daemonKey} does not match ${daemonAddress(machineId, envName)}`)
+    err.status = 400
+    throw err
+  }
+  return {
+    daemon_key: daemonKey,
+    machine_id: resolvedMachineId,
+    env_name: resolvedEnvName,
+  }
+}
+
 function settleSpawnMailboxIndeterminate(mailbox, detail) {
   const error = detail.error || 'spawn outcome is indeterminate after daemon restart'
   const settled = mailboxLibrarian.indeterminate(mailbox.id, error, {
@@ -2026,6 +2047,15 @@ function withProjectLabel(labels, project) {
   const label = `${PROJECT_LABEL_PREFIX}${project}`
   const kept = existing.filter(entry => !String(entry).startsWith(PROJECT_LABEL_PREFIX))
   return kept.includes(label) ? kept : [...kept, label]
+}
+
+async function failServerMintShell(agentId, reason) {
+  if (!agentId) return
+  spawnLibrarian.failPending(agentId, reason || 'launch-failed')
+  const shell = await fleetStore.getAgent?.(agentId)
+  if (!shell?.metadata?.shell) return
+  await fleetStore.markDead(agentId)
+  broadcastState()
 }
 
 async function performSpawnRelay(caller, msg) {
@@ -2172,7 +2202,6 @@ async function performSpawnRelay(caller, msg) {
         mandatory: true,
       })
     }
-    await fleetStore.setAgentDaemonRoute(pendingAgentId, daemonAddress(route.machine_id, route.env_name))
   }
   const spawnRequest = {
     agent_id: targetAgentId,
@@ -2215,7 +2244,7 @@ async function performSpawnRelay(caller, msg) {
         }
         if (pendingAgentId && result?.ok === false) {
           if (!isIndeterminateSpawnOutcome(result)) {
-            spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
+            await failServerMintShell(pendingAgentId, result.code || result.reason || 'launch-failed')
           }
         }
       } catch (e) {
@@ -2243,7 +2272,7 @@ async function performSpawnRelay(caller, msg) {
             error: e.message || 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
           }
         } else {
-          if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
+          if (pendingAgentId) await failServerMintShell(pendingAgentId, 'launch-failed')
           const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
             reason: e.code || 'launch-failed',
             error: e.message || String(e),
@@ -2273,7 +2302,7 @@ async function performSpawnRelay(caller, msg) {
         }
       }
       if (result?.ok === false && result.reason !== 'spawning') {
-        if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
+        if (pendingAgentId) await failServerMintShell(pendingAgentId, result.reason || result.error || 'launch-failed')
         const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
         if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
         if (settled) deliverSpawnLaunchFailure(settled, { ...result, error: result.error || result.reason || 'launch-failed' })
@@ -2283,6 +2312,7 @@ async function performSpawnRelay(caller, msg) {
       if (readiness) {
         ready = await readiness
         if (!ready.ok) {
+          if (pendingAgentId) await failServerMintShell(pendingAgentId, ready.reason)
           const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
           if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
           return
@@ -2317,7 +2347,7 @@ async function performSpawnRelay(caller, msg) {
       if (settled) deliverSpawnPermissionClamp(settled, completion)
       broadcastState()
     } catch (e) {
-      if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
+      if (pendingAgentId) await failServerMintShell(pendingAgentId, 'launch-failed')
       const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
         reason: e.code || 'launch-failed',
         error: e.message || String(e),
@@ -6005,9 +6035,18 @@ async function handleFleetWsMessage(ws, msg) {
     if (loginAgentId) {
       const existing = await fleetStore.getAgent?.(loginAgentId)
       if (!existing || existing.dead) { error(`No live shell for agent "${loginAgentId}". Spawn must create the shell before login.`); return }
+      let routeProof
+      try {
+        routeProof = loginDaemonRouteProof(msg)
+      } catch (e) {
+        error(e)
+        return
+      }
+      if (!routeProof?.daemon_key) {
+        error(`Agent login for "${loginAgentId}" requires daemon route information.`)
+        return
+      }
       humanPresence.detach(ws)
-      agentFleetConnections.set(loginAgentId, ws)
-      ws._tldaAgentId = loginAgentId
       const now = new Date().toISOString()
       const agent = {
         ...existing,
@@ -6023,7 +6062,10 @@ async function handleFleetWsMessage(ws, msg) {
       if (agent.metadata?.shell) {
         agent.metadata = { ...agent.metadata, shell: null }
       }
+      await fleetStore.setAgentDaemonRoute(loginAgentId, routeProof.daemon_key)
       await fleetStore.upsertAgent(agent)
+      agentFleetConnections.set(loginAgentId, ws)
+      ws._tldaAgentId = loginAgentId
       const stored = await fleetStore.getAgent?.(loginAgentId) || agent
       const storedAgent = await fleetStore.projectAgentDaemonRoute?.(stored) || stored
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })

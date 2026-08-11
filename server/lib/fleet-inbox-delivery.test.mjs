@@ -318,7 +318,11 @@ test('codex recipients use the MCP ACK path before daemon fallback', async () =>
       recipientWs.once('open', resolve)
       recipientWs.once('error', reject)
     })
-    await request(recipientWs, 1, 'login', { agent_id: 'fleet:recipient' })
+    await request(recipientWs, 1, 'login', {
+      agent_id: 'fleet:recipient',
+      machine_id: 'mini',
+      env_name: 'testing',
+    })
     recipientWs.on('message', raw => {
       const frame = JSON.parse(String(raw))
       if (frame.event === 'channel-notification' && frame.data?.metadata?.wake_ack_id) {
@@ -403,7 +407,11 @@ test('explicit deliveryChannel tmux does not bypass the MCP ACK path', async () 
       recipientWs.once('open', resolve)
       recipientWs.once('error', reject)
     })
-    await request(recipientWs, 1, 'login', { agent_id: 'fleet:recipient' })
+    await request(recipientWs, 1, 'login', {
+      agent_id: 'fleet:recipient',
+      machine_id: 'mini',
+      env_name: 'testing',
+    })
     recipientWs.on('message', raw => {
       const frame = JSON.parse(String(raw))
       if (frame.event === 'channel-notification' && frame.data?.metadata?.wake_ack_id) wakeAckSeen = true
@@ -478,7 +486,11 @@ test('an open MCP channel must ACK notification delivery or fall through to daem
       recipientWs.once('open', resolve)
       recipientWs.once('error', reject)
     })
-    await request(recipientWs, 1, 'login', { agent_id: 'fleet:recipient' })
+    await request(recipientWs, 1, 'login', {
+      agent_id: 'fleet:recipient',
+      machine_id: 'mini',
+      env_name: 'testing',
+    })
 
     senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
     await new Promise((resolve, reject) => {
@@ -548,7 +560,11 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
       recipientWs.once('open', resolve)
       recipientWs.once('error', reject)
     })
-    await request(recipientWs, 1, 'login', { agent_id: 'fleet:recipient' })
+    await request(recipientWs, 1, 'login', {
+      agent_id: 'fleet:recipient',
+      machine_id: 'mini',
+      env_name: 'testing',
+    })
     recipientWs.on('message', raw => {
       const frame = JSON.parse(String(raw))
       const ackId = frame.data?.metadata?.wake_ack_id

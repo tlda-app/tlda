@@ -103,6 +103,30 @@ function getAgentCwd() {
   return _agentCwdCache;
 }
 
+function loginRouteFields() {
+  const cwd = getAgentCwd() || process.env.PWD || null;
+  const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
+  const envName = getActiveEnvName();
+  const daemonKey = process.env.FLEET_DAEMON_KEY || (machineId && envName ? `${machineId}:${envName}` : null);
+  let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
+  if (!detectedTmux && process.env.TMUX) {
+    try {
+      const tmuxSession = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 3000 }).trim();
+      if (tmuxSession.startsWith('fleet-')) detectedTmux = tmuxSession;
+    } catch {
+      // Tmux auto-detection is optional; login still proceeds without a tmux name.
+    }
+  }
+  return {
+    cwd,
+    machineId,
+    envName,
+    daemonKey,
+    detectedTmux,
+    project: projectForCwd(cwd, { configDir: CONFIG_DIR, envName }) || undefined,
+  };
+}
+
 // Resolve a chat-like message body from the tool args. Two forms:
 //   - { [bodyField] } : an inline string → body = value, no source provenance.
 //   - { file, selector } : read the markdown file (agent-side — the file is on
@@ -510,7 +534,19 @@ function sendOneShotWS(envName, type, params = {}, opts = {}) {
     }));
     ws.on('open', () => {
       if (loginId) {
-        ws.send(JSON.stringify({ type: 'login', agent_id: opts.authenticateAgentId, id: loginId }));
+        const route = loginRouteFields();
+        ws.send(JSON.stringify({
+          type: 'login',
+          agent_id: opts.authenticateAgentId,
+          id: loginId,
+          tmux_session: route.detectedTmux || undefined,
+          cwd: route.cwd || undefined,
+          project: route.project,
+          machine_id: route.machineId,
+          env_name: route.envName,
+          daemon_key: route.daemonKey || undefined,
+          metadata: { kind: harnessFromEnv().kind },
+        }));
       } else {
         sendRequest();
       }
@@ -2449,20 +2485,8 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     if (activeAgentId() && shellId !== activeAgentId() && !nativeBinding) {
       return { content: [{ type: 'text', text: `Login rejected: session already bound to ${activeAgentId()}, cannot relogin as ${shellId}.` }], isError: true };
     }
-    let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
-    if (!detectedTmux && process.env.TMUX) {
-      try {
-        const tmuxSession = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 3000 }).trim();
-        if (tmuxSession.startsWith('fleet-')) detectedTmux = tmuxSession;
-      } catch {
-        // Tmux auto-detection is optional; login still proceeds without a tmux name.
-      }
-    }
-
-    const cwd = getAgentCwd() || process.env.PWD || null;
-    const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
-    const envName = getActiveEnvName();
-    const daemonKey = process.env.FLEET_DAEMON_KEY || (machineId && envName ? `${machineId}:${envName}` : null);
+    const route = loginRouteFields();
+    const { cwd, machineId, envName, daemonKey, detectedTmux } = route;
     const currentHarness = harnessFromEnv();
     const localMarker = extra => formatLoginMarker({
       mint_id: process.env.FLEET_MINT_ID || localAgentId || shellId,
@@ -2489,9 +2513,10 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       // No labels. Login used to send an always-empty array, and the server's
       // `labels || existing.labels` reads [] as an answer, so every login
       // erased the agent's labels.
-      project: projectForCwd(cwd, { configDir: CONFIG_DIR, envName }) || undefined,
+      project: route.project,
       machine_id: machineId,
       env_name: envName,
+      daemon_key: daemonKey || undefined,
       metadata: { kind: currentHarness.kind },
     };
     if (!shellId && !localAgentId) {
