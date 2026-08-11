@@ -97,7 +97,7 @@ import {
 import { createLightboxSurfaceRequest } from '../wm/lightbox-surface'
 import { clientPointToPage } from '../wm/viewport-coordinates'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
-import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
+import { cancelWMDrop, finishWMDrop, registerWMDropTarget, updateWMDrop, type WMDropPayload } from '../wm/drop-targets'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
@@ -6042,6 +6042,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       const drag = dragRef.current
       dragRef.current = null
       restoreHeldTouchAction()
+      // Now that a chat drag enters the WM drop system, a cancelled one has to
+      // leave it too, or the filter zone keeps the preview it was showing.
+      cancelWMDrop()
       if (drag?.pillId) {
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
         const onMain = !!drag._onMain
@@ -6097,6 +6100,24 @@ function FleetChatInner({ shape }: { shape: any }) {
           x: pagePos.x - 35,
           y: pagePos.y - 9,
         })
+        // Offer the drag to the WM drop system, exactly as FleetAgentsShape does.
+        // Without this a pill dragged out of a chat never enters that system at
+        // all, so the filter drop zones never preview and never resolve — which is
+        // the whole of "dragging a pill from the agents panel filters, dragging the
+        // same pill from a chat does nothing". The zone's own `accepts` limits this
+        // to agent/label/team pills, so doc, file, annotation and markdown chips
+        // still fall through to dropPillOnTarget untouched.
+        updateWMDrop({
+          kind: 'fleet-pill',
+          data: {
+            editor,
+            pillId: String(drag.pillId),
+            pillType: drag.pillType,
+            value: drag.value,
+            displayName: drag.displayName,
+            pagePoint: pagePos,
+          },
+        }, { x: e.clientX, y: e.clientY })
       }
 
       // Membrane handoff: when pointer leaves the chat, move the pill
@@ -6264,14 +6285,31 @@ function FleetChatInner({ shape }: { shape: any }) {
       const pagePos = onMain
         ? clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY })
         : fleetPointerEventPagePoint(dropEditor, frame, e)
-      dropPillOnTarget(
-        dropEditor,
-        drag.pillId as TLShapeId,
-        drag.value,
-        pagePos,
-        drag.content,
-        (message) => addToast({ title: message, severity: 'error' }),
-      )
+      // Give a registered WM drop target — the chat filter zones — first refusal,
+      // then fall back. This is the same order FleetAgentsShape uses, and the
+      // fallback is what keeps every other pill type behaving as before: a zone
+      // that does not accept this payload returns false and dropPillOnTarget runs.
+      const handledByDropTarget = finishWMDrop({
+        kind: 'fleet-pill',
+        data: {
+          editor: dropEditor,
+          pillId: String(drag.pillId),
+          pillType: drag.pillType,
+          value: drag.value,
+          displayName: drag.displayName,
+          pagePoint: pagePos,
+        },
+      }, { x: e.clientX, y: e.clientY })
+      if (!handledByDropTarget) {
+        dropPillOnTarget(
+          dropEditor,
+          drag.pillId as TLShapeId,
+          drag.value,
+          pagePos,
+          drag.content,
+          (message) => addToast({ title: message, severity: 'error' }),
+        )
+      }
       try {
         deleteFleetPill(dropEditor, drag.pillId as TLShapeId, 'drag-drop', { surface: 'chat' })
       } catch {
