@@ -25,7 +25,7 @@ import {
 } from '../wm/markdown-surface'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 // @ts-ignore — vanilla JS module
-import { parseCanonicalEventReference } from '../../shared/canonical-references.mjs'
+import { parseCanonicalReference } from '../../shared/canonical-references.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES, placeFleetShapeAtScreenPoint } from './fleet-utils'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
@@ -570,8 +570,8 @@ export async function dropPillOnTarget(
       const sourceShapeId: string | undefined = typeof pillValue === 'string' && pillValue.startsWith('shape:')
         ? pillValue : undefined
       const uid = sourceShapeId || pillValue || (Date.now().toString(36) + Math.random().toString(36).slice(2, 5))
-      const canonicalEvent = parseCanonicalEventReference(uid)
-      const token = canonicalEvent?.canonical || `«${pillType}:${displayName}#${uid}»`
+      const canonicalReference = parseCanonicalReference(uid)
+      const token = canonicalReference?.canonical || `«${pillType}:${displayName}#${uid}»`
       if (content) chipContentStore.set(token, content)
       chatInsertBus.dispatchEvent(new CustomEvent('insert', {
         detail: { chatId: hitShape.id, text: token },

@@ -92,6 +92,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getQaStatus',
   'getReportCloseOperationResult',
   'getSearchStats',
+  'getSessionEntryById',
   'getSharedDoc',
   'getSharedDocs',
   'getSkillReads',

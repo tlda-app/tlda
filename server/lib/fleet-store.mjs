@@ -5058,6 +5058,14 @@ export class FleetStore {
     return { ...event, metadata: event.metadata ? JSON.parse(event.metadata) : null };
   }
 
+  getSessionEntryById(entryId) {
+    const row = this.db.prepare(`
+      SELECT id, agent_id AS agentId, session_id AS sessionId, role, timestamp, text
+      FROM session_entries WHERE id = ?
+    `).get(entryId)
+    return row ? { source: 'session', ...row } : null
+  }
+
   listPendingTimerEvents() {
     const rows = this.db.prepare(`
       SELECT ${this._EVT}

@@ -67,7 +67,7 @@ import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, u
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
 // @ts-ignore — vanilla JS module
-import { CANONICAL_EVENT_REFERENCE_SOURCE, canonicalEventReference, parseCanonicalEventReference } from '../../shared/canonical-references.mjs'
+import { CANONICAL_REFERENCE_SOURCE, canonicalEventReference, parseCanonicalEventReference, parseCanonicalSearchReference } from '../../shared/canonical-references.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -3200,7 +3200,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // for visible items, so the cost scales with the viewport not the message count.
   const postProcess = useCallback((html: string): string => {
     html = transformNonCode(html, (text) => text.replace(
-      new RegExp(CANONICAL_EVENT_REFERENCE_SOURCE, 'g'),
+      new RegExp(CANONICAL_REFERENCE_SOURCE, 'g'),
       (reference) => `<span class="ref-chip" data-canonical-event-ref="${reference}" data-token="${reference}">${reference}</span>`,
     ))
     // Turn «type:label» reference tokens into chips — only in non-code regions
@@ -3538,6 +3538,36 @@ function FleetChatInner({ shape }: { shape: any }) {
         popover.innerHTML = ctxRef.current
           ? renderChatLine(matchEvent, ctxRef.current)
           : `<div class="chat-line">${matchEvent.text || '(no content)'}</div>`
+        const chipRect = chip.getBoundingClientRect()
+        popover.style.position = 'fixed'
+        popover.style.left = `${chipRect.left}px`
+        popover.style.bottom = `${window.innerHeight - chipRect.top + 4}px`
+        popover.style.zIndex = '10000'
+        popover.style.maxWidth = `${w}px`
+        document.body.appendChild(popover)
+        return
+      }
+      const canonicalSearch = parseCanonicalSearchReference(token)
+      if (canonicalSearch) {
+        const response = await fetch(`/api/search-results/${canonicalSearch.source}/${canonicalSearch.id}`)
+        if (!response.ok || !chip.matches(':hover')) return
+        const result = (await response.json()).result
+        const rawEvent = canonicalSearch.source === 'session'
+          ? {
+              type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant',
+              from: result.agentId,
+              to: null,
+              text: result.text,
+              timestamp: result.timestamp,
+              id: result.id,
+            }
+          : result
+        document.querySelector('.chip-hover-popover')?.remove()
+        const popover = document.createElement('div')
+        popover.className = 'chip-hover-popover fleet-chat-shape'
+        popover.innerHTML = ctxRef.current
+          ? renderChatLine(convertChatEvent(rawEvent), ctxRef.current)
+          : `<div class="chat-line">${result.text || '(no content)'}</div>`
         const chipRect = chip.getBoundingClientRect()
         popover.style.position = 'fixed'
         popover.style.left = `${chipRect.left}px`
@@ -7651,7 +7681,7 @@ function InputHighlightUnderlay({ inputRef }: { inputRef: React.RefObject<HTMLIn
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
       const highlighted = escaped.replace(
-        new RegExp(`(«.+?»|${CANONICAL_EVENT_REFERENCE_SOURCE})`, 'g'),
+        new RegExp(`(«.+?»|${CANONICAL_REFERENCE_SOURCE})`, 'g'),
         '<span class="ref-chip-underlay">$1</span>'
       )
       setHtml(highlighted)

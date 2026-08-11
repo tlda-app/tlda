@@ -5,6 +5,8 @@ import { convertChatEvent } from '../fleet/fleet-data.mjs'
 import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 import { groupFleetSearchResults, type FleetSearchResultGroup } from '../fleet/search-query'
 import { fleetSearchResultParticipantLabel } from '../../shared/filter-semantics.mjs'
+// @ts-ignore — vanilla JS module
+import { canonicalSearchReference } from '../../shared/canonical-references.mjs'
 
 const SEARCH_GROUP_INITIAL_LIMIT = 6
 
@@ -23,9 +25,9 @@ function searchResultMessageDrag(result: any, text: string, ctx: any, agents: an
   const label = fleetSearchResultParticipantLabel(result, fromId, { agents }) || ctx.agentLabel(fromId)
   const ts = result.timestamp || ''
   const time = ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
-  const id = result.source === 'session'
-    ? (result.id ? `session:${result.id}` : `session:${fromId}:${ts}`)
-    : (result.id ? `msg:${result.id}` : `msg:${fromId}:${ts}`)
+  const id = result.id
+    ? canonicalSearchReference(result.source === 'session' ? 'session' : 'msg', result.id)
+    : null
   const stamped = ts ? new Date(ts) : null
   const readableTs = stamped && !Number.isNaN(stamped.getTime()) ? stamped.toLocaleString() : ts
   const content = [
@@ -34,7 +36,7 @@ function searchResultMessageDrag(result: any, text: string, ctx: any, agents: an
     text,
   ].filter(Boolean).join(' ')
   return {
-    value: id,
+    value: id || `${result.source === 'session' ? 'session' : 'msg'}:${fromId}:${ts}`,
     displayName: `${label} ${time} search`.trim(),
     color: '#8888a0',
     content,
