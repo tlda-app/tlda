@@ -5236,6 +5236,14 @@ let _channelHasOpened = false;
 const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60_000;
 
+export function classifyChannelNoticeDedupe({ eventId, deliveredIds, wakeAckId, isDirectTarget } = {}) {
+  const duplicate = !!(eventId && deliveredIds?.has?.(eventId));
+  return {
+    duplicate,
+    ackDuplicateWake: duplicate && !!wakeAckId && !!isDirectTarget,
+  };
+}
+
 function inboxCallText(action = 'see it') {
   return `call inbox() to ${action}.`;
 }
@@ -5270,6 +5278,20 @@ async function deliverChannelNotice(content, meta = {}) {
       return typeNotificationIntoPane(content, 0);
     default:
       throw new Error(`Unhandled harness kind: ${kind}`);
+  }
+}
+
+async function acknowledgeWakeChannelNotice(agentId, wakeAckId) {
+  if (!agentId || !wakeAckId) return false;
+  try {
+    const result = await mcpFleetTransport.ephemeral('channel-notification-ack', {
+      agent: agentId,
+      ack_id: wakeAckId,
+    }, { deadlineMs: 1000 });
+    return result?.acknowledged === true;
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] channel notification ack failed: ${e.message}\n`);
+    return false;
   }
 }
 
@@ -5308,9 +5330,6 @@ async function handleChannelMessage(msg) {
   if (msg.event === 'event-update' && !isTimerFire) return;
   if (eventType === 'timer' && !isTimerFire) return;
 
-  const eventId = channelEventId(msg, data);
-  if (eventId && _deliveredChannelIds.has(eventId)) return;
-
   const wiretapCc = data.metadata?.wiretap_cc || [];
   const isDirectTarget = directRecipients(data).includes(agentId);
   const isWiretapTarget = wiretapCc.includes(agentId);
@@ -5319,6 +5338,19 @@ async function handleChannelMessage(msg) {
   const fromId = data.from || data.from_id || '';
   if (fromId === agentId && eventType !== 'timer') return;
   if (data.metadata?.source === 'terminal') return;
+
+  const eventId = channelEventId(msg, data);
+  const wakeAckId = data.metadata?.wake_ack_id || null;
+  const dedupe = classifyChannelNoticeDedupe({
+    eventId,
+    deliveredIds: _deliveredChannelIds,
+    wakeAckId,
+    isDirectTarget,
+  });
+  if (dedupe.duplicate) {
+    if (dedupe.ackDuplicateWake) await acknowledgeWakeChannelNotice(agentId, wakeAckId);
+    return;
+  }
 
   let content = '';
   if (eventType === 'channel-notification') {
@@ -5343,16 +5375,8 @@ async function handleChannelMessage(msg) {
     event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
     from: fromId,
   });
-  const wakeAckId = data.metadata?.wake_ack_id || null;
   if (delivered && wakeAckId && isDirectTarget) {
-    try {
-      await mcpFleetTransport.ephemeral('channel-notification-ack', {
-        agent: agentId,
-        ack_id: wakeAckId,
-      }, { deadlineMs: 1000 });
-    } catch (e) {
-      process.stderr.write(`[fleet-channel] channel notification ack failed: ${e.message}\n`);
-    }
+    await acknowledgeWakeChannelNotice(agentId, wakeAckId);
   }
   if (delivered && eventId) {
     _deliveredChannelIds.add(eventId);
