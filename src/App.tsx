@@ -4,6 +4,7 @@ import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDo
 import { clearDocumentStores } from './stores'
 import { initToken, fetchAuthLevel } from './authToken'
 import { log } from './logger'
+import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { receiveFilterEvents, sendMessage, useFleetAgents, useFleetEvents, useFleetIdentity, useFleetTasks } from './fleet-data-adapter'
@@ -70,6 +71,21 @@ class ErrorBoundary extends Component<
 
   static getDerivedStateFromError(error: Error) {
     return { hasError: true, error }
+  }
+
+  componentDidMount() {
+    window.addEventListener(SHAPE_RENDER_ERROR_EVENT, this.handleShapeRenderError)
+  }
+
+  componentWillUnmount() {
+    window.removeEventListener(SHAPE_RENDER_ERROR_EVENT, this.handleShapeRenderError)
+  }
+
+  private handleShapeRenderError = (event: Event) => {
+    const error = errorFromShapeRenderEvent(event)
+    if (!error) return
+    this.props.onError?.()
+    this.setState({ hasError: true, error })
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
