@@ -184,7 +184,7 @@ export function createTerminalRpc({
   async function writeTextToTerminal(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
-    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text } = args
+    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
     if (ready_timeout_ms != null) await waitForTerminalInputReady(tmuxSession, ready_timeout_ms)
@@ -200,7 +200,7 @@ export function createTerminalRpc({
     } catch {
       // Capture is advisory. Preserve the existing send path when unavailable.
     }
-    const pty = terminalWatchPtys.get(tmuxSession)?.alive
+    const pty = use_pty && terminalWatchPtys.get(tmuxSession)?.alive
       ? terminalWatchPtys.get(tmuxSession).pty
       : null
     if (pty) {
@@ -238,6 +238,7 @@ export function createTerminalRpc({
       ready_timeout_ms: readyTimeoutMs,
       clear_before_text: !!clearBeforeText,
       literal_text: true,
+      use_pty: false,
     })
   }
 

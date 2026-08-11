@@ -111,3 +111,68 @@ test('old busy text above the prompt tail does not block exact notification text
     ['send-keys', '-t', '=fleet-test:', 'Enter'],
   ])
 })
+
+test('notify-agent uses direct tmux injection even when a terminal watch pty is active', async () => {
+  const calls = []
+  const ptyWrites = []
+  const rpc = createTerminalRpc({
+    tmuxArgs: [],
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg() {},
+    detectPrompt: () => ({ type: 'none' }),
+    stripAnsi: value => String(value || ''),
+    promptCooldowns: new Map(),
+    surfacedPrompts: new Map(),
+    alivenessCache: new Map(),
+    thinkingSpinnerRe: /never-matches/,
+    interruptHintRe: /never-matches/,
+    thinkingScanLines: 20,
+    terminalSizePollMs: 5000,
+    decideTerminalWatchExit: () => ({ terminalDead: false }),
+    onArmBySession() {},
+    onEmitAgentStatus() {},
+    onPlanModeSeen() {},
+    onPlanModeGone() {},
+    hasPlanMode: () => false,
+    resolveAgentRoute: () => ({ agent_id: 'fleet:test', session_id: 'session-1', tmux_session: 'fleet-test' }),
+    resolveTerminalAgent: () => ({ id: 'fleet:test', sessionId: 'session-1', tmuxSession: 'fleet-test' }),
+    validateTmuxOwner: () => true,
+    ptyModuleImpl: {
+      spawn() {
+        return {
+          write(value) { ptyWrites.push(value) },
+          resize() {},
+          kill() {},
+          onData() {},
+          onExit() {},
+        }
+      },
+    },
+    execFileImpl: async (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (args.includes('capture-pane')) return { stdout: 'Claude ready\n❯ ' }
+      if (args.includes('display-message')) return { stdout: '120 40' }
+      return { stdout: '' }
+    },
+  })
+
+  assert.equal((await rpc.handlers['start-terminal-watch']({ agent_id: 'fleet:test' })).ok, true)
+
+  const result = await rpc.handlers['notify-agent']({
+    agent_id: 'fleet:test',
+    text: 'LIVE-CLAUDE-WATCH',
+    enter_delay_ms: 0,
+    ready_timeout_ms: 1000,
+    clear_before_text: true,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.via, 'tmux')
+  assert.deepEqual(ptyWrites, [])
+  assert.deepEqual(calls.slice(-3).map(call => call.slice(1)), [
+    ['send-keys', '-t', '=fleet-test:', 'C-u'],
+    ['send-keys', '-t', '=fleet-test:', '-l', '--', 'LIVE-CLAUDE-WATCH'],
+    ['send-keys', '-t', '=fleet-test:', 'Enter'],
+  ])
+  assert.equal(rpc.handlers['stop-terminal-watch']({ agent_id: 'fleet:test' }).ok, true)
+})
