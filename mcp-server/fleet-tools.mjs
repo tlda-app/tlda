@@ -3097,7 +3097,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
     if (queuedOperationId) {
-      warning += `\n\nQueued for durable delivery; no server ACK yet: ${queuedOperationId}`;
+      warning += `\n\nQueued locally; no server ACK yet: ${queuedOperationId}`;
       if (authoredSuggestions.length) {
         warning += '\nSuggestion chips were not posted yet because the chat message has not received a server id.';
       }
@@ -5144,7 +5144,7 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 export function durableDelivery(row) {
   switch (row?.status) {
     case 'accepted':
-      return { delivery: 'delivered' }
+      return { delivery: 'accepted' }
     case 'failed':
       return { delivery: 'not delivered', reason: row.lastError, resend: 'pointless' }
     case 'dead':
@@ -5156,7 +5156,7 @@ export function durableDelivery(row) {
 
 export function describeDurableOutcome(type, d, { waitedMs } = {}) {
   const waited = Number.isFinite(waitedMs) ? ` after ${(waitedMs / 1000).toFixed(1)}s` : ''
-  if (d.delivery === 'delivered') return null
+  if (d.delivery === 'accepted') return null
   if (d.delivery === 'not delivered') {
     return `⚠ ${type} NOT DELIVERED — the server refused it: ${d.reason}. Re-sending will not help; fix the cause.`
   }

@@ -18,10 +18,10 @@ function enqueue(o, id = 'op-1') {
 const clientDeadline = new Error('WS request deadline exceeded after 5000ms (type=chat)')
 const serverRefusal = Object.assign(new Error('fleet WS request was not accepted before deadline after 5000ms (type=chat)'), { serverRejected: true })
 
-test('accepted row reports delivered and says nothing to the caller', () => {
+test('accepted row reports accepted and says nothing to the caller', () => {
   const o = outbox(); enqueue(o)
   const row = o.markAccepted('op-1', { ok: true })
-  assert.equal(durableDelivery(row).delivery, 'delivered')
+  assert.equal(durableDelivery(row).delivery, 'accepted')
   assert.equal(describeDurableOutcome('chat', durableDelivery(row)), null)
 })
 
