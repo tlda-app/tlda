@@ -2327,17 +2327,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
       )
       semanticRoots.push(root)
     })
-    // A thread message that already fits is not collapsed. The renderer marks
-    // every body, because it cannot know how tall rendered markdown lays out --
-    // this is the half that measures. Without it a two-line message carries a
-    // collapsed class that does nothing but lie about the row being cut off,
-    // which is the defect the 8/01 version was written to avoid.
-    el.querySelectorAll<HTMLElement>('.pretty-msg-body.thread-msg-collapsed').forEach(body => {
-      if (body.scrollHeight <= body.clientHeight + 1) {
-        body.classList.remove('thread-msg-collapsed')
-        body.style.maxHeight = ''
-      }
-    })
     // Restore code-block expand state (each block keyed by index within the row)
     el.querySelectorAll('.code-block-wrap').forEach((wrap, i) => {
       if (expanded.has(`${itemKey}:code:${i}`)) {

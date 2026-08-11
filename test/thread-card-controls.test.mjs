@@ -75,35 +75,30 @@ test('the hidden middle is present, not another ellipsis', () => {
   for (const n of [6, 7, 8, 9, 10, 11, 12, 13]) assert.match(middle, new RegExp(`message ${n}\\b`))
 })
 
-// Skip: "it's supposed to fucking render threads at ... 16 lines tall. With a
-// fucking expand button, but it's rendering them like arbitrarily fucking tall."
-// Skip, on the card that clipped itself and expanded on a click: "there's no
-// fucking expand button... It's literally click to expand to something you can
-// expand." One expand, and it is the gap marker.
-//
-// The clip and the card's onclick were ONE mechanism, not two rules: a clipped
-// card plus click-to-unclip is what produced the invisible first expand. So what
-// this forbids is the CARD carrying a bound or a click -- not the string
-// `max-height` anywhere. A bound on a message body is a different thing and is
-// allowed; Skip, 8/09 01:36:15: "it does seem like agents send really really
-// long messages sometimes, and that just makes the thread view super
-// disruptive."
-test('the card has no height bound and no click of its own', () => {
+// Expanded thread cards render the messages as normal chat content. The only
+// thread-level fold is the middle row marker; individual message bodies do not
+// carry an independent max-height that survives expansion.
+test('the card and its message bodies have no height bound or click of their own', () => {
   for (const thread of [0, 16]) {
     const html = renderThreadRows(threadRows(1, 16), { ...ctx, foldHeights: { thread } })
     const cardTag = html.slice(0, html.indexOf('>') + 1)
 
     assert.match(cardTag, /tool-pretty-thread/)
     assert.doesNotMatch(cardTag, /max-height/)
+    assert.doesNotMatch(html, /max-height/)
+    assert.doesNotMatch(html, /thread-msg-collapsed/)
     assert.doesNotMatch(html, /onclick=/)
     assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
-
-    // Whatever the preference bounds, it bounds a message body -- never the
-    // card, and never the gap marker, which is the one expand.
-    for (const tag of html.match(/<[^>]*max-height[^>]*>/g) || []) {
-      assert.match(tag, /pretty-msg-body/)
-    }
   }
+})
+
+test('thread message bodies do not use the removed more-control path', () => {
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+  const html = renderThreadRows(threadRows(1, 2), { ...ctx, foldHeights: { thread: 16 } })
+
+  assert.doesNotMatch(html, /pretty-msg-body-more/)
+  assert.doesNotMatch(html, />\[more\]</)
+  assert.doesNotMatch(source, /pretty-msg-body-more/)
 })
 
 // The search card's shell -- its open/collapse button and its "inspected" line
