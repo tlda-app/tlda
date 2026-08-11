@@ -59,7 +59,7 @@ export function createDaemonWakeCore({
     if (alive) {
       if (!params.takeover_existing) {
         const notified = await tell(false)
-        return { ok: true, alreadyAlive: true, ...facts, ...(notified ? { notified: true } : {}) }
+        return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
       }
       if (!targetDaemonKey || !processDaemonKey || !replaceProcess) {
         throw new Error(`mint ${facts.mintId} takeover is not configured on this daemon`)
@@ -67,7 +67,7 @@ export function createDaemonWakeCore({
       const liveDaemonKey = await processDaemonKey(facts)
       if (liveDaemonKey === targetDaemonKey) {
         const notified = await tell(false)
-        return { ok: true, alreadyAlive: true, ...facts, ...(notified ? { notified: true } : {}) }
+        return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
       }
       if (!liveDaemonKey) {
         throw new Error(`mint ${facts.mintId} takeover refused: live process has no daemon ownership`)
@@ -100,7 +100,7 @@ export function createDaemonWakeCore({
     }
     if (!resumed) {
       const notified = await tell(false)
-      return { ok: true, alreadyAlive: true, ...facts, ...(notified ? { notified: true } : {}) }
+      return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
     }
     const current = store.updateProcessState(facts.mintId, resumed)
     const notified = await tell(true)
@@ -110,7 +110,7 @@ export function createDaemonWakeCore({
       ...(alive ? { takenOver: true } : {}),
       ...current,
       ...resumed,
-      ...(notified ? { notified: true } : {}),
+      ...(notified?.ok ? { notified: true } : {}),
     }
   }
 }

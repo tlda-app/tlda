@@ -134,10 +134,11 @@ export function createTerminalRpc({
     const text = stripAnsi ? stripAnsi(pane || '') : String(pane || '')
     const lines = text.split('\n').filter(line => line.trim())
     const tail = lines.slice(-6)
-    const tailText = tail.join('\n')
-    const promptReady = tail.some(line => line.includes('❯') || line.trimStart().startsWith('›'))
-    const busy = ['Thinking', 'Working', 'Transmuting', 'ESC to interrupt', 'esc to interrupt', 'Starting MCP servers'].some(marker => tailText.includes(marker))
-    return promptReady && !busy
+    const promptIndex = tail.findLastIndex(line => line.includes('❯') || line.trimStart().startsWith('›'))
+    const busyIndex = tail.findLastIndex(line =>
+      ['Thinking', 'Working', 'Transmuting', 'ESC to interrupt', 'esc to interrupt', 'Starting MCP servers'].some(marker => line.includes(marker)) ||
+      line.includes('✻'))
+    return promptIndex >= 0 && promptIndex > busyIndex
   }
 
   async function waitForTerminalInputReady(tmuxSession, timeoutMs = 0) {
@@ -184,10 +185,13 @@ export function createTerminalRpc({
   async function writeTextToTerminal(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
-    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true } = args
+    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true, require_ready = false } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
-    if (ready_timeout_ms != null) await waitForTerminalInputReady(tmuxSession, ready_timeout_ms)
+    if (ready_timeout_ms != null) {
+      const ready = await waitForTerminalInputReady(tmuxSession, ready_timeout_ms)
+      if (!ready && require_ready) return { ok: false, reason: 'terminal-not-ready', via: 'none' }
+    }
     // A live tmux can still be unable to consume task text. Clear only prompts
     // already classified as safe auto-accepts before injecting the queued text;
     // unknown, permission, and choice prompts remain untouched.
@@ -239,6 +243,7 @@ export function createTerminalRpc({
       clear_before_text: !!clearBeforeText,
       literal_text: true,
       use_pty: false,
+      require_ready: readyTimeoutMs != null,
     })
   }
 

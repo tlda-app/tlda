@@ -124,6 +124,28 @@ assert.equal(handoff.resumed, true)
 assert.equal(handoff.alreadyAlive, undefined)
 assert.equal(handoffResumes, 2)
 
+const unreadyNotifyWake = createDaemonWakeCore({
+  store: {
+    resolve: () => ({
+      mintId: 'mint-unready',
+      fleetId: 'fleet:unready',
+      sessionId: 'session-unready',
+      processState: { tmux_session: 'fleet-unready' },
+    }),
+    updateProcessState: () => assert.fail('already-live notify must not update process state'),
+  },
+  processAlive: async () => true,
+  resumeSession: async () => assert.fail('already-live notify must not resume'),
+  notifyAgent: async () => ({ ok: false, reason: 'terminal-not-ready' }),
+})
+
+const unreadyNotify = await unreadyNotifyWake({
+  fleet_id: 'fleet:unready',
+  notify_text: 'LIVE-CLAUDE-TIMEOUT',
+})
+assert.equal(unreadyNotify.alreadyAlive, true)
+assert.equal(unreadyNotify.notified, undefined)
+
 let failedResumeAttempts = 0
 const failedWake = createDaemonWakeCore({
   store: {
