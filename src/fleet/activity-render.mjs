@@ -288,11 +288,7 @@ function threadCounts(ctx) {
 function threadBodyFold(ctx) {
   const lines = Number(ctx?.foldHeights?.thread)
   if (!Number.isFinite(lines) || lines <= 0) return { cls: '', style: '' }
-  return {
-    cls: ' thread-msg-collapsed',
-    style: ` style="max-height:${(lines * 1.5).toFixed(1)}em"`,
-    more: '<div class="pretty-expand-btn pretty-msg-body-more">[more]</div>',
-  }
+  return { cls: ' thread-msg-collapsed', style: ` style="max-height:${(lines * 1.5).toFixed(1)}em"` }
 }
 
 function renderThreadMsg(msg, ctx) {
@@ -302,7 +298,7 @@ function renderThreadMsg(msg, ctx) {
   if (msg.raw != null) {
     const rawText = String(msg.raw)
     const rawFold = threadBodyFold(ctx)
-    return `<div class="chat-line"><div class="pretty-msg-body${rawFold.cls}"${rawFold.style}>${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div>${rawFold.more || ''}</div>`
+    return `<div class="chat-line"><div class="pretty-msg-body${rawFold.cls}"${rawFold.style}>${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div></div>`
   }
   const from = String(msg.from ?? '')
   const to = String(msg.to ?? '')
@@ -326,7 +322,7 @@ function renderThreadMsg(msg, ctx) {
       <span class="chat-nick ${fromCls}">${agentNameHtml(from)}</span>
       <span class="chat-arrow">→</span>
       <span class="chat-nick ${toCls}">${agentNameHtml(to)}</span>
-      <div class="pretty-msg-body${fold.cls}"${fold.style}>${bodyHtml}</div>${fold.more || ''}
+      <div class="pretty-msg-body${fold.cls}"${fold.style}>${bodyHtml}</div>
     </div>`
 }
 
