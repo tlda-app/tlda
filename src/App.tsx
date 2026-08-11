@@ -22,6 +22,8 @@ import { useFleetTheme } from './hooks/useFleetTheme'
 import { ChatComposer } from './shapes/ChatComposer'
 import { getPref, parseCsvPref, subscribePref } from './preferences'
 // @ts-ignore — vanilla JS module
+import { buildFleetAgentFilter } from '../shared/filter-semantics.mjs'
+// @ts-ignore — vanilla JS module
 import { attachIndexChatTail } from './index-chat-tail.mjs'
 // @ts-ignore — vanilla JS module
 import { indexSelectedAgentRecipientId } from './fleet/send-target-binding.mjs'
@@ -33,6 +35,8 @@ import {
 import { PrettyName } from './shapes/PrettyName'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc } from './fleet/chat-render.mjs'
+// @ts-ignore — vanilla JS module
+import { renderActivityGroup } from './fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
@@ -762,12 +766,9 @@ function projectLabelMatches(row: FleetAgentDirectoryRowModel, project: string) 
   return row.labels.some(label => label === project || label === `project:${project}` || label.endsWith(`/${project}`))
 }
 
-function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null, humanId: string | null | undefined): FleetChatFilter | null {
-  if (!row?.exactName || !humanId) return null
-  return [
-    [['from', humanId], ['to', row.exactName]],
-    [['from', row.exactName], ['to', humanId]],
-  ]
+function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null): FleetChatFilter | null {
+  if (!row?.exactName) return null
+  return buildFleetAgentFilter(row.exactName) as FleetChatFilter
 }
 
 function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>, sendTargets: string[]) {
@@ -997,8 +998,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   }, [agentRows, selectedAgentId])
   // The dep array is narrowed to `.exactName` on purpose, and `exhaustive-deps`
   // will tell you it is incomplete. It is not: `fleetChatFilterForAgent` reads
-  // `row.exactName` and `humanId` and nothing else, so this is every value the
-  // closure consumes. The rule tracks whole identifiers and cannot express
+  // `row.exactName` and nothing else, so this is every value the closure
+  // consumes. The rule tracks whole identifiers and cannot express
   // "only this property," which is why it ships as a warning.
   //
   // Widening it to `selectedAgent` is a regression, not a cleanup. This filter
@@ -1007,8 +1008,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   // the filter continuously, and tears down and re-establishes the index chat
   // subscription with it.
   const selectedAgentFilter = useMemo(
-    () => fleetChatFilterForAgent(selectedAgent, identity.id),
-    [selectedAgent?.exactName, identity.id],
+    () => fleetChatFilterForAgent(selectedAgent),
+    [selectedAgent?.exactName],
   )
   const chromeChatFilter = selectedAgentFilter || [[['from', '__tlda-index-no-agent__']]] as FleetChatFilter
   const indexChatBufferKey = selectedAgent?.id ? `chat:index:${selectedAgent.id}` : 'chat:index:no-agent'
@@ -1054,14 +1055,33 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   }, [selectedAgent, selectedChatEvents])
   const renderedChatRows = useMemo(() => {
     let previousMessageTimestamp: string | null = null
-    return selectedChatRows.map((event, index) => {
+    const rows: { key: string; html: string }[] = []
+    let activityGroup: any[] = []
+    const flushActivity = () => {
+      if (activityGroup.length === 0) return
+      const first = activityGroup[0]
+      rows.push({
+        key: `activity:${first._dbId || first.id || first.timestamp || rows.length}`,
+        html: `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, chatRenderContext)}</div>`,
+      })
+      activityGroup = []
+    }
+    selectedChatRows.forEach((event, index) => {
+      if (event._activity) {
+        if (activityGroup.length > 0 && activityGroup[0].from !== event.from) flushActivity()
+        activityGroup.push(event)
+        return
+      }
+      flushActivity()
       const html = renderChatLine(event, { ...chatRenderContext, previousMessageTimestamp })
       if (html && event.timestamp) previousMessageTimestamp = event.timestamp
-      return {
+      rows.push({
         key: event.id || event._tempId || `${event.timestamp}-${index}`,
         html,
-      }
+      })
     })
+    flushActivity()
+    return rows
   }, [chatRenderContext, selectedChatRows])
 
   useEffect(() => {
