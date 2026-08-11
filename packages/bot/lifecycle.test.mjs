@@ -8,6 +8,40 @@ import { createBot, createTransportFixture } from './index.mjs'
 
 const turn = () => new Promise(resolve => setImmediate(resolve))
 
+const ORIGINAL_ENV = {
+  TLDA_BOT_NAME: process.env.TLDA_BOT_NAME,
+  TLDA_BOT_MACHINE_ID: process.env.TLDA_BOT_MACHINE_ID,
+  TLDA_BOT_TMUX_SESSION: process.env.TLDA_BOT_TMUX_SESSION,
+  FLEET_DAEMON_KEY: process.env.FLEET_DAEMON_KEY,
+  TLDA_ENV: process.env.TLDA_ENV,
+}
+
+function restoreEnv() {
+  for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
+    if (value == null) delete process.env[key]
+    else process.env[key] = value
+  }
+}
+
+function loginRouteProof(payload) {
+  const machineId = payload.machine_id || null
+  const envName = payload.env_name || null
+  const daemonKey = payload.daemon_key || (machineId && envName ? `${machineId}:${envName}` : null)
+  if (!daemonKey) return null
+  const keyParts = daemonKey.split(':')
+  const resolvedMachineId = machineId || keyParts[0] || null
+  const resolvedEnvName = envName || keyParts.slice(1).join(':') || null
+  if (!resolvedMachineId || !resolvedEnvName) return null
+  if (machineId && envName && daemonKey !== `${machineId}:${envName}`) {
+    throw new Error(`login daemon route mismatch: daemon_key ${daemonKey} does not match ${machineId}:${envName}`)
+  }
+  return {
+    daemon_key: daemonKey,
+    machine_id: resolvedMachineId,
+    env_name: resolvedEnvName,
+  }
+}
+
 async function login(socket, assignedName, id = 'fleet:fixture') {
   await turn()
   const request = socket.sent.find(message => message.type === 'login')
@@ -103,4 +137,60 @@ test('bot registration does not duplicate its friendly name as an explicit label
   assert.ok(login)
   assert.equal(login.name, 'todd')
   assert.deepEqual(login.labels, ['bot'])
+})
+
+test('bot login sends daemon route proof required by the receive gate', async t => {
+  restoreEnv()
+  t.after(restoreEnv)
+  process.env.TLDA_BOT_MACHINE_ID = 'mini'
+  process.env.TLDA_BOT_TMUX_SESSION = 'fleet-bot-fixture_testing'
+  process.env.FLEET_DAEMON_KEY = 'mini:testing'
+  process.env.TLDA_ENV = 'testing'
+
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'fixture',
+    fleetId: 'fleet:fixture',
+    pidFile: join(directory, 'fixture.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).start()
+  t.after(() => bot.stop())
+
+  await turn()
+  const login = transport.sockets[0].sent.find(message => message.type === 'login')
+  assert.ok(login)
+  assert.equal(login.machine_id, 'mini')
+  assert.equal(login.env_name, 'testing')
+  assert.equal(login.daemon_key, 'mini:testing')
+  assert.equal(login.tmux_session, 'fleet-bot-fixture_testing')
+  assert.equal(loginRouteProof(login).daemon_key, 'mini:testing')
+})
+
+test('bot login route proof also works from machine and env when daemon key is absent', async t => {
+  restoreEnv()
+  t.after(restoreEnv)
+  process.env.TLDA_BOT_MACHINE_ID = 'mini'
+  process.env.TLDA_ENV = 'testing'
+  delete process.env.FLEET_DAEMON_KEY
+
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'fixture',
+    fleetId: 'fleet:fixture',
+    pidFile: join(directory, 'fixture.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).start()
+  t.after(() => bot.stop())
+
+  await turn()
+  const login = transport.sockets[0].sent.find(message => message.type === 'login')
+  assert.ok(login)
+  assert.equal(login.machine_id, 'mini')
+  assert.equal(login.env_name, 'testing')
+  assert.equal(login.daemon_key, undefined)
+  assert.equal(loginRouteProof(login).daemon_key, 'mini:testing')
 })

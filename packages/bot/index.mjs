@@ -54,6 +54,8 @@ export function createBot({
   const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet';
   const PID_FILE = process.env.TLDA_BOT_PIDFILE || pidFile || join(homedir(), '.config', 'tlda', `${key}.pid`);
   const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null;
+  const ENV_NAME = process.env.TLDA_ENV || null;
+  const DAEMON_KEY = process.env.FLEET_DAEMON_KEY || null;
   const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null;
   const id = fleetId || process.env.FLEET_ID;
   if (!/^fleet:[a-zA-Z0-9_-]+$/.test(id || '')) throw new Error('bot harness requires FLEET_ID');
@@ -167,6 +169,8 @@ export function createBot({
       human,
       kind: human ? undefined : 'bot',
       machine_id: MACHINE_ID || undefined,
+      env_name: ENV_NAME || undefined,
+      daemon_key: DAEMON_KEY || undefined,
       tmux_session: TMUX_SESSION || undefined,
       metadata: { bot: key, model: key, pid: process.pid, ...metadata },
     };
