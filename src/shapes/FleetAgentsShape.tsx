@@ -278,6 +278,7 @@ export function usePillDrag() {
   const cancelDrag = useCallback(() => {
     const drag = dragRef.current
     dragRef.current = null
+    fleetTaskDropBus.dispatchEvent(new CustomEvent('target', { detail: {} }))
     if (drag?.pillId) {
       // Delete (and so record) before clearing ACTIVE, so the record shows the
       // pill went out from under a live drag. Nothing else runs between.
@@ -343,6 +344,16 @@ export function usePillDrag() {
         }
 
         if (drag.pillId) {
+          const fleetTaskRow = fleetTaskDropTarget(
+            document.elementsFromPoint(ev.clientX, ev.clientY),
+            drag.pillType,
+          ) as HTMLElement | null
+          fleetTaskDropBus.dispatchEvent(new CustomEvent('target', {
+            detail: {
+              taskId: fleetTaskRow?.dataset.fleetTaskId,
+              inboxShapeId: fleetTaskRow?.dataset.fleetInboxShapeId,
+            },
+          }))
           const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70
@@ -384,6 +395,7 @@ export function usePillDrag() {
         } else {
           dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos)
         }
+        fleetTaskDropBus.dispatchEvent(new CustomEvent('target', { detail: {} }))
         editor.run(() => {
           try {
             deleteFleetPill(editor, drag.pillId as TLShapeId, 'drag-drop', { surface: 'roster' })

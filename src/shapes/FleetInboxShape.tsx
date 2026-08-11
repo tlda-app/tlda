@@ -488,6 +488,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const ownedFleetTasks = useMemo<OwnedFleetTask[]>(() => {
     return projectOwnedFleetTasks(tasks, myId)
   }, [tasks, myId])
+  const [taskDropTargetId, setTaskDropTargetId] = useState<string | null>(null)
 
   useEffect(() => {
     const onAssign = (event: Event) => {
@@ -503,8 +504,16 @@ function FleetInboxInner({ shape }: { shape: any }) {
         error: error instanceof Error ? error.message : String(error),
       }))
     }
+    const onTarget = (event: Event) => {
+      const { taskId, inboxShapeId } = (event as CustomEvent<{ taskId?: string; inboxShapeId?: string }>).detail || {}
+      setTaskDropTargetId(inboxShapeId === shape.id && taskId ? taskId : null)
+    }
     fleetTaskDropBus.addEventListener('assign', onAssign)
-    return () => fleetTaskDropBus.removeEventListener('assign', onAssign)
+    fleetTaskDropBus.addEventListener('target', onTarget)
+    return () => {
+      fleetTaskDropBus.removeEventListener('assign', onAssign)
+      fleetTaskDropBus.removeEventListener('target', onTarget)
+    }
   }, [ownedFleetTasks, myId, myName, shape.id])
 
   // Tasks group — a live projection of the understanding-ribbon's stale spans.
@@ -846,6 +855,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             timeItems={timeItems}
             fleetTasks={ownedFleetTasks}
             inboxShapeId={shape.id}
+            taskDropTargetId={taskDropTargetId}
             threads={visibleThreads}
             directNodes={visibleDirectNodes}
             cascadeNodes={visibleCascadeNodes}
@@ -915,9 +925,9 @@ function TaskRow({ t, onOpen }: { t: RibbonTask; onOpen?: () => void }) {
   )
 }
 
-function FleetTaskRow({ task, inboxShapeId, onOpen }: { task: OwnedFleetTask; inboxShapeId: string; onOpen?: () => void }) {
+function FleetTaskRow({ task, inboxShapeId, isDropTarget, onOpen }: { task: OwnedFleetTask; inboxShapeId: string; isDropTarget?: boolean; onOpen?: () => void }) {
   return (
-    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId} onClick={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
+    <div className={`fleet-inbox-task${isDropTarget ? ' fleet-inbox-task-drop-target' : ''}`} data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId} onClick={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-task-row">
         <span className="fleet-inbox-task-icon">●</span>
         <span className="fleet-inbox-task-text">{task.description}</span>
@@ -1027,6 +1037,7 @@ interface InboxListProps {
   timeItems: InboxItem[]
   fleetTasks: OwnedFleetTask[]
   inboxShapeId: string
+  taskDropTargetId: string | null
   threads: Thread[]
   directNodes: NodeTask[]
   cascadeNodes: NodeTask[]
@@ -1040,14 +1051,14 @@ interface InboxListProps {
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, fleetTasks, inboxShapeId, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
+  const { sortMode, timeItems, fleetTasks, inboxShapeId, taskDropTargetId, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
   const empty = fleetTasks.length === 0 && threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
-    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} inboxShapeId={inboxShapeId} onOpen={() => onOpenItem(it.key)} />
+    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} inboxShapeId={inboxShapeId} isDropTarget={it.task.id === taskDropTargetId} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} />
@@ -1078,7 +1089,7 @@ function InboxList(props: InboxListProps) {
           {(fleetTasks.length > 0 || directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
-              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} inboxShapeId={inboxShapeId} onOpen={() => onOpenItem(`fleet-task:${task.id}`)} />)}
+              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} inboxShapeId={inboxShapeId} isDropTarget={task.id === taskDropTargetId} onOpen={() => onOpenItem(`fleet-task:${task.id}`)} />)}
               {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onOpen={() => onOpenItem(`node:${t.id}`)} />)}
               {spanTasks.map((t) => <TaskRow key={t.id} t={t} onOpen={() => onOpenItem(`task:${t.id}`)} />)}
             </div>
