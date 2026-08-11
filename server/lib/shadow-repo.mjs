@@ -15,6 +15,10 @@ const execAsync = (cmd, opts = {}) => _execAsyncRaw(cmd, { maxBuffer: 50 * 1024 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, cpSync, rmSync, symlinkSync, lstatSync, statSync } from 'fs'
 import { readdir as readdirAsync, rm as rmAsync, cp as cpAsync } from 'fs/promises'
 import { join, relative, basename, dirname, resolve } from 'path'
+
+// The ref the daemon maintains in the working copy and bundles on a move: the
+// tip of that project's mirrored version history.
+const SHADOW_HEAD_REF = 'refs/tlda/shadow/HEAD'
 import { fileURLToPath } from 'url'
 
 const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts')
@@ -101,71 +105,133 @@ export async function createShadowBundleBase64(name, hash) {
  *
  * Throws on failure. Returns the path of the new shadow repo.
  */
-export async function initShadowFromProjectRepo(name, projectRepoPath, paperScope) {
-  if (!existsSync(join(projectRepoPath, '.git'))) {
-    throw new Error(`Project repo has no .git: ${projectRepoPath}`)
-  }
-  if (!Array.isArray(paperScope) || paperScope.length === 0) {
-    throw new Error('paperScope must be a non-empty list of paths')
-  }
+/**
+ * Create a project's shadow repo if it does not exist. **This is the one place a
+ * shadow comes into being.** The origin varies; the act does not.
+ *
+ *   no origin            a new repo — the project has no history to inherit
+ *   { bundlePath }       another environment's shadow, moved as a git bundle
+ *   { projectRepoPath, paperScope }
+ *                        the project's own git history, filtered to paper scope
+ *
+ * A bundle and a repo are the same kind of thing to `git clone`, and "no origin"
+ * is not a different path — it is this path with nothing to clone from. That
+ * distinction is the whole point: an earlier version of this change deleted the
+ * no-origin case as "the guesswork path", which measured as `bregman` recording
+ * no versions at all, because a locally-linked project has no source repo on the
+ * server and so has never had an origin to seed from.
+ *
+ * Every origin gets the same write guards, which the blank path alone used to
+ * install — a cloned shadow came up with no commit-msg hook at all.
+ */
+export async function ensureShadowRepo(name, { bundlePath = null, projectRepoPath = null, paperScope = null } = {}) {
   const repoDir = shadowRepoDir(name)
-  if (existsSync(repoDir)) {
-    throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
+  if (existsSync(join(repoDir, '.git'))) return repoDir
+  if (!existsSync(repoDir)) mkdirSync(repoDir, { recursive: true })
+
+  if (bundlePath) {
+    if (!existsSync(bundlePath)) throw new Error(`Shadow bundle not found: ${bundlePath}`)
+    // Not `git clone`. The daemon bundles one ref — the mirrored history — and
+    // deliberately not `--all`, so the bundle names no branch and no HEAD. Clone
+    // accepts that silently and leaves an empty repo with no commits, which then
+    // reads as "this paper has no versions". Fetch the ref onto a branch and
+    // point HEAD at it instead.
+    await execAsync('git init', { cwd: repoDir, timeout: 10000 })
+    await execAsync(`git fetch "${bundlePath}" "${SHADOW_HEAD_REF}:refs/heads/main"`, { cwd: repoDir, timeout: 120000 })
+    await execAsync('git symbolic-ref HEAD refs/heads/main', { cwd: repoDir, timeout: 5000 })
+    await execAsync('git reset --hard', { cwd: repoDir, timeout: 30000 })
+  } else if (projectRepoPath) {
+    if (!existsSync(join(projectRepoPath, '.git'))) {
+      throw new Error(`Project repo has no .git: ${projectRepoPath}`)
+    }
+    if (!Array.isArray(paperScope) || paperScope.length === 0) {
+      throw new Error('paperScope must be a non-empty list of paths')
+    }
+    await execAsync(`git clone --no-local "${projectRepoPath}" "${repoDir}"`, { timeout: 120000 })
+    // git-filter-repo refuses to run on a non-fresh clone by default.
+    const pathArgs = paperScope.map(p => `--path "${p.replace(/"/g, '\\"')}"`).join(' ')
+    await execAsync(`git-filter-repo ${pathArgs} --force`, { cwd: repoDir, timeout: 600000 })
+  } else {
+    await execAsync('git init', { cwd: repoDir, timeout: 10000 })
   }
 
-  // Clone the project repo to the shadow location (file:// transport copies
-  // history; --no-local would skip hardlinks but we don't need that).
-  await execAsync(
-    `git clone --no-local "${projectRepoPath}" "${repoDir}"`,
-    { timeout: 120000 }
-  )
-
-  // Filter the clone to keep only paper-scope paths. git-filter-repo refuses
-  // to run on a non-fresh clone by default — pass --force.
-  const pathArgs = paperScope.map(p => `--path "${p.replace(/"/g, '\\"')}"`).join(' ')
-  await execAsync(
-    `git-filter-repo ${pathArgs} --force`,
-    { cwd: repoDir, timeout: 600000 }
-  )
-
-  // Set local identity so subsequent commitSnapshot calls work.
   await execAsync('git config user.email "tlda@local"', { cwd: repoDir, timeout: 5000 })
   await execAsync('git config user.name "tlda"', { cwd: repoDir, timeout: 5000 })
+  // Nothing should keep fetching from the origin: a bundle is a temp file about
+  // to be deleted, and the project repo is not upstream of the shadow.
+  try {
+    await execAsync('git remote remove origin', { cwd: repoDir, timeout: 5000 })
+  } catch {
+    // no origin to remove — git errors when the remote is absent, and absent is
+    // the state we are trying to reach, so there is nothing to recover from.
+  }
 
-  // Drop the origin remote that filter-repo leaves behind — the shadow
-  // shouldn't track upstream.
-  try { await execAsync('git remote remove origin', { cwd: repoDir, timeout: 5000 }) } catch {}
+  writeShadowGuardFiles(repoDir, name)
+
+  // A repo with no commit has no HEAD, and callers read HEAD. Only the
+  // no-origin case needs this; a clone already has history.
+  const { stdout: head } = await execAsync('git rev-parse --verify HEAD 2>/dev/null || true', { cwd: repoDir, timeout: 5000 })
+  if (!head.trim()) {
+    await execAsync('git add .gitignore CLAUDE.md && git commit -m "init"', { cwd: repoDir, timeout: 10000 })
+  }
+
+  installShadowCommitGuard(repoDir)
 
   return repoDir
 }
 
 /**
- * Initialize shadow repo for a project (git init if needed).
+ * Seed a project's shadow from a bundle of another environment's shadow —
+ * the import half of `mirrorShadow`, which has always produced these bundles
+ * (`git bundle create --all`) and had nothing on the other side to read them.
+ * That gap is why moving a project between environments arrived with one
+ * version: the source and render were pushed, and the history had no carrier.
+ *
+ * This is not a second way to build a shadow. A bundle and a repo are the same
+ * kind of thing to `git clone`, so this is the same clone as
+ * `initShadowFromProjectRepo` with a different origin — and no filter, because
+ * a shadow bundle is already scoped to the paper.
  */
-export async function initShadowRepo(name) {
+export async function initShadowFromBundle(name, bundlePath) {
   const repoDir = shadowRepoDir(name)
-  if (!existsSync(repoDir)) {
-    mkdirSync(repoDir, { recursive: true })
+  if (existsSync(join(repoDir, '.git'))) {
+    throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
   }
+  return await ensureShadowRepo(name, { bundlePath })
+}
 
-  // Already initialized?
-  if (existsSync(join(repoDir, '.git'))) return repoDir
+export async function initShadowFromProjectRepo(name, projectRepoPath, paperScope) {
+  const repoDir = shadowRepoDir(name)
+  if (existsSync(repoDir)) {
+    throw new Error(`Shadow repo already exists at ${repoDir} — rename or delete first`)
+  }
+  return await ensureShadowRepo(name, { projectRepoPath, paperScope })
+}
 
-  await execAsync('git init', { cwd: repoDir, timeout: 10000 })
-  await execAsync('git config user.email "tlda@local"', { cwd: repoDir, timeout: 5000 })
-  await execAsync('git config user.name "tlda"', { cwd: repoDir, timeout: 5000 })
-
+/**
+ * Install the shadow repo's write guards: the ignore list, the DO-NOT-WRITE
+ * marker, and the commit-msg hook that blocks direct agent commits.
+ *
+ * These used to be installed only by the blank `git init` path, so a shadow
+ * created by cloning the project repo came up with no hook and no marker —
+ * protection depended on which creation path happened to run. There is now one
+ * creation path, and it installs them here.
+ */
+function writeShadowGuardFiles(repoDir, name) {
   writeFileSync(join(repoDir, '.gitignore'), GITIGNORE_CONTENT)
 
   const claudeMd = `# DO NOT WRITE HERE\n\nThis directory is a server-managed mirror of the paper's source files.\n\n**Do not commit changes here.** Write in your project directory instead\n(e.g. \`~/work/${name}/\`). Use the MCP \`push\` or \`input_scratch\`\ntools to send changes to the server.\n\nChanges committed directly here **do not trigger builds** and will be\n**overwritten by the next successful build**.\n\nOnly touch this repo if the build pipeline itself has broken badly and you\nare debugging the server infrastructure directly.\n`
   writeFileSync(join(repoDir, 'CLAUDE.md'), claudeMd)
+}
 
+/**
+ * The commit-msg hook rejects any message that is not `Build at …`, so it must
+ * go in AFTER the seed commit — installing it first makes it reject our own
+ * `init`, which is how the first version of this refactor failed.
+ */
+function installShadowCommitGuard(repoDir) {
   const commitMsgHook = `#!/bin/sh\n# Block agent commits to shadow repo — only the server's commitSnapshot should write here.\nmsg=$(cat "$1")\nif ! echo "$msg" | grep -qE "^Build at "; then\n  echo "ERROR: Direct commits to this shadow repo are blocked." >&2\n  echo "Write your changes in your project source directory instead." >&2\n  echo "See CLAUDE.md in this repo for details." >&2\n  exit 1\nfi\n`
-  await execAsync('git add .gitignore CLAUDE.md && git commit -m "init"', { cwd: repoDir, timeout: 10000 })
-
-  const hookPath = join(repoDir, '.git', 'hooks', 'commit-msg')
-  writeFileSync(hookPath, commitMsgHook, { mode: 0o755 })
-
+  writeFileSync(join(repoDir, '.git', 'hooks', 'commit-msg'), commitMsgHook, { mode: 0o755 })
   return repoDir
 }
 
@@ -279,12 +345,20 @@ export async function readShadowSourceScope(name) {
  * persist-symlink migration without a single log line. Callers must report it.
  */
 export async function commitSnapshot(name) {
-  const repoDir = await initShadowRepo(name)
+  const repoDir = shadowRepoDir(name)
   const srcDir = sourceDir(name)
 
   if (!existsSync(srcDir)) {
     throw new Error(`Source directory not found: ${srcDir}`)
   }
+
+  // One creation function, whatever the origin. Refusing to create one here was
+  // measured on a real build and it is wrong: a locally-linked project has no
+  // source git repo ON THE SERVER, so its shadow can only ever come from this
+  // call. Refusing means such a project records no versions at all — and that is
+  // every project Skip actually uses. His 177 `Build at …` versions exist
+  // BECAUSE this path creates a shadow when there is nothing to seed from.
+  await ensureShadowRepo(name)
 
   const { scope, reason } = diagnosePaperScope(name)
   if (!scope) {

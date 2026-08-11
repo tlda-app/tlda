@@ -566,13 +566,32 @@ async function loadLocallyBoundProjects() {
   return loaded
 }
 
-function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
+// Linking is a clone, so the history goes with it. This working copy has been
+// receiving that history on every build; the server being linked to has none.
+//
+// Awaited, and failures are not caught. If this working copy holds history and
+// it cannot be delivered, the link fails — a link that half-succeeds and leaves
+// the paper starting from version one is the old broken behaviour wearing a
+// success message.
+async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
   const result = sourceSync.bindSource(project, sourceDir)
   if (projectMetadata?.name === project) {
     serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
   }
   applyProjectWorldOwnership('local-source-link')
+
+  const exported = await shadowMirror.exportShadowBundle({ project })
+  if (!exported.empty) {
+    sendMsg({
+      type: 'adopt-shadow-history',
+      project,
+      head: exported.head,
+      bundleBase64: exported.bundleBase64,
+      machine_id: MACHINE_ID,
+    })
+    log.info(`sent ${project}@${exported.head.slice(0, 7)} history to the server`)
+  }
   return result
 }
 
@@ -1078,6 +1097,7 @@ machineRpc.register({
   'wake': rpcWake,
   ...localArtifacts.handlers,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
+  'export-shadow-bundle': shadowMirror.exportShadowBundle,
   'apply-source-update': params => sourceSync.applyAcceptedSourceUpdate(params),
 })
 

@@ -6,6 +6,10 @@ import { promisify } from 'util'
 
 const execFileP = promisify(execFile)
 
+// The ref mirrorShadowRef maintains in the working copy: the tip of this
+// project's mirrored version history.
+const SHADOW_HEAD_REF = 'refs/tlda/shadow/HEAD'
+
 async function gitRetryOnLock(fn, retries = 3, delayMs = 500) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -56,7 +60,63 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
     }
   }
 
-  return { mirrorShadowRef }
+  /**
+   * The other direction. `mirrorShadowRef` writes the server's history into the
+   * working copy on every build; this reads it back out, so a server that has
+   * no history for a project can get it from the machine that does.
+   *
+   * That is what makes a project movable. A move re-links the paper to another
+   * environment, and the new server starts with no history — but the working
+   * copy has been accumulating it all along, under refs this daemon wrote. The
+   * bundle is what a clone reads, so the new server clones what the old one
+   * mirrored out, and the versions carry across without either server talking
+   * to the other.
+   *
+   * Returns `{ empty: true }` rather than throwing when the working copy holds
+   * no shadow history: a paper that has never been built has none, and that is
+   * an ordinary state, not a failure.
+   */
+  async function exportShadowBundle({ project }) {
+    if (!project) throw new Error('missing project')
+    const sourceDir = getSourceDir(project)
+    if (!sourceDir) throw new Error(`project ${project} is not watched on this daemon`)
+
+    let head
+    try {
+      const { stdout } = await execFileP('git', ['rev-parse', '--verify', SHADOW_HEAD_REF], { cwd: sourceDir, timeout: 5000 })
+      head = stdout.trim()
+    } catch {
+      // No mirrored history in this working copy — the ref is absent until the
+      // first build mirrors one down.
+      return { ok: true, empty: true, project, sourceDir }
+    }
+    if (!/^[0-9a-f]{40}$/i.test(head)) return { ok: true, empty: true, project, sourceDir }
+
+    const bundlePath = path.join(os.tmpdir(), `tlda-shadow-export-${project}-${head.slice(0, 7)}-${Date.now()}.bundle`)
+    try {
+      // Bundle the REF, not the bare sha: `git bundle create <path> <sha>`
+      // writes nothing ("Refusing to create empty bundle") because a bundle
+      // carries refs. Naming the ref carries every commit reachable from it,
+      // which is the whole version history.
+      //
+      // Deliberately not `--all`: that would sweep up the author's own branches,
+      // and the server is not supposed to hold every file they have.
+      await execFileP('git', ['bundle', 'create', bundlePath, SHADOW_HEAD_REF], { cwd: sourceDir, timeout: 60000 })
+      const bundleBase64 = fs.readFileSync(bundlePath).toString('base64')
+      log.info(`exported ${project}@${head.slice(0, 7)} shadow history from ${sourceDir}`)
+      return { ok: true, empty: false, project, sourceDir, head, bundleBase64 }
+    } finally {
+      try {
+        fs.rmSync(bundlePath, { force: true })
+      } catch (e) {
+        // Best-effort cleanup of a temp file: failing to delete it must not mask
+        // the export result, which is the thing the caller needs.
+        log.warn(`failed to remove temporary shadow export bundle ${bundlePath}: ${e.message}`)
+      }
+    }
+  }
+
+  return { mirrorShadowRef, exportShadowBundle }
 }
 
 async function preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef = null }) {
