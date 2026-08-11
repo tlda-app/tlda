@@ -13,15 +13,6 @@ export function projectOwnedFleetTasks(tasks, myId) {
     }))
 }
 
-export function fleetTaskDropTarget(elements, pillType) {
-  if (pillType !== 'agent') return null
-  for (const element of elements) {
-    const row = element.closest?.('[data-fleet-task-id]')
-    if (row?.dataset?.fleetTaskId) return row
-  }
-  return null
-}
-
 export function inboxTaskTransfer(task, agent, myId, myName) {
   return {
     from: myId,

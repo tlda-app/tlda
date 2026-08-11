@@ -69,7 +69,7 @@ import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
 import { agentDisplayLabel, agentExactName, createFleetShape, isFleetShapeForOwnerKey } from './fleet-utils'
-import { usePillDrag } from './FleetAgentsShape'
+import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer, type VoiceTargetHandle } from './ChatComposer'
 import { PersistentCornerButtonSlider } from '../CornerButtonSlider'
@@ -95,10 +95,10 @@ import {
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
 import { createLightboxSurfaceRequest } from '../wm/lightbox-surface'
-import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
+import { clientPointToPage } from '../wm/viewport-coordinates'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
+import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
-import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { peekClearedComposerDraft, stashClearedComposerDraft, takeClearedComposerDraft, dropClearedComposerDraft } from '../stores/composerDraftStore'
 import { getPref, subscribePref } from '../preferences'
@@ -219,71 +219,6 @@ function terminalUnavailableReason(agent: TerminalAgent | null): string | null {
   if (!agent) return 'No terminal target selected'
   if (!agent.id) return 'Terminal unavailable: target is unresolved'
   if (agent.dead) return 'Terminal unavailable: agent is dead'
-  return null
-}
-
-function isFleetPillRecord(record: any): boolean {
-  return record?.typeName === 'shape' && record.type === 'fleet-pill'
-}
-
-function useFleetPillCount(editor: Editor): number {
-  const [count, setCount] = useState(() =>
-    editor.getCurrentPageShapes().reduce((total, shape) => total + ((shape.type as string) === 'fleet-pill' ? 1 : 0), 0),
-  )
-
-  useEffect(() => {
-    return editor.store.listen(({ changes }) => {
-      let delta = 0
-      for (const record of Object.values(changes.added)) {
-        if (isFleetPillRecord(record)) delta += 1
-      }
-      for (const record of Object.values(changes.removed)) {
-        if (isFleetPillRecord(record)) delta -= 1
-      }
-      for (const [from, to] of Object.values(changes.updated) as any[]) {
-        const wasPill = isFleetPillRecord(from)
-        const isPill = isFleetPillRecord(to)
-        if (!wasPill && isPill) delta += 1
-        else if (wasPill && !isPill) delta -= 1
-      }
-      if (delta !== 0) setCount(value => Math.max(0, value + delta))
-    }, { source: 'all', scope: 'document' })
-  }, [editor])
-
-  return count
-}
-
-/**
- * The fleet pill currently over a given chat shape, or null.
- *
- * There can be more than one fleet-pill on the page — pills are ordinary synced
- * shapes, so another client's pill shows up here too, and one left behind by a
- * different user or device is not reclaimable by this one
- * (shouldReclaimFleetPill requires a matching userId/deviceId). Taking
- * `pills[0]` therefore tracked whichever pill happened to sort first rather than
- * the one under the pointer, and a single foreign pill was enough to aim the
- * filter overlay at the wrong shape.
- *
- * One selection, shared by every reader, so the preview and the filter that
- * gets committed cannot disagree about which pill is being dragged.
- */
-function fleetPillOverShape(editor: Editor, shapeId: TLShapeId) {
-  const chatBounds = editor.getShapePageBounds(shapeId)
-  if (!chatBounds) return null
-  for (const pill of editor.getCurrentPageShapes()) {
-    if ((pill.type as string) !== 'fleet-pill') continue
-    const props = pill.props as { pillType?: string; value?: string; displayName?: string }
-    // Content pills (msg, code, ref, …) go to the composer, not to the filter.
-    if (props.pillType !== 'agent' && props.pillType !== 'label' && props.pillType !== 'team') continue
-    const pb = editor.getShapePageBounds(pill.id)
-    if (!pb) continue
-    const cx = pb.x + pb.w / 2
-    const cy = pb.y + pb.h / 2
-    if (cx >= chatBounds.x && cx <= chatBounds.x + chatBounds.w &&
-        cy >= chatBounds.y && cy <= chatBounds.y + chatBounds.h) {
-      return { props, centre: { x: cx, y: cy }, chatBounds }
-    }
-  }
   return null
 }
 
@@ -3749,7 +3684,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [shape.id, editor])
 
   useEffect(() => {
-    return subscribeFleetChatInputDropPreview(shape.id, setShapeDropActive)
+    const element = inputAreaRef.current
+    if (!element) return
+    return registerWMDropTarget<{ commit: (chatId: string) => void }>(element, {
+      accepts: (payload: WMDropPayload): payload is WMDropPayload<{ commit: (chatId: string) => void }> =>
+        payload.kind === 'chat-composer-item',
+      preview: () => setShapeDropActive(true),
+      leave: () => setShapeDropActive(false),
+      drop: (payload) => payload.data.commit(shape.id),
+    })
   }, [shape.id])
 
   // Hover events on annotation ref-chips → dispatch to AnnotationViewer
@@ -5127,22 +5070,36 @@ function FleetChatInner({ shape }: { shape: any }) {
     return map
   }, [agents])
 
-  // Detect pill drag hovering over this chat — returns stable string to avoid flicker
-  // Only agent/label pills trigger filter mode, not content pills (msg, code, etc.)
-  const fleetPillCount = useFleetPillCount(editor)
-  const pillOverKey = useValue('pill-over', () => {
-    if (fleetPillCount === 0) return ''
-    const over = fleetPillOverShape(editor, shape.id)
-    if (!over) return ''
-    const { props, centre, chatBounds } = over
-    const role = centre.y < chatBounds.y + chatBounds.h / 2 ? 'to' : 'from'
-    return `${role}\0${props.value}\0${props.displayName}\0${props.pillType}`
-  }, [editor, shape.id, fleetPillCount])
-  const pillOver = useMemo(() => {
-    if (!pillOverKey) return null
-    const [role, value, displayName, pillType] = pillOverKey.split('\0')
-    return { role, value, displayName, pillType }
-  }, [pillOverKey])
+  const [pillOver, setPillOver] = useState<{ role: 'to' | 'from'; value: string; displayName: string; pillType: string; clientPoint: { x: number; y: number } } | null>(null)
+
+  useEffect(() => {
+    const element = shapeContainerRef.current
+    if (!element) return
+    return registerWMDropTarget<FleetPillDropData>(element, {
+      accepts: (payload: WMDropPayload): payload is WMDropPayload<FleetPillDropData> => {
+        if (payload.kind !== 'fleet-pill') return false
+        const pillType = (payload.data as FleetPillDropData).pillType
+        return pillType === 'agent' || pillType === 'label' || pillType === 'team'
+      },
+      preview: (payload, point) => {
+        const rect = element.getBoundingClientRect()
+        setPillOver({
+          role: point.y < rect.top + rect.height / 2 ? 'to' : 'from',
+          value: payload.data.value,
+          displayName: payload.data.displayName,
+          pillType: payload.data.pillType,
+          clientPoint: point,
+        })
+      },
+      leave: () => setPillOver(null),
+      drop: (payload) => dropPillOnTarget(
+        payload.data.editor,
+        payload.data.pillId as TLShapeId,
+        payload.data.value,
+        payload.data.pagePoint,
+      ),
+    })
+  }, [shape.id])
 
   // Auto-open filter mode when pill hovers over this chat
   useEffect(() => {
@@ -6517,7 +6474,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         <div
           ref={inputAreaRef}
           className={`fleet-chat-input-area${shapeDropActive ? ' fleet-chat-input-drop-active' : ''}`}
-          data-fleet-chat-input-drop-target={shape.id}
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
@@ -7192,12 +7148,11 @@ export function FleetChatFilterMode({
   filter: [string, string][][]
   shapeId: any
   editor: any
-  externalPillOver?: { role: string; value: string; displayName: string; pillType?: string } | null
+  externalPillOver?: { role: string; value: string; displayName: string; pillType?: string; clientPoint?: { x: number; y: number } } | null
   surface?: 'body' | 'overlay'
 }) {
   // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
   const filterModeRef = useRef<HTMLDivElement>(null)
-  const viewportId = useVisibilityViewportId()
   const filterRef = useRef(filter)
   filterRef.current = filter
   const updateChatProps = useCallback((props: Record<string, unknown>) => {
@@ -7245,26 +7200,7 @@ export function FleetChatFilterMode({
     return () => document.removeEventListener('pointerup', handlePointerUp, { capture: true })
   }, [shapeId, editor, updateChatProps])
 
-  // Detect pill hovering over the shape — show two-pane drop preview
-  const fleetPillCount = useFleetPillCount(editor)
-  const pillOverKey = useValue('filter-pill-over', () => {
-    if (fleetPillCount === 0) return ''
-    const over = fleetPillOverShape(editor, shapeId)
-    if (!over) return ''
-    return `${over.props.value}\0${over.props.displayName}\0${over.props.pillType}`
-  }, [editor, shapeId, fleetPillCount])
-
-  const internalPillOver = useMemo(() => {
-    if (!pillOverKey) return null
-    const [value, displayName, pillType] = pillOverKey.split('\0')
-    return { value, displayName, pillType }
-  }, [pillOverKey])
-  const pillOver = externalPillOver ?? internalPillOver
-  const externalPane = fleetPillCount === 0 && (
-    externalPillOver?.role === 'to' || externalPillOver?.role === 'from' || externalPillOver?.role === 'replace'
-  )
-    ? externalPillOver.role
-    : null
+  const pillOver = externalPillOver ?? null
 
   // AND-group hover detection via pill shape position vs DOM bounding rects.
   // Pointer events don't work during drag because FleetAgentsShape holds pointer capture.
@@ -7282,12 +7218,9 @@ export function FleetChatFilterMode({
     // Same-editor drags must use the filter-mode DOM panes: the visible active pane
     // and committed filter have to come from the same hit test. The external
     // role is only authoritative when this editor cannot see the pill shape.
-    if (externalPane) return { pane: externalPane, idx: -1 }
     if (!pillOver) { lastGroupRef.current = null; return null }
-    if (fleetPillCount === 0) { lastGroupRef.current = null; return null }
-    const over = fleetPillOverShape(editor, shapeId)
-    if (!over) { lastGroupRef.current = null; return null }
-    const screenPt = pagePointToClient(editor, over.centre, viewportId)
+    const screenPt = pillOver.clientPoint
+    if (!screenPt) { lastGroupRef.current = null; return null }
 
     const ENTER_PAD = 8
     const EXIT_PAD = 30
@@ -7336,7 +7269,7 @@ export function FleetChatFilterMode({
       return { pane, idx: foundIdx }
     }
     return null
-  }, [editor, externalPane, pillOver, fleetPillCount])
+  }, [pillOver])
 
   // Compute preview DNF for each pane based on hovered AND group
   const toGroupIdx = hoveredGroup?.pane === 'to' ? hoveredGroup.idx : -1

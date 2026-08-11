@@ -58,10 +58,7 @@ import {
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
 import { pagePointToClient } from '../wm/viewport-coordinates'
-import {
-  findFleetChatInputDropTarget,
-  setFleetChatInputDropPreview,
-} from './fleet-chat-drop-target'
+import { cancelWMDrop, finishWMDrop, updateWMDrop } from '../wm/drop-targets'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -323,32 +320,37 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
   override onTranslateStart = (shape: any) => {
     if (!shape.props.docView) beginNativeSnapDrag(this.editor)
-    setFleetChatInputDropPreview(null)
+    cancelWMDrop()
   }
 
   override onTranslate = (_initial: any, current: any) => {
     if (current.props.docView) return
     const clientPoint = mathNoteCenterClientPoint(this.editor, current)
-    const target = clientPoint ? findFleetChatInputDropTarget(clientPoint) : null
-    setFleetChatInputDropPreview(target?.chatId ?? null)
+    if (!clientPoint) return
+    updateWMDrop({
+      kind: 'chat-composer-item',
+      data: { commit: (chatId: string) => chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId, text: annotationDropToken(current) } })) },
+    }, clientPoint)
   }
 
   override onTranslateCancel = (_initial: any, current: any) => {
     if (!current.props.docView) endNativeSnapDrag(this.editor)
-    setFleetChatInputDropPreview(null)
+    cancelWMDrop()
   }
 
   override onTranslateEnd = (initial: any, current: any) => {
     if (!current.props.docView) endNativeSnapDrag(this.editor)
     const clientPoint = mathNoteCenterClientPoint(this.editor, current)
-    const target = clientPoint ? findFleetChatInputDropTarget(clientPoint) : null
-    setFleetChatInputDropPreview(null)
-    if (!target) return
-
-    this.editor.updateShape({ id: current.id, type: current.type, x: initial.x, y: initial.y })
-    chatInsertBus.dispatchEvent(new CustomEvent('insert', {
-      detail: { chatId: target.chatId, text: annotationDropToken(current) },
-    }))
+    if (!clientPoint) return
+    finishWMDrop({
+      kind: 'chat-composer-item',
+      data: {
+        commit: (chatId: string) => {
+          this.editor.updateShape({ id: current.id, type: current.type, x: initial.x, y: initial.y })
+          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId, text: annotationDropToken(current) } }))
+        },
+      },
+    }, clientPoint)
   }
 
   override onClick = (shape: any) => {

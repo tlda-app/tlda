@@ -13,13 +13,14 @@ import {
   useEditor,
   useValue,
   createShapeId,
+  type Editor,
   type TLShapeId,
 } from 'tldraw'
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext, type CSSProperties } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, useFleetProjects, useFleetIdentity, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
-import { dropPillOnTarget, fleetTaskDropBus } from './FleetPillShape'
+import { dropPillOnTarget } from './FleetPillShape'
 import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { agentDisplayLabel } from './fleet-utils'
@@ -27,8 +28,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
-// @ts-ignore — vanilla JS module
-import { fleetTaskDropTarget } from './fleet-task-inbox.mjs'
+import { cancelWMDrop, finishWMDrop, updateWMDrop } from '../wm/drop-targets'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { ProjectContext } from '../PanelContext'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
@@ -269,6 +269,15 @@ interface DragState {
 
 const DRAG_THRESHOLD = 5
 
+export type FleetPillDropData = {
+  editor: Editor
+  pillId: string
+  pillType: 'agent' | 'label' | 'team'
+  value: string
+  displayName: string
+  pagePoint: { x: number; y: number }
+}
+
 export function usePillDrag() {
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
@@ -278,7 +287,7 @@ export function usePillDrag() {
   const cancelDrag = useCallback(() => {
     const drag = dragRef.current
     dragRef.current = null
-    fleetTaskDropBus.dispatchEvent(new CustomEvent('target', { detail: {} }))
+    cancelWMDrop()
     if (drag?.pillId) {
       // Delete (and so record) before clearing ACTIVE, so the record shows the
       // pill went out from under a live drag. Nothing else runs between.
@@ -340,22 +349,19 @@ export function usePillDrag() {
           drag.pillId = pillId as unknown as string
           markFleetPillActive(String(pillId))
           editor.cancel()
+          updateWMDrop({
+            kind: 'fleet-pill',
+            data: { editor, pillId: String(pillId), pillType: drag.pillType, value: drag.value, displayName: drag.displayName, pagePoint: pagePos },
+          }, { x: ev.clientX, y: ev.clientY })
           return
         }
 
         if (drag.pillId) {
-          const fleetTaskRow = fleetTaskDropTarget(
-            document.elementsFromPoint(ev.clientX, ev.clientY),
-            drag.pillType,
-          ) as HTMLElement | null
-          fleetTaskDropBus.dispatchEvent(new CustomEvent('target', {
-            detail: {
-              taskId: fleetTaskRow?.dataset.fleetTaskId,
-              inboxShapeId: fleetTaskRow?.dataset.fleetInboxShapeId,
-              agent: drag.displayName,
-            },
-          }))
           const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
+          updateWMDrop({
+            kind: 'fleet-pill',
+            data: { editor, pillId: drag.pillId, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, pagePoint: pagePos },
+          }, { x: ev.clientX, y: ev.clientY })
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70
           const ph = pillShape?.props?.h || 18
@@ -381,22 +387,13 @@ export function usePillDrag() {
         markFleetPillInactive(String(drag.pillId))
 
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
-        const fleetTaskRow = fleetTaskDropTarget(
-          document.elementsFromPoint(ev.clientX, ev.clientY),
-          drag.pillType,
-        ) as HTMLElement | null
-        if (fleetTaskRow?.dataset.fleetTaskId) {
-          fleetTaskDropBus.dispatchEvent(new CustomEvent('assign', {
-            detail: {
-              taskId: fleetTaskRow.dataset.fleetTaskId,
-              inboxShapeId: fleetTaskRow.dataset.fleetInboxShapeId,
-              agent: drag.value,
-            },
-          }))
-        } else {
+        const handled = finishWMDrop({
+          kind: 'fleet-pill',
+          data: { editor, pillId: drag.pillId, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, pagePoint: pagePos },
+        }, { x: ev.clientX, y: ev.clientY })
+        if (!handled) {
           dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos)
         }
-        fleetTaskDropBus.dispatchEvent(new CustomEvent('target', { detail: {} }))
         editor.run(() => {
           try {
             deleteFleetPill(editor, drag.pillId as TLShapeId, 'drag-drop', { surface: 'roster' })

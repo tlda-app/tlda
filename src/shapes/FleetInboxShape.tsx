@@ -24,8 +24,8 @@ import { inboxConversationRecipientId } from '../fleet/send-target-binding.mjs'
 import type { TLShapeId } from 'tldraw'
 import { agentDisplayLabel } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { usePillDrag } from './FleetAgentsShape'
-import { fleetTaskDropBus } from './FleetPillShape'
+import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
+import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
 // @ts-ignore — vanilla JS module
 import { inboxTaskTransfer, projectOwnedFleetTasks } from './fleet-task-inbox.mjs'
 import { ChatComposer } from './ChatComposer'
@@ -488,33 +488,16 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const ownedFleetTasks = useMemo<OwnedFleetTask[]>(() => {
     return projectOwnedFleetTasks(tasks, myId)
   }, [tasks, myId])
-  const [taskDropTarget, setTaskDropTarget] = useState<{ taskId: string; agent: string } | null>(null)
-
-  useEffect(() => {
-    const onAssign = (event: Event) => {
-      const { taskId, inboxShapeId, agent } = (event as CustomEvent<{ taskId?: string; inboxShapeId?: string; agent?: string }>).detail || {}
-      if (inboxShapeId !== shape.id) return
-      const task = ownedFleetTasks.find(candidate => candidate.id === taskId)
-      if (!task || !agent || !myId) return
-      fleetDurable('delegate', {
-        ...inboxTaskTransfer(task, agent, myId, myName),
-      }).catch((error: unknown) => log.error('fleet-inbox', 'task assignment failed', {
-        taskId: task.id,
-        agent,
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    }
-    const onTarget = (event: Event) => {
-      const { taskId, inboxShapeId, agent } = (event as CustomEvent<{ taskId?: string; inboxShapeId?: string; agent?: string }>).detail || {}
-      setTaskDropTarget(inboxShapeId === shape.id && taskId && agent ? { taskId, agent } : null)
-    }
-    fleetTaskDropBus.addEventListener('assign', onAssign)
-    fleetTaskDropBus.addEventListener('target', onTarget)
-    return () => {
-      fleetTaskDropBus.removeEventListener('assign', onAssign)
-      fleetTaskDropBus.removeEventListener('target', onTarget)
-    }
-  }, [ownedFleetTasks, myId, myName, shape.id])
+  const assignTask = useCallback((task: OwnedFleetTask, agent: string) => {
+    if (!myId) return
+    fleetDurable('delegate', {
+      ...inboxTaskTransfer(task, agent, myId, myName),
+    }).catch((error: unknown) => log.error('fleet-inbox', 'task assignment failed', {
+      taskId: task.id,
+      agent,
+      error: error instanceof Error ? error.message : String(error),
+    }))
+  }, [myId, myName])
 
   // Tasks group — a live projection of the understanding-ribbon's stale spans.
   // Reading the ribbon shape inside useValue keeps this reactive: re-approving a
@@ -765,8 +748,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
       <div
         ref={containerRef}
         className="fleet-shape fleet-inbox-shape"
-        data-fleet-task-id={activeItem?.kind === 'fleet-task' ? activeItem.task.id : undefined}
-        data-fleet-inbox-shape-id={activeItem?.kind === 'fleet-task' ? shape.id : undefined}
         style={{
           width: '100%',
           height: '100%',
@@ -844,7 +825,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             myName={myName}
           />
         ) : activeItem?.kind === 'fleet-task' ? (
-          <FleetTaskDetail task={activeItem.task} myId={myId} />
+          <FleetTaskDetail task={activeItem.task} myId={myId} onAssign={assignTask} />
         ) : activeItem ? (
           <div className="fleet-inbox-modal-pop-wrap">
             <ItemDetail item={activeItem} onApprove={approveNode} />
@@ -854,8 +835,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             sortMode={sortMode}
             timeItems={timeItems}
             fleetTasks={ownedFleetTasks}
-            inboxShapeId={shape.id}
-            taskDropTarget={taskDropTarget}
+            onAssignTask={assignTask}
             threads={visibleThreads}
             directNodes={visibleDirectNodes}
             cascadeNodes={visibleCascadeNodes}
@@ -925,9 +905,22 @@ function TaskRow({ t, onOpen }: { t: RibbonTask; onOpen?: () => void }) {
   )
 }
 
-function FleetTaskRow({ task, inboxShapeId, dropAgent, onOpen }: { task: OwnedFleetTask; inboxShapeId: string; dropAgent?: string; onOpen?: () => void }) {
+function FleetTaskRow({ task, onAssign, onOpen }: { task: OwnedFleetTask; onAssign: (task: OwnedFleetTask, agent: string) => void; onOpen?: () => void }) {
+  const targetRef = useRef<HTMLDivElement>(null)
+  const [dropAgent, setDropAgent] = useState<string | null>(null)
+  useEffect(() => {
+    const element = targetRef.current
+    if (!element) return
+    return registerWMDropTarget<FleetPillDropData>(element, {
+      accepts: (payload: WMDropPayload): payload is WMDropPayload<FleetPillDropData> =>
+        payload.kind === 'fleet-pill' && (payload.data as FleetPillDropData).pillType === 'agent',
+      preview: (payload) => setDropAgent(payload.data.displayName),
+      leave: () => setDropAgent(null),
+      drop: (payload) => onAssign(task, payload.data.value),
+    })
+  }, [onAssign, task])
   return (
-    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId} onClick={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
+    <div ref={targetRef} className="fleet-inbox-task" onClick={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-task-row">
         <span className="fleet-inbox-task-icon">●</span>
         <span className="fleet-inbox-task-text">{task.description}</span>
@@ -1036,8 +1029,7 @@ interface InboxListProps {
   sortMode: SortMode
   timeItems: InboxItem[]
   fleetTasks: OwnedFleetTask[]
-  inboxShapeId: string
-  taskDropTarget: { taskId: string; agent: string } | null
+  onAssignTask: (task: OwnedFleetTask, agent: string) => void
   threads: Thread[]
   directNodes: NodeTask[]
   cascadeNodes: NodeTask[]
@@ -1051,14 +1043,14 @@ interface InboxListProps {
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, fleetTasks, inboxShapeId, taskDropTarget, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
+  const { sortMode, timeItems, fleetTasks, onAssignTask, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenMarkdownTag, onOpenItem, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
   const empty = fleetTasks.length === 0 && threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
-    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} inboxShapeId={inboxShapeId} dropAgent={it.task.id === taskDropTarget?.taskId ? taskDropTarget.agent : undefined} onOpen={() => onOpenItem(it.key)} />
+    if (it.kind === 'fleet-task') return <FleetTaskRow key={it.key} task={it.task} onAssign={onAssignTask} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onOpen={() => onOpenItem(it.key)} />
     if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} />
@@ -1089,7 +1081,7 @@ function InboxList(props: InboxListProps) {
           {(fleetTasks.length > 0 || directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
-              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} inboxShapeId={inboxShapeId} dropAgent={task.id === taskDropTarget?.taskId ? taskDropTarget.agent : undefined} onOpen={() => onOpenItem(`fleet-task:${task.id}`)} />)}
+              {fleetTasks.map((task) => <FleetTaskRow key={task.id} task={task} onAssign={onAssignTask} onOpen={() => onOpenItem(`fleet-task:${task.id}`)} />)}
               {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onOpen={() => onOpenItem(`node:${t.id}`)} />)}
               {spanTasks.map((t) => <TaskRow key={t.id} t={t} onOpen={() => onOpenItem(`task:${t.id}`)} />)}
             </div>
@@ -1357,11 +1349,25 @@ interface TaskLedgerEvent {
   metadata?: string | Record<string, unknown> | null
 }
 
-function FleetTaskDetail({ task, myId }: { task: OwnedFleetTask; myId: string | null }) {
+function FleetTaskDetail({ task, myId, onAssign }: { task: OwnedFleetTask; myId: string | null; onAssign: (task: OwnedFleetTask, agent: string) => void }) {
   const [events, setEvents] = useState<TaskLedgerEvent[]>([])
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
   const voiceTargetSnapshotRef = useRef<(() => VoiceTargetHandle) | null>(null)
+  const targetRef = useRef<HTMLDivElement>(null)
+  const [dropAgent, setDropAgent] = useState<string | null>(null)
+
+  useEffect(() => {
+    const element = targetRef.current
+    if (!element) return
+    return registerWMDropTarget<FleetPillDropData>(element, {
+      accepts: (payload: WMDropPayload): payload is WMDropPayload<FleetPillDropData> =>
+        payload.kind === 'fleet-pill' && (payload.data as FleetPillDropData).pillType === 'agent',
+      preview: (payload) => setDropAgent(payload.data.displayName),
+      leave: () => setDropAgent(null),
+      drop: (payload) => onAssign(task, payload.data.value),
+    })
+  }, [onAssign, task])
 
   const loadEvents = useCallback(async () => {
     try {
@@ -1400,7 +1406,8 @@ function FleetTaskDetail({ task, myId }: { task: OwnedFleetTask; myId: string | 
 
   return (
     <>
-      <div className="fleet-inbox-conv fleet-inbox-task-ledger">
+      <div ref={targetRef} className="fleet-inbox-conv fleet-inbox-task-ledger">
+        {dropAgent && <div className="fleet-inbox-task-ledger-kind">Assign to {dropAgent}</div>}
         <div className="fleet-inbox-task-ledger-entry">
           <div className="fleet-inbox-task-ledger-kind">task</div>
           <div>{task.message || task.description}</div>
