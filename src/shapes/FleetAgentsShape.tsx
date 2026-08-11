@@ -352,6 +352,7 @@ export function usePillDrag() {
             detail: {
               taskId: fleetTaskRow?.dataset.fleetTaskId,
               inboxShapeId: fleetTaskRow?.dataset.fleetInboxShapeId,
+              agent: drag.displayName,
             },
           }))
           const pagePos = fleetPointerEventPagePoint(editor, frame, ev)

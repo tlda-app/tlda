@@ -394,8 +394,7 @@
   cursor: pointer;
   transition: background 0.1s;
 }
-.fleet-inbox-task:hover,
-.fleet-inbox-task-drop-target {
+.fleet-inbox-task:hover {
   background: rgba(200, 150, 70, 0.07);
 }
 .fleet-inbox-task-row {
