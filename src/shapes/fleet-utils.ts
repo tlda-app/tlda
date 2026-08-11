@@ -130,6 +130,26 @@ function fleetNudgeRectForShape(editor: Editor, shape: TLShape): FleetNudgeRect 
   }
 }
 
+function fleetNudgeRectForCurrentShape(shape: TLShape): FleetNudgeRect | null {
+  const panel = shape as TLShape & { x: number; y: number; props?: { w?: number; h?: number } }
+  const w = panel.props?.w
+  const h = panel.props?.h
+  if (typeof w !== 'number' || typeof h !== 'number') return null
+  const left = panel.x
+  const top = panel.y
+  const right = left + w
+  const bottom = top + h
+  return {
+    id: shape.id,
+    left,
+    right,
+    top,
+    bottom,
+    centerX: (left + right) / 2,
+    centerY: (top + bottom) / 2,
+  }
+}
+
 function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): FleetNudgeRect[] {
   const selectedIds = new Set(editor.getSelectedShapeIds())
   return editor.getCurrentPageShapes()
@@ -198,7 +218,7 @@ export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, curr
   const candidates = collectFleetPanelNudgeCandidates(editor, current)
   if (candidates.length === 0) return
 
-  const dragged = fleetNudgeRectForShape(editor, current)
+  const dragged = fleetNudgeRectForCurrentShape(current)
   if (!dragged) return
 
   const zoom = editor.getZoomLevel() || 1
