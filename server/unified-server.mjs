@@ -3720,12 +3720,16 @@ app.post('/api/education/card/:agentId', async (req, res) => {
   const { drill, gradient = null, pass = null, card = {}, chat = null } = req.body || {}
   if (!drill) return res.status(400).json({ error: 'Missing drill in body' })
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
+  const teacher = chat ? await fleetStore.findAgent?.('teacher') : null
+  if (chat && (!teacher || teacher.dead || teacher.friendly_name !== 'teacher')) {
+    return res.status(404).json({ error: 'Teacher agent not found' })
+  }
   await fleetStore.addDrillCard(agentId, drill, { gradient, pass, card })
   // Post the card to the agent's chat (markdown), the same channel as any message.
   if (chat) {
     try {
       await fleetStore.share({
-        type: 'chat', from: 'fleet:teacher', to: agentId, text: chat,
+        type: 'chat', from: teacher.id, to: agentId, text: chat,
         metadata: { kind: 'drill-card', drill, gradient, pass },
       })
     } catch (e) { console.error('[education] card chat failed:', e.message) }
