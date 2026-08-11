@@ -917,7 +917,7 @@ function TaskRow({ t, onOpen }: { t: RibbonTask; onOpen?: () => void }) {
 
 function FleetTaskRow({ task, inboxShapeId, onOpen }: { task: OwnedFleetTask; inboxShapeId: string; onOpen?: () => void }) {
   return (
-    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId} onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
+    <div className="fleet-inbox-task" data-fleet-task-id={task.id} data-fleet-inbox-shape-id={inboxShapeId} onClick={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-task-row">
         <span className="fleet-inbox-task-icon">●</span>
         <span className="fleet-inbox-task-text">{task.description}</span>
