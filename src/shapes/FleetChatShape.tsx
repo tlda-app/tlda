@@ -2332,10 +2332,18 @@ const ChatMessageRow = memo(function ChatMessageRow({
     // this is the half that measures. Without it a two-line message carries a
     // collapsed class that does nothing but lie about the row being cut off,
     // which is the defect the 8/01 version was written to avoid.
-    el.querySelectorAll<HTMLElement>('.pretty-msg-body.thread-msg-collapsed').forEach(body => {
-      if (body.scrollHeight <= body.clientHeight + 1) {
+    el.querySelectorAll<HTMLElement>('.pretty-msg-body.thread-msg-collapsed').forEach((body, i) => {
+      const more = body.nextElementSibling?.classList.contains('pretty-msg-body-more')
+        ? body.nextElementSibling as HTMLElement
+        : null
+      const key = `${itemKey}:thread-body:${i}`
+      if (more) more.dataset.threadBodyKey = key
+      if (expanded.has(key) || body.scrollHeight <= body.clientHeight + 1) {
         body.classList.remove('thread-msg-collapsed')
         body.style.maxHeight = ''
+        if (more) more.style.display = 'none'
+      } else if (more) {
+        more.style.display = ''
       }
     })
     // Restore code-block expand state (each block keyed by index within the row)
@@ -4738,6 +4746,18 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
+        if (expandBtn.classList.contains('pretty-msg-body-more')) {
+          const body = expandBtn.previousElementSibling instanceof HTMLElement
+            ? expandBtn.previousElementSibling
+            : null
+          if (!body?.classList.contains('pretty-msg-body')) return
+          body.classList.remove('thread-msg-collapsed')
+          body.style.maxHeight = ''
+          expandBtn.style.display = 'none'
+          const key = expandBtn.dataset.threadBodyKey
+          if (key) expandedRowsRef.current.add(key)
+          return
+        }
         // A gap marker owns the rows next to it. Check that first: inside a
         // thread card the marker sits within the semantic operation, and
         // treating it as the card's own toggle would close the thread instead
