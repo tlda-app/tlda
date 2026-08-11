@@ -35,6 +35,8 @@ export function createDaemonWakeCore({
         agentId: facts.fleetId || params.fleet_id || params.fleetId || null,
         text,
         enterDelayMs: params.enter_delay_ms,
+        readyTimeoutMs: started ? params.notify_ready_timeout_ms : undefined,
+        clearBeforeText: started && Number(params.notify_ready_timeout_ms) > 0,
         started,
       })
     }

@@ -130,6 +130,35 @@ export function createTerminalRpc({
     }
   }
 
+  function terminalInputReady(pane) {
+    const text = stripAnsi ? stripAnsi(pane || '') : String(pane || '')
+    const lines = text.split('\n').filter(line => line.trim())
+    const tail = lines.slice(-6)
+    const tailText = tail.join('\n')
+    const promptReady = tail.some(line => line.includes('❯') || line.trimStart().startsWith('›'))
+    const busy = ['Thinking', 'Working', 'Transmuting', 'ESC to interrupt', 'esc to interrupt', 'Starting MCP servers'].some(marker => tailText.includes(marker))
+    return promptReady && !busy
+  }
+
+  async function waitForTerminalInputReady(tmuxSession, timeoutMs = 0) {
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+    while (Date.now() < deadline) {
+      try {
+        const pane = await capturePaneTail(tmuxSession)
+        const prompt = detectPrompt(pane)
+        if (prompt.type === 'auto-accept') {
+          await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey)
+        } else if (terminalInputReady(pane)) {
+          return true
+        }
+      } catch {
+        // Prompt polling tolerates transient tmux capture failures until timeout.
+      }
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+    return false
+  }
+
   async function rpcSendKey(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
@@ -155,9 +184,10 @@ export function createTerminalRpc({
   async function writeTextToTerminal(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
-    const { text, enter, enter_delay_ms, literal_text } = args
+    const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
+    if (ready_timeout_ms != null) await waitForTerminalInputReady(tmuxSession, ready_timeout_ms)
     // A live tmux can still be unable to consume task text. Clear only prompts
     // already classified as safe auto-accepts before injecting the queued text;
     // unknown, permission, and choice prompts remain untouched.
@@ -174,6 +204,7 @@ export function createTerminalRpc({
       ? terminalWatchPtys.get(tmuxSession).pty
       : null
     if (pty) {
+      if (clear_before_text) pty.write('\x15')
       if (text) pty.write(text)
       if (enter !== false) {
         const delay = Number(enter_delay_ms ?? 120)
@@ -182,6 +213,7 @@ export function createTerminalRpc({
       }
       return { ok: true, via: 'pty' }
     }
+    if (clear_before_text) await tmux('send-keys', '-t', tmuxSession, 'C-u')
     if (text) {
       if (literal_text) await tmux('send-keys', '-t', tmuxSession, '-l', '--', text)
       else await tmux('send-keys', '-t', tmuxSession, '--', text)
@@ -195,7 +227,7 @@ export function createTerminalRpc({
   }
 
   async function rpcNotifyAgent(args = {}) {
-    const { agent_id: agentId, text, enter_delay_ms: enterDelayMs } = args
+    const { agent_id: agentId, text, enter_delay_ms: enterDelayMs, ready_timeout_ms: readyTimeoutMs, clear_before_text: clearBeforeText } = args
     if (!agentId) throw new Error('agent_id required')
     if (!text) throw new Error('notification text required')
     return writeTextToTerminal({
@@ -203,6 +235,8 @@ export function createTerminalRpc({
       text: terminalSafeNotificationText(text),
       enter: true,
       enter_delay_ms: enterDelayMs,
+      ready_timeout_ms: readyTimeoutMs,
+      clear_before_text: !!clearBeforeText,
       literal_text: true,
     })
   }

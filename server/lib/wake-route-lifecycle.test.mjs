@@ -6,7 +6,7 @@ import { runWakeRouteLifecycle } from './wake-route-lifecycle.mjs'
 
 // Wake and tell are one call: the daemon is the only side that knows whether it
 // started a process, so it decides whether the return notice goes on the front.
-function rig({ alive, notifyDelayMs = 400 }) {
+function rig({ alive, notifyDelayMs = 400, notifyReadyTimeoutMs = 30000 }) {
   const injected = []
   const wakeParams = []
   const sleeps = []
@@ -21,8 +21,8 @@ function rig({ alive, notifyDelayMs = 400 }) {
       running = true
       return { pid: 4242 }
     },
-    notifyAgent: async ({ text, enterDelayMs }) => {
-      injected.push({ text, enterDelayMs })
+    notifyAgent: async ({ text, enterDelayMs, readyTimeoutMs, clearBeforeText }) => {
+      injected.push({ text, enterDelayMs, readyTimeoutMs, clearBeforeText })
       return { ok: true }
     },
     sleep: async (ms) => { sleeps.push(ms) },
@@ -40,6 +40,7 @@ function rig({ alive, notifyDelayMs = 400 }) {
       returnNoticeText: '💻 You were away as hibernating for one minute.',
       enterDelayMs: 400,
       notifyDelayMs,
+      notifyReadyTimeoutMs,
       sendDaemonDurable: async (_key, _op, params) => {
         wakeParams.push(params)
         return wake(params)
@@ -61,10 +62,13 @@ test('an agent whose process never stopped gets the nudge without a return notic
     return_notice: '💻 You were away as hibernating for one minute.',
     enter_delay_ms: 400,
     notify_delay_ms: 400,
+    notify_ready_timeout_ms: 30000,
   }])
   assert.deepEqual(injected, [{
     text: '📬 Available message arrived: No. — call inbox() to read and respond.',
     enterDelayMs: 400,
+    readyTimeoutMs: undefined,
+    clearBeforeText: false,
   }])
   assert.deepEqual(sleeps, [])
 })
@@ -81,10 +85,13 @@ test('the return notice goes on the front only when the daemon started a process
     return_notice: '💻 You were away as hibernating for one minute.',
     enter_delay_ms: 400,
     notify_delay_ms: 400,
+    notify_ready_timeout_ms: 30000,
   }])
   assert.deepEqual(injected, [{
     text: '💻 You were away as hibernating for one minute.\n\n📬 Available message arrived: No. — call inbox() to read and respond.',
     enterDelayMs: 400,
+    readyTimeoutMs: 30000,
+    clearBeforeText: true,
   }])
   assert.deepEqual(sleeps, [400])
 })
@@ -102,10 +109,13 @@ test('a return notice without a nudge is still delivered on restart', async () =
     notify_text: 'Your MCP was restarted. Call login(), then inbox().',
     enter_delay_ms: 400,
     notify_delay_ms: 400,
+    notify_ready_timeout_ms: 30000,
   }])
   assert.deepEqual(injected, [{
     text: 'Your MCP was restarted. Call login(), then inbox().',
     enterDelayMs: 400,
+    readyTimeoutMs: 30000,
+    clearBeforeText: true,
   }])
   assert.deepEqual(sleeps, [400])
 })
