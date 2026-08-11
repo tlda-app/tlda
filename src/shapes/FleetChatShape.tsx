@@ -3987,6 +3987,21 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     const delta = row.getBoundingClientRect().top - viewportTop - anchor.top
     if (Math.abs(delta) <= 0.5) return true
+    const available = delta < 0
+      ? el.scrollTop
+      : Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
+    if (Math.abs(delta) > available + 0.5) {
+      log.metric('chat-anchor', 'anchor correction outside scroll range', {
+        panelId: String(shape.id),
+        anchorKey: anchor.key,
+        delta: Math.round(delta),
+        available: Math.round(available),
+        scrollTop: Math.round(el.scrollTop),
+        scrollHeight: Math.round(el.scrollHeight),
+        clientHeight: Math.round(el.clientHeight),
+      })
+      return false
+    }
     geometryReconcileScrollTopRef.current = el.scrollTop + delta
     el.scrollTop += delta
     geometryReconcileScrollTopRef.current = el.scrollTop
@@ -4368,7 +4383,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         viewportAnchorRef.current = null
         setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
       }
-      if (userScrolledUpRef.current) captureViewportAnchor()
+      if (userScrolledUpRef.current) {
+        if (!(touchScrollActiveRef.current || explicitScrollInputRef.current)) restoreViewportAnchor()
+        captureViewportAnchor()
+      }
       else checkFollowInvariant('scroll-event')
     }
     document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
@@ -4392,7 +4410,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       explicitScrollInputRef.current = false
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, checkFollowInvariant, enterReaderMode, resumeFollowIfSettledAtBottom, reconcileViewportGeometry])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, restoreViewportAnchor, checkFollowInvariant, enterReaderMode, resumeFollowIfSettledAtBottom, reconcileViewportGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {
