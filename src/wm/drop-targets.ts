@@ -32,6 +32,8 @@ export function registerWMDropTarget<T>(element: HTMLElement, target: WMDropTarg
 function targetAt(payload: WMDropPayload, point: WMDropPoint) {
   for (const element of Array.from(targetElements).reverse()) {
     if (!element.isConnected) continue
+    const style = getComputedStyle(element)
+    if (style.pointerEvents === 'none' || style.display === 'none' || style.visibility === 'hidden') continue
     const target = targets.get(element)
     if (!target?.accepts(payload)) continue
     const rect = element.getBoundingClientRect()
