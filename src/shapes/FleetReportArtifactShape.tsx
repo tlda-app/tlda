@@ -7,6 +7,7 @@ import {
 } from 'tldraw'
 import { fleetReportArtifactProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
+import { nudgeFleetPanelTranslate } from './fleet-utils'
 import './fleet-report-artifact.css'
 
 const DEFAULT_W = 520
@@ -22,6 +23,7 @@ export class FleetReportArtifactShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
   override canBind = () => false
   override hideRotateHandle = () => true
 
