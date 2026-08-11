@@ -268,6 +268,48 @@ async function main() {
     const { stdout: modeRaw } = await git(modeMatchSource, ['ls-tree', 'HEAD', 'script.sh'])
     assert.match(modeRaw, /^100755 blob /)
 
+    // A path in scope but absent from THIS shadow tree, still present locally.
+    //
+    // readShadowSourceScope unions every path ever committed to the shadow repo
+    // across its whole history, then we compare that union against ONE commit. A
+    // file that legitimately left the build scope — an input no longer \input{},
+    // a scratch file the author keeps — is therefore in scope, missing from the
+    // shadow tree, and present in the checkout.
+    //
+    // This used to throw, which aborts the ENTIRE checkpoint: every other file in
+    // the build loses its preservation commit too, on every build, forever.
+    // balancing-act was stuck this way on `.scratchinputs/scratch-template.tex`
+    // from 2026-07-20 until 2026-08-11.
+    const droppedScope = await makeScopedBundle(root, async (shadow) => {
+      await write(path.join(shadow, 'main.tex'), 'built\n')
+      await git(shadow, ['add', 'main.tex'])
+      await git(shadow, ['commit', '-m', 'Build without the scratch input'])
+    })
+    const droppedSource = await fs.promises.mkdtemp(path.join(root, 'dropped-'))
+    await initRepo(droppedSource)
+    await write(path.join(droppedSource, 'main.tex'), 'old\n')
+    await write(path.join(droppedSource, '.scratchinputs/scratch-template.tex'), 'author keeps this\n')
+    await git(droppedSource, ['add', 'main.tex', '.scratchinputs/scratch-template.tex'])
+    await git(droppedSource, ['commit', '-m', 'author base'])
+    await write(path.join(droppedSource, 'main.tex'), 'built\n')
+
+    const dropped = await runMirror(droppedSource, droppedScope.hash, droppedScope.bundleBase64, {
+      sourceScope: ['main.tex', '.scratchinputs/scratch-template.tex'],
+    })
+    assert.equal(dropped.result.ok, true, 'checkpoint must survive a scoped path missing from this shadow tree')
+
+    // The in-scope file still got preserved — the whole point of not aborting.
+    const { stdout: preservedMain } = await git(droppedSource, ['show', 'HEAD:main.tex'])
+    assert.equal(preservedMain, 'built\n', 'main.tex must still be preserved')
+
+    // And the author's file is untouched: still tracked, still on disk, not deleted.
+    const { stdout: keptRaw } = await git(droppedSource, ['show', 'HEAD:.scratchinputs/scratch-template.tex'])
+    assert.equal(keptRaw, 'author keeps this\n', 'author file must remain in HEAD')
+    assert.equal(
+      fs.existsSync(path.join(droppedSource, '.scratchinputs/scratch-template.tex')), true,
+      'author file must remain on disk',
+    )
+
     console.log('shadow mirror preserve regression passed')
   } finally {
     await fs.promises.rm(root, { recursive: true, force: true })

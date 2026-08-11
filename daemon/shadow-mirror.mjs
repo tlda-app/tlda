@@ -136,8 +136,26 @@ async function preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log
     if (entriesMatch(baseEntry, shadowEntry)) continue
 
     if (!shadowEntry) {
+      // The scope is HISTORICAL: readShadowSourceScope unions every path that has
+      // ever appeared in ANY commit of the shadow repo, then we compare it against
+      // ONE commit. So a file that legitimately left the paper's build scope — an
+      // input no longer \input{}, a scratch file the author keeps — is in scope,
+      // absent from this shadow tree, and still present in the checkout.
+      //
+      // Throwing there aborts the whole checkpoint, so every OTHER file in the
+      // build loses its preservation commit too, permanently and on every build.
+      // balancing-act was stuck on `.scratchinputs/scratch-template.tex` from
+      // 2026-07-20: tracked in HEAD, unmodified since May, and absent from a
+      // shadow tree that carries no `.scratchinputs` at all.
+      //
+      // Skipping is strictly safer than throwing and preserves the guard's actual
+      // purpose. The guard exists so we never stage the deletion of a file that
+      // exists locally — and skipping does not stage it. The path simply keeps
+      // whatever HEAD already had, which is the author's own file. We only record
+      // a deletion when the working copy agrees the file is gone.
       if (fs.existsSync(path.join(sourceDir, rel))) {
-        throw new Error(`cannot preserve ${project}@${hash7}: local ${rel} exists but shadow deleted it`)
+        log.info(`preserve ${project}@${hash7}: ${rel} is outside this build's shadow tree but present locally; leaving it untouched`)
+        continue
       }
       entries.push({ path: rel, deleted: true })
       continue
