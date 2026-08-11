@@ -1,4 +1,4 @@
-import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
+import type { Editor, TLShape, TLShapeId, TLShapePartial, TLViewportId } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
@@ -16,6 +16,7 @@ import {
   getAnchorIdForOwnerKey,
   getMyAnchorId,
   isFleetShapeForOwnerKey,
+  isMyFleetShape,
 } from './fleet-ownership'
 import {
   buildFleetLayoutPlanInput,
@@ -71,6 +72,149 @@ export function endNativeSnapDrag(editor: Editor) {
   if (previous === undefined) return
   editor.user.updateUserPreferences({ isSnapMode: previous })
   if (stack && stack.length === 0) nativeSnapModeStack.delete(editor)
+}
+
+type FleetNudgeRect = {
+  id: TLShapeId
+  left: number
+  right: number
+  top: number
+  bottom: number
+  centerX: number
+  centerY: number
+}
+
+const FLEET_PANEL_NUDGE_THRESHOLD_SCREEN_PX = 10
+const FLEET_PANEL_NUDGE_CAP_SCREEN_PX = 3
+const FLEET_PANEL_NUDGE_FRACTION = 0.35
+
+function overlapSize(a0: number, a1: number, b0: number, b1: number): number {
+  return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0))
+}
+
+function sameBandOnY(a: FleetNudgeRect, b: FleetNudgeRect): boolean {
+  return overlapSize(a.top, a.bottom, b.top, b.bottom) > Math.min(a.bottom - a.top, b.bottom - b.top) * 0.35
+}
+
+function sameBandOnX(a: FleetNudgeRect, b: FleetNudgeRect): boolean {
+  return overlapSize(a.left, a.right, b.left, b.right) > Math.min(a.right - a.left, b.right - b.left) * 0.35
+}
+
+function addClosest(candidate: number, current: number | null): number | null {
+  if (candidate === 0) return current
+  if (current === null || Math.abs(candidate) < Math.abs(current)) return candidate
+  return current
+}
+
+function pressureDelta(delta: number | null, threshold: number, cap: number): number {
+  if (delta === null || Math.abs(delta) > threshold) return 0
+  const nudge = Math.min(Math.abs(delta) * FLEET_PANEL_NUDGE_FRACTION, cap)
+  return Math.sign(delta) * nudge
+}
+
+function fleetNudgeRectForShape(editor: Editor, shape: TLShape): FleetNudgeRect | null {
+  const bounds = editor.getShapePageBounds(shape.id)
+  if (!bounds) return null
+  const left = bounds.x
+  const top = bounds.y
+  const right = bounds.x + bounds.w
+  const bottom = bounds.y + bounds.h
+  return {
+    id: shape.id,
+    left,
+    right,
+    top,
+    bottom,
+    centerX: (left + right) / 2,
+    centerY: (top + bottom) / 2,
+  }
+}
+
+function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): FleetNudgeRect[] {
+  const selectedIds = new Set(editor.getSelectedShapeIds())
+  return editor.getCurrentPageShapes()
+    .filter(shape => shape.id !== current.id && !selectedIds.has(shape.id) && isMyFleetShape(shape))
+    // Add a group restriction here if fleet-panel nudging becomes group-scoped.
+    .map(shape => fleetNudgeRectForShape(editor, shape))
+    .filter((rect): rect is FleetNudgeRect => rect !== null)
+}
+
+function closestFleetPanelNudge(
+  dragged: FleetNudgeRect,
+  candidates: FleetNudgeRect[],
+): { dx: number | null; dy: number | null } {
+  let dx: number | null = null
+  let dy: number | null = null
+
+  for (const candidate of candidates) {
+    dx = addClosest(candidate.left - dragged.left, dx)
+    dx = addClosest(candidate.centerX - dragged.centerX, dx)
+    dx = addClosest(candidate.right - dragged.right, dx)
+
+    dy = addClosest(candidate.top - dragged.top, dy)
+    dy = addClosest(candidate.centerY - dragged.centerY, dy)
+    dy = addClosest(candidate.bottom - dragged.bottom, dy)
+  }
+
+  const horizontalGaps = new Set<number>()
+  const verticalGaps = new Set<number>()
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) {
+      const a = candidates[i]
+      const b = candidates[j]
+      if (sameBandOnY(a, b)) {
+        const gap = Math.max(a.left, b.left) - Math.min(a.right, b.right)
+        if (gap > 0) horizontalGaps.add(gap)
+      }
+      if (sameBandOnX(a, b)) {
+        const gap = Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)
+        if (gap > 0) verticalGaps.add(gap)
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (sameBandOnY(dragged, candidate)) {
+      for (const gap of horizontalGaps) {
+        dx = addClosest(candidate.right + gap - dragged.left, dx)
+        dx = addClosest(candidate.left - gap - dragged.right, dx)
+      }
+    }
+    if (sameBandOnX(dragged, candidate)) {
+      for (const gap of verticalGaps) {
+        dy = addClosest(candidate.bottom + gap - dragged.top, dy)
+        dy = addClosest(candidate.top - gap - dragged.bottom, dy)
+      }
+    }
+  }
+
+  return { dx, dy }
+}
+
+export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, current: TLShape): TLShapePartial | void {
+  if (current.parentId !== editor.getCurrentPageId()) return
+  if (!isMyFleetShape(current)) return
+
+  const candidates = collectFleetPanelNudgeCandidates(editor, current)
+  if (candidates.length === 0) return
+
+  const dragged = fleetNudgeRectForShape(editor, current)
+  if (!dragged) return
+
+  const zoom = editor.getZoomLevel() || 1
+  const threshold = FLEET_PANEL_NUDGE_THRESHOLD_SCREEN_PX / zoom
+  const cap = FLEET_PANEL_NUDGE_CAP_SCREEN_PX / zoom
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates)
+  const nudgeX = pressureDelta(dx, threshold, cap)
+  const nudgeY = pressureDelta(dy, threshold, cap)
+  if (nudgeX === 0 && nudgeY === 0) return
+
+  return {
+    id: current.id,
+    type: current.type,
+    x: current.x + nudgeX,
+    y: current.y + nudgeY,
+  } as TLShapePartial
 }
 
 /** Display-only label. Do not use this as a filter or routing value. */

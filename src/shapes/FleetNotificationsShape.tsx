@@ -8,6 +8,7 @@ import { fleetNotificationsProps } from '../../shared/shapes/fleet-panel-schema.
 import { useEffect, useRef, type SyntheticEvent } from 'react'
 import { dismissItem, sendMessage, useItems, type Item, type ItemAction } from '../fleet-data-adapter'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
+import { nudgeFleetPanelTranslate } from './fleet-utils'
 import './fleet-notifications.css'
 
 const DEFAULT_W = 360
@@ -23,6 +24,7 @@ export class FleetNotificationsShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => true
   override canResize = () => true
+  override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
   override canBind = () => false
   override hideRotateHandle = () => true
 

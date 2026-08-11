@@ -22,7 +22,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore — vanilla JS module
 import { inboxConversationRecipientId } from '../fleet/send-target-binding.mjs'
 import type { TLShapeId } from 'tldraw'
-import { agentDisplayLabel } from './fleet-utils'
+import { agentDisplayLabel, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { registerWMDropTarget, type WMDropPayload } from '../wm/drop-targets'
@@ -344,6 +344,7 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => true
   override canResize = () => true
+  override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true

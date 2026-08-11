@@ -36,7 +36,7 @@ import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { FLEET_SHAPE_TYPES } from './fleet-utils'
+import { FLEET_SHAPE_TYPES, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
@@ -84,6 +84,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, sources: DEFAULT_REF_SOURCES, label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '', targetShapeId: '', useFullBounds: false }
   }
+  override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
   override canSnap = () => true
 
   component(shape: any) {

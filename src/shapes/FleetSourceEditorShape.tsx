@@ -38,6 +38,7 @@ import { shouldReuseTrackedSourceAnchor } from '../sourceCursorTracking'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { clearVoiceAccumulator, notifyAccumulatorCursorMoved, setVoiceAccumulator } from '../voice.mjs'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
+import { nudgeFleetPanelTranslate } from './fleet-utils'
 import './fleet-chat.css'
 
 const DEFAULT_W = 560
@@ -127,6 +128,7 @@ export class FleetSourceEditorShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
