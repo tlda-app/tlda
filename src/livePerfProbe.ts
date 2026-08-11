@@ -11,6 +11,11 @@ type LivePerfProbeHandle = {
   recordEvent: (type: string, detail?: Record<string, unknown>) => void
   sample: (reason?: string) => void
   stop: () => void
+  // The event ring is already bounded at MAX_EVENT_BUFFER; this only makes it
+  // readable. Without it an intermittent fault leaves nothing behind: the
+  // events exist in the page and no one can retrieve them after the fact,
+  // which is exactly why the filter-drop break could not be explained.
+  readEvents: () => LivePerfEvent[]
 }
 
 type BrowserMemory = {
@@ -444,6 +449,8 @@ export function installLivePerfProbe(
   const handle = {
     recordEvent,
     sample,
+    // A copy, so a reader cannot mutate the ring it is inspecting.
+    readEvents: () => [...events],
     stop() {
       stopped = true
       window.clearInterval(interval)
