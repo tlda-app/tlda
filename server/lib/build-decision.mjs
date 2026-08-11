@@ -82,11 +82,25 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
     }
 
     try {
-      // Scope and changedFiles are both project-relative — compare directly.
+      // changedFiles are project-relative. The stored scope is too, for anything
+      // built since the format changed — but a project whose last successful build
+      // predates that change still holds absolute paths on disk, and this file is
+      // only ever rewritten BY a build. So an exact-match test wedges such a
+      // project permanently: nothing is ever relevant, no build runs, and the
+      // build is the only thing that would repair the file. `balancing-act` sat
+      // that way from 2026-07-21 to 2026-08-11 — its `relevant-files.json` mtime
+      // and its `lastBuild` are the same minute because it froze itself, while
+      // `balancing-act-jose` in the SAME directory built normally off a
+      // relative-path file.
+      //
+      // Matching a trailing path segment reads both formats. It errs toward
+      // building, which is the safe direction: an extra build costs time, a
+      // missed one silently serves a stale render and reports success.
       const { files: relevantList } = JSON.parse(readFileSync(relevantPath, 'utf8'))
       const relevantSet = new Set(relevantList || [])
 
-      const anyRelevant = changedFiles.some(f => relevantSet.has(f))
+      const anyRelevant = changedFiles.some(f =>
+        relevantSet.has(f) || (relevantList || []).some(r => typeof r === 'string' && r.endsWith(`/${f}`)))
 
       if (!anyRelevant) {
         return { build: false, eager: false, reason: 'outside-tree' }
