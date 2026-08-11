@@ -25,10 +25,10 @@ export async function runWakeRouteLifecycle({
   ownerDaemon,
   nudgeText = null,
   returnNoticeText = null,
+  enterDelayMs = 0,
   traceId = null,
   sendDaemonDurable,
   appendControlTrace = () => {},
-  sendWakeNudge = null,
   getAgentDaemonRoute,
   insertWakeLifecycleEvent = async () => {},
 }) {
@@ -44,24 +44,21 @@ export async function runWakeRouteLifecycle({
 
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
-  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: agentId })
+  const wakePayload = { fleet_id: agentId }
+  if (nudgeText) {
+    wakePayload.notify_text = nudgeText
+    if (returnNoticeText) wakePayload.return_notice = returnNoticeText
+    if (enterDelayMs != null) wakePayload.enter_delay_ms = enterDelayMs
+  } else if (returnNoticeText) {
+    wakePayload.notify_text = returnNoticeText
+    if (enterDelayMs != null) wakePayload.enter_delay_ms = enterDelayMs
+  }
+  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', wakePayload)
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
   const nextSeat = await getAgentDaemonRoute?.(agentId)
   if (!nextSeat?.daemon_key) throw new Error(`wake for ${agentId} did not retain a daemon route`)
-  const deliveredNudge = spawnResult.alreadyAlive
-    ? nudgeText
-    : [returnNoticeText, nudgeText].filter(Boolean).join('\n\n')
-  if (sendWakeNudge && deliveredNudge) {
-    await sendWakeNudge(
-      nextSeat.daemon_key,
-      agent,
-      deliveredNudge,
-      spawnResult.alreadyAlive ? 'already-awake' : 'post-respawn',
-      'wake-route',
-    )
-  }
   if (traceId) {
     appendControlTrace({
       trace_id: traceId,
