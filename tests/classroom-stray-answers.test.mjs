@@ -1,10 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import fs, { readFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import express from 'express'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { zipSync } from 'fflate'
 import { strayAnswers, inspectSubmissionArchive, parseQmdReferences } from '../server/lib/classroom-submission.mjs'
+import { ClassroomStore } from '../server/lib/classroom-store.mjs'
+import { createClassroomRouter } from '../server/routes/classroom.mjs'
 
 // Both fixtures are Skip's own homework through his own bin/make-handout.py.
 // They are here because the two documents fail differently: in hw9 an answer
@@ -92,4 +97,56 @@ test('an untouched handout uploads clean', () => {
     assert.deepEqual(inspection.errors, [], `${name} should upload clean`)
     assert.ok(inspection.answerIds.length > 0, `${name} should carry answer ids`)
   }
+})
+
+test('an edit to the handout after the freeze is not blamed on the student', async () => {
+  // The freeze names a revision, not a fingerprint. An instructor who fixes a
+  // typo in the handout after students have started must not turn every
+  // hand-in into a refusal: the comparison stays at the revision they were
+  // given. Reading current source here was the defect this test pins.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-freeze-'))
+  const store = new ClassroomStore(path.join(dir, 'classroom.db'))
+  try {
+    store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
+    store.upsertAssignment({ id: 'hw9', courseId: 'qtm285', title: 'Homework 9', dueAt: '2026-09-01T20:00:00Z' })
+    store.freezeTemplate('hw9', { templateDocKey: 'hw9-handout', templateVersion: 'rev-at-freeze' })
+
+    // Current source has moved on: the instructor reworded narrative prose
+    // that sits under an answer block. Against that revision the student's
+    // own untouched copy of that prose is text the handout does not contain —
+    // which is exactly what the check calls an answer typed under the box.
+    const prose = week0.match(/:::\n\n([^:#\n][^\n]{25,})/)[1]
+    const revisions = {
+      'rev-at-freeze': week0,
+      'rev-now': week0.replace(prose, 'Reworded after the freeze.'),
+    }
+    assert.equal(strayAnswers(week0, revisions['rev-now']).length, 1, 'the edit must be one the check would flag')
+    const upload = async resolveTemplateSource => {
+      const app = express(); app.use(express.json())
+      app.use('/api/classroom', createClassroomRouter({
+        store,
+        resolvePrincipal: () => ({ role: 'student', studentId: 'ada', courseId: 'qtm285' }),
+        resolveTemplateSource,
+      }))
+      const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
+      try {
+        const archive = zipSync({ 'week0-homework.qmd': new Uint8Array(Buffer.from(week0)) })
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/api/classroom/assignments/hw9/submissions/ada/upload`, {
+          method: 'POST', headers: { 'content-type': 'application/zip' }, body: archive,
+        })
+        return { status: response.status, body: await response.json().catch(() => ({})) }
+      } finally { server.close() }
+    }
+
+    // Positive control: pointed at current source, the check does fire and does
+    // refuse this hand-in. Without this the assertion below passes on a route
+    // that never reached the check at all.
+    const againstCurrent = await upload(async () => revisions['rev-now'])
+    assert.equal(againstCurrent.status, 422, 'the current revision should refuse this hand-in')
+    assert.match(againstCurrent.body.problems[0], /underneath the answer box/)
+
+    // The real assertion: resolving the stored version leaves it accepted.
+    const againstFrozen = await upload(async (docKey, version) => revisions[version])
+    assert.notEqual(againstFrozen.status, 422, `the hand-in was refused: ${JSON.stringify(againstFrozen.body.problems || againstFrozen.body)}`)
+  } finally { store.close(); fs.rmSync(dir, { recursive: true, force: true }) }
 })

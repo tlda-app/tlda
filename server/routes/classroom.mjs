@@ -1,11 +1,11 @@
 import { Router } from 'express'
-import crypto from 'node:crypto'
 import { ClassroomStore } from '../lib/classroom-store.mjs'
 import { extractToken, validateToken } from '../lib/auth.mjs'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { createProject, hashSourceFiles, readProject, sourceDir, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { createProject, readProject, sourceDir, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
 
@@ -63,8 +63,35 @@ export async function classroomTemplateVersion(templateDocKey) {
   const project = await readProject(templateDocKey)
   if (!project) throw new Error('template document not found')
   if (project.buildStatus !== 'success') throw new Error('template document build is not ready')
-  const hashes = Object.entries(await hashSourceFiles(templateDocKey)).sort(([left], [right]) => left.localeCompare(right))
-  return crypto.createHash('sha256').update(JSON.stringify(hashes)).digest('hex')
+  const version = await currentVersion(templateDocKey)
+  if (!version?.hash) throw new Error('template document has no source history to freeze against')
+  return version.hash
+}
+
+/**
+ * The template's source at the exact revision that was frozen.
+ *
+ * The version is a coordinate, not a fingerprint: it names which revision the
+ * students started from, so a handout edited after the freeze is still compared
+ * against what they were given. Reading current source here would report the
+ * instructor's later edit as the student's mistake.
+ *
+ * This was once a sha256 over hashSourceFiles(), which can detect that the
+ * handout moved but cannot say what it was. If you are weighing "detect the
+ * change" against "fetch the change" again, the project already answered it:
+ * AGENTS.md puts `eiv-paper@0b77278` beside npm's `pkg@1.2.3` and concludes
+ * that a version is a coordinate on a thing you already named. A checksum is
+ * not that, whatever it is called. Fetch the change.
+ */
+export async function classroomTemplateSource(templateDocKey, templateVersion) {
+  const project = await readProject(templateDocKey)
+  if (!project?.mainFile) return null
+  const checkout = await checkoutSource(templateDocKey, templateVersion)
+  try {
+    return await readFile(join(checkout, project.mainFile), 'utf8')
+  } finally {
+    await rm(checkout, { recursive: true, force: true })
+  }
 }
 
 /**
@@ -76,13 +103,11 @@ export async function classroomTemplateVersion(templateDocKey) {
  * student's mistake. An assignment with no frozen template simply does not get
  * that check — see `strayAnswers`, which makes no claim without one.
  */
-async function frozenTemplateSource(store, assignmentId) {
+async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) {
   const assignment = store.getAssignment(assignmentId)
-  if (!assignment?.templateDocKey) return null
-  const project = await readProject(assignment.templateDocKey)
-  if (!project?.mainFile) return null
+  if (!assignment?.templateDocKey || !assignment.templateVersion) return null
   try {
-    return await readFile(join(sourceDir(assignment.templateDocKey), project.mainFile), 'utf8')
+    return await resolveTemplateSource(assignment.templateDocKey, assignment.templateVersion)
   } catch (error) {
     // A template that cannot be read must not block a hand-in. The check is
     // skipped and the reason reaches the log rather than the student.
@@ -91,7 +116,7 @@ async function frozenTemplateSource(store, assignmentId) {
   }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource } = {}) {
   const router = Router()
   router.use((req, res, next) => {
     const principal = resolvePrincipal(req, store)
@@ -278,7 +303,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
       const archive = Buffer.concat(chunks)
       if (!archive.length) return fail(422, { error: 'The upload was empty — no file bytes arrived.' })
 
-      const inspection = inspectSubmissionArchive(archive, { template: await frozenTemplateSource(store, assignmentId) })
+      const inspection = inspectSubmissionArchive(archive, { template: await frozenTemplateSource(store, assignmentId, resolveTemplateSource) })
       if (!inspection.ok) return fail(422, { error: 'This archive cannot be marked yet.', problems: inspection.errors })
 
       const contentRef = `submission-${assignmentId}-${studentId}`
