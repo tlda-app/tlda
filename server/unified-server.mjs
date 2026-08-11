@@ -6607,8 +6607,16 @@ async function handleFleetWsMessage(ws, msg) {
       const subscriptionMatches = await fleetStore.resolveSubscriptionDeliveries?.(from, to, 'chat', filterAst) || []
       const recipientAgent = await fleetStore.getAgent?.(to)
       const nativeParentId = recipientAgent?.parent_agent_id || null
+      const hasOpenDirectChannel = hasOpenFleetSocketForAgent(to)
+      const daemonRoute = await fleetStore.getAgentDaemonRoute?.(to)
+      const deliveryBlockReason = (() => {
+        if (!recipientAgent || recipientAgent.human || to === SERVER_OWNER_ID) return null
+        if (recipientAgent.metadata?.shell) return 'recipient is a pending shell'
+        if (!hasOpenDirectChannel && !daemonRoute) return 'recipient has no daemon route'
+        return null
+      })()
       const nativeChildHasDirectChannel = nativeParentId
-        ? hasOpenFleetSocketForAgent(to) || !!(await fleetStore.getAgentDaemonRoute?.(to))
+        ? hasOpenDirectChannel || !!daemonRoute
         : false
       const nativeNeedsParent = !!nativeParentId && !nativeChildHasDirectChannel
       const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
@@ -6641,7 +6649,14 @@ async function handleFleetWsMessage(ws, msg) {
       const subscriptionRecipients = [...new Set(subscriptionDeliveries.map(d => d.recipient))]
       for (const id of subscriptionRecipients) watchRecipients.add(id)
       subscriptionDeliveriesAll.push(...subscriptionDeliveries)
-      const entry = deliveryDecision ? {
+      const entry = deliveryBlockReason ? {
+        recipient: to,
+        delivery: 'accepted',
+        status: inboxStatus,
+        statusTag: inboxStatusTag,
+        deliveryChannel,
+        reason: deliveryBlockReason,
+      } : deliveryDecision ? {
         recipient: to,
         delivery: nativeNeedsParent ? 'queued' : deliveryDecision.delivery,
         status: inboxStatus,
@@ -6665,7 +6680,7 @@ async function handleFleetWsMessage(ws, msg) {
         // The delivery facts that used to be scalar metadata keys describing
         // "the" recipient. One entry per recipient of this one event.
         entry,
-        deliveryDecision,
+        deliveryDecision: deliveryBlockReason ? null : deliveryDecision,
       })
     }
 

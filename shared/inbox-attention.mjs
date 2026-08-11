@@ -105,7 +105,7 @@ export function decideSubscriptionDelivery({ policy, priority, now = Date.now() 
   return null
 }
 
-export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy, notificationPolicy }) {
+export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy, notificationPolicy, reason }) {
   const label = notificationPolicy
     ? `${recipientLabel || 'recipient'} [${notificationPolicy}]`
     : `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
@@ -119,6 +119,7 @@ export function formatAttentionReceipt({ recipientLabel, status, tag, priority, 
   // "Notified skip [available]" for a message Skip never received. The other
   // branches below already say Queued/Batched/Held and were never the problem.
   if (delivery === 'notified') return `Notify queued for ${label}${p === 'normal' ? '' : ` as ${p}`}.`
+  if (delivery === 'accepted') return `Accepted for ${label}. It was not delivered${reason ? `: ${reason}` : ''}.`
   if (delivery === 'batched') {
     const when = notifyBy ? ` This will be delivered by ${new Date(notifyBy).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''
     return `Batched for ${label}.${when}\nSay "this is urgent" if it should interrupt now.`
