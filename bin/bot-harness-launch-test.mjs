@@ -20,7 +20,6 @@ const result = await launchMintProcess({
   cwd: process.cwd(),
   botName: 'todd',
   botScript: '/opt/tlda-bots/todd/todd.mjs',
-  botIdFile: '/tmp/tlda-bot-test/todd.fleet-id',
   botPidFile: '/tmp/tlda-bot-test/todd.pid',
   botHeartbeatFile: '/tmp/tlda-bot-test/todd.heartbeat',
   botWaitChannel: 'fleet-bot-todd-test-exit',
@@ -63,7 +62,6 @@ assert.match(captured.cmd, /FLEET_ID=.*fleet:bot-test/)
 assert.match(captured.cmd, /FLEET_NAME=.*sodd/)
 assert.match(captured.cmd, /TLDA_BOT_NAME=.*todd/)
 assert.match(captured.cmd, /TLDA_BOT_REQUESTED_NAME=.*todd/)
-assert.match(captured.cmd, /TLDA_BOT_IDFILE=.*\/tmp\/tlda-bot-test\/todd\.fleet-id/)
 assert.match(captured.cmd, /FLEET_HARNESS=bot/)
 assert.match(captured.cmd, /tmux wait-for -S .*fleet-bot-todd-test-exit/)
 assert.equal(captured.options.sendKeys, false)

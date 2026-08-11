@@ -2,9 +2,8 @@
 // Boots the worktree server isolated (temp DB, test port, supervisors off), then:
 //   1. exercises POST/GET /api/suggestions + the 'suggestions' WS broadcast,
 //      including per-agent replace semantics and multi-agent flattening;
-//   2. spawns the Todd bot the way the supervisor does (TLDA_BOT_NAME +
-//      TLDA_BOT_PIDFILE env) and asserts it registers under a persisted fleet id
-//      with friendly name "todd" and writes its pidfile.
+//   2. spawns the Todd bot the way the supervisor does and asserts it registers
+//      under the harness fleet id with friendly name "todd" and writes its pidfile.
 import WebSocket from 'ws'
 import { spawn } from 'child_process'
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'fs'
@@ -17,7 +16,7 @@ const PORT = Number(process.env.PORT || (5194 + (process.pid % 1000)))
 const DB = `/tmp/suggestions-test-${process.pid}.db`
 const TODD_SCRIPT = process.env.TLDA_TODD_SCRIPT || '/Users/skip/work/tlda-bots/todd/todd.mjs'
 const TODD_PID = `/tmp/suggestions-test-todd-${process.pid}.pid`
-const TODD_ID = `/tmp/suggestions-test-todd-${process.pid}.fleet-id`
+const TODD_ID = `fleet:suggestions-test-todd-${process.pid}`
 const TODD_HOME = `/tmp/suggestions-test-home-${process.pid}`
 const TODD_CONFIG = 'suggestions-test'
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
@@ -31,7 +30,7 @@ let srv, todd
 function cleanup(code) {
   todd?.kill('SIGKILL')
   srv?.kill('SIGKILL')
-  for (const f of [DB, `${DB}-wal`, `${DB}-shm`, TODD_PID, TODD_ID]) rmSync(f, { force: true })
+  for (const f of [DB, `${DB}-wal`, `${DB}-shm`, TODD_PID]) rmSync(f, { force: true })
   rmSync(TODD_HOME, { recursive: true, force: true })
   process.exit(code)
 }
@@ -113,13 +112,12 @@ async function run() {
   // app+bot integration test, so it spawns the real bot from its real home.
   const toddEnv = { ...process.env }
   delete toddEnv.FLEET_NAME
-  delete toddEnv.FLEET_ID
   delete toddEnv.FLEET_LOCAL_ID
   delete toddEnv.FLEET_MINT_ID
   todd = spawn('node', [TODD_SCRIPT], {
     cwd: ROOT,
     env: { ...toddEnv, HOME: TODD_HOME, TLDA_ENV: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
-           TLDA_BOT_IDFILE: TODD_ID, TLDA_BOT_MACHINE_ID: 'suggestions-test', TLDA_BOT_TMUX_SESSION: 'suggestions-test-todd',
+           FLEET_ID: TODD_ID, TLDA_BOT_MACHINE_ID: 'suggestions-test', TLDA_BOT_TMUX_SESSION: 'suggestions-test-todd',
            NODE_TLS_REJECT_UNAUTHORIZED: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -130,7 +128,7 @@ async function run() {
   for (let i = 0; i < 20; i++) {
     await sleep(500)
     const st = await fetch(`${base}/api/state`).then(r => r.json()).catch(() => ({}))
-    registered = (st.agents || []).find(a => a.id !== 'fleet:todd' && a.friendly_name === 'todd')
+    registered = (st.agents || []).find(a => a.id === TODD_ID && a.friendly_name === 'todd')
     if (registered) break
   }
   if (!registered) fail(`Todd never registered with friendly_name=todd.\nTodd log:\n${toddLog}`)
@@ -141,7 +139,6 @@ async function run() {
   for (let i = 0; i < 10 && !/assigned_name=todd canonical=true/.test(toddLog); i++) await sleep(100)
   if (!/assigned_name=todd canonical=true/.test(toddLog)) fail(`Todd did not learn canonical assignment.\nTodd log:\n${toddLog}`)
   if (!existsSync(TODD_PID)) fail('Todd did not write its pidfile at TLDA_BOT_PIDFILE')
-  if (!existsSync(TODD_ID)) fail('Todd did not write its idfile at TLDA_BOT_IDFILE')
   const pid = readFileSync(TODD_PID, 'utf8').trim()
   if (!pid || isNaN(parseInt(pid, 10))) fail(`Todd pidfile content invalid: "${pid}"`)
   console.log(`PASS: Todd registered as ${registered.id} ("todd"), wrote pidfile (pid ${pid})`)

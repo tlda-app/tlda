@@ -773,7 +773,7 @@ const agentLauncher = createAgentLauncher({
   },
 })
 
-const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'))
+const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: ACTIVE_ENV })
 function stripCompiledPermissionSet(processFact = {}) {
   const { permission_set: _permissionSet, ...rest } = processFact || {}
   return rest
@@ -801,6 +801,7 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
 
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
+  envName: ACTIVE_ENV,
   launchProcess: async params => {
     const launchStartedAt = new Date().toISOString()
     const processFact = await launchMintProcess({
@@ -830,7 +831,7 @@ daemonMintCore = createDaemonMintCore({
       : processFact
     return stripCompiledPermissionSet(recorded)
   },
-  requestSeat: ({ mint_id, name, metadata, launch }) => wsMintShell({
+  requestSeat: ({ mint_id, name, metadata, launch, fail_if_not_fresh }) => wsMintShell({
     localAgentId: mint_id,
     name,
     tmuxSession: null,
@@ -839,6 +840,7 @@ daemonMintCore = createDaemonMintCore({
     effort: launch.effort,
     kind: launch.kind || 'codex',
     metadata,
+    failIfNotFresh: fail_if_not_fresh,
     machineId: MACHINE_ID,
     envName: ACTIVE_ENV,
     daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
@@ -961,6 +963,7 @@ async function rpcMint(params = {}) {
       model: 'bot',
       kind: 'bot',
       metadata: params.metadata || null,
+      failIfNotFresh: !!params.failIfNotFresh || !!params.fail_if_not_fresh,
       machineId: MACHINE_ID,
       envName: ACTIVE_ENV,
       daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
@@ -982,6 +985,7 @@ async function rpcMint(params = {}) {
     name: params.friendly_name || params.name || null,
     metadata: params.metadata || null,
     request_seat: !(params.fleet_id || params.agent_id),
+    fail_if_not_fresh: !!params.failIfNotFresh || !!params.fail_if_not_fresh,
     launch: {
       name: params.friendly_name || params.name || null,
       model: params.model,
@@ -990,7 +994,6 @@ async function rpcMint(params = {}) {
       kind: params.kind || modelSpec.harness,
       botScript: params.botScript || params.bot_script || params.script || null,
       botName: params.botName || params.bot_name || null,
-      botIdFile: params.botIdFile || params.bot_id_file || null,
       botPidFile: params.botPidFile || params.bot_pid_file || null,
       botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
       botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
@@ -1004,6 +1007,9 @@ async function rpcMint(params = {}) {
       requester: params.requester,
     },
   })
+  if ((params.failIfNotFresh || params.fail_if_not_fresh) && facts.registrationError) {
+    throw new Error(facts.registrationError)
+  }
   return {
     ok: true,
     mint_id: facts.mintId,

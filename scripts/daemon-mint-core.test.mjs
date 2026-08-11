@@ -39,6 +39,7 @@ await new Promise(resolve => setImmediate(resolve))
 assert.deepEqual(events, ['process-start', 'seat-start'])
 assert.equal(store.get('mint:test').fleetId, 'fleet:test')
 assert.equal(store.get('mint:test').sessionId, null)
+assert.equal(store.get('mint:test').envName, null)
 assert.equal(readMintFacts(path.join(dir, 'mint.sqlite'), 'mint:test').fleetId, 'fleet:test')
 assert.equal(readMintFacts(path.join(dir, 'mint.sqlite'), 'mint:missing'), null)
 assert.equal(resolveLoginFleetId({
@@ -77,6 +78,19 @@ const serverCore = createDaemonMintCore({
 await serverCore.mint({ mint_id: 'mint:server', fleet_id: 'fleet:server', name: 'server' })
 assert.deepEqual(serverEvents, ['launch:fleet:server', 'bind:fleet:server:session:server'])
 
+const envCore = createDaemonMintCore({
+  store,
+  envName: 'testing',
+  mintId: () => 'mint:env',
+  launchProcess: async () => ({ session_id: 'session:env', tmux_session: 'fleet-env' }),
+  requestSeat: async () => ({ fleet_id: 'fleet:env', friendly_name: 'env-bot' }),
+  bindSeat: async () => {},
+})
+await envCore.mint({ name: 'env-bot' })
+assert.equal(store.get('mint:env').envName, 'testing')
+assert.equal(store.resolve('env-bot', { envName: 'testing' }).fleetId, 'fleet:env')
+assert.equal(store.resolve('env-bot', { envName: 'stable' }), null)
+
 const markerRaceEvents = []
 const markerRaceCore = createDaemonMintCore({
   store,
@@ -99,7 +113,10 @@ let alive = true
 const wake = createDaemonWakeCore({
   store,
   processAlive: async () => alive,
-  resumeSession: async facts => ({ tmux_session: `resumed-${facts.sessionId}` }),
+  resumeSession: async facts => {
+    alive = true
+    return { tmux_session: `resumed-${facts.sessionId}` }
+  },
 })
 assert.equal((await wake('fleet:server')).alreadyAlive, true)
 alive = false

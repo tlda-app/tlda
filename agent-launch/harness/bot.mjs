@@ -39,7 +39,6 @@ export function buildCmd({
   config = {},
   botScript = null,
   botName = null,
-  botIdFile = null,
   botPidFile = null,
   botHeartbeatFile = null,
   botWaitChannel = null,
@@ -60,7 +59,6 @@ export function buildCmd({
     parts.push(`TLDA_BOT_NAME=${sq(requestedBotName)}`)
     parts.push(`TLDA_BOT_REQUESTED_NAME=${sq(requestedBotName)}`)
   }
-  if (botIdFile) parts.push(`TLDA_BOT_IDFILE=${sq(botIdFile)}`)
   if (botPidFile) parts.push(`TLDA_BOT_PIDFILE=${sq(botPidFile)}`)
   if (botHeartbeatFile) parts.push(`TLDA_BOT_HEARTBEAT=${sq(botHeartbeatFile)}`)
   if (tmuxSession) parts.push(`TLDA_BOT_TMUX_SESSION=${sq(tmuxSession)}`)

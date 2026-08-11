@@ -35,7 +35,6 @@ test('transport fixture proves inertness, commands, help, unknown help, and reco
     name: 'fixture',
     fleetId: 'fleet:fixture',
     pidFile: join(directory, 'fixture.pid'),
-    idFile: join(directory, 'fixture.id'),
     server: 'http://fixture.test',
     WebSocketClass: transport.WebSocketClass,
     reconnectInitialMs: 1,
@@ -94,15 +93,14 @@ test('bot registration does not duplicate its friendly name as an explicit label
     labels: ['bot', 'todd', 'bot'],
     fleetId: 'fleet:todd-fixture',
     pidFile: join(directory, 'todd.pid'),
-    idFile: join(directory, 'todd.id'),
     server: 'http://fixture.test',
     WebSocketClass: transport.WebSocketClass,
   }).start()
   t.after(() => bot.stop())
 
   await turn()
-  const reservation = transport.sockets[0].sent.find(message => message.type === 'reserve-shell')
-  assert.ok(reservation)
-  assert.equal(reservation.name, 'todd')
-  assert.deepEqual(reservation.labels, ['bot'])
+  const login = transport.sockets[0].sent.find(message => message.type === 'login')
+  assert.ok(login)
+  assert.equal(login.name, 'todd')
+  assert.deepEqual(login.labels, ['bot'])
 })

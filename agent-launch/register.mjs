@@ -294,6 +294,7 @@ async function wsIdentityMessage(type, {
   sessionId,
   metadata,
   shell = false,
+  failIfNotFresh = false,
   machineId,
   envName,
   api = resolveApi(),
@@ -312,6 +313,7 @@ async function wsIdentityMessage(type, {
     kind,
   }
   if (shell) msg.shell = true
+  if (failIfNotFresh) msg.fail_if_not_fresh = true
   const resolvedMachineId = machineId || getMachineId()
   if (resolvedMachineId) msg.machine_id = resolvedMachineId
   const resolvedEnvName = envName || activeEnvName()

@@ -15,6 +15,7 @@ export class MintFactConflictError extends Error {
 const COLUMNS = new Set([
   'fleet_id',
   'friendly_name',
+  'env_name',
   'metadata',
   'launch_recipe',
   'process_state',
@@ -36,6 +37,7 @@ function mintRow(row) {
     mintId: row.mint_id,
     fleetId: row.fleet_id,
     friendlyName: row.friendly_name,
+    envName: row.env_name,
     metadata: decoded(row.metadata),
     launchRecipe: decoded(row.launch_recipe),
     processState: decoded(row.process_state),
@@ -63,7 +65,7 @@ export function resolveLoginFleetId({ explicitFleetId = null, mintId = null, sto
   return explicitFleetId || readMintFacts(storeFile, mintId)?.fleetId || null
 }
 
-export function resolveMintFacts(file, identifier) {
+export function resolveMintFacts(file, identifier, { envName = null } = {}) {
   if (!file || !identifier || !fs.existsSync(file)) return null
   const db = new Database(file, { readonly: true, fileMustExist: true })
   try {
@@ -71,7 +73,9 @@ export function resolveMintFacts(file, identifier) {
     return mintRow(
       db.prepare('SELECT * FROM daemon_mints WHERE mint_id = ?').get(identifier)
       || db.prepare('SELECT * FROM daemon_mints WHERE fleet_id = ?').get(identifier)
-      || db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? ORDER BY created_at DESC LIMIT 1').get(identifier)
+      || (envName
+        ? db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name = ? ORDER BY created_at DESC LIMIT 1').get(identifier, envName)
+        : db.prepare('SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name IS NULL ORDER BY created_at DESC LIMIT 1').get(identifier))
     )
   } finally {
     db.close()
@@ -79,7 +83,8 @@ export function resolveMintFacts(file, identifier) {
 }
 
 export class MintStore {
-  constructor(file) {
+  constructor(file, { defaultEnvName = null } = {}) {
+    this.defaultEnvName = defaultEnvName
     fs.mkdirSync(path.dirname(file), { recursive: true })
     this.db = new Database(file)
     this.db.pragma('busy_timeout = 5000')
@@ -89,6 +94,7 @@ export class MintStore {
         mint_id TEXT PRIMARY KEY,
         fleet_id TEXT UNIQUE,
         friendly_name TEXT,
+        env_name TEXT,
         metadata TEXT,
         launch_recipe TEXT,
         process_state TEXT,
@@ -99,6 +105,8 @@ export class MintStore {
         updated_at TEXT NOT NULL
       );
     `)
+    const cols = this.db.prepare('PRAGMA table_info(daemon_mints)').all().map(col => col.name)
+    if (!cols.includes('env_name')) this.db.exec('ALTER TABLE daemon_mints ADD COLUMN env_name TEXT')
   }
 
   ensure(mintId, now = new Date().toISOString()) {
@@ -121,19 +129,26 @@ export class MintStore {
     return mintRow(row)
   }
 
-  getByFriendlyName(name) {
+  getByFriendlyName(name, envName = this.defaultEnvName) {
+    if (!envName) {
+      const row = this.db.prepare(`
+        SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name IS NULL
+        ORDER BY created_at DESC LIMIT 1
+      `).get(name)
+      return mintRow(row)
+    }
     const row = this.db.prepare(`
-      SELECT * FROM daemon_mints WHERE friendly_name = ?
+      SELECT * FROM daemon_mints WHERE friendly_name = ? AND env_name = ?
       ORDER BY created_at DESC LIMIT 1
-    `).get(name)
+    `).get(name, envName)
     return mintRow(row)
   }
 
-  resolve(identifier) {
+  resolve(identifier, { envName = this.defaultEnvName } = {}) {
     if (!identifier) return null
     return this.get(identifier)
       || this.getByFleetId(identifier)
-      || this.getByFriendlyName(identifier)
+      || this.getByFriendlyName(identifier, envName)
   }
 
   updateProcessState(mintId, processState, now = new Date().toISOString()) {

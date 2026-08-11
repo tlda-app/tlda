@@ -234,12 +234,14 @@ const VALUE_FLAGS = new Set([
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
   'fresh', 'refresh', 'enroll', 'i-like-to-live-dangerously', 'list-models',
+  'fail-if-not-fresh',
 ])
 
 const SPAWN_NON_MODEL_OPTION_FLAGS = new Set([
   'agent-id', 'config', 'cwd', 'enroll', 'fresh', 'i-like-to-live-dangerously',
   'kind', 'list-models', 'machine', 'mode', 'model', 'name', 'permissions',
-  'policy', 'refresh', 'server', 'session',
+  'policy', 'refresh', 'server', 'session', 'bot-script', 'bot-name',
+  'bot-pid-file', 'bot-heartbeat-file', 'bot-wait-channel', 'fail-if-not-fresh',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1387,7 +1389,6 @@ function botServicePaths(name, { configName = null } = {}) {
     logFile: join(CONFIG_DIR, `${suffix}.log`),
     pidFile: join(CONFIG_DIR, `${suffix}.pid`),
     heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
-    idFile: join(CONFIG_DIR, `${suffix}.fleet-id`),
     tmuxSession: `fleet-bot-${tmuxSuffix}`,
     waitChannel: `fleet-bot-${tmuxSuffix}-exit`,
   }
@@ -1421,7 +1422,6 @@ function botEnvironmentEntries(bot, paths) {
     ['TLDA_BOT_NAME', bot.name],
     ['TLDA_BOT_PIDFILE', paths.pidFile],
     ['TLDA_BOT_HEARTBEAT', paths.heartbeatFile],
-    ['TLDA_BOT_IDFILE', paths.idFile],
     ['TLDA_BOT_MACHINE_ID', botMachineId(bot)],
     ['TLDA_BOT_TMUX_SESSION', paths.tmuxSession],
   ]
@@ -1447,9 +1447,25 @@ function botCommandEnvironment(bot, paths) {
 
 function botWakeCommand(bot, paths) {
   const envPrefix = botCommandEnvironment(bot, paths)
+  const script = resolveBotScriptForCli(bot.script)
+  const cwd = FLEET_DAEMON_MAIN_ROOT
+  const mintArgs = [
+    'agent',
+    'mint',
+    bot.name,
+    '--model', 'bot',
+    '--kind', 'bot',
+    '--cwd', cwd,
+    '--bot-script', script,
+    '--bot-name', bot.name,
+    '--bot-pid-file', paths.pidFile,
+    '--bot-heartbeat-file', paths.heartbeatFile,
+    '--bot-wait-channel', paths.waitChannel,
+    '--fail-if-not-fresh',
+  ].map(quoteCommandArg).join(' ')
+  const wakeArgs = ['agent', 'wake', bot.name].map(quoteCommandArg).join(' ')
   return [
-    `fleet_id=$(cat ${shellQuote(paths.idFile)})`,
-    `env ${envPrefix} tlda agent wake "$fleet_id" >> ${shellQuote(paths.logFile)} 2>&1`,
+    `env ${envPrefix} tlda ${mintArgs} >> ${shellQuote(paths.logFile)} 2>&1 || env ${envPrefix} tlda ${wakeArgs} >> ${shellQuote(paths.logFile)} 2>&1`,
     `pane_pid=$(tmux display-message -p -t ${shellQuote(paths.tmuxSession)} '#{pane_pid}' 2>/dev/null || true)`,
     `if [[ -z "$pane_pid" ]]; then exit 1; fi`,
     `while kill -0 "$pane_pid" 2>/dev/null; do sleep 1; done`,
@@ -1828,14 +1844,6 @@ function printBotPlan(bot) {
   console.log(dim(`  Tmux: ${paths.tmuxSession}`))
   console.log(dim(`  Plist: ${paths.plist}`))
   console.log(dim(`  Log: ${paths.logFile}`))
-}
-
-function readBotFleetId(paths) {
-  const id = existsSync(paths.idFile) ? readFileSync(paths.idFile, 'utf8').trim() : ''
-  if (!/^fleet:[a-zA-Z0-9_-]+$/.test(id)) {
-    throw new Error(`bot ${paths.label} needs an existing fleet id at ${paths.idFile}; refusing to mint a replacement`)
-  }
-  return id
 }
 
 function botPermissionFacts() {
@@ -3446,6 +3454,7 @@ export async function runFleetSpawn(spawnArgs, {
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
+  const failIfNotFresh = hasRawFlag(spawnArgs, 'fail-if-not-fresh')
   const name = spawnPositionalFromRaw(spawnArgs, 0)
   if (!name && !session) {
     console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--cwd path] [--permissions <profile>] [--i-like-to-live-dangerously]'))
@@ -3518,6 +3527,7 @@ export async function runFleetSpawn(spawnArgs, {
     const result = await lifecycleImpl('mint', {
       name,
       model: flagFromRaw(spawnArgs, 'model') || undefined,
+      kind: flagFromRaw(spawnArgs, 'kind') || undefined,
       cwd,
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
       modelOptions: collectSpawnModelOptionsFromRaw(spawnArgs),
@@ -3527,6 +3537,12 @@ export async function runFleetSpawn(spawnArgs, {
       requester: { id: 'localhost', human: true },
       fresh: true,
       respawn: false,
+      failIfNotFresh,
+      botScript: flagFromRaw(spawnArgs, 'bot-script') || undefined,
+      botName: flagFromRaw(spawnArgs, 'bot-name') || undefined,
+      botPidFile: flagFromRaw(spawnArgs, 'bot-pid-file') || undefined,
+      botHeartbeatFile: flagFromRaw(spawnArgs, 'bot-heartbeat-file') || undefined,
+      botWaitChannel: flagFromRaw(spawnArgs, 'bot-wait-channel') || undefined,
     }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
     printLocalDaemonOutcome(result)
@@ -3539,7 +3555,7 @@ export async function runFleetSpawn(spawnArgs, {
   }
   if (spawnMode === 'respawn') {
     const { MintStore } = await import('../daemon/mint-store.mjs')
-    const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'))
+    const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
     let restored
     try {
       const stored = mintStore.resolve(name)

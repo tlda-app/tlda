@@ -210,7 +210,7 @@ function shellReservationOptions(params = {}) {
   return params.shellReservationTimeoutMs ? { timeoutMs: params.shellReservationTimeoutMs } : {}
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env, botScript = null, botName = null, botIdFile = null, botPidFile = null, botHeartbeatFile = null, botWaitChannel = null, botEnv = null }) {
+async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env, botScript = null, botName = null, botPidFile = null, botHeartbeatFile = null, botWaitChannel = null, botEnv = null }) {
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
@@ -254,7 +254,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
       harnessOptions,
       botScript,
       botName,
-      botIdFile,
       botPidFile,
       botHeartbeatFile,
       botWaitChannel,
@@ -350,7 +349,6 @@ export async function launchMintProcess(params) {
     env: spawnEnv(params),
     botScript: params.botScript || params.bot_script || params.script || null,
     botName: params.botName || params.bot_name || null,
-    botIdFile: params.botIdFile || params.bot_id_file || null,
     botPidFile: params.botPidFile || params.bot_pid_file || null,
     botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
     botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
@@ -910,7 +908,6 @@ async function spawnRespawn(params) {
     env: spawnEnv(params),
     botScript: params.botScript || params.bot_script || facts.launchRecipe?.botScript || facts.launchRecipe?.bot_script || facts.launchRecipe?.script || null,
     botName: params.botName || params.bot_name || facts.launchRecipe?.botName || facts.launchRecipe?.bot_name || null,
-    botIdFile: params.botIdFile || params.bot_id_file || facts.launchRecipe?.botIdFile || facts.launchRecipe?.bot_id_file || null,
     botPidFile: params.botPidFile || params.bot_pid_file || facts.launchRecipe?.botPidFile || facts.launchRecipe?.bot_pid_file || null,
     botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || facts.launchRecipe?.botHeartbeatFile || facts.launchRecipe?.bot_heartbeat_file || null,
     botWaitChannel: params.botWaitChannel || params.bot_wait_channel || facts.launchRecipe?.botWaitChannel || facts.launchRecipe?.bot_wait_channel || null,

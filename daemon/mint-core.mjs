@@ -15,6 +15,7 @@ export function createDaemonMintCore({
   requestSeat,
   bindSeat,
   mintId = randomUUID,
+  envName = null,
 }) {
   if (!store || !launchProcess || !bindSeat) throw new Error('mint core dependencies are required')
   const joins = new Map()
@@ -72,9 +73,11 @@ export function createDaemonMintCore({
     metadata = null,
     launch = {},
     request_seat = true,
+    fail_if_not_fresh = false,
   } = {}) {
     const id = suppliedMintId || mintId()
     store.ensure(id)
+    if (envName) store.setFact(id, 'env_name', envName)
     if (name) store.setFact(id, 'friendly_name', name)
     if (metadata) store.setFact(id, 'metadata', metadata)
     store.setFact(id, 'launch_recipe', persistentLaunchRecipe(launch))
@@ -93,7 +96,7 @@ export function createDaemonMintCore({
     const seatPromise = suppliedFleetId || !request_seat
       ? Promise.resolve(null)
       : Promise.resolve()
-          .then(() => requestSeat({ mint_id: id, name, metadata, launch }))
+          .then(() => requestSeat({ mint_id: id, name, metadata, launch, fail_if_not_fresh }))
           .then(seat => recordSeat(id, seat))
           .catch(error => ({ error: error?.message || String(error) }))
 

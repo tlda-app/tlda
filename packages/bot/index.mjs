@@ -1,11 +1,9 @@
 // @tlda/bot — the lifecycle harness for a tlda-compatible bot.
 //
-// A standing bot (todd, teacher) is a long-lived fleet participant: it holds a
-// persisted fleet id, requests a canonical friendly name from the allocator,
-// keeps a WebSocket alive with reconnect/backoff, owns a pidfile, and dispatches
-// chat messages addressed to it only when the allocator assigned that canonical
-// name. todd and teacher hand-rolled most of this identically; this factors it
-// into one surface:
+// A standing bot (todd, teacher) is a long-lived fleet participant: it uses the
+// fleet id supplied by the harness, keeps a WebSocket alive with
+// reconnect/backoff, owns a pidfile, and dispatches chat messages addressed to
+// it only when the allocator assigned that canonical name.
 //
 //   import { runBot } from '@tlda/bot'
 //   const bot = runBot({ name: 'teacher', labels: ['bot'] })
@@ -14,34 +12,15 @@
 //   })
 //
 // Identity is config-driven: TLDA_BOT_NAME and TLDA_BOT_PIDFILE override
-// `name`/pidfile, TLDA_BOT_IDFILE persists the fleet id, and TLDA_BOT_MACHINE_ID
-// / TLDA_BOT_TMUX_SESSION wire it into normal fleet lifecycle machinery.
+// `name`/pidfile, FLEET_ID is supplied by the harness, and TLDA_BOT_MACHINE_ID /
+// TLDA_BOT_TMUX_SESSION wire it into normal fleet lifecycle machinery.
 
 import WebSocket from 'ws';
-import { randomUUID } from 'node:crypto';
 import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
 import { createCommandRegistry } from './commands.mjs';
-
-function loadOrCreateFleetId(file, fallback = null, bestEffort = false) {
-  try {
-    const existing = readFileSync(file, 'utf8').trim();
-    if (/^fleet:[a-zA-Z0-9_-]+$/.test(existing)) return existing;
-    throw new Error(`invalid bot fleet id "${existing}"`);
-  } catch (e) {
-    if (e?.code !== 'ENOENT') throw e;
-  }
-  const id = fallback || `fleet:${randomUUID().slice(0, 8)}`;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, id);
-  } catch (error) {
-    if (!bestEffort) throw error;
-  }
-  return id;
-}
 
 function registrationLabels(labels, key) {
   const out = [];
@@ -66,18 +45,18 @@ async function confirmRegisteredFromRoster(server, id, timeoutMs = 10_000) {
 
 export function createBot({
   name = 'bot', pretty_name = null, labels = ['bot'], human = false, allow = null, server,
-  commands = [], cwd = process.cwd(), metadata = {}, fleetId = null, bestEffortIdentity = false,
-  pidFile = null, idFile = null, WebSocketClass = WebSocket, handshakeTimeoutMs = 10_000,
+  commands = [], cwd = process.cwd(), metadata = {}, fleetId = null,
+  pidFile = null, WebSocketClass = WebSocket, handshakeTimeoutMs = 10_000,
   reconnectInitialMs = 500, reconnectMaxMs = 5000,
 } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
   const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet';
   const PID_FILE = process.env.TLDA_BOT_PIDFILE || pidFile || join(homedir(), '.config', 'tlda', `${key}.pid`);
-  const ID_FILE = process.env.TLDA_BOT_IDFILE || idFile || join(dirname(PID_FILE), `${key}.fleet-id`);
   const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null;
   const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null;
-  const id = loadOrCreateFleetId(ID_FILE, fleetId, bestEffortIdentity);
+  const id = fleetId || process.env.FLEET_ID;
+  if (!/^fleet:[a-zA-Z0-9_-]+$/.test(id || '')) throw new Error('bot harness requires FLEET_ID');
   const explicitLabels = registrationLabels(labels, key);
   const allowSet = allow ? new Set(allow) : null;
   const registry = createCommandRegistry(commands);
@@ -196,7 +175,6 @@ export function createBot({
       if (human) {
         result = await requestRaw({ ...basePayload, type: 'register', human: true });
       } else {
-        await requestRaw({ ...basePayload, type: 'reserve-shell' });
         result = await requestRaw({ ...basePayload, type: 'login' });
       }
     } catch (e) {

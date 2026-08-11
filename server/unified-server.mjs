@@ -178,6 +178,15 @@ function wsSummary() {
   return { total: _trackedWs.size, byKind }
 }
 
+function formatNameCollisions(collisions = []) {
+  return collisions.map(c => {
+    if (c.kind === 'pseudo_label') return `${c.name} is a reserved routing label`
+    if (c.kind === 'server_owner') return `${c.name} is the server owner name`
+    if (c.kind === 'self_id') return `${c.name} is this agent's durable id`
+    return `${c.name} collides with ${c.kind}${c.agent_id ? ` on ${c.agent_id}` : ''}`
+  }).join('; ')
+}
+
 function recordServerPerfEvent(type, detail = {}) {
   const event = {
     ts: new Date().toISOString(),
@@ -5696,7 +5705,7 @@ async function handleFleetWsMessage(ws, msg) {
     // onto every message, so the real fleet id arrives as agent_id. Falling
     // back to id keeps direct WS callers that send id=fleet_id working. Reading
     // the bare `id` first here was the root cause of phantom UUID-keyed rows.
-    const { agent_id, id: msgId, local_agent_id, name, pretty_name, labels, manager, metadata, machine_id, env_name, kind } = msg
+    const { agent_id, id: msgId, local_agent_id, name, pretty_name, labels, manager, metadata, machine_id, env_name, kind, fail_if_not_fresh } = msg
     const isShellReservation = type === 'reserve-shell' || type === 'mint-shell'
     if (type === 'register' && !msg.human) {
       error('register is only for human browser sessions; agents must use reserve-shell before startup and login after startup')
@@ -5730,6 +5739,13 @@ async function handleFleetWsMessage(ws, msg) {
     let assignedName = (existing && !existing.dead) ? (existing.friendly_name || requestedName) : requestedName
     const willSetName = (!existing?.friendly_name || existing?.dead) && requestedName
     if (willSetName) {
+      if (type === 'mint-shell' && fail_if_not_fresh) {
+        const collisions = await fleetStore.checkNameAvailable?.([requestedName], { excludeId: agentId, asFriendlyName: true }) || []
+        if (collisions.length) {
+          error(`Spawn name "${requestedName}" is unavailable: ${formatNameCollisions(collisions)}. Wake the existing agent.`)
+          return
+        }
+      }
       const incomingLabels = Array.isArray(labels) ? labels : []
       if (incomingLabels.includes('bot') && incomingLabels.includes(requestedName)) {
         for (const holder of await fleetStore.getLiveAgentsByFriendlyName?.(requestedName) || []) {
