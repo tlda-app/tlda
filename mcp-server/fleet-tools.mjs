@@ -789,16 +789,63 @@ async function getAgentDoc() {
 // "really fancy" upgrade is to resolve macros from that shadow version with a
 // cache. See setAgentPreambleDoc.)
 let _agentPreambleDoc = null;        // { doc, version } | null
-export function setAgentPreambleDoc(doc, version = null) {
+let _agentPreambleLoaded = false;
+
+function normalizeAgentPreamble(value) {
+  if (!value || typeof value !== 'object') return null;
+  const doc = typeof value.doc === 'string' ? value.doc.trim() : '';
+  if (!doc) return null;
+  const version = typeof value.version === 'string' && value.version.trim() ? value.version.trim() : null;
+  return { doc, version };
+}
+
+async function persistAgentPreambleDoc(ref) {
+  const agent = activeAgentId();
+  if (!agent) return;
+  const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/set-metadata`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent, chatPreamble: ref }),
+    signal: AbortSignal.timeout(3000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${body ? ` — ${body.slice(0, 200)}` : ''}`);
+  }
+}
+
+async function getStoredAgentPreambleDoc() {
+  if (_agentPreambleLoaded) return _agentPreambleDoc;
+  _agentPreambleLoaded = true;
+  const agent = activeAgentId();
+  if (!agent) return _agentPreambleDoc;
+  try {
+    const rows = await mcpFleetTransport.ephemeral('store-agents-by-ids', { ids: [agent] }, { deadlineMs: 2000 });
+    const stored = normalizeAgentPreamble(rows?.[0]?.metadata?.chatPreamble);
+    if (stored) _agentPreambleDoc = stored;
+  } catch (e) {
+    process.stderr.write(`[fleet] preamble metadata lookup failed for ${agent}: ${e.message}\n`);
+  }
+  return _agentPreambleDoc;
+}
+
+export async function setAgentPreambleDoc(doc, version = null, { persist = false } = {}) {
   _agentPreambleDoc = doc ? { doc, version: version || null } : null;
+  _agentPreambleLoaded = true;
+  if (persist) await persistAgentPreambleDoc(_agentPreambleDoc);
 }
 
 // The document whose preamble applies to this agent's chat: an explicit
 // set_preamble wins; otherwise the agent's working folder. Used both to lint the
 // agent's outgoing math and to stamp `preambleRef` on its messages so every
 // reader renders that math with the sender's macros.
+async function getAgentPreambleRef() {
+  return getStoredAgentPreambleDoc();
+}
+
 async function getAgentPreambleDoc() {
-  if (_agentPreambleDoc) return _agentPreambleDoc.doc;
+  const ref = await getAgentPreambleRef();
+  if (ref?.doc) return ref.doc;
   return getAgentDoc();
 }
 
@@ -2863,6 +2910,10 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const fileRenderIssues = sharedMarkdownFile ? renderCheck.validity : [];
     const styleHints = renderCheck.style;
 
+    if (renderIssues.length > 0 && args.amend_id == null) {
+      return { content: [{ type: 'text', text: `Message NOT sent — chat render check failed (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}):\n${renderIssues.map(l => `- ${l}`).join('\n')}` }], isError: true };
+    }
+
     // ---- amend branch: edit an already-sent message in place ----
     // `amend_id` present → route to the server's amend handler (same body forms,
     // same keep/clear-`source` semantics) instead of posting a new message.
@@ -3022,9 +3073,10 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     // the sender's preamble (not the reader's). { doc, version } — version is
     // captured for the future but ignored on resolution today.
     let preambleRef = null;
-    const preambleDoc = await getAgentPreambleDoc();
+    const configuredPreamble = await getAgentPreambleRef();
+    const preambleDoc = configuredPreamble?.doc || await getAgentDoc();
     if (preambleDoc) {
-      const pv = await fetchCurrentDocVersion(preambleDoc);
+      const pv = configuredPreamble?.version || await fetchCurrentDocVersion(preambleDoc);
       preambleRef = { doc: preambleDoc, version: pv || null };
     }
 
@@ -5238,7 +5290,7 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
   return { ok: true, queued: true, operation_id: operationId };
 }
 
-const mcpFleetTransport = createFleetOperationTransport({
+let mcpFleetTransport = createFleetOperationTransport({
   name: 'mcp-fleet',
   sendEphemeral: (operation, payload, options = {}) =>
     sendFleetRequestAttempt(operation, payload, {
@@ -5255,6 +5307,19 @@ const mcpFleetTransport = createFleetOperationTransport({
     }
   },
 })
+
+export function __resetAgentPreambleForTest() {
+  _agentPreambleDoc = null;
+  _agentPreambleLoaded = false;
+}
+
+export function __setFleetTransportForTest(transport) {
+  mcpFleetTransport = {
+    ...mcpFleetTransport,
+    ...(transport?.ephemeral ? { ephemeral: transport.ephemeral } : {}),
+    ...(transport?.durable ? { durable: transport.durable } : {}),
+  };
+}
 
 let _channelHasOpened = false;
 
