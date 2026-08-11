@@ -990,15 +990,13 @@ async function reanimateAgent(agentQuery) {
   }
   const daemonKey = before.daemon_key || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
   if (!daemonKey) {
-    // "No daemon address" describes the symptom and hides the cause, which cost
-    // an hour of source reading to reconstruct. The server writes a route only
-    // when an agent is minted (performSpawnRelay), and it no longer accepts the
-    // daemon's 'agent-route' announcement, so a route that goes missing never
-    // comes back on its own. Say that, because the next step depends on it.
+    // "No daemon address" describes the symptom and hides the next action. A
+    // route can be restored when the owning daemon announces agent-route, but
+    // reanimate cannot choose a daemon until the server has that route.
     const err = new Error(
       `${before.friendly_name || before.id} has no daemon route on the server. ` +
-      `A route is written only at mint and is never re-established, so this will ` +
-      `not recover on reconnect. The owning daemon may still hold the route.`
+      `The owning daemon may still hold the route and can re-establish it by ` +
+      `announcing agent-route; reanimate cannot continue until that happens.`
     )
     err.status = 409
     throw err
@@ -8762,9 +8760,10 @@ async function handleDaemonWsMessage(ws, msg) {
   // exactly one place — at mint — and dropped every re-announcement on the floor,
   // logging `no handler for daemon message type "agent-route" ... dropping`.
   //
-  // That is what made a lost route unrecoverable: reanimate's own error says "a
-  // route is written only at mint and is never re-established". Re-establishment
-  // is what this message IS, and the daemon never stopped sending it.
+  // That is what made a lost route unrecoverable: reanimate used to report that
+  // a route was written only at mint and was never re-established.
+  // Re-establishment is what this message IS, and the daemon never stopped
+  // sending it.
   //
   // Recording it here does not restore server-owned route authority, which is
   // what that commit set out to remove. The daemon still decides where the agent
