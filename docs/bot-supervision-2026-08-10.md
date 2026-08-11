@@ -2,6 +2,19 @@
 
 This records the bot supervision state found during the launchd waiter rollout.
 
+> **Re-checked against the running machine 2026-08-10 ~22:30 EDT (app-chief4).**
+> The root cause below is wrong, and so are three of its supporting claims. They
+> are corrected inline where they appear, each marked **Correction 2026-08-10**.
+> Working notes and the full measurements: `scratch/app-chief4/stable-bots-2026-08-10.md`.
+>
+> **Short version: the id-derivation backport cannot fix any of these bots.** Each
+> plist reads the identity file and hands the id to `tlda agent wake` *before* the
+> bot process starts, so `loadOrCreateFleetId()` is downstream of a step that has
+> already failed. The real cause is the **mint ledger**: of seven bot mint rows in
+> `~/.config/tlda/daemon-mints.sqlite`, exactly one pins a `_stable` tmux session,
+> and it is todd's. Todd is the only bot ever minted twice, once per environment.
+> That is the whole difference between it and the four dead jobs.
+
 ## Confirmed live-process count
 
 At 2026-08-10 03:48 EDT, direct checks of each bot's own identity/pid files and
@@ -34,6 +47,13 @@ Dead at that check:
 - `grammar.stable`: has identity `fleet:grammar` and pidfile `45874`, but its
   plist is the old direct tmux form and points at missing
   `/Users/skip/work/tlda/bin/bots/grammar-bot.mjs`.
+
+  **Correction 2026-08-10:** its plist is *not* the old form. It is the current
+  `tlda agent wake` form, identical in shape to `todd.stable`'s working one; it
+  was regenerated at some point. Its only fault is the id. Its own log says so:
+  `wake did not produce a live runtime for bot:testing:grammar: tmux session
+  fleet-bot-grammar_testing already has a live harness runtime` — `fleet:grammar`
+  has a single mint row and that row pins the *testing* session.
 - `teacher.stable`: has identity `fleet:d0722d34` and pidfile `801`, but that
   process is not live. Its plist uses the current `tlda agent wake` form.
 
@@ -95,6 +115,14 @@ from `fleet:${BOT_KEY}` whenever it bootstraps without one, so a hand-seeded id
 survives only until the next cold start — and for `chat-lint` it would revert to
 `fleet:chat-lint`, recreating grammar's collision exactly.
 
+**Correction 2026-08-10:** a hand-seeded file does survive. `loadOrCreateFleetId()`
+writes only when the file is *absent* (the ENOENT branch); a present, valid file is
+read and returned untouched. And under launchd the bot never bootstraps without one
+anyway — the plist wrapper `cat`s the file and will not launch the bot if it is
+missing, which is exactly why `chat-lint.stable` and `nobody.stable` log
+`Usage: tlda agent ...` and never start. Seeding is necessary but not sufficient:
+the id also needs a mint ledger row, which is the part no command creates.
+
 ### The fix already exists in `todd`; it was never backported
 
 `todd/todd.mjs:93` is the same function with the last line changed:
@@ -114,6 +142,20 @@ id themselves and take whichever one they are handed.
 
 So the change is a backport of a pattern already running in production, not a new
 design.
+
+**Correction 2026-08-10: the backport fixes none of these bots, and todd is not
+alive because of it.** Every bot plist runs
+`fleet_id=$(cat '<job>.fleet-id'); ... tlda agent wake "$fleet_id"`, so launchd
+resolves the identity and the bot process only starts if that wake succeeds.
+`loadOrCreateFleetId()` — the function this backport changes — runs inside the bot,
+downstream of the failure. All four dead jobs die in the wrapper, before any bot
+code executes.
+
+Todd.stable is alive because its identity file holds an id that has a **mint ledger
+row pinning `fleet-bot-todd_stable`**. Of the seven `kind: 'bot'` rows in
+`daemon-mints.sqlite`, that is the only `_stable` one; every other bot has a single
+row pinned to `_testing`. Id-derivation code cannot create a ledger row, so no
+version of this backport could have worked.
 
 ### The migration question, which is why nobody should run it yet
 
@@ -246,3 +288,13 @@ Two more, both non-fatal but worth knowing:
 **So the backport needs `fleet:teacher` given a real home before it runs**, not just
 the old rows disposed of. That is a fourth item on the migration, and it is in the
 server rather than in `tlda-bots`.
+
+**Correction 2026-08-10: this does not gate anything, and never did.**
+`fleet:teacher` already owns no agent row — `roster(filter: "fleet:teacher")`
+returns zero matches with *"resolves to fleet:teacher but has no live roster row"*.
+Stable's teacher is `fleet:bd3541fd` and testing's is `fleet:91e5a81b`; neither has
+ever been `fleet:teacher`. So every drill card is already posted from an id nothing
+owns, today, under current code and independent of any id change. It is a real
+pre-existing bug in `server/unified-server.mjs:3701` and deserves its own fix — but
+it is not a migration blocker, and treating it as one held up the bot repair for
+nothing.
