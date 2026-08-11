@@ -2725,11 +2725,14 @@ export class FleetStore {
     if (!agent?.id) return agent;
     const route = this.getAgentDaemonRoute(agent.id);
     if (!route) return withoutProtectedAgentFields(agent);
+    const separator = route.daemon_key.indexOf(':');
     return {
       ...agent,
       route_present: true,
       route_daemon_key: route.daemon_key,
       daemon_key: route.daemon_key,
+      machine_id: separator > 0 ? route.daemon_key.slice(0, separator) : null,
+      env_name: separator > 0 ? route.daemon_key.slice(separator + 1) || null : null,
     };
   }
 
