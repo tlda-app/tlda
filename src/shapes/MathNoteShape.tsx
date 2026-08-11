@@ -326,7 +326,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override onTranslate = (_initial: any, current: any) => {
     if (current.props.docView) return
     const clientPoint = mathNoteCenterClientPoint(this.editor, current)
-    if (!clientPoint) return
+    if (!clientPoint) {
+      cancelWMDrop()
+      return
+    }
     updateWMDrop({
       kind: 'chat-composer-item',
       data: { commit: (chatId: string) => chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId, text: annotationDropToken(current) } })) },
@@ -341,7 +344,10 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   override onTranslateEnd = (initial: any, current: any) => {
     if (!current.props.docView) endNativeSnapDrag(this.editor)
     const clientPoint = mathNoteCenterClientPoint(this.editor, current)
-    if (!clientPoint) return
+    if (!clientPoint) {
+      cancelWMDrop()
+      return
+    }
     finishWMDrop({
       kind: 'chat-composer-item',
       data: {
