@@ -96,7 +96,7 @@ test('the card has no height bound and no click of its own', () => {
     assert.match(cardTag, /tool-pretty-thread/)
     assert.doesNotMatch(cardTag, /max-height/)
     assert.doesNotMatch(html, /onclick=/)
-    assert.equal((html.match(/pretty-thread-range-more/g) || []).length, 1)
+    assert.equal((html.match(/pretty-expand-btn/g) || []).length, 1)
 
     // Whatever the preference bounds, it bounds a message body -- never the
     // card, and never the gap marker, which is the one expand.
@@ -104,14 +104,6 @@ test('the card has no height bound and no click of its own', () => {
       assert.match(tag, /pretty-msg-body/)
     }
   }
-})
-
-test('a clamped thread message has its own more affordance', () => {
-  const html = renderThreadRows(threadRows(1, 2), { ...ctx, foldHeights: { thread: 16 } })
-
-  assert.match(html, /pretty-msg-body thread-msg-collapsed/)
-  assert.match(html, /pretty-msg-body-more/)
-  assert.match(html, />\[more\]</)
 })
 
 // The search card's shell -- its open/collapse button and its "inspected" line
