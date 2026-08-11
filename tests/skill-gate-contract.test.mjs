@@ -2,14 +2,20 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-test('default writing gates require the current writing skill', async () => {
+test('default TeX gates require the TeX operation router', async () => {
   const config = JSON.parse(await readFile(new URL('../server/qualifications-default.json', import.meta.url), 'utf8'))
   const writingRules = config.rules.filter(rule => ['*.tex', '*.bib', '*.md'].includes(rule.edit))
   assert.deepEqual(writingRules.map(rule => rule.requires), [
-    ['writing-arguments'],
-    ['writing-arguments'],
-    ['writing-arguments'],
+    ['editing-tex'],
+    ['editing-tex'],
+    ['editing-tex'],
   ])
+})
+
+test('default gates do not infer a workflow from code file extensions', async () => {
+  const config = JSON.parse(await readFile(new URL('../server/qualifications-default.json', import.meta.url), 'utf8'))
+  const nonTexEditRules = config.rules.filter(rule => rule.edit && !['*.tex', '*.bib', '*.md'].includes(rule.edit))
+  assert.deepEqual(nonTexEditRules, [])
 })
 
 test('skill gates point agents at skill tools, not inaccessible filesystem paths', async () => {

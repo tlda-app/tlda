@@ -1,16 +1,8 @@
 {
   "rules": [
-    { "edit": "*.tex", "requires": ["constructing-arguments"] },
-    { "edit": "*.bib", "requires": ["constructing-arguments"] },
-    { "edit": "*.md",  "requires": ["constructing-arguments"], "condition": "latex-project" },
-
-    { "edit": "*.css", "requires": ["app-development", "app-testing", "appearance-requires-permission"] },
-    { "edit": "*.tsx", "requires": ["app-development", "app-testing", "appearance-requires-permission", "code-patterns"] },
-    { "edit": "*.ts",  "requires": ["app-development", "code-patterns"] },
-    { "edit": "*.js",  "requires": ["app-development", "code-patterns"] },
-    { "edit": "*.mjs", "requires": ["app-development", "code-patterns"] },
-
-    { "edit": "*.R",   "requires": ["math-implementation"] },
+    { "edit": "*.tex", "requires": ["editing-tex"] },
+    { "edit": "*.bib", "requires": ["editing-tex"] },
+    { "edit": "*.md",  "requires": ["editing-tex"], "condition": "latex-project" },
 
     { "tool": "playwright/*", "requires": ["app-testing"] },
     { "tool": "tlda/delegate", "requires": ["point-dont-paraphrase", "manager-team-stewardship"] },
