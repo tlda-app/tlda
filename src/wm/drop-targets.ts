@@ -13,40 +13,33 @@ export type WMDropTarget<T = unknown> = {
 }
 
 const targets = new WeakMap<HTMLElement, WMDropTarget<any>>()
-const targetElements = new Set<HTMLElement>()
 let active: { element: HTMLElement; target: WMDropTarget<any> } | null = null
 
 export function registerWMDropTarget<T>(element: HTMLElement, target: WMDropTarget<T>) {
   targets.set(element, target)
-  targetElements.add(element)
   return () => {
     if (active?.element === element) {
       active.target.leave?.()
       active = null
     }
     targets.delete(element)
-    targetElements.delete(element)
   }
 }
 
 function targetAt(payload: WMDropPayload, point: WMDropPoint) {
-  for (const element of Array.from(targetElements).reverse()) {
-    if (!element.isConnected) continue
-    const style = getComputedStyle(element)
-    if (style.pointerEvents === 'none' || style.display === 'none' || style.visibility === 'hidden') continue
-    const target = targets.get(element)
-    if (!target?.accepts(payload)) continue
-    const rect = element.getBoundingClientRect()
-    if (
-      point.x >= rect.left &&
-      point.x <= rect.right &&
-      point.y >= rect.top &&
-      point.y <= rect.bottom
-    ) {
-      return { element, target }
-    }
-  }
-  return null
+  if (typeof document === 'undefined') return null
+  return registeredDropTargetFromElements(
+    document.elementsFromPoint(point.x, point.y),
+    (element: HTMLElement) => {
+      if (!element.isConnected) return null
+      const target = targets.get(element)
+      if (!target) return null
+      const style = getComputedStyle(element)
+      if (style.pointerEvents === 'none' || style.display === 'none' || style.visibility === 'hidden') return null
+      return target
+    },
+    payload,
+  )
 }
 
 export function updateWMDrop(payload: WMDropPayload, point: WMDropPoint) {
@@ -73,3 +66,5 @@ export function cancelWMDrop() {
   active?.target.leave?.()
   active = null
 }
+// @ts-ignore — vanilla JS module
+import { registeredDropTargetFromElements } from './drop-target-resolution.mjs'
