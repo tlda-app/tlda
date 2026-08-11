@@ -164,7 +164,25 @@ async function preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log
     const localEntry = await worktreeEntry(sourceDir, rel)
     if (!localEntry) throw new Error(`cannot preserve ${project}@${hash7}: local ${rel} is missing`)
     if (localEntry.blob !== shadowEntry.blob) {
-      throw new Error(`cannot preserve ${project}@${hash7}: local ${rel} changed after build`)
+      // The author edited during the build, so the working copy no longer matches
+      // what was rendered. That is the normal state of a paper someone is actively
+      // writing, and it used to abort the entire checkpoint — which is why
+      // eiv-paper had NEVER mirrored and balancing-act-jose stopped on 2026-08-04.
+      //
+      // Skip ruled on this directly, 2026-08-11 19:41:53 EDT, asked in plain terms
+      // whether the saved snapshot should record the version that was built or
+      // skip the file: "The version that was built, please."
+      //
+      // Recording it cannot touch their edit. This function commits through a TEMP
+      // index (GIT_INDEX_FILE) via read-tree/update-index/write-tree/commit-tree,
+      // then a compare-and-swap `update-ref <ref> <new> <base>`. Nothing writes the
+      // working tree, and the CAS fails rather than clobbers if the branch moved.
+      // Their newer text stays on disk and reads as an uncommitted modification,
+      // which is the truth: they changed it after the build.
+      //
+      // validateTargetIndex still refuses separately when the author has STAGED a
+      // conflicting change — that guard is untouched and still tested.
+      log.info(`preserve ${project}@${hash7}: ${rel} changed after the build; recording the built version and leaving the working copy alone`)
     }
     if (localEntry.mode !== shadowEntry.mode) {
       throw new Error(`cannot preserve ${project}@${hash7}: local ${rel} mode ${localEntry.mode} differs from shadow ${shadowEntry.mode}`)

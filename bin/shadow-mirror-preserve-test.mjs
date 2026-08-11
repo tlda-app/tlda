@@ -172,15 +172,41 @@ async function main() {
     await assertDirty(raceSource, 'main.tex')
     await assertCachedClean(raceSource, 'main.tex')
 
+    // The author edited while the build was running. This used to reject, which
+    // aborted the whole checkpoint — eiv-paper had NEVER mirrored, and
+    // balancing-act-jose stopped on 2026-08-04, both on exactly this.
+    //
+    // Skip ruled on it directly, 2026-08-11 19:41:53 EDT, asked in plain terms
+    // whether the saved snapshot should record the version that was built or skip
+    // the file: "The version that was built, please."
+    //
+    // So all three of these must hold together: history records the BUILT version,
+    // the newer working file is byte-identical and still dirty, and the shadow ref
+    // is correct. The middle one is the safety property — the checkpoint commits
+    // through a temp index and never writes the working tree.
     const conflictSource = await makeSource(root, 'newer local\n')
     const { stdout: conflictBeforeRaw } = await git(conflictSource, ['rev-parse', 'HEAD'])
-    await assert.rejects(
-      () => runMirror(conflictSource, hash, bundleBase64),
-      /local main\.tex changed after build/,
-    )
+    const conflictBeforeBytes = fs.readFileSync(path.join(conflictSource, 'main.tex'))
+    const conflict = await runMirror(conflictSource, hash, bundleBase64)
+    assert.equal(conflict.result.ok, true, 'an edit during the build must not abort the checkpoint')
+
+    // 1. Author branch history records the version that was built.
+    const { stdout: conflictHeadFile } = await git(conflictSource, ['show', 'HEAD:main.tex'])
+    assert.equal(conflictHeadFile, 'new\n', 'HEAD must record the built version')
     const { stdout: conflictAfterRaw } = await git(conflictSource, ['rev-parse', 'HEAD'])
-    assert.equal(conflictAfterRaw.trim(), conflictBeforeRaw.trim())
+    assert.notEqual(conflictAfterRaw.trim(), conflictBeforeRaw.trim(), 'a preservation commit must exist')
+
+    // 2. The newer working file is untouched — byte-identical, and still dirty.
+    assert.deepEqual(
+      fs.readFileSync(path.join(conflictSource, 'main.tex')), conflictBeforeBytes,
+      'the working copy must be byte-identical after the checkpoint',
+    )
+    assert.equal(fs.readFileSync(path.join(conflictSource, 'main.tex'), 'utf8'), 'newer local\n')
     await assertDirty(conflictSource, 'main.tex')
+
+    // 3. Shadow history still points at the built snapshot.
+    const { stdout: conflictShadowRaw } = await git(conflictSource, ['rev-parse', 'refs/tlda/shadow/HEAD'])
+    assert.equal(conflictShadowRaw.trim(), hash, 'shadow HEAD must be the built snapshot')
 
     const accumulated = await makeScopedBundle(root, async (shadow) => {
       await write(path.join(shadow, 'a.tex'), 'old a\n')
