@@ -1668,6 +1668,21 @@ async function finalizeBuildVersion({
     console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
     ctx.addLog(`mirror to working copy failed: ${mirrorErr.message}`)
     await _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: recorded.hash, message: mirrorErr.message } })
+    // `lastMirrorFailure` is written here and read by nothing — no route, no CLI,
+    // no client. So a project whose builds render fine while never checkpointing
+    // into a working copy looks healthy from every surface a person can see.
+    // That is how minimax-linear and wildfire-plos went unmirrored from
+    // 2026-07-28 and synth-combined from 2026-07-10 without anyone noticing.
+    //
+    // The success path four lines up already clears `syncErrorJson` on the
+    // doc-version sentinel, and SyncErrorPill already renders it. The failure
+    // path simply never set it, so the one surface built for this stayed empty.
+    // Setting it is the whole fix: no new field, no new UI, and it survives
+    // reconnects because the sentinel does.
+    await _reporter.writeSentinel(`doc-${name}`, {
+      timestamp: Date.now(),
+      syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Not saved to the working copy: ${mirrorErr.message}` }]),
+    })
     throw new Error(`working-copy checkpoint failed for ${name}@${hash7}: ${mirrorErr.message}`)
   }
 
