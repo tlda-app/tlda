@@ -756,6 +756,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
       <div
         ref={containerRef}
         className="fleet-shape fleet-inbox-shape"
+        data-fleet-task-id={activeItem?.kind === 'fleet-task' ? activeItem.task.id : undefined}
+        data-fleet-inbox-shape-id={activeItem?.kind === 'fleet-task' ? shape.id : undefined}
         style={{
           width: '100%',
           height: '100%',
