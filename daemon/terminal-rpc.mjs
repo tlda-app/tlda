@@ -160,6 +160,12 @@ export function createTerminalRpc({
     return false
   }
 
+  async function pasteLiteralText(tmuxSession, text) {
+    const buffer = `tlda-notify-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    await tmux('set-buffer', '-b', buffer, text)
+    await tmux('paste-buffer', '-dp', '-b', buffer, '-t', tmuxSession)
+  }
+
   async function rpcSendKey(args = {}) {
     if (!resolveAgentRoute) throw new Error('agent route resolution unavailable')
     const { tmux_session: tmuxSession } = resolveAgentRoute(args)
@@ -188,8 +194,9 @@ export function createTerminalRpc({
     const { text, enter, enter_delay_ms, literal_text, ready_timeout_ms, clear_before_text, use_pty = true, require_ready = false } = args
     checkSession(tmuxSession)
     onArmBySession(tmuxSession)
-    if (ready_timeout_ms != null) {
-      const ready = await waitForTerminalInputReady(tmuxSession, ready_timeout_ms)
+    const readyTimeoutMs = Math.max(0, Number(ready_timeout_ms) || 0)
+    if (readyTimeoutMs > 0) {
+      const ready = await waitForTerminalInputReady(tmuxSession, readyTimeoutMs)
       if (!ready && require_ready) return { ok: false, reason: 'terminal-not-ready', via: 'none' }
     }
     // A live tmux can still be unable to consume task text. Clear only prompts
@@ -219,7 +226,7 @@ export function createTerminalRpc({
     }
     if (clear_before_text) await tmux('send-keys', '-t', tmuxSession, 'C-u')
     if (text) {
-      if (literal_text) await tmux('send-keys', '-t', tmuxSession, '-l', '--', text)
+      if (literal_text) await pasteLiteralText(tmuxSession, text)
       else await tmux('send-keys', '-t', tmuxSession, '--', text)
     }
     if (enter !== false) {
@@ -243,7 +250,7 @@ export function createTerminalRpc({
       clear_before_text: !!clearBeforeText,
       literal_text: true,
       use_pty: false,
-      require_ready: readyTimeoutMs != null,
+      require_ready: Number(readyTimeoutMs) > 0,
     })
   }
 

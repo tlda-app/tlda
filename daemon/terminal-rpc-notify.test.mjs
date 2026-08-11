@@ -47,7 +47,8 @@ test('notify-agent waits for a prompt and clears before exact notification text'
     ['capture-pane', '-t', '=fleet-test:', '-p', '-S', '-50'],
     ['capture-pane', '-t', '=fleet-test:', '-p', '-S', '-50'],
     ['send-keys', '-t', '=fleet-test:', 'C-u'],
-    ['send-keys', '-t', '=fleet-test:', '-l', '--', 'LIVE-CLAUDE-TOKEN'],
+    ['set-buffer', '-b', calls[3][3], 'LIVE-CLAUDE-TOKEN'],
+    ['paste-buffer', '-dp', '-b', calls[3][3], '-t', '=fleet-test:'],
     ['send-keys', '-t', '=fleet-test:', 'Enter'],
   ])
 })
@@ -106,8 +107,8 @@ test('old busy text above the prompt tail does not block exact notification text
   assert.equal(result.ok, true)
   assert.equal(calls.filter(call => call.includes('capture-pane')).length, 2)
   assert.deepEqual(calls.slice(-3).map(call => call.slice(1)), [
-    ['send-keys', '-t', '=fleet-test:', 'C-u'],
-    ['send-keys', '-t', '=fleet-test:', '-l', '--', 'LIVE-CLAUDE-OLD-BUSY'],
+    ['set-buffer', '-b', calls.at(-3)[3], 'LIVE-CLAUDE-OLD-BUSY'],
+    ['paste-buffer', '-dp', '-b', calls.at(-3)[3], '-t', '=fleet-test:'],
     ['send-keys', '-t', '=fleet-test:', 'Enter'],
   ])
 })
@@ -170,8 +171,8 @@ test('notify-agent uses direct tmux injection even when a terminal watch pty is 
   assert.equal(result.via, 'tmux')
   assert.deepEqual(ptyWrites, [])
   assert.deepEqual(calls.slice(-3).map(call => call.slice(1)), [
-    ['send-keys', '-t', '=fleet-test:', 'C-u'],
-    ['send-keys', '-t', '=fleet-test:', '-l', '--', 'LIVE-CLAUDE-WATCH'],
+    ['set-buffer', '-b', calls.at(-3)[3], 'LIVE-CLAUDE-WATCH'],
+    ['paste-buffer', '-dp', '-b', calls.at(-3)[3], '-t', '=fleet-test:'],
     ['send-keys', '-t', '=fleet-test:', 'Enter'],
   ])
   assert.equal(rpc.handlers['stop-terminal-watch']({ agent_id: 'fleet:test' }).ok, true)
@@ -231,8 +232,56 @@ test('claude status after an old prompt blocks notification until a later prompt
 
   assert.equal(result.ok, true)
   assert.deepEqual(calls.slice(-3).map(call => call.slice(1)), [
-    ['send-keys', '-t', '=fleet-test:', 'C-u'],
-    ['send-keys', '-t', '=fleet-test:', '-l', '--', 'LIVE-CLAUDE-AFTER-STATUS'],
+    ['set-buffer', '-b', calls.at(-3)[3], 'LIVE-CLAUDE-AFTER-STATUS'],
+    ['paste-buffer', '-dp', '-b', calls.at(-3)[3], '-t', '=fleet-test:'],
+    ['send-keys', '-t', '=fleet-test:', 'Enter'],
+  ])
+})
+
+test('zero ready timeout does not gate exact notification delivery', async () => {
+  const calls = []
+  const rpc = createTerminalRpc({
+    tmuxArgs: [],
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg() {},
+    detectPrompt: () => ({ type: 'none' }),
+    stripAnsi: value => String(value || ''),
+    promptCooldowns: new Map(),
+    surfacedPrompts: new Map(),
+    alivenessCache: new Map(),
+    thinkingSpinnerRe: /never-matches/,
+    interruptHintRe: /never-matches/,
+    thinkingScanLines: 20,
+    terminalSizePollMs: 5000,
+    decideTerminalWatchExit: () => ({ terminalDead: false }),
+    onArmBySession() {},
+    onEmitAgentStatus() {},
+    onPlanModeSeen() {},
+    onPlanModeGone() {},
+    hasPlanMode: () => false,
+    resolveAgentRoute: () => ({ agent_id: 'fleet:test', session_id: 'session-1', tmux_session: 'fleet-test' }),
+    resolveTerminalAgent: () => ({ id: 'fleet:test', sessionId: 'session-1', tmuxSession: 'fleet-test' }),
+    validateTmuxOwner: () => true,
+    execFileImpl: async (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (args.includes('capture-pane')) return { stdout: 'Codex startup still settling' }
+      return { stdout: '' }
+    },
+  })
+
+  const result = await rpc.handlers['notify-agent']({
+    agent_id: 'fleet:test',
+    text: 'LIVE-CODEX-ZERO',
+    enter_delay_ms: 0,
+    ready_timeout_ms: 0,
+    clear_before_text: false,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.via, 'tmux')
+  assert.deepEqual(calls.slice(-3).map(call => call.slice(1)), [
+    ['set-buffer', '-b', calls.at(-3)[3], 'LIVE-CODEX-ZERO'],
+    ['paste-buffer', '-dp', '-b', calls.at(-3)[3], '-t', '=fleet-test:'],
     ['send-keys', '-t', '=fleet-test:', 'Enter'],
   ])
 })

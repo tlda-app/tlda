@@ -158,20 +158,21 @@ test('notification text is converted to one printable line', () => {
   )
 })
 
-test('notification tmux fallback writes sanitized text literally before one Enter', async () => {
+test('notification tmux fallback pastes sanitized text before one Enter', async () => {
   const { rpc, calls } = makeTerminalRpc({ terminalInputAllowed: false })
   await rpc.handlers['notify-agent']({
     agent_id: 'fleet:test',
     text: '!rm -rf ~\nEnter\r\x1b[31m',
     enter_delay_ms: 0,
   })
-  assert.deepEqual(calls.slice(-2), [
-    ['tmux', ['send-keys', '-t', '=agent-session:', '-l', '--', '!rm -rf ~\\nEnter\\r\\x1b[31m']],
+  assert.deepEqual(calls.slice(-3), [
+    ['tmux', ['set-buffer', '-b', calls.at(-3)[1][2], '!rm -rf ~\\nEnter\\r\\x1b[31m']],
+    ['tmux', ['paste-buffer', '-dp', '-b', calls.at(-3)[1][2], '-t', '=agent-session:']],
     ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']],
   ])
 })
 
-test('notification active PTY writes sanitized text before one Enter', async () => {
+test('notification bypasses active PTY and pastes sanitized text before one Enter', async () => {
   const { rpc, calls, ptyWrites } = makeTerminalRpcWithPty()
   try {
     await rpc.handlers['start-terminal-watch']({ agent_id: 'fleet:test' })
@@ -180,8 +181,12 @@ test('notification active PTY writes sanitized text before one Enter', async () 
       text: '!rm -rf ~\nEnter\r\x1b[31m',
       enter_delay_ms: 0,
     })
-    assert.deepEqual(ptyWrites, ['!rm -rf ~\\nEnter\\r\\x1b[31m'])
-    assert.deepEqual(calls.at(-1), ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']])
+    assert.deepEqual(ptyWrites, [])
+    assert.deepEqual(calls.slice(-3), [
+      ['tmux', ['set-buffer', '-b', calls.at(-3)[1][2], '!rm -rf ~\\nEnter\\r\\x1b[31m']],
+      ['tmux', ['paste-buffer', '-dp', '-b', calls.at(-3)[1][2], '-t', '=agent-session:']],
+      ['tmux', ['send-keys', '-t', '=agent-session:', 'Enter']],
+    ])
   } finally {
     rpc.stopAllTerminalWatches()
   }
