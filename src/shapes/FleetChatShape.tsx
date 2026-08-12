@@ -3421,6 +3421,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [dragLozenges, setDragLozenges] = useState<Array<'image' | 'file'> | null>(null)
   const [shapeDropActive, setShapeDropActive] = useState(false)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const chipHoverSeqRef = useRef(0)
 
   useEffect(() => {
     const logEl = chatLogEl
@@ -3502,8 +3503,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!chip) return
       // Don't handle annotation chips here (they use AnnotationViewer)
       if (chip.classList.contains('ref-chip-annotation')) return
+      const hoverSeq = ++chipHoverSeqRef.current
+      document.querySelector('.chip-hover-popover')?.remove()
       // Delay to avoid accidental triggers
       await new Promise(r => setTimeout(r, 500))
+      if (hoverSeq !== chipHoverSeqRef.current) return
       if (dragCoordinator.isActive || hasActiveFleetPill()) return
       if (!chip.matches(':hover')) return
       const token = chip.getAttribute('data-token') || ''
@@ -3518,8 +3522,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           matchEvent = (await response.json()).event
           if (matchEvent) matchEvent._dbId = matchEvent.id
         }
+        if (hoverSeq !== chipHoverSeqRef.current) return
         if (!matchEvent || !chip.matches(':hover')) return
-        document.querySelector('.chip-hover-popover')?.remove()
         const popover = document.createElement('div')
         popover.className = 'chip-hover-popover fleet-chat-shape'
         popover.innerHTML = ctxRef.current
@@ -3539,6 +3543,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         const response = await fetch(`/api/search-results/${canonicalSearch.source}/${canonicalSearch.id}`)
         if (!response.ok || !chip.matches(':hover')) return
         const result = (await response.json()).result
+        if (hoverSeq !== chipHoverSeqRef.current) return
         const rawEvent = canonicalSearch.source === 'session'
           ? {
               type: result.role === 'user' ? 'terminal_user' : 'terminal_assistant',
@@ -3549,7 +3554,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               id: result.id,
             }
           : result
-        document.querySelector('.chip-hover-popover')?.remove()
         const popover = document.createElement('div')
         popover.className = 'chip-hover-popover fleet-chat-shape'
         popover.innerHTML = ctxRef.current
@@ -3575,7 +3579,6 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (!logEl) return
         const card = logEl.querySelector(`.edit-diff-wrap[data-proposal-id="${pid}"]`) as HTMLElement | null
         if (!card) return
-        document.querySelector('.chip-hover-popover')?.remove()
         const popover = document.createElement('div')
         popover.className = 'chip-hover-popover fleet-chat-shape'
         popover.innerHTML = `<div class="chat-activity-inline-wrap">${card.outerHTML}</div>`
@@ -3607,9 +3610,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
       if (!matchEvent) return
 
-      // Remove any existing popover
-      document.querySelector('.chip-hover-popover')?.remove()
-
       // Render the event as chat HTML
       const popover = document.createElement('div')
       popover.className = 'chip-hover-popover fleet-chat-shape'
@@ -3623,6 +3623,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         while (end < liveEvents.length - 1 && liveEvents[end + 1]._activity && liveEvents[end + 1].from === agentId) end++
         const group = liveEvents.slice(start, end + 1)
         const { renderActivityGroup } = await import('../fleet/activity-render.mjs')
+        if (hoverSeq !== chipHoverSeqRef.current) return
         rendered = `<div class="chat-activity-inline-wrap">${renderActivityGroup(group.length > 0 ? group : [matchEvent], ctxRef.current)}</div>`
       } else {
         rendered = ctxRef.current ? renderChatLine(matchEvent, ctxRef.current) : `<div class="chat-line">${matchEvent.text || '(no content)'}</div>`
