@@ -19,7 +19,6 @@ import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
-import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
@@ -318,8 +317,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     return new Rectangle2d({ width: shape.props.w, height: shape.props.h, isFilled: true })
   }
 
-  override onTranslateStart = (shape: any) => {
-    if (!shape.props.docView) beginNativeSnapDrag(this.editor)
+  override onTranslateStart = () => {
     cancelWMDrop()
   }
 
@@ -336,13 +334,11 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     }, clientPoint)
   }
 
-  override onTranslateCancel = (_initial: any, current: any) => {
-    if (!current.props.docView) endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => {
     cancelWMDrop()
   }
 
   override onTranslateEnd = (initial: any, current: any) => {
-    if (!current.props.docView) endNativeSnapDrag(this.editor)
     const clientPoint = mathNoteCenterClientPoint(this.editor, current)
     if (!clientPoint) {
       cancelWMDrop()

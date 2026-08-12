@@ -58,22 +58,6 @@ export { laneDy, layoutOffset } from './fleet-layout-geometry'
 export { planFleetLayoutShapes, type FleetLayoutPlan, type FleetLayoutShapePlan, type FleetLayoutVariant } from './fleet-layout-plan'
 export { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
 
-const nativeSnapModeStack = new WeakMap<Editor, boolean[]>()
-export function beginNativeSnapDrag(editor: Editor) {
-  const stack = nativeSnapModeStack.get(editor) ?? []
-  stack.push(editor.user.getIsSnapMode())
-  nativeSnapModeStack.set(editor, stack)
-  editor.user.updateUserPreferences({ isSnapMode: true })
-}
-
-export function endNativeSnapDrag(editor: Editor) {
-  const stack = nativeSnapModeStack.get(editor)
-  const previous = stack?.pop()
-  if (previous === undefined) return
-  editor.user.updateUserPreferences({ isSnapMode: previous })
-  if (stack && stack.length === 0) nativeSnapModeStack.delete(editor)
-}
-
 type FleetNudgeRect = {
   id: TLShapeId
   left: number
