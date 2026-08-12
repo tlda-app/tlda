@@ -61,7 +61,11 @@ export function buildCmd({
   }
   if (botPidFile) parts.push(`TLDA_BOT_PIDFILE=${sq(botPidFile)}`)
   if (botHeartbeatFile) parts.push(`TLDA_BOT_HEARTBEAT=${sq(botHeartbeatFile)}`)
-  if (tmuxSession) parts.push(`TLDA_BOT_TMUX_SESSION=${sq(tmuxSession)}`)
+  // No TLDA_BOT_TMUX_SESSION. A bot was handed a terminal name and believed it;
+  // the name is only correct when the agent was created by a mint using this same
+  // config, so a woken bot was told it lived somewhere it did not. Skip: "you
+  // don't need to fucking know the terminal name fucking ever. And you don't need
+  // to fucking pass it … that is information that should not be passed."
   if (env.TLDA_MACHINE_ID) {
     parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
     parts.push(`TLDA_BOT_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)

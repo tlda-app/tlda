@@ -1423,7 +1423,9 @@ function botEnvironmentEntries(bot, paths) {
     ['TLDA_BOT_PIDFILE', paths.pidFile],
     ['TLDA_BOT_HEARTBEAT', paths.heartbeatFile],
     ['TLDA_BOT_MACHINE_ID', botMachineId(bot)],
-    ['TLDA_BOT_TMUX_SESSION', paths.tmuxSession],
+    // No TLDA_BOT_TMUX_SESSION — see agent-launch/harness/bot.mjs. `paths.tmuxSession`
+    // is still used by the supervisor's liveness check below; that check is removed
+    // with the bot manager, which supervises its own children and needs no name.
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
   if (bot.environment) entries.push(['TLDA_ENV', String(bot.environment)])
