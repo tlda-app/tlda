@@ -1,8 +1,8 @@
 /**
  * FleetSourceEditorShape — HUD fleet shape for live source editing.
  *
- * Edits use the normal project push path so the existing build/reload pipeline
- * sees source changes as project writes, not as a separate side channel.
+ * Edits bind to the server-side source room. The room is the browser
+ * participant and pushes checkpoints through the normal project authority path.
  */
 import {
   BaseBoxShapeUtil,
@@ -17,10 +17,13 @@ import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, redo, undo } from '@codemirror/commands'
 import { getOriginalDoc, unifiedMergeView, updateOriginalDoc } from '@codemirror/merge'
+import * as Y from 'yjs'
+import { yCollab } from 'y-codemirror.next'
 import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 import { ProjectContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
+import { appendToken } from '../authToken'
 import { clearChromeCondition, setChromeCondition } from '../chrome/conditions'
 import { htmlSourceLineAnchorAtCanvasY, type HtmlSourceLineAnchor } from '../htmlSourceAnchors'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
@@ -160,6 +163,24 @@ function basename(file: string) {
 
 function projectApiPath(projectName: string, path: string) {
   return `${STORE_API}/api/projects/${encodeURIComponent(projectName)}${path}`
+}
+
+function sourceSyncPath(projectName: string, sourceFile: string) {
+  const base = new URL(STORE_API)
+  base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
+  base.pathname = `/source-sync/${encodeURIComponent(projectName)}/${encodeURIComponent(sourceFile)}`
+  base.search = ''
+  return appendToken(base.toString())
+}
+
+function uint8ToBase64(update: Uint8Array) {
+  let binary = ''
+  update.forEach(byte => { binary += String.fromCharCode(byte) })
+  return btoa(binary)
+}
+
+function base64ToUint8(value: string) {
+  return Uint8Array.from(atob(value), char => char.charCodeAt(0))
 }
 
 function getFleetStyleVars(): CSSProperties {
@@ -518,6 +539,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const voiceStopRef = useRef<(() => void) | null>(null)
   const queueWriteRef = useRef<((text: string) => void) | null>(null)
   const flushWriteRef = useRef<(() => void) | null>(null)
+  const sourceRoomSocketRef = useRef<WebSocket | null>(null)
+  const sourceRoomApplyingRemoteRef = useRef(false)
 
   // One edit, computed by voice.mjs, applied here. This used to carry its own
   // from/to session span and replace all of it with the entire spoken text on
@@ -952,15 +975,16 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 
   // Writes are checkpoints, not a stream. Typing arms the idle boundary; the
   // click-out and leave-insert-mode boundaries flush it immediately.
-  const queueWrite = (text: string) => {
+  const queueWrite = () => {
     saveSeqRef.current += 1
-    const seq = saveSeqRef.current
     if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
     setStatus('dirty')
     setStatusText('Sync pending...')
     writeTimerRef.current = window.setTimeout(() => {
       writeTimerRef.current = null
-      void writeSource(text, seq)
+      sourceRoomSocketRef.current?.send(JSON.stringify({ type: 'flush' }))
+      setStatus('syncing')
+      setStatusText('Syncing...')
     }, idleWriteMs())
   }
   queueWriteRef.current = queueWrite
@@ -973,7 +997,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     const text = fullSourceRef.current
     if (text === undefined) return
     saveSeqRef.current += 1
-    void writeSource(text, saveSeqRef.current)
+    sourceRoomSocketRef.current?.send(JSON.stringify({ type: 'flush' }))
+    setStatus('syncing')
+    setStatusText('Syncing...')
   }
   flushWriteRef.current = flushWrite
 
@@ -1024,6 +1050,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   useEffect(() => {
     if (!doc?.projectName || !cmHostRef.current || !file) return
     let cancelled = false
+    let roomSocket: WebSocket | null = null
+    let roomDoc: Y.Doc | null = null
 
     async function loadSource() {
       if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
@@ -1032,11 +1060,66 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setStatusText(`Loading ${file}...`)
       try {
         const sourcePath = await resolveSourceFilePath(file)
-        const res = await fetch(projectApiPath(doc!.projectName, `/source/${encodeURIComponent(sourcePath)}`))
-	        if (!res.ok) throw new Error(`source ${res.status}`)
-        const text = await res.text()
-        const sourceRevision = res.headers.get('X-TLDA-Source-Revision')
-        if (cancelled || !cmHostRef.current) return
+        const ydoc = new Y.Doc()
+        const ytext = ydoc.getText('source')
+        const socket = new WebSocket(sourceSyncPath(doc!.projectName, sourcePath))
+        roomDoc = ydoc
+        roomSocket = socket
+        sourceRoomSocketRef.current?.close()
+        sourceRoomSocketRef.current = socket
+        const sourceRevision = await new Promise<string | null>((resolve, reject) => {
+          const timeout = window.setTimeout(() => reject(new Error('source room timed out')), 10000)
+          socket.addEventListener('open', () => {
+            const sendLocalUpdate = (update: Uint8Array, origin: unknown) => {
+              if (origin === 'source-room') return
+              if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'update', update: uint8ToBase64(update) }))
+            }
+            ydoc.on('update', sendLocalUpdate)
+          }, { once: true })
+          socket.addEventListener('message', (event) => {
+            let message: any
+            try { message = JSON.parse(String(event.data)) } catch { return }
+            if (message?.type === 'sync' && typeof message.update === 'string') {
+              window.clearTimeout(timeout)
+              sourceRoomApplyingRemoteRef.current = true
+              Y.applyUpdate(ydoc, base64ToUint8(message.update), 'source-room')
+              requestAnimationFrame(() => { sourceRoomApplyingRemoteRef.current = false })
+              resolve(typeof message.sourceRevision === 'string' ? message.sourceRevision : null)
+            }
+          }, { once: true })
+          socket.addEventListener('error', () => {
+            window.clearTimeout(timeout)
+            reject(new Error('source room unavailable'))
+          }, { once: true })
+        })
+        const handleRoomMessage = (event: MessageEvent) => {
+          let message: any
+          try { message = JSON.parse(String(event.data)) } catch { return }
+          if (message?.type === 'update' && typeof message.update === 'string') {
+            sourceRoomApplyingRemoteRef.current = true
+            Y.applyUpdate(ydoc, base64ToUint8(message.update), 'source-room')
+            requestAnimationFrame(() => { sourceRoomApplyingRemoteRef.current = false })
+          } else if (message?.type === 'status') {
+            if (typeof message.sourceRevision === 'string') loadedSourceRevisionRef.current = message.sourceRevision
+            if (message.status === 'synced') {
+              savedTextRef.current = ytext.toString()
+              setHeldConflictFile((held) => (held === normalizeFile(file) ? null : held))
+              setStatus('synced')
+              setStatusText(message.building ? 'Synced; build queued' : 'Synced')
+            } else if (message.status === 'conflict') {
+              setStatus('dirty')
+              setStatusText('Conflict — resolve the markers, then it syncs')
+            }
+          }
+        }
+        socket.addEventListener('message', handleRoomMessage)
+        const text = ytext.toString()
+        if (cancelled || !cmHostRef.current) {
+          socket.removeEventListener('message', handleRoomMessage)
+          socket.close()
+          ydoc.destroy()
+          return
+        }
 	
 	        cmKeydownCleanupRef.current?.()
 	        cmKeydownCleanupRef.current = null
@@ -1059,8 +1142,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
             sourceEditorHistoryKeymap,
             ...(useVim ? [vim()] : []),
             lineNumbers(),
-            history({ minDepth: 10000 }),
             latex(),
+            yCollab(ytext, null),
             ...(mergeDocs
               ? [unifiedMergeView({
                   original: mergeDocs.originalText,
@@ -1085,6 +1168,12 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 	              const currentText = update.state.doc.toString()
 	              fullSourceRef.current = currentText
               setSourceHasConflictMarkers(hasConflictMarkers(currentText))
+              if (sourceRoomApplyingRemoteRef.current) {
+                if (!hasConflictMarkers(currentText)) savedTextRef.current = currentText
+                setStatus(hasConflictMarkers(currentText) ? 'dirty' : 'ready')
+                setStatusText(hasConflictMarkers(currentText) ? 'Resolve conflict markers' : trackedAnchorStatusText(sourceWindowRef.current))
+                return
+              }
 	              if (currentText === savedTextRef.current) {
 	                if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
 	                writeTimerRef.current = null
@@ -1099,7 +1188,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
                 setStatusText(hasConflictMarkers(currentText) ? 'Resolve conflict markers' : 'Ready to resolve')
                 return
               }
-              queueWrite(currentText)
+              queueWrite()
             }),
             keymap.of([...defaultKeymap, ...historyKeymap]),
           ],
@@ -1179,10 +1268,13 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       }
     }
 
-    loadSource()
-	    return () => {
-	      cancelled = true
-	      cmKeydownCleanupRef.current?.()
+	    loadSource()
+		    return () => {
+		      cancelled = true
+      if (sourceRoomSocketRef.current === roomSocket) sourceRoomSocketRef.current = null
+      roomSocket?.close()
+      roomDoc?.destroy()
+		      cmKeydownCleanupRef.current?.()
 	      cmKeydownCleanupRef.current = null
 	      cmPanelCleanupRef.current?.()
 	      cmPanelCleanupRef.current = null
