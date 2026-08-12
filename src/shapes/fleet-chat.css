@@ -1438,6 +1438,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   font-size: var(--fleet-base-font, 11px);
   margin-top: 1px;
 }
+.fleet-chat-shape .tool-pretty-thread .pretty-msg-body.thread-msg-collapsed {
+  overflow: hidden;
+}
 .fleet-chat-shape .pretty-ver {
   font-family: var(--mono);
   font-size: calc(var(--fleet-base-font, 11px) * 0.818182);
