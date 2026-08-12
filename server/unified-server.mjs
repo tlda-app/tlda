@@ -57,8 +57,9 @@ import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../sh
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
-import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
+import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
@@ -219,6 +220,14 @@ function recordJsonlIndexBgFailure(source, entries, e) {
   console.error(`[jsonl-index-bg-fail] ${source}: background index of ${(entries || []).length} entries failed — SEARCH GAP (re-indexable), sessions=${sessions.join(',')}:`, e?.message || e)
   recordServerPerfEvent('jsonl-index-bg-fail', { source, entries: (entries || []).length, sessions, error: e?.message || String(e) })
 }
+
+const sourceRoomDaemon = createSourceRoomDaemon({
+  projectDir: getProjectDir,
+  readProject,
+  sourceLifecycleStore,
+  readClientSourceManifest,
+  processProjectPush,
+})
 
 function activityDeliverySnapshot() {
   return {
@@ -1371,6 +1380,7 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 }))
 
 setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
+  await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
   const keys = [...daemonConnections.keys()].filter(key => key !== sourceDaemonKey)
   if (keys.length === 0) return
   const settled = await Promise.allSettled(keys.map(key =>
@@ -4655,6 +4665,7 @@ if (useTls) {
 }
 
 const syncWss = new WebSocketServer({ noServer: true })
+const sourceRoomWss = new WebSocketServer({ noServer: true })
 // Fleet traffic crosses the Wi-Fi/tailnet path as well as local links. Keep
 // small RPC replies cheap and compress larger incremental events when the
 // client negotiates permessage-deflate.
@@ -4800,6 +4811,28 @@ server.on('upgrade', async (req, socket, head) => {
       })
       // Replay cached signals (build-status, build-progress, heartbeat, etc.) to reconnecting clients
       setTimeout(() => replayCachedSignals(docName, sessionId), 500)
+    })
+    return
+  }
+
+  if (url.pathname.startsWith('/source-sync/')) {
+    const rest = url.pathname.slice('/source-sync/'.length)
+    const slash = rest.indexOf('/')
+    if (slash <= 0 || slash === rest.length - 1) { socket.destroy(); return }
+    const project = decodeURIComponent(rest.slice(0, slash))
+    const filePath = decodeURIComponent(rest.slice(slash + 1))
+    const remoteAddr = req.socket.remoteAddress
+    const remotePort = req.socket.remotePort
+    sourceRoomWss.handleUpgrade(req, socket, head, (ws) => {
+      trackWs(ws, { kind: 'source-sync', project, filePath, remoteAddr, remotePort })
+      sourceRoomDaemon.handleSocket(project, filePath, ws).catch(error => {
+        try { ws.send(JSON.stringify({ type: 'error', message: error?.message || String(error) })) } catch {
+          // Best-effort notify: the socket may already be gone.
+        }
+        try { ws.close() } catch {
+          // Best-effort teardown: upgrade failure has no recovery path here.
+        }
+      })
     })
     return
   }

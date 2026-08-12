@@ -122,6 +122,15 @@ const ALLOWED = {
       'and the Deepgram relay. Neither carries durable operations, so the outbox and ' +
       'request-response machinery in the library have nothing to do here.',
   },
+  'src/shapes/FleetSourceEditorShape.tsx': {
+    count: 1,
+    category: 'exception',
+    reason:
+      'Source editor Yjs protocol. This socket carries y-codemirror.next Y.Text ' +
+      'updates and an initial Yjs state update for one source file; it is not a ' +
+      'fleet operation stream and must not replay durable outbox messages through ' +
+      'the fleet request-response transport.',
+  },
 
   // --- product: reaching around the library. This is the number. -----------
   'src/fleet/fleet-data.mjs': {
@@ -161,6 +170,7 @@ const ALLOWED = {
   // --- tooling: test and script clients that speak the wire on purpose -----
   'bin/delegate-spawn-shell-e2e-test.mjs': { count: 2, category: 'tooling', reason: 'E2E client: drives /ws/fleet and /ws/fleet-daemon directly to test the wire.' },
   'bin/server-originated-claude-mint-real-daemon-test.mjs': { count: 1, category: 'tooling', reason: 'Real-daemon mint test: one /ws/fleet client in openFleet(), same shape as the spawn tests beside it.' },
+  'bin/source-room-daemon-test.mjs': { count: 1, category: 'tooling', reason: 'Source-room protocol test: one Node participant opens /source-sync and sends Yjs updates without a browser.' },
   'bin/filter-expr-integration.mjs': { count: 1, category: 'tooling', reason: 'Integration client for filter expressions over the live fleet socket.' },
   'bin/spawn-collision-test.mjs': { count: 2, category: 'tooling', reason: 'Spawn collision test: needs two independent raw connections to race them.' },
   'bin/spawn-mailbox-outcome-test.mjs': { count: 2, category: 'tooling', reason: 'Mailbox outcome test: agent and daemon sockets, asserted against directly.' },
