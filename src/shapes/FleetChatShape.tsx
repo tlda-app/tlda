@@ -5487,6 +5487,51 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (draft.voiceTarget) setVoiceTarget(ta, draft.voiceTarget as VoiceTargetHandle)
   }
 
+  const activateComposerRailAction = (action: string, value: string | null) => {
+    if (action === 'image') {
+      imageFileInputRef.current?.click()
+      return
+    }
+    if (action === 'follow') {
+      if (!atBottom) {
+        scrollToBottom()
+        return
+      }
+      setHardLocked(prev => {
+        const next = !prev
+        if (next) goToTail('hard-lock-toggle')
+        return next
+      })
+      return
+    }
+    if (action.startsWith('terminal-')) {
+      const controlId = action.slice('terminal-'.length)
+      const control = terminalComposerControls.find(candidate => candidate.id === controlId)
+      if (!control?.agent?.id || control.unavailableReason) return
+      const agentId = control.agent.id
+      if (termHoverPinned && termHoverAgentId === agentId) {
+        setTermHoverPinned(false)
+        setTermHoverVisible(false)
+        pickTerminalHover(null)
+      } else {
+        pickTerminalHover(agentId)
+        setTermHoverPinned(true)
+        setTermHoverVisible(true)
+      }
+      return
+    }
+    if (action === 'traffic') {
+      if (!composerAgentLabel) return
+      if (value) selectComposerTrafficMode(value as ComposerTrafficFilterMode)
+      else cycleComposerTrafficMode()
+      return
+    }
+    if (action === 'clear') {
+      toggleComposerClear()
+      setComposerDraftVersion(v => v + 1)
+    }
+  }
+
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
       const agent = resolveTargetAgent(label, agents)
@@ -6610,20 +6655,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 (no dead gap). Order is set via CSS `order`, not DOM order. */}
             <PersistentCornerButtonSlider
               className="fleet-composer-gutter"
-              onSelect={(action, value) => {
-                // A button that carries data-composer-rail-action is ON the rail, so
-                // press-drag-release must do the same thing its click does. The image
-                // button declared the attribute without being handled here, so sliding
-                // to it highlighted it and then did nothing — Skip: "it doesn't work
-                // properly as a button on the slider". Any new rail action must be
-                // handled here too, or it is not a real slider element.
-                if (action === 'image') {
-                  imageFileInputRef.current?.click()
-                  return
-                }
-                if (action !== 'traffic' || !composerAgentLabel) return
-                selectComposerTrafficMode(value as ComposerTrafficFilterMode)
-              }}
+              onSelect={activateComposerRailAction}
             >
             <input
               ref={imageFileInputRef}
@@ -6643,7 +6675,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               data-composer-rail-label="Image"
               onClick={(e) => {
                 e.stopPropagation()
-                imageFileInputRef.current?.click()
+                activateComposerRailAction('image', null)
               }}
               title="Choose image"
               aria-label="Choose image"
@@ -6668,17 +6700,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               onPointerDown={stopEventPropagation}
               onClick={(e) => {
                 stopEventPropagation(e as any)
-                if (!atBottom) {
-                  // Off bottom: this click only returns to the bottom.
-                  scrollToBottom()
-                  return
-                }
-                // At bottom: toggle follow mode.
-                setHardLocked(prev => {
-                  const next = !prev
-                  if (next) goToTail('hard-lock-toggle')
-                  return next
-                })
+                activateComposerRailAction('follow', null)
               }}
               title={!atBottom
                 ? 'Scroll to bottom'
@@ -6716,17 +6738,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
-                  if (!agent?.id || unavailableReason) return
-                  const agentId = agent.id
-                  if (termHoverPinned && termHoverAgentId === agentId) {
-                    setTermHoverPinned(false)
-                    setTermHoverVisible(false)
-                    pickTerminalHover(null)
-                  } else {
-                    pickTerminalHover(agentId)
-                    setTermHoverPinned(true)
-                    setTermHoverVisible(true)
-                  }
+                  activateComposerRailAction(`terminal-${control.id}`, null)
                 }}
                 onMouseEnter={() => {
                   if (termHideTimerRef.current) {
@@ -6766,21 +6778,11 @@ function FleetChatInner({ shape }: { shape: any }) {
               data-composer-rail-values="dm-quiet,dm,agent"
               data-composer-rail-labels="DM|DM tools|All"
               data-composer-rail-current-value={composerTrafficMode}
-              // Cycle from click, because the enclosing PersistentCornerButtonSlider
-              // owns the gesture: it takes pointer capture on the rail, so this
-              // button never sees its own pointer events, and it resolves a
-              // no-travel press by calling button.click(). A drag release over a
-              // different traffic slot selects that slot directly.
-              //
-              // This used to drive off pointerup instead, because a native tap on
-              // a text label does not synthesize a click on iPad. That reasoning
-              // was right and is now moot: the slider's click() is programmatic,
-              // so it fires on touch and mouse alike, and the tap-vs-drag guard
-              // that pointerup needed now lives in the slider.
+              // Click cycles; a drag release over a traffic slot passes that slot
+              // value through the same composer-rail action function.
               onClick={(e) => {
                 stopEventPropagation(e)
-                if (!composerAgentLabel) return
-                cycleComposerTrafficMode()
+                activateComposerRailAction('traffic', null)
               }}
               disabled={!composerAgentLabel}
               title={!composerAgentLabel
@@ -6809,8 +6811,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 data-composer-rail-label={canUnclearComposer ? 'Unclear' : 'Clear'}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
-                  toggleComposerClear()
-                  setComposerDraftVersion(v => v + 1)
+                  activateComposerRailAction('clear', null)
                 }}
                 title={canUnclearComposer ? 'Restore cleared text' : 'Clear composer'}
                 aria-label={canUnclearComposer ? 'Restore cleared composer text' : 'Clear composer text'}

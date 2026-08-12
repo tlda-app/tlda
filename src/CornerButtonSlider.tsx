@@ -12,7 +12,6 @@ type PersistentRailTarget = {
   action: string
   value: string | null
   label: string
-  button: HTMLButtonElement
   x: number
 }
 
@@ -99,7 +98,7 @@ export function PersistentCornerButtonSlider({
 }: {
   className?: string
   children: React.ReactNode
-  onSelect?: (action: string, value: string) => void
+  onSelect?: (action: string, value: string | null) => void
 }) {
   const railRef = useRef<HTMLDivElement>(null)
   const pointerRef = useRef<number | null>(null)
@@ -134,7 +133,6 @@ export function PersistentCornerButtonSlider({
       action: source.action,
       value: source.values[index],
       label: source.labels[index] || source.values[index],
-      button: source.button,
       x: left + slotWidth * (index + 0.5) - railRect.left,
     }
   }, [])
@@ -162,7 +160,6 @@ export function PersistentCornerButtonSlider({
       action: button.dataset.composerRailAction || '',
       value: null,
       label: button.dataset.composerRailLabel || button.title || button.getAttribute('aria-label') || '',
-      button,
       x: buttonRect.left + buttonRect.width / 2 - railRect.left,
     }
   }, [])
@@ -211,8 +208,8 @@ export function PersistentCornerButtonSlider({
         const dx = start ? e.clientX - start.clientX : 0
         const dy = start ? e.clientY - start.clientY : 0
         const noTravel = Math.hypot(dx, dy) < 4
-        if (source && !noTravel && target.value !== null) onSelect?.(target.action, target.value)
-        else target.button.click()
+        const value = source && !noTravel ? target.value : null
+        if (target.action) onSelect?.(target.action, value)
       }
       window.setTimeout(() => setActive(null), 140)
     }}
