@@ -1985,13 +1985,6 @@ function ThreadChatOperationView({
   const [collapseTop, setCollapseTop] = useState('50%')
   const viewRef = useRef<HTMLDivElement>(null)
 
-  const setThreadBodyCollapsed = useCallback((root: HTMLElement, collapsed: boolean) => {
-    root.querySelectorAll<HTMLElement>('.tool-pretty-thread .pretty-msg-body').forEach(body => {
-      body.classList.toggle('thread-msg-collapsed', collapsed)
-      body.style.maxHeight = collapsed ? '24.0em' : ''
-    })
-  }, [])
-
   const load = useCallback(async (force = false) => {
     if (!force && THREAD_HTML_CACHE.has(cacheKey)) return
     setLoading(true)
@@ -2075,9 +2068,8 @@ function ThreadChatOperationView({
         btn.classList.remove('thread-fold-open')
       }
     })
-    setThreadBodyCollapsed(root, true)
     root.closest('.thread-shell')?.classList.remove('thread-middle-open')
-  }, [setThreadBodyCollapsed])
+  }, [])
 
   return (
     <div className="semantic-operation-expanded-shell thread-shell">
@@ -2292,10 +2284,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
             btn.textContent = ''
             btn.classList.add('thread-fold-open')
           }
-          moreRows.parentElement?.querySelectorAll<HTMLElement>('.pretty-msg-body').forEach(body => {
-            body.classList.remove('thread-msg-collapsed')
-            body.style.maxHeight = ''
-          })
           moreRows.closest('.thread-shell')?.classList.add('thread-middle-open')
         }
       })
@@ -4832,10 +4820,6 @@ function FleetChatInner({ shape }: { shape: any }) {
             expandBtn.dataset.collapsedLabel = expandBtn.textContent || 'Expand'
           }
           moreRows.style.display = wasExpanded ? 'none' : ''
-          expandBtn.parentElement?.querySelectorAll<HTMLElement>('.pretty-msg-body').forEach(body => {
-            body.classList.toggle('thread-msg-collapsed', wasExpanded)
-            body.style.maxHeight = wasExpanded ? '24.0em' : ''
-          })
           // Open, the marker stops being a control and becomes the fold line --
           // Skip: "the expand doesn't flip to collapse when expanded but almost
           // vanishes. perhaps just a faint line running from spine across the

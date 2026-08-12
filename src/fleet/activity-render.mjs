@@ -266,20 +266,16 @@ function threadCounts(ctx) {
   }
 }
 
-const THREAD_BODY_COLLAPSED_STYLE = ' style="max-height:24.0em"'
-
 // One thread row. `msg` is an ordinary message ({ timestamp, from, to, body }),
 // a tool-activity event ({ timestamp, activity }) whose `activity` is a
 // renderActivityGroup item, or an unparsed blob ({ raw }).
-function renderThreadMsg(msg, ctx, collapseBody = false) {
+function renderThreadMsg(msg, ctx) {
   if (msg.activity) {
     return `<div class="pretty-thread-activity">${renderActivityGroup([msg.activity], ctx)}</div>`
   }
-  const bodyClass = collapseBody ? ' pretty-msg-body thread-msg-collapsed' : ' pretty-msg-body'
-  const bodyStyle = collapseBody ? THREAD_BODY_COLLAPSED_STYLE : ''
   if (msg.raw != null) {
     const rawText = String(msg.raw)
-    return `<div class="chat-line"><div class="${bodyClass.trim()}"${bodyStyle}>${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div></div>`
+    return `<div class="chat-line"><div class="pretty-msg-body">${ctx.renderMarkdown ? ctx.renderMarkdown(esc(rawText)) : esc(rawText)}</div></div>`
   }
   const from = String(msg.from ?? '')
   const to = String(msg.to ?? '')
@@ -302,7 +298,7 @@ function renderThreadMsg(msg, ctx, collapseBody = false) {
       <span class="chat-nick ${fromCls}">${agentNameHtml(from)}</span>
       <span class="chat-arrow">→</span>
       <span class="chat-nick ${toCls}">${agentNameHtml(to)}</span>
-      <div class="${bodyClass.trim()}"${bodyStyle}>${bodyHtml}</div>
+      <div class="pretty-msg-body">${bodyHtml}</div>
     </div>`
 }
 
@@ -318,11 +314,11 @@ export function renderThreadRows(msgs, ctx, headerText = '') {
   let rows
   if (list.length > front + tail) {
     const hiddenCount = list.length - front - tail
-    const hiddenRows = list.slice(front, list.length - tail).map(m => renderThreadMsg(m, ctx, true)).join('')
-    rows = list.slice(0, front).map(m => renderThreadMsg(m, ctx, true)).join('')
+    const hiddenRows = list.slice(front, list.length - tail).map(m => renderThreadMsg(m, ctx)).join('')
+    rows = list.slice(0, front).map(m => renderThreadMsg(m, ctx)).join('')
       + `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
       + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
-      + (tail ? list.slice(-tail).map(m => renderThreadMsg(m, ctx, true)).join('') : '')
+      + (tail ? list.slice(-tail).map(m => renderThreadMsg(m, ctx)).join('') : '')
   } else {
     rows = list.map(m => renderThreadMsg(m, ctx)).join('')
   }
