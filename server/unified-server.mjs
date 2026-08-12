@@ -2057,6 +2057,72 @@ async function failServerMintShell(agentId, reason) {
   broadcastState()
 }
 
+function daemonRouteProofFromMintResult(result = {}, expectedAgentId = null) {
+  const agentId = result.agent_id || result.fleet_id || result.fleetId || result.agent?.id || null
+  if (expectedAgentId && agentId !== expectedAgentId) {
+    throw new Error(`daemon mint returned agent_id ${agentId || '(none)'} for ${expectedAgentId}`)
+  }
+  const proof = loginDaemonRouteProof(result)
+  if (!proof?.daemon_key) {
+    throw new Error(`daemon mint for "${expectedAgentId || agentId || '(unknown)'}" returned no daemon route proof`)
+  }
+  return { agentId, ...proof }
+}
+
+async function abortPreparedServerMint(machineId, result = {}, reason = 'server mint commit failed', envName = null) {
+  const mintId = result.mint_id || result.mintId || null
+  const agentId = result.agent_id || result.fleet_id || result.fleetId || result.agent?.id || null
+  const tmuxSession = result.tmux_session || result.tmuxSession || null
+  if (!mintId && !agentId && !tmuxSession) return null
+  return await sendDaemonDurable(machineId, 'abort-mint', {
+    mint_id: mintId || undefined,
+    agent_id: agentId || undefined,
+    tmux_session: tmuxSession || undefined,
+    reason,
+    daemon_env_name: envName || result.env_name || result.envName || undefined,
+  })
+}
+
+async function commitServerOriginatedMint({
+  agentId,
+  friendlyName,
+  prettyName,
+  doc,
+  cwd,
+  model,
+  permissionGrant,
+  daemonKey,
+  subscriptions,
+}) {
+  const now = new Date().toISOString()
+  const agent = {
+    id: agentId,
+    friendly_name: friendlyName || null,
+    pretty_name: prettyName ?? null,
+    labels: withProjectLabel([], doc),
+    registered_at: now,
+    last_seen: now,
+    dead: false,
+    human: false,
+    metadata: {
+      shell: true,
+      ...(doc ? { project: doc } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(model ? { model } : {}),
+      ...(permissionGrant ? { permissionGrant } : {}),
+    },
+  }
+  return fleetStore.commitServerOriginatedMint({
+    agent,
+    daemonKey,
+    subscriptions: subscriptions.map(slot => ({
+      query: slot.query,
+      notificationPolicy: slot.policy || slot.notificationPolicy || DEFAULT_SUBSCRIPTION_POLICY,
+      mandatory: true,
+    })),
+  })
+}
+
 async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
@@ -2123,88 +2189,11 @@ async function performSpawnRelay(caller, msg) {
       refresh: !!refresh,
     },
   })
-  const readiness = pendingAgentId
-    ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
-    : null
-  let reservedFriendlyName = null
-  if (pendingAgentId) {
-    const now = new Date().toISOString()
-    const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
-    reservedFriendlyName = assignedName
-    await fleetStore.upsertAgent({
-      id: pendingAgentId,
-      friendly_name: assignedName,
-      pretty_name: requestedPrettyName ?? null,
-      // Project membership is a label and belongs on the initial row, so its
-      // label_history span opens at registered_at.
-      labels: withProjectLabel([], doc),
-      registered_at: now,
-      last_seen: now,
-      dead: false,
-      human: false,
-      // The spawn already knows all three — `doc`, `cwd` and `model` come in on
-      // the request and are handed to the daemon — but none of them were written
-      // to the row, so the agent directory had nothing to group by. Every living
-      // agent read as project-less, and the index's per-project cells could only
-      // ever show the handful of agents someone had labelled by hand, which is
-      // why the names in them were old.
-      metadata: {
-        shell: true,
-        ...(doc ? { project: doc } : {}),
-        ...(cwd ? { cwd } : {}),
-        ...(model ? { model } : {}),
-      },
-    })
-    // Both slots, written where the row is made, because this is the mint.
-    //
-    // A spawn allocates the fleet id and writes the agent row right here, sends
-    // the daemon a request carrying no subscriptions, and the agent arrives later
-    // at `login`, which writes none either. So an agent minted this way — by
-    // another agent, or from the app — came up addressable with nothing listening
-    // on its behalf, including itself. Delivery has no floor, so that is silence
-    // rather than a degraded inbox: nothing wakes it, and the sender gets no
-    // receipt saying so, which from outside is indistinguishable from an agent
-    // that heard you and ignored you.
-    //
-    // The other mint, the daemon's shell reservation, has always done this. That
-    // is why agents spawned from the CLI worked all day while every agent spawned
-    // by an agent was deaf, and why the repair kept being a keyed one-shot
-    // backfill — three in one day, each fixing the rows that existed and leaving
-    // the next mint broken.
-    //
-    // Two slots, because there are two ways of being talked to: someone addressed
-    // me, or someone addressed a set I am in. Not three — splitting name from id
-    // is meaningless as a preference and lets two slots that both mean "you"
-    // drift apart, since names move and ids do not.
-    //
-    // Written at creation, so it happens once and never re-asserts itself over a
-    // later choice. Turning a slot down to `hold` survives every wake and
-    // re-login.
-    // The slots and their levels are declared in server.yaml under
-    // `subscriptions:`, not written into this file. Which queries an agent starts
-    // with, and how loud each one starts, is configuration.
-    //
-    // server.yaml rather than daemon.yaml because the server is not allowed to
-    // read daemon.yaml, and minting happens here. The daemon's own set still
-    // travels with a shell reservation, which is the other mint; this is the one
-    // the app and `delegate(mint:)` use.
-    //
-    // The constants are the floor for a config that declares nothing. An agent
-    // with no slots hears nothing at all, which is the failure this exists to
-    // prevent, so silence is not an available outcome of an empty key.
-    const slots = loadServerConfig().subscriptions
-    for (const slot of (slots?.length ? slots : MINT_SLOTS)) {
-      await fleetStore.ensureSubscription?.({
-        owner: pendingAgentId,
-        query: slot.query,
-        notificationPolicy: slot.policy || DEFAULT_SUBSCRIPTION_POLICY,
-        mandatory: true,
-      })
-    }
-  }
+  const mintSlots = loadServerConfig().subscriptions
+  const mintSubscriptions = mintSlots?.length ? mintSlots : MINT_SLOTS
   const spawnRequest = {
     agent_id: targetAgentId,
-    friendly_name: reservedFriendlyName || undefined,
+    friendly_name: pendingAgentId ? spawnName : undefined,
     pretty_name: pendingAgentId ? (requestedPrettyName ?? undefined) : undefined,
     name: resolved.name || undefined,
     model: model || undefined,
@@ -2227,6 +2216,94 @@ async function performSpawnRelay(caller, msg) {
     daemon_env_name: route.env_name,
     respawn: refresh ? false : resolved.respawn,
     refresh: !!refresh,
+  }
+  if (pendingAgentId) {
+    let result
+    try {
+      result = await sendDaemonDurable(machineId, 'mint', spawnRequest)
+      if (isIndeterminateSpawnOutcome(result)) {
+        throw new Error(result.error || 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed')
+      }
+      if (result?.ok === false) {
+        throw new Error(result.error || result.reason || 'launch-failed')
+      }
+      const routeProof = daemonRouteProofFromMintResult(result, pendingAgentId)
+      const assignedName = result?.assigned_name || result?.name || spawnName
+      const committed = await commitServerOriginatedMint({
+        agentId: pendingAgentId,
+        friendlyName: assignedName,
+        prettyName: requestedPrettyName,
+        doc,
+        cwd,
+        model,
+        permissionGrant: result?.permissionGrant || result?.permission_grant || null,
+        daemonKey: routeProof.daemon_key,
+        subscriptions: mintSubscriptions,
+      })
+      void fleetStore.share?.({ type: 'lifecycle', agent_id: pendingAgentId, from: pendingAgentId, to: pendingAgentId, text: `${assignedName || pendingAgentId} shell reserved` })
+      broadcastState(committed)
+    } catch (e) {
+      try {
+        await abortPreparedServerMint(machineId, result, e.message || 'server mint commit failed', route.env_name)
+      } catch (abortError) {
+        e.message = `${e.message}; abort-mint failed: ${abortError.message}`
+      }
+      const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
+        reason: e.code || 'launch-failed',
+        error: e.message || String(e),
+      })
+      if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+      if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
+      throw e
+    }
+    const readiness = spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
+    void (async () => {
+      try {
+        const ready = await readiness
+        if (!ready.ok) {
+          const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
+          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
+          return
+        }
+        const agentRecord = ready?.agent || await fleetStore.findAgent(pendingAgentId)
+        const permissionGrant = result?.permissionGrant || result?.permission_grant || agentRecord?.metadata?.permissionGrant || null
+        const assignedName = agentRecord?.friendly_name || result?.assigned_name || result?.name || spawnName
+        const completion = {
+          ...result,
+          agentId: agentRecord?.id || pendingAgentId,
+          label: assignedName,
+          assigned_name: assignedName,
+          requested_name: result?.requested_name || spawnName,
+          name_changed: result?.name_changed ?? (assignedName !== spawnName),
+          permissionGrant,
+          permissionClamp: result?.permissionClamp || result?.permission_clamp || null,
+          spawnerPermission: result?.spawnerPermission,
+          projectPermission: result?.projectPermission,
+          modelPermission: result?.modelPermission,
+        }
+        const settled = mailboxLibrarian.complete(mailbox.id, completion)
+        if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
+        if (settled) deliverSpawnPermissionClamp(settled, completion)
+        broadcastState()
+      } catch (e) {
+        const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
+          reason: e.code || 'launch-failed',
+          error: e.message || String(e),
+        })
+        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+        if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
+      }
+    })()
+    return {
+      ok: true,
+      async: true,
+      status: 'pending',
+      mailbox_id: mailbox.id,
+      agent_id: targetAgentId,
+      name: spawnName,
+      machine_id: machineId,
+      env_name: route.env_name,
+    }
   }
   void (async () => {
     try {

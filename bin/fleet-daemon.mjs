@@ -1056,6 +1056,23 @@ async function rpcWake(params = {}) {
   return wakeMint(params)
 }
 
+async function rpcAbortMint(params = {}) {
+  const identifier = params.mint_id || params.mintId || params.agent_id || params.agentId || params.fleet_id || params.fleetId
+  if (!identifier) throw new Error('abort-mint requires mint_id or agent_id')
+  const facts = mintStore.resolve(identifier)
+  if (!facts) return { ok: true, absent: true }
+  const tmuxSession = params.tmux_session || params.tmuxSession || facts.processState?.tmux_session || null
+  const terminated = tmuxSession
+    ? await terminateTmuxSession(tmuxSession, { tmuxSocket: TMUX_SOCKET })
+    : true
+  if (!terminated) {
+    throw new Error(`abort-mint could not terminate ${tmuxSession}`)
+  }
+  mintStore.delete(facts.mintId)
+  if (facts.fleetId) await permissionLedger.delete(facts.fleetId)
+  return { ok: true, mint_id: facts.mintId, agent_id: facts.fleetId || null, terminated: !!tmuxSession }
+}
+
 // Kill the agent's session and bring it back, entirely inside the daemon.
 //
 // This exists so an agent can restart ITSELF. Doing it from the agent's own
@@ -1126,6 +1143,7 @@ machineRpc.register({
   'kick': rpcKick,
   ...agentLauncher.handlers,
   'mint': rpcMint,
+  'abort-mint': rpcAbortMint,
   'wake': rpcWake,
   ...localArtifacts.handlers,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,

@@ -2463,6 +2463,68 @@ export class FleetStore {
     return this.getAgentDaemonRoute(agentId);
   }
 
+  commitServerOriginatedMint({ agent, daemonKey, subscriptions = [] }) {
+    if (!agent?.id) throw new Error('server-originated mint commit requires an agent id');
+    if (!daemonKey) throw new Error('server-originated mint commit requires daemon route proof');
+    const before = this._getAgent.get(agent.id);
+    if (before && !before.dead) throw new Error(`Agent "${agent.id}" already exists`);
+    const labels = this._normalizeCompleteLabels(Array.isArray(agent.labels) ? agent.labels : []);
+    let insertedEvent = null;
+    try {
+      this.db.transaction(() => {
+        this._upsertAgent.run(
+          agent.id,
+          agent.parent_agent_id || null,
+          agent.friendly_name || null,
+          serializePrettyName(agent.pretty_name),
+          JSON.stringify(labels),
+          agent.registered_at || null,
+          agent.last_seen || new Date().toISOString(),
+          agent.dead ? 1 : 0,
+          agent.human ? 1 : 0,
+          agent.is_manager ? 1 : 0,
+          agent.metadata ? JSON.stringify(agent.metadata) : null
+        );
+        insertedEvent = this._insertLabelStateEvent({
+          type: 'register',
+          agentId: agent.id,
+          actorId: agent.id,
+          labels,
+          operation: 'register',
+          timestamp: agent.registered_at || new Date().toISOString(),
+        });
+        this._rebuildLabelHistoryForAgent(agent.id);
+        this._setAgentDaemonRoute.run(agent.id, daemonKey);
+        for (const slot of subscriptions) {
+          if (!slot?.query) continue;
+          const existing = this._getSubscriptionsByOwner.all(agent.id).find(row => row.query === slot.query);
+          if (existing) continue;
+          this._addSubscription.run(
+            agent.id,
+            slot.query,
+            slot.policy || slot.notificationPolicy || 'immediate',
+            new Date().toISOString(),
+            agent.id,
+            'subscription',
+            null,
+            slot.mandatory === false ? 0 : 1,
+          );
+        }
+      })();
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
+        throw new Error(`Name "${agent.friendly_name}" is already taken by another live agent`);
+      }
+      throw e;
+    }
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agent.id);
+    this._resolvableSubscriptionWiretapCache = null;
+    if (insertedEvent) this._notifyEvent(insertedEvent);
+    const stored = this.getAgent(agent.id);
+    return this.projectAgentDaemonRoute(stored);
+  }
+
 
   upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {
