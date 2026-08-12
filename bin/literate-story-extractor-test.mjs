@@ -7,6 +7,7 @@ import {
   discoverStoryTestFiles,
   extractStories,
   extractStoriesFromFile,
+  LITERATE_STORY_LIMITS,
   renderStoriesMarkdown,
 } from './lib/literate-story-extractor.mjs'
 
@@ -58,6 +59,19 @@ assert.throws(
   ].join('\n'), 'bad-story-test.mjs'),
   /bad-story-test\.mjs:3: assertion message contains interpolation/,
   'interpolated assertion messages must fail before they enter the story catalogue',
+)
+assert.throws(
+  () => extractStories([
+    '// ## Missing state',
+    '// ### Hidden helper',
+    'await helperThatAssertsInternally()',
+  ].join('\n'), 'hidden-helper-test.mjs'),
+  /hidden-helper-test\.mjs:2: story step "Hidden helper" has no visible assertion messages/,
+  'a step with only helper-internal assertions must not silently disappear',
+)
+assert.ok(
+  LITERATE_STORY_LIMITS.some(limit => limit.includes('Assertions hidden inside helpers')),
+  'converter-facing extractor limits must be documented where the tool exposes them',
 )
 
 console.log('literate story extractor test passed')

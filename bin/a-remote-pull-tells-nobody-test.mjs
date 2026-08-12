@@ -132,11 +132,23 @@ const toldTheMachines = []
 setAcceptedSourceMutationHandler(async payload => { toldTheMachines.push(payload) })
 
 try {
+  // ## A remote pull tells linked machines
+  //
+  // Alice has a paper linked to a git remote. A collaborator who does not use
+  // tlda pushes to that remote. tlda pulls the change into the project, and
+  // every linked machine has to be told about the accepted source revision.
   const { remote, startRevision } = await paperWithARemote(NAME)
 
+  // ### The collaborator pushes to the remote
   theCollaboratorPushes(remote)
+  assert.equal(
+    git(['--git-dir', remote, 'show', 'master:main.tex'], root),
+    'the collaborator rewrote the introduction\n',
+    'the git remote — has the collaborator rewrite',
+  )
   const before = toldTheMachines.length
 
+  // ### tlda pulls the remote
   // tlda polls and pulls it in.
   await syncOverleaf(NAME)
 
@@ -145,28 +157,27 @@ try {
   assert.equal(
     readSourceFile(NAME, 'main.tex'),
     'the collaborator rewrote the introduction\n',
-    'the pull did not reach the project source at all, so this test is not exercising what it claims',
+    'the project source — has the collaborator rewrite from the remote',
   )
   const authority = (await sourceLifecycleStore(NAME)).readAuthority()
   assert.notEqual(
     authority.currentRevision,
     startRevision,
-    'the source authority did not move, so nothing was accepted and there would be nothing to announce',
+    'the source authority — moved to a new revision for the remote pull',
   )
 
+  // ### Linked machines are notified
   // And every machine with this project linked has to hear about it.
   const told = toldTheMachines.slice(before)
   assert.ok(
     told.length > 0,
-    'the remote advanced, tlda pulled it, the source authority moved -- and no linked machine was told.\n'
-    + "    Alice keeps editing on a revision the project has already left behind. She finds out by being\n"
-    + '    refused, or not at all if it rebases cleanly and her version is quietly gone.',
+    "Alice's laptop — is told about the remote pull",
   )
   assert.equal(told[0].project, NAME)
   assert.equal(
     told[0].sourceRevision,
     authority.currentRevision,
-    'the machines were told about a revision other than the one the pull actually landed on',
+    "Alice's laptop — is told the revision the remote pull landed on",
   )
 
   console.log('a remote pull tells every linked machine')

@@ -5,6 +5,14 @@ import ts from 'typescript'
 // Literate story assertion messages are the catalogue state lines. Keep them as
 // reader-facing state only: no interpolation, no failure narration, no source
 // values. If the assertion fails, assert prints expected and actual values.
+export const LITERATE_STORY_LIMITS = [
+  'Only `// ##` story comments and `// ###` step comments in test files are story structure.',
+  'Every `// ###` step must expose at least one `assert.*` message directly under that step.',
+  'Assertions hidden inside helpers do not appear in the catalogue; add a visible step assertion for the state the helper proves.',
+  'Bare assertions with no message do not appear; story assertions need a reader-facing state message.',
+  'Assertion messages must be plain strings or concatenated plain strings; interpolation is refused because source values belong to assert output, not the catalogue.',
+  'Custom assertion wrappers and non-`assert` libraries are not inspected.',
+]
 const TEST_DIRS = ['bin', 'tests', 'test', 'scripts', 'server', 'shared', 'daemon', 'packages', 'mcp-server']
 const TEST_FILE = /(?:^|[-.])test\.(?:mjs|js|ts)$/
 const HEADING_COMMENT_RE = /^\s*\/\/\s*(#{2,3})\s+(.+?)\s*$/
@@ -64,6 +72,9 @@ export function extractStories(source, file = '<inline>') {
           return { text: assertion.message, line: assertion.line }
         }),
     )
+    if (currentStep.states.length === 0) {
+      throw new Error(`${file}:${heading.line}: story step "${heading.title}" has no visible assertion messages`)
+    }
   }
   return stories.filter(story => story.steps.length)
 }
@@ -123,10 +134,7 @@ function staticString(node, sourceFile) {
     if (left != null && right != null) return left + right
   }
   if (ts.isTemplateExpression(node)) {
-    return node.templateSpans.reduce(
-      (text, span) => `${text}\${${span.expression.getText(sourceFile)}}${span.literal.text}`,
-      node.head.text,
-    )
+    return `${node.head.text}\${${node.templateSpans[0]?.expression.getText(sourceFile) ?? '...'}}`
   }
   return null
 }

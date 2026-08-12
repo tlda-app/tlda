@@ -81,15 +81,14 @@ try {
   const inlined = snapshot.files.filter(file => file.content !== undefined)
   assert.equal(
     inlined.length, 0,
-    `the revision — every entry is a reference, not content; otherwise ${inlined.length} of `
-    + `${snapshot.files.length} files are inlined and opening one still parses all of them`,
+    'the revision — every entry is a reference, not content',
   )
   const target = snapshot.files.find(file => file.path === TARGET)
-  assert.ok(target?.sha256, 'the revision — the file we open is named by a hash; otherwise there is no blob to read')
+  assert.ok(target?.sha256, 'the revision — the file we open is named by a hash')
 
   // ### Reading one file does not read any other file's bytes
   const before = String(lifecycle.readRevisionFile(revision, TARGET))
-  assert.equal(before, TARGET_TEXT, 'the file we open — its own text; otherwise the read is wrong before we prove anything')
+  assert.equal(before, TARGET_TEXT, 'the file we open — its own text')
 
   // Take every other chapter's bytes away. If the read still works, it never
   // needed them.
@@ -100,13 +99,12 @@ try {
     const path = join(projectDir(NAME), '.source-lifecycle', 'blobs', file.sha256.slice(0, 2), file.sha256)
     if (existsSync(path)) { rmSync(path); removed++ }
   }
-  assert.ok(removed > 0, 'the book — other chapters had blobs to remove; otherwise this proves nothing')
+  assert.ok(removed > 0, 'the book — other chapters had blobs to remove')
 
   const after = String(lifecycle.readRevisionFile(revision, TARGET))
   assert.equal(
     after, TARGET_TEXT,
-    `the file we open — still its own text with ${removed} other chapters' bytes deleted; `
-    + 'otherwise opening one file reads the whole book, and a book big enough cannot be opened at all',
+    "the file we open — still its own text with other chapters' bytes deleted",
   )
 
   // ### The control: the deletion was real
@@ -119,14 +117,13 @@ try {
   assert.throws(
     () => lifecycle.readRevisionFile(revision, gone.path),
     /Corrupt revision file entry/,
-    `${gone.path} — unreadable now its blob is deleted; otherwise the bytes came from somewhere `
-    + 'else and the assertion above proved nothing',
+    'the deleted chapter — unreadable now its blob is deleted',
   )
 
   // ### And a path that was never in the book is absent, not corrupt
   assert.equal(
     lifecycle.readRevisionFile(revision, 'chapters/never-written.tex'), null,
-    'a file nobody wrote — absent; otherwise absent and corrupt are the same answer again',
+    'a file nobody wrote — absent',
   )
 
   console.log('one file out of a big book: reading it does not read the book')
