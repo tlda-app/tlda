@@ -12,6 +12,14 @@ export const LITERATE_STORY_LIMITS = [
   'Bare assertions with no message do not appear; story assertions need a reader-facing state message.',
   'Assertion messages must be plain strings or concatenated plain strings; interpolation is refused because source values belong to assert output, not the catalogue.',
   'Custom assertion wrappers and non-`assert` libraries are not inspected.',
+  // A story line says what the app did. A precondition or control says the test
+  // was capable of failing. They read identically in `subject — state` form and
+  // mean opposite things: "the server process — dies inside the source
+  // transaction" looks like behaviour under test, and a reader whose eye lands
+  // on it goes hunting for a rollback bug that is not there. It was setup being
+  // verified.
+  'A precondition or control is not a story line. It asserts the test could have failed — that the crash really killed the process, that the deleted blob is really unreadable, that the push really reached the server — rather than anything the app promises.',
+  'Preconditions and controls keep their consequence in the message, because that consequence is what tells a reader a failure means the run proved nothing rather than the product is broken. The state-only rule is for story lines.',
 ]
 const TEST_DIRS = ['bin', 'tests', 'test', 'scripts', 'server', 'shared', 'daemon', 'packages', 'mcp-server']
 const TEST_FILE = /(?:^|[-.])test\.(?:mjs|js|ts)$/
