@@ -50,41 +50,6 @@ const TINT_COLORS: Record<string, string> = {
   'black': '#6b7280',
 }
 
-/**
- * Pre-compensate a hex color for dark mode's `invert(0.88) hue-rotate(180deg)` filter.
- * The SVG container applies this filter in dark mode, mangling any fill colors we set.
- * This computes the input color that produces the desired output after the filter.
- */
-function compensateForDarkMode(hex: string): string {
-  // Parse hex
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-
-  // Step 1: Undo hue-rotate(180deg) — the matrix is self-inverse
-  // CSS hue-rotate(180deg) matrix (cos=-1, sin=0):
-  //   [-0.574  1.430  0.144]
-  //   [ 0.426  0.430  0.144]
-  //   [ 0.426  1.430 -0.856]
-  const hr = -0.574 * r + 1.430 * g + 0.144 * b
-  const hg = 0.426 * r + 0.430 * g + 0.144 * b
-  const hb = 0.426 * r + 1.430 * g - 0.856 * b
-
-  // Step 2: Undo invert(0.88): input = (224.4 - output) / 0.76
-  const ir = (224.4 - hr) / 0.76
-  const ig = (224.4 - hg) / 0.76
-  const ib = (224.4 - hb) / 0.76
-
-  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)))
-  return `#${clamp(ir).toString(16).padStart(2, '0')}${clamp(ig).toString(16).padStart(2, '0')}${clamp(ib).toString(16).padStart(2, '0')}`
-}
-
-/** Check if the viewer is in dark mode */
-function isDarkMode(): boolean {
-  return document.documentElement.classList.contains('tl-theme__dark') ||
-    window.matchMedia?.('(prefers-color-scheme: dark)').matches
-}
-
 interface TextFragment {
   text: string
   x: number
@@ -373,10 +338,9 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, projectName?: s
   setTimeout(resolveAndStore, 50)
 }
 
-/** Resolve tint color, compensating for dark mode filter if needed. */
+/** Resolve tint color. */
 function resolveTintColor(colorName: string): string {
-  const base = TINT_COLORS[colorName] || TINT_COLORS.yellow
-  return isDarkMode() ? compensateForDarkMode(base) : base
+  return TINT_COLORS[colorName] || TINT_COLORS.yellow
 }
 
 /**

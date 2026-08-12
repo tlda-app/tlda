@@ -171,7 +171,6 @@ function drainWordSpaceQueue() {
 function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
-  const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
   const doc = useContext(ProjectContext)
   const projectName = doc?.projectName || ''
@@ -503,10 +502,10 @@ function SvgPageComponent({ shape }: { shape: any }) {
         >
           <div
             ref={containerRef}
+            className="svg-page-content"
             style={{
               width: '100%',
               height: '100%',
-              filter: isDark ? 'invert(0.88) hue-rotate(180deg)' : 'none',
             }}
           />
         </div>

@@ -29,7 +29,6 @@
   --fleet-dim-alpha-20: 1;
   --fleet-dim-alpha-18: 1;
   --fleet-dim-alpha-10: 1;
-  --text-bright: #c0c0d4;
   --accent: #9370db;
   --green: #7ab8a0;
   --yellow: #c8b060;
@@ -543,7 +542,6 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   --surface: #f0f0f5;
   --text: #444;
   --text-dim: #555;
-  --text-bright: #222;
   --border: #ddd;
   --accent: #7c8aff;
   --glass-1: rgba(0,0,0,0.02);

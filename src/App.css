@@ -25,6 +25,14 @@
   --tlda-canvas-background: #0f0f1a;
 }
 
+/* Default-family ink, above <body> so a theme family's own value wins. */
+html {
+  --text-bright: #c0c0d4;
+}
+html[data-theme="light"] {
+  --text-bright: #222;
+}
+
 /* Pan mode: override cursor to grab when active */
 body.tlda-pan-mode,
 body.tlda-pan-mode * {

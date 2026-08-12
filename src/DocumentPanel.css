@@ -2489,6 +2489,14 @@ body.phone-mode .phone-page-indicator.visible {
   background: transparent;
 }
 
+/* The document takes the theme's ink. Set on the root so everything drawn
+   inherits it — glyphs, and the rules dvisvgm draws for fraction bars and
+   tables. Anything carrying its own fill, such as a coloured link, keeps it:
+   a declared value beats an inherited one. */
+.svg-page-content svg {
+  fill: var(--text-bright);
+}
+
 .tl-theme__dark [data-shape-type="fleet-search"] input,
 .tl-theme__dark [data-shape-type="fleet-chat"] textarea {
   background: rgba(255, 255, 255, 0.04) !important;
