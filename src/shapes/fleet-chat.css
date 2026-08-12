@@ -2684,6 +2684,10 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   white-space: normal;
   z-index: 12;
 }
+.fleet-agents-shape .fleet-agents-spawn-notice {
+  border-color: rgba(120, 150, 190, 0.45);
+  color: var(--text-dim);
+}
 .fleet-agents-shape .fleet-agents-spawn-ghost {
   position: absolute;
   top: 0;
@@ -4943,11 +4947,15 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
 .fleet-chat-shape .fleet-dead-agent-notice {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 2px 8px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   color: var(--text-dim);
   opacity: var(--ui-tone-active);
+}
+.fleet-chat-shape .fleet-dead-agent-notice-error {
+  color: #d56a6a;
 }
 .fleet-chat-shape .fleet-dead-reanimate {
   color: var(--accent);
@@ -4955,9 +4963,17 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.fleet-chat-shape .fleet-dead-reanimate.is-pending {
+  cursor: wait;
+  opacity: var(--ui-tone-rest);
+}
 .fleet-chat-shape .fleet-dead-reanimate:hover {
   opacity: var(--ui-tone-full);
   color: var(--text-bright);
+}
+.fleet-chat-shape .fleet-dead-reanimate-status {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* --- Agent suggestion chips (clickable + hover tooltip) --- */

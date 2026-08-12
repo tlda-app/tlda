@@ -48,9 +48,9 @@ test('a persistent 502 THROWS — it never guesses null and misattributes writes
   await assert.rejects(call(), /HTTP 502/)
 })
 
-test('a permanently routeless agent (409 forever) throws, carrying the status', async () => {
-  hits = 0; respond = () => ({ status: 409 })
-  await assert.rejects(call(), /HTTP 409/)
+test('a permanently routeless agent (409 forever) throws, carrying the server diagnostic', async () => {
+  hits = 0; respond = () => ({ status: 409, body: { error: 'agent has no daemon route' } })
+  await assert.rejects(call(), /agent has no daemon route/)
 })
 
 test('a good binding is returned unchanged, with no retry', async () => {

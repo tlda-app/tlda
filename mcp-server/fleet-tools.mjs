@@ -2430,7 +2430,9 @@ export async function nativeChildBinding(threadId, toolUseId, { retry = false } 
       }
       if (res.status === 404) { answered++; continue; }
       if (!res.ok) {
-        lastError = new Error(`native child identity lookup returned HTTP ${res.status}`);
+        const body = await res.json().catch(() => ({}));
+        const detail = body?.error || body?.message || res.statusText || `HTTP ${res.status}`;
+        lastError = new Error(`native child identity lookup failed: ${detail}`);
         continue;
       }
       return await res.json();
@@ -2461,20 +2463,34 @@ function isLocalParentToolUse(toolUseId) {
   return parentTranscriptContainsToolUse(parentMintFacts().sessionPath || null, toolUseId);
 }
 
+function isPreLoginTopLevelMint() {
+  if (!PARENT_AGENT_ID) return false;
+  const localMintId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
+  if (!localMintId) return false;
+  const facts = parentMintFacts();
+  if (facts.fleetId && facts.fleetId !== PARENT_AGENT_ID) return false;
+  return !facts.sessionId;
+}
+
+function shouldSkipNativeChildLookup(name) {
+  // A freshly launched top-level mint has to log in before it can have a daemon
+  // route. Asking whether it is a native child of itself deadlocks that login.
+  return name === 'login' && isPreLoginTopLevelMint();
+}
+
 export async function handleFleetTool(name, args, context = {}) {
   if (TOOL_IDENTITY.getStore()) return handleFleetToolWithIdentity(name, args, context);
   let nativeBinding = null;
-  try {
-    nativeBinding = await nativeChildBinding(
-      context.threadId,
-      context.toolUseId,
-      { retry: name === 'login' },
-    );
-  } catch (error) {
-    if (name === 'login') {
-      return { content: [{ type: 'text', text: `Login could not resolve this native thread's fleet identity: ${error.message}` }], isError: true };
+  if (!shouldSkipNativeChildLookup(name)) {
+    try {
+      nativeBinding = await nativeChildBinding(
+        context.threadId,
+        context.toolUseId,
+        { retry: name === 'login' },
+      );
+    } catch (error) {
+      process.stderr.write(`[fleet] native child identity lookup failed before ${name}; using local MCP identity: ${error.message}\n`);
     }
-    process.stderr.write(`[fleet] native child identity lookup failed before ${name}; using local MCP identity: ${error.message}\n`);
   }
   return TOOL_IDENTITY.run({
     agentId: nativeBinding?.child_agent_id || BASE_AGENT_ID,

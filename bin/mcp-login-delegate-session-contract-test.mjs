@@ -3,10 +3,11 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
 
 const configDir = mkdtempSync(path.join(os.tmpdir(), 'tlda-session-contract-'))
+mkdirSync(path.join(configDir, '.claude'), { recursive: true })
 const childId = 'fleet:session-contract-child'
 const childName = 'session-contract-child'
 const parentId = 'fleet:session-contract-parent'
@@ -64,10 +65,14 @@ writeFileSync(path.join(configDir, 'daemon.yaml'), `machineId: session-contract-
 
 Object.assign(process.env, {
   FLEET_ID: parentId,
+  HOME: configDir,
   TLDA_CONFIG_DIR: configDir,
   TLDA_DAEMON_CONFIG_DIR: configDir,
   TLDA_ENV: 'test',
 })
+delete process.env.FLEET_LOCAL_ID
+delete process.env.FLEET_MINT_ID
+delete process.env.CODEX_THREAD_ID
 
 try {
   const { handleFleetTool, initFleet } = await import('../mcp-server/fleet-tools.mjs')

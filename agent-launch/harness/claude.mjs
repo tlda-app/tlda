@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
 import { activeEnvName, gitAuthorEnv } from '../identity.mjs'
+import { repoRoot } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
@@ -35,6 +36,21 @@ function passthroughConfigEnv(env = {}) {
   return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR']
     .filter(key => env[key])
     .map(key => [key, String(env[key])])
+}
+
+function mcpConfig() {
+  return {
+    mcpServers: {
+      tlda: {
+        type: 'stdio',
+        command: process.execPath,
+        args: [path.join(repoRoot(), 'mcp-server', 'index.mjs')],
+        env: {
+          TLDA_MCP_FLEET_ONLY: '1',
+        },
+      },
+    },
+  }
 }
 
 export function loginPrompt() {
@@ -127,6 +143,7 @@ export function buildCmd({
     },
   }))}`)
   appendLaunchFlags(parts, effectiveHarnessOptions)
+  parts.push(`--mcp-config ${sq(JSON.stringify(mcpConfig()))}`)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   else if (freshSessionId) parts.push(`--session-id ${sq(freshSessionId)}`)
   parts.push(`--model ${sq(model)}`)

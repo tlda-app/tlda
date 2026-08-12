@@ -456,38 +456,45 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
   // Optimistic spawn cards — transient per-device state, not shared.
   const [optimisticAgents, setOptimisticAgents] = useState<OptimisticAgent[]>([])
+  const [spawnNotice, setSpawnNotice] = useState('')
   // Stable ref for agents so submitSpawn can read the current list without
   // taking agents as a dep (it changes frequently and would re-create the callback).
   const agentsRef = useRef<any[]>(agents)
   agentsRef.current = agents
 
   // Reconcile: drop an optimistic card when a matching real agent arrives.
-  // Runs on every agents update; uses functional-update pattern to avoid
-  // needing optimisticAgents in deps (preventing a setState→effect→setState loop).
+  // Runs on every agents update and when optimistic rows change. Only writes
+  // state when at least one row reconciles, so the effect settles after one pass.
   useEffect(() => {
-    setOptimisticAgents(prev => {
-      if (prev.length === 0) return prev
-      let changed = false
-      const remaining = prev.filter(opt => {
-        const existingSet = new Set(opt.existingIds)
-        const matched = agents.some((a: any) => {
-          if (a.dead) return false
-          // Name-based: the real agent registers with the same friendly_name
-          if (opt.name) return a.friendly_name === opt.name
-          // Model-based fallback: a NEW agent (not in existingIds at spawn time)
-          // with a matching model alias. Uses formatFleetAgentModel to normalise
-          // 'claude-opus-4-8' → 'opus48' so the comparison works across formats.
-          return !existingSet.has(a.id) && formatFleetAgentModel(a.metadata?.model) === formatFleetAgentModel(opt.model)
-        })
-        if (matched) {
-          changed = true
-          return false
-        }
-        return true
+    if (optimisticAgents.length === 0) return
+    let notice = ''
+    let changed = false
+    const remaining = optimisticAgents.filter(opt => {
+      const existingSet = new Set(opt.existingIds)
+      const exactNameMatch = !!opt.name && agents.some((a: any) => !a.dead && a.friendly_name === opt.name)
+      if (exactNameMatch) {
+        changed = true
+        return false
+      }
+      const matchingNewAgent = agents.find((a: any) => {
+        if (a.dead) return false
+        if (existingSet.has(a.id)) return false
+        if (opt.doc && a.metadata?.project && a.metadata.project !== opt.doc) return false
+        return formatFleetAgentModel(a.metadata?.model) === formatFleetAgentModel(opt.model)
       })
-      return changed ? remaining : prev
+      if (matchingNewAgent) {
+        if (opt.name && matchingNewAgent.friendly_name && matchingNewAgent.friendly_name !== opt.name) {
+          notice = `"${opt.name}" was taken; minted "${matchingNewAgent.friendly_name}"`
+        }
+        changed = true
+        return false
+      }
+      return true
     })
-  }, [agents])
+    if (!changed) return
+    setOptimisticAgents(remaining)
+    if (notice) setSpawnNotice(notice)
+  }, [agents, optimisticAgents])
 
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
@@ -542,6 +549,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }
     const { doc, name, model, options } = parsedSpawn
     setSpawnError('')
+    setSpawnNotice('')
 
     // Add optimistic card immediately — the real agent will reconcile it away.
     const optimisticId = `opt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
@@ -922,7 +930,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   setSpawnFocused(false)
                   setDropdownIdx(-1)
                 }}
-                onChange={(e) => { setSpawnDoc(e.target.value); setSpawnError(''); setDropdownIdx(-1); setDropdownDismissed(false) }}
+                onChange={(e) => { setSpawnDoc(e.target.value); setSpawnError(''); setSpawnNotice(''); setDropdownIdx(-1); setDropdownDismissed(false) }}
                 onKeyDown={(e) => {
                   e.stopPropagation()
                   if (e.key === 'ArrowDown') {
@@ -959,9 +967,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 placeholder={spawnFocused ? '' : 'mint a new agent'}
               />
               {spawnFocused && <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, activeOptionSpecs)}</span>}
-              {spawnInvalid && (
-                <span id="fleet-agents-spawn-error" className="fleet-agents-spawn-error" role="alert">
-                  {spawnTooltip}
+              {(spawnInvalid || spawnNotice) && (
+                <span id="fleet-agents-spawn-error" className={'fleet-agents-spawn-error' + (!spawnInvalid ? ' fleet-agents-spawn-notice' : '')} role={spawnInvalid ? 'alert' : 'status'}>
+                  {spawnInvalid ? spawnTooltip : spawnNotice}
                 </span>
               )}
             </span>

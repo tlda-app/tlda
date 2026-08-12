@@ -5615,6 +5615,33 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
     return null
   }, [sendTargets, agents, resolveTargetAgent, agentRouteName, agentDisplayName])
+  const [reanimateStatus, setReanimateStatus] = useState<null | { agentId: string; state: 'pending' | 'queued' | 'error'; message?: string }>(null)
+  useEffect(() => {
+    setReanimateStatus(current => (
+      !deadTargetAgent || current?.agentId !== deadTargetAgent.id ? null : current
+    ))
+  }, [deadTargetAgent?.id])
+
+  const triggerReanimate = useCallback((agent: { id: string; name: string }) => {
+    setReanimateStatus({ agentId: agent.id, state: 'pending' })
+    fleetDurable('reanimate', { agent: agent.id })
+      .then((result: any) => {
+        if (result?.queued) {
+          setReanimateStatus({ agentId: agent.id, state: 'queued', message: 'queued' })
+        } else if (result?.error) {
+          setReanimateStatus({ agentId: agent.id, state: 'error', message: result.error })
+        } else {
+          setReanimateStatus({ agentId: agent.id, state: 'queued', message: 'waking' })
+        }
+      })
+      .catch((err: any) => {
+        setReanimateStatus({
+          agentId: agent.id,
+          state: 'error',
+          message: String(err?.message || err || 'reanimate failed'),
+        })
+      })
+  }, [])
 
   // Resolve against the whole roster rather than the composer's send targets.
   // A terminal-card notification pins the hover for whichever agent raised it,
@@ -6679,18 +6706,19 @@ function FleetChatInner({ shape }: { shape: any }) {
           />
           {deadTargetAgent && (
             <div
-              className="fleet-dead-agent-notice"
+              className={'fleet-dead-agent-notice' + (reanimateStatus?.state === 'error' ? ' fleet-dead-agent-notice-error' : '')}
             >
               <span>{deadTargetAgent.name} is dead</span>
               <span
-                className="fleet-dead-reanimate"
+                className={'fleet-dead-reanimate' + (reanimateStatus?.state === 'pending' ? ' is-pending' : '')}
                 // text <span>: onPointerUp so a finger/stylus tap fires (no
                 // synthesized click on touch); pointerup covers mouse too.
                 onPointerUp={(e) => {
                   stopEventPropagation(e as any)
-                  fleetDurable('reanimate', { agent: deadTargetAgent.id })
+                  if (reanimateStatus?.state !== 'pending') triggerReanimate(deadTargetAgent)
                 }}
-              >reanimate?</span>
+              >{reanimateStatus?.state === 'pending' ? 'reanimating...' : 'reanimate?'}</span>
+              {reanimateStatus?.message && <span className="fleet-dead-reanimate-status">{reanimateStatus.message}</span>}
             </div>
           )}
           <div style={{ position: 'relative' }}>
