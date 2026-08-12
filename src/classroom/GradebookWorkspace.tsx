@@ -25,7 +25,7 @@ export function GradebookWorkspace() {
   return <main className="classroomWorkspace">
     <header><div><h1>{data.course.title}</h1><div>Submissions and grading</div></div><div className="classroomCounts"><span>{data.counts.missing} missing</span><span>{data.counts.ungraded} ungraded</span><span>{data.counts.returned} returned</span></div></header>
     <table className="classroomTable"><thead><tr><th>Student</th>{data.assignments.map(a => <th key={a.id}>{a.title}<br/><small>Due {new Date(a.dueAt).toLocaleString()}</small></th>)}</tr></thead>
-      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? 'Not submitted' : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cell.state}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}</tr>)}</tbody>
+      <tbody>{data.rows.map(row => <tr key={row.id}><th>{row.displayName}{row.universityLogin && <><br/><small>{row.universityLogin}</small></>}</th>{row.assignments.map(cell => <td key={cell.assignmentId} className={`state-${cell.state}`}>{cell.state === 'not-submitted' || !cell.contentRef ? 'Not submitted' : <a href={open(cell.assignmentId,row.id,cell.contentRef)}>{cell.state}<br/><small>{cell.submittedAt && new Date(cell.submittedAt).toLocaleString()}</small></a>}</td>)}</tr>)}</tbody>
     </table>
   </main>
 }

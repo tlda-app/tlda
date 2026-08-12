@@ -3,7 +3,7 @@ export interface Assignment {
   solutionsLocked?: boolean
  id: string; courseId: string; title: string; dueAt: string; solutionsDocKey?: string; solutionsVersion?: string; templateDocKey?: string; templateVersion?: string }
 export interface StatusCell { assignmentId: string; state: 'not-submitted' | GradingStatus; studentId?: string; contentRef?: string; submittedAt?: string; gradingStatus?: GradingStatus }
-export interface StatusRow { id: string; displayName: string; assignments: StatusCell[] }
+export interface StatusRow { id: string; displayName: string; universityLogin?: string; assignments: StatusCell[] }
 export interface CourseStatus { course: { id: string; title: string }; assignments: Assignment[]; rows: StatusRow[]; counts: Record<string, number> }
 export interface FeedbackMark { id: string; title: string; text: string; attached: boolean; visibility: 'instructor-draft' | 'returned' }
 export interface ProblemAnswer { studentId: string; displayName: string; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
