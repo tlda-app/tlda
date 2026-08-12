@@ -20,7 +20,7 @@ import { noteServerDelivery } from './filter-equivalence.mjs'
 
 const NS = 'chat-subscription'
 
-/** @type {Map<string, {filter: unknown, window: number, onEvents: (events: readonly object[], meta: {subId: string, reason: string, browserReceivedAtMs?: number, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void, humanId: string|null, humanName: string|null, correlationKey: string|null, filterKey: string, nextCursor: string|null, hasMore: boolean, historyPending: boolean}>} */
+/** @type {Map<string, {filter: unknown, window: number, onEvents: (events: readonly object[], meta: {subId: string, reason: string, browserReceivedAtMs?: number, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void, humanId: string|null, humanName: string|null, correlationKey: string|null, filterKey: string, nextCursor: string|null, hasMore: boolean}>} */
 const _subs = new Map()
 let _nextSubId = 1
 
@@ -54,7 +54,6 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
     filterKey: JSON.stringify(filter ?? null),
     nextCursor: null,
     hasMore: true,
-    historyPending: true,
   })
   if (_send) {
     try {
@@ -126,7 +125,6 @@ export function dispatchFilterEvents(data) {
     log.metric(NS, 'history query failed for a subscription', { subId: data.subId, error: data.error, filterKey: sub.filterKey })
   }
   const events = Array.isArray(data.events) ? data.events : []
-  sub.historyPending = false
   // A reconnect or identity refresh replays the newest page. Preserve the
   // deepest cursor already reached; only an explicitly older page advances it.
   if (!data.error && (data.requestBefore != null || sub.nextCursor == null)) {
@@ -156,8 +154,10 @@ export function requestEarlierChatHistory(correlationKey) {
   const found = [..._subs.entries()].find(([, sub]) => sub.correlationKey === correlationKey)
   if (!found) return false
   const [subId, sub] = found
-  if (sub.historyPending || !sub.hasMore || !sub.nextCursor) return false
-  sub.historyPending = true
+  // Guarded on the cursor alone. A request that is never answered leaves the
+  // cursor where it was, so the next startReached asks for the same page again
+  // and the panel recovers by itself.
+  if (!sub.hasMore || !sub.nextCursor) return false
   try {
     _send('subscribe-filter', {
       subId,
@@ -169,7 +169,6 @@ export function requestEarlierChatHistory(correlationKey) {
     })
     return true
   } catch (e) {
-    sub.historyPending = false
     log.metric(NS, 'older history request failed', { subId, error: String(e) })
     return false
   }
@@ -196,11 +195,9 @@ export function refreshChatSubscriptionIdentity(humanId, humanName) {
     sub.humanName = humanName
     if (!_send) continue
     try {
-      sub.historyPending = true
       _send('subscribe-filter', { subId, filter: sub.filter, humanId, humanName, window: sub.window })
       n++
     } catch (e) {
-      sub.historyPending = false
       log.metric(NS, 'identity re-subscribe failed', { subId, error: String(e) })
     }
   }
@@ -214,12 +211,10 @@ export function resubscribeAll() {
   let n = 0
   for (const [subId, sub] of _subs) {
     try {
-      sub.historyPending = true
       _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName, window: sub.window })
       n++
     }
     catch (e) {
-      sub.historyPending = false
       log.metric(NS, 'resubscribe failed', { subId, error: String(e) })
     }
   }
