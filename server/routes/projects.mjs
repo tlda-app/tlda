@@ -1109,6 +1109,21 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         error.lifecycleResult = lifecycleResult
         throw error
       }
+      if (lifecycleResult.status === 'accepted-clean-rebase' && Array.isArray(lifecycleResult.revision?.files)) {
+        for (const rebasedFile of lifecycleResult.revision.files) {
+          const content = Buffer.from(rebasedFile.content, 'base64')
+          const previousContent = await readSourceFileAsync(name, rebasedFile.path)
+          if (!await writeSourceFileAsync(name, rebasedFile.path, content)) continue
+          const existing = changedPushFiles.find(file => file.path === rebasedFile.path)
+          const change = {
+            path: rebasedFile.path,
+            content,
+            regions: changedTextRegions(previousContent, bufferToUtf8(content)),
+          }
+          if (existing) Object.assign(existing, change)
+          else changedPushFiles.push(change)
+        }
+      }
       acceptedSourceMutation = {
         previousRevision: authorityBefore.currentRevision || null,
         sourceRevision: lifecycleResult.authority?.currentRevision || null,

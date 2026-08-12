@@ -116,6 +116,12 @@ function deriveClassifications(base, current, incoming) {
   })
 }
 
+function cleanRebaseFiles(classifications) {
+  if (!classifications.length) return null
+  if (!classifications.every(item => item.status === 'clean-rebase-candidate' && typeof item.merged === 'string')) return null
+  return classifications.map(item => ({ path: item.path, content: item.merged, encoding: 'base64' }))
+}
+
 export function createSourceLifecycleStore({ root, context = {}, fault = null }) {
   const statePath = join(root, 'authority.json')
   const revisionsRoot = join(root, 'revisions')
@@ -176,14 +182,22 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       if (before.state !== SOURCE_AUTHORITY_CURRENT || expectedRevision !== before.currentRevision) {
         const base = expectedRevision ? revision(expectedRevision) : null
         const current = before.currentRevision ? revision(before.currentRevision) : null
+        const classifications = deriveClassifications(base, current, incoming)
         const evidence = {
           version: 1, id: randomUUID(), status: 'stale-base', expectedRevision,
           currentRevision: before.currentRevision, incomingRevision: incoming.id,
-          classifications: deriveClassifications(base, current, incoming),
+          classifications,
           byteSize: incoming.byteSize, dependencyPins: incoming.dependencyPins,
           createdAt: new Date().toISOString(),
         }
         atomicJson(join(evidenceRoot, `${evidence.id}.json`), evidence, fault)
+        const rebasedFiles = cleanRebaseFiles(classifications)
+        if (rebasedFiles) {
+          const rebased = persistSnapshot(rebasedFiles, incoming.dependencyPins)
+          const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id }
+          atomicJson(statePath, authority, fault)
+          return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
+        }
         return { ok: false, status: 'stale-base', authority: before, evidence }
       }
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id }

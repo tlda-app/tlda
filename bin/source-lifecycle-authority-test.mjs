@@ -24,6 +24,41 @@ assert.equal(store.readRevision(stale.evidence.incomingRevision).files[0].conten
 assert.equal(stale.evidence.currentRevision, accepted.authority.currentRevision)
 assert.equal(stale.evidence.classifications[0].status, 'conflict')
 
+const cleanRoot = mkdtempSync(join(tmpdir(), 'tlda-source-clean-rebase-'))
+const cleanStore = createSourceLifecycleStore({ root: cleanRoot, context: { format: 'svg', mainFile: 'main.tex' } })
+const cleanBase = cleanStore.bootstrap({
+  expectedRevision: null,
+  sourceManifest: ['main.tex', 'notes.tex'],
+  files: [
+    { path: 'main.tex', content: 'base main\n' },
+    { path: 'notes.tex', content: 'base notes\n' },
+  ],
+})
+const cleanCurrent = cleanStore.submit({
+  expectedRevision: cleanBase.authority.currentRevision,
+  sourceManifest: ['main.tex', 'notes.tex'],
+  files: [
+    { path: 'main.tex', content: 'alice main\n' },
+    { path: 'notes.tex', content: 'base notes\n' },
+  ],
+})
+const cleanStale = cleanStore.submit({
+  expectedRevision: cleanBase.authority.currentRevision,
+  sourceManifest: ['main.tex', 'notes.tex'],
+  files: [
+    { path: 'main.tex', content: 'base main\n' },
+    { path: 'notes.tex', content: 'bob notes\n' },
+  ],
+})
+assert.equal(cleanStale.ok, true)
+assert.equal(cleanStale.status, 'accepted-clean-rebase')
+assert.equal(cleanStale.evidence.classifications.every(item => item.status === 'clean-rebase-candidate'), true)
+assert.equal(cleanStore.readAuthority().currentRevision, cleanStale.authority.currentRevision)
+assert.deepEqual(
+  cleanStore.readRevision(cleanStale.authority.currentRevision).files.map(file => [file.path, Buffer.from(file.content, 'base64').toString()]),
+  [['main.tex', 'alice main\n'], ['notes.tex', 'bob notes\n']],
+)
+
 const pinRoot = mkdtempSync(join(tmpdir(), 'tlda-source-pins-'))
 const pins = createSourceLifecycleStore({ root: pinRoot, context: { format: 'svg', mainFile: 'main.tex' } })
 const pinA = pins.bootstrap({ ...snapshot('same\n'), dependencyPins: [{ version: '1', name: 'dep' }] })
