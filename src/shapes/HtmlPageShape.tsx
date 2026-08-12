@@ -85,6 +85,14 @@ function isHtmlPageShapeRecord(value: unknown): value is HtmlPageShapeRecord {
   )
 }
 
+function htmlPageIframeTitle(shape: HtmlPageShapeRecord) {
+  const source = shape.props.source?.trim()
+  if (source) return `HTML document page: ${source}`
+  const path = (shape.props.url || '').split(/[?#]/)[0]
+  const filename = path.split('/').filter(Boolean).pop()
+  return filename ? `HTML document page: ${filename}` : 'HTML document page'
+}
+
 type FleetDocviewShapeRecord = {
   id: TLShapeId
   type: 'fleet-docview'
@@ -1108,6 +1116,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const urlWithParams = shape.props.url
     ? appendToken(shape.props.url + (shape.props.url.includes('?') ? '&' : '?') + `_tldaShape=${shape.id}`)
     : ''
+  const iframeTitle = htmlPageIframeTitle(shape)
 
   const handleFragmentStep = useCallback((direction: 'next' | 'prev') => {
     const iframe = iframeRef.current
@@ -1156,6 +1165,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           {isNearViewport && urlWithParams ? (
             <iframe
               ref={iframeRef}
+              title={iframeTitle}
               src={urlWithParams}
               style={{
                 width: '100%',
