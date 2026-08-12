@@ -168,6 +168,7 @@ const ALLOWED = {
   },
 
   // --- tooling: test and script clients that speak the wire on purpose -----
+  'bin/collaborators-and-an-editor-test.mjs': { count: 2, category: 'tooling', reason: 'Source-room clients: two of them, on /source-sync/<project>/<file>, speaking the room\'s JSON frames — sync, update, flush, status — with base64 Yjs updates inside. Two because the story is two people with one file open at once, which one socket cannot show.' },
   'bin/delegate-spawn-shell-e2e-test.mjs': { count: 2, category: 'tooling', reason: 'E2E client: drives /ws/fleet and /ws/fleet-daemon directly to test the wire.' },
   'bin/server-originated-claude-mint-real-daemon-test.mjs': { count: 1, category: 'tooling', reason: 'Real-daemon mint test: one /ws/fleet client in openFleet(), same shape as the spawn tests beside it.' },
   'bin/source-room-daemon-test.mjs': { count: 3, category: 'tooling', reason: 'Source-room protocol tests: Node participants open /source-sync to send Yjs updates without a browser, including checkpoint-error and duplicate-render cases.' },
