@@ -180,8 +180,8 @@ RUN . /etc/os-release \
 # install.packages() that fails to compile one package still exits 0, so the
 # only thing that catches it at build time is loading each namespace.
 RUN . /etc/os-release \
-    && Rscript -e "install.packages(c('knitr','rmarkdown','ggplot2','purrr'), repos = 'https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest', type = 'source')" \
-    && Rscript -e 'pkgs <- c("knitr","rmarkdown","ggplot2","purrr"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop("classroom R runtime incomplete, these namespaces will not load: ", paste(missing, collapse = ", ")); cat("classroom R runtime OK:", paste(pkgs, collapse = " "), "\n")'
+    && Rscript -e "install.packages(c('knitr','rmarkdown','ggplot2','purrr','tidyverse','htmltools','kableExtra','scales'), repos = 'https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest', type = 'source')" \
+    && Rscript -e 'pkgs <- c("knitr","rmarkdown","ggplot2","purrr","tidyverse","htmltools","kableExtra","scales"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop("classroom R runtime incomplete, these namespaces will not load: ", paste(missing, collapse = ", ")); cat("classroom R runtime OK:", paste(pkgs, collapse = " "), "\n")'
 
 # Keep the restored packages on the persistent volume. Without this the renv
 # cache lives in the container filesystem and every machine replacement pays the
