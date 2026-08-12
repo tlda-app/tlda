@@ -1,0 +1,34 @@
+{
+  "name": "tlda-classroom",
+  "displayName": "tlda Classroom",
+  "description": "Prepare QTM homework submissions from Positron.",
+  "version": "0.1.0",
+  "publisher": "tlda",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Education"
+  ],
+  "activationEvents": [
+    "onCommand:tldaClassroom.zipForSubmission"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "tldaClassroom.zipForSubmission",
+        "category": "Homework",
+        "title": "Zip for submission",
+        "enablement": "resourceExtname == .qmd"
+      }
+    ]
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  }
+}
