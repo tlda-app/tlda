@@ -607,6 +607,53 @@ every match now draws a hairline guide at the line it is pulling toward.
 **Whether that satisfies him is not established** — he has not been asked since it
 landed, and a fix is not a confirmation.
 
+**Drag handles stick, then the tab dies. One mechanism fixed, no repro.** He
+picked an agent's label out of the agents panel, dropped it into the left of his
+layout, and resized:
+
+> the drag handles … they were just visible, and they couldn't go away … it
+> wasn't resizing as I moved my mouse
+
+then the render loop went and the tab with it (`React error #185`). The drop path
+is corroborated independently by telemetry — a burst of `wm-drop-resolve` with
+`kind: "fleet-pill"`, `resolved: false`, `registeredHitCount: 0`, about seventy
+seconds before the crash, which is the `detached`-versus-nothing-registered
+distinction `drop-targets.ts:33-54` exists to record. `5c7b99029` fixes **one**
+mechanism: the chat container's ref cleanup could call a drop target's `leave()`
+— which sets React state — from inside React's own ref-replace path.
+
+**That is a code-backed fix for a plausible cause, not a reproduction.** The
+crash has not been reproduced and is not known to be gone.
+
+**Expanded rows do not survive a remount. Not fixed.** He expanded a 13-message
+thread; the control flipped to collapse and the card did not stay open.
+
+The cause is a state-location choice, and it is verifiable by reading:
+`expandedRowsRef` and `collapsedRowsRef` are `useRef<Set<string>>(new Set())`
+inside `FleetChatInner` (`shapes/FleetChatShape.tsx:4247-4248`) — **component
+state, not shape props.** They were made refs deliberately, to survive
+`dangerouslySetInnerHTML` re-renders; that is render-survival, which is a
+different problem from state that outlives a mount. So expansion is lost to a
+HUD toggle or a cull, and before `a824072f3` two mounts meant two copies that
+could disagree. **Removing the second copy did not move the state.**
+
+**Chat scroll had two correction loops with different targets. Both fixes
+landed.** Measured: `scrollTop` set to 0 on all four `.fleet-chat-log` elements,
+after which each snapped back to a *different* bottom — the canvas copies to
+`44647` and `35348`, the HUD copies to `27432` and `25416`. That is not a race on
+one element; it is two loops disagreeing about where the bottom is, with HUD
+state deciding which one owned his reading position. `8543d9048` defers
+correction while a pointer is held and `85c06a69e` removes the second render.
+
+**Activity cards disappearing. Cause unknown, and two explanations are dead.**
+The 4000-shape figure that was blamed is a tldraw option rather than one of ours
+— it does not appear anywhere under `src/` — and **activity cards are not tldraw
+shapes at all**: they are HTML inside `FleetChatShape`, and no activity type is
+in the panel registry. Existing telemetry counts *mounted DOM cards*, which
+Virtuoso may legitimately unmount, so it sits one layer too late to tell a vanish
+from ordinary virtualisation. An instrument was added in `7b0ae6236`. **Nothing
+is established.**
+
 ### Smaller mismatches
 
 - `repackFleetShapes` (`FleetHUD.tsx:229`) is exported, carries an
