@@ -67,6 +67,7 @@ import {
   enterFleetLayoutMode,
   exitFleetLayoutMode,
   fleetLayoutActiveRef,
+  isFleetLayoutInteractionActive,
   registerFleetLayoutViewportSync,
 } from './fleet-layout-mode'
 import './FleetHUD.css'
@@ -442,7 +443,7 @@ export function FleetHUD({
       enterFleetLayoutMode()
     } else if (hasFleetSelected) {
       document.body.classList.remove('fleet-hud-fleet-selected')
-    } else {
+    } else if (!isFleetLayoutInteractionActive(editor)) {
       exitFleetLayoutMode()
     }
   }, [hudWm, viewportId])

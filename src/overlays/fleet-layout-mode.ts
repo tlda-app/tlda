@@ -16,6 +16,17 @@ export function syncFleetLayoutSelectionViewport(editor: Editor) {
   fleetLayoutViewportSync.get(editor)?.()
 }
 
+export function isFleetLayoutInteractionActive(editor: Editor): boolean {
+  const path = editor.getPath()
+  const instance = editor.getInstanceState()
+  return (
+    !path.endsWith('.idle') ||
+    editor.inputs.isPointing ||
+    editor.inputs.isDragging ||
+    instance.brush !== null
+  )
+}
+
 export function withFleetLayoutSelectionIntent<T>(shapeId: string, fn: () => T): T {
   fleetLayoutSelectionIntentId = shapeId
   try {
