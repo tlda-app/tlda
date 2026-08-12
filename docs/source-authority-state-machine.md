@@ -62,6 +62,13 @@ checkout and stops deciding. The person's next save is a new ordinary
 submission. A second stale-base without a writable conflict blocks automatic
 submission until an authoritative project sync changes the known revision.
 
+Known follow-up: non-conflict source-change rejections now surface as critical
+daemon warnings, but the current warning route goes to the server owner. A
+validation rejection also belongs to the daemon/source owner that submitted the
+local change. Once the `{ file, owner, source }` ownership shape from the
+live-editor refusal path settles, route these warnings to that owner as well as
+the server owner.
+
 ## Applying an accepted remote revision locally
 
 The local decision is per changed path. Let:
