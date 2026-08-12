@@ -47,6 +47,8 @@ import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
 import { shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
 // @ts-ignore — vanilla JS module
+import { nextChatVirtuosoFirstItemIndex, VIRTUOSO_STATUS_ITEM_KEY } from './chatVirtuosoIndex.mjs'
+// @ts-ignore — vanilla JS module
 import {
   FLEET_TEAM_FROM_ROLE,
   FLEET_TEAM_TO_ROLE,
@@ -3292,7 +3294,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
-    items.push({ key: '__status__', html: '', _status: true })
+    items.push({ key: VIRTUOSO_STATUS_ITEM_KEY, html: '', _status: true })
     return items
   }, [rawItems])
   // Virtuoso needs a stable logical index when rows are prepended. Without it,
@@ -3306,17 +3308,11 @@ function FleetChatInner({ shape }: { shape: any }) {
     previousVirtuosoFilterKeyRef.current = filterKey
     virtuosoFirstItemIndexRef.current = 1_000_000
   } else {
-    const previousKeys = previousVirtuosoItemKeysRef.current
-    const previousKeyIndexes = new Map(previousKeys.map((key, index) => [key, index]))
-    for (let nextIndex = 0; nextIndex < nextVirtuosoItemKeys.length; nextIndex++) {
-      const previousIndex = previousKeyIndexes.get(nextVirtuosoItemKeys[nextIndex])
-      if (previousIndex === undefined) continue
-      const prependedCount = nextIndex - previousIndex
-      if (prependedCount > 0) {
-        virtuosoFirstItemIndexRef.current -= prependedCount
-      }
-      break
-    }
+    virtuosoFirstItemIndexRef.current = nextChatVirtuosoFirstItemIndex(
+      virtuosoFirstItemIndexRef.current,
+      previousVirtuosoItemKeysRef.current,
+      nextVirtuosoItemKeys,
+    )
   }
   previousVirtuosoItemKeysRef.current = nextVirtuosoItemKeys
   const virtuosoFirstItemIndex = virtuosoFirstItemIndexRef.current
