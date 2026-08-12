@@ -59,6 +59,18 @@ body.tlda-pan-mode * {
   z-index: var(--tlda-z-canvas-overlay) !important;
 }
 
+/* tldraw pads the vertical toolbar's LEFT edge with --tl-sab, which it defines
+   as env(safe-area-inset-bottom). On iPad that inset is ~20px in both
+   orientations, so the toolbar sits a constant distance off the left edge —
+   the same in landscape and portrait, and invisible on desktop where the inset
+   is 0. A left-edge padding reads the left inset.
+   Upstream bug, tldraw 5.2.0 — re-check on upgrade and delete this if fixed.
+   Narrow on purpose: --tl-sab is correct where it is also used, for the
+   horizontal toolbar's bottom padding, so the token itself must not change. */
+.tlui-layout .tlui-main-toolbar--vertical {
+  padding-left: calc(var(--tl-space-3) + env(safe-area-inset-left));
+}
+
 /* Shrink and fade toolbar controls (color dot keeps its inline color) */
 .tlui-layout__bottom {
   z-index: var(--tlda-z-tldraw-chrome) !important;

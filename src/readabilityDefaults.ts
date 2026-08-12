@@ -10,6 +10,8 @@ export type ReadabilityProfile = {
   chatAspect: number
   marginAspect: number
   agentsFrac: number
+  /** Soft-snap pull between fleet panels, in em of the profile's font size. */
+  nudgeStrength: number
 }
 
 export type ReadabilityProfiles = Record<string, Partial<ReadabilityProfile>>
@@ -26,6 +28,7 @@ export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
   chatAspect: 0.66,
   marginAspect: 0.06,
   agentsFrac: 0.4,
+  nudgeStrength: 1,
 }
 
 export const DEFAULT_READABILITY_PROFILES: ReadabilityProfiles = {}

@@ -498,6 +498,11 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <input type="number" min={24} max={64} step={2} value={activeReadability.touchTarget} onChange={e => setReadability('touchTarget', Number(e.target.value))} className="prefs-num" />
             <span className="prefs-num-unit">px</span>
           </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Snap strength</span>
+            <input type="number" min={0} max={4} step={0.5} value={activeReadability.nudgeStrength} onChange={e => setReadability('nudgeStrength', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">em</span>
+          </div>
           <label className="prefs-toggle-row">
             <input type="checkbox" checked={activeReadability.faint} onChange={e => setReadability('faint', e.target.checked)} />
             <span>Faint</span>

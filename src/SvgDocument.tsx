@@ -81,6 +81,7 @@ import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, 
 import { AgentAttentionOverlay } from './overlays/AgentAttentionOverlay'
 import { SpatialWorldMap } from './overlays/SpatialWorldMap'
 import { FleetToolGhost } from './overlays/FleetToolGhost'
+import { FleetNudgeGuides } from './overlays/FleetNudgeGuides'
 import { ChromeConditions } from './chrome/ChromeConditions'
 import { RecognizeButton } from './overlays/RecognizeButton'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
@@ -728,8 +729,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   const components = useMemo<TLComponents>(
     () => {
       const chrome = isPresentation
-        ? <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><ChromeConditions /></>
-        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel projectName={projectName} /><ProvenanceInline projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><ChromeConditions /></>
+        ? <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
+        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel projectName={projectName} /><ProvenanceInline projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
       return {
         PageMenu: null,
         SharePanel: null,

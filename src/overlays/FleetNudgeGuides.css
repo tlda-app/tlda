@@ -1,0 +1,23 @@
+/* Fixed, so pageToScreen coordinates land directly — the guides can come from
+   the HUD editor, whose container is not this overlay's offset parent. */
+.fleet-nudge-guides {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--tlda-z-canvas-overlay);
+}
+
+/* One hairline, at the app's active tone — present enough to answer "what is
+   it lining up with", quiet enough not to compete with the document. */
+.fleet-nudge-guide {
+  position: absolute;
+  background: currentColor;
+  color: #2f80ed;
+  opacity: var(--ui-tone-active);
+  width: 1px;
+  height: 1px;
+}
+
+.tl-theme__dark .fleet-nudge-guide {
+  color: #7aa9f7;
+}

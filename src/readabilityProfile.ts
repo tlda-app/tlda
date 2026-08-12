@@ -33,7 +33,19 @@ function cleanProfile(value: Partial<ReadabilityProfile> | undefined): Readabili
     chatAspect: clamp(Number(p.chatAspect) || base.chatAspect, 0.2, 2),
     marginAspect: clamp(Number(p.marginAspect) || base.marginAspect, 0, 0.4),
     agentsFrac: clamp(Number(p.agentsFrac) || base.agentsFrac, 0.25, 0.6),
+    // Not `|| base`: 0 is a meaningful value here — it turns soft snap off.
+    nudgeStrength: clamp(Number.isFinite(Number(p.nudgeStrength)) ? Number(p.nudgeStrength) : base.nudgeStrength, 0, 4),
   }
+}
+
+/**
+ * Furthest a soft snap may pull a fleet panel, in screen px. The setting is in
+ * em so it tracks the device's own text size: 3 CSS px is nothing on a high-DPI
+ * tablet, one line of text is the same apparent distance everywhere.
+ */
+export function getFleetNudgeStrengthPx(deviceId?: string): number {
+  const p = getReadabilityProfile(deviceId)
+  return p.nudgeStrength * p.fontSize
 }
 
 export function getCurrentReadabilityDeviceId(): string {
