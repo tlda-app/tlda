@@ -7681,19 +7681,20 @@ function InputHighlightUnderlay({ inputRef }: { inputRef: React.RefObject<HTMLIn
   useEffect(() => {
     const el = inputRef.current as HTMLTextAreaElement | null
     if (!el) return
+    const referencePatternSource = `«.+?»|${CANONICAL_REFERENCE_SOURCE}`
     const sync = () => {
       const val = el.value
-      if (!val || !val.includes('«')) {
+      if (!val || !new RegExp(referencePatternSource).test(val)) {
         setHtml('')
         return
       }
-      // Escape HTML, then highlight «...» tokens
+      // Escape HTML, then highlight reference tokens.
       const escaped = val
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
       const highlighted = escaped.replace(
-        new RegExp(`(«.+?»|${CANONICAL_REFERENCE_SOURCE})`, 'g'),
+        new RegExp(`(${referencePatternSource})`, 'g'),
         '<span class="ref-chip-underlay">$1</span>'
       )
       setHtml(highlighted)
