@@ -121,13 +121,29 @@ const mounted = inPage(function () {
     })
   }
   ed.zoomToBounds(ed.getShapePageBounds(id), { inset: 60 })
-  const el = document.querySelector('[data-shape-id="' + id + '"]')
-  const content = el && el.querySelector('.cm-content')
-  return { mounted: !!el, hasCodeMirror: !!content, text: content ? content.textContent : null }
+  // Creating the shape and reading it in the same turn finds a mounted element
+  // with no CodeMirror in it: React has not rendered yet, and the editor then
+  // has to fetch the file. Both are asynchronous, so wait for the view and for
+  // the text rather than sampling once and calling it broken.
+  return new Promise(resolve => {
+    const started = Date.now()
+    const poll = setInterval(() => {
+      const el = document.querySelector('[data-shape-id="' + id + '"]')
+      const content = el && el.querySelector('.cm-content')
+      const text = content ? content.textContent : null
+      if (text) {
+        clearInterval(poll)
+        resolve({ mounted: true, hasCodeMirror: true, text, waitedMs: Date.now() - started })
+      } else if (Date.now() - started > 30000) {
+        clearInterval(poll)
+        resolve({ mounted: !!el, hasCodeMirror: !!content, text, waitedMs: Date.now() - started })
+      }
+    }, 250)
+  })
 })
 
 assert.ok(!mounted.error, `could not mount the editor: ${mounted.error}`)
-assert.ok(mounted.hasCodeMirror, 'the source editor shape mounted but has no CodeMirror view')
+assert.ok(mounted.hasCodeMirror, `the source editor shape mounted but has no CodeMirror view after ${mounted.waitedMs}ms`)
 assert.ok(
   says(mounted.text, 'A paragraph both of us will edit'),
   `the editor is not showing ${FILE} — it read ${JSON.stringify(mounted.text)}. `
