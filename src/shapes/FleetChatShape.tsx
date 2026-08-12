@@ -3280,6 +3280,40 @@ function FleetChatInner({ shape }: { shape: any }) {
     items.push({ key: VIRTUOSO_STATUS_ITEM_KEY, html: '', _status: true })
     return items
   }, [rawItems])
+  const rawActivityItemKeys = useMemo(
+    () => rawItems
+      .filter(item => String(item.key).startsWith('activity:'))
+      .map(item => String(item.key)),
+    [rawItems],
+  )
+  const previousActivityRenderStateRef = useRef('')
+  useEffect(() => {
+    const logEl = chatLogEl
+    if (!logEl) return
+    const mountedActivityCards = logEl.querySelectorAll('.chat-activity-card, [data-activity-card]').length
+    const mountedItemKeys = Array.from(logEl.querySelectorAll<HTMLElement>('[data-chat-item-key]'))
+      .map(el => el.dataset.chatItemKey || '')
+      .filter(Boolean)
+    const state = JSON.stringify({
+      rawActivityItems: rawActivityItemKeys.length,
+      mountedActivityCards,
+      mountedItemKeys,
+    })
+    if (state === previousActivityRenderStateRef.current) return
+    previousActivityRenderStateRef.current = state
+    log.metric('chat-activity-render', 'activity render state changed', {
+      panelId: String(shape.id),
+      filterKey,
+      bufferKey: chatEventBufferKey,
+      messageCount: chatMessages.length,
+      itemCount: allItems.length,
+      rawActivityItems: rawActivityItemKeys.length,
+      rawActivityItemKeys: rawActivityItemKeys.slice(-12),
+      mountedActivityCards,
+      mountedItemKeys: mountedItemKeys.slice(-20),
+      lastEventId: getLastEventId(),
+    })
+  }, [allItems.length, chatEventBufferKey, chatLogEl, chatMessages.length, filterKey, rawActivityItemKeys, shape.id])
   // Virtuoso needs a stable logical index when rows are prepended. Without it,
   // loading the previous subscription page reinterprets the new first row as
   // index zero and jumps the viewport to the oldest fetched message.
