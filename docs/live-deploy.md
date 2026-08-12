@@ -14,10 +14,11 @@ If a push needs to abort, wait for it to finish; killing the client does not sto
 `/Users/skip/work/deploy/stable` deploys `fly.stable.toml`, the Fly app
 `tldraw-sync-skip-stable` at `https://tlda-fly-stable.cormorant-matrix.ts.net`.
 `stable` only accepts a commit that `testing` has already deployed successfully.
-That means the `testing` ref, `testing/deploy-state/last-successful-sha`, and
-the deployed commit object must agree. The stable gate reads the marker and
-requires the candidate commit to be an ancestor of it, so the hook writes the
-marker only after the ref is reconciled.
+The `testing` ref is the deployment record: the stable gate reads
+`testing`'s `refs/heads/main`, requires the candidate commit to exist in that
+repository, and requires it to be an ancestor of the `testing` ref. The
+`testing/deploy-state/last-successful-sha` marker is written after Git accepts
+the ref, so it is status, not the authority for promotion.
 
 The deploy repositories reject pushes with:
 
