@@ -3943,6 +3943,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // The geometry seam records the scrollTop it writes. The next matching scroll
   // event updates measurements but cannot be interpreted as reader intent.
   const geometryReconcileScrollTopRef = useRef<number | null>(null)
+  const panelPointerIdsRef = useRef<Set<number>>(new Set())
+  const deferredGeometryReconcileRef = useRef(false)
   // Reactive bottom-position state. Drives the unified follow/jump button:
   // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
   // Position (not scroll-intent) is the right signal here — matches the spec
@@ -4070,6 +4072,18 @@ function FleetChatInner({ shape }: { shape: any }) {
   const reconcileViewportGeometry = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
+    if (panelPointerIdsRef.current.size > 0) {
+      if (!deferredGeometryReconcileRef.current) {
+        log.metric('chat-anchor', 'geometry reconcile deferred; panel pointer active', {
+          panelId: String(shape.id),
+          pointerCount: panelPointerIdsRef.current.size,
+          scrolledUp: userScrolledUpRef.current,
+          hardLocked: hardLockedRef.current,
+        })
+      }
+      deferredGeometryReconcileRef.current = true
+      return
+    }
     if (userScrolledUpRef.current && !hardLockedRef.current) {
       restoreViewportAnchor()
       captureViewportAnchor()
@@ -4087,6 +4101,51 @@ function FleetChatInner({ shape }: { shape: any }) {
     const observer = new ResizeObserver(reconcileViewportGeometry)
     observer.observe(list)
     return () => observer.disconnect()
+  }, [chatLogEl, reconcileViewportGeometry])
+
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+    const active = panelPointerIdsRef.current
+    const flushDeferred = () => {
+      if (active.size > 0 || !deferredGeometryReconcileRef.current) return
+      deferredGeometryReconcileRef.current = false
+      reconcileViewportGeometry()
+    }
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target
+      const panel = shapeContainerRef.current ?? el
+      if (target instanceof Node && panel.contains(target)) active.add(e.pointerId)
+    }
+    const onPointerDone = (e: PointerEvent) => {
+      if (!active.delete(e.pointerId)) return
+      flushDeferred()
+    }
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.buttons !== 0 || !active.delete(e.pointerId)) return
+      flushDeferred()
+    }
+    const clearAll = () => {
+      if (active.size === 0) return
+      active.clear()
+      flushDeferred()
+    }
+    el.addEventListener('pointerdown', onPointerDown, { capture: true })
+    document.addEventListener('pointermove', onPointerMove, { capture: true })
+    document.addEventListener('pointerup', onPointerDone, { capture: true })
+    document.addEventListener('pointercancel', onPointerDone, { capture: true })
+    window.addEventListener('blur', clearAll)
+    window.addEventListener('pagehide', clearAll)
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      document.removeEventListener('pointermove', onPointerMove, { capture: true })
+      document.removeEventListener('pointerup', onPointerDone, { capture: true })
+      document.removeEventListener('pointercancel', onPointerDone, { capture: true })
+      window.removeEventListener('blur', clearAll)
+      window.removeEventListener('pagehide', clearAll)
+      active.clear()
+      deferredGeometryReconcileRef.current = false
+    }
   }, [chatLogEl, reconcileViewportGeometry])
 
   // Read the panel's current render state at record time rather than closing
