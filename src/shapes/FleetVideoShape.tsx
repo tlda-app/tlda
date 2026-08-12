@@ -9,6 +9,7 @@ import {
 import { getLiveVideoTiles, subscribeLiveVideoTiles, type LiveVideoTile } from '../livekit/liveVideoRegistry'
 import { isMyFleetShape, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
+import { FleetHudRenderGate } from './useIsInViewport'
 import './fleet-video.css'
 
 export class FleetVideoShapeUtil extends BaseBoxShapeUtil<any> {
@@ -44,9 +45,11 @@ export class FleetVideoShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     return (
-      <HTMLContainer style={{ pointerEvents: 'all' }}>
-        <FleetVideoComponent shape={shape} />
-      </HTMLContainer>
+      <FleetHudRenderGate>
+        <HTMLContainer style={{ pointerEvents: 'all' }}>
+          <FleetVideoComponent shape={shape} />
+        </HTMLContainer>
+      </FleetHudRenderGate>
     )
   }
 

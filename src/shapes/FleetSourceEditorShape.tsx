@@ -42,6 +42,7 @@ import { getVimMode, subscribeVimMode } from '../vimMode'
 import { clearVoiceAccumulator, notifyAccumulatorCursorMoved, setVoiceAccumulator } from '../voice.mjs'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { nudgeFleetPanelTranslate } from './fleet-utils'
+import { FleetHudRenderGate } from './useIsInViewport'
 import './fleet-chat.css'
 
 const DEFAULT_W = 560
@@ -138,9 +139,11 @@ export class FleetSourceEditorShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     return (
-      <HTMLContainer style={{ pointerEvents: 'all' }}>
-        <FleetSourceEditorComponent shape={shape} />
-      </HTMLContainer>
+      <FleetHudRenderGate>
+        <HTMLContainer style={{ pointerEvents: 'all' }}>
+          <FleetSourceEditorComponent shape={shape} />
+        </HTMLContainer>
+      </FleetHudRenderGate>
     )
   }
 

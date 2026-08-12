@@ -26,7 +26,7 @@ import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } f
 import { agentDisplayLabel, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
-import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { FleetHudRenderGate, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { cancelWMDrop, finishWMDrop, updateWMDrop } from '../wm/drop-targets'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
@@ -242,7 +242,7 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
 
   component(shape: any) {
-    return <FleetAgentsComponent shape={shape} />
+    return <FleetHudRenderGate><FleetAgentsComponent shape={shape} /></FleetHudRenderGate>
   }
 
   getIndicatorPath() {

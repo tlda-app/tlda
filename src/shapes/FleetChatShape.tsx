@@ -98,7 +98,7 @@ import { decideFollowTransition, isTrueBottomGap } from './chatScrollIntent.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { Terminal } from 'xterm'
-import { useVisibilityViewportId } from './useIsInViewport'
+import { FleetHudRenderGate, useVisibilityViewportId } from './useIsInViewport'
 import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
@@ -1368,7 +1368,7 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
 
   component(shape: any) {
-    return <FleetChatComponent shape={shape} />
+    return <FleetHudRenderGate><FleetChatComponent shape={shape} /></FleetHudRenderGate>
   }
 
   getIndicatorPath() {
@@ -7081,28 +7081,6 @@ function FleetChatInner({ shape }: { shape: any }) {
  * delivery. There is no second history access path.
  */
 const CHAT_FIRST_PAGE = 100
-const FLEET_HUD_OPEN_BODY_CLASS = 'fleet-hud-open'
-
-function isFleetHudOpenBodyState(): boolean {
-  return typeof document !== 'undefined' && document.body.classList.contains(FLEET_HUD_OPEN_BODY_CLASS)
-}
-
-function subscribeFleetHudOpenBodyState(onStoreChange: () => void): () => void {
-  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
-  const observer = new MutationObserver(onStoreChange)
-  observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
-  return () => observer.disconnect()
-}
-
-function useMainCanvasChatHiddenByHud(): boolean {
-  const viewportId = useVisibilityViewportId()
-  const hudOpen = useSyncExternalStore(
-    subscribeFleetHudOpenBodyState,
-    isFleetHudOpenBodyState,
-    () => false,
-  )
-  return !viewportId && hudOpen
-}
 
 function useChatFilterSubscription(shape: any) {
   const { filter } = shape.props as { filter: [string, string][][] }
@@ -7202,8 +7180,6 @@ function FleetChatMounted({ shape }: { shape: any }) {
 }
 
 const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
-  const hiddenByHud = useMainCanvasChatHiddenByHud()
-  if (hiddenByHud) return null
   return <FleetChatMounted shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
 

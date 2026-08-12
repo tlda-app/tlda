@@ -41,6 +41,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { optionalJson } from '../optionalJson'
+import { FleetHudRenderGate } from './useIsInViewport'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -89,9 +90,11 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
 
   component(shape: any) {
     return (
-      <HTMLContainer style={{ pointerEvents: 'all' }}>
-        <FleetDocViewComponent shape={shape} />
-      </HTMLContainer>
+      <FleetHudRenderGate>
+        <HTMLContainer style={{ pointerEvents: 'all' }}>
+          <FleetDocViewComponent shape={shape} />
+        </HTMLContainer>
+      </FleetHudRenderGate>
     )
   }
 

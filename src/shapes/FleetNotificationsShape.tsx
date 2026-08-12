@@ -9,6 +9,7 @@ import { useEffect, useRef, type SyntheticEvent } from 'react'
 import { dismissItem, sendMessage, useItems, type Item, type ItemAction } from '../fleet-data-adapter'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { nudgeFleetPanelTranslate } from './fleet-utils'
+import { FleetHudRenderGate } from './useIsInViewport'
 import './fleet-notifications.css'
 
 const DEFAULT_W = 360
@@ -29,7 +30,7 @@ export class FleetNotificationsShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
 
   component(shape: any) {
-    return <FleetNotificationsComponent shape={shape} />
+    return <FleetHudRenderGate><FleetNotificationsComponent shape={shape} /></FleetHudRenderGate>
   }
 
   getIndicatorPath() {

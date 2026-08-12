@@ -8,6 +8,7 @@ import {
 import { fleetReportArtifactProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { nudgeFleetPanelTranslate } from './fleet-utils'
+import { FleetHudRenderGate } from './useIsInViewport'
 import './fleet-report-artifact.css'
 
 const DEFAULT_W = 520
@@ -28,7 +29,7 @@ export class FleetReportArtifactShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
 
   component(shape: any) {
-    return <FleetReportArtifactComponent shape={shape} />
+    return <FleetHudRenderGate><FleetReportArtifactComponent shape={shape} /></FleetHudRenderGate>
   }
 
   getIndicatorPath(shape: any) {

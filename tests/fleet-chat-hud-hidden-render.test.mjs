@@ -3,26 +3,50 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { JSDOM } from 'jsdom'
 
-const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+const chatSource = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+const viewportSource = readFileSync(new URL('../src/shapes/useIsInViewport.ts', import.meta.url), 'utf8')
 
-test('main-canvas chat render is skipped only while HUD owns the visible copy', () => {
+test('shared fleet HUD render gate skips only the hidden main-canvas copy', () => {
   assert.match(
-    source,
-    /function useMainCanvasChatHiddenByHud\(\)[\s\S]*const viewportId = useVisibilityViewportId\(\)[\s\S]*return !viewportId && hudOpen/,
-    'the skip must apply to the main canvas only; HUD renders have a viewport id',
+    viewportSource,
+    /function useMainCanvasFleetShapeHiddenByHud\(\)[\s\S]*const viewportId = useVisibilityViewportId\(\)[\s\S]*return !viewportId && hudOpen/,
+    'the shared skip must apply to the main canvas only; HUD renders have a viewport id',
   )
 
-  const componentAt = source.indexOf('const FleetChatComponent = memo(function FleetChatComponent')
-  assert.ok(componentAt > 0, 'FleetChatComponent must own the HUD-open guard')
-  const component = source.slice(componentAt, componentAt + 600)
-  assert.match(component, /if \(hiddenByHud\) return null/, 'the hidden main-canvas copy must render nothing')
-  assert.match(component, /return <FleetChatMounted shape=\{shape\} \/>/, 'visible copies must mount the normal chat body')
+  assert.match(
+    viewportSource,
+    /function FleetHudRenderGate\(\{ children \}: \{ children: ReactNode \}\)[\s\S]*useMainCanvasFleetShapeHiddenByHud\(\) \? null/,
+    'the render gate must be a plain conditional render, so effects clean up on unmount',
+  )
 
-  const mountedAt = source.indexOf('function FleetChatMounted')
+  const mountedAt = chatSource.indexOf('function FleetChatMounted')
   assert.ok(mountedAt > 0, 'subscription-bearing chat body must be split into a child component')
-  const mounted = source.slice(mountedAt, mountedAt + 500)
+  const mounted = chatSource.slice(mountedAt, mountedAt + 500)
   assert.match(mounted, /useChatFilterSubscription\(shape\)/, 'chat subscription must live only in the mounted child')
   assert.match(mounted, /useUnreadRailSubscription\(shape\)/, 'unread rail subscription must live only in the mounted child')
+})
+
+test('every HUD allowlisted fleet panel uses the shared render gate', () => {
+  const files = [
+    'FleetAgentsShape.tsx',
+    'FleetChatShape.tsx',
+    'FleetDocViewShape.tsx',
+    'FleetInboxShape.tsx',
+    'FleetNotificationsShape.tsx',
+    'FleetReportArtifactShape.tsx',
+    'FleetSearchShape.tsx',
+    'FleetSourceEditorShape.tsx',
+    'FleetVideoShape.tsx',
+  ]
+  for (const file of files) {
+    const source = readFileSync(new URL(`../src/shapes/${file}`, import.meta.url), 'utf8')
+    assert.match(source, /FleetHudRenderGate/, `${file} must use the shared HUD render gate`)
+    assert.doesNotMatch(
+      source,
+      /fleet-hud-open[\s\S]{0,400}return null|return null[\s\S]{0,400}fleet-hud-open/,
+      `${file} must not reimplement the HUD-open condition locally`,
+    )
+  }
 })
 
 test('HUD open/close remount keeps earlier history in the same chat buffer', async () => {

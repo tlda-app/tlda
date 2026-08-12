@@ -49,7 +49,7 @@ import { fleetDurable } from '../fleet/fleet-data.mjs'
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
-import { useIsInViewport } from './useIsInViewport'
+import { FleetHudRenderGate, useIsInViewport } from './useIsInViewport'
 import { fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
 import { log } from '../logger'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
@@ -351,7 +351,7 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
 
   component(shape: any) {
-    return <FleetInboxComponent shape={shape} />
+    return <FleetHudRenderGate><FleetInboxComponent shape={shape} /></FleetHudRenderGate>
   }
 
   getIndicatorPath() {

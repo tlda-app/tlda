@@ -39,7 +39,7 @@ import {
   searchAutocompleteSuggestions,
   type SearchAutocompleteSuggestion,
 } from '../fleet/search-autocomplete'
-import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
+import { FleetHudRenderGate, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
 import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
@@ -310,7 +310,7 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   override hideRotateHandle = () => true
 
   component(shape: any) {
-    return <FleetSearchComponent shape={shape} />
+    return <FleetHudRenderGate><FleetSearchComponent shape={shape} /></FleetHudRenderGate>
   }
 
   getIndicatorPath() {

@@ -5,7 +5,7 @@
  * during scrolling/zooming, preventing rapid mount/unmount thrashing at
  * viewport edges.
  */
-import { createContext, createElement, useContext, type ReactNode } from 'react'
+import { Fragment, createContext, createElement, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { useEditor, useValue } from 'tldraw'
 import type { Editor, TLShapeId, TLViewportId } from 'tldraw'
 
@@ -22,6 +22,33 @@ const VisibilityViewportContext = createContext<VisibilityViewportContextValue>(
 
 export function useVisibilityViewportId(): VisibilityViewportId | undefined {
   return useContext(VisibilityViewportContext).viewportId
+}
+
+const FLEET_HUD_OPEN_BODY_CLASS = 'fleet-hud-open'
+
+function isFleetHudOpenBodyState(): boolean {
+  return typeof document !== 'undefined' && document.body.classList.contains(FLEET_HUD_OPEN_BODY_CLASS)
+}
+
+function subscribeFleetHudOpenBodyState(onStoreChange: () => void): () => void {
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
+  const observer = new MutationObserver(onStoreChange)
+  observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+  return () => observer.disconnect()
+}
+
+export function useMainCanvasFleetShapeHiddenByHud(): boolean {
+  const viewportId = useVisibilityViewportId()
+  const hudOpen = useSyncExternalStore(
+    subscribeFleetHudOpenBodyState,
+    isFleetHudOpenBodyState,
+    () => false,
+  )
+  return !viewportId && hudOpen
+}
+
+export function FleetHudRenderGate({ children }: { children: ReactNode }) {
+  return useMainCanvasFleetShapeHiddenByHud() ? null : createElement(Fragment, null, children)
 }
 
 export function VisibilityViewportProvider({
