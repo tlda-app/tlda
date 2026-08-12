@@ -32,7 +32,6 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'checkNameAvailable',
   'claimTimerTerminal',
   'clearSkillReads',
-  'commitServerOriginatedMint',
   'consumeTaskChanges',
   'createNativeSubagentNotification',
   'daemonOutboxWasProcessed',
