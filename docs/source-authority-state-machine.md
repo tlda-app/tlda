@@ -117,3 +117,30 @@ The implementation is checked at the same boundaries:
 The live acceptance gate is the same final transition: start from one accepted
 revision, pause the owning daemon, make divergent local and server edits, then
 resume it. The linked checkout must contain both sides as conflict markers.
+
+## A push cannot carry a file larger than one request
+
+`sourceFileBatches` bounds a push at 20 MiB of raw bytes. Two things about that
+bound are not true, and a 488-file course book with 33 MB CSVs found both on
+2026-08-12.
+
+**The bound is in the wrong units.** The request body is base64 inside JSON, so
+20 MiB of raw bytes leaves as roughly 27 MiB on the wire, against a server that
+accepts `express.json({ limit: '50mb' })`. The bound and the limit measure
+different things, so staying under the bound says nothing about staying under the
+limit.
+
+**And a file bigger than the bound cannot be batched at all.** The batcher starts
+a new batch only when the current one is non-empty — correct, because a file
+cannot be split — so a 33 MB file becomes a 33 MB batch and about 44 MB of body.
+That is under the server's limit and above what it survives: the observed result
+was a request timeout followed by the box being unreachable, health included.
+
+So the bound works for the small files and is structurally unable to help with
+the large ones. Whatever replaces it, three things have to be true rather than
+one: the bound measures encoded bytes, a single oversized file has an answer that
+is not "a batch of one", and a file the transport cannot carry is refused with a
+sentence saying so rather than by taking the server down.
+
+Until then, a project containing a file of that size cannot be pushed, and the
+failure is a dead box rather than a rejection.
