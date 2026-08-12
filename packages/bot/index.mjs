@@ -20,6 +20,7 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from '
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
+import { ResilientWS } from '../../shared/resilient-ws.mjs';
 import { createCommandRegistry } from './commands.mjs';
 
 function registrationLabels(labels, key) {
@@ -63,7 +64,7 @@ export function createBot({
   const allowSet = allow ? new Set(allow) : null;
   const registry = createCommandRegistry(commands);
 
-  let ws = null, msgId = 1, reconnectTimer = null, reconnectDelay = reconnectInitialMs, stopped = false;
+  let msgId = 1, stopped = false;
   let assignedName = null;
   const pending = new Map();
   const waiters = new Set();
@@ -94,30 +95,51 @@ export function createBot({
     return assignedName === key;
   }
 
-  function connect() {
-    // Bounded handshake: reconnection is driven only by 'close', so a peer that
-    // accepts the TCP connection and never answers the upgrade would otherwise
-    // leave this socket in CONNECTING forever with no event to reconnect on.
-    ws = new WebSocketClass(WS_URL, { rejectUnauthorized: false, handshakeTimeout: handshakeTimeoutMs });
-    ws.on('open', async () => {
+  // Every bot connected to this package used to get a second implementation of
+  // reconnect/backoff, hand-rolled here beside the one in shared/resilient-ws.
+  // The two disagreed on the rule that matters: this one reset the delay inside
+  // ws.on('open'), one line before the login that can throw, so a server that was
+  // UP and REJECTING logins was retried at the floor delay forever — testing Todd
+  // did that twice a second for 3.5 hours against the daemon-route gate. The
+  // shared client resets only after a connection has stayed up (stableConnectionMs),
+  // which is the same rule its own comment states, and it covers the
+  // server-is-down case identically. Reply correlation and canonical-name gating
+  // stay here; they sit above the socket, not in it.
+  //
+  // TLS: the hand-rolled socket passed `rejectUnauthorized: false` for every URL,
+  // not just local dev. That is preserved verbatim below rather than tightened as
+  // a side effect of a refactor — changing who a bot will trust is a separate
+  // decision from where its backoff resets.
+  class BotSocket extends WebSocketClass {
+    constructor(url, options) {
+      super(url, { rejectUnauthorized: false, ...(options || {}) });
+    }
+  }
+
+  const rws = new ResilientWS({
+    url: () => WS_URL,
+    label: key,
+    initialBackoffMs: reconnectInitialMs,
+    maxBackoffMs: reconnectMaxMs,
+    // Bounded handshake: a peer that accepts the TCP connection and never answers
+    // the upgrade would otherwise leave the socket in CONNECTING forever with no
+    // event to reconnect on. Previously `handshakeTimeout` on the ws constructor;
+    // the shared client does this with its own timer and defaults it OFF, so it
+    // has to be passed explicitly to keep the behaviour.
+    connectAttemptTimeoutMs: handshakeTimeoutMs,
+    WebSocketImpl: BotSocket,
+    onOpen: async () => {
       log(`connected to ${WS_URL}`);
-      reconnectDelay = reconnectInitialMs;
       try {
         const result = await loginFleet();
         fire('open', result);
       } catch (e) {
         log(`login failed: ${e.message}`);
-        ws?.close();
+        // reconnect(), not close(): close() disarms the retry loop entirely.
+        rws.reconnect();
       }
-    });
-    ws.on('message', (raw) => {
-      let msg;
-      try {
-        msg = JSON.parse(raw.toString());
-      } catch {
-        // Ignore malformed websocket frames; the next valid frame can still proceed.
-        return;
-      }
+    },
+    onMessage: (msg) => {
       if (msg.id && pending.has(msg.id)) {
         const { resolve, reject, timer } = pending.get(msg.id);
         pending.delete(msg.id); clearTimeout(timer);
@@ -126,33 +148,23 @@ export function createBot({
         return;
       }
       dispatch(msg);
-    });
-    ws.on('close', () => {
-      fire('close');
-      if (!stopped) {
-        log(`disconnected, reconnecting in ${reconnectDelay}ms`);
-        scheduleReconnect();
-      }
-    });
-    ws.on('error', (e) => console.error(`[${key}] ws error:`, e.message));
-  }
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, reconnectMaxMs);
-  }
-  function sendRaw(msg) { if (ws?.readyState === WebSocketClass.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg })); }
+    },
+    onClose: () => { fire('close'); },
+  });
+
+  function connect() { rws.connect(); }
+  function sendRaw(msg) { if (rws.connected) rws.send({ id: msgId++, ...msg }); }
   function send(msg) { if (isCanonical()) sendRaw(msg); }
   function requestRaw(msg, timeoutMs = 10_000) {
     return new Promise((resolve, reject) => {
-      if (!ws || ws.readyState !== WebSocketClass.OPEN) return reject(new Error('WS not connected'));
+      if (!rws.connected) return reject(new Error('WS not connected'));
       const rid = msgId++;
       const timer = setTimeout(() => {
         pending.delete(rid);
         reject(new Error(`${msg?.type || 'ws request'} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       pending.set(rid, { resolve, reject, timer });
-      ws.send(JSON.stringify({ id: rid, ...msg }));
+      rws.send({ id: rid, ...msg });
     });
   }
   function request(msg, timeoutMs = 10_000) {
@@ -272,7 +284,7 @@ export function createBot({
     }
     writeFileSync(PID_FILE, String(process.pid));
     const cleanup = () => { try { unlinkSync(PID_FILE); } catch { /* already gone */ } };
-    process.on('SIGINT', () => { log('shutting down'); cleanup(); ws?.close(); process.exit(0); });
+    process.on('SIGINT', () => { log('shutting down'); cleanup(); rws.close(); process.exit(0); });
     process.on('exit', cleanup);
     log(`starting (pid ${process.pid}) on ${SERVER}`);
     connect();
@@ -296,9 +308,7 @@ export function createBot({
   }
   function stop() {
     stopped = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-    ws?.close();
+    rws.close();
   }
 
   const api = {
