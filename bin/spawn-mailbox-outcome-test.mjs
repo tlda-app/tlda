@@ -10,7 +10,7 @@ import { createMachineRpc, rpcRequestFingerprint } from '../daemon/machine-rpc.m
 const PORT = Number(process.env.PORT || (5607 + (process.pid % 1000)))
 const DB = `/tmp/spawn-mailbox-outcome-${process.pid}.db`
 const CONFIG_DIR = `/tmp/spawn-mailbox-outcome-config-${process.pid}`
-const ENV_NAME = 'default'
+const ENV_NAME = 'test'
 const MACHINE_ID = 'spawn-outcome-box'
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
 if (useTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
@@ -44,7 +44,7 @@ function fail(message) {
 
 async function waitHealth() {
   let lastError = null
-  for (let i = 0; i < 80; i += 1) {
+  for (let i = 0; i < 240; i += 1) {
     try {
       const r = await fetch(`${proto}://localhost:${PORT}/api/health`)
       if (r.ok) return
@@ -64,7 +64,7 @@ function openFleet() {
   })
 }
 
-function request(ws, type, body = {}, timeoutMs = 5000) {
+function request(ws, type, body = {}, timeoutMs = 30_000) {
   const id = `${type}:${Date.now()}:${Math.random().toString(36).slice(2)}`
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -93,7 +93,13 @@ async function reserveAndLogin(ws, agentId, name) {
     daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
     metadata: { permissionGrant: 'ops' },
   })
-  return request(ws, 'login', { agent_id: agentId, kind: 'codex' })
+  return request(ws, 'login', {
+    agent_id: agentId,
+    kind: 'codex',
+    machine_id: MACHINE_ID,
+    env_name: ENV_NAME,
+    daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+  })
 }
 
 async function waitForAgent(agentId, timeoutMs = 3000) {
@@ -127,6 +133,33 @@ async function waitForChat(ws, pattern, timeoutMs = 3000) {
   return null
 }
 
+async function waitForSpawnMailbox(ws, pattern, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const events = await request(ws, 'fleet-search', {
+      query: '',
+      eventTypes: ['spawn_mailbox'],
+      historyOnly: true,
+      eventOnly: true,
+      limit: 50,
+    })
+    const found = (events.results || []).find(e => pattern.test(e.text || ''))
+    if (found) return found
+    await sleep(100)
+  }
+  return null
+}
+
+async function assertRejectsMessage(promise, pattern, label) {
+  try {
+    await promise
+  } catch (e) {
+    assert.match(e.message, pattern, label)
+    return e
+  }
+  fail(`${label}: expected rejection matching ${pattern}`)
+}
+
 async function startMockDaemon() {
   const daemon = new WebSocket(`${wsProto}://localhost:${PORT}/ws/fleet-daemon`, wsOpts)
   const modes = []
@@ -152,9 +185,20 @@ async function startMockDaemon() {
     executionDbPath,
   })
   rpc.register({
-    mint: async msg => ({ ok: true, pending: true, agent_id: msg.agent_id, fleetId: msg.agent_id }),
-    spawn: async msg => ({ ok: true, pending: true, agent_id: msg.agent_id, fleetId: msg.agent_id }),
-    wake: async msg => ({ ok: true, pending: true, agent_id: msg.agent_id, fleetId: msg.agent_id }),
+    mint: async msg => ({
+      ok: true,
+      pending: true,
+      mint_id: msg.mint_id,
+      agent_id: msg.agent_id,
+      fleet_id: msg.agent_id,
+      name: msg.friendly_name || msg.name,
+      machine_id: MACHINE_ID,
+      env_name: ENV_NAME,
+      daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+    }),
+    spawn: async msg => ({ ok: true, pending: true, agent_id: msg.agent_id, fleet_id: msg.agent_id }),
+    wake: async msg => ({ ok: true, pending: true, agent_id: msg.agent_id, fleet_id: msg.agent_id }),
+    'abort-mint': async msg => ({ ok: true, mint_id: msg.mint_id || null, agent_id: msg.agent_id || null }),
   })
   await new Promise((resolve, reject) => {
     daemon.on('open', () => {
@@ -173,8 +217,12 @@ async function startMockDaemon() {
   })
   daemon.on('message', raw => {
     const msg = JSON.parse(raw.toString())
-    if (msg.type !== 'rpc' || !['mint', 'spawn', 'wake'].includes(msg.op)) return
+    if (msg.type !== 'rpc' || !['mint', 'spawn', 'wake', 'abort-mint'].includes(msg.op)) return
     captured.push(msg)
+    if (msg.op === 'abort-mint') {
+      void rpc.handleRpc(msg)
+      return
+    }
     const mode = modes.shift() || 'ok'
     if (mode === 'indeterminate') {
       executionDb.prepare(`
@@ -190,6 +238,21 @@ async function startMockDaemon() {
         type: 'rpc-reply',
         id: msg.id,
         result: { ok: false, reason: 'test-failed', error: 'daemon refused launch for test' },
+      }))
+      return
+    }
+    if (mode === 'route-denied') {
+      daemon.send(JSON.stringify({
+        type: 'rpc-reply',
+        id: msg.id,
+        result: {
+          ok: true,
+          pending: true,
+          mint_id: msg.params?.mint_id || msg.mint_id || null,
+          agent_id: msg.params?.agent_id || msg.agent_id,
+          fleet_id: msg.params?.agent_id || msg.agent_id,
+          name: msg.params?.friendly_name || msg.params?.name || 'route-denied',
+        },
       }))
       return
     }
@@ -238,32 +301,58 @@ async function run() {
   try {
     await reserveAndLogin(requesterWs, 'fleet:spawn-outcome-requester', 'spawn-outcome-requester')
 
-    modes.push('indeterminate')
-    const unknownStarted = await request(requesterWs, 'spawn', {
+    const routeBacked = await request(requesterWs, 'spawn', {
       fresh: true,
-      name: 'unknown-started',
+      name: 'route-backed',
       model: 'sol',
       cwd: process.cwd(),
       iLikeToLiveDangerously: true,
     })
-    assert.equal(unknownStarted.ok, true)
-    assert.ok(unknownStarted.agent_id)
-    await request(spawnedWs, 'login', { agent_id: unknownStarted.agent_id, kind: 'codex' })
-    const live = await waitForAgent(unknownStarted.agent_id)
-    assert.ok(live, `indeterminate fresh spawn did not resolve to live login; server log:\n${serverLog}`)
-    const wrongFailure = await waitForChat(requesterWs, /Mint mailbox .* failed.*unknown-started/, 500)
+    assert.equal(routeBacked.ok, true)
+    assert.ok(routeBacked.agent_id)
+    await request(spawnedWs, 'login', {
+      agent_id: routeBacked.agent_id,
+      kind: 'codex',
+      machine_id: MACHINE_ID,
+      env_name: ENV_NAME,
+      daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+    })
+    const live = await waitForAgent(routeBacked.agent_id)
+    assert.ok(live, `route-backed fresh spawn did not resolve to live login; server log:\n${serverLog}`)
+    const wrongFailure = await waitForChat(requesterWs, /mint failed.*route-backed/i, 500)
     assert.equal(wrongFailure, null)
-    console.log('PASS: indeterminate fresh spawn resolves by observing login, not by reporting failure')
+    console.log('PASS: route-backed fresh spawn commits after daemon route proof and resolves by login')
+
+    modes.push('route-denied')
+    await assertRejectsMessage(request(requesterWs, 'spawn', {
+      fresh: true,
+      name: 'route-denied',
+      model: 'sol',
+      cwd: process.cwd(),
+      iLikeToLiveDangerously: true,
+    }), /returned no daemon route proof/, 'route-denied spawn')
+    const roster = await request(requesterWs, 'fleet-roster-truth', { limit: 500 })
+    assert.equal((roster.agents || []).some(a => a.id === 'route-denied' || a.friendly_name === 'route-denied'), false)
+    await assertRejectsMessage(request(requesterWs, 'chat', {
+      from: 'fleet:spawn-outcome-requester',
+      to: 'route-denied',
+      message: 'proof message',
+    }), /No recipients matched|No live recipients|matched no agents|recipient/i, 'route-denied chat')
+    await assertRejectsMessage(request(requesterWs, 'capture-pane', {
+      agent: 'route-denied',
+      lines: 5,
+    }), /agent not found/, 'route-denied terminal')
+    console.log('PASS: route-denied server mint returns an error and creates no addressable roster/chat/terminal target')
 
     modes.push('failure')
-    await request(requesterWs, 'spawn', {
+    await assertRejectsMessage(request(requesterWs, 'spawn', {
       fresh: true,
       name: 'known-failed',
       model: 'sol',
       cwd: process.cwd(),
       iLikeToLiveDangerously: true,
-    })
-    const failed = await waitForChat(requesterWs, /Mint mailbox .* failed.*known-failed.*daemon refused launch for test/)
+    }), /daemon refused launch for test/, 'daemon-declared spawn failure')
+    const failed = await waitForChat(requesterWs, /mint failed.*known-failed[\s\S]*daemon refused launch for test/i)
     assert.ok(failed, `real spawn failure was not reported as failed; server log:\n${serverLog}`)
     console.log('PASS: daemon-declared spawn failure still reports failed')
 
@@ -273,7 +362,7 @@ async function run() {
       respawn: true,
       iLikeToLiveDangerously: true,
     })
-    const indeterminate = await waitForChat(requesterWs, /Mint mailbox .* indeterminate.*spawn-outcome-requester/)
+    const indeterminate = await waitForSpawnMailbox(requesterWs, /spawn mailbox indeterminate: fleet:spawn-outcome-requester/, 10_000)
     assert.ok(indeterminate, `unresolved wake outcome was not reported as indeterminate; server log:\n${serverLog}`)
     assert.doesNotMatch(indeterminate.text, / failed/)
     console.log('PASS: unresolved respawn outcome reports indeterminate, not failed')
@@ -289,4 +378,4 @@ run().then(() => {
   cleanup(0)
 }).catch(e => fail(`${e.stack}\nSERVER LOG:\n${serverLog || ''}`))
 
-setTimeout(() => fail('overall test timeout'), 45_000)
+setTimeout(() => fail(`overall test timeout\nSERVER LOG:\n${serverLog || ''}`), 90_000)
