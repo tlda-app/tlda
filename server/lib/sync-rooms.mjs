@@ -439,6 +439,7 @@ export function initSyncRooms(dir, options = {}) {
  * Room names use "doc-{project}" convention; strip prefix for storage path.
  */
 function snapshotPath(docName) {
+  if (!projectsDir) throw new Error('sync-rooms used before initSyncRooms(dir); refusing to resolve a snapshot path against the working directory')
   const projectName = docName.startsWith('doc-') ? docName.slice(4) : docName
   return join(projectsDir, projectName, 'sync-snapshot.json')
 }
