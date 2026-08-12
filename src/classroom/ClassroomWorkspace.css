@@ -20,3 +20,9 @@
 .classroomDropTarget strong { font-size: 18px; }
 .classroomDropTarget span { color: #6c685f; }
 .classroomFileInput { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.classroomRegistration { max-width: 720px; margin: 0 auto; }
+.classroomRegistration form, .classroomTokenResult { display: grid; gap: 14px; padding: 20px; background: white; }
+.classroomRegistration label { display: grid; gap: 5px; color: #6c685f; font-size: 12px; }
+.classroomRegistration input { padding: 9px 10px; border: 1px solid #aaa59a; border-radius: 6px; font: inherit; }
+.classroomRegistration button { width: fit-content; min-height: 38px; padding: 7px 12px; border: 1px solid #aaa59a; border-radius: 6px; background: #f7f6f2; color: inherit; }
+.classroomTokenResult code { overflow-wrap: anywhere; padding: 10px; background: #f7f6f2; }

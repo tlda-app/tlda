@@ -9,6 +9,7 @@ export interface FeedbackMark { id: string; title: string; text: string; attache
 export interface ProblemAnswer { studentId: string; displayName: string; contentRef: string; gradingStatus: GradingStatus; anchor: string | null }
 export interface ProblemsView { assignment: Assignment; problems: { problemId: string; answers: ProblemAnswer[] }[] }
 export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
+export interface RegisteredStudent { student: { id: string; courseId: string; displayName: string }; enrollmentToken: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const classroomToken = new URLSearchParams(window.location.search).get('classroomToken')
@@ -24,6 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const classroomApi = {
+  register: (courseId: string, body: { displayName: string; universityLogin: string }) => request<RegisteredStudent>(`/courses/${encodeURIComponent(courseId)}/register`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }),
   status: (courseId: string) => request<CourseStatus>(`/courses/${encodeURIComponent(courseId)}/status`),
   problems: (assignmentId: string) => request<ProblemsView>(`/assignments/${encodeURIComponent(assignmentId)}/problems`),
   // The student's own work. Their identity comes from their token, so this

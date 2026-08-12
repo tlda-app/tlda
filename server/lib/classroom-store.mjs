@@ -59,6 +59,9 @@ export class ClassroomStore {
     // upload rather than being re-derived by reparsing each archive.
     const submissionColumns = new Set(this.db.pragma('table_info(submissions)').map(column => column.name))
     if (!submissionColumns.has('answer_ids')) this.db.exec('ALTER TABLE submissions ADD COLUMN answer_ids TEXT')
+    const studentColumns = new Set(this.db.pragma('table_info(students)').map(column => column.name))
+    if (!studentColumns.has('university_login')) this.db.exec('ALTER TABLE students ADD COLUMN university_login TEXT')
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_students_course_login ON students(course_id, university_login) WHERE university_login IS NOT NULL')
   }
 
   close() { this.db.close() }
@@ -79,13 +82,21 @@ export class ClassroomStore {
     return this.getStudent(id)
   }
 
+  registerStudent({ courseId, displayName, universityLogin, enrollmentToken }) {
+    const id = `${courseId}:${universityLogin}`
+    const tokenHash = hashEnrollmentToken(enrollmentToken)
+    this.db.prepare(`INSERT INTO students(id,course_id,display_name,enrollment_token_hash,active,university_login)
+      VALUES (?,?,?,?,1,?)`).run(id, courseId, displayName, tokenHash, universityLogin)
+    return this.getStudent(id)
+  }
+
   getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, active FROM students WHERE id=?').get(id) || null }
   studentForToken(token) {
     if (!token) return null
     return this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName FROM students
       WHERE enrollment_token_hash=? AND active=1`).get(hashEnrollmentToken(token)) || null
   }
-  listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
+  listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
 
   upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null }) {
     this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version)

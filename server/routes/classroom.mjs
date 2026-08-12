@@ -8,6 +8,7 @@ import { createProject, readProject, sourceDir, writeSourceFileAsync } from '../
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
+import crypto from 'node:crypto'
 
 // Everything the student uploaded, in the shape they uploaded it. Deliberately
 // not listSourceFiles, which filters by client-source ownership rules — an
@@ -118,6 +119,21 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
 
 export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, dispatchSubmissionBuild = dispatchBuild } = {}) {
   const router = Router()
+  router.post('/courses/:courseId/register', (req, res) => {
+    const displayName = String(req.body?.displayName || '').trim()
+    const universityLogin = String(req.body?.universityLogin || '').trim().toLowerCase()
+    if (!displayName || !universityLogin) return res.status(400).json({ error: 'displayName and universityLogin are required' })
+    if (!/^[a-z0-9._-]+$/.test(universityLogin)) return res.status(400).json({ error: 'universityLogin contains unsupported characters' })
+    if (!store.getCourse(req.params.courseId)) return res.status(404).json({ error: 'Course not found' })
+    const enrollmentToken = crypto.randomBytes(32).toString('hex')
+    try {
+      const student = store.registerStudent({ courseId: req.params.courseId, displayName, universityLogin, enrollmentToken })
+      return res.status(201).json({ student, enrollmentToken })
+    } catch (error) {
+      if (String(error?.code || '').startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ error: 'That university login is already registered for this course' })
+      throw error
+    }
+  })
   router.use((req, res, next) => {
     const principal = resolvePrincipal(req, store)
     if (!principal) return res.status(401).json({ error: 'Unauthorized' })

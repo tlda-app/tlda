@@ -54,6 +54,28 @@ test('a student cannot bypass archive hand-in with an arbitrary document key', a
   } finally { f.close() }
 })
 
+test('a student can register their name and university login and receive a token', async () => {
+  const f = await serverFixture()
+  try {
+    let response = await f.request('/courses/qtm285/register', '', {
+      method: 'POST',
+      body: JSON.stringify({ displayName: 'Katherine Johnson', universityLogin: 'kjohn42' }),
+    })
+    assert.equal(response.status, 201)
+    const registration = await response.json()
+    assert.equal(registration.student.displayName, 'Katherine Johnson')
+    assert.equal(registration.student.id, 'qtm285:kjohn42')
+    assert.equal(f.store.studentForToken(registration.enrollmentToken).id, registration.student.id)
+    assert.equal(f.store.listStudents('qtm285').find(student => student.id === registration.student.id).universityLogin, 'kjohn42')
+
+    response = await f.request('/courses/qtm285/register', '', {
+      method: 'POST',
+      body: JSON.stringify({ displayName: 'Someone Else', universityLogin: 'kjohn42' }),
+    })
+    assert.equal(response.status, 409)
+  } finally { f.close() }
+})
+
 test('only instructor can read gradebook and return feedback', async () => {
   const f = await serverFixture()
   try {
