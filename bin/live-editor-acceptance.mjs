@@ -284,6 +284,8 @@ const readBuffer = () => inPage(function () {
 })
 
 const failures = []
+let storyOnePassed = false
+let storyTwoOutcome = 'did not run'
 
 // --- story one: you are not told what changed ----------------------------
 {
@@ -380,6 +382,7 @@ const failures = []
   const serverHasBobsText = says(server, 'and then some')
 
   if (!raced.raced) {
+    storyTwoOutcome = 'did not reproduce the race'
     console.log('STORY TWO — did not observe the save in flight, so the race never ran. '
       + `Statuses seen: ${JSON.stringify(raced.seen.filter(Boolean).slice(0, 8))}. Not counted either way.`)
   } else if (editorHasBobsText && !serverHasBobsText && editorClaimsSynced) {
@@ -391,6 +394,7 @@ const failures = []
       + '    a buffer that says it is safe, and it is not on the server.',
     )
   } else {
+    storyTwoOutcome = 'ran and converged'
     console.log(`STORY TWO — ran, and converged. Editor status ${JSON.stringify(raced.final)}; `
       + `server ${serverHasBobsText ? 'has' : 'does not have'} the final text. `
       + 'Recorded, not counted as a failure.')
@@ -404,5 +408,8 @@ if (failures.length > 0) {
   process.exit(1)
 }
 
-console.log('\nthe linked editor is working: you are told what changed, and told when you are refused')
+// Names only what ran. The fixed line this replaces claimed "told what changed,
+// and told when you are refused" on the verdict run, where story two had
+// skipped — an overclaim in the one sentence a person is most likely to quote.
+console.log(`\nno acceptance story failed. STORY ONE ${storyOnePassed ? 'passed' : 'did not run'}; STORY TWO ${storyTwoOutcome}.`)
 process.exit(0)
