@@ -243,11 +243,17 @@ COPY server/package-lock.json* ./
 RUN npm install --production
 
 # --- server code ---
-# LOAD-BEARING: the COPY paths below are mirrored in SHIPPED_PATHS in the dev
-# bot's server-import-resolution.mjs, which checks that nothing on the boot path
+# LOAD-BEARING: the COPY paths below are mirrored in SHIPPED_PATHS in
+# scripts/check-server-imports.mjs, which checks that nothing on the boot path
 # imports a package missing from server/package.json or a file that never ships.
 # Add or remove a COPY here without updating that array and the check goes
 # quietly out of date, which is the failure it exists to catch.
+#
+# That check now runs in `pre-receive`, so it cannot be off. It previously lived
+# only in the dev bot, and on 2026-08-12 the bot was in a restart loop all day:
+# c668f9b78 imported `yjs` in server/lib/source-room-daemon.mjs, declared at the
+# root and not here, and crash-looped testing to its restart cap. The check was
+# correct and nobody was running it.
 COPY server/lib/ ./server/lib/
 COPY server/routes/ ./server/routes/
 COPY server/unified-server.mjs ./server/
