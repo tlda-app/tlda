@@ -45,6 +45,8 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
+import { shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
+// @ts-ignore — vanilla JS module
 import {
   FLEET_TEAM_FROM_ROLE,
   FLEET_TEAM_TO_ROLE,
@@ -3892,7 +3894,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const explicitScrollInputTimerRef = useRef(0)
   const followInvariantTimerRef = useRef(0)
   const goToTailRunRef = useRef(0)
-  const deferredGeometryReconcileRef = useRef(false)
   // The geometry seam records the scrollTop it writes. The next matching scroll
   // event updates measurements but cannot be interpreted as reader intent.
   const geometryReconcileScrollTopRef = useRef<number | null>(null)
@@ -3968,10 +3969,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   const restoreViewportAnchor = useCallback(() => {
     const el = chatLogRef.current
     const anchor = viewportAnchorRef.current
-    if (!el || !userScrolledUpRef.current || !anchor?.key || touchScrollActiveRef.current) return false
+    const anchorKey = anchor?.key
+    const anchorTop = anchor?.top
+    if (!el || !anchorKey || typeof anchorTop !== 'number' || !shouldPreserveChatViewport({
+      scrolledUp: userScrolledUpRef.current,
+      hardLocked: hardLockedRef.current,
+      hasAnchor: true,
+    })) return false
     const viewportTop = el.getBoundingClientRect().top
     const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
-    const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchor.key)
+    const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchorKey)
     if (!row) {
       // The anchored row left the DOM. Virtuoso unmounts rows outside its render
       // window, which is what a reanchor does — so this is the likely state
@@ -3980,13 +3987,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       // has always been recorded; this is the other half of the same story.
       log.metric('chat-anchor', 'anchor row gone; viewport left uncorrected', {
         panelId: String(shape.id),
-        anchorKey: anchor.key,
+        anchorKey,
         renderedRows: rows.length,
         top: el.scrollTop,
       })
       return false
     }
-    const delta = row.getBoundingClientRect().top - viewportTop - anchor.top
+    const delta = row.getBoundingClientRect().top - viewportTop - anchorTop
     if (Math.abs(delta) <= 0.5) return true
     const available = delta < 0
       ? el.scrollTop
@@ -3994,7 +4001,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (Math.abs(delta) > available + 0.5) {
       log.metric('chat-anchor', 'anchor correction outside scroll range', {
         panelId: String(shape.id),
-        anchorKey: anchor.key,
+        anchorKey,
         delta: Math.round(delta),
         available: Math.round(available),
         scrollTop: Math.round(el.scrollTop),
@@ -4008,7 +4015,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollTop
     log.metric('chat-anchor', 'preserved viewport across content resize', {
       panelId: String(shape.id),
-      anchorKey: anchor.key,
+      anchorKey,
       delta: Math.round(delta),
     })
     return true
@@ -4017,24 +4024,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const reconcileViewportGeometry = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
-    if (touchScrollActiveRef.current) {
-      // Where the skip actually happens. restoreViewportAnchor has its own
-      // touchScrollActive term, but this early return is its only caller's
-      // first act, so that term never decides anything — instrumenting it
-      // would have recorded a permanent zero. One record per gesture: the
-      // deferred flag is already the dedupe.
-      if (!deferredGeometryReconcileRef.current) {
-        log.metric('chat-anchor', 'geometry reconcile deferred; touch gesture in flight', {
-          panelId: String(shape.id),
-          anchorKey: viewportAnchorRef.current?.key ?? null,
-          scrolledUp: userScrolledUpRef.current,
-          top: el.scrollTop,
-        })
-      }
-      deferredGeometryReconcileRef.current = true
-      return
-    }
-    deferredGeometryReconcileRef.current = false
     if (userScrolledUpRef.current && !hardLockedRef.current) {
       restoreViewportAnchor()
       captureViewportAnchor()
@@ -4297,7 +4286,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           touchScrollActiveRef.current = false
           // Touch's settle detector. Same rule as the wheel's above.
           resumeFollowIfSettledAtBottom('touch-settle-at-bottom')
-          if (deferredGeometryReconcileRef.current) reconcileViewportGeometry()
         }
       }, TOUCH_SCROLL_SETTLE_MS)
     }
