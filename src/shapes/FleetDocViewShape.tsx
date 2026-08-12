@@ -36,7 +36,7 @@ import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { FLEET_SHAPE_TYPES, nudgeFleetPanelTranslate } from './fleet-utils'
+import { createOwnedFleetPanelShape, FLEET_SHAPE_TYPES, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
@@ -503,15 +503,17 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         >{showSources ? '▢' : '⊛'}</button>
         <button
           className="fleet-layout-btn"
-          onPointerUp={(e: any) => {
+          onPointerUp={async (e: any) => {
             e.stopPropagation()
             if (!mainEditor) return
             const newId = createShapeId()
-            mainEditor.createShape({
-              id: newId, type: 'fleet-docview' as any,
+            const createdId = await createOwnedFleetPanelShape(mainEditor, {
+              id: newId,
+              type: 'fleet-docview',
               x: shape.x + w / 2 + 5, y: shape.y, isLocked: false,
               props: { w: w / 2 - 5, h, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds },
             })
+            if (!createdId) return
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
             mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...normalizedProps, w: w / 2 - 5 } })
           }}
@@ -519,15 +521,17 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         >⬒</button>
         <button
           className="fleet-layout-btn"
-          onPointerUp={(e: any) => {
+          onPointerUp={async (e: any) => {
             e.stopPropagation()
             if (!mainEditor) return
             const newId = createShapeId()
-            mainEditor.createShape({
-              id: newId, type: 'fleet-docview' as any,
+            const createdId = await createOwnedFleetPanelShape(mainEditor, {
+              id: newId,
+              type: 'fleet-docview',
               x: shape.x, y: shape.y + h / 2 + 5, isLocked: false,
               props: { w, h: h / 2 - 5, sources: sourcesRaw, label, page, yTop, yBottom, title, targetShapeId, useFullBounds },
             })
+            if (!createdId) return
             if (mainEditor.getShape(shape.id)?.isLocked) mainEditor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
             mainEditor.updateShape({ id: shape.id, type: shape.type, props: { ...normalizedProps, h: h / 2 - 5 } })
           }}

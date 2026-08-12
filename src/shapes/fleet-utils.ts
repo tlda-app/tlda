@@ -12,6 +12,7 @@ import {
   FLEET_SHAPE_TYPES,
   fleetPanelDefaultProps,
 } from './fleet-panel-registry'
+import { shouldRepairFleetPanelOwnership, type FleetOwnerProps } from './fleet-owner-repair'
 import {
   getAnchorIdForOwnerKey,
   getMyAnchorId,
@@ -392,13 +393,26 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
 }
 
 /** Enter TLDraw select mode for direct resize/move of a fleet panel. */
-export function selectFleetShapeForLayout(editor: Editor, shape: TLShape) {
-  if (shape.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+export async function selectFleetShapeForLayout(editor: Editor, shape: TLShape) {
+  await whenDeviceReady()
+  const currentShape = editor.getShape(shape.id) ?? shape
+  const myId = getHumanId()
+  const myDevice = getDeviceId()
+  const currentProps = ((currentShape as TLShape & { props?: FleetOwnerProps }).props ?? {}) as FleetOwnerProps
+  const missingOwner = shouldRepairFleetPanelOwnership(FLEET_SHAPE_TYPES.has(currentShape.type as string), currentProps)
+  if (missingOwner && myId && myDevice) {
+    editor.updateShape({
+      id: currentShape.id,
+      type: currentShape.type,
+      props: { ...currentProps, userId: myId, deviceId: myDevice },
+    } as TLShapePartial)
+  }
+  if (currentShape.isLocked) editor.updateShape({ id: currentShape.id, type: currentShape.type, isLocked: false })
   syncFleetLayoutSelectionViewport(editor)
-  withFleetLayoutSelectionIntent(shape.id, () => {
+  withFleetLayoutSelectionIntent(currentShape.id, () => {
     editor.setCurrentTool('select')
-    editor.select(shape.id)
-    if (typeof document !== 'undefined' && FLEET_SHAPE_TYPES.has(shape.type as string)) {
+    editor.select(currentShape.id)
+    if (typeof document !== 'undefined' && FLEET_SHAPE_TYPES.has(currentShape.type as string)) {
       enterFleetLayoutMode()
     }
   })
