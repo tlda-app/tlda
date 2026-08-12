@@ -129,6 +129,25 @@ const files = await getJson(api('/files'))
 assert.ok(files.ok, `could not read ${PROJECT}'s file list: ${files.unreachable || files.status}`)
 assert.ok(files.body.files.includes(FILE), `${FILE} is not in ${PROJECT}'s manifest: ${files.body.files.join(', ')}`)
 
+// The browser loads the DEPLOYED bundle, not this checkout. A red run against a
+// bundle that does not contain the room means "not deployed yet" and nothing
+// about the wiring — so feature-detect the served JavaScript rather than
+// trusting a sha, and refuse to draw a conclusion instead of drawing a wrong
+// one. (Inspect the bundle named by the served index.html; other bundles and
+// source maps are not proof of what the browser loads.)
+const indexHtml = await fetch(SERVER, { signal: AbortSignal.timeout(90_000) }).then(r => r.text())
+const bundlePath = (indexHtml.match(/\/assets\/index-[A-Za-z0-9_-]+\.js/) || [])[0]
+assert.ok(bundlePath, `could not find the app bundle in the served index.html at ${SERVER}`)
+const bundle = await fetch(`${SERVER}${bundlePath}`, { signal: AbortSignal.timeout(180_000) }).then(r => r.text())
+const buildInfo = await getJson(`${SERVER}/api/build-info`)
+const deployedSha = buildInfo.ok ? String(buildInfo.body.gitSha || '').slice(0, 9) : 'unknown'
+assert.ok(
+  bundle.includes('source-sync'),
+  `The deployed bundle (${bundlePath}, sha ${deployedSha}) has no source-room client in it.\n`
+  + '    This run cannot answer whether the editor receives changes: a failure would mean\n'
+  + '    "not deployed", not "the wiring is incomplete". Deploy the room and run it again.',
+)
+
 execFileSync('tlda-dev', ['pw', 'setup', '--project', PROJECT], { encoding: 'utf8', timeout: 300_000 })
 
 const opening = `Acceptance run.\n\nA paragraph both of us will edit.\n`
