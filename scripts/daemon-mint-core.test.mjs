@@ -56,6 +56,26 @@ assert.equal(facts.fleetId, 'fleet:test')
 assert.equal(facts.sessionId, 'session:test')
 assert.equal(events.filter(value => value.startsWith('bind:')).length, 1)
 
+const lifecycleEvents = []
+const lifecycleCore = createDaemonMintCore({
+  store,
+  mintId: () => 'mint:lifecycle',
+  launchProcess: async () => ({ session_id: 'session:lifecycle', tmux_session: 'fleet-lifecycle', cwd: '/tmp/lifecycle', harness: 'codex', model: 'gpt-test' }),
+  requestSeat: async () => { throw new Error('server unavailable') },
+  bindSeat: async () => {},
+})
+const lifecycleFacts = await lifecycleCore.mint({
+  name: 'lifecycle',
+  launch: { cwd: '/tmp/lifecycle', kind: 'codex', model: 'gpt-test' },
+  onLifecycleEvent: (event, data) => lifecycleEvents.push([event, data]),
+})
+assert.equal(lifecycleFacts.registrationError, 'server unavailable')
+assert.deepEqual(lifecycleEvents.map(([event]) => event), ['server-registration-attempt', 'local-launch', 'server-registration-deferred'])
+assert.equal(lifecycleEvents[0][1].local_agent_id, 'mint:lifecycle')
+assert.equal(lifecycleEvents[1][1].tmux_session, 'fleet-lifecycle')
+assert.equal(lifecycleEvents[1][1].local_agent_id, 'mint:lifecycle')
+assert.equal(lifecycleEvents[2][1].reason, 'server unavailable')
+
 store.setFact('mint:test', 'fleet_id', 'fleet:test')
 assert.throws(
   () => store.setFact('mint:test', 'fleet_id', 'fleet:other'),

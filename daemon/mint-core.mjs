@@ -4,6 +4,14 @@ function resultFact(result, snake, camel = snake) {
   return result?.[snake] ?? result?.[camel] ?? null
 }
 
+function emitLifecycle(onLifecycleEvent, event, data = {}) {
+  try {
+    onLifecycleEvent?.(event, data)
+  } catch {
+    // Progress reporting is advisory; mint facts are the durable result.
+  }
+}
+
 function persistentLaunchRecipe(launch = {}) {
   const { permissionSet: _permissionSet, permission_set: _permission_set, ...rest } = launch || {}
   return rest
@@ -74,7 +82,10 @@ export function createDaemonMintCore({
     launch = {},
     request_seat = true,
     fail_if_not_fresh = false,
+    onLifecycleEvent = null,
+    on_lifecycle_event = null,
   } = {}) {
+    const lifecycle = onLifecycleEvent || on_lifecycle_event
     const id = suppliedMintId || mintId()
     store.ensure(id)
     if (envName) store.setFact(id, 'env_name', envName)
@@ -92,16 +103,68 @@ export function createDaemonMintCore({
         name,
         ...launch,
       }))
-      .then(process => recordProcess(id, process))
+      .then(async process => {
+        const facts = await recordProcess(id, process)
+        emitLifecycle(lifecycle, 'local-launch', {
+          local_agent_id: id,
+          fleet_id: facts?.fleetId || suppliedFleetId || null,
+          name: facts?.friendlyName || name || null,
+          tmux_session: process?.tmux_session || process?.tmuxSession || facts?.processState?.tmux_session || null,
+          cwd: process?.cwd || launch?.cwd || null,
+          harness: process?.harness || launch?.kind || null,
+          model: process?.model || launch?.model || null,
+        })
+        if (facts?.joinedAt) {
+          emitLifecycle(lifecycle, 'server-binding-joined', {
+            local_agent_id: id,
+            fleet_id: facts.fleetId || suppliedFleetId || null,
+            name: facts.friendlyName || name || null,
+          })
+        }
+        return facts
+      })
     const seatPromise = suppliedFleetId || !request_seat
       ? Promise.resolve(null)
       : Promise.resolve()
-          .then(() => requestSeat({ mint_id: id, name, metadata, launch, fail_if_not_fresh }))
-          .then(seat => recordSeat(id, seat))
-          .catch(error => ({ error: error?.message || String(error) }))
+          .then(() => {
+            emitLifecycle(lifecycle, 'server-registration-attempt', {
+              local_agent_id: id,
+              name,
+            })
+            return requestSeat({ mint_id: id, name, metadata, launch, fail_if_not_fresh })
+          })
+          .then(async seat => {
+            const facts = await recordSeat(id, seat)
+            emitLifecycle(lifecycle, 'server-registration-joined', {
+              local_agent_id: id,
+              fleet_id: facts?.fleetId || resultFact(seat, 'fleet_id', 'fleetId') || null,
+              name: facts?.friendlyName || name || null,
+            })
+            if (facts?.joinedAt) {
+              emitLifecycle(lifecycle, 'server-binding-joined', {
+                local_agent_id: id,
+                fleet_id: facts.fleetId || resultFact(seat, 'fleet_id', 'fleetId') || null,
+                name: facts.friendlyName || name || null,
+              })
+            }
+            return facts
+          })
+          .catch(error => {
+            const message = error?.message || String(error)
+            return { error: message }
+          })
 
     const [, seat] = await Promise.all([processPromise, seatPromise])
     const facts = store.get(id)
+    if (seat?.error) {
+      emitLifecycle(lifecycle, 'server-registration-deferred', {
+        local_agent_id: id,
+        fleet_id: facts?.fleetId || suppliedFleetId || null,
+        name: facts?.friendlyName || name || null,
+        tmux_session: facts?.processState?.tmux_session || null,
+        reason: seat.error,
+      })
+    }
     return seat?.error ? { ...facts, registrationError: seat.error } : facts
   }
 

@@ -3357,14 +3357,19 @@ function printMintLifecycleEvent(event, data = {}) {
   }
   if (event === 'local-launch') {
     console.log(`Local launch ${localId || '(pending local id)'}${tmuxSession ? ` in ${tmuxSession}` : ''}`)
+    if (localId) console.log(`  Agent is running locally; press Ctrl-Z to background this wait, then run: tlda agent attach ${localId}`)
     return
   }
   if (event === 'server-registration-joined') {
     console.log(`Server registration joined ${fleetId || '(pending fleet id)'}`)
     return
   }
+  if (event === 'server-registration-attempt') {
+    console.log(`Server registration started${localId ? ` for ${localId}` : ''}`)
+    return
+  }
   if (event === 'server-binding-joined') {
-    console.log(`Server binding joined ${fleetId || '(pending fleet id)'}`)
+    console.log(`Route published${fleetId ? ` for ${fleetId}` : ''}`)
     return
   }
   if (event === 'server-registration-deferred') {
