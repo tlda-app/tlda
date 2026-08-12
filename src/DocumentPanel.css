@@ -2517,10 +2517,6 @@ body.warm-mode [data-shape-type="fleet-chat"] textarea {
   background: rgba(0, 0, 0, 0.03) !important;
 }
 
-body.warm-mode [data-shape-id] svg {
-  filter: sepia(0.15) saturate(0.9) brightness(0.97);
-}
-
 /* Voice note button — bottom right, stacked above highlighter */
 .voice-note-btn {
   display: flex;
