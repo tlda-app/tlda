@@ -17,8 +17,7 @@ body.fog-dark-mode [data-shape-type="fleet-chat"] textarea {
 }
 
 body.fog-dark-mode .fleet-chat-shape,
-body.fog-dark-mode .fleet-agents-shape,
-body.fog-dark-mode .fleet-inbox-shape {
+body.fog-dark-mode .fleet-agents-shape {
   --bg: #1a2024;
   --surface: #222a2e;
   --text: #a0b8bc;
@@ -32,7 +31,6 @@ body.fog-dark-mode .fleet-inbox-shape {
   --cyan: #58c0b8;
   --purple: #9090c0;
   --orange: #c09868;
-  --red: #d87878;
   --glass-1: rgba(140,190,200,0.03);
   --glass-2: rgba(140,190,200,0.05);
   --glass-3: rgba(140,190,200,0.06);
@@ -171,8 +169,7 @@ body.fog-light-mode [data-shape-type="fleet-chat"] textarea {
 }
 
 body.fog-light-mode .fleet-chat-shape,
-body.fog-light-mode .fleet-agents-shape,
-body.fog-light-mode .fleet-inbox-shape {
+body.fog-light-mode .fleet-agents-shape {
   --bg: #d2dfe3;
   --surface: #e8eef0;
   --text: #1a3540;
@@ -185,8 +182,6 @@ body.fog-light-mode .fleet-inbox-shape {
   --blue: #1a6888;
   --cyan: #0a7880;
   --purple: #6868a0;
-  --orange: #8a5a28;
-  --red: #a83f48;
   --glass-1: rgba(0,40,55,0.03);
   --glass-2: rgba(0,40,55,0.04);
   --glass-3: rgba(0,40,55,0.06);
@@ -313,60 +308,58 @@ body.fog-light-mode .book-tab--active {
 /* ------------------------------------------------------------------ */
 
 body.warm-light-mode,
-body.warm-light-mode .tl-theme__dark { --tlda-canvas-background: #eee9e1; }
-body.warm-light-mode .tl-background { background: #eee9e1 !important; }
+body.warm-light-mode .tl-theme__dark { --tlda-canvas-background: #e8e1d7; }
+body.warm-light-mode .tl-background { background: #e8e1d7 !important; }
 body.warm-light-mode .svg-page-background { background: transparent; }
 body.warm-light-mode .fleet-chat-shape,
-body.warm-light-mode .fleet-agents-shape,
-body.warm-light-mode .fleet-inbox-shape {
-  --bg: #eee9e1; --surface: #f7f3ed; --text: #453f38; --text-dim: #746c63;
-  --text-bright: #2f2a25; --border: #ddd5ca; --accent: #75638f; --purple: #75638f;
-  --glass-1: rgba(47,42,37,.03); --glass-2: rgba(47,42,37,.04); --glass-3: rgba(47,42,37,.06);
-  --glass-4: rgba(47,42,37,.08); --glass-5: rgba(47,42,37,.10); --glass-6: rgba(47,42,37,.12);
+body.warm-light-mode .fleet-agents-shape {
+  --bg: #e8e1d7; --surface: #f1ece4; --text: #3d342a; --text-dim: #66594c;
+  --text-bright: #2a2119; --border: #d8cfc2; --accent: #8b6750;
+  --glass-1: rgba(61,52,42,.03); --glass-2: rgba(61,52,42,.04); --glass-3: rgba(61,52,42,.06);
+  --glass-4: rgba(61,52,42,.08); --glass-5: rgba(61,52,42,.10); --glass-6: rgba(61,52,42,.12);
 }
-body.warm-light-mode .cluster-shape { --bg: #eee9e1; --surface: #f7f3ed; --text: #453f38; --text-dim: #746c63; --text-bright: #2f2a25; --border: #ddd5ca; }
+body.warm-light-mode .cluster-shape { --bg: #e8e1d7; --surface: #f1ece4; --text: #3d342a; --text-dim: #66594c; --text-bright: #2a2119; --border: #d8cfc2; }
 body.warm-light-mode .scrolly-figure-wrap,
 body.warm-light-mode .canvas-clip-panel,
-body.warm-light-mode .canvas-clip-panel__content { background: #eee9e1; }
-body.warm-light-mode { --pill-icon-color: #453f38; --pill-icon-color-hover: #75638f; }
-body.warm-light-mode .tlui-toolbar { background: rgba(247,243,237,.6) !important; }
-body.warm-light-mode .doc-panel { color: rgba(69,63,56,.1); }
+body.warm-light-mode .canvas-clip-panel__content { background: #e8e1d7; }
+body.warm-light-mode { --pill-icon-color: #3d342a; --pill-icon-color-hover: #3d342a; }
+body.warm-light-mode .tlui-toolbar { background: rgba(241,236,228,.6) !important; }
+body.warm-light-mode .doc-panel { color: rgba(61,52,42,.1); }
 body.warm-light-mode .doc-panel:hover,
-body.warm-light-mode .doc-panel-open { background: rgba(247,243,237,.92); color: rgba(69,63,56,.6); }
+body.warm-light-mode .doc-panel-open { background: rgba(241,236,228,.92); color: rgba(61,52,42,.6); }
 body.warm-light-mode .doc-panel:hover .doc-panel-content,
 body.warm-light-mode .doc-panel:hover .doc-panel-tabs,
 body.warm-light-mode .doc-panel:hover .search-input-wrap,
 body.warm-light-mode .doc-panel-open .doc-panel-content,
 body.warm-light-mode .doc-panel-open .doc-panel-tabs,
-body.warm-light-mode .doc-panel-open .search-input-wrap { color: #453f38; }
+body.warm-light-mode .doc-panel-open .search-input-wrap { color: #3d342a; }
 
 body.warm-dark-mode,
-body.warm-dark-mode .tl-theme__dark { --tlda-canvas-background: #211f1d; }
-body.warm-dark-mode .tl-background { background: #211f1d !important; }
+body.warm-dark-mode .tl-theme__dark { --tlda-canvas-background: #241f1b; }
+body.warm-dark-mode .tl-background { background: #241f1b !important; }
 body.warm-dark-mode .svg-page-background { background: transparent; }
 body.warm-dark-mode .fleet-chat-shape,
-body.warm-dark-mode .fleet-agents-shape,
-body.warm-dark-mode .fleet-inbox-shape {
-  --bg: #211f1d; --surface: #2b2825; --text: #bdb5ab; --text-dim: #8d857c;
-  --text-bright: #ded7ce; --border: #403a35; --accent: #9b89b4; --purple: #9b89b4;
-  --glass-1: rgba(222,215,206,.03); --glass-2: rgba(222,215,206,.05); --glass-3: rgba(222,215,206,.06);
-  --glass-4: rgba(222,215,206,.08); --glass-5: rgba(222,215,206,.10); --glass-6: rgba(222,215,206,.12);
+body.warm-dark-mode .fleet-agents-shape {
+  --bg: #241f1b; --surface: #302923; --text: #c6b9aa; --text-dim: #8b7c6d;
+  --text-bright: #e1d5c7; --border: #40362e; --accent: #bd9072;
+  --glass-1: rgba(225,213,199,.03); --glass-2: rgba(225,213,199,.05); --glass-3: rgba(225,213,199,.06);
+  --glass-4: rgba(225,213,199,.08); --glass-5: rgba(225,213,199,.10); --glass-6: rgba(225,213,199,.12);
 }
-body.warm-dark-mode .cluster-shape { --bg: #211f1d; --surface: #2b2825; --text: #bdb5ab; --text-dim: #8d857c; --text-bright: #ded7ce; --border: #403a35; }
+body.warm-dark-mode .cluster-shape { --bg: #241f1b; --surface: #302923; --text: #c6b9aa; --text-dim: #8b7c6d; --text-bright: #e1d5c7; --border: #40362e; }
 body.warm-dark-mode .scrolly-figure-wrap,
 html body.warm-dark-mode .clip-panel,
-html body.warm-dark-mode .clip-panel-canvas { background: #211f1d; }
-body.warm-dark-mode { --pill-icon-color: #ded7ce; --pill-icon-color-hover: #9b89b4; }
-body.warm-dark-mode .tlui-toolbar { background: rgba(33,31,29,.75) !important; }
-body.warm-dark-mode .doc-panel { color: rgba(222,215,206,.1); }
+html body.warm-dark-mode .clip-panel-canvas { background: #241f1b; }
+body.warm-dark-mode { --pill-icon-color: #fff; --pill-icon-color-hover: #fff; }
+body.warm-dark-mode .tlui-toolbar { background: rgba(36,31,27,.75) !important; }
+body.warm-dark-mode .doc-panel { color: rgba(225,213,199,.1); }
 body.warm-dark-mode .doc-panel:hover,
-body.warm-dark-mode .doc-panel-open { background: rgba(43,40,37,.92); color: rgba(222,215,206,.6); }
+body.warm-dark-mode .doc-panel-open { background: rgba(48,41,35,.92); color: rgba(225,213,199,.6); }
 body.warm-dark-mode .doc-panel:hover .doc-panel-content,
 body.warm-dark-mode .doc-panel:hover .doc-panel-tabs,
 body.warm-dark-mode .doc-panel:hover .search-input-wrap,
 body.warm-dark-mode .doc-panel-open .doc-panel-content,
 body.warm-dark-mode .doc-panel-open .doc-panel-tabs,
-body.warm-dark-mode .doc-panel-open .search-input-wrap { color: #ded7ce; }
+body.warm-dark-mode .doc-panel-open .search-input-wrap { color: #e1d5c7; }
 
 /* ------------------------------------------------------------------ */
 /* Power Company — black and white with lime and hot-pink accents     */

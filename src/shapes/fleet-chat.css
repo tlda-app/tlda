@@ -2,8 +2,7 @@
 
 /* --- Theme variables (default dark theme) --- */
 .fleet-chat-shape,
-.fleet-agents-shape,
-.fleet-inbox-shape {
+.fleet-agents-shape {
   --bg: #0f0f1a;
   --surface: #161625;
   --text: #a8a8c0;
@@ -40,16 +39,7 @@
   --cyan: #6aafb0;
   --red: #e55;
   --border: #1e1e32;
-  --agent-human: #8b6fc2;
-  --agent-manager: #4f9a7a;
-  --agent-0: #4f8fbd;
-  --agent-1: #8174b2;
-  --agent-2: #b77a4d;
-  --agent-3: #3f9698;
-  --agent-4: #a96782;
-  --agent-5: #a58e3e;
-  --label: #4f9a7a;
-  --project-label: #4f8fbd;
+  --nick-pink: #b87a95;
   --glass-1: rgba(255,255,255,0.02);
   --glass-2: rgba(255,255,255,0.03);
   --glass-3: rgba(255,255,255,0.04);
@@ -353,15 +343,15 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 .fleet-chat-shape .fleet-filter-chip-to,
 .fleet-inbox-shape .fleet-filter-chip-to {
-  color: var(--blue);
-  border-color: color-mix(in srgb, var(--blue) 38%, transparent);
-  background: color-mix(in srgb, var(--blue) 8%, transparent);
+  color: #7a9ec8;
+  border-color: #7a9ec860;
+  background: #7a9ec815;
 }
 .fleet-chat-shape .fleet-filter-chip-from,
 .fleet-inbox-shape .fleet-filter-chip-from {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 38%, transparent);
-  background: color-mix(in srgb, var(--green) 8%, transparent);
+  color: #7ab8a0;
+  border-color: #7ab8a060;
+  background: #7ab8a015;
 }
 .fleet-chat-shape .fleet-filter-chip-ghost,
 .fleet-inbox-shape .fleet-filter-chip-ghost {
@@ -458,11 +448,11 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 .fleet-chat-shape .fleet-filter-pane-active.fleet-filter-pane-to,
 .fleet-inbox-shape .fleet-filter-pane-active.fleet-filter-pane-to {
-  background: color-mix(in srgb, var(--blue) 8%, transparent);
+  background: rgba(122, 158, 200, 0.08);
 }
 .fleet-chat-shape .fleet-filter-pane-active.fleet-filter-pane-from,
 .fleet-inbox-shape .fleet-filter-pane-active.fleet-filter-pane-from {
-  background: color-mix(in srgb, var(--green) 8%, transparent);
+  background: rgba(122, 184, 160, 0.08);
 }
 .fleet-chat-shape .fleet-filter-pane-label,
 .fleet-inbox-shape .fleet-filter-pane-label {
@@ -548,22 +538,14 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 
 /* Light theme overrides */
 .tl-theme__light .fleet-chat-shape,
-.tl-theme__light .fleet-agents-shape,
-.tl-theme__light .fleet-inbox-shape {
+.tl-theme__light .fleet-agents-shape {
   --bg: #fafafa;
   --surface: #f0f0f5;
   --text: #444;
   --text-dim: #555;
   --text-bright: #222;
   --border: #ddd;
-  --accent: #5b67d8;
-  --green: #347a64;
-  --yellow: #806a16;
-  --blue: #356f9a;
-  --purple: #6b57a8;
-  --orange: #9a5f32;
-  --cyan: #2c7b7d;
-  --red: #b83b42;
+  --accent: #7c8aff;
   --glass-1: rgba(0,0,0,0.02);
   --glass-2: rgba(0,0,0,0.03);
   --glass-3: rgba(0,0,0,0.04);
@@ -757,15 +739,15 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 }
 
 /* --- Nick colors --- */
-.fleet-chat-shape .nick-human { color: var(--agent-human); }
-.fleet-chat-shape .nick-manager { color: var(--agent-manager); }
+.fleet-chat-shape .nick-human { color: #9370db; }
+.fleet-chat-shape .nick-manager { color: var(--green); }
 .fleet-chat-shape .nick-keepalive { color: var(--text-dim); }
-.fleet-chat-shape .nick-agent-0 { color: var(--agent-0); }
-.fleet-chat-shape .nick-agent-1 { color: var(--agent-1); }
-.fleet-chat-shape .nick-agent-2 { color: var(--agent-2); }
-.fleet-chat-shape .nick-agent-3 { color: var(--agent-3); }
-.fleet-chat-shape .nick-agent-4 { color: var(--agent-4); }
-.fleet-chat-shape .nick-agent-5 { color: var(--agent-5); }
+.fleet-chat-shape .nick-agent-0 { color: var(--blue); }
+.fleet-chat-shape .nick-agent-1 { color: var(--purple); }
+.fleet-chat-shape .nick-agent-2 { color: var(--orange); }
+.fleet-chat-shape .nick-agent-3 { color: var(--cyan); }
+.fleet-chat-shape .nick-agent-4 { color: var(--nick-pink); }
+.fleet-chat-shape .nick-agent-5 { color: var(--yellow); }
 
 /* --- Chat arrow --- */
 .fleet-chat-shape .chat-arrow {
@@ -2396,7 +2378,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   transition: background 0.2s;
 }
 .fleet-agents-shape .fleet-agents-unread-dot.active {
-  background: var(--blue);
+  background: #7a9ec8;
 }
 
 /* --- Kill/respawn button (left of agent name, on hover) --- */
@@ -3751,7 +3733,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 /* Layout button active state */
 .fleet-shape .fleet-layout-btn.active {
   opacity: 1 !important;
-  color: var(--purple);
+  color: #9370db;
 }
 
 /* Composer utility rail: terminal, traffic toggle, follow/jump, and clear stay
@@ -4615,28 +4597,28 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   transition: background 0.15s;
 }
 .fleet-chat-shape .plan-approve-btn {
-  background: color-mix(in srgb, var(--green) 20%, transparent);
+  background: rgba(122, 184, 160, 0.2);
   color: var(--green);
-  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border: 1px solid rgba(122, 184, 160, 0.3);
 }
 .fleet-chat-shape .plan-approve-btn:hover {
-  background: color-mix(in srgb, var(--green) 35%, transparent);
+  background: rgba(122, 184, 160, 0.35);
 }
 .fleet-chat-shape .plan-supervised-btn {
-  background: color-mix(in srgb, var(--blue) 15%, transparent);
-  color: var(--blue);
-  border: 1px solid color-mix(in srgb, var(--blue) 25%, transparent);
+  background: rgba(100, 180, 255, 0.15);
+  color: #64b4ff;
+  border: 1px solid rgba(100, 180, 255, 0.25);
 }
 .fleet-chat-shape .plan-supervised-btn:hover {
-  background: color-mix(in srgb, var(--blue) 28%, transparent);
+  background: rgba(100, 180, 255, 0.28);
 }
 .fleet-chat-shape .plan-reject-btn {
-  background: color-mix(in srgb, var(--red) 15%, transparent);
+  background: rgba(229, 85, 85, 0.15);
   color: var(--red);
-  border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+  border: 1px solid rgba(229, 85, 85, 0.25);
 }
 .fleet-chat-shape .plan-reject-btn:hover {
-  background: color-mix(in srgb, var(--red) 28%, transparent);
+  background: rgba(229, 85, 85, 0.28);
 }
 .fleet-chat-shape .plan-card-approved .plan-card-actions,
 .fleet-chat-shape .plan-card-supervised .plan-card-actions,
@@ -4653,19 +4635,19 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   opacity: 0.2;
 }
 .fleet-chat-shape .plan-card-approved .plan-approve-btn {
-  background: color-mix(in srgb, var(--green) 40%, transparent);
-  border-color: color-mix(in srgb, var(--green) 60%, transparent);
+  background: rgba(122, 184, 160, 0.4);
+  border-color: rgba(122, 184, 160, 0.6);
 }
 .fleet-chat-shape .plan-card-supervised .plan-supervised-btn {
-  background: color-mix(in srgb, var(--blue) 35%, transparent);
-  border-color: color-mix(in srgb, var(--blue) 50%, transparent);
+  background: rgba(100, 180, 255, 0.35);
+  border-color: rgba(100, 180, 255, 0.5);
 }
 .fleet-chat-shape .plan-card-rejected .plan-reject-btn {
-  background: color-mix(in srgb, var(--red) 35%, transparent);
-  border-color: color-mix(in srgb, var(--red) 50%, transparent);
+  background: rgba(229, 85, 85, 0.35);
+  border-color: rgba(229, 85, 85, 0.5);
 }
 .fleet-chat-shape .plan-card-approved {
-  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+  border-color: rgba(122, 184, 160, 0.4);
   background: rgba(122, 184, 160, 0.04);
 }
 .fleet-chat-shape .plan-card-approved .plan-card-header {
