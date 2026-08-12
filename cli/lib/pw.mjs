@@ -643,10 +643,16 @@ function tabReclaimReason(tab, touches, { now = Date.now(), maxIdleMs = PW_STALE
   return null
 }
 
-function reclaimTabs({ maxIdleMs = PW_STALE_TAB_MS, aggressive = false } = {}) {
-  if (!sessionOpen()) return []
+// `tabs` comes from the caller, which has already established the session is up
+// — sweep checked sessionOpen() one line earlier, and selectMyTab holds a
+// non-empty stableTabs() list, which is itself proof. Re-deriving either here
+// cost two more `playwright-cli` invocations, and on the Mini one invocation is
+// ~6-8s of process startup: that duplication alone put `pw sweep` over the dev
+// bot's budget, so the bot SIGTERMed a sweep that was working and the pool was
+// never reclaimed. If the session drops in between, listTabs() is empty and the
+// loop does nothing — the same result the removed guard produced.
+function reclaimTabs(tabs, { maxIdleMs = PW_STALE_TAB_MS, aggressive = false } = {}) {
   const touches = readTouchRecords()
-  const tabs = listTabs()
   const reclaimed = []
   for (const tab of tabs) {
     const reason = tabReclaimReason(tab, touches, { maxIdleMs, aggressive })
@@ -735,7 +741,7 @@ function selectMyTab() {
       const atLimit = tabs.length >= PW_MAX_TABS_PER_SESSION
       const underPressure = Number.isFinite(pressure) && pressure >= PW_BLOCK_OPEN_PRESSURE
       if (atLimit || underPressure) {
-        const reclaimed = reclaimTabs({ aggressive: underPressure })
+        const reclaimed = reclaimTabs(tabs, { aggressive: underPressure })
         if (reclaimed.length) {
           console.error(`pw: reclaimed ${reclaimed.length} stale/error tab(s) before creating new browser load`)
           tabs = stableTabs()
@@ -1012,7 +1018,7 @@ export async function cmdPw(args, repoRoot) {
       process.exit(1)
     }
     try {
-      const reclaimed = reclaimTabs({ aggressive: true })
+      const reclaimed = reclaimTabs(listTabs(), { aggressive: true })
       if (!reclaimed.length) console.log('no stale/error tabs to park')
       else {
         console.log(`parked ${reclaimed.length} stale/error tab(s):`)
