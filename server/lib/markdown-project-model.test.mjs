@@ -78,6 +78,17 @@ test('Markdown member links target project routes while external URLs stay exter
   assert.match(html, /href="https:\/\/example\.com\/outside\.md"/)
 })
 
+test('Markdown headings retain explicit ids and their source-line anchors', () => {
+  const html = renderMarkdownColumnHtml({
+    source: '# Course start {#sec-course-start}\n\nRead this first.',
+    title: 'Course',
+  })
+
+  assert.match(html, /<span id="line-1"><\/span><h1 id="sec-course-start"/)
+  assert.doesNotMatch(html, /<h1 id="line-1"/)
+  assert.doesNotMatch(html, />Course start \{#sec-course-start\}<\/h1>/)
+})
+
 test('Markdown columns render with the parent project macros', () => {
   const html = renderMarkdownColumnHtml({
     source: 'The fitted value is $\\hmu$ with error $\\abs{x}$.',

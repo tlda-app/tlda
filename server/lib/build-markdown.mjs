@@ -701,13 +701,17 @@ function linkifyMarkdownDocRefs(html) {
   return enhanceTexsyncAnchors(linkifyMarkdownTextRefs(html))
 }
 
-function installLineAnchorPlugin(md) {
+function installLineAnchorPlugin(md, explicitHeadingIds = new Map()) {
   const defaultOpen = (type) => {
     const original = md.renderer.rules[type]
     md.renderer.rules[type] = (tokens, idx, options, env, self) => {
       const token = tokens[idx]
       if (token.map && token.map[0] != null) {
-        token.attrSet('id', `line-${token.map[0] + 1}`)
+        const lineId = `line-${token.map[0] + 1}`
+        const explicitHeadingId = type === 'heading_open' ? explicitHeadingIds.get(token.map[0]) : null
+        token.attrSet('id', explicitHeadingId || lineId)
+        const rendered = original ? original(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
+        return explicitHeadingId ? `<span id="${lineId}"></span>${rendered}` : rendered
       }
       return original ? original(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
     }
@@ -755,7 +759,7 @@ function markdownTocForSource(source, page) {
     let headingTitle = inlineToken?.children?.map(t => t.content).join('') || ''
     const explicitId = headingTitle.match(/\{#([\w-]+)\}/)
     if (explicitId) headingTitle = headingTitle.replace(/\s*\{#[\w-]+\}/, '').trim()
-    const anchor = slugify(headingTitle)
+    const anchor = explicitId?.[1] || slugify(headingTitle)
     if (level <= 4 && headingTitle && anchor) {
       toc.push({ title: headingTitle, level: levels[level] || 'subsubsection', page, anchor })
     }
@@ -766,6 +770,11 @@ function markdownTocForSource(source, page) {
 export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [], projectName = null, sourceFile = null, mainFile = null, macros = {} }) {
   _macros = { ...baseMacros, ...macros, ...extractMacros(source) }
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
+  const explicitHeadingIds = new Map()
+  renderSource.split('\n').forEach((line, index) => {
+    const match = line.match(/^#{1,6}\s+.*?\s+\{#([\w-]+)\}\s*$/)
+    if (match) explicitHeadingIds.set(index, match[1])
+  })
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
   const processedSource = stripVolatileMarkdownMarkersForRender(renderSource)
     .replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
@@ -784,7 +793,7 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames 
     const minHeight = Math.min(1200, Math.max(360, lineCount * 28))
     return `<div class="tlda-mermaid-placeholder" data-tlda-mermaid-id="${id}" style="min-height:${minHeight}px"><template data-tlda-mermaid-source>${escHtml(token.content)}</template></div>\n`
   }
-  installLineAnchorPlugin(md)
+  installLineAnchorPlugin(md, explicitHeadingIds)
   const env = {}
   const tokens = md.parse(processedSource, env)
   let content = md.renderer.render(tokens, md.options, env)
