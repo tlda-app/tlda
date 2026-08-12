@@ -29,6 +29,54 @@ let _send = null
 export function setChatSubscriptionTransport(send) { _send = send }
 
 /**
+ * Send one subscription message and record what ACTUALLY happened to it.
+ *
+ * Every call site here used to wrap `_send` in its own `try/catch`. All four
+ * were dead code: `_send` is `browserFleetTransport.ephemeral`, whose adapter
+ * (`sendBrowserRequestAttempt`) is `async`, so it returns a pending promise and
+ * throws nothing a synchronous `catch` can see. The catches had never fired
+ * once. On 2026-08-12 three real `subscribe-filter` failures occurred in two of
+ * Skip's tabs — `WS request idle timeout after 45000ms`, each paired with an
+ * `unsubscribe-filter` failure a millisecond earlier, so a refilter — and the
+ * branch that exists to say `subscribe-filter send failed` said nothing.
+ *
+ * `async` here is load-bearing rather than decorative: it funnels BOTH modes
+ * into one catch. `_send` can still throw synchronously (the transport rejects
+ * an unknown operation or a missing mode before the adapter runs), and awaiting
+ * turns that into the same rejection as a lost acknowledgement.
+ *
+ * The record names the `subId` and the `filterKey`. That is the whole point: the
+ * truth was already in `client.log` as a `fleet-transport` terminal error, and
+ * it could not be joined to a panel because the only record that named the
+ * subscription was the one that overstated it.
+ *
+ * ACKNOWLEDGED, never DELIVERED. The server registers the subscription before it
+ * replies (`unified-server.mjs`, `subscribe()` then `reply()`), so a lost reply
+ * is not a lost subscription — on 2026-08-12 a panel kept receiving for forty
+ * minutes after its own subscribe "failed". Resolving false means the server
+ * never answered, and nothing stronger.
+ *
+ * Never rejects, so callers may collect these with `Promise.all` without adding
+ * an unhandled rejection of their own.
+ *
+ * @param {'subscribe-filter'|'unsubscribe-filter'} operation
+ * @param {Record<string, unknown>} payload
+ * @param {{subId: string, filterKey?: string|null, site: string}} meta
+ * @returns {Promise<boolean>} true if the server acknowledged.
+ */
+async function sendSubscription(operation, payload, { subId, filterKey = null, site }) {
+  try {
+    await _send(operation, payload)
+    return true
+  } catch (e) {
+    log.metric(NS, `${operation} NOT acknowledged`, {
+      subId, filterKey, site, error: String(e?.message || e),
+    })
+    return false
+  }
+}
+
+/**
  * Subscribe a chat to its filter. Returns a dispose function.
  *
  * @param {unknown} filter DNF filter, exactly as the shape stores it. Sent
@@ -56,21 +104,24 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
     hasMore: true,
   })
   if (_send) {
-    try {
-      _send('subscribe-filter', { subId, filter, humanId, humanName, window })
-    } catch (e) {
-      // Surfaced, never swallowed: a subscribe that silently fails is a panel
-      // that shows nothing forever, which is the failure mode we are removing.
-      log.metric(NS, 'subscribe-filter send failed', { subId, error: String(e) })
-    }
+    // Surfaced, never swallowed: a subscribe that silently fails is a panel that
+    // shows nothing forever, which is the failure mode we are removing. This is
+    // the site the 2026-08-12 failures were on.
+    void sendSubscription(
+      'subscribe-filter',
+      { subId, filter, humanId, humanName, window },
+      { subId, filterKey: JSON.stringify(filter ?? null), site: 'subscribe' },
+    )
   } else {
     log.metric(NS, 'subscribe-filter before transport was set', { subId })
   }
   return () => {
     _subs.delete(subId)
-    if (_send) {
-      try { _send('unsubscribe-filter', { subId }) } catch { /* socket already gone */ }
-    }
+    // A failed unsubscribe leaves a subscription the server drops on close, so
+    // it is not urgent — but it is recorded, because the pairing of a failed
+    // unsubscribe with a failed subscribe one millisecond later is what
+    // identified a refilter as the site of the 2026-08-12 failures.
+    if (_send) void sendSubscription('unsubscribe-filter', { subId }, { subId, site: 'dispose' })
   }
 }
 
@@ -158,20 +209,21 @@ export function requestEarlierChatHistory(correlationKey) {
   // cursor where it was, so the next startReached asks for the same page again
   // and the panel recovers by itself.
   if (!sub.hasMore || !sub.nextCursor) return false
-  try {
-    _send('subscribe-filter', {
+  // The boolean says the request was ISSUED, which is all its one caller uses it
+  // for. Whether it was answered arrives later, on the record above.
+  void sendSubscription(
+    'subscribe-filter',
+    {
       subId,
       filter: sub.filter,
       humanId: sub.humanId,
       humanName: sub.humanName,
       window: sub.window,
       before: sub.nextCursor,
-    })
-    return true
-  } catch (e) {
-    log.metric(NS, 'older history request failed', { subId, error: String(e) })
-    return false
-  }
+    },
+    { subId, filterKey: sub.filterKey, site: 'older-history' },
+  )
+  return true
 }
 
 /**
@@ -188,37 +240,71 @@ export function requestEarlierChatHistory(correlationKey) {
  * and never revisited is apparently the standing trap in this codebase.
  */
 export function refreshChatSubscriptionIdentity(humanId, humanName) {
-  let n = 0
+  const attempts = []
   for (const [subId, sub] of _subs) {
     if (sub.humanId === humanId && sub.humanName === humanName) continue
     sub.humanId = humanId
     sub.humanName = humanName
     if (!_send) continue
-    try {
-      _send('subscribe-filter', { subId, filter: sub.filter, humanId, humanName, window: sub.window })
-      n++
-    } catch (e) {
-      log.metric(NS, 'identity re-subscribe failed', { subId, error: String(e) })
-    }
+    attempts.push(attempt(subId, sub, { humanId, humanName }, 'identity'))
   }
-  if (n) log.metric(NS, 're-subscribed after identity changed', { count: n, humanId })
-  return n
+  if (!attempts.length) return Promise.resolve(null)
+  return settle(attempts).then(tally => {
+    log.metric(NS, 'identity resubscribe settled', { ...tally, humanId })
+    return tally
+  })
 }
 
-/** Re-send every live subscription. For use after a reconnect. */
+/** One `subscribe-filter` for an existing subscription, tagged with its outcome. */
+function attempt(subId, sub, { humanId = sub.humanId, humanName = sub.humanName } = {}, site) {
+  return sendSubscription(
+    'subscribe-filter',
+    { subId, filter: sub.filter, humanId, humanName, window: sub.window },
+    { subId, filterKey: sub.filterKey, site },
+  ).then(ok => ({ subId, ok }))
+}
+
+/**
+ * Wait for a batch of subscribes to be answered and count what happened.
+ *
+ * The tally is emitted when the ANSWER is known, not when the question is asked,
+ * so it lands up to one request-idle timeout after the reconnect. That lateness
+ * is the point. Until now this batch reported `count: N` the instant the sends
+ * were issued — a number that could not be wrong, because it counted intentions.
+ * On 2026-08-12 a tab logged its optimistic count and the three `fleet-transport`
+ * timeouts that contradicted it arrived 45 seconds later in a different
+ * namespace, carrying no subId, with nothing to join them by.
+ *
+ * A tally is kept at all — rather than only recording failures — because this
+ * codebase has already paid for the alternative. `chat-freeze-probe.mjs` added
+ * its census because transition-only telemetry "is indistinguishable from an
+ * instrument that isn't running", and on 2026-08-12 a probe whose high-water
+ * mark had read 0 since July was read as evidence for eleven minutes.
+ */
+function settle(attempts) {
+  return Promise.all(attempts).then(results => {
+    const failed = results.filter(r => !r.ok)
+    return {
+      attempted: results.length,
+      acknowledged: results.length - failed.length,
+      failed: failed.length,
+      failedSubIds: failed.map(r => r.subId),
+    }
+  })
+}
+
+/**
+ * Re-send every live subscription. For use after a reconnect.
+ *
+ * Resolves to the settled tally, or null if there was nothing to send. The
+ * caller logs it; see settle() for why it is worth waiting for.
+ */
 export function resubscribeAll() {
-  if (!_send) return 0
-  let n = 0
-  for (const [subId, sub] of _subs) {
-    try {
-      _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName, window: sub.window })
-      n++
-    }
-    catch (e) {
-      log.metric(NS, 'resubscribe failed', { subId, error: String(e) })
-    }
-  }
-  return n
+  if (!_send) return Promise.resolve(null)
+  const attempts = []
+  for (const [subId, sub] of _subs) attempts.push(attempt(subId, sub, {}, 'reconnect'))
+  if (!attempts.length) return Promise.resolve(null)
+  return settle(attempts)
 }
 
 /**

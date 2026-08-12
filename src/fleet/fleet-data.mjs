@@ -1000,8 +1000,13 @@ export function connect() {
     // anywhere — dead from the day it was added, harmless while panels still
     // rendered from the client store, load-bearing the moment they stopped.
     setChatSubscriptionTransport((name, payload) => browserFleetTransport.ephemeral(name, payload))
-    const resent = resubscribeAll()
-    if (resent) log.metric('chat-subscription', 're-subscribed after reconnect', { count: resent })
+    // Logged when the server has answered, not when the sends were issued. The
+    // old `count: N` here was the number of subscribes ATTEMPTED — it counted
+    // intentions and so could never be wrong, which is why three real timeouts
+    // on 2026-08-12 sat beside a record claiming three successes.
+    void resubscribeAll().then(tally => {
+      if (tally) log.metric('chat-subscription', 'reconnect resubscribe settled', tally)
+    })
     flushBrowserDurableOutbox().catch(error => {
       log.error('fleet-transport', 'durable outbox flush failed', { error: error.message })
     })
