@@ -407,11 +407,48 @@ weighs more: pan locks after 8 px and breaks when the off-axis out-travels the
 locked one by 1.6×, retaining 45 % of off-axis motion meanwhile
 (`gesture-policy.ts:11-18`).
 
+Gestures mount only when `expanded && fleetBounds && docShapesReady &&
+cameraReady` (`FleetHUD.tsx:493`). The `cameraReady` term is the youngest and the
+one that has already cost a day: on 2026-08-12 a change made the HUD render
+nothing until camera restore, the gesture hook ran against that empty render,
+found no element, installed no listeners, and never re-ran — so three-finger pan
+over the panels was dead on iPad and phone until `1b8eca699` mounted the gestures
+after camera restore. **A hook that installs DOM listeners against a conditional
+render needs a re-run condition, not just a mount.**
+
 Three-finger pan drives the **main** camera; the HUD's camera poll mirrors that
 onto the overlay. That poll must therefore fire on movement along *either* axis
 even though the overlay rides only one — the distinction between "when to
 recompute" and "what counts as a deliberate reposition" is spelled out at
 `FleetHUD.tsx:963-989`, and conflating them broke three-finger pan on a deck.
+
+### Snapping is two different things, and only one of them is wanted
+
+**tldraw's native snap is off.** `SvgDocument.tsx:1138` sets `isSnapMode: false`
+at mount. It is a tldraw *user preference*, so it persists per browser profile
+and has to be written rather than merely left alone. Six fleet shapes still carry
+`canSnap = () => true`, which is inert while the preference is off.
+
+**Soft snap for fleet panels is on, and is a specified feature.** Skip,
+2026-08-12 13:22:18 EDT:
+
+> There is there we have, like, soft snap that was supposed to be implemented for
+> our shapes, bro.
+
+It is not tldraw's snap and does not use it. `nudgeFleetPanelTranslate`
+(`shapes/fleet-utils.ts:242`) runs on translate, finds the closest edge, centre,
+or equal-gap match against the other panels, and applies a *fraction* of the
+remaining distance — 0.35 (`fleet-utils.ts:80`) — so it is a pull, not a jump.
+Strength is a readability-profile setting in `em`, so it tracks the device's own
+text size; `0` turns it off. The matched page line is published to
+`shapes/fleet-nudge-guides.ts` and drawn as a hairline by
+`overlays/FleetNudgeGuides.tsx` for as long as the pull is on.
+
+**Do not delete soft snap to make odd behaviour stop.** That instruction is here
+because the opposite was briefed to an agent on 2026-08-12 and corrected within
+three minutes: the standing "snapping is off everywhere" rule is about tldraw's
+native snap, and reading it as covering fleet panels would remove a feature Skip
+asked for.
 
 ### Layout mode
 
@@ -486,6 +523,14 @@ run.
 The behaviour is not visibly wrong, which is exactly the problem: this is the
 belief three separate agents each had to disprove from symptoms.
 
+**And it is still being written into new code.** `shapes/fleet-nudge-guides.ts:9`
+— added by `210ff19ed` on 2026-08-12 — says a fleet panel "can be dragged on the
+HUD layer, which has its own editor, and only that editor can project its own
+pages." Same claim, twelve hours old. The stale comments are not merely
+historical residue; they are the source the next author reads, so each one
+reproduces itself. That is the argument for correcting them rather than leaving
+them as harmless.
+
 ### `.tool-passes-through` has CSS and no writer
 
 `FleetHUD.css:140-157` disables pointer events on eight panel types when the wrap
@@ -524,6 +569,44 @@ Adding or removing a fleet shape leaves the others where they are; the reflow wa
 removed because it made things worse, with a TODO to reimplement add-and-delete
 as identity (`FleetHUD.tsx:795-798`).
 
+### Open symptoms Skip has reported
+
+These are his words with timestamps, not diagnoses. Read forward from them before
+acting — one item on this list was answered 24 minutes after he raised it.
+
+**Flicker under a held finger. Open.** 2026-08-12 13:13:49 EDT, from an iPad:
+
+> when I have my thumb down, Sometimes … there was, like, sort of up down, like,
+> sort of visual flicker. … I guess something was, like, measuring its height.
+> Right? But that wasn't that's not to spec.
+
+And at 13:22:46 EDT, on why it matters more than its size suggests:
+
+> it just creates anxiety, right, to, like, observe flicker all the time
+
+Owned by `anchor-drift` as of 13:24:52 EDT, with telemetry reported as pointing
+at the height-measurement path. **This document does not name a cause** — the
+plausible candidates in here (bounds recomputation during a touch drag, the
+`ResizeObserver`s on panel content) have not been measured against his session,
+and a guess in this file would be read as a finding.
+
+**Soft snap felt wrong and showed nothing. Answered.** 2026-08-12 13:11:24 EDT:
+
+> No visual indication and, like, just weird feeling. I think something is in
+> there
+
+and at 13:19:58 EDT, on priority:
+
+> it's not super high priority, but it is an important feel issue, and I would
+> like it fixed.
+
+`210ff19ed` (13:35:52 EDT) is the response: the pull could never move a panel
+more than 3 screen pixels, which on a high-DPI tablet is not a perceptible
+distance, so strength became an `em` setting on the readability profile, and
+every match now draws a hairline guide at the line it is pulling toward.
+**Whether that satisfies him is not established** — he has not been asked since it
+landed, and a fix is not a confirmation.
+
 ### Smaller mismatches
 
 - `repackFleetShapes` (`FleetHUD.tsx:229`) is exported, carries an
@@ -544,10 +627,13 @@ as identity (`FleetHUD.tsx:795-798`).
 
 ## What is not established here
 
-- **What Skip currently experiences as wrong with the window manager.** He has
-  said the WM "is kinda fucked right now"; the errata above is what the source
-  shows, which is not the same list. Nothing here should be read as an account of
-  his symptoms.
+- **Whether the reported-symptoms list is complete.** It is what he said in one
+  bounded window of his own thread on 2026-08-12 (12:14–13:30 EDT), read in
+  order. He has said the WM "is kinda fucked right now", and that sentence is
+  broader than the two items above. The rest of what he means is not established
+  here.
+- **The cause of the flicker.** Named as open above, deliberately without a
+  mechanism.
 - **Whether the double render is fully gated.** `85c06a69e` covers the nine
   registry panel types through the shared gate. Whether any other component
   mirrored into the HUD viewport still mounts twice has not been measured.
