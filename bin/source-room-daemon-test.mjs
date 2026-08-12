@@ -206,6 +206,54 @@ try {
     ws.close()
   })
 
+  const failedProject = 'source-room-checkpoint-error'
+  createProject({ name: failedProject, title: failedProject, mainFile: 'main.tex', format: 'svg' })
+  await updateProject(failedProject, { pages: 1, buildStatus: 'success' })
+  suppressBuilds(failedProject)
+  await acceptedPush(failedProject, {
+    expectedRevision: null,
+    sourceManifest: ['main.tex'],
+    files: [{ path: 'main.tex', content: 'safe base\n' }],
+  })
+  const failedDaemon = createSourceRoomDaemon({
+    projectDir,
+    readProject,
+    sourceLifecycleStore,
+    readClientSourceManifest,
+    processProjectPush: async () => ({
+      status: 409,
+      ok: false,
+      error: 'Source transaction failed: remote unavailable',
+    }),
+    pushDelayMs: 10,
+    log: { error() {} },
+  })
+  roomDaemons.push(failedDaemon)
+  await withSourceRoomSocketServer(failedDaemon, async port => {
+    const doc = new Y.Doc()
+    const text = doc.getText('source')
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/source-sync/${failedProject}/main.tex`)
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', reject)
+    })
+    const initial = await onceSocket(ws, 'sync')
+    Y.applyUpdate(doc, base64ToUint8(initial.update), 'source-room')
+    doc.on('update', (update, origin) => {
+      if (origin === 'source-room') return
+      ws.send(JSON.stringify({ type: 'update', update: uint8ToBase64(update) }))
+    })
+    text.insert(text.length, 'held locally\n')
+    ws.send(JSON.stringify({ type: 'flush' }))
+    const status = await onceSocket(ws, 'status')
+    assert.equal(status.status, 'error')
+    assert.equal(status.error, 'Source transaction failed: remote unavailable')
+    const room = await failedDaemon.getRoom(failedProject, 'main.tex')
+    assert.equal(room.ytext.toString(), 'safe base\nheld locally\n')
+    assert.equal(readSourceFile(failedProject, 'main.tex'), 'safe base\n')
+    ws.close()
+  })
+
   const duplicateProject = 'source-room-duplicate-render'
   createProject({ name: duplicateProject, title: duplicateProject, mainFile: 'main.tex', format: 'svg' })
   await updateProject(duplicateProject, { pages: 1, buildStatus: 'success' })

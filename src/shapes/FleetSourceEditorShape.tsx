@@ -1109,6 +1109,10 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
             } else if (message.status === 'conflict') {
               setStatus('dirty')
               setStatusText('Conflict — resolve the markers, then it syncs')
+            } else if (message.status === 'error') {
+              const reason = typeof message.error === 'string' && message.error.trim() ? ` ${message.error.trim()}` : ''
+              setStatus('error')
+              setStatusText(`Not published — your text is saved here.${reason}`)
             }
           }
         }

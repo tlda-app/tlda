@@ -243,8 +243,8 @@ export function createSourceRoomDaemon({
         if (room.queued || room.ytext.toString() !== content) await flushRoom(room)
         return
       }
-      if (result.status === 409 || result.lifecycleStatus === 'stale-base') {
-        const merged = conflictTextFor(result, room.filePath)
+      const merged = conflictTextFor(result, room.filePath)
+      if (result.lifecycleStatus === 'stale-base' || merged) {
         if (typeof result.authority?.currentRevision === 'string') room.heldRevision = result.authority.currentRevision
         room.pending = null
         room.blocked = true
@@ -253,11 +253,25 @@ export function createSourceRoomDaemon({
         broadcast(room, { type: 'status', status: 'conflict', sourceRevision: room.heldRevision })
         return
       }
-      throw new Error(result.error || `source room push failed with ${result.status}`)
+      room.pending = null
+      room.queued = true
+      persistRoom(room)
+      broadcast(room, {
+        type: 'status',
+        status: 'error',
+        sourceRevision: room.heldRevision,
+        error: result.error || `source room push failed with ${result.status}`,
+      })
     } catch (error) {
       room.pending = null
       room.queued = true
       persistRoom(room)
+      broadcast(room, {
+        type: 'status',
+        status: 'error',
+        sourceRevision: room.heldRevision,
+        error: error?.message || String(error),
+      })
       log.error?.(`[source-room] ${room.project}:${room.filePath} push failed: ${error?.message || error}`)
     }
   }

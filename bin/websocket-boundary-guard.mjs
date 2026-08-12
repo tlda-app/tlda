@@ -170,7 +170,7 @@ const ALLOWED = {
   // --- tooling: test and script clients that speak the wire on purpose -----
   'bin/delegate-spawn-shell-e2e-test.mjs': { count: 2, category: 'tooling', reason: 'E2E client: drives /ws/fleet and /ws/fleet-daemon directly to test the wire.' },
   'bin/server-originated-claude-mint-real-daemon-test.mjs': { count: 1, category: 'tooling', reason: 'Real-daemon mint test: one /ws/fleet client in openFleet(), same shape as the spawn tests beside it.' },
-  'bin/source-room-daemon-test.mjs': { count: 2, category: 'tooling', reason: 'Source-room protocol tests: Node participants open /source-sync to send Yjs updates without a browser, including the duplicate-render case with two sockets on one room.' },
+  'bin/source-room-daemon-test.mjs': { count: 3, category: 'tooling', reason: 'Source-room protocol tests: Node participants open /source-sync to send Yjs updates without a browser, including checkpoint-error and duplicate-render cases.' },
   'bin/filter-expr-integration.mjs': { count: 1, category: 'tooling', reason: 'Integration client for filter expressions over the live fleet socket.' },
   'bin/spawn-collision-test.mjs': { count: 2, category: 'tooling', reason: 'Spawn collision test: needs two independent raw connections to race them.' },
   'bin/spawn-mailbox-outcome-test.mjs': { count: 2, category: 'tooling', reason: 'Mailbox outcome test: agent and daemon sockets, asserted against directly.' },
