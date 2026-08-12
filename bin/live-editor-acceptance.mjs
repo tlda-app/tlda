@@ -51,7 +51,10 @@ const says = (haystack, phrase) => String(haystack || '').includes(phrase)
 const api = path => `${SERVER}/api/projects/${PROJECT}${path}`
 
 /** Run a function in the agent's tab and return its value. */
-function inPage(fn, { timeoutMs = 240_000 } = {}) {
+// 10 minutes, and that is not paranoia: the pool serialises on a lock, so an
+// eval that returns in milliseconds can sit behind another agent's turn for
+// minutes. A 4-minute limit SIGTERM'd a healthy run tonight.
+function inPage(fn, { timeoutMs = 600_000 } = {}) {
   const out = execFileSync('tlda-dev', ['pw', 'eval', fn.toString()], {
     encoding: 'utf8', timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024,
   })
@@ -89,12 +92,42 @@ async function alicePushes(content, expectedRevision) {
 // Every one of these exists because its absence looks exactly like a feature
 // that does not work.
 
-const project = await fetch(api('')).then(r => r.ok ? r.json() : null)
-assert.ok(project, `${PROJECT} does not exist on ${SERVER}. Create it before running this — `
-  + 'pw setup only navigates, and a missing project renders a 404 that reads as an empty canvas.')
+// Retry, and say which of the two things went wrong. A single unretried fetch
+// against a cold-starting Fly box comes back as a transport error, and
+// reporting that as "the project does not exist" is a confident falsehood —
+// the same mistake as reading an unmounted view as a missing feature. The
+// project really was there when this fired tonight.
+async function getJson(url, { tries = 4 } = {}) {
+  let last = null
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(90_000) })
+      if (res.ok) return { ok: true, body: await res.json() }
+      if (res.status === 404) return { ok: false, notFound: true, status: 404 }
+      last = `HTTP ${res.status}`
+    } catch (e) {
+      last = e.message
+    }
+    if (attempt < tries) await sleep(attempt * 5_000)
+  }
+  return { ok: false, unreachable: last }
+}
 
-const files = await fetch(api('/files')).then(r => r.json())
-assert.ok(files.files.includes(FILE), `${FILE} is not in ${PROJECT}'s manifest: ${files.files.join(', ')}`)
+const project = await getJson(api(''))
+assert.ok(
+  !project.unreachable,
+  `${SERVER} did not answer for ${PROJECT} after 4 tries (${project.unreachable}). `
+  + 'That is the server, not the project — a cold Fly box takes about 90s. Nothing is proven either way.',
+)
+assert.ok(
+  project.ok,
+  `${PROJECT} does not exist on ${SERVER}. Create it before running this — pw setup only `
+  + 'navigates, and a missing project renders a 404 that reads as an empty canvas.',
+)
+
+const files = await getJson(api('/files'))
+assert.ok(files.ok, `could not read ${PROJECT}'s file list: ${files.unreachable || files.status}`)
+assert.ok(files.body.files.includes(FILE), `${FILE} is not in ${PROJECT}'s manifest: ${files.body.files.join(', ')}`)
 
 execFileSync('tlda-dev', ['pw', 'setup', '--project', PROJECT], { encoding: 'utf8', timeout: 300_000 })
 
