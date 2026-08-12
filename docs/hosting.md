@@ -107,14 +107,9 @@ Codex authentication from a Fly secret.
 
 ## The live Fly deployment
 
-The authoritative live procedure remains `docs/live-deploy.md`. From a clean
-main checkout, use the wrapper:
+The authoritative live procedure remains `docs/live-deploy.md`. Deploying is a
+push to `/Users/skip/work/deploy/testing`.
 
-```bash
-npm run deploy:live
-```
-
-The wrapper runs the preflight and build before `fly deploy -c fly.live.toml`.
 The live image is defined by `fly.live.toml`, `Dockerfile.live`, and
 `scripts/fly-entrypoint-live.sh`. The entrypoint mounts mutable projects, Yjs
 state, and server fleet state on the Fly volume; writes the server's named
@@ -122,8 +117,8 @@ config; and, when `TS_AUTHKEY` is supplied, joins the tailnet and proxies HTTPS
 to port 5176 with `tailscale serve`.
 
 Do not substitute plain `fly deploy`, `fly.toml`, or the old `tlda publish`
-snapshot path. After deploy, verify Fly status, `/health`, `/api/fleet-config`,
-the build-info commit, and the actual browser-visible behavior being shipped.
+snapshot path. After deploy, verify Fly status, `/api/health`, and the
+build-info commit.
 
 ## Optional services
 
