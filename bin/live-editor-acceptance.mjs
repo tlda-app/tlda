@@ -151,6 +151,42 @@ assert.ok(
   + '    "not deployed", not "the wiring is incomplete". Deploy the room and run it again.',
 )
 
+// The bundle check above proves a room client is there. It cannot say WHICH
+// one — a bundle built an hour ago still contains `source-sync`. So name the
+// deployed sha and the room commits inside it, and print them, so a green is
+// green against something specific rather than against "a room".
+//
+// Matched by message, not by ancestry: main is built by cherry-pick here, so
+// `merge-base --is-ancestor` false-negatives on landed work. A sha this
+// checkout has never seen is reported as unknown rather than treated as a
+// failure — that is a fact about my clone, not about the deploy.
+if (buildInfo.ok && deployedSha !== 'unknown') {
+  let roomCommits = null
+  try {
+    roomCommits = execFileSync('git', ['log', '--oneline', '-i', '--grep=source room', deployedSha], {
+      encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    // Deliberately swallowed: `git log` on a sha this clone has never fetched
+    // exits non-zero, and that is a fact about my checkout rather than about
+    // the deploy. Reporting it as a failure would block a run for a reason
+    // that has nothing to do with what is served. roomCommits stays null and
+    // the block below is skipped.
+    console.log(`deployed sha ${deployedSha} is not in this checkout — cannot name the room it was built from`)
+  }
+  if (roomCommits !== null) {
+    console.log(`deployed sha ${deployedSha}; room commits in its history:`)
+    for (const line of (roomCommits ? roomCommits.split('\n') : ['  (none by message)'])) console.log(`  ${line}`)
+    assert.ok(
+      roomCommits,
+      `The served bundle contains a source-room client, but ${deployedSha} has no commit whose\n`
+      + '    message names the source room. Either it was built from something this checkout has\n'
+      + '    not seen, or the bundle and the server disagree. Either way a result here would be\n'
+      + '    green against an unknown room.',
+    )
+  }
+}
+
 execFileSync('tlda-dev', ['pw', 'setup', '--project', PROJECT], { encoding: 'utf8', timeout: 300_000 })
 
 const opening = `Acceptance run.\n\nA paragraph both of us will edit.\n`
