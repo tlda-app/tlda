@@ -14,7 +14,7 @@ import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
-import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
+import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
@@ -310,6 +310,11 @@ function printPushBuildStatus(result, unchangedMessage = 'No changes detected.')
   }
 }
 
+export function requireAcceptedPush(result) {
+  if (result && result.ok !== false) return result
+  throw new Error(result?.error || result?.status || 'Source push was rejected')
+}
+
 // --- HTTP helpers ---
 
 async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
@@ -391,7 +396,13 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
 
   const { changedPaths, deletedFiles } = diffSourceHashes(localHashes, serverHashes)
 
-  const files = collectSpecificFiles(dir, changedPaths)
+  const changedFiles = changedPaths
+    .map(path => {
+      const fullPath = join(dir, path)
+      if (!existsSync(fullPath)) return null
+      return { path, fullPath, size: statSync(fullPath).size }
+    })
+    .filter(Boolean)
   const total = localPaths.length
   const skipped = total - changedPaths.length
   if (skipped > 0) {
@@ -401,13 +412,32 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
     console.log(dim(`  ${deletedFiles.length} files deleted on server`))
   }
 
-  return await api('POST', `/api/projects/${name}/push`, {
-    files,
-    sourceManifest,
-    expectedRevision: sourceAuthority.currentRevision,
-    ...(deletedFiles?.length > 0 && { deletedFiles }),
-    ...extraBody,
-  })
+  const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
+  let expectedRevision = sourceAuthority.currentRevision
+  let result = null
+  if (changedFiles.length > 0) {
+    const pushed = await pushSourceFileBatches(name, changedFiles, {
+      context: sourceContext,
+      initialManifestPaths: survivingServerPaths,
+      expectedRevision,
+      readBatchFiles: batch => batch.map(file => ({ path: file.path, ...readForUpload(file.fullPath) })),
+      extraBody,
+      logProgress: changedFiles.length !== changedPaths.length || changedFiles.some(file => file.size > 0),
+    })
+    result = pushed.result
+    expectedRevision = pushed.expectedRevision
+  }
+  const cleanupFiles = [...new Set([...(deletedFiles || []), ...staleServerPaths])]
+  if (cleanupFiles.length > 0 || forceMetadata || changedFiles.length === 0) {
+    result = requireAcceptedPush(await api('POST', `/api/projects/${name}/push`, {
+      files: [],
+      sourceManifest,
+      expectedRevision,
+      ...(cleanupFiles.length > 0 && { deletedFiles: cleanupFiles }),
+      ...extraBody,
+    }))
+  }
+  return result || { ok: true, unchanged: true }
 }
 
 function sourceManifestForFiles(files, context = {}) {
@@ -426,6 +456,52 @@ function generatedHtmlArtifactDirs(paths) {
 async function currentSourceRevision(name) {
   const authority = await api('GET', `/api/projects/${name}/source-authority`)
   return authority.currentRevision
+}
+
+const SOURCE_PUSH_MAX_RAW_BYTES = 20 * 1024 * 1024
+
+export function sourceFileBatches(files, maxRawBytes = SOURCE_PUSH_MAX_RAW_BYTES) {
+  const batches = []
+  let batch = []
+  let batchBytes = 0
+  for (const file of files) {
+    const bytes = file.size
+    if (batch.length > 0 && batchBytes + bytes > maxRawBytes) {
+      batches.push(batch)
+      batch = []
+      batchBytes = 0
+    }
+    batch.push(file)
+    batchBytes += bytes
+  }
+  if (batch.length > 0) batches.push(batch)
+  return batches
+}
+
+async function pushSourceFileBatches(name, files, {
+  context,
+  initialManifestPaths,
+  expectedRevision,
+  readBatchFiles,
+  extraBody = {},
+  logProgress = true,
+}) {
+  const currentPaths = new Set(initialManifestPaths)
+  const batches = sourceFileBatches(files)
+  let result = null
+  for (let index = 0; index < batches.length; index++) {
+    const batch = batches[index]
+    for (const file of batch) currentPaths.add(file.path)
+    result = requireAcceptedPush(await api('POST', `/api/projects/${name}/push`, {
+      files: readBatchFiles(batch),
+      sourceManifest: normalizeSourceManifest([...currentPaths], context),
+      expectedRevision,
+      ...extraBody,
+    }))
+    expectedRevision = result.sourceRevision || await currentSourceRevision(name)
+    if (logProgress) console.log(dim(`  ${index + 1}/${batches.length}: ${batch.length} file(s)`))
+  }
+  return { result, expectedRevision, currentPaths }
 }
 
 function findMainTex(dir) {
@@ -811,46 +887,27 @@ async function cmdCreate() {
     const finalManifest = normalizeSourceManifest(qmdFiles.map(file => file.path), qmdContext)
     const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
     const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, finalManifest)
-    const currentPaths = new Set(survivingServerPaths)
     let expectedRevision = await currentSourceRevision(name)
     const priority = new Set([mainFile, '_quarto.yml', '_quarto_book.yml', 'development.qmd', 'scratch/fall-2026-development-schedule.html'])
     qmdFiles.sort((a, b) => Number(priority.has(b.path)) - Number(priority.has(a.path)) || a.path.localeCompare(b.path))
-    const batches = []
-    const maxRawBytes = 20 * 1024 * 1024
-    let batch = []
-    let batchBytes = 0
-    for (const file of qmdFiles) {
-      const bytes = file.size
-      if (batch.length > 0 && batchBytes + bytes > maxRawBytes) {
-        batches.push(batch)
-        batch = []
-        batchBytes = 0
-      }
-      batch.push(file)
-      batchBytes += bytes
-    }
-    if (batch.length > 0) batches.push(batch)
+    const batches = sourceFileBatches(qmdFiles)
 
     console.log(`Pushing ${qmdFiles.length} file(s) in ${batches.length} bounded request(s)...`)
-    for (let index = 0; index < batches.length; index++) {
-      const files = batches[index]
-      for (const file of files) currentPaths.add(file.path)
-      const result = await api('POST', `/api/projects/${name}/push`, {
-        files: readBatchFiles(files),
-        sourceManifest: normalizeSourceManifest([...currentPaths], qmdContext),
-        expectedRevision,
-      })
-      expectedRevision = result.sourceRevision || await currentSourceRevision(name)
-      console.log(dim(`  ${index + 1}/${batches.length}: ${files.length} file(s)`))
-    }
+    const pushed = await pushSourceFileBatches(name, qmdFiles, {
+      context: qmdContext,
+      initialManifestPaths: survivingServerPaths,
+      expectedRevision,
+      readBatchFiles,
+    })
+    expectedRevision = pushed.expectedRevision
     const staleFiles = staleServerPaths
     if (staleFiles.length > 0) {
-      await api('POST', `/api/projects/${name}/push`, {
+      requireAcceptedPush(await api('POST', `/api/projects/${name}/push`, {
         files: [],
         deletedFiles: staleFiles,
         sourceManifest: finalManifest,
         expectedRevision,
-      })
+      }))
     }
     console.log(green('Quarto project processed.'))
 
