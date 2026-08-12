@@ -752,34 +752,24 @@ async function getMacrosForDoc(doc) {
   } catch { return {}; }
 }
 
-// Resolve which project an agent "is on" from its working folder: the project
-// whose sourceDir contains the agent's cwd (longest match wins). This is the
+// Resolve which project an agent "is on" from its working folder. This is the
 // document whose macros render/lint the agent's chat — an agent working in
 // ~/work/bregman-lower-bound uses bregman's \E, \chis, etc. No tool call or
 // human-viewport guessing required; the folder is the source of truth.
+//
+// The answer comes from `projectForCwd` — the daemon's source-bindings, which
+// `project link` owns and which login already uses to report the agent's
+// project. That is the one place the project↔checkout map lives, and it is
+// machine-local: the event store is shared across machines and cannot know
+// where a checkout sits, so asking it is asking the wrong process.
 let _agentDocCache = { doc: null, ts: 0 };
 async function getAgentDoc() {
-  if (_agentDocCache.doc !== null && Date.now() - _agentDocCache.ts < MACROS_CACHE_MS) return _agentDocCache.doc;
+  if (_agentDocCache.ts && Date.now() - _agentDocCache.ts < MACROS_CACHE_MS) return _agentDocCache.doc;
   const cwd = getAgentCwd();
   if (!cwd) return null;
-  try {
-    const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
-    const res = await fleetFetch(`${TLDA_SERVER}/api/projects`, { headers, signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return null;
-    const body = await res.json();
-    const projects = body?.projects || [];
-    let best = null;
-    for (const p of projects) {
-      if (!p.sourceDir) continue;
-      const sd = p.sourceDir.replace(/\/+$/, '');
-      if (cwd === sd || cwd.startsWith(sd + '/')) {
-        if (!best || sd.length > best.len) best = { name: p.name, len: sd.length };
-      }
-    }
-    const doc = best?.name || null;
-    _agentDocCache = { doc, ts: Date.now() };
-    return doc;
-  } catch { return null; }
+  const doc = projectForCwd(cwd, { configDir: CONFIG_DIR, envName: activeEnvName() }) || null;
+  _agentDocCache = { doc, ts: Date.now() };
+  return doc;
 }
 
 // An agent's preamble is a *document reference*: by default the project in its
@@ -5326,6 +5316,8 @@ let mcpFleetTransport = createFleetOperationTransport({
 export function __resetAgentPreambleForTest() {
   _agentPreambleDoc = null;
   _agentPreambleLoaded = false;
+  _agentDocCache = { doc: null, ts: 0 };
+  _macrosCache.clear();
 }
 
 export function __setFleetTransportForTest(transport) {

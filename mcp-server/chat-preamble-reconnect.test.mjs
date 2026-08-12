@@ -1,7 +1,39 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 process.env.FLEET_ID = 'fleet:test-agent'
+// The project↔checkout map is machine-local daemon state. Point CONFIG_DIR at a
+// fixture so these tests read their own bindings rather than the developer's.
+// The fixture needs a daemon.yaml too: it is the environment authority, and the
+// environment names the bindings file.
+const CONFIG_DIR_FIXTURE = mkdtempSync(join(tmpdir(), 'preamble-bindings-'))
+process.env.TLDA_CONFIG_DIR = CONFIG_DIR_FIXTURE
+process.env.TLDA_ENV = 'preamble-test'
+writeFileSync(join(CONFIG_DIR_FIXTURE, 'daemon.yaml'), [
+  'environments:',
+  '  default: preamble-test',
+  '  values:',
+  '    preamble-test:',
+  '      database: http://127.0.0.1:1',
+  '      store: http://127.0.0.1:1',
+  '      licenseKey: ""',
+  '',
+].join('\n'))
+
+const { daemonStateSuffix } = await import('../shared/daemon-socket-path.mjs')
+const { getActiveEnvName } = await import('../shared/config.mjs')
+const BINDINGS_FILE = join(CONFIG_DIR_FIXTURE, `source-bindings${daemonStateSuffix(getActiveEnvName())}.json`)
+
+function writeSourceBindings(bindings) {
+  writeFileSync(BINDINGS_FILE, JSON.stringify(bindings))
+}
+
+function clearSourceBindings() {
+  rmSync(BINDINGS_FILE, { force: true })
+}
 
 const {
   __resetAgentPreambleForTest,
@@ -146,6 +178,7 @@ test('configuration preamble write persists metadata used by a fresh MCP process
 
 test('missing paper macro warning remains post-delivery when no preamble is loaded', async () => {
   __resetAgentPreambleForTest()
+  clearSourceBindings()
   const { restore } = installFetchStub()
   const { durableCalls } = installTransportStub()
   try {
@@ -159,6 +192,36 @@ test('missing paper macro warning remains post-delivery when no preamble is load
     assert.match(result.content[0].text, /Won't render properly/)
     assert.match(result.content[0].text, /macros that aren't loaded/)
   } finally {
+    restore()
+  }
+})
+
+// The defect this file exists for: a fresh agent that never calls
+// configuration() still has to render its project's math. Its preamble comes
+// from the project its working directory belongs to — the daemon's
+// source-bindings — with no tool call it has to know to make. The fixture binds
+// the project to the directory this process is running in, which is the
+// directory the agent-cwd probe reports.
+test('a fresh agent gets its working project as its preamble with no configuration() call', async () => {
+  __resetAgentPreambleForTest()
+  writeSourceBindings({ paper: process.cwd() })
+  const { restore, setMetadataCalls } = installFetchStub({ macros: { '\\foo': 'x' } })
+  const { durableCalls } = installTransportStub()
+  try {
+    const result = await handleFleetTool('chat', {
+      to: 'fleet:skip',
+      message: 'Uses paper macro $\\foo$.',
+    })
+
+    assert.equal(result.isError, undefined)
+    assert.equal(durableCalls.length, 1)
+    assert.deepEqual(durableCalls[0].payload.preambleRef, { doc: 'paper', version: 'freshve' })
+    // Nothing was written to agent metadata: the default is derived, not stored.
+    assert.deepEqual(setMetadataCalls, [])
+    // The macros resolved, so the renderer can display the message.
+    assert.doesNotMatch(result.content[0].text, /macros that aren't loaded/)
+  } finally {
+    clearSourceBindings()
     restore()
   }
 })

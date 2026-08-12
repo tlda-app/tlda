@@ -65,7 +65,7 @@ export function checkChatRender(message, macros = {}) {
       if (undefinedMacro && !hasPaperMacros) {
         if (!suggestedSetMacros) {
           suggestedSetMacros = true
-          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`)
+          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Your preamble is normally the project your working directory belongs to; if you are outside a linked checkout, point it at a document once with \`configuration({ project: "<name>" })\`, or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`)
         }
       } else {
         const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex
