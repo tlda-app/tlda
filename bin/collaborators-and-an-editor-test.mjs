@@ -50,12 +50,14 @@ initSyncRooms(root)
 
 const daemons = []
 
-function makeRoomDaemon() {
-  // A push delay long enough that nothing checkpoints on its own — every flush
-  // in here is one this test asked for, so a failure is never a race.
+// pushDelayMs 1_000_000 freezes the checkpoint so every flush is one the test
+// asked for and a failure is never a race. That makes the stories readable and
+// it also removes the timer they were written for, so the last story below
+// uses the room's real delay instead.
+function makeRoomDaemon(pushDelayMs = 1_000_000) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush, pushDelayMs: 1_000_000, log: { error() {} },
+    processProjectPush, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
@@ -258,6 +260,63 @@ try {
 
       carol.ws.close()
       dan.ws.close()
+    })
+  }
+
+  // ---------------------------------------------------------------------
+  // The same room, on its own clock.
+  //
+  // Every story above forces the checkpoint, which makes them readable and
+  // removes the thing they are about. Every silent-loss failure in this
+  // domain lives at a boundary that fires on a timer — the browser's idle
+  // write, a daemon's debounce, and now the room's checkpoint — so at least
+  // one story has to let the timer fire.
+  //
+  // No sleep anywhere in here. The room announces its own checkpoint with a
+  // `status` frame, so the test waits for the edge the product publishes
+  // rather than guessing at a duration. If that frame ever stops being
+  // emitted, this hangs and says so, which is the correct failure: a timer
+  // nobody can observe is a timer nobody can debug when it eats a paragraph.
+  // ---------------------------------------------------------------------
+  {
+    const name = 'the-room-on-its-own-clock'
+    const start = await paper(name, 'opening\nclosing\n')
+    const roomDaemon = makeRoomDaemon(250) // the shipped default
+
+    await withSockets(roomDaemon, async port => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/source-sync/${name}/main.tex`)
+      const sync = await nextMessage(ws, 'sync')
+      const doc = new Y.Doc()
+      Y.applyUpdate(doc, new Uint8Array(Buffer.from(sync.update, 'base64')), 'room')
+      const text = doc.getText('source')
+      doc.on('update', (update, origin) => {
+        if (origin === 'room') return
+        ws.send(JSON.stringify({ type: 'update', update: Buffer.from(update).toString('base64') }))
+      })
+
+      // Carol types. Nobody flushes anything.
+      const checkpointed = nextMessage(ws, 'status')
+      text.insert('opening\n'.length, "carol's paragraph\n")
+
+      // Alice pushes from her machine inside the same window.
+      await pushesFromTheirMachine(
+        roomDaemon, name, 'alice', start.sourceRevision,
+        'opening\nclosing\nalice from her laptop\n',
+      )
+
+      const status = await checkpointed
+      assert.equal(status.status, 'synced', `the room's own checkpoint reported ${status.status}`)
+
+      const onDisk = readSourceFile(name, 'main.tex')
+      assert.ok(
+        onDisk.includes("carol's paragraph"),
+        `the room checkpointed on its own and did not write what Carol typed: ${JSON.stringify(onDisk)}`,
+      )
+      assert.ok(
+        onDisk.includes('alice from her laptop'),
+        `the room's own checkpoint reverted Alice's push: ${JSON.stringify(onDisk)}`,
+      )
+      ws.close()
     })
   }
 
