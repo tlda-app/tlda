@@ -84,13 +84,13 @@ try {
 
     // ### Bob saves
     const bobResult = await bob.edits('notes.tex', 'bob adds a note\n').pushes()
-    assert.equal(bobResult.status, 200, "Bob's save — accepted though he started from r1")
+    assert.equal(bobResult.status, 200, "Bob's save — accepted though he started from r1; otherwise he was refused though he touched a file nobody else did")
     const r3 = bobResult.sourceRevision
     assert.equal(alice.heldRevision, r2, "Alice's laptop — still r2")
-    assert.equal(bob.heldRevision, r3, "Bob's desktop — r3, clean")
+    assert.equal(bob.heldRevision, r3, "Bob's desktop — r3, clean; otherwise Bob's note is not in the revision he holds")
 
-    assert.equal(readSourceFile(name, 'main.tex'), 'alice rewrites the introduction\n', "the paper — r3 still has Alice's introduction")
-    assert.equal(readSourceFile(name, 'notes.tex'), 'bob adds a note\n', "the paper — r3 has Bob's note")
+    assert.equal(readSourceFile(name, 'main.tex'), 'alice rewrites the introduction\n', "the paper — r3 still has Alice's introduction; otherwise Bob's stale save overwrote Alice")
+    assert.equal(readSourceFile(name, 'notes.tex'), 'bob adds a note\n', "the paper — r3 has Bob's note; otherwise Bob's edit to notes.tex was lost")
   }
 
   // ---------------------------------------------------------------------

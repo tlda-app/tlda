@@ -135,7 +135,8 @@ function nextMessage(ws, type) {
 }
 
 try {
-  // ---------------------------------------------------------------------
+  // ## Two daemons push while Carol edits
+  //
   // Alice and Bob are each on their own machine. Carol has main.tex open in
   // the browser and is typing into it — nothing of hers has checkpointed yet.
   // Both daemons push while she types.
@@ -143,20 +144,31 @@ try {
   // Everyone's work has to be in the file when Carol's draft lands. Carol's
   // checkpoint is the dangerous moment: it writes the whole file, so anything
   // the room never heard about is what it silently reverts.
-  // ---------------------------------------------------------------------
   {
     const name = 'two-daemons-and-an-editor'
     const start = await paper(name, 'opening\nclosing\n')
     const roomDaemon = makeRoomDaemon()
     const room = await roomDaemon.getRoom(name, 'main.tex')
 
+    // ### Carol types
     // Carol types. This is in the room and on nobody's disk.
     room.ytext.insert('opening\n'.length, "carol's paragraph\n")
+    assert.ok(
+      room.ytext.toString().includes("carol's paragraph"),
+      "Carol's editor — her paragraph is in the room, not checkpointed yet; otherwise Carol's draft never reached the live room",
+    )
 
+    // ### Alice saves
     const alice = await pushesFromTheirMachine(
       roomDaemon, name, 'alice', start.sourceRevision,
       'opening\nclosing\nalice from her laptop\n',
     )
+    assert.ok(
+      room.ytext.toString().includes('alice from her laptop'),
+      "Carol's editor — Alice's laptop line is in the room; otherwise Carol's checkpoint will revert Alice's push",
+    )
+
+    // ### Bob saves
     await pushesFromTheirMachine(
       roomDaemon, name, 'bob', alice.sourceRevision,
       'opening\nclosing\nalice from her laptop\nbob from his desktop\n',
@@ -169,21 +181,22 @@ try {
       ['Alice', 'alice from her laptop'],
       ['Bob', 'bob from his desktop'],
     ]) {
-      assert.ok(inTheRoom.includes(line), `${who}'s line never reached the room: ${JSON.stringify(inTheRoom)}`)
+      assert.ok(inTheRoom.includes(line), `${who}'s work — in the room before checkpoint; otherwise ${who}'s line never reached the room: ${JSON.stringify(inTheRoom)}`)
     }
 
+    // ### Carol checkpoints
     // Carol's editor checkpoints. It writes the whole file.
     await roomDaemon.flushRoom(room)
     const onDisk = readSourceFile(name, 'main.tex')
-    assert.ok(onDisk.includes("carol's paragraph"), "carol's own draft was lost by her own checkpoint")
-    assert.ok(onDisk.includes('alice from her laptop'), "carol's checkpoint reverted alice's push")
-    assert.ok(onDisk.includes('bob from his desktop'), "carol's checkpoint reverted bob's push")
+    assert.ok(onDisk.includes("carol's paragraph"), "the paper — has Carol's paragraph after her checkpoint; otherwise Carol's own draft was lost by her own checkpoint")
+    assert.ok(onDisk.includes('alice from her laptop'), "the paper — has Alice's laptop line after Carol checkpoints; otherwise Carol's checkpoint reverted Alice's push")
+    assert.ok(onDisk.includes('bob from his desktop'), "the paper — has Bob's desktop line after Carol checkpoints; otherwise Carol's checkpoint reverted Bob's push")
   }
 
-  // ---------------------------------------------------------------------
+  // ## A reading group pushes while Carol edits
+  //
   // "Two n." The same story with six people pushing while one person types.
   // Nothing below knows the number six.
-  // ---------------------------------------------------------------------
   {
     const name = 'a-reading-group-and-an-editor'
     const people = ['Alice', 'Bob', 'Dan', 'Erin', 'Frank', 'Grace']
@@ -191,37 +204,49 @@ try {
     const roomDaemon = makeRoomDaemon()
     const room = await roomDaemon.getRoom(name, 'main.tex')
 
+    // ### Carol types
     room.ytext.insert('opening\n'.length, "carol's paragraph\n")
+    assert.ok(
+      room.ytext.toString().includes("carol's paragraph"),
+      "Carol's editor — her paragraph is in the room before the group pushes; otherwise the typist's draft never entered the shared file",
+    )
 
+    // ### The reading group saves
     let revision = start.sourceRevision
     let content = 'opening\nclosing\n'
     for (const who of people) {
       content += `${who} pushed this\n`
       const result = await pushesFromTheirMachine(roomDaemon, name, who.toLowerCase(), revision, content)
       revision = result.sourceRevision
+      assert.ok(
+        room.ytext.toString().includes(`${who} pushed this`),
+        `${who}'s laptop — their push is in the room; otherwise the editor's checkpoint will drop ${who}'s work`,
+      )
     }
 
+    // ### Carol checkpoints
     await roomDaemon.flushRoom(room)
     const onDisk = readSourceFile(name, 'main.tex')
-    assert.ok(onDisk.includes("carol's paragraph"), "the person typing lost her draft when six people pushed under her")
+    assert.ok(onDisk.includes("carol's paragraph"), "the paper — has Carol's paragraph after the group pushes; otherwise the person typing lost her draft when six people pushed under her")
     for (const who of people) {
-      assert.ok(onDisk.includes(`${who} pushed this`), `${who}'s push was reverted by the editor's checkpoint`)
+      assert.ok(onDisk.includes(`${who} pushed this`), `the paper — has ${who}'s push after Carol checkpoints; otherwise ${who}'s push was reverted by the editor's checkpoint`)
     }
   }
 
-  // ---------------------------------------------------------------------
+  // ## Two people have the same file open
+  //
   // Two people with the same file open at once. This is the thing Skip
   // expected and that did not exist before the room: not conflict markers
   // between two browsers, but both of them simply looking at the same text.
   //
   // Carol types; Dan, who has touched nothing, must see it without asking.
-  // ---------------------------------------------------------------------
   {
     const name = 'two-people-with-the-file-open'
     await paper(name, 'opening\nclosing\n')
     const roomDaemon = makeRoomDaemon()
 
     await withSockets(roomDaemon, async port => {
+      // ### Carol and Dan open the file
       const join = async () => {
         const ws = new WebSocket(`ws://127.0.0.1:${port}/source-sync/${name}/main.tex`)
         const sync = await nextMessage(ws, 'sync')
@@ -238,8 +263,9 @@ try {
 
       const carol = await join()
       const dan = await join()
-      assert.equal(dan.text.toString(), 'opening\nclosing\n', 'Dan did not receive the file when he opened it')
+      assert.equal(dan.text.toString(), 'opening\nclosing\n', "Dan's editor — has the current file when he opens it; otherwise Dan did not receive the file")
 
+      // ### Carol types
       // Carol types, and sends it the way a client does.
       const before = Y.encodeStateVector(carol.doc)
       carol.text.insert('opening\n'.length, "carol's paragraph\n")
@@ -254,7 +280,7 @@ try {
       ])
       assert.ok(
         arrived,
-        'Dan has the same file open and never saw Carol type. He is reading text that is already '
+        "Dan's editor — has Carol's paragraph without asking; otherwise Dan has the same file open and never saw Carol type. He is reading text that is already "
         + `out of date, and his own next edit will be built on it: ${JSON.stringify(dan.text.toString())}`,
       )
 
@@ -263,7 +289,8 @@ try {
     })
   }
 
-  // ---------------------------------------------------------------------
+  // ## The room checkpoints on its own clock
+  //
   // The same room, on its own clock.
   //
   // Every story above forces the checkpoint, which makes them readable and
@@ -277,44 +304,57 @@ try {
   // rather than guessing at a duration. If that frame ever stops being
   // emitted, this hangs and says so, which is the correct failure: a timer
   // nobody can observe is a timer nobody can debug when it eats a paragraph.
-  // ---------------------------------------------------------------------
   {
     const name = 'the-room-on-its-own-clock'
     const start = await paper(name, 'opening\nclosing\n')
     const roomDaemon = makeRoomDaemon(250) // the shipped default
 
     await withSockets(roomDaemon, async port => {
+      // ### Carol opens the file
       const ws = new WebSocket(`ws://127.0.0.1:${port}/source-sync/${name}/main.tex`)
       const sync = await nextMessage(ws, 'sync')
       const doc = new Y.Doc()
       Y.applyUpdate(doc, new Uint8Array(Buffer.from(sync.update, 'base64')), 'room')
       const text = doc.getText('source')
+      assert.equal(text.toString(), 'opening\nclosing\n', "Carol's editor — has the file before the timer story starts; otherwise the room timer test is not measuring a real edit")
       doc.on('update', (update, origin) => {
         if (origin === 'room') return
         ws.send(JSON.stringify({ type: 'update', update: Buffer.from(update).toString('base64') }))
       })
 
+      // ### Carol types
       // Carol types. Nobody flushes anything.
       const checkpointed = nextMessage(ws, 'status')
       text.insert('opening\n'.length, "carol's paragraph\n")
+      assert.ok(
+        text.toString().includes("carol's paragraph"),
+        "Carol's editor — has her paragraph before the room's timer fires; otherwise there is nothing for the checkpoint to save",
+      )
 
+      // ### Alice saves inside the checkpoint window
       // Alice pushes from her machine inside the same window.
       await pushesFromTheirMachine(
         roomDaemon, name, 'alice', start.sourceRevision,
         'opening\nclosing\nalice from her laptop\n',
       )
+      const room = await roomDaemon.getRoom(name, 'main.tex')
+      assert.ok(
+        room.ytext.toString().includes('alice from her laptop'),
+        "the room — has Alice's laptop line before its own checkpoint fires; otherwise the timer checkpoint will revert Alice's push",
+      )
 
+      // ### The room checkpoint fires
       const status = await checkpointed
-      assert.equal(status.status, 'synced', `the room's own checkpoint reported ${status.status}`)
+      assert.equal(status.status, 'synced', `the room's own checkpoint — reported synced without a manual flush; otherwise it reported ${status.status}`)
 
       const onDisk = readSourceFile(name, 'main.tex')
       assert.ok(
         onDisk.includes("carol's paragraph"),
-        `the room checkpointed on its own and did not write what Carol typed: ${JSON.stringify(onDisk)}`,
+        `the paper — has Carol's paragraph after the room's own checkpoint; otherwise the room checkpointed on its own and did not write what Carol typed: ${JSON.stringify(onDisk)}`,
       )
       assert.ok(
         onDisk.includes('alice from her laptop'),
-        `the room's own checkpoint reverted Alice's push: ${JSON.stringify(onDisk)}`,
+        `the paper — has Alice's laptop line after the room's own checkpoint; otherwise the room's own checkpoint reverted Alice's push: ${JSON.stringify(onDisk)}`,
       )
       ws.close()
     })

@@ -88,7 +88,7 @@ function assertionMessages(sourceFile) {
   const visit = node => {
     if (ts.isCallExpression(node) && isAssertCall(node)) {
       const last = node.arguments[node.arguments.length - 1]
-      const message = staticString(last)
+      const message = staticString(last, sourceFile)
       if (message) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
         messages.push({ line: line + 1, message })
@@ -106,9 +106,20 @@ function isAssertCall(node) {
   return ts.isIdentifier(expression.expression) && expression.expression.text === 'assert'
 }
 
-function staticString(node) {
+function staticString(node, sourceFile) {
   if (!node) return null
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticString(node.left, sourceFile)
+    const right = staticString(node.right, sourceFile)
+    if (left != null && right != null) return left + right
+  }
+  if (ts.isTemplateExpression(node)) {
+    return node.templateSpans.reduce(
+      (text, span) => `${text}\${${span.expression.getText(sourceFile)}}${span.literal.text}`,
+      node.head.text,
+    )
+  }
   return null
 }
 
