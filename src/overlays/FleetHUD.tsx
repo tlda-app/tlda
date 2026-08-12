@@ -490,7 +490,7 @@ export function FleetHUD({
   const lastHudAnchorStateSigRef = useRef('')
   const hudCameraDivergedRef = useRef(false)
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
-  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+  const gesturesEnabled = expanded && !!fleetBounds && docShapesReady && cameraReady
 
   useEffect(() => {
     if (isDocumentCameraRestored()) {
