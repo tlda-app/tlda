@@ -216,6 +216,18 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     const handled = sourceCorrelation.handle(message)
     if (!handled) return false
     if (conflicted.length > 0) sourceCorrelation.holdForHuman(message.project)
+    if (!message?.ok && conflicted.length === 0) {
+      const detail = message.error || message.status || 'unknown'
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'source-change-rejected',
+        severity: 'critical',
+        project: message.project,
+        message: `Source change for ${message.project} was rejected by the server: ${detail}`,
+        status: message.status || null,
+        httpStatus: message.httpStatus || null,
+      })
+    }
     let retry
     while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry.payload, retry.retried)
     return true
