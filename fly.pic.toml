@@ -1,0 +1,39 @@
+# fly.pic.toml — the QTM 285 course backend ("Prediction, Inference, and Causality").
+# A peer of live and stable: same image, same entrypoint, its own app, volume and
+# tailnet name, so course content and student identity live in their own
+# environment rather than in testing.
+# Deploy with:  fly deploy -c fly.pic.toml
+app = "tlda-pic"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.live"
+
+[env]
+  PORT = "5176"
+  NODE_ENV = "production"
+  # Everything else this server needs lives in config/deployments/pic/, committed
+  # and baked into the image. TLDA_DEPLOYMENT names that directory and is the only
+  # pointer that must arrive from outside it.
+  TLDA_DEPLOYMENT = "pic"
+  # The tailnet node name, and therefore the URL: tlda-pic.cormorant-matrix.ts.net.
+  # Live and stable carry this as a `fly secrets` value; it is not a secret, and an
+  # unset one silently collides with live's default of `tlda-fly`, so it is
+  # committed here where a reader can see which box answers which name. The
+  # hostname must stay inside *.cormorant-matrix.ts.net — the tldraw license is
+  # bound to that domain and a *.fly.dev name would lose the canvas.
+  TS_HOSTNAME = "tlda-pic"
+
+# No [http_service] — like live and stable, this server is NOT exposed on the
+# public internet. Access is tailnet-only via `tailscale serve`; see
+# scripts/fly-entrypoint-live.sh. No public service means no autostop, so the
+# machine stays running on its CMD and its persistent volume.
+[[vm]]
+  size = "performance-2x"
+  memory = "4096"
+
+# Course content, fleet.db and sync data. Same mount point as live and stable so
+# the shared entrypoint's symlinks resolve.
+[mounts]
+  source = "sync_data"
+  destination = "/app/server/persist"
