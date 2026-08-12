@@ -120,6 +120,26 @@ test('a thread card carries no semantic-operation shell', () => {
   assert.match(html, /semantic-operation-body/)
 })
 
+test('a long bash tool call labels the card once', () => {
+  const html = renderActivityGroup([
+    {
+      from: 'fleet:pretty',
+      timestamp: '2026-08-12T04:35:15.000Z',
+      _toolName: 'Bash',
+      _toolArg: 'printf',
+      _toolInput: { command: 'printf "one"\nprintf "two"\nprintf "three"' },
+    },
+  ], {
+    ...ctx,
+    highlightSyntax: value => value,
+    foldHeights: { bash: 10 },
+  })
+
+  assert.equal((html.match(/class="tool-name">Bash<\/span>/g) || []).length, 1)
+  assert.equal((html.match(/class="code-block-lang">bash<\/span>/g) || []).length, 0)
+  assert.match(html, /data-lang="bash"/)
+})
+
 // The renderer test above cannot see the control wrapped around its HTML. That
 // was the exact hole which let a green suite ship Collapse on every collapsed
 // card. Skip, 8/02 12:25:11 PM EDT, correcting himself on the next line: "your
