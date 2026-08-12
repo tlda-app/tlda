@@ -11,9 +11,13 @@ export interface ProblemsView { assignment: Assignment; problems: { problemId: s
 export interface Submission { assignmentId: string; studentId: string; contentRef: string; submittedAt: string; gradingStatus: GradingStatus; feedback: FeedbackMark[] }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const classroomToken = new URLSearchParams(window.location.search).get('classroomToken')
   const response = await fetch(`/api/classroom${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    headers: {
+      ...(classroomToken ? { 'x-tlda-student-token': classroomToken } : {}),
+      ...(init?.headers || {}),
+    },
   })
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`)
   return response.json()
@@ -25,9 +29,14 @@ export const classroomApi = {
   // The student's own work. Their identity comes from their token, so this
   // takes no student id and cannot be aimed at anyone else.
   mySubmission: (assignmentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/mine`),
+  uploadMine: (assignmentId: string, archive: File) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/mine/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/zip' },
+    body: archive,
+  }),
   assignment: (id: string) => request<Assignment>(`/assignments/${encodeURIComponent(id)}`),
   submission: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}`),
-  feedback: (assignmentId: string, studentId: string, body: { title: string; text: string; attached?: boolean }) => request<{ id: string }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/feedback`, { method: 'POST', body: JSON.stringify(body) }),
+  feedback: (assignmentId: string, studentId: string, body: { title: string; text: string; attached?: boolean }) => request<{ id: string }>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/feedback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   grade: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/grade`, { method: 'POST' }),
   returnFeedback: (assignmentId: string, studentId: string) => request<Submission>(`/assignments/${encodeURIComponent(assignmentId)}/submissions/${encodeURIComponent(studentId)}/return`, { method: 'POST' }),
 }

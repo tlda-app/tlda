@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SvgDocumentEditor } from '../SvgDocument'
 import { createHtmlDocumentFromPageInfo } from '../svgDocumentLoader'
 import type { SvgDocument } from '../loaders/types'
@@ -34,6 +34,26 @@ export function StudentWork() {
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [error, setError] = useState('')
   const [loaded, setLoaded] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+
+  const upload = async (file?: File) => {
+    if (!file || uploading) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('Upload the ZIP containing your QMD file and any images it uses.')
+      return
+    }
+    try {
+      setError('')
+      setUploading(true)
+      setSubmission(await classroomApi.uploadMine(assignmentId, file))
+      setAssignment(await classroomApi.assignment(assignmentId))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -70,13 +90,34 @@ export function StudentWork() {
     return () => { cancelled = true }
   }, [submission, assignment])
 
-  if (error) return <main className="classroomWorkspace"><p className="classroomError">{error}</p></main>
   if (!loaded) return <main className="classroomWorkspace">Loading…</main>
 
   if (!submission) {
     return <main className="classroomWorkspace">
       <header><div><h1>{assignment?.title ?? assignmentId}</h1><div>Not submitted yet</div></div></header>
-      <p>Upload your work to see it here. The solutions unlock once you have submitted.</p>
+      <button
+        className="classroomDropTarget"
+        type="button"
+        disabled={uploading}
+        onClick={() => fileInput.current?.click()}
+        onDragOver={event => event.preventDefault()}
+        onDrop={event => {
+          event.preventDefault()
+          void upload(event.dataTransfer.files[0])
+        }}
+      >
+        <strong>{uploading ? 'Uploading…' : 'Drop your homework ZIP here'}</strong>
+        <span>or choose a ZIP containing your QMD file and its images</span>
+      </button>
+      <input
+        ref={fileInput}
+        className="classroomFileInput"
+        type="file"
+        accept=".zip,application/zip"
+        onChange={event => void upload(event.target.files?.[0])}
+      />
+      <p>The official solution unlocks after your upload is recorded.</p>
+      {error && <p className="classroomError">{error}</p>}
     </main>
   }
 
@@ -91,6 +132,7 @@ export function StudentWork() {
       <span className="statusChip">{submission.gradingStatus}</span>
       {assignment?.solutionsLocked && <span>solutions unlock when you submit</span>}
       {returned.length > 0 && <span>{returned.length} comment{returned.length === 1 ? '' : 's'}</span>}
+      {error && <span className="classroomError">{error}</span>}
     </aside>
   </>
 }

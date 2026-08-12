@@ -270,8 +270,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   // renders the work to HTML pages — which is what the side-by-side marking view
   // already reads. So `contentRef` stays a document key and nothing downstream
   // has to learn a new shape.
-  router.post('/assignments/:assignmentId/submissions/:studentId/upload', (req, res) => {
-    const { assignmentId, studentId } = req.params
+  const receiveSubmissionArchive = (req, res, assignmentId, studentId) => {
     if (!allowedStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })
     if (!store.getAssignment(assignmentId)) return res.status(404).json({ error: 'Assignment not found' })
 
@@ -318,6 +317,18 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         fail(500, { error: 'The submission could not be stored. Nothing was recorded — please try again.' })
       }
     })
+  }
+
+  // A student never supplies their own id. The enrollment token is the
+  // identity, and the assignment page is the assignment.
+  router.post('/assignments/:assignmentId/mine/upload', (req, res) => {
+    const p = req.classroomPrincipal
+    if (p.role !== 'student') return res.status(400).json({ error: 'Only a student can upload work of their own' })
+    return receiveSubmissionArchive(req, res, req.params.assignmentId, p.studentId)
+  })
+
+  router.post('/assignments/:assignmentId/submissions/:studentId/upload', (req, res) => {
+    return receiveSubmissionArchive(req, res, req.params.assignmentId, req.params.studentId)
   })
 
   router.post('/assignments/:assignmentId/submissions/:studentId/feedback', instructor, (req, res) => {

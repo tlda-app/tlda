@@ -56,7 +56,7 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
       '',
     ].join('\n')
     const archive = zipSync({ 'homework.qmd': new Uint8Array(Buffer.from(qmd)) })
-    const uploaded = await request('/assignments/hw1/submissions/ada/upload', 'ada', {
+    const uploaded = await request('/assignments/hw1/mine/upload', 'ada', {
       method: 'POST',
       headers: { 'content-type': 'application/zip' },
       body: archive,

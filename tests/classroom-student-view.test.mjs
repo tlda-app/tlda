@@ -94,14 +94,9 @@ test('not submitted is an ordinary answer, not an error state', async t => {
 })
 
 test('no student-reachable route hands back an unreturned draft', async t => {
-  // The leak app-chief2 found was not on a read path — it was `submit()`
-  // returning drafts, straight out of a route a student calls. My five cases
-  // above all tested /mine, so all five encoded the same assumption: that the
-  // leak surface is where you go to read. It is wherever a submission body
-  // reaches a student.
-  //
-  // So this asserts the property rather than the function: whatever a student
-  // can call, none of it comes back carrying his unreturned working.
+  // The old direct-submit route once returned drafts. Archive hand-in is now
+  // the only submission path, so an arbitrary document key cannot reach the
+  // store or unlock a solution at all.
   const { store, server, get } = await serve(); t.after(() => server.close())
   seeded(store)
   store.addFeedback({ assignmentId: 'hw', studentId: 'ada', title: 'draft', text: 'not sent yet' })
@@ -109,16 +104,17 @@ test('no student-reachable route hands back an unreturned draft', async t => {
   principal = { role: 'student', studentId: 'ada', courseId: 'c' }
   const base = `http://127.0.0.1:${server.address().port}/api/classroom`
 
+  const directSubmit = await fetch(`${base}/assignments/hw/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contentRef: 'sub-ada' }),
+  })
+  assert.equal(directSubmit.status, 404)
+
   const bodies = [
     (await get('/assignments/hw/mine')).body,
     (await get('/assignments/hw/submissions/ada')).body,
     (await get('/courses/c/assignments')).body,
-    // The one that was actually leaking: re-submitting.
-    await fetch(`${base}/assignments/hw/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contentRef: 'sub-ada' }),
-    }).then(r => r.json()),
   ]
 
   for (const body of bodies) {
