@@ -7081,6 +7081,28 @@ function FleetChatInner({ shape }: { shape: any }) {
  * delivery. There is no second history access path.
  */
 const CHAT_FIRST_PAGE = 100
+const FLEET_HUD_OPEN_BODY_CLASS = 'fleet-hud-open'
+
+function isFleetHudOpenBodyState(): boolean {
+  return typeof document !== 'undefined' && document.body.classList.contains(FLEET_HUD_OPEN_BODY_CLASS)
+}
+
+function subscribeFleetHudOpenBodyState(onStoreChange: () => void): () => void {
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
+  const observer = new MutationObserver(onStoreChange)
+  observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+  return () => observer.disconnect()
+}
+
+function useMainCanvasChatHiddenByHud(): boolean {
+  const viewportId = useVisibilityViewportId()
+  const hudOpen = useSyncExternalStore(
+    subscribeFleetHudOpenBodyState,
+    isFleetHudOpenBodyState,
+    () => false,
+  )
+  return !viewportId && hudOpen
+}
 
 function useChatFilterSubscription(shape: any) {
   const { filter } = shape.props as { filter: [string, string][][] }
@@ -7169,7 +7191,7 @@ function useUnreadRailSubscription(shape: any) {
   }, [isOnlyChat, me, shape.id])
 }
 
-const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
+function FleetChatMounted({ shape }: { shape: any }) {
   useChatFilterSubscription(shape)
   useUnreadRailSubscription(shape)
   // Chat panels must not mount/unmount while the user pans horizontally. The
@@ -7177,6 +7199,12 @@ const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: 
   // rebuilds the message/rendering hooks. Keep the chat mounted; the inner
   // render cache and live-store views handle event-side cost.
   return <FleetChatInner shape={shape} />
+}
+
+const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
+  const hiddenByHud = useMainCanvasChatHiddenByHud()
+  if (hiddenByHud) return null
+  return <FleetChatMounted shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
 
 
