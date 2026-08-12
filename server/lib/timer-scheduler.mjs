@@ -144,14 +144,25 @@ export class ServerTimerScheduler {
             event_id: Number(taskState.event.id),
             metadata_patch: taskPatch,
           })
-          // Chat panels are server-fed subscription buffers. Send the updated
-          // delegate row through their authoritative filter-event intake as
-          // well; the unchanged event id makes this an in-place upsert, not a
-          // second task row.
+          // Chat panels are server-fed subscription buffers, so the event-update
+          // broadcast above cannot reach them: their only inputs are filter-event
+          // and filter-events. This sends the updated delegate row through that
+          // intake so a panel holding it stops showing a stale next_fire_at.
+          //
+          // updateOnly, because the row carries its ORIGINAL id and timestamp.
+          // The upsert this comment used to promise is only in-place for a panel
+          // that already holds the row; for one that does not, this inserted an
+          // hours-old event that strict timestamp ordering sorted above
+          // everything, so the panel's head became a timestamp nothing had
+          // fetched. Caught on the wire on 2026-08-12: this seat's own 15-minute
+          // heartbeat, created 08:03:36Z, delivered live at 16:03:38Z with
+          // lateBySec 28802 — the age of the row, growing by exactly one repeat
+          // interval per fire. It read as a truncation boundary and cost three
+          // agents six hours.
           this.broadcast?.('fleet-event', {
             ...taskState.event,
             metadata: { ...(taskState.event.metadata || {}), ...taskPatch },
-          })
+          }, { updateOnly: true })
         }
         await this.refresh()
         return { ok: true, to, notified, recurring: true, next_fire_at: nextFireAt }

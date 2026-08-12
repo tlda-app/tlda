@@ -1448,7 +1448,7 @@ const filterPushCounters = {
 }
 const filterPushStartedAt = new Date().toISOString()
 
-async function pushFilteredEvent(data) {
+async function pushFilteredEvent(data, { updateOnly = false } = {}) {
   if (!data) return
   filterPushCounters.eventsSeen++
   filterPushCounters.lastEventAt = new Date().toISOString()
@@ -1471,7 +1471,10 @@ async function pushFilteredEvent(data) {
   delete publicData._filter_agents
   for (const { conn, subId } of matched) {
     try {
-      if (conn.readyState === 1) conn.send(JSON.stringify({ event: 'filter-event', data: { subId, event: publicData } }))
+      // updateOnly rides the ENVELOPE, never publicData. It is a fact about this
+      // delivery, not about the event, so it must not reach a panel's store or
+      // travel anywhere a live row is compared against a fetched one.
+      if (conn.readyState === 1) conn.send(JSON.stringify({ event: 'filter-event', data: { subId, event: publicData, ...(updateOnly ? { updateOnly: true } : {}) } }))
     } catch { /* the socket's own close path cleans up */ }
   }
 }
@@ -1485,7 +1488,7 @@ function broadcastFleet(msg) {
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
 }
-function broadcastEvent(type, data) {
+function broadcastEvent(type, data, options = {}) {
   if (type === 'fleet-event' && data?.type === 'activity') {
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_BROADCAST, data, 1, {
       type: 'activity',
@@ -1509,7 +1512,7 @@ function broadcastEvent(type, data) {
     })
   }
   if (type === 'fleet-event') {
-    if (isChatHistoryEventType(data?.type)) void pushFilteredEvent(data)
+    if (isChatHistoryEventType(data?.type)) void pushFilteredEvent(data, { updateOnly: !!options.updateOnly })
     return
   }
   broadcastFleet({ event: type, data })

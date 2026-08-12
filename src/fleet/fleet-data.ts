@@ -209,6 +209,7 @@ function reconcileEventBuffer(buffer: EventBuffer): void {
 export function applyFilterEvents(
   bufferKey: string,
   events: readonly Record<string, unknown>[],
+  { updateOnly = false }: { updateOnly?: boolean } = {},
 ): number {
   const buffer = eventBuffers.get(bufferKey)
   if (!buffer || !buffer.serverFed) return 0
@@ -216,7 +217,18 @@ export function applyFilterEvents(
   buffer.store.bulk((store) => {
     for (const raw of events) {
       const event = asFleetEvent(raw)
-      if (!store.get(event.id)) added++
+      const present = !!store.get(event.id)
+      // You cannot update what you do not hold. An updateOnly push is a re-send
+      // of a row that changed — a recurring timer re-broadcasting its task's
+      // delegate row on every fire — carrying that row's ORIGINAL id and
+      // timestamp. For a panel holding the row that is the in-place upsert it
+      // was meant to be. For a panel that does not, inserting it puts an
+      // hours-old event in the buffer, where strict timestamp ordering sorts it
+      // above everything and the panel's head becomes a timestamp nothing ever
+      // fetched. That false boundary sent three agents through a six-hour paging
+      // investigation on 2026-08-12.
+      if (updateOnly && !present) continue
+      if (!present) added++
       store.upsert(event)
     }
   })

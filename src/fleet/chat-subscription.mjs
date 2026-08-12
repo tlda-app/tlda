@@ -143,13 +143,24 @@ export function dispatchFilterEvent(data) {
   }
   const event = data.event || null
   if (!event) return false
-  // Record that the SERVER matched this event for this subscription. The client
-  // records its own verdict from the path it already runs; the comparison of the
-  // two on real traffic is the gate before the old path is deleted.
-  noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
+  // An updateOnly push is a re-send of a row that changed, not the arrival of a
+  // new event, and it rides the envelope rather than the row so the stored event
+  // is unchanged.
+  const updateOnly = !!data.updateOnly
+  // DELIBERATE HOLE IN THIS DENOMINATOR, and whoever reads the comparator later
+  // needs to know it is here. noteServerDelivery feeds the live-vs-client
+  // equivalence check, whose disagreements gate deleting the old client path. A
+  // re-fire is not a delivery of a new event, so counting it would inflate the
+  // server side — and once the panel deliberately declines to insert a row it
+  // does not hold, the comparator would read that as the client LOSING an event
+  // and manufacture exactly the disagreement it exists to detect. Excluded here,
+  // at the one place that can tell the two apart.
+  if (!updateOnly) {
+    noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
+  }
   sub.onEvents([event], {
     subId: data.subId,
-    reason: data.reason || 'live',
+    reason: updateOnly ? 'update' : (data.reason || 'live'),
     browserReceivedAtMs,
   })
   return true

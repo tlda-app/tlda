@@ -1319,11 +1319,15 @@ function applyTaskDelta(delta) {
  * server-fed chat panel — history page and live push both land here, converted
  * the same way, so a message renders identically whichever way it arrived.
  *
+ * `reason: 'update'` marks a re-send of a row that changed rather than an
+ * arrival. It is carried on the delivery envelope, never on the row, so what a
+ * panel stores stays byte-identical to what history returns.
+ *
  * @param {string} bufferKey
  * @param {readonly object[]} rows
- * @param {{browserReceivedAtMs?: number|null}} [timing]
+ * @param {{browserReceivedAtMs?: number|null, reason?: string}} [timing]
  */
-export function receiveFilterEvents(bufferKey, rows, { browserReceivedAtMs = null } = {}) {
+export function receiveFilterEvents(bufferKey, rows, { browserReceivedAtMs = null, reason = 'live' } = {}) {
   if (!bufferKey) return 0
   const events = convertChatEvents(rows)
   if (Number.isFinite(browserReceivedAtMs)) {
@@ -1336,7 +1340,7 @@ export function receiveFilterEvents(bufferKey, rows, { browserReceivedAtMs = nul
       }
     }
   }
-  const added = applyFilterEvents(bufferKey, events)
+  const added = applyFilterEvents(bufferKey, events, { updateOnly: reason === 'update' })
   if (added) notify('messages', null)
   return added
 }
