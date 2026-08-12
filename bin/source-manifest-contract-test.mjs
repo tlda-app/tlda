@@ -3,6 +3,7 @@
 import assert from 'assert/strict'
 import { execFileSync } from 'child_process'
 import { createHash } from 'crypto'
+import { EventEmitter } from 'events'
 import Database from 'better-sqlite3'
 import fs from 'fs'
 import os from 'os'
@@ -26,12 +27,14 @@ import {
   readSourceFile,
   sourceLifecycleStore,
   sourceDir,
+  outputDir,
   updateProject,
   updateClientSourceManifest,
 } from '../server/lib/project-store.mjs'
 import { processProjectPush } from '../server/routes/projects.mjs'
 import { recoverProjectSourceTransactions, resumeOverleafPollers, syncOverleaf } from '../server/lib/overleaf-sync.mjs'
 import { pushMcpSourceFiles } from '../mcp-server/source-push-orchestration.mjs'
+import { createSourceSync } from '../daemon/source-sync.mjs'
 
 function md5(value) {
   return createHash('md5').update(value).digest('hex')
@@ -112,6 +115,11 @@ function assertProjectFilesDbPragmas(root) {
   assert.match(projectStore, /journal_size_limit = 67108864/, 'project-files DB connection must cap retained journal size')
 }
 
+function filterBuildsAway(name) {
+  fs.mkdirSync(outputDir(name), { recursive: true })
+  fs.writeFileSync(path.join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
+}
+
 function git(args, cwd, options = {}) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options }).trim()
 }
@@ -134,6 +142,7 @@ async function setupOverleafProject(root, name) {
 
   createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
   await updateProject(name, { pages: 1, buildStatus: 'success', overleafRemote: remote, autoSync: true })
+  filterBuildsAway(name)
   write(path.join(sourceDir(name), 'main.tex'), 'old main\n')
   write(path.join(sourceDir(name), 'notes.tex'), 'old notes\n')
   await updateClientSourceManifest(name, ['main.tex', 'notes.tex'])
@@ -213,17 +222,54 @@ function assertPushSuppliersCarryManifest() {
   }
 }
 
-function assertDaemonBootstrapSeparatesOwnershipFromBytePayload() {
-  const source = fs.readFileSync(path.join(process.cwd(), 'daemon/source-sync.mjs'), 'utf8')
-  const start = source.indexOf('function pushWatchedFiles')
-  const end = source.indexOf('const _pendingSourceProjects', start)
-  assert.ok(start >= 0 && end > start, 'pushWatchedFiles not found')
-  const fn = source.slice(start, end)
-  assert.match(fn, /let uploadPaths = new Set\(\)/, 'daemon bootstrap must compute the byte-bearing upload inventory')
-  assert.match(fn, /sourceManifest = collectSourceManifest\([\s\S]*uploadPaths[\s\S]*authorityManifest/, 'daemon sourceManifest must preserve inherited ownership around the upload inventory')
-  assert.match(fn, /for \(const rel of normalizeSourceManifest\(\[\.\.\.uploadPaths\]/, 'daemon files must contain only byte-bearing upload paths')
-  assert.doesNotMatch(fn, /for \(const rel of sourceManifest\)/, 'daemon must not resend every inherited ownership path as a file body')
-  assert.doesNotMatch(fn, /new Set\(\[\.\.\.watchSet,[\s\S]*mainFile/, 'daemon markdown manifest must not derive from watchSet + mainFile')
+async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
+  const sourceRoot = path.join(root, 'daemon-source-change')
+  fs.mkdirSync(sourceRoot, { recursive: true })
+  write(path.join(sourceRoot, 'main.tex'), 'first\n')
+  write(path.join(sourceRoot, 'legacy-preserved.tex'), 'server-owned bytes\n')
+
+  const sent = []
+  const watchers = []
+  const sourceSync = createSourceSync({
+    sourceBindingsFile: path.join(root, 'source-bindings.json'),
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg(message) { sent.push(message); return true },
+    isConnected: () => true,
+    resolveEditor: () => null,
+    reconcileIntervalMs: 60_000,
+    watch(paths) {
+      const watcher = new EventEmitter()
+      watcher.paths = paths
+      watcher.close = () => Promise.resolve()
+      watchers.push(watcher)
+      return watcher
+    },
+  })
+
+  try {
+    sourceSync.bindSource('daemon-source-change', sourceRoot)
+    sourceSync.sync([{
+      name: 'daemon-source-change',
+      mainFile: 'main.tex',
+      format: 'svg',
+      sourceRevision: 'revision-1',
+      sourceManifest: ['legacy-preserved.tex'],
+    }], { authoritativeRevisions: true })
+    assert.equal(sent.length, 0, 'daemon sync must not replay every watched source body on connect')
+    assert.equal(watchers.length, 1, 'daemon source watcher must start')
+
+    write(path.join(sourceRoot, 'main.tex'), 'second\n')
+    watchers[0].emit('change', path.join(sourceRoot, 'main.tex'))
+    await new Promise(resolve => setTimeout(resolve, 250))
+
+    assert.equal(sent.length, 1, 'daemon source mutation must send one source-change')
+    assert.deepEqual(sent[0].files.map(file => file.path), ['main.tex'], 'daemon files must contain only byte-bearing changed paths')
+    assert.equal(sent[0].files[0].content, 'second\n')
+    assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'daemon sourceManifest must preserve inherited ownership around the changed byte inventory')
+    assert.equal(sent[0].expectedRevision, 'revision-1')
+  } finally {
+    sourceSync.closeAll()
+  }
 }
 
 function assertPutRequiresCallerManifest() {
@@ -256,7 +302,7 @@ function assertMcpCallersCarryManifest() {
   const pushEnd = index.indexOf('// Shadow-branch commit', pushStart)
   assert.ok(pushStart >= 0 && pushEnd > pushStart, 'MCP push handler not found')
   const pushHandler = index.slice(pushStart, pushEnd)
-  assert.match(pushHandler, /pushMcpSourceFiles\(\{ project, files, session: process\.env\.CLAUDE_SESSION, serverFetch \}\)/, 'MCP push handler must use tested source push orchestration')
+  assert.match(pushHandler, /pushMcpSourceFiles\(\{[\s\S]*\bproject,[\s\S]*\bfiles,[\s\S]*session:\s*process\.env\.CLAUDE_SESSION,[\s\S]*editedBy:\s*process\.env\.FLEET_ID,[\s\S]*\bserverFetch,[\s\S]*\}\)/, 'MCP push handler must use tested source push orchestration')
   assert.doesNotMatch(pushHandler, /catch\s*\{[^}]*\}/, 'MCP push must fail closed if current authored inventory cannot be read')
 }
 
@@ -350,7 +396,7 @@ async function main() {
     assert.equal(isSourceFilePath('main.run.xml', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('main.fdb_latexmk', { mainFile: 'main.tex' }), false)
     assertPushSuppliersCarryManifest()
-    assertDaemonBootstrapSeparatesOwnershipFromBytePayload()
+    await assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root)
     assertPutRequiresCallerManifest()
     assertMcpCallersCarryManifest()
     await assertMcpPushOrchestrationBehavior()
@@ -358,6 +404,7 @@ async function main() {
 
     createProject({ name: 'latex-project', title: 'Latex', mainFile: 'main.tex', format: 'svg' })
     await updateProject('latex-project', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('latex-project')
     assert.deepEqual(fs.readdirSync(sourceDir('latex-project')), [], 'Project creation must not invent source files')
     write(path.join(sourceDir('latex-project'), 'README.md'), '# legacy unowned file\n')
     write(path.join(sourceDir('latex-project'), 'main.synctex.gz'), 'generated\n')
@@ -584,6 +631,7 @@ async function main() {
       lastEditedBy: 'original-editor',
       lastEditedByAt: 43,
     })
+    filterBuildsAway('overleaf-fail')
     write(path.join(sourceDir('overleaf-fail'), 'main.tex'), 'old main\n')
     write(path.join(sourceDir('overleaf-fail'), 'notes.tex'), 'old notes\n')
     await updateClientSourceManifest('overleaf-fail', ['main.tex', 'notes.tex'])
@@ -729,7 +777,9 @@ async function main() {
     const journal = JSON.parse(fs.readFileSync(path.join(recoveryRoot, 'recovery.json'), 'utf8'))
     assert.equal(journal.state, 'publish-pending')
     assert.equal(journal.previousRemoteHead, priorRemoteHead)
-    assert.equal(journal.proposedRemoteHead, await readProject('overleaf-compensation-race').overleafHead)
+    assert.match(journal.proposedRemoteHead, /^[0-9a-f]{40}$/)
+    assert.notEqual(journal.proposedRemoteHead, priorRemoteHead)
+    assert.equal((await readProject('overleaf-compensation-race')).overleafHead, undefined)
     assert.equal(fs.existsSync(path.join(recoveryRoot, 'overleaf-worktree', '.git')), false)
     assert.equal(
       fs.readdirSync(recoveryRoot, { recursive: true })
@@ -748,6 +798,7 @@ async function main() {
 
     createProject({ name: 'journal-crash', title: 'Journal crash', mainFile: 'main.tex', format: 'svg' })
     await updateProject('journal-crash', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('journal-crash')
     write(path.join(sourceDir('journal-crash'), 'main.tex'), 'unchanged\n')
     await updateClientSourceManifest('journal-crash', ['main.tex'])
     const journalCrashRevision = await bootstrapAuthority('journal-crash', ['main.tex'])
@@ -764,6 +815,7 @@ async function main() {
 
     createProject({ name: 'snapshot-ready-crash', title: 'Snapshot ready crash', mainFile: 'main.tex', format: 'svg' })
     await updateProject('snapshot-ready-crash', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('snapshot-ready-crash')
     write(path.join(sourceDir('snapshot-ready-crash'), 'main.tex'), 'unchanged\n')
     await updateClientSourceManifest('snapshot-ready-crash', ['main.tex'])
     const snapshotReadyRevision = await bootstrapAuthority('snapshot-ready-crash', ['main.tex'])
@@ -799,6 +851,7 @@ async function main() {
 
     createProject({ name: 'manifest-row-recovery', title: 'Manifest row recovery', mainFile: 'main.tex', format: 'svg' })
     await updateProject('manifest-row-recovery', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('manifest-row-recovery')
     write(path.join(sourceDir('manifest-row-recovery'), 'main.tex'), 'original\n')
     await updateClientSourceManifest('manifest-row-recovery', ['main.tex'])
     beforeRejected = await snapshotProject('manifest-row-recovery')
@@ -852,13 +905,13 @@ async function main() {
     await assert.rejects(syncOverleaf('poll-retry', {
       testHooks: { processProjectPush: async () => ({ status: 409, ok: false, error: 'injected transaction rejection' }) },
     }), /injected transaction rejection/)
-    assert.equal(await readProject('poll-retry').overleafSyncStatus, 'error')
+    assert.equal((await readProject('poll-retry')).overleafSyncStatus, 'error')
     assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: path.join(projectDir('poll-retry'), 'overleaf-clone'), encoding: 'utf8',
     }).trim(), retryHead, 'failed poll must reset the clone so the same remote HEAD is retried')
     result = await syncOverleaf('poll-retry')
     assert.equal(result.changed > 0, true)
-    assert.equal(await readProject('poll-retry').overleafSyncStatus, 'ok')
+    assert.equal((await readProject('poll-retry')).overleafSyncStatus, 'ok')
     assert.equal(readSourceFile('poll-retry', 'third-party.tex'), 'third party work\n')
 
     await setupOverleafProject(root, 'resume-failure-first')
@@ -876,7 +929,7 @@ async function main() {
     )
     assert.equal(resumed, 1)
     assert.deepEqual(resumedProjects, ['resume-success-later'])
-    assert.equal(await readProject('resume-failure-first').overleafSyncStatus, 'error')
+    assert.equal((await readProject('resume-failure-first')).overleafSyncStatus, 'error')
 
     assert.equal(isSourceFilePath('README.md', { format: 'markdown', mainFile: 'README.md' }), true)
     createProject({ name: 'markdown-readme', title: 'Markdown', mainFile: 'README.md', format: 'svg' })
@@ -903,6 +956,7 @@ async function main() {
 
     createProject({ name: 'zero-first', title: 'Zero', mainFile: 'main.tex', format: 'svg' })
     await updateProject('zero-first', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('zero-first')
     write(path.join(sourceDir('zero-first'), 'main.tex'), 'already here\n')
     await updateClientSourceManifest('zero-first', ['main.tex'])
     result = await processProjectPush('zero-first', {
@@ -915,6 +969,7 @@ async function main() {
 
     createProject({ name: 'failed', title: 'Failed', mainFile: 'main.tex', format: 'svg' })
     await updateProject('failed', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('failed')
     await updateClientSourceManifest('failed', ['main.tex'])
     write(path.join(sourceDir('failed'), 'main.tex'), 'kept\n')
     beforeRejected = await snapshotProject('failed')
@@ -958,11 +1013,12 @@ async function main() {
       members: ['accepted-book-member'],
     })
     assert.equal(result.status, 200)
-    assert.deepEqual(await readProject('book-project').members, ['accepted-book-member'])
+    assert.deepEqual((await readProject('book-project')).members, ['accepted-book-member'])
 
     const localHashes = { 'main.tex': md5('delivered\n') }
     createProject({ name: 'summary', title: 'Summary', mainFile: 'main.tex', format: 'svg' })
     await updateProject('summary', { pages: 1, buildStatus: 'success' })
+    filterBuildsAway('summary')
     write(path.join(sourceDir('summary'), 'main.tex'), 'delivered\n')
     await updateClientSourceManifest('summary', ['main.tex'])
     assert.deepEqual(diffSourceHashes(localHashes, await hashSourceFiles('summary')), {

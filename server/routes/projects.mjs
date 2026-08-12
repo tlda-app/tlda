@@ -1156,10 +1156,18 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         await preparedOverleaf.restoreRemote()
       } catch (compensationError) {
         const recovery = transaction.abandon()
+        const recoveryError = 'Remote advanced after publish; recovery required'
+        await updateProject(name, {
+          overleafHead: project.overleafHead,
+          overleafLastPullAt: project.overleafLastPullAt,
+          overleafLastPushAt: project.overleafLastPushAt,
+          overleafSyncStatus: 'error',
+          overleafSyncError: recoveryError,
+        })
         console.error(`[${name}] Source transaction requires recovery: ${compensationError.message}`)
         return {
           status: 409, ok: false, recoveryRequired: true,
-          error: 'Remote advanced after publish; recovery required',
+          error: recoveryError,
           recovery: recoveryJournal || recovery,
         }
       }
@@ -1197,7 +1205,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     }
   }
 
-  const changedFiles = (files || []).map(f => f.path)
+  const changedFiles = [...(files || []).map(f => f.path), ...(deletedFiles || [])]
   const changedPartFiles = await refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)
   const projectPartsChanged = changedPartFiles.length > 0
   // Persisted buildStatus can lag dispatch. The queue is the authority for

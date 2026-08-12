@@ -78,7 +78,7 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
     const relevantPath = join(outputDir(name), 'relevant-files.json')
 
     if (!existsSync(relevantPath)) {
-      return { build: true, eager: false, reason: 'no-relevant-files-yet' }
+      return { build: true, eager: true, reason: 'no-relevant-files-yet' }
     }
 
     try {
@@ -106,7 +106,7 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
         return { build: false, eager: false, reason: 'outside-tree' }
       }
     } catch (e) {
-      return { build: true, eager: false, reason: `relevant-files-parse-failed: ${e.message}` }
+      return { build: true, eager: true, reason: `relevant-files-parse-failed: ${e.message}` }
     }
   }
 

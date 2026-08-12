@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { shouldBuildOnPush } from './build-decision.mjs'
 import { createBuildQueue } from './build-queue.mjs'
+import { closeProjectStore, initProjectStore } from './project-store.mjs'
 
 function makeQueue() {
   const starts = []
@@ -149,4 +153,22 @@ test('all document formats build eagerly after an accepted source change', () =>
     ),
     { build: true, eager: true, reason: 'svg-eager' },
   )
+})
+
+test('SVG source changes without a usable relevant-files filter still build eagerly', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-decision-'))
+  try {
+    await initProjectStore(root)
+    assert.deepEqual(
+      shouldBuildOnPush(
+        { format: 'svg', pages: 2, buildStatus: 'success' },
+        'unused-no-relevant-files-project',
+        { changedFiles: ['main.tex'], anyChanged: true },
+      ),
+      { build: true, eager: true, reason: 'no-relevant-files-yet' },
+    )
+  } finally {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
 })
