@@ -3183,6 +3183,10 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 const serverRuntimeConfig = loadServerConfig()
 const DEEPGRAM_SDK_BRIDGE_URL = serverRuntimeConfig.deepgramBridgeUrl
 const BROWSER_VOICE_BRIDGE_URL = serverRuntimeConfig.deepgramDirectUrl || ''
+// Raw PCM is 16,000 samples/sec * 2 bytes = 32,000 B/s. 64 MiB holds about
+// 35 minutes. Age is not a discard rule: while offline, time passing is not
+// evidence that the only copy of the user's speech stopped mattering.
+const DEEPGRAM_PROXY_PCM_BACKLOG_MAX_BYTES = serverRuntimeConfig.deepgramProxyPcmBacklogMaxBytes || 64 * 1024 * 1024
 const WHISPER_BRIDGE_URL = 'ws://127.0.0.1:8179'
 
 async function isBridgeUp(bridgeUrl) {
@@ -5112,8 +5116,7 @@ server.on('upgrade', async (req, socket, head) => {
       let pendingBytes = 0
       let droppedFrames = 0
       let flushedFrames = 0
-      const maxPendingAgeMs = 180000
-      const maxPendingBytes = 16000 * 2 * (maxPendingAgeMs / 1000)
+      const maxPendingBytes = DEEPGRAM_PROXY_PCM_BACKLOG_MAX_BYTES
 
       const proxySnapshot = () => ({
         pendingFrames: pending.length,
@@ -5122,7 +5125,6 @@ server.on('upgrade', async (req, socket, head) => {
         droppedFrames,
         flushedFrames,
         maxPendingBytes,
-        maxPendingAgeMs,
         upstreamReadyState: upstream?.readyState ?? null,
       })
 
@@ -5144,10 +5146,6 @@ server.on('upgrade', async (req, socket, head) => {
       }
 
       const prunePending = () => {
-        const now = Date.now()
-        for (let i = pending.length - 1; i >= 0; i--) {
-          if (now - pending[i].queuedAt > maxPendingAgeMs) dropPendingAt(i)
-        }
         while (pendingBytes > maxPendingBytes && pending.length) dropPendingAt(0)
       }
 

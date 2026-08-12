@@ -272,6 +272,7 @@ function readAll() {
     voiceBackend: getPref('voice-backend'),
     voiceHudMeter: getPref('voice-hud-meter'),
     voiceSubmitWords: getPref('voice-submit-words'),
+    voicePcmBacklogMb: getPref('voice-pcm-backlog-mb'),
     radioSubtitlesEnabled: getPref('radio-subtitles-enabled'),
     radioSubtitleDwellSec: normalizeRadioSubtitleDwellSec(getPref('radio-subtitle-dwell-sec')),
     voiceIdleCutoffMs: getPref('voice-idle-cutoff-ms'),
@@ -676,6 +677,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
               ['Idle cutoff', 'voice-idle-cutoff-ms', prefs.voiceIdleCutoffMs, 'ms'],
               ['Pre-roll', 'voice-preroll-ms', prefs.voicePrerollMs, 'ms'],
               ['Resume RMS', 'voice-resume-rms', prefs.voiceResumeRms, ''],
+              ['Offline buffer', 'voice-pcm-backlog-mb', prefs.voicePcmBacklogMb, 'MB'],
               ['Endpointing', 'voice-endpointing', prefs.voiceEndpointing, 'ms'],
               ['Utterance end', 'voice-utterance-end-ms', prefs.voiceUtteranceEndMs, 'ms'],
             ] as const).map(([label, key, val, unit]) => (

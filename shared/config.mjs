@@ -327,6 +327,13 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 # in half. Absent = the browser relays through the same-origin proxy here.
 # deepgramDirectUrl: wss://tlda-voice.example.ts.net
 
+# Byte cap for the same-origin voice proxy's raw PCM queue while it is holding
+# browser audio before the upstream bridge opens. Raw 16 kHz, 16-bit mono PCM is
+# 16,000 samples/sec * 2 bytes = 32,000 B/s; 64 MiB holds about 35 minutes. Age
+# is not a discard rule because time passing offline is not evidence that the
+# speech stopped mattering.
+# deepgramProxyPcmBacklogMaxBytes: 67108864
+
 # Where uploaded and copied chat attachments live. On a hosted box this MUST name
 # the persistent volume — anywhere else is wiped on restart, which once 404'd
 # markdown chips out from under the annotation viewer.

@@ -56,6 +56,9 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // machine is deployed. Absent means the browser uses the same-origin proxy on
   // this server, which is the route that ships today.
   'deepgramDirectUrl',
+  // Byte cap for the same-origin voice proxy's raw PCM queue while it is holding
+  // browser audio before the upstream bridge opens.
+  'deepgramProxyPcmBacklogMaxBytes',
   // Where uploaded and copied chat attachments live. On Fly this must name the
   // persistent volume; the container wipes anything else on restart, which once
   // wiped markdown-chip files out from under their chips. Absent = this machine's
@@ -148,6 +151,7 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
   if (config.telemetryUrl !== undefined) validateTelemetryUrl(config.telemetryUrl, label)
   if (config.deepgramBridgeUrl !== undefined) validateWebSocketUrl(config.deepgramBridgeUrl, 'deepgramBridgeUrl', label)
   if (config.deepgramDirectUrl !== undefined) validateWebSocketUrl(config.deepgramDirectUrl, 'deepgramDirectUrl', label)
+  if (config.deepgramProxyPcmBacklogMaxBytes !== undefined) validatePositiveInteger(config.deepgramProxyPcmBacklogMaxBytes, 'deepgramProxyPcmBacklogMaxBytes', label)
   if (config.uploadDir !== undefined && (typeof config.uploadDir !== 'string' || !config.uploadDir.trim())) {
     throw new Error(`${label}: "uploadDir" must be a nonempty path`)
   }
@@ -172,6 +176,12 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
     }
   }
   return config
+}
+
+function validatePositiveInteger(value, key, label = 'config') {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label}: "${key}" must be a positive integer`)
+  }
 }
 
 /**

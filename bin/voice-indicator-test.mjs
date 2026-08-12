@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  PCM_BACKLOG_MAX_AGE_MS,
-  PCM_BACKLOG_MAX_BYTES,
+  DEFAULT_PCM_BACKLOG_MAX_BYTES,
   PcmBacklog,
   composeVoiceText,
   deliverVoiceComposition,
@@ -25,6 +24,12 @@ assert.equal(
 assert.equal(voiceIndicatorState(true, 'connection lost; reconnecting'), 'reconnecting')
 assert.equal(voiceIndicatorState(true, 'speech lost; recognizer recovering'), 'reconnecting')
 assert.equal(voiceIndicatorState(true, 'waiting for recognizer'), 'reconnecting')
+assert.equal(voiceIndicatorState(true, 'holding speech; not sending'), 'buffered')
+assert.equal(voiceIndicatorState(true, 'holding speech; not sending').length, 8)
+assert.equal(voiceIndicatorState(true, 'no mic input'), 'mic dead')
+assert.equal(voiceIndicatorState(true, 'mic failed — tap to retry'), 'mic dead')
+assert.equal(voiceIndicatorState(true, 'mic stopped; restarting'), 'mic dead')
+assert.equal(voiceIndicatorState(true, 'mic dead').length, 8)
 assert.equal(pcmInputLevel(new Int16Array(128).buffer), 0)
 assert.ok(pcmInputLevel(new Int16Array(128).fill(8192).buffer) > 0.9)
 assert.equal(pcmInputLevel(new ArrayBuffer(0)), 0)
@@ -131,19 +136,17 @@ const afterResetDelivered = []
 assert.equal(backlog.drain(10, chunk => { afterResetDelivered.push(new Uint8Array(chunk)[0]); return true }), true)
 assert.deepEqual(afterResetDelivered, [])
 
-assert.equal(backlog.snapshot().maxAgeMs, 180000)
-assert.equal(backlog.snapshot().maxBytes, 5760000)
-assert.equal(PCM_BACKLOG_MAX_AGE_MS, 180000)
-assert.equal(PCM_BACKLOG_MAX_BYTES, 5760000)
+assert.equal(backlog.snapshot().maxBytes, 67108864)
+assert.equal(DEFAULT_PCM_BACKLOG_MAX_BYTES, 67108864)
 
 const originalNow = Date.now
 try {
   Date.now = () => 0
   const deployBacklog = new PcmBacklog()
   deployBacklog.push(12, new Uint8Array([12]).buffer)
-  assert.equal(deployBacklog.snapshot(179999).frames, 1)
-  assert.equal(deployBacklog.snapshot(180001).frames, 0)
-  assert.equal(deployBacklog.snapshot(180001).droppedFrames, 1)
+  assert.equal(deployBacklog.snapshot(180001).frames, 1)
+  assert.equal(deployBacklog.snapshot(3600000).frames, 1)
+  assert.equal(deployBacklog.snapshot(3600000).droppedFrames, 0)
 
   const epochBacklog = new PcmBacklog()
   epochBacklog.push(20, new Uint8Array([20]).buffer)
@@ -158,7 +161,7 @@ try {
   Date.now = originalNow
 }
 
-const boundedBacklog = new PcmBacklog({ maxBytes: 2, maxAgeMs: 1000 })
+const boundedBacklog = new PcmBacklog({ maxBytes: 2 })
 boundedBacklog.push(11, new Uint8Array([1]).buffer)
 boundedBacklog.push(11, new Uint8Array([2]).buffer)
 boundedBacklog.push(11, new Uint8Array([3]).buffer)
@@ -168,7 +171,6 @@ assert.equal(boundedSnapshot.bytes, 2)
 assert.equal(boundedSnapshot.droppedFrames, 1)
 assert.equal(boundedSnapshot.flushedFrames, 0)
 assert.equal(boundedSnapshot.maxBytes, 2)
-assert.equal(boundedSnapshot.maxAgeMs, 1000)
 assert.ok(Number.isFinite(boundedSnapshot.oldestAgeMs))
 assert.deepEqual({
   ...boundedSnapshot,
@@ -180,7 +182,6 @@ assert.deepEqual({
   droppedFrames: 1,
   flushedFrames: 0,
   maxBytes: 2,
-  maxAgeMs: 1000,
 })
 const boundedDelivered = []
 assert.equal(boundedBacklog.drain(11, chunk => { boundedDelivered.push(new Uint8Array(chunk)[0]); return true }), true)

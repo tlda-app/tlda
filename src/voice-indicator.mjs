@@ -12,17 +12,22 @@ export function pcmInputLevel(buffer) {
 export function voiceIndicatorState(recording, healthLabel) {
   if (!recording) return 'off'
   const label = healthLabel || ''
+  if (label.includes('holding speech') || label.includes('not sending')) return 'buffered'
+  if (label.includes('mic failed') || label.includes('mic unavailable') ||
+      label.includes('mic stopped') || label === 'no mic input') return 'mic dead'
   if (label.includes('reconnecting') || label.includes('restarting') || label.includes('recovering') ||
       label.includes('connection lost') || label.includes('connecting') ||
       label.includes('recognizer idle') || label.includes('recognizer unavailable') ||
-      label.includes('waiting for recognizer') || label.includes('mic failed') ||
-      label.includes('mic unavailable') || label === 'no mic input' ||
+      label.includes('waiting for recognizer') ||
       label === 'starting voice') return 'reconnecting'
   // These two strings are the steady states Skip sits in while dictating, and they are
   // rendered as visible text — showRecordingHud() builds `${voiceStatusLabel()} -> ${who}`
   // and centers it in a fixed-width row. So the WIDTH of these words is part of the
-  // design, not a cosmetic detail: both are 8 characters, which is why the panel holds
-  // still while he works.
+  // design, not a cosmetic detail: the ordinary states are 8 characters, which
+  // is why the panel holds still while he works. "buffered" is the offline but
+  // still-recording state: mic is alive, raw PCM is queued, and the socket is not
+  // currently sending. "mic dead" is the same width, but means capture itself is
+  // broken and talking would be lost.
   //
   // They were renamed to 'receiving audio' (15) and 'listening' (9) in b82f6e84 — a pure
   // rename riding inside a real reliability fix, states and logic untouched. Centered
@@ -133,14 +138,16 @@ export function deliverVoiceComposition(textarea, composition, write) {
   }
 }
 
-export const PCM_BACKLOG_MAX_AGE_MS = 180000
-export const PCM_BACKLOG_MAX_BYTES = 16000 * 2 * (PCM_BACKLOG_MAX_AGE_MS / 1000)
+export const PCM_BYTES_PER_SECOND = 16000 * 2
+// 64 MiB / 32,000 bytes per second is about 2,097 seconds, roughly 35
+// minutes, of raw 16 kHz, 16-bit mono PCM. A time cap discards the only copy of
+// what was said while offline; the byte cap is the real device-safety bound.
+export const DEFAULT_PCM_BACKLOG_MAX_BYTES = 64 * 1024 * 1024
 
 export class PcmBacklog {
-  constructor({ maxBytes = PCM_BACKLOG_MAX_BYTES, maxAgeMs = PCM_BACKLOG_MAX_AGE_MS } = {}) {
+  constructor({ maxBytes = DEFAULT_PCM_BACKLOG_MAX_BYTES } = {}) {
     this.chunks = []
     this.maxBytes = maxBytes
-    this.maxAgeMs = maxAgeMs
     this.bytes = 0
     this.dropped = 0
     this.flushed = 0
@@ -152,12 +159,7 @@ export class PcmBacklog {
     this.dropped++
     return chunk
   }
-  _prune(now = Date.now()) {
-    if (this.maxAgeMs > 0) {
-      for (let i = this.chunks.length - 1; i >= 0; i--) {
-        if (now - this.chunks[i].queuedAt > this.maxAgeMs) this._dropAt(i)
-      }
-    }
+  _prune() {
     while (this.maxBytes > 0 && this.bytes > this.maxBytes && this.chunks.length) {
       this._dropAt(0)
     }
@@ -200,7 +202,6 @@ export class PcmBacklog {
       droppedFrames: this.dropped,
       flushedFrames: this.flushed,
       maxBytes: this.maxBytes,
-      maxAgeMs: this.maxAgeMs,
     }
   }
   get length() { return this.chunks.length }

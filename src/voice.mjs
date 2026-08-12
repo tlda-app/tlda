@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, parseCsvPref, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, normalizeTranscriptText as normalizeDeepgramText, partitionAtCursor, pcmInputLevel, reclaimVoiceInterim, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
+import { DEFAULT_PCM_BACKLOG_MAX_BYTES, PcmBacklog, deliverVoiceComposition, isPriorFinalSuffixEcho, normalizeTranscriptText as normalizeDeepgramText, partitionAtCursor, pcmInputLevel, reclaimVoiceInterim, trimSubmittedPrefixFromDeepgramText, voiceIndicatorState } from './voice-indicator.mjs'
 import { agentKeytermNames } from './voice-keyterms.mjs'
 import { getFleetAgents, getFleetEvents } from './fleet/fleet-data.ts'
 import { getHumanId } from './fleet/fleet-data.mjs'
@@ -1076,6 +1076,7 @@ function sendDeepgramAudioChunk(data) {
   if (!voiceHasRoute() || (typeof document !== 'undefined' && document.hidden)) return false
   if (_deepgramWs?.readyState === WebSocket.OPEN && _deepgramRelayConnected) reconcileUpstream()
   if (_dgUpstreamPaused) return false
+  _deepgramAudioBacklog.maxBytes = voicePcmBacklogMaxBytes()
   if (_deepgramPcmPaused || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN ||
       !_deepgramRelayConnected || !deepgramRecognizerAcceptsAudio() || _deepgramReadyEpoch !== _speechEpoch) {
     _deepgramAudioBacklog.push(_speechEpoch, data)
@@ -1092,6 +1093,12 @@ function sendDeepgramAudioChunk(data) {
   _audioChunkCadenceMs = _lastAudioChunkTime ? now - _lastAudioChunkTime : null
   _lastAudioChunkTime = now
   return true
+}
+
+function voicePcmBacklogMaxBytes() {
+  const mb = Number(getPref('voice-pcm-backlog-mb'))
+  if (!Number.isFinite(mb) || mb <= 0) return DEFAULT_PCM_BACKLOG_MAX_BYTES
+  return Math.max(1, Math.floor(mb * 1024 * 1024))
 }
 
 function flushDeepgramAudioBacklog() {
@@ -1365,12 +1372,13 @@ function voiceStatusLabel() {
   const cached = voiceIndicatorState(true, _voiceHealthLabel)   // transient events
   const live = voiceIndicatorState(true, liveLivenessLabel())   // live chain state, recomputed now
   if (cached === 'reconnecting' || live === 'reconnecting') return 'reconnecting'
+  if (cached === 'buffered' || live === 'buffered') return 'buffered'
   // The audio gate itself. This is the predicate the audio path already trusts to decide
   // whether to send or backlog (see sendDeepgramAudioChunk), and it is the term that was
   // false during every one of the 133 redials — `_deepgramReadyEpoch !== _speechEpoch`
   // for the whole window his words were going into a buffer. Reusing it rather than
   // inventing a second health notion that can disagree with the one the audio obeys.
-  if (_backend === 'deepgram' && !voiceCanReportRawAudioFlowing()) return 'reconnecting'
+  if (_backend === 'deepgram' && !voiceCanReportRawAudioFlowing()) return 'buffered'
   // Everything above is a readiness claim from our own side: socket up, bridge says
   // connected, gate open. All of it can stay true while Deepgram silently stops
   // answering. So one end-to-end check the readiness terms cannot give — he is audibly
@@ -1735,6 +1743,7 @@ export function getVoiceRuntimeSummary(now = Date.now()) {
       audioChunkCadenceMs: _audioChunkCadenceMs,
       lastMicFrameAgoMs: _lastMicFrameTime ? now - _lastMicFrameTime : null,
       lastAudioChunkAgoMs: _lastAudioChunkTime ? now - _lastAudioChunkTime : null,
+      audioBacklogMaxBytes: deepgramBacklog.maxBytes,
       audioBacklogFrames: deepgramBacklog.frames,
       audioBacklogBytes: deepgramBacklog.bytes,
       audioBacklogOldestAgeMs: deepgramBacklog.oldestAgeMs,
@@ -2578,9 +2587,7 @@ function deepgramCommonState(now = Date.now()) {
 function deepgramHealthLabel(now = Date.now()) {
   if (_deepgramHardFailure) return _deepgramHardFailure
   if (!_deepgramRelayConnected) {
-    return _deepgramWs?.readyState === WebSocket.CONNECTING
-      ? 'connecting to recognizer'
-      : 'connection lost; reconnecting'
+    return 'holding speech; not sending'
   }
   const status = currentDeepgramRecognizerStatus()
   if (status === 'connected') {
@@ -2588,7 +2595,7 @@ function deepgramHealthLabel(now = Date.now()) {
   }
   if (status === 'idle') return 'paused; speak to resume'
   if (status === 'error') return 'recognizer unavailable; recovering'
-  return 'waiting for recognizer'
+  return 'holding speech; not sending'
 }
 
 function _dgTrickleFlush() {
@@ -3294,7 +3301,7 @@ function connectDeepgramBridge(generation) {
     _deepgramWs = null
   }
   try {
-    _voiceHealthLabel = 'connecting to recognizer'
+    _voiceHealthLabel = 'holding speech; not sending'
     if (_recording) showRecordingHud()
     const relay = new WebSocket(deepgramBridgeUrl())
     _deepgramWs = relay
@@ -3319,7 +3326,7 @@ function connectDeepgramBridge(generation) {
       _deepgramRelayConnected = false
       _deepgramWs = null
       vlog('bridge WS closed', { recording: _recording })
-      showDontSpeak('connection lost; reconnecting')
+      showDontSpeak('holding speech; not sending')
       if (deepgramRelayAuthorityIsCurrent(generation)) {
         vlog('bridge auto-reconnect in 1s')
         scheduleDeepgramReconnect(generation)
