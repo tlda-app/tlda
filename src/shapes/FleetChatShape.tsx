@@ -2700,7 +2700,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const docRef = useRef<typeof doc>(doc)
   useEffect(() => { docRef.current = doc }, [doc])
-  const shapeContainerRef = useRef<HTMLDivElement>(null)
+  const shapeContainerRef = useRef<HTMLDivElement | null>(null)
 
   const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
     openChatMarkdownColumn({
@@ -5131,10 +5131,31 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const [pillOver, setPillOver] = useState<{ role: 'to' | 'from'; value: string; displayName: string; pillType: string; clientPoint: { x: number; y: number } } | null>(null)
 
-  useEffect(() => {
-    const element = shapeContainerRef.current
+  // The drop target is registered against THIS DOM node, so the registration has
+  // to follow the node. An effect reading `shapeContainerRef.current` does not:
+  // a ref assignment re-runs nothing, so when React replaced the node the
+  // registration kept pointing at the detached one, `isConnected` went false,
+  // and the resolver returned null forever — the chat silently stopped opening
+  // its filter overlay, no error, recoverable only by remount. Skip: "no overlay
+  // comes up, just doesnt do shit".
+  //
+  // Registering inside the callback ref itself is the fix. React invokes it with
+  // the new node and with null on teardown, which is exactly the lifecycle the
+  // registration needs — and nothing here touches state or render, so it cannot
+  // participate in an update cascade. An earlier version drove this through
+  // `useState`; that was reverted during a live `#185` investigation and is not
+  // coming back, because "the registration must follow the node" never required
+  // a render in the first place.
+  const dropRegistrationRef = useRef<(() => void) | null>(null)
+  const setShapeContainer = useCallback((element: HTMLDivElement | null) => {
+    shapeContainerRef.current = element
+    // Detach the old registration first: two live registrations for one shape
+    // would leave the stale one resolving against a detached node, which is the
+    // bug this exists to prevent.
+    dropRegistrationRef.current?.()
+    dropRegistrationRef.current = null
     if (!element) return
-    return registerWMDropTarget<FleetPillDropData>(element, {
+    dropRegistrationRef.current = registerWMDropTarget<FleetPillDropData>(element, {
       accepts: (payload: WMDropPayload): payload is WMDropPayload<FleetPillDropData> => {
         if (payload.kind !== 'fleet-pill') return false
         const pillType = (payload.data as FleetPillDropData).pillType
@@ -5158,7 +5179,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         payload.data.pagePoint,
       ),
     })
-  }, [shape.id])
+  }, [])
 
   // Auto-open filter mode when pill hovers over this chat
   useEffect(() => {
@@ -6500,7 +6521,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }}
     >
       <div
-        ref={shapeContainerRef}
+        ref={setShapeContainer}
         className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}`}
         style={{
           ...fleetStyleVars,
