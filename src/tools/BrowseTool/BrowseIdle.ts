@@ -596,7 +596,7 @@ export class BrowseIdle extends StateNode {
   }
 
   private _handleOverlayPointerDown(info: TLPointerEventInfo): boolean {
-    const currentPagePoint = this.editor.screenToPage(info.point, { viewportId: info.viewportId })
+    const currentPagePoint = clientPointToPage(this.editor, info.point, info.viewportId)
     const hitOverlay = this.editor.overlays.getOverlayAtPoint(
       currentPagePoint,
       this.editor.options.hitTestMargin / this.editor.getZoomLevel(),
