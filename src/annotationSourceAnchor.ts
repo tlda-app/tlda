@@ -72,10 +72,17 @@ export async function annotationSourceAnchorAtCanvasPoint(
   x: number,
   y: number,
 ): Promise<AnnotationSourceAnchor | null> {
-  if (HTML_PAGE_FORMATS.has(document.format || '')) {
-    const page = htmlPageAtCanvasPoint(editor, x, y)
-    return page ? htmlSourceLineAnchorAtCanvasY(page.shape, page.bounds, y) : null
-  }
+  // What the annotation is placed ON decides which source it anchors to, not
+  // what the project as a whole is. A LaTeX project's Markdown parts are
+  // html-page shapes living on their own TLDraw page, so branching on
+  // `document.format` sent every note on those pages down the synctex path and
+  // measured their coordinates against the PDF page boxes — a different page in
+  // a different coordinate space. That yields no anchor, or a main.tex line the
+  // note is nowhere near.
+  const htmlPage = htmlPageAtCanvasPoint(editor, x, y)
+  if (htmlPage) return htmlSourceLineAnchorAtCanvasY(htmlPage.shape, htmlPage.bounds, y)
+
+  if (HTML_PAGE_FORMATS.has(document.format || '')) return null
 
   const pdfPos = canvasToPdf(x, y, document.pages)
   if (!pdfPos) return null
@@ -90,7 +97,11 @@ export async function resolveAnnotationSourceAnchor(
 ): Promise<ResolvedAnnotationAnchor | null> {
   if (anchor.anchored === false) return anchor
 
-  if (HTML_PAGE_FORMATS.has(document.format || '')) {
+  // Resolve by what the anchor IS, for the same reason we choose by what the
+  // annotation sits on: an html-line anchor carries the shape it was taken
+  // from, and it has to resolve through that shape even when the project's own
+  // format is LaTeX.
+  if ('shapeId' in anchor && anchor.shapeId) {
     const htmlAnchor = anchor as Extract<HtmlSourceLineAnchor, { anchored: true }>
     const page = htmlPageForSource(editor, htmlAnchor)
     if (!page) return { anchored: false, reason: 'unresolved', file: htmlAnchor.file, page: 0, shapeId: htmlAnchor.shapeId || '' }
