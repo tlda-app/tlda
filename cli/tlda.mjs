@@ -1878,7 +1878,7 @@ function printBotPlan(unit) {
 // supervisor's configuration, so on testing that name never existed; the check
 // exited 1, KeepAlive relaunched the job, and it went around forever while the bot
 // was healthy. There is no terminal name on this path to be wrong about now.
-const BOT_SUPERVISION_POLL_MS = 5000
+const BOT_SUPERVISION_POLL_MS = parseInt(process.env.TLDA_BOT_SUPERVISION_POLL_MS, 10) || 5000
 
 function liveBotPid(paths) {
   if (!existsSync(paths.pidFile)) return 0
