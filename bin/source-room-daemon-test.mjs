@@ -206,6 +206,67 @@ try {
     ws.close()
   })
 
+  const duplicateProject = 'source-room-duplicate-render'
+  createProject({ name: duplicateProject, title: duplicateProject, mainFile: 'main.tex', format: 'svg' })
+  await updateProject(duplicateProject, { pages: 1, buildStatus: 'success' })
+  suppressBuilds(duplicateProject)
+  await acceptedPush(duplicateProject, {
+    expectedRevision: null,
+    sourceManifest: ['main.tex'],
+    files: [{ path: 'main.tex', content: 'duplicate base\n' }],
+  })
+  let duplicatePushes = 0
+  const duplicateDaemon = createSourceRoomDaemon({
+    projectDir,
+    readProject,
+    sourceLifecycleStore,
+    readClientSourceManifest,
+    processProjectPush: async (...args) => {
+      duplicatePushes += 1
+      return processProjectPush(...args)
+    },
+    pushDelayMs: 25,
+    log: { error() {} },
+  })
+  roomDaemons.push(duplicateDaemon)
+  await withSourceRoomSocketServer(duplicateDaemon, async port => {
+    const join = async () => {
+      const doc = new Y.Doc()
+      const text = doc.getText('source')
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/source-sync/${duplicateProject}/main.tex`)
+      await new Promise((resolve, reject) => {
+        ws.once('open', resolve)
+        ws.once('error', reject)
+      })
+      const initial = await onceSocket(ws, 'sync')
+      Y.applyUpdate(doc, base64ToUint8(initial.update), 'source-room')
+      doc.on('update', (update, origin) => {
+        if (origin === 'source-room') return
+        ws.send(JSON.stringify({ type: 'update', update: uint8ToBase64(update) }))
+      })
+      ws.on('message', raw => {
+        const message = JSON.parse(String(raw))
+        if (message.type === 'update') Y.applyUpdate(doc, base64ToUint8(message.update), 'source-room')
+      })
+      return { text, ws }
+    }
+
+    const canvas = await join()
+    const hud = await join()
+    const synced = Promise.all([onceSocket(canvas.ws, 'status'), onceSocket(hud.ws, 'status')])
+    canvas.text.insert(canvas.text.length, 'typed once\n')
+    const statuses = await Promise.race([
+      synced,
+      new Promise((resolve, reject) => setTimeout(() => reject(new Error('duplicate-render checkpoint timed out')), 5000)),
+    ])
+    assert.deepEqual(statuses.map(status => status.status), ['synced', 'synced'])
+    assert.equal(duplicatePushes, 1, 'two mounted clients produced more than one checkpoint push')
+    assert.equal(readSourceFile(duplicateProject, 'main.tex'), 'duplicate base\ntyped once\n')
+    assert.equal(hud.text.toString(), 'duplicate base\ntyped once\n')
+    canvas.ws.close()
+    hud.ws.close()
+  })
+
   console.log('source room daemon tests passed')
 } finally {
   for (const daemon of roomDaemons) daemon.closeAll()
