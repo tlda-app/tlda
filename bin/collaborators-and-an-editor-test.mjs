@@ -155,7 +155,7 @@ try {
     room.ytext.insert('opening\n'.length, "carol's paragraph\n")
     assert.ok(
       room.ytext.toString().includes("carol's paragraph"),
-      "Carol's editor — her paragraph is in the room, not checkpointed yet",
+      "Carol's editor — her paragraph is in the room, not checkpointed yet; otherwise Carol's draft never reached the live room",
     )
 
     // ### Alice saves
@@ -165,7 +165,7 @@ try {
     )
     assert.ok(
       room.ytext.toString().includes('alice from her laptop'),
-      "Carol's editor — Alice's laptop line is in the room",
+      "Carol's editor — Alice's laptop line is in the room; otherwise Carol's checkpoint will revert Alice's push",
     )
 
     // ### Bob saves
@@ -188,9 +188,9 @@ try {
     // Carol's editor checkpoints. It writes the whole file.
     await roomDaemon.flushRoom(room)
     const onDisk = readSourceFile(name, 'main.tex')
-    assert.ok(onDisk.includes("carol's paragraph"), "the paper — has Carol's paragraph after her checkpoint")
-    assert.ok(onDisk.includes('alice from her laptop'), "the paper — has Alice's laptop line after Carol checkpoints")
-    assert.ok(onDisk.includes('bob from his desktop'), "the paper — has Bob's desktop line after Carol checkpoints")
+    assert.ok(onDisk.includes("carol's paragraph"), "the paper — has Carol's paragraph after her checkpoint; otherwise Carol's own draft was lost by her own checkpoint")
+    assert.ok(onDisk.includes('alice from her laptop'), "the paper — has Alice's laptop line after Carol checkpoints; otherwise Carol's checkpoint reverted Alice's push")
+    assert.ok(onDisk.includes('bob from his desktop'), "the paper — has Bob's desktop line after Carol checkpoints; otherwise Carol's checkpoint reverted Bob's push")
   }
 
   // ## A reading group pushes while Carol edits
@@ -208,7 +208,7 @@ try {
     room.ytext.insert('opening\n'.length, "carol's paragraph\n")
     assert.ok(
       room.ytext.toString().includes("carol's paragraph"),
-      "Carol's editor — her paragraph is in the room before the group pushes",
+      "Carol's editor — her paragraph is in the room before the group pushes; otherwise the typist's draft never entered the shared file",
     )
 
     // ### The reading group saves
@@ -227,7 +227,7 @@ try {
     // ### Carol checkpoints
     await roomDaemon.flushRoom(room)
     const onDisk = readSourceFile(name, 'main.tex')
-    assert.ok(onDisk.includes("carol's paragraph"), "the paper — has Carol's paragraph after the group pushes")
+    assert.ok(onDisk.includes("carol's paragraph"), "the paper — has Carol's paragraph after the group pushes; otherwise the person typing lost her draft when six people pushed under her")
     for (const who of people) {
       assert.ok(onDisk.includes(`${who} pushed this`), "the paper — has each reader's push after Carol checkpoints")
     }
@@ -263,7 +263,7 @@ try {
 
       const carol = await join()
       const dan = await join()
-      assert.equal(dan.text.toString(), 'opening\nclosing\n', "Dan's editor — has the current file when he opens it")
+      assert.equal(dan.text.toString(), 'opening\nclosing\n', "Dan's editor — has the current file when he opens it; otherwise Dan did not receive the file")
 
       // ### Carol types
       // Carol types, and sends it the way a client does.
@@ -280,7 +280,7 @@ try {
       ])
       assert.ok(
         arrived,
-        "Dan's editor — has Carol's paragraph without asking",
+        "Dan's editor — has Carol's paragraph without asking; otherwise Dan has the same file open and never saw Carol type. He is reading text that is already ",
       )
 
       carol.ws.close()
@@ -315,7 +315,7 @@ try {
       const doc = new Y.Doc()
       Y.applyUpdate(doc, new Uint8Array(Buffer.from(sync.update, 'base64')), 'room')
       const text = doc.getText('source')
-      assert.equal(text.toString(), 'opening\nclosing\n', "Carol's editor — has the file before the timer story starts")
+      assert.equal(text.toString(), 'opening\nclosing\n', "Carol's editor — has the file before the timer story starts; otherwise the room timer test is not measuring a real edit")
       doc.on('update', (update, origin) => {
         if (origin === 'room') return
         ws.send(JSON.stringify({ type: 'update', update: Buffer.from(update).toString('base64') }))
@@ -327,7 +327,7 @@ try {
       text.insert('opening\n'.length, "carol's paragraph\n")
       assert.ok(
         text.toString().includes("carol's paragraph"),
-        "Carol's editor — has her paragraph before the room's timer fires",
+        "Carol's editor — has her paragraph before the room's timer fires; otherwise there is nothing for the checkpoint to save",
       )
 
       // ### Alice saves inside the checkpoint window
@@ -339,7 +339,7 @@ try {
       const room = await roomDaemon.getRoom(name, 'main.tex')
       assert.ok(
         room.ytext.toString().includes('alice from her laptop'),
-        "the room — has Alice's laptop line before its own checkpoint fires",
+        "the room — has Alice's laptop line before its own checkpoint fires; otherwise the timer checkpoint will revert Alice's push",
       )
 
       // ### The room checkpoint fires

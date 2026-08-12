@@ -84,11 +84,11 @@ try {
     'the revision — every entry is a reference, not content',
   )
   const target = snapshot.files.find(file => file.path === TARGET)
-  assert.ok(target?.sha256, 'the revision — the file we open is named by a hash')
+  assert.ok(target?.sha256, 'the revision — the file we open is named by a hash; otherwise there is no blob to read and the story below is about nothing')
 
   // ### Reading one file does not read any other file's bytes
   const before = String(lifecycle.readRevisionFile(revision, TARGET))
-  assert.equal(before, TARGET_TEXT, 'the file we open — its own text')
+  assert.equal(before, TARGET_TEXT, 'the file we open — its own text; otherwise the read is already wrong before we prove anything about it')
 
   // Take every other chapter's bytes away. If the read still works, it never
   // needed them.
@@ -99,7 +99,7 @@ try {
     const path = join(projectDir(NAME), '.source-lifecycle', 'blobs', file.sha256.slice(0, 2), file.sha256)
     if (existsSync(path)) { rmSync(path); removed++ }
   }
-  assert.ok(removed > 0, 'the book — other chapters had blobs to remove')
+  assert.ok(removed > 0, 'the book — other chapters had blobs to remove; otherwise nothing was deleted and the assertion below proves nothing')
 
   const after = String(lifecycle.readRevisionFile(revision, TARGET))
   assert.equal(

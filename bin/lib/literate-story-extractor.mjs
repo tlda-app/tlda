@@ -2,15 +2,22 @@ import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join, relative } from 'path'
 import ts from 'typescript'
 
-// Literate story assertion messages are the catalogue state lines. Keep them as
-// reader-facing state only: no interpolation, no failure narration, no source
-// values. If the assertion fails, assert prints expected and actual values.
+// An assertion message carries two halves: the state, and what it costs a
+// person that the state is wrong.
+//
+//   'the paper — r3 has Bob's note; otherwise Bob's edit to notes.tex was lost'
+//
+// Both halves reach a failing reader, because `expected 'bob notes' to equal ''`
+// does not tell anybody Bob lost work. The catalogue takes the state and stops
+// at `; otherwise`. That split is the tool's job, not the author's — authors
+// write both halves, always.
 export const LITERATE_STORY_LIMITS = [
   'Only `// ##` story comments and `// ###` step comments in test files are story structure.',
   'Every `// ###` step must expose at least one `assert.*` message directly under that step.',
   'Assertions hidden inside helpers do not appear in the catalogue; add a visible step assertion for the state the helper proves.',
   'Bare assertions with no message do not appear; story assertions need a reader-facing state message.',
   'Assertion messages must be plain strings or concatenated plain strings; interpolation is refused because source values belong to assert output, not the catalogue.',
+  'An assertion message is `state; otherwise consequence`. The failing output gets the whole string — a red has to say what a person lost, not just which value differed. The catalogue keeps the state and cuts at `; otherwise`.',
   'Custom assertion wrappers and non-`assert` libraries are not inspected.',
   // A story line says what the app did. A precondition or control says the test
   // was capable of failing. They read identically in `subject — state` form and
@@ -21,6 +28,16 @@ export const LITERATE_STORY_LIMITS = [
   'A precondition or control is not a story line. It asserts the test could have failed — that the crash really killed the process, that the deleted blob is really unreadable, that the push really reached the server — rather than anything the app promises.',
   'Preconditions and controls keep their consequence in the message, because that consequence is what tells a reader a failure means the run proved nothing rather than the product is broken. The state-only rule is for story lines.',
 ]
+/**
+ * The catalogue line: everything before `; otherwise`. The consequence after it
+ * belongs to whoever is reading a failure, not to somebody reading the stories
+ * as prose.
+ */
+export function catalogueLine(message) {
+  const cut = message.indexOf('; otherwise')
+  return (cut === -1 ? message : message.slice(0, cut)).trim()
+}
+
 const TEST_DIRS = ['bin', 'tests', 'test', 'scripts', 'server', 'shared', 'daemon', 'packages', 'mcp-server']
 const TEST_FILE = /(?:^|[-.])test\.(?:mjs|js|ts)$/
 const HEADING_COMMENT_RE = /^\s*\/\/\s*(#{2,3})\s+(.+?)\s*$/
@@ -77,7 +94,7 @@ export function extractStories(source, file = '<inline>') {
           if (assertion.message.includes('${')) {
             throw new Error(`${file}:${assertion.line}: assertion message contains interpolation and cannot be a story line: ${assertion.message}`)
           }
-          return { text: assertion.message, line: assertion.line }
+          return { text: catalogueLine(assertion.message), line: assertion.line }
         }),
     )
     if (currentStep.states.length === 0) {
