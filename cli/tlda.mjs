@@ -15,7 +15,7 @@ import { randomBytes } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles, withReferencedRoots } from './lib/source-files.mjs'
-import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, normalizeSourceManifest } from '../shared/source-manifest.mjs'
+import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
@@ -760,9 +760,14 @@ async function cmdCreate() {
     // render that would reveal which of them it touches. So the directory IS
     // the closure, minus what a previous render produced: those are rebuilt
     // server-side, and shipping them would push stale output into the version.
-    // isQuartoRenderOutput is the one rule; the watcher that pushes his later
+    // isSourceFilePath is the one rule; the watcher that pushes his later
     // saves asks the same function, so a file this drops does not come back
     // through the other door.
+    const qmdContext = { format: 'qmd', mainFile }
+    // Paths and sizes only. Reading every file up front cost 527 MB of base64 —
+    // over a gigabyte once V8 holds it as strings — before the first request was
+    // sent, on a tree the server then takes in 20 MB pieces. Content is read a
+    // batch at a time below, so at most one batch is ever resident.
     const qmdFiles = []
     const sourceRoot = realpathSync(dir)
     const insideSourceRoot = target => {
@@ -780,25 +785,30 @@ async function cmdCreate() {
           continue
         }
         if (!insideSourceRoot(resolvedPath)) continue
-        const isDirectory = statSync(fullPath).isDirectory()
-        if (isDirectory) {
+        const stats = statSync(fullPath)
+        if (stats.isDirectory()) {
           if (entry.name === '.git' || isIgnoredSourceDir(entry.name)) continue
           if (ancestors.has(resolvedPath)) continue
           collectQmdDir(base, relPath, new Set([...ancestors, resolvedPath]))
         } else {
-          if (isQuartoRenderOutput(relPath, mainFile)) continue
-          qmdFiles.push({
-            path: relPath,
-            content: readFileSync(fullPath).toString('base64'),
-            encoding: 'base64',
-          })
+          // The same predicate the manifest is built from. Asking only
+          // isQuartoRenderOutput here sent five .pdf and two .log files that
+          // normalizeSourceManifest then dropped, so the push declared a
+          // manifest its own files did not match — a 409 on whichever batch
+          // carried one, not an OOM.
+          if (!isSourceFilePath(relPath, qmdContext)) continue
+          qmdFiles.push({ path: relPath, fullPath, size: stats.size })
         }
       }
     }
     collectQmdDir(dir)
 
-    const qmdContext = { format: 'qmd', mainFile }
-    const finalManifest = sourceManifestForFiles(qmdFiles, qmdContext)
+    const readBatchFiles = batch => batch.map(file => ({
+      path: file.path,
+      content: readFileSync(file.fullPath).toString('base64'),
+      encoding: 'base64',
+    }))
+    const finalManifest = normalizeSourceManifest(qmdFiles.map(file => file.path), qmdContext)
     const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
     const currentPaths = new Set(Object.keys(serverHashes))
     let expectedRevision = await currentSourceRevision(name)
@@ -809,7 +819,7 @@ async function cmdCreate() {
     let batch = []
     let batchBytes = 0
     for (const file of qmdFiles) {
-      const bytes = Buffer.byteLength(file.content, 'base64')
+      const bytes = file.size
       if (batch.length > 0 && batchBytes + bytes > maxRawBytes) {
         batches.push(batch)
         batch = []
@@ -825,7 +835,7 @@ async function cmdCreate() {
       const files = batches[index]
       for (const file of files) currentPaths.add(file.path)
       const result = await api('POST', `/api/projects/${name}/push`, {
-        files,
+        files: readBatchFiles(files),
         sourceManifest: normalizeSourceManifest([...currentPaths], qmdContext),
         expectedRevision,
       })

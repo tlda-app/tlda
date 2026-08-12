@@ -1017,14 +1017,21 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     if (candidate.size !== manifest.length || manifest.some(path => !candidate.has(path))) {
       return { status: 409, ok: false, error: authorityBefore.state === 'uninitialized' ? 'Bootstrap requires a complete source snapshot' : 'Proposed snapshot does not match sourceManifest', authority: authorityBefore }
     }
-    const observed = inheritedManifest.size > 0
-      ? await Promise.all(manifest.map(async path => {
-          const serverContent = await readSourceFileAsync(name, path)
-          return inheritedManifest.has(path) || serverContent === null
-            ? candidate.get(path)
-            : { path, content: serverContent }
-        }))
-      : (await Promise.all(manifest.map(async path => ({ path, content: await readSourceFileAsync(name, path) })))).filter(file => file.content !== null)
+    // Bootstrap is the only consumer: `lifecycle.submit` is handed neither
+    // `observedServerFiles` nor `observedSourceManifest` below, so on an
+    // established project every read here loaded a file's whole content off
+    // disk to keep its path and throw its bytes away. On the QTM 285 book that
+    // is the entire 395 MB tree, read at 1499-way concurrency, on every push.
+    const observed = authorityBefore.state !== 'uninitialized'
+      ? []
+      : inheritedManifest.size > 0
+        ? await Promise.all(manifest.map(async path => {
+            const serverContent = await readSourceFileAsync(name, path)
+            return inheritedManifest.has(path) || serverContent === null
+              ? candidate.get(path)
+              : { path, content: serverContent }
+          }))
+        : (await Promise.all(manifest.map(async path => ({ path, content: await readSourceFileAsync(name, path) })))).filter(file => file.content !== null)
     lifecycleCandidate = {
       expectedRevision, sourceManifest: manifest, files: manifest.map(path => candidate.get(path)),
       observedServerFiles: authorityBefore.state === 'uninitialized' && observed.length > 0 ? observed : null,

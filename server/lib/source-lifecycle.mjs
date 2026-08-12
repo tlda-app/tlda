@@ -139,7 +139,10 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     const path = join(revisionsRoot, encodeURIComponent(id), 'snapshot.json')
     if (existsSync(path)) return readJson(path)
     atomicJson(path, record, fault)
-    return readJson(path)
+    // `record` is exactly what was just serialized, so reading it back was a
+    // second full copy of the snapshot — a 527 MB parse on the QTM 285 book, to
+    // reconstruct an object already in hand.
+    return record
   }
 
   return {
