@@ -438,10 +438,14 @@ export function initSyncRooms(dir, options = {}) {
  * Get snapshot file path for a document.
  * Room names use "doc-{project}" convention; strip prefix for storage path.
  */
-function snapshotPath(docName) {
-  if (!projectsDir) throw new Error('sync-rooms used before initSyncRooms(dir); refusing to resolve a snapshot path against the working directory')
+function projectFilePath(docName, filename) {
+  if (!projectsDir) throw new Error(`sync-rooms used before initSyncRooms(dir); refusing to resolve ${filename} against the working directory`)
   const projectName = docName.startsWith('doc-') ? docName.slice(4) : docName
-  return join(projectsDir, projectName, 'sync-snapshot.json')
+  return join(projectsDir, projectName, filename)
+}
+
+function snapshotPath(docName) {
+  return projectFilePath(docName, 'sync-snapshot.json')
 }
 
 /**
@@ -523,8 +527,7 @@ const changeTimers = new Map()
  * Get changelog file path for a document.
  */
 function changelogPath(docName) {
-  const projectName = docName.startsWith('doc-') ? docName.slice(4) : docName
-  return join(projectsDir, projectName, 'changelog.jsonl.gz')
+  return projectFilePath(docName, 'changelog.jsonl.gz')
 }
 
 /**
