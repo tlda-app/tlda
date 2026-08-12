@@ -570,6 +570,7 @@ The full private-network, Fly, and collaborator-handoff procedures live in
 - [Documentation map](docs/README.md)
 - [Hosting tlda](docs/hosting.md)
 - [Current main architecture](docs/current-main-architecture.md)
+- [The window manager](docs/window-manager.md)
 - [Live deployment](docs/live-deploy.md)
 
 ## Third-party licenses

@@ -10,6 +10,8 @@ removed; Git history remains their archive.
 - [Using tlda](using-tlda.md) — identity, project linking, Markdown, search, agents,
   permissions, and local configuration
 - [Current architecture](current-main-architecture.md) — current developer architecture
+- [The window manager](window-manager.md) — layers, the fleet HUD's second viewport, and
+  where the current implementation does not match the design
 - [LiveKit](livekit.md) — implemented voice/video path and server configuration
 - [Live deployment](live-deploy.md) — current live deployment runbook
 - [Hosting tlda](hosting.md) — serving privately and deploying the live Fly application
