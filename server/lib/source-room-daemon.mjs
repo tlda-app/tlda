@@ -40,15 +40,11 @@ function bufferFromBase64(value) {
   return Buffer.from(String(value || ''), 'base64')
 }
 
-function fileTextFromSnapshot(revision, filePath) {
-  const file = revision?.files?.find(candidate => candidate.path === filePath)
-  return file ? bufferFromBase64(file.content).toString('utf8') : ''
-}
-
 function sourceRoomFileText(lifecycle, { revisionId = null, filePath }) {
-  if (revisionId) return fileTextFromSnapshot(lifecycle.readRevision(revisionId), filePath)
-  const current = lifecycle.readCurrentFile(filePath)
-  return current?.content ? current.content.toString('utf8') : ''
+  const content = revisionId
+    ? lifecycle.readRevisionFile(revisionId, filePath)
+    : lifecycle.readCurrentFile(filePath)?.content
+  return content ? content.toString('utf8') : ''
 }
 
 function hasConflictMarkers(text) {
