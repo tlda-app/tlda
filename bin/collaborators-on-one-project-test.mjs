@@ -50,7 +50,8 @@ async function paper(name, manifest, opening) {
 const authorityOf = async name => (await sourceLifecycleStore(name)).readAuthority()
 
 try {
-  // ---------------------------------------------------------------------
+  // ## Alice and Bob edit different files
+  //
   // Alice is on her laptop, Bob is on his. They pull the same draft, edit
   // different files, and both go to lunch. Both edits have to be in the paper
   // when they get back.
@@ -58,24 +59,38 @@ try {
   // This is the story c730ef058 fixed. Before it, Bob's push was refused for
   // being behind — though the server had already worked out that the two of
   // them had not touched each other's files.
-  // ---------------------------------------------------------------------
   {
     const name = 'two-daemons-different-files'
     const manifest = ['main.tex', 'notes.tex']
-    await paper(name, manifest, path => `opening ${path}\n`)
+    const r1 = await paper(name, manifest, path => `opening ${path}\n`)
 
     const alice = daemonOn('Alice', 'her laptop', name, manifest)
     const bob = daemonOn('Bob', 'his desktop', name, manifest)
+
+    // ### Everyone arrives
     await everyoneArrivesAt(alice, bob)
+    assert.equal((await sourceLifecycleStore(name)).readAuthority().currentRevision, r1, 'the paper — r1, both files unchanged')
+    assert.equal(alice.heldRevision, r1, "Alice's laptop — r1, clean")
+    assert.equal(bob.heldRevision, r1, "Bob's desktop — r1, clean")
 
+    // ### Alice saves
     const aliceResult = await alice.edits('main.tex', 'alice rewrites the introduction\n').pushes()
-    assert.equal(aliceResult.status, 200, `${alice.describe} could not push at all: ${aliceResult.error}`)
+    assert.equal(aliceResult.status, 200, "Alice's save — accepted")
+    const r2 = aliceResult.sourceRevision
+    assert.equal(alice.heldRevision, r2, "Alice's laptop — r2, clean")
+    assert.equal(bob.heldRevision, r1, "Bob's desktop — still r1, not told by his own push")
+    assert.equal(readSourceFile(name, 'main.tex'), 'alice rewrites the introduction\n', "the paper — r2, Alice's introduction")
+    assert.equal(readSourceFile(name, 'notes.tex'), 'opening notes.tex\n', 'the paper — notes.tex still unchanged')
 
+    // ### Bob saves
     const bobResult = await bob.edits('notes.tex', 'bob adds a note\n').pushes()
-    assert.equal(bobResult.status, 200, `${bob.describe} was refused, though he touched a file nobody else did`)
+    assert.equal(bobResult.status, 200, "Bob's save — accepted though he started from r1")
+    const r3 = bobResult.sourceRevision
+    assert.equal(alice.heldRevision, r2, "Alice's laptop — still r2")
+    assert.equal(bob.heldRevision, r3, "Bob's desktop — r3, clean")
 
-    assert.equal(readSourceFile(name, 'main.tex'), 'alice rewrites the introduction\n', "alice's edit to main.tex was lost")
-    assert.equal(readSourceFile(name, 'notes.tex'), 'bob adds a note\n', "bob's edit to notes.tex was lost")
+    assert.equal(readSourceFile(name, 'main.tex'), 'alice rewrites the introduction\n', "the paper — r3 still has Alice's introduction")
+    assert.equal(readSourceFile(name, 'notes.tex'), 'bob adds a note\n', "the paper — r3 has Bob's note")
   }
 
   // ---------------------------------------------------------------------
