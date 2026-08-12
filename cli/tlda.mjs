@@ -8,7 +8,7 @@
  */
 
 import { resolve, relative, basename, dirname, join, delimiter } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
@@ -214,7 +214,7 @@ const COMMAND_HELP = {
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|status|log] [name]\n\n  Inspect configured fleet bots. Launchd configuration is reconciled only by the owner-run config apply operation. A supervised bot restarts when its process exits.',
+  bot:     'tlda bot [list|status|log] [name]\n\n  Inspect configured fleet bots. One launchd job, the bot manager, keeps every declared bot running; `tlda bot manager` is that job and is started by the owner-run config apply operation rather than by hand.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
@@ -1405,10 +1405,6 @@ async function probeDaemonLaunchdStartCapability() {
   })
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
 function botServiceName(name) {
   return String(name || '').trim()
 }
@@ -1424,26 +1420,20 @@ function botEnvironmentSuffix(configName = null) {
   return `.${String(configName).replace(/[^A-Za-z0-9_.-]/g, '-')}`
 }
 
-function botLaunchdLabel(name, { configName = null } = {}) {
-  return `com.tlda.bot.${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
-}
-
+// A bot's files, and nothing about a terminal. There is no per-bot launchd label
+// any more — one bot manager supervises every bot on this machine — and no tmux
+// session name, which is the string that made the old per-bot supervisor restart
+// a healthy bot forever.
 function botServicePaths(name, { configName = null } = {}) {
   if (!configName) {
     const configured = getManagedBots().find(bot => bot.name === name)
     configName = configured?.environment || getActiveEnvName()
   }
   const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
-  const tmuxSuffix = suffix.replaceAll('.', '_')
-  const label = botLaunchdLabel(name, { configName })
   return {
-    label,
-    plist: join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`),
     logFile: join(CONFIG_DIR, `${suffix}.log`),
     pidFile: join(CONFIG_DIR, `${suffix}.pid`),
     heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
-    tmuxSession: `fleet-bot-${tmuxSuffix}`,
-    waitChannel: `fleet-bot-${tmuxSuffix}-exit`,
   }
 }
 
@@ -1457,12 +1447,12 @@ function configuredBots() {
   return getManagedBots()
 }
 
-function findConfiguredBot(name) {
-  const bots = configuredBots()
-  if (!name) return bots
-  const bot = bots.find(b => b.name === name)
-  if (!bot) throw new Error(`No configured bot named "${name}". Run \`tlda bot list\`.`)
-  return [bot]
+function findBotUnits(name) {
+  const units = managedBotUnits()
+  if (!name) return units
+  const matched = units.filter(unit => unit.bot.name === name)
+  if (!matched.length) throw new Error(`No supervised bot named "${name}". Run \`tlda bot list\`.`)
+  return matched
 }
 
 function botMachineId(bot) {
@@ -1476,9 +1466,9 @@ function botEnvironmentEntries(bot, paths) {
     ['TLDA_BOT_PIDFILE', paths.pidFile],
     ['TLDA_BOT_HEARTBEAT', paths.heartbeatFile],
     ['TLDA_BOT_MACHINE_ID', botMachineId(bot)],
-    // No TLDA_BOT_TMUX_SESSION — see agent-launch/harness/bot.mjs. `paths.tmuxSession`
-    // is still used by the supervisor's liveness check below; that check is removed
-    // with the bot manager, which supervises its own children and needs no name.
+    // No TLDA_BOT_TMUX_SESSION — see agent-launch/harness/bot.mjs. No terminal name
+    // appears anywhere on this path: the bot manager asks the pidfile the bot itself
+    // wrote, so there is nothing left to reconstruct.
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
   if (bot.environment) entries.push(['TLDA_ENV', String(bot.environment)])
@@ -1486,52 +1476,28 @@ function botEnvironmentEntries(bot, paths) {
   return entries
 }
 
-function botEnvironmentPlist(bot, paths) {
-  return botEnvironmentEntries(bot, paths)
-    .filter(([key]) => key === 'PATH' || key === 'NODE_EXTRA_CA_CERTS' || key === 'TLDA_ENV')
+const BOT_MANAGER_LABEL = 'com.tlda.bot-manager'
+
+function botManagerPaths() {
+  return {
+    label: BOT_MANAGER_LABEL,
+    plist: labelPlistPath(BOT_MANAGER_LABEL),
+    logFile: join(CONFIG_DIR, 'bot-manager.log'),
+  }
+}
+
+function botManagerEnvironmentPlist() {
+  const entries = [['PATH', daemonPathEnv()]]
+  if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
+  return entries
     .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
     .join('\n')
 }
 
-function botCommandEnvironment(bot, paths) {
-  return botEnvironmentEntries(bot, paths)
-    .filter(([key, value]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && value !== undefined && value !== null)
-    .map(([key, value]) => `${key}=${shellQuote(value)}`)
-    .join(' ')
-}
-
-function botWakeCommand(bot, paths) {
-  const envPrefix = botCommandEnvironment(bot, paths)
-  const script = resolveBotScriptForCli(bot.script)
-  const cwd = FLEET_DAEMON_MAIN_ROOT
-  const mintArgs = [
-    'agent',
-    'mint',
-    bot.name,
-    '--model', 'bot',
-    '--kind', 'bot',
-    '--cwd', cwd,
-    '--bot-script', script,
-    '--bot-name', bot.name,
-    '--bot-pid-file', paths.pidFile,
-    '--bot-heartbeat-file', paths.heartbeatFile,
-    '--bot-wait-channel', paths.waitChannel,
-    '--fail-if-not-fresh',
-  ].map(quoteCommandArg).join(' ')
-  const wakeArgs = ['agent', 'wake', bot.name].map(quoteCommandArg).join(' ')
-  return [
-    `env ${envPrefix} tlda ${mintArgs} >> ${shellQuote(paths.logFile)} 2>&1 || env ${envPrefix} tlda ${wakeArgs} >> ${shellQuote(paths.logFile)} 2>&1`,
-    `pane_pid=$(tmux display-message -p -t ${shellQuote(paths.tmuxSession)} '#{pane_pid}' 2>/dev/null || true)`,
-    `if [[ -z "$pane_pid" ]]; then exit 1; fi`,
-    `while kill -0 "$pane_pid" 2>/dev/null; do sleep 1; done`,
-  ].join('; ')
-}
-
-function botLaunchCommand(bot, paths = botServicePaths(bot.name)) {
-  return botWakeCommand(bot, paths)
-}
-
-function botPlistContent(bot, paths = botServicePaths(bot.name)) {
+// One job for every bot on this machine, in every environment. It carries no
+// TLDA_ENV of its own: each bot's environment is declared in bots.yaml and reaches
+// the bot through the launch this process performs.
+function botManagerPlistContent(paths = botManagerPaths()) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1542,7 +1508,7 @@ function botPlistContent(bot, paths = botServicePaths(bot.name)) {
     <array>
         <string>/bin/zsh</string>
         <string>-fc</string>
-        <string>${plistEscape(botLaunchCommand(bot, paths))}</string>
+        <string>${plistEscape('exec tlda bot manager')}</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${plistEscape(FLEET_DAEMON_MAIN_ROOT)}</string>
@@ -1550,7 +1516,7 @@ function botPlistContent(bot, paths = botServicePaths(bot.name)) {
     <string>Background</string>
     <key>EnvironmentVariables</key>
     <dict>
-${botEnvironmentPlist(bot, paths)}
+${botManagerEnvironmentPlist()}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -1565,15 +1531,6 @@ ${botEnvironmentPlist(bot, paths)}
 </dict>
 </plist>
 `
-}
-
-function writeBotPlist(bot) {
-  const paths = botServicePaths(bot.name)
-  const effectiveBot = bot.environment ? bot : { ...bot, environment: getActiveEnvName() }
-  if (!existsSync(dirname(paths.plist))) mkdirSync(dirname(paths.plist), { recursive: true })
-  if (!existsSync(dirname(paths.logFile))) mkdirSync(dirname(paths.logFile), { recursive: true })
-  writeFileSync(paths.plist, botPlistContent(effectiveBot, paths))
-  return paths
 }
 
 function launchAgentsDir() {
@@ -1602,17 +1559,39 @@ function daemonJobForEnvName(envName) {
   }
 }
 
-function botJob(bot, envName = null) {
-  const effectiveEnvName = envName || bot.environment || null
-  const effectiveBot = effectiveEnvName ? { ...bot, environment: effectiveEnvName } : bot
-  const paths = botServicePaths(bot.name, { configName: effectiveEnvName })
+function botManagerJob() {
+  const paths = botManagerPaths()
   return {
-    kind: 'bot',
-    name: effectiveEnvName ? `${bot.name}:${effectiveEnvName}` : bot.name,
+    kind: 'bot-manager',
+    name: 'bot-manager',
     label: paths.label,
     plist: paths.plist,
-    content: botPlistContent(effectiveBot, paths),
+    content: botManagerPlistContent(paths),
   }
+}
+
+// Every bot the declaration puts in an environment this machine's daemon config
+// knows about. The bot manager supervises exactly this list, and `tlda bot status`
+// reports exactly this list, so the two cannot disagree.
+function managedBotUnits() {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const envNames = Object.keys(daemonConfig.environments?.values || {})
+  const botsByName = new Map(configuredBots().map(bot => [bot.name, bot]))
+  const units = []
+  for (const [envName, botNames] of Object.entries(getManagedBotEnvironments()).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!envNames.includes(envName)) throw new Error(`bots.yaml names unknown environment "${envName}"`)
+    for (const botName of botNames) {
+      const bot = botsByName.get(botName)
+      if (!bot) throw new Error(`bots.yaml environment ${envName} references unknown bot "${botName}"`)
+      units.push({
+        bot: { ...bot, environment: envName },
+        envName,
+        label: `${botName}:${envName}`,
+        paths: botServicePaths(botName, { configName: envName }),
+      })
+    }
+  }
+  return units
 }
 
 function serverLaunchdLabel() {
@@ -1694,30 +1673,20 @@ function serverJobIfInstalled() {
 function desiredLaunchdJobs() {
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
   const envNames = Object.keys(daemonConfig.environments?.values || {}).sort()
-  const botsByName = new Map(configuredBots().map(bot => [bot.name, bot]))
-  const botEnvironments = getManagedBotEnvironments()
-  const botJobs = []
-  for (const [envName, botNames] of Object.entries(botEnvironments).sort(([a], [b]) => a.localeCompare(b))) {
-    if (!envNames.includes(envName)) throw new Error(`bots.yaml names unknown environment "${envName}"`)
-    for (const botName of botNames) {
-      const bot = botsByName.get(botName)
-      if (!bot) throw new Error(`bots.yaml environment ${envName} references unknown bot "${botName}"`)
-      botJobs.push(botJob(bot, envName))
-    }
-  }
-  const jobs = [
-    ...envNames.map(name => daemonJobForEnvName(name)),
-    ...botJobs,
-  ]
+  const jobs = envNames.map(name => daemonJobForEnvName(name))
+  if (managedBotUnits().length) jobs.push(botManagerJob())
   const serverJob = serverJobIfInstalled()
   if (serverJob) jobs.push(serverJob)
   return jobs
 }
 
+// `com.tlda.bot.` stays here with no job left that writes it: the per-bot plists
+// this machine already carries are managed, so an apply plans them for removal.
 function isManagedLaunchdLabel(label) {
   return label === 'com.tlda.fleet-daemon' ||
     label.startsWith('com.tlda.fleet-daemon.') ||
     label.startsWith('com.tlda.bot.') ||
+    label === BOT_MANAGER_LABEL ||
     label === serverLaunchdLabel()
 }
 
@@ -1891,14 +1860,115 @@ async function cmdConfigApply() {
   console.log(green('tlda config apply complete.'))
 }
 
-function printBotPlan(bot) {
-  const paths = botServicePaths(bot.name)
-  console.log(`${bot.name}: ${paths.label}`)
-  console.log(dim(`  Script: ${resolveBotScriptForCli(bot.script)}`))
-  console.log(dim(`  Machine: ${botMachineId(bot)}`))
-  console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-  console.log(dim(`  Plist: ${paths.plist}`))
-  console.log(dim(`  Log: ${paths.logFile}`))
+function printBotPlan(unit) {
+  console.log(`${unit.label}`)
+  console.log(dim(`  Script: ${resolveBotScriptForCli(unit.bot.script)}`))
+  console.log(dim(`  Machine: ${botMachineId(unit.bot)}`))
+  console.log(dim(`  Log: ${unit.paths.logFile}`))
+}
+
+// The bot manager. One launchd job supervises every bot the declaration puts in
+// an environment, and it asks one question per bot: does the pidfile that bot
+// wrote itself hold a live pid? That is the same test packages/bot/index.mjs uses
+// to refuse to start twice, so the manager and the bot agree by construction.
+//
+// What this replaces: twelve per-bot jobs, each of which relaunched `tlda agent
+// mint || tlda agent wake` and then looked for a tmux session named
+// `fleet-bot-<bot>_<env>`. A mint names the session after the agent, not after the
+// supervisor's configuration, so on testing that name never existed; the check
+// exited 1, KeepAlive relaunched the job, and it went around forever while the bot
+// was healthy. There is no terminal name on this path to be wrong about now.
+const BOT_SUPERVISION_POLL_MS = 5000
+
+function liveBotPid(paths) {
+  if (!existsSync(paths.pidFile)) return 0
+  const pid = Number(readFileSync(paths.pidFile, 'utf8').trim())
+  if (!Number.isInteger(pid) || pid <= 0) return 0
+  try {
+    process.kill(pid, 0)
+    return pid
+  } catch (error) {
+    if (error?.code === 'ESRCH') return 0
+    if (error?.code === 'EPERM') return pid
+    throw error
+  }
+}
+
+function botManagerLog(message) {
+  console.log(`${new Date().toISOString()} bot-manager: ${message}`)
+}
+
+function runBotCliCommand(args, unit) {
+  const env = { ...process.env, ...Object.fromEntries(botEnvironmentEntries(unit.bot, unit.paths)) }
+  const logFd = openSync(unit.paths.logFile, 'a')
+  return new Promise(resolve => {
+    let settled = false
+    const finish = code => {
+      if (settled) return
+      settled = true
+      closeSync(logFd)
+      resolve(code)
+    }
+    const child = cpSpawn(process.execPath, [fileURLToPath(import.meta.url), ...args], {
+      cwd: FLEET_DAEMON_MAIN_ROOT,
+      env,
+      stdio: ['ignore', logFd, logFd],
+    })
+    child.on('error', error => {
+      botManagerLog(`${unit.label}: ${args.slice(0, 2).join(' ')} could not run: ${error.message}`)
+      finish(1)
+    })
+    child.on('exit', code => finish(code === null ? 1 : code))
+  })
+}
+
+async function startBot(unit) {
+  const minted = await runBotCliCommand([
+    'agent', 'mint', unit.bot.name,
+    '--model', 'bot',
+    '--kind', 'bot',
+    '--cwd', FLEET_DAEMON_MAIN_ROOT,
+    '--bot-script', resolveBotScriptForCli(unit.bot.script),
+    '--bot-name', unit.bot.name,
+    '--bot-pid-file', unit.paths.pidFile,
+    '--bot-heartbeat-file', unit.paths.heartbeatFile,
+    '--fail-if-not-fresh',
+  ], unit)
+  if (minted === 0) return
+  // The name already belongs to a living fleet agent, which is the ordinary case
+  // for a bot whose process died: wake restarts that identity instead of minting a
+  // second one beside it.
+  await runBotCliCommand(['agent', 'wake', unit.bot.name], unit)
+}
+
+async function runBotManager() {
+  const wait = () => new Promise(resolve => setTimeout(resolve, BOT_SUPERVISION_POLL_MS))
+  botManagerLog(`starting (pid ${process.pid})`)
+  // The declaration is re-read every pass rather than captured at start, so a bot
+  // added to bots.yaml is picked up without restarting this job — a plist whose
+  // content does not mention any bot would otherwise be Unchanged by config apply.
+  let announced = null
+  for (;;) {
+    let units
+    try {
+      units = managedBotUnits()
+    } catch (error) {
+      botManagerLog(`bots.yaml unusable, supervising nothing this pass: ${error.message}`)
+      await wait()
+      continue
+    }
+    const declaration = units.map(unit => unit.label).join(', ')
+    if (declaration !== announced) {
+      botManagerLog(`supervising ${units.length} bot(s): ${declaration || '(none)'}`)
+      announced = declaration
+    }
+    for (const unit of units) {
+      if (liveBotPid(unit.paths)) continue
+      botManagerLog(`${unit.label}: no live process — starting`)
+      await startBot(unit)
+    }
+    await wait()
+  }
 }
 
 function botPermissionFacts() {
@@ -2443,67 +2513,56 @@ async function cmdBot() {
   const sub = getPositional(0) || 'list'
   const name = getPositional(1)
 
+  if (sub === 'manager') {
+    await runBotManager()
+    return
+  }
+
   if (sub === 'list') {
-    for (const bot of configuredBots()) printBotPlan(bot)
+    for (const unit of findBotUnits(name)) printBotPlan(unit)
     return
   }
 
   if (sub === 'status') {
-    const bots = findConfiguredBot(name)
-    for (const bot of bots) {
-      const paths = botServicePaths(bot.name)
-      if (process.platform === 'darwin') {
-        try {
-          const out = await runLaunchctl(['print', daemonLaunchdTarget(paths.label)])
-          const pidLine = out.split('\n').find(line => line.trim().startsWith('pid ='))
-          const stateLine = out.split('\n').find(line => line.trim().startsWith('state ='))
-          console.log(green(`${bot.name}: running + supervised`) + dim(` (${paths.label})`))
-          if (stateLine) console.log(dim(`  ${stateLine.trim()}`))
-          if (pidLine) console.log(dim(`  ${pidLine.trim()}`))
-          console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-          console.log(dim(`  Log: ${paths.logFile}`))
-          continue
-        } catch (error) {
-          const detail = error?.message || String(error)
-          if (!/Could not find service|No such process|service not found/i.test(detail)) throw error
-        }
+    const units = findBotUnits(name)
+    const paths = botManagerPaths()
+    let managerRunning = false
+    if (process.platform === 'darwin') {
+      try {
+        await runLaunchctl(['print', daemonLaunchdTarget(paths.label)])
+        managerRunning = true
+      } catch (error) {
+        const detail = error?.message || String(error)
+        if (!/Could not find service|No such process|service not found/i.test(detail)) throw error
       }
-      const pid = existsSync(paths.pidFile) ? Number(readFileSync(paths.pidFile, 'utf8').trim()) : 0
-      let running = false
-      if (Number.isInteger(pid) && pid > 0) {
-        try {
-          process.kill(pid, 0)
-          running = true
-        } catch (error) {
-          if (error?.code !== 'ESRCH') throw error
-        }
-      }
-      if (running) {
-        console.log(yellow(`${bot.name}: running unsupervised`) + dim(` (${paths.label})`))
-        console.log(red('  Configuration fault: the bot process is running without its launchd supervisor.'))
-        console.log(dim(`  Bot pid: ${pid}`))
-        console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-        console.log(dim(`  Log: ${paths.logFile}`))
-      } else {
-        console.log(red(`${bot.name}: not running`) + dim(` (${paths.label})`))
-      }
+    }
+    console.log(managerRunning
+      ? green(`bot manager: running`) + dim(` (${paths.label})`)
+      : red(`bot manager: not running`) + dim(` (${paths.label})`))
+    console.log(dim(`  Log: ${paths.logFile}`))
+    for (const unit of units) {
+      const pid = liveBotPid(unit.paths)
+      console.log(pid
+        ? green(`${unit.label}: running`) + dim(` (pid ${pid})`)
+        : red(`${unit.label}: not running`))
+      console.log(dim(`  Log: ${unit.paths.logFile}`))
     }
     return
   }
 
   if (sub === 'log' || sub === 'logs') {
-    const bots = findConfiguredBot(name)
+    const units = findBotUnits(name)
     const { execSync } = await import('child_process')
-    for (const bot of bots) {
-      const { logFile } = botServicePaths(bot.name)
-      if (existsSync(logFile)) execSync(`tail -50 "${logFile}"`, { stdio: 'inherit' })
-      else console.log(`No bot log: ${bot.name}`)
+    for (const unit of units) {
+      console.log(bold(unit.label))
+      if (existsSync(unit.paths.logFile)) execSync(`tail -50 "${unit.paths.logFile}"`, { stdio: 'inherit' })
+      else console.log(`No bot log: ${unit.label}`)
     }
     return
   }
 
   console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|status|log] [name]')
+  console.error('Usage: tlda bot [list|status|log|manager] [name]')
   process.exit(1)
 }
 

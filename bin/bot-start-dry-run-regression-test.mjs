@@ -21,7 +21,7 @@ try {
 
   writeFileSync(join(configDir, 'server.yaml'), '')
   writeFileSync(join(configDir, 'daemon.yaml'), `machineId: test-machine\nenvironments:\n  default: test\n  values:\n    test:\n      database: https://example.invalid\n      store: https://example.invalid\n      licenseKey: test-license\nregions: {}\nprofiles: {}\ngrants: {}\nmodels: {}\n`)
-  writeFileSync(join(configDir, 'bots.yaml'), `bots:\n  todd:\n    script: /opt/tlda-bots/todd/todd.mjs\n`)
+  writeFileSync(join(configDir, 'bots.yaml'), `bots:\n  todd:\n    script: /opt/tlda-bots/todd/todd.mjs\nenvironments:\n  test:\n    - todd\n`)
 
   for (const command of ['launchctl', 'tmux']) {
     const path = join(fakeBin, command)
@@ -58,8 +58,33 @@ try {
     },
   })
   assert.equal(statusResult.status, 0, statusResult.stderr || statusResult.stdout)
-  assert.match(statusResult.stdout, /todd: running unsupervised/)
-  assert.match(statusResult.stdout, /Configuration fault:/)
+  // Liveness is the pidfile the bot wrote, not a launchd job of its own and not a
+  // tmux session name. A running bot with no per-bot job is the new normal state,
+  // so it must not read as a fault.
+  assert.match(statusResult.stdout, new RegExp(`todd:test: running \\(pid ${process.pid}\\)`))
+  assert.doesNotMatch(statusResult.stdout, /Configuration fault:/)
+  assert.match(statusResult.stdout, /bot manager: not running/)
+
+  // The declaration says one bot in one environment, so an apply installs one bot
+  // manager and takes away the per-bot job that used to supervise it.
+  const staleBotPlist = join(taskHome, 'Library', 'LaunchAgents', 'com.tlda.bot.todd.test.plist')
+  writeFileSync(staleBotPlist, '<plist>stale per-bot supervisor</plist>')
+  const planResult = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'config', 'apply', '--dry-run'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: taskHome,
+      TLDA_CONFIG_DIR: configDir,
+      PATH: `${fakeBin}:${process.env.PATH || ''}`,
+    },
+  })
+  assert.equal(planResult.status, 0, planResult.stderr || planResult.stdout)
+  const group = (title, text) => text.split(/^(?=Add:|Update:|Remove:|Unchanged:)/m).find(part => part.startsWith(`${title}:`)) || ''
+  assert.match(group('Add', planResult.stdout), /com\.tlda\.bot-manager/)
+  assert.match(group('Remove', planResult.stdout), /com\.tlda\.bot\.todd\.test/)
+  assert.doesNotMatch(group('Add', planResult.stdout), /com\.tlda\.bot\.todd/)
+  assert.equal(existsSync(staleBotPlist), true, 'a dry run must not touch any plist')
 
   console.log('bot command supervision boundary: ok')
 } finally {
