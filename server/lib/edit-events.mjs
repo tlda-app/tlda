@@ -49,20 +49,6 @@ function readJsonl(name, file) {
     .map(line => JSON.parse(line))
 }
 
-function decodeSnapshotFile(file) {
-  if (!file) return null
-  return Buffer.from(file.content || '', 'base64')
-}
-
-function snapshotFileMap(snapshot) {
-  return new Map((snapshot?.files || []).map(file => [file.path, decodeSnapshotFile(file)]))
-}
-
-function sha256(value) {
-  if (value == null) return null
-  return createHash('sha256').update(value).digest('hex')
-}
-
 function textOrNull(buf) {
   if (buf == null || buf.includes(0)) return null
   return buf.toString('utf8')
@@ -116,27 +102,35 @@ function lineDiffHunks(beforeValue, afterValue) {
   return hunks
 }
 
-function changedFilesFromSnapshots(beforeSnapshot, afterSnapshot, requestedFiles = [], deletedFiles = []) {
-  const before = snapshotFileMap(beforeSnapshot)
-  const after = snapshotFileMap(afterSnapshot)
+// A revision no longer carries its files' bytes, so this asks the store per
+// path instead of building two full maps. The hashes it reports are the ones a
+// v2 snapshot already stores, so deciding WHICH files changed now reads no
+// content at all; only the surviving few are read, to diff them.
+function changedFilesFromSnapshots(lifecycle, beforeSnapshot, afterSnapshot, requestedFiles = [], deletedFiles = []) {
+  const beforePaths = (beforeSnapshot?.files || []).map(file => file.path)
+  const afterPaths = (afterSnapshot?.files || []).map(file => file.path)
+  const hashOf = (snapshot, path) => (snapshot ? lifecycle.snapshotFileHash(snapshot, path) : null)
   const paths = new Set([
     ...requestedFiles.map(file => file?.path).filter(Boolean),
     ...deletedFiles.filter(Boolean),
   ])
   if (paths.size === 0) {
-    for (const path of before.keys()) if (!after.has(path) || !before.get(path).equals(after.get(path))) paths.add(path)
-    for (const path of after.keys()) if (!before.has(path)) paths.add(path)
+    const after = new Set(afterPaths)
+    for (const path of beforePaths) if (!after.has(path) || hashOf(beforeSnapshot, path) !== hashOf(afterSnapshot, path)) paths.add(path)
+    const before = new Set(beforePaths)
+    for (const path of afterPaths) if (!before.has(path)) paths.add(path)
   }
-  return [...paths].sort().map(path => {
-    const beforeContent = before.get(path) ?? null
-    const afterContent = after.get(path) ?? null
-    return {
-      path,
-      before_hash: sha256(beforeContent),
-      after_hash: sha256(afterContent),
-      hunks: lineDiffHunks(beforeContent, afterContent),
-    }
-  }).filter(file => file.before_hash !== file.after_hash)
+  return [...paths].sort().map(path => ({
+    path,
+    before_hash: hashOf(beforeSnapshot, path),
+    after_hash: hashOf(afterSnapshot, path),
+  })).filter(file => file.before_hash !== file.after_hash).map(file => ({
+    ...file,
+    hunks: lineDiffHunks(
+      beforeSnapshot ? lifecycle.snapshotFile(beforeSnapshot, file.path) : null,
+      afterSnapshot ? lifecycle.snapshotFile(afterSnapshot, file.path) : null,
+    ),
+  }))
 }
 
 function normalizeOrigin(body = {}) {
@@ -375,7 +369,7 @@ export async function recordAcceptedSourceTransaction(name, body = {}, acceptedS
   const lifecycle = await sourceLifecycleStore(name)
   const previousSnapshot = acceptedSourceMutation.previousRevision ? lifecycle.readRevision(acceptedSourceMutation.previousRevision) : null
   const afterSnapshot = lifecycle.readRevision(acceptedSourceMutation.sourceRevision)
-  const changed_files = changedFilesFromSnapshots(previousSnapshot, afterSnapshot, acceptedSourceMutation.files || [], acceptedSourceMutation.deletedFiles || [])
+  const changed_files = changedFilesFromSnapshots(lifecycle, previousSnapshot, afterSnapshot, acceptedSourceMutation.files || [], acceptedSourceMutation.deletedFiles || [])
   if (changed_files.length === 0) return null
   const origin = normalizeOrigin(body)
   const record_id = stableId('src-txn', {

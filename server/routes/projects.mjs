@@ -996,7 +996,10 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   let lifecycleCandidate = null
   if (sourceMutation) {
     const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
-    const candidate = new Map((current?.files || []).map(file => [file.path, { ...file, encoding: 'base64' }]))
+    // A v2 entry is `{path, sha256, size}` and carries forward as a reference —
+    // an unchanged file costs nothing on the next push, which is what stops a
+    // batched bootstrap from re-serializing the whole book once per batch.
+    const candidate = new Map((current?.files || []).map(file => [file.path, file]))
     const inheritedManifest = authorityBefore.state === 'uninitialized'
       ? new Set(await readClientSourceManifest(name))
       : new Set()
@@ -1118,7 +1121,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       }
       if (lifecycleResult.status === 'accepted-clean-rebase' && Array.isArray(lifecycleResult.revision?.files)) {
         for (const rebasedFile of lifecycleResult.revision.files) {
-          const content = Buffer.from(rebasedFile.content, 'base64')
+          const content = lifecycle.snapshotFile(lifecycleResult.revision, rebasedFile.path)
           const previousContent = await readSourceFileAsync(name, rebasedFile.path)
           if (!await writeSourceFileAsync(name, rebasedFile.path, content)) continue
           const existing = changedPushFiles.find(file => file.path === rebasedFile.path)

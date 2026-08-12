@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto'
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { spawnSync } from 'child_process'
@@ -8,25 +8,6 @@ import { isTextSourcePath, normalizeSourceManifest } from '../../shared/source-m
 export const SOURCE_AUTHORITY_UNINITIALIZED = 'uninitialized'
 export const SOURCE_AUTHORITY_CURRENT = 'current'
 export const SOURCE_AUTHORITY_RECONCILIATION_REQUIRED = 'reconciliation-required'
-
-function canonicalSnapshot(files, manifest, context) {
-  if (!Array.isArray(files) || !Array.isArray(manifest)) throw new Error('A complete files array and sourceManifest are required')
-  const normalized = normalizeSourceManifest(manifest, context)
-  if (normalized.length !== manifest.length || normalized.some((path, index) => path !== manifest[index])) {
-    throw new Error('sourceManifest must be normalized, unique, and contain only authored source paths')
-  }
-  const byPath = new Map()
-  for (const file of files) {
-    if (!file || typeof file.path !== 'string' || !normalized.includes(file.path) || byPath.has(file.path)) {
-      throw new Error(`Invalid or duplicate snapshot file: ${file?.path ?? ''}`)
-    }
-    byPath.set(file.path, file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(String(file.content ?? '')))
-  }
-  if (byPath.size !== normalized.length || normalized.some(path => !byPath.has(path))) {
-    throw new Error('Snapshot files must exactly match sourceManifest')
-  }
-  return normalized.map(path => ({ path, content: byPath.get(path).toString('base64') }))
-}
 
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue)
@@ -41,31 +22,24 @@ function canonicalPins(dependencyPins) {
   return dependencyPins.map(stableValue).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
 }
 
-function revisionFor(files, dependencyPins) {
-  const hash = createHash('sha256')
-  for (const file of files) hash.update(file.path).update('\0').update(file.content).update('\0')
-  hash.update(JSON.stringify(dependencyPins)).update('\0')
-  return `sha256:${hash.digest('hex')}`
-}
-
-function byteSize(files) {
-  return files.reduce((total, file) => total + Buffer.byteLength(file.content, 'base64'), 0)
-}
-
 function syncFile(path) {
   const fd = openSync(path, 'r')
   try { fsyncSync(fd) } finally { closeSync(fd) }
 }
 
-function atomicJson(path, value, fault) {
+function atomicWrite(path, buffer, fault) {
   mkdirSync(dirname(path), { recursive: true })
   const pending = `${path}.pending-${process.pid}-${randomUUID()}`
-  writeFileSync(pending, JSON.stringify(value, null, 2))
+  writeFileSync(pending, buffer)
   syncFile(pending)
   fault?.('before-rename', { path, pending })
   renameSync(pending, path)
   syncFile(path)
   syncFile(dirname(path))
+}
+
+function atomicJson(path, value, fault) {
+  atomicWrite(path, JSON.stringify(value, null, 2), fault)
 }
 
 function readJson(path) {
@@ -98,64 +72,205 @@ export function classifyThreeWay({ base, current, incoming, binary = false }) {
   }
 }
 
-function deriveClassifications(base, current, incoming) {
-  const snapshots = [base, current, incoming].map(snapshot => new Map((snapshot?.files || []).map(file => [file.path, file.content])))
-  const paths = [...new Set(snapshots.flatMap(snapshot => [...snapshot.keys()]))].sort()
-  return paths.map(path => {
-    const encoded = snapshots.map(snapshot => snapshot.get(path))
-    if (encoded.some(value => value == null)) return { path, status: 'classification-unavailable' }
-    const contents = encoded.map(value => Buffer.from(value, 'base64'))
-    const binary = !isTextSourcePath(path) || contents.some(value => value.includes(0))
-    const result = classifyThreeWay({ base: contents[0], current: contents[1], incoming: contents[2], binary })
-    return {
-      path,
-      status: result.status,
-      ...(result.merged != null ? { merged: Buffer.from(result.merged).toString('base64') } : {}),
-      ...(result.error ? { error: result.error } : {}),
-    }
-  })
-}
-
 function cleanRebaseFiles(classifications) {
   if (!classifications.length) return null
   if (!classifications.every(item => item.status === 'clean-rebase-candidate' && typeof item.merged === 'string')) return null
   return classifications.map(item => ({ path: item.path, content: item.merged, encoding: 'base64' }))
 }
 
+/**
+ * A revision is a manifest of content hashes; the bytes live once each under
+ * `blobs/`.
+ *
+ * It used to be one `snapshot.json` carrying every file's base64 content, which
+ * meant each push re-serialized the whole project. On the QTM 285 book — 1499
+ * files, 394 MB — that is 525 MB of base64 against V8's 512 MiB ceiling on a
+ * single string, so `JSON.stringify` threw `RangeError: Invalid string length`
+ * before machine size was even the question. Content-addressing removes the
+ * ceiling and the quadratic together: a push writes only blobs the store does
+ * not already hold, and `snapshot.json` stays a few hundred kilobytes whatever
+ * the project weighs.
+ *
+ * Snapshots written before this (`version: 1`, content inline) stay readable
+ * through `entryContent` below, at the ids they already have. See `revisionFor`
+ * for how new ids are computed and why that does not strand them.
+ */
 export function createSourceLifecycleStore({ root, context = {}, fault = null }) {
   const statePath = join(root, 'authority.json')
   const revisionsRoot = join(root, 'revisions')
   const evidenceRoot = join(root, 'evidence')
+  const blobsRoot = join(root, 'blobs')
   const state = () => readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null }
-  const revision = id => readJson(join(revisionsRoot, encodeURIComponent(id), 'snapshot.json'))
 
-  function persistSnapshot(files, dependencyPins = []) {
-    const pins = canonicalPins(dependencyPins)
-    const id = revisionFor(files, pins)
-    const record = {
-      version: 1, id, manifest: files.map(file => file.path), files,
-      byteSize: byteSize(files), dependencyPins: pins, createdAt: new Date().toISOString(),
+  // A `version: 1` entry stores base64 in `content` and does not say so, while
+  // an entry built from a file on disk stores utf8 in `content` and also does
+  // not say so. Callers carry entries from one revision into the next, so that
+  // ambiguity decodes a legacy file into the literal text of its own base64 —
+  // silently, and into the authority store. The store tags what it emits so no
+  // caller has to remember.
+  function revision(id) {
+    const record = readJson(join(revisionsRoot, encodeURIComponent(id), 'snapshot.json'))
+    if (!record || record.version !== 1) return record
+    return { ...record, files: (record.files || []).map(file => ({ ...file, encoding: 'base64' })) }
+  }
+
+  const blobPath = sha => join(blobsRoot, sha.slice(0, 2), sha)
+
+  function writeBlob(buffer) {
+    const sha = createHash('sha256').update(buffer).digest('hex')
+    const path = blobPath(sha)
+    if (!existsSync(path)) atomicWrite(path, buffer, fault)
+    return { sha256: sha, size: buffer.length }
+  }
+
+  function readBlob(sha) {
+    const path = blobPath(sha)
+    return existsSync(path) ? readFileSync(path) : null
+  }
+
+  // Raw bytes for one snapshot entry, whichever form it is in: a v2 blob
+  // reference, or a `version: 1` snapshot's inline base64 from before this
+  // change. Snapshots have always stored content base64-encoded.
+  function entryContent(entry) {
+    if (!entry) return null
+    if (entry.content !== undefined) {
+      return Buffer.isBuffer(entry.content) ? entry.content : Buffer.from(String(entry.content), 'base64')
     }
+    return entry.sha256 ? readBlob(entry.sha256) : null
+  }
+
+  /**
+   * A revision is identified by its tree of `(path, content hash)`, the way a
+   * git tree is identified by the blobs it names rather than by their bytes.
+   *
+   * The previous definition hashed the concatenated base64 of every file, so
+   * computing a revision id meant reading the whole project — measured at 2.2 s
+   * per 75 MB, which is 65% of a push and would make a one-line save on a
+   * 394 MB book cost about eleven seconds of blocked event loop, forever. The
+   * blobs are already sha256-addressed, so hashing those instead is the same
+   * collision resistance at O(files) rather than O(bytes).
+   *
+   * Ids therefore differ from the ones the concatenating definition produced.
+   * Nothing recomputes an id to check it: `expectedRevision` is whatever the
+   * server last handed the client, and old snapshots keep their old ids on disk
+   * and stay resolvable, so no live project needs migrating.
+   */
+  function revisionFor(entries, dependencyPins) {
+    const hash = createHash('sha256')
+    for (const entry of entries) hash.update(entry.path).update('\0').update(entry.sha256).update('\0')
+    hash.update(JSON.stringify(dependencyPins)).update('\0')
+    return `sha256:${hash.digest('hex')}`
+  }
+
+  /**
+   * Validate the proposed snapshot against its manifest and put every file's
+   * bytes in the blob store, returning manifest-ordered `{path, sha256, size}`.
+   *
+   * Entries arrive either with content (a push, or a rebase result) or as a
+   * `{path, sha256}` reference carried forward from the current revision — the
+   * second form is what lets an unchanged file cost nothing on the next push.
+   */
+  function canonicalSnapshot(files, manifest, snapshotContext) {
+    if (!Array.isArray(files) || !Array.isArray(manifest)) throw new Error('A complete files array and sourceManifest are required')
+    const normalized = normalizeSourceManifest(manifest, snapshotContext)
+    if (normalized.length !== manifest.length || normalized.some((path, index) => path !== manifest[index])) {
+      throw new Error('sourceManifest must be normalized, unique, and contain only authored source paths')
+    }
+    const declared = new Set(normalized)
+    const byPath = new Map()
+    for (const file of files) {
+      if (!file || typeof file.path !== 'string' || !declared.has(file.path) || byPath.has(file.path)) {
+        throw new Error(`Invalid or duplicate snapshot file: ${file?.path ?? ''}`)
+      }
+      if (file.sha256 && file.content === undefined) {
+        if (!existsSync(blobPath(file.sha256))) throw new Error(`Missing blob for ${file.path}`)
+        byPath.set(file.path, { path: file.path, sha256: file.sha256, size: file.size ?? statSync(blobPath(file.sha256)).size })
+      } else {
+        const raw = file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(String(file.content ?? ''))
+        byPath.set(file.path, { path: file.path, ...writeBlob(raw) })
+      }
+    }
+    if (byPath.size !== normalized.length) {
+      throw new Error('Snapshot files must exactly match sourceManifest')
+    }
+    return normalized.map(path => byPath.get(path))
+  }
+
+  function persistSnapshot(entries, dependencyPins = []) {
+    const pins = canonicalPins(dependencyPins)
+    const id = revisionFor(entries, pins)
     const path = join(revisionsRoot, encodeURIComponent(id), 'snapshot.json')
     if (existsSync(path)) return readJson(path)
+    const record = {
+      version: 2, id, manifest: entries.map(entry => entry.path), files: entries,
+      byteSize: entries.reduce((total, entry) => total + entry.size, 0),
+      dependencyPins: pins, createdAt: new Date().toISOString(),
+    }
     atomicJson(path, record, fault)
-    // `record` is exactly what was just serialized, so reading it back was a
-    // second full copy of the snapshot — a 527 MB parse on the QTM 285 book, to
-    // reconstruct an object already in hand.
+    // `record` is exactly what was serialized, so reading it back would be a
+    // second copy for nothing.
     return record
+  }
+
+  function fileEntry(snapshot, path) {
+    return snapshot?.files?.find(candidate => candidate.path === path) || null
+  }
+
+  function revisionFileContent(snapshot, path) {
+    return entryContent(fileEntry(snapshot, path))
+  }
+
+  // sha256 of the file's raw bytes. Free for a v2 entry, which already is that
+  // hash; computed for a `version: 1` entry. Callers comparing two revisions
+  // want this rather than the content, and on a large project the difference is
+  // reading nothing instead of reading everything.
+  function revisionFileHash(snapshot, path) {
+    const entry = fileEntry(snapshot, path)
+    if (!entry) return null
+    if (entry.sha256) return entry.sha256
+    const content = entryContent(entry)
+    return content ? createHash('sha256').update(content).digest('hex') : null
+  }
+
+  // Only the paths that could have changed are read, and only one revision's
+  // copy of each at a time. Reading all three revisions whole is what this
+  // avoids: on a large book that is three full projects resident to classify a
+  // handful of edited files.
+  function deriveClassifications(base, current, incoming) {
+    const snapshots = [base, current, incoming]
+    const paths = [...new Set(snapshots.flatMap(snapshot => (snapshot?.files || []).map(file => file.path)))].sort()
+    return paths.map(path => {
+      const entries = snapshots.map(snapshot => fileEntry(snapshot, path))
+      if (entries.some(entry => entry == null)) return { path, status: 'classification-unavailable' }
+      const contents = entries.map(entry => entryContent(entry))
+      if (contents.some(value => value == null)) return { path, status: 'classification-unavailable' }
+      const binary = !isTextSourcePath(path) || contents.some(value => value.includes(0))
+      const result = classifyThreeWay({ base: contents[0], current: contents[1], incoming: contents[2], binary })
+      return {
+        path,
+        status: result.status,
+        ...(result.merged != null ? { merged: Buffer.from(result.merged).toString('base64') } : {}),
+        ...(result.error ? { error: result.error } : {}),
+      }
+    })
   }
 
   return {
     readAuthority: state,
     readRevision: revision,
+    /** Raw bytes of one file in one revision, without loading the rest. */
+    readRevisionFile(id, path) {
+      return revisionFileContent(revision(id), path)
+    },
+    /** The same, for a snapshot record the caller already holds. */
+    snapshotFile: revisionFileContent,
+    snapshotFileHash: revisionFileHash,
     readCurrentFile(path) {
       const authority = state()
       if (authority.state !== SOURCE_AUTHORITY_CURRENT || !authority.currentRevision) return null
-      const current = revision(authority.currentRevision)
-      const file = current?.files?.find(candidate => candidate.path === path)
       return {
         sourceRevision: authority.currentRevision,
-        content: file ? Buffer.from(file.content, 'base64') : null,
+        content: revisionFileContent(revision(authority.currentRevision), path),
       }
     },
     bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
@@ -196,7 +311,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         atomicJson(join(evidenceRoot, `${evidence.id}.json`), evidence, fault)
         const rebasedFiles = cleanRebaseFiles(classifications)
         if (rebasedFiles) {
-          const rebased = persistSnapshot(rebasedFiles, incoming.dependencyPins)
+          const rebased = persistSnapshot(canonicalSnapshot(rebasedFiles, incoming.manifest, context), incoming.dependencyPins)
           const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id }
           atomicJson(statePath, authority, fault)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
