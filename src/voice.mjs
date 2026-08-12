@@ -534,82 +534,6 @@ let _accumulator = null
 const DOUBLE_TAP_MS = 350
 
 const _micChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('fleet-voice-mic') : null
-const VOICE_MIC_OWNER_KEY = 'tlda.voiceMicOwner'
-const VOICE_MIC_OWNER_TTL_MS = 5000
-const VOICE_MIC_OWNER_HEARTBEAT_MS = 2000
-const _micOwnerId = `voice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-let _micOwnerHeartbeat = null
-
-function parseVoiceMicOwner(raw, now = Date.now()) {
-  try {
-    const owner = typeof raw === 'string' ? JSON.parse(raw) : raw
-    if (!owner || typeof owner.id !== 'string' || typeof owner.at !== 'number') return null
-    if (now - owner.at > VOICE_MIC_OWNER_TTL_MS) return null
-    return owner
-  } catch {
-    return null
-  }
-}
-
-function readVoiceMicOwner(now = Date.now()) {
-  try {
-    return parseVoiceMicOwner(localStorage.getItem(VOICE_MIC_OWNER_KEY), now)
-  } catch {
-    return null
-  }
-}
-
-function writeVoiceMicOwner(reason = 'heartbeat') {
-  const owner = { id: _micOwnerId, at: Date.now(), reason }
-  try {
-    localStorage.setItem(VOICE_MIC_OWNER_KEY, JSON.stringify(owner))
-  } catch {
-    // BroadcastChannel still covers ordinary same-tab starts; localStorage is the durable backstop.
-  }
-  try {
-    _micChannel?.postMessage({ type: 'mic-owner', ...owner })
-  } catch {
-    // Broadcast is opportunistic; localStorage owns the lease.
-  }
-}
-
-function releaseVoiceMicOwner() {
-  try {
-    const owner = readVoiceMicOwner()
-    if (owner?.id === _micOwnerId) localStorage.removeItem(VOICE_MIC_OWNER_KEY)
-  } catch {
-    // Storage cleanup is best-effort during teardown.
-  }
-}
-
-function voiceMicOwnerIsCurrent(now = Date.now()) {
-  const owner = readVoiceMicOwner(now)
-  return !owner || owner.id === _micOwnerId
-}
-
-function stopIfVoiceMicOwnedElsewhere(reason = 'unknown') {
-  const owner = readVoiceMicOwner()
-  if (!owner || owner.id === _micOwnerId) return false
-  vlog('stopping voice: another tab owns the mic', { reason, owner: owner.id, self: _micOwnerId })
-  stopRecording()
-  return true
-}
-
-function startVoiceMicOwnerHeartbeat() {
-  writeVoiceMicOwner('start')
-  clearInterval(_micOwnerHeartbeat)
-  _micOwnerHeartbeat = setInterval(() => {
-    if (!_recording) return
-    if (stopIfVoiceMicOwnedElsewhere('lease-check')) return
-    writeVoiceMicOwner('heartbeat')
-  }, VOICE_MIC_OWNER_HEARTBEAT_MS)
-}
-
-function stopVoiceMicOwnerHeartbeat() {
-  clearInterval(_micOwnerHeartbeat)
-  _micOwnerHeartbeat = null
-  releaseVoiceMicOwner()
-}
 
 // --- HUD ---
 
@@ -1149,10 +1073,6 @@ function reconcileUpstream() {
 
 function sendDeepgramAudioChunk(data) {
   if (_backend !== 'deepgram' || !_recording) return false
-  if (!voiceMicOwnerIsCurrent()) {
-    stopIfVoiceMicOwnedElsewhere('audio-send')
-    return false
-  }
   if (!voiceHasRoute() || (typeof document !== 'undefined' && document.hidden)) return false
   if (_deepgramWs?.readyState === WebSocket.OPEN && _deepgramRelayConnected) reconcileUpstream()
   if (_dgUpstreamPaused) return false
@@ -2824,25 +2744,13 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     } catch {}
     return
   }
-  if (!voiceMicOwnerIsCurrent()) {
-    try {
-      const m = JSON.parse(event.data)
-      if (m?.type === 'transcript' && m.text) {
-        vlog('DROPPED transcript (stale mic owner)', { text: m.text.slice(0, 30) })
-      }
-    } catch {
-      // Malformed stale messages are already being dropped.
-    }
-    stopIfVoiceMicOwnedElsewhere('deepgram-message')
-    return
-  }
   try {
     const msg = JSON.parse(event.data)
 
     if (msg.type === 'proxy_status') {
       if (relay !== _deepgramWs) return
       _lastProxyTelemetry = { ...(msg.proxy || {}), receivedAt: Date.now() }
-      // Skip's kept-open Fly session had no durable proxy records, even though
+      // Skip's retained Fly session had no durable proxy records, even though
       // live-perf ordinarily persists this snapshot. Logging receipt directly
       // separates a missing sampler record from a missing proxy_status message.
       // The relay reports only while it is BUFFERING (before upstream opens) and
@@ -3820,7 +3728,7 @@ function startRecording() {
   // accumulator/textarea, fillTextarea discards the stream until a target is
   // selected. The mic stays live regardless — only the mic button stops it.
 
-  startVoiceMicOwnerHeartbeat()
+  _micChannel?.postMessage('mic-start')
 
   _recording = true
   _dgUpstreamPaused = false   // fresh recording — upstream is active until routing/tab says otherwise
@@ -3887,7 +3795,6 @@ function stopRecording() {
   }
   _recording = false
   emitRecordingChange()
-  stopVoiceMicOwnerHeartbeat()
 
   stopVoiceLivenessWatchdog()
   hideHealthDot()
@@ -4132,16 +4039,8 @@ export async function initVoice() {
   if (_micChannel) {
     _micChannel.onmessage = (e) => {
       if (e.data === 'mic-start') stopRecording()
-      else if (e.data?.type === 'mic-owner' && e.data.id !== _micOwnerId && _recording) {
-        stopRecording()
-      }
     }
   }
-  window.addEventListener('storage', (e) => {
-    if (e.key !== VOICE_MIC_OWNER_KEY || !_recording) return
-    const owner = parseVoiceMicOwner(e.newValue)
-    if (owner && owner.id !== _micOwnerId) stopRecording()
-  })
 
   // Abort recognition before page unload to prevent WebKit crash
   // (SpeechRecognitionServer::messageSenderConnection segfault when
@@ -4169,7 +4068,6 @@ export async function initVoice() {
       return
     }
     if (!document.hidden && _recording) {
-      if (stopIfVoiceMicOwnedElsewhere('visibilitychange')) return
       if (_backend === 'deepgram') {
         // Resume AudioContext if suspended (tab came back from background)
         if (_deepgramContext?.state === 'suspended') {
@@ -4255,13 +4153,6 @@ export const __test = {
   deepgramMessage(message) { onDeepgramMessage({ data: JSON.stringify(message) }, _deepgramWs) },
   enterEdit(trigger) { enterEdit(trigger) },
   boundaryTelemetry() { return { ..._voiceBoundaryTelemetry } },
-  micOwnerId() { return _micOwnerId },
-  parseVoiceMicOwner(raw, now) { return parseVoiceMicOwner(raw, now) },
-  voiceMicOwnerIsCurrent(now) { return voiceMicOwnerIsCurrent(now) },
-  writeVoiceMicOwnerForTest(owner) {
-    if (owner == null) localStorage.removeItem(VOICE_MIC_OWNER_KEY)
-    else localStorage.setItem(VOICE_MIC_OWNER_KEY, JSON.stringify(owner))
-  },
   state() {
     return {
       backend: _backend,
@@ -4286,10 +4177,6 @@ export const __test = {
     _accumulator = null
     _voiceDumping = false
     _speechEpoch = 0
-    stopVoiceMicOwnerHeartbeat()
-    try { localStorage.removeItem(VOICE_MIC_OWNER_KEY) } catch {
-      // Test reset tolerates unavailable storage.
-    }
     resetDeepgramTextState()
     _voiceBoundaryTelemetry.messageSends = 0
     _voiceBoundaryTelemetry.lineBreaks = 0
