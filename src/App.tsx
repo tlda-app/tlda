@@ -554,6 +554,16 @@ function DocumentRadio() {
   const identity = useFleetIdentity()
   const agents = useFleetAgents()
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  // The roster is read when a message arrives, never when the subscription is
+  // established, so it belongs in a ref rather than the dependency list.
+  // useFleetAgents hands back a new array on every agents-delta, and this fleet
+  // emits those continuously: measured on Skip's tab, 103 agents-delta frames
+  // and 100 subscribe/unsubscribe pairs in the same 60 seconds. Each pair tore
+  // down a live subscription and opened a new one with a byte-identical filter,
+  // and any history page still in flight for the old subId was discarded on
+  // arrival as belonging to an unknown subscription.
+  const agentsRef = useRef(agents)
+  agentsRef.current = agents
 
   useEffect(() => {
     const target = identity.name || identity.id
@@ -564,12 +574,12 @@ function DocumentRadio() {
       (events, meta) => {
         if (meta.reason !== 'live') return
         for (const raw of events) {
-          maybeShowRadioSubtitleForIncomingChat(convertChatEvent(raw), agents, identity.id)
+          maybeShowRadioSubtitleForIncomingChat(convertChatEvent(raw), agentsRef.current, identity.id)
         }
       },
       { humanId: identity.id, humanName: identity.name, correlationKey: 'radio:document' },
     )
-  }, [identity.id, identity.name, agents])
+  }, [identity.id, identity.name])
 
   useEffect(() => {
     setRadioReplyHandler((entry: { from: string; label: string }) => {
