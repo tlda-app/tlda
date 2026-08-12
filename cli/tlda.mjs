@@ -310,11 +310,6 @@ function printPushBuildStatus(result, unchangedMessage = 'No changes detected.')
   }
 }
 
-export function requireAcceptedPush(result) {
-  if (result && result.ok !== false) return result
-  throw new Error(result?.error || result?.status || 'Source push was rejected')
-}
-
 // --- HTTP helpers ---
 
 async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
@@ -429,13 +424,13 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
   }
   const cleanupFiles = [...new Set([...(deletedFiles || []), ...staleServerPaths])]
   if (cleanupFiles.length > 0 || forceMetadata || changedFiles.length === 0) {
-    result = requireAcceptedPush(await api('POST', `/api/projects/${name}/push`, {
+    result = await api('POST', `/api/projects/${name}/push`, {
       files: [],
       sourceManifest,
       expectedRevision,
       ...(cleanupFiles.length > 0 && { deletedFiles: cleanupFiles }),
       ...extraBody,
-    }))
+    })
   }
   return result || { ok: true, unchanged: true }
 }
@@ -492,12 +487,12 @@ async function pushSourceFileBatches(name, files, {
   for (let index = 0; index < batches.length; index++) {
     const batch = batches[index]
     for (const file of batch) currentPaths.add(file.path)
-    result = requireAcceptedPush(await api('POST', `/api/projects/${name}/push`, {
+    result = await api('POST', `/api/projects/${name}/push`, {
       files: readBatchFiles(batch),
       sourceManifest: normalizeSourceManifest([...currentPaths], context),
       expectedRevision,
       ...extraBody,
-    }))
+    })
     expectedRevision = result.sourceRevision || await currentSourceRevision(name)
     if (logProgress) console.log(dim(`  ${index + 1}/${batches.length}: ${batch.length} file(s)`))
   }
@@ -902,12 +897,12 @@ async function cmdCreate() {
     expectedRevision = pushed.expectedRevision
     const staleFiles = staleServerPaths
     if (staleFiles.length > 0) {
-      requireAcceptedPush(await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/push`, {
         files: [],
         deletedFiles: staleFiles,
         sourceManifest: finalManifest,
         expectedRevision,
-      }))
+      })
     }
     console.log(green('Quarto project processed.'))
 
