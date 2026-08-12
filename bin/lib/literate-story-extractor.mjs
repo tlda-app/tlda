@@ -2,6 +2,9 @@ import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join, relative } from 'path'
 import ts from 'typescript'
 
+// Literate story assertion messages are the catalogue state lines. Keep them as
+// reader-facing state only: no interpolation, no failure narration, no source
+// values. If the assertion fails, assert prints expected and actual values.
 const TEST_DIRS = ['bin', 'tests', 'test', 'scripts', 'server', 'shared', 'daemon', 'packages', 'mcp-server']
 const TEST_FILE = /(?:^|[-.])test\.(?:mjs|js|ts)$/
 const HEADING_COMMENT_RE = /^\s*\/\/\s*(#{2,3})\s+(.+?)\s*$/
@@ -54,7 +57,12 @@ export function extractStories(source, file = '<inline>') {
     currentStep.states.push(
       ...assertions
         .filter(assertion => assertion.line > heading.line && assertion.line < endLine)
-        .map(assertion => ({ text: assertion.message, line: assertion.line })),
+        .map(assertion => {
+          if (assertion.message.includes('${')) {
+            throw new Error(`${file}:${assertion.line}: assertion message contains interpolation and cannot be a story line: ${assertion.message}`)
+          }
+          return { text: assertion.message, line: assertion.line }
+        }),
     )
   }
   return stories.filter(story => story.steps.length)

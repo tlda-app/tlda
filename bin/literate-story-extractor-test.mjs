@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 
 import {
   discoverStoryTestFiles,
+  extractStories,
   extractStoriesFromFile,
   renderStoriesMarkdown,
 } from './lib/literate-story-extractor.mjs'
@@ -46,8 +47,17 @@ assert.deepEqual(
   ],
 )
 assert.ok(
-  renderStoriesMarkdown(editorStories).includes("${who}'s laptop — their push is in the room"),
-  'template assertion messages should keep loop variables visible in the story catalogue',
+  renderStoriesMarkdown(editorStories).includes("each reader's laptop — their push is in the room"),
+  'parameterized stories should use reader-facing state lines rather than source interpolation',
+)
+assert.throws(
+  () => extractStories([
+    '// ## Bad story',
+    '// ### Bad step',
+    'assert.equal(actual, expected, `the paper — has ${value}`)',
+  ].join('\n'), 'bad-story-test.mjs'),
+  /bad-story-test\.mjs:3: assertion message contains interpolation/,
+  'interpolated assertion messages must fail before they enter the story catalogue',
 )
 
 console.log('literate story extractor test passed')
