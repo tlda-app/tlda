@@ -45,6 +45,16 @@ export class FleetStoreClient {
     this._pending = new Map()
     this._listeners = []
     this._closed = false
+    // Queue accounting. The worker is one thread handling one message at a
+    // time, so everything queued behind the running call waits for it, and that
+    // wait is the whole latency of a store call under load — not the query.
+    // Nothing on the main thread could see it: the loop stays healthy while
+    // callers wait, so event-loop lag reads fine and each caller's own timer
+    // reports its total wait as if the call itself were slow. Twelve RPCs were
+    // observed completing within 3ms of each other, each reporting 3.32s, with
+    // main-thread lag at 20.9ms — one blocking op, eleven queued behind it, no
+    // instrument anywhere that could say so.
+    this._queueStats = { calls: 0, settled: 0, maxDepth: 0, waitTotalMs: 0, waitMaxMs: 0, byMethod: new Map() }
 
     this._worker = new Worker(new URL('./fleet-store.worker.mjs', import.meta.url), {
       workerData: { dbPath, options },
@@ -79,6 +89,7 @@ export class FleetStoreClient {
       const waiter = this._pending.get(msg.id)
       if (!waiter) return
       this._pending.delete(msg.id)
+      this._recordSettled(waiter)
       if (msg.error) {
         const err = new Error(msg.error.message)
         // Keep the worker-side stack; without it every store failure looks like
@@ -154,9 +165,85 @@ export class FleetStoreClient {
     if (this._closed) return Promise.reject(new Error('fleet store client is closed'))
     const id = ++this._seq
     return new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject })
+      this._pending.set(id, { resolve, reject, method, queuedAt: performance.now() })
+      this._recordQueued(method)
       this._worker.postMessage({ id, method, args })
     })
+  }
+
+  _methodStats(method) {
+    let stats = this._queueStats.byMethod.get(method)
+    if (!stats) {
+      stats = { calls: 0, settled: 0, waitTotalMs: 0, waitMaxMs: 0 }
+      this._queueStats.byMethod.set(method, stats)
+    }
+    return stats
+  }
+
+  _recordQueued(method) {
+    const q = this._queueStats
+    q.calls += 1
+    if (this._pending.size > q.maxDepth) q.maxDepth = this._pending.size
+    this._methodStats(method).calls += 1
+  }
+
+  _recordSettled(waiter) {
+    if (!waiter?.method) return
+    const waited = performance.now() - waiter.queuedAt
+    const q = this._queueStats
+    q.settled += 1
+    q.waitTotalMs += waited
+    if (waited > q.waitMaxMs) q.waitMaxMs = waited
+    const stats = this._methodStats(waiter.method)
+    stats.settled += 1
+    stats.waitTotalMs += waited
+    if (waited > stats.waitMaxMs) stats.waitMaxMs = waited
+  }
+
+  /**
+   * What the queue in front of the store looks like right now, and what it has
+   * cost since this process started. `depth` is the calls waiting or running;
+   * `oldestWaitMs` is how long the one at the head has been waiting, which is
+   * the number that says "wedged" rather than "busy". Per-method rows name
+   * which caller is paying and which is charging.
+   *
+   * Cumulative counters rather than a sampled window: a ring would need a size
+   * and a window would need a period, and neither is a fact anybody has. A
+   * counter read twice is a rate, and the caller already knows the interval.
+   */
+  queueStats() {
+    const q = this._queueStats
+    let oldestWaitMs = 0
+    let head = null
+    const now = performance.now()
+    for (const waiter of this._pending.values()) {
+      if (!waiter.method) continue
+      const waited = now - waiter.queuedAt
+      if (waited > oldestWaitMs) {
+        oldestWaitMs = waited
+        head = waiter.method
+      }
+    }
+    const byMethod = {}
+    for (const [method, stats] of q.byMethod) {
+      byMethod[method] = {
+        calls: stats.calls,
+        settled: stats.settled,
+        waitMeanMs: stats.settled ? stats.waitTotalMs / stats.settled : 0,
+        waitMaxMs: stats.waitMaxMs,
+      }
+    }
+    return {
+      depth: this._pending.size,
+      oldestWaitMs,
+      oldestMethod: head,
+      maxDepth: q.maxDepth,
+      calls: q.calls,
+      settled: q.settled,
+      waitMeanMs: q.settled ? q.waitTotalMs / q.settled : 0,
+      waitMaxMs: q.waitMaxMs,
+      byMethod,
+    }
   }
 
   /** Resolves once the worker has opened the database. */

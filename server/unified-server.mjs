@@ -3433,6 +3433,12 @@ app.get('/api/diagnostics/live-perf', requireRead, async (req, res) => {
       ws: wsSummary(),
       events: serverEvents,
       lagProfiler: lagProfiler.snapshot(),
+      // The store runs on one worker thread that handles one call at a time, so
+      // a store call's latency is mostly the queue in front of it. Everything
+      // else in this block measures the MAIN thread, which stays healthy while
+      // callers wait — read `fleetStoreQueue.oldestWaitMs` before concluding
+      // from `eventLoopLag` that the server is fine.
+      fleetStoreQueue: fleetStore?.queueStats?.() || null,
     },
     activityDelivery: activityDeliverySnapshot(),
   })
