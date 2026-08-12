@@ -76,9 +76,12 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
    * no shadow history: a paper that has never been built has none, and that is
    * an ordinary state, not a failure.
    */
-  async function exportShadowBundle({ project }) {
+  async function exportShadowBundle({ project, sourceDir: explicitSourceDir = null }) {
     if (!project) throw new Error('missing project')
-    const sourceDir = getSourceDir(project)
+    // The caller may name the directory instead of letting us resolve it. A link
+    // offers this history BEFORE it writes the binding — so that a failed offer
+    // leaves nothing behind — and at that moment there is no binding to resolve.
+    const sourceDir = explicitSourceDir || getSourceDir(project)
     if (!sourceDir) throw new Error(`project ${project} is not watched on this daemon`)
 
     let head

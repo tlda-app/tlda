@@ -357,6 +357,30 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return { linked: true, alreadyLinked: false, sourceDir: normalized }
   }
 
+  /**
+   * Answer "would binding this project to this directory be a no-op, a new
+   * link, or a conflict?" without writing anything.
+   *
+   * This exists so a caller that must do fallible work BEFORE the link is real
+   * — offering the project's version history to the server it is moving to —
+   * can ask the question first and write only once the work has succeeded. The
+   * alternative is binding up front and unbinding on failure, which leaves a
+   * window where a binding names a project the server does not have. That is
+   * not hypothetical: a link to `stable` on 2026-08-12 failed and left exactly
+   * that row behind in `source-bindings.stable.json`.
+   *
+   * Throws on conflict, so the caller gets today's error at today's moment.
+   */
+  function bindingStatus(project, sourceDir) {
+    const normalized = path.resolve(sourceDir)
+    const existing = loadSourceBindings()[project]
+    const resolved = existing ? path.resolve(existing) : null
+    if (resolved && resolved !== normalized) {
+      throw new Error(`Project "${project}" is already linked to ${resolved}; unlink it first`)
+    }
+    return { alreadyLinked: resolved === normalized, sourceDir: normalized }
+  }
+
   function unbindSource(project, expectedSourceDir = null) {
     const bindings = loadSourceBindings()
     if (!bindings[project]) return { unlinked: false, alreadyUnlinked: true }
@@ -1016,6 +1040,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   return {
     bindSource,
+    bindingStatus,
     boundProjectNames,
     unbindSource,
     sync,

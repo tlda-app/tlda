@@ -569,30 +569,72 @@ async function loadLocallyBoundProjects() {
 // Linking is a clone, so the history goes with it. This working copy has been
 // receiving that history on every build; the server being linked to has none.
 //
-// Awaited, and failures are not caught. If this working copy holds history and
-// it cannot be delivered, the link fails — a link that half-succeeds and leaves
-// the paper starting from version one is the old broken behaviour wearing a
-// success message.
+// Two calls make a link, and they are not the same operation. Without
+// projectMetadata the caller is still deciding — the project may not exist on
+// that server yet — so this only ANSWERS whether the directory is already
+// linked, and writes nothing. With projectMetadata the caller has just read
+// `GET /api/projects/<name>`, which is what makes it true that the destination
+// has the project, and only then is there somewhere for history to land.
+//
+// Offering history used to happen on both calls, so every link sent the bundle
+// twice and the first one named a project the server had never heard of.
+//
+// The offer is a GATE. Skip, asked whether "the adopt usually arrives first" was
+// good enough: "the answer is we do not lose data in this fucking app." So the
+// link blocks until the destination reports the versions are there, and fails if
+// they are not — and because the binding is written only after that answer, a
+// failed link leaves nothing behind. A link that half-succeeds and leaves the
+// paper starting from version one is the old broken behaviour wearing a success
+// message.
 async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null }) {
   if (!project || !sourceDir) throw new Error('project and sourceDir are required')
-  const result = sourceSync.bindSource(project, sourceDir)
-  if (projectMetadata?.name === project) {
-    serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
-  }
-  applyProjectWorldOwnership('local-source-link')
 
-  const exported = await shadowMirror.exportShadowBundle({ project })
-  if (!exported.empty) {
-    sendMsg({
+  const status = sourceSync.bindingStatus(project, sourceDir)
+  if (projectMetadata?.name !== project) {
+    // Nothing to adopt into yet. Report, do not write.
+    return { linked: false, alreadyLinked: status.alreadyLinked, sourceDir: status.sourceDir }
+  }
+
+  if (!status.alreadyLinked) await offerShadowHistory({ project, sourceDir })
+
+  const result = sourceSync.bindSource(project, sourceDir)
+  serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
+  applyProjectWorldOwnership('local-source-link')
+  return result
+}
+
+// Hand this project's mirrored history to the server it is being linked to, and
+// do not return until the server says it holds it.
+//
+// The confirmation has to come from the adoption itself. The daemon transport
+// acknowledges every envelope it accepts — including one whose type no handler
+// claims, which is how this feature shipped broken for two days — so an ACK
+// proves delivery of bytes and nothing about whether a shadow repo now exists.
+// `sendMsgWithReply` resolves only on `{ id, result }` from the handler, and we
+// require the version count the server read back off its own disk AFTER
+// adopting. A reply is the outcome of the thing that produced the state; the
+// count is the state.
+async function offerShadowHistory({ project, sourceDir }) {
+  const exported = await shadowMirror.exportShadowBundle({ project, sourceDir })
+  if (exported.empty) return  // never built here — an ordinary state, nothing to carry
+
+  const hash7 = exported.head.slice(0, 7)
+  let reply
+  try {
+    reply = await sendMsgWithReply({
       type: 'adopt-shadow-history',
       project,
       head: exported.head,
       bundleBase64: exported.bundleBase64,
       machine_id: MACHINE_ID,
-    })
-    log.info(`sent ${project}@${exported.head.slice(0, 7)} history to the server`)
+    }, { timeoutMs: 120000 })
+  } catch (e) {
+    throw new Error(`${project} was not linked: its ${hash7} history could not be delivered (${e.message})`)
   }
-  return result
+  if (!reply?.ok || !(reply.versions > 0)) {
+    throw new Error(`${project} was not linked: the server did not confirm its ${hash7} history (${JSON.stringify(reply)})`)
+  }
+  log.info(`delivered ${project}@${hash7} history to the server — ${reply.versions} version(s)`)
 }
 
 function rpcUnlinkProjectSource({ project, sourceDir }) {

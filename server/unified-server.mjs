@@ -62,7 +62,7 @@ import { createSourceChangeResultCache } from './lib/source-change-correlation.m
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
-import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
+import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler } from './routes/projects.mjs'
@@ -9125,6 +9125,40 @@ async function handleDaemonWsMessage(ws, msg) {
     if (project) {
       setSentinelSyncError(project, null)
       _daemonWarnDedup.delete(`${project}|${SERVER_OWNER_ID}`)
+    }
+    return
+  }
+
+  // The receiving half of a move. A daemon offers a project's version history
+  // because the paper was just linked here and its working copy has been
+  // accumulating that history on every build. `d5984269e` wrote both ends of
+  // this and never added this case, so the daemon sent and every server dropped
+  // it from 2026-08-10 until it was measured: four versions on the source, one
+  // disjoint version on the destination.
+  //
+  // The reply is the link's gate, not a courtesy. Skip: "we do not lose data in
+  // this fucking app" — so the daemon blocks the link until this says versions
+  // landed, and the CLI does not push until the link returns. That is why the
+  // reply must come from adoptShadowHistory having actually run: the generic
+  // outbox ACK travels a different path (`ackDaemonOutboxMessage`, keyed by
+  // outbox_id) and would happily acknowledge a message this branch never saw.
+  // Only `{ id, result }` resolves the daemon's pending request.
+  if (type === 'adopt-shadow-history') {
+    const { project, bundleBase64, head } = msg
+    try {
+      await adoptShadowHistory({ name: project, bundleBase64, head })
+      const { listVersions } = await import('./lib/shadow-repo.mjs')
+      const versions = await listVersions(project, { limit: 500 })
+      console.log(`[shadow] adopted ${project}@${String(head || '').slice(0, 7)} — ${versions.length} version(s)`)
+      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true, project, versions: versions.length } }))
+    } catch (e) {
+      // Answer the daemon rather than letting its request time out: it is
+      // holding a link open and the person ran a command. Reported, not
+      // rethrown — rethrowing marks the envelope failed and redelivers a bundle
+      // whose link has already been failed, and the operator's next move is to
+      // run `tlda project link` again, not to have the server retry silently.
+      console.error(`[shadow] adopt failed for ${project}: ${e.message}`)
+      if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))
     }
     return
   }
