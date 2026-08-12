@@ -290,6 +290,16 @@ const failures = []
   const alice = 'Acceptance run.\n\nAlice rewrote this paragraph.\n'
   const pushed = await alicePushes(alice, await currentRevision())
   assert.equal(pushed.status, 200, 'Alice could not push')
+  // A 200 is the outcome of the thing that produced the state, not the state.
+  // Tonight the CLI printed 1/10, exited 0, and reported success on a push the
+  // server had rejected — so read the file back and let the server say what it
+  // holds. Otherwise a lying success sets up a red that blames the editor for
+  // never being told about a change that never landed.
+  assert.ok(
+    says(await serverText(), 'Alice rewrote this paragraph'),
+    `Alice's push answered 200 and ${FILE} on the server does not contain her text. `
+    + 'Nothing below could tell "the editor was not told" apart from "there was nothing to tell".',
+  )
 
   // Generous: this is not a race. If the editor has any receive path at all,
   // ten seconds is plenty.
