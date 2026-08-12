@@ -1,6 +1,7 @@
 import React, { useLayoutEffect, useRef, useState } from 'react'
 import { PrettyName } from './PrettyName'
 import {
+  fleetAgentLabelColor,
   type FleetAgentDirectoryRowModel,
 } from './FleetAgentDirectoryModel'
 export {
@@ -98,8 +99,9 @@ function fleetAgentFolderLabel(row: FleetAgentDirectoryRowModel, knownProjects: 
   const cwdLabel = row.labels.find((label) => label.startsWith('cwd:'))?.slice('cwd:'.length).trim()
   const projectNameLabels = new Set(knownProjects.filter(Boolean))
   const plainProjectLabel = row.labels.find((label) => projectNameLabels.has(label)) || ''
-  const project = row.project || projectLabel || plainProjectLabel
   const cwd = row.cwd || cwdLabel || ''
+  const inferredProject = projectNameLabels.has(row.cwdLabel) ? row.cwdLabel : ''
+  const project = row.project || projectLabel || plainProjectLabel || inferredProject
   if (project) {
     return {
       label: `project:${project}`,
@@ -139,6 +141,10 @@ function FleetAgentLabelChipView({
   const [compactScale, setCompactScale] = useState(1)
   const compactScaleRef = useRef(1)
   compactScaleRef.current = compactScale
+  const chipStyle = {
+    '--fleet-label-color': fleetAgentLabelColor(chip.label),
+    ...(compact ? { '--fleet-compact-label-scale': compactScale } : {}),
+  } as React.CSSProperties
 
   useLayoutEffect(() => {
     if (!compact) return
@@ -172,7 +178,7 @@ function FleetAgentLabelChipView({
       data-mode="agent"
       title={chip.title}
       aria-label={chip.title}
-      style={compact ? { '--fleet-compact-label-scale': compactScale } as React.CSSProperties : undefined}
+      style={chipStyle}
       onPointerDown={(e) => onLabelPointerDown?.(e, chip.label, row)}
       onPointerUp={(e) => onLabelPointerUp?.(e, chip.label, row)}
     >

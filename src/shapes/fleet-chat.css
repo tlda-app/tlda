@@ -2178,9 +2178,9 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   padding: 0 5px;
   border-radius: 2px;
   line-height: 16px;
-  color: var(--label);
-  background: color-mix(in srgb, var(--label) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--label) 24%, transparent);
+  color: var(--fleet-label-color);
+  background: color-mix(in srgb, var(--fleet-label-color) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fleet-label-color) 24%, transparent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2202,9 +2202,9 @@ body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
   font-size: calc(1em * var(--fleet-compact-label-scale, 1));
 }
 .fleet-agents-shape .fleet-agents-detail-label-chip.is-folder-label {
-  color: var(--project-label);
-  background: color-mix(in srgb, var(--project-label) 13%, transparent);
-  border-color: color-mix(in srgb, var(--project-label) 28%, transparent);
+  color: var(--fleet-label-color);
+  background: color-mix(in srgb, var(--fleet-label-color) 14%, transparent);
+  border-color: color-mix(in srgb, var(--fleet-label-color) 24%, transparent);
 }
 .fleet-agents-shape .fleet-agents-detail-label-glyph {
   flex-shrink: 0;
