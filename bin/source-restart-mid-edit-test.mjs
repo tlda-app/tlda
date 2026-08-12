@@ -91,7 +91,14 @@ try {
   } catch (error) {
     died = error.signal === 'SIGKILL'
   }
-  assert.equal(died, true, 'the server process — dies inside the source transaction')
+  // A precondition, not an expectation: if the child was not really killed,
+  // everything below measures an ordinary clean run and proves nothing about
+  // recovery. That distinction is why the consequence stays in the message.
+  assert.equal(
+    died, true,
+    'the server process — dies inside the source transaction; otherwise it exited cleanly and '
+    + 'nothing below is testing a crash at all',
+  )
 
   await initProjectStore(root)
 
