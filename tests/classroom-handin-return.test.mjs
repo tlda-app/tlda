@@ -20,6 +20,7 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
 
   const builds = []
+  let buildError = null
   const app = express()
   app.use(express.json())
   app.use('/api/classroom', createClassroomRouter({
@@ -31,7 +32,10 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
           ? { role: 'student', studentId: 'ada', courseId: 'qtm285' }
           : null
     },
-    dispatchSubmissionBuild: async contentRef => { builds.push(contentRef) },
+    dispatchSubmissionBuild: async contentRef => {
+      builds.push(contentRef)
+      if (buildError) throw buildError
+    },
   }))
   const server = await new Promise(resolve => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening))
@@ -92,6 +96,17 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
     assert.equal(visible.feedback.length, 1)
     assert.equal(visible.feedback[0].text, 'Show the last step.')
     assert.equal(visible.feedback[0].visibility, 'returned')
+
+    store.upsertAssignment({ id: 'hw2', courseId: 'qtm285', title: 'Homework 2', dueAt: '2026-09-08T20:00:00Z' })
+    buildError = new Error('R package missing')
+    const failedRender = await request('/assignments/hw2/mine/upload', 'ada', {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: archive,
+    })
+    assert.equal(failedRender.status, 200, await failedRender.text())
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal((await readProject('submission-hw2-ada')).buildStatus, 'error')
   } finally {
     await new Promise(resolve => server.close(resolve))
     store.close()

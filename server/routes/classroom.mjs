@@ -4,7 +4,7 @@ import { extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { createProject, readProject, sourceDir, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { createProject, readProject, sourceDir, updateProject, writeSourceFileAsync } from '../lib/project-store.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
@@ -328,7 +328,15 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         // fails leaves the work stored and re-renderable, where waiting on the
         // build would lose it.
         res.json({ ...submission, qmdPath: inspection.qmdPath, answerIds: inspection.answerIds })
-        dispatchSubmissionBuild(contentRef).catch(error => console.error(`[classroom] render failed for ${contentRef}:`, error))
+        dispatchSubmissionBuild(contentRef).catch(async error => {
+          console.error(`[classroom] render failed for ${contentRef}:`, error)
+          try {
+            await updateProject(contentRef, { buildStatus: 'error' })
+          } catch (updateError) {
+            // The submission response has already been sent; retain the original render failure in the server log.
+            console.error(`[classroom] failed to record render error for ${contentRef}:`, updateError)
+          }
+        })
       } catch (error) {
         console.error(`[classroom] could not store submission ${contentRef}:`, error)
         fail(500, { error: 'The submission could not be stored. Nothing was recorded — please try again.' })
