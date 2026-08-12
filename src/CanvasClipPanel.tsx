@@ -237,7 +237,12 @@ export function CanvasClipPanel({
       if (viewport?.screenBounds) {
         mainEditor.updateViewport(viewportId as TLViewportId, { camera })
       }
+      // The direct DOM write is the fast path from 11a3ee26a: HUD pans stay off
+      // FleetHUD's render path and the visible panels move immediately. Keep it,
+      // but also publish the same camera into TldrawViewport's React prop below
+      // so CanvasOverlays draws selection handles from the same frame.
       applyViewportCameraToDom(canvasRef.current, camera)
+      setSyncedCamera(prev => sameCanvasClipCamera(prev, camera) ? prev : camera)
     }
     const setCamera = (camera: { x: number; y: number; z: number }) => {
       setCanvasClipSurfaceCamera(wmSurface, camera)
@@ -265,6 +270,7 @@ export function CanvasClipPanel({
   // useValue recomputes — which can briefly flip isInViewport false, unmounting
   // FleetChatInner/FleetAgentsInner (the remount bug, 2026-06-22, commit 1517e737).
   const stableCameraRef = useRef<{ x: number; y: number; z: number } | null>(null)
+  const [syncedCamera, setSyncedCamera] = useState<{ x: number; y: number; z: number } | null>(null)
   const [interactiveCamera, setInteractiveCamera] = useState<{ x: number; y: number; z: number } | null>(null)
   const plannedCamera = (() => {
     const next = (() => {
@@ -288,10 +294,11 @@ export function CanvasClipPanel({
     stableCameraRef.current = next
     return next
   })()
-  const camera = interactiveCamera ?? plannedCamera
+  const camera = syncedCamera ?? interactiveCamera ?? plannedCamera
 
   useEffect(() => {
     setInteractiveCamera(null)
+    setSyncedCamera(null)
   }, [plannedCamera])
 
   useEffect(() => {
