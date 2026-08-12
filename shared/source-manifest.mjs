@@ -64,7 +64,7 @@ export function isQuartoRenderOutput(path, mainFile = '') {
   const rel = normalizePath(path)
   const segments = rel.split('/')
   const dirs = segments.slice(0, -1)
-  if (dirs.some(d => d === '.quarto' || d === '_site' || d === '_book' || d.startsWith('_book-'))) return true
+  if (dirs.some(d => d === '.quarto' || d === '_freeze' || d === '_site' || d === '_book' || d.startsWith('_book-'))) return true
   if (dirs.some(d => d.endsWith('_files') || d.endsWith('_cache'))) return true
   // The rendered sibling of the main file — `talk.qmd` renders to `talk.html`.
   const rendered = normalizePath(mainFile).replace(/\.qmd$/i, '.html')
