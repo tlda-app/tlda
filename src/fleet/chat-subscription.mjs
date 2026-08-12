@@ -189,38 +189,6 @@ export function dispatchFilterEvents(data) {
   const events = Array.isArray(data.events) ? data.events : []
   // A reconnect or identity refresh replays the newest page. Preserve the
   // deepest cursor already reached; only an explicitly older page advances it.
-  //
-  // Recorded because the guard's failure is invisible and permanent. The cursor
-  // lives on the subscription; the rows live in the panel's buffer, which merges
-  // and never removes. If a replayed newest page overwrites a deepened cursor,
-  // every later fetch-earlier asks for rows NEWER than what the reader can
-  // already see, they merge invisibly, and the span between is unreachable for
-  // the life of the tab. Observed on Skip's session at 15:25:54: a reconnect
-  // replayed sub759's newest page with nextCursor 14:43:10 while that panel's
-  // oldest rendered row was 02:29:36 -- eleven hours older than its own cursor.
-  // Whether the guard held could not be established from outside, which is what
-  // this record answers. Transition-only: a replay that changes nothing is silent.
-  const replayingNewest = !data.error && data.requestBefore == null
-  if (replayingNewest && data.nextCursor) {
-    // Two cases, and only the first can do damage. Recording both is what makes
-    // the record readable: the guard holding is the control for the guard failing.
-    const heldCursor = sub.nextCursor
-    const takesIt = heldCursor == null
-    if (takesIt || data.nextCursor > heldCursor) {
-      log.metric(NS, 'newest-page replay against a held cursor', {
-        subId: data.subId,
-        filterKey: sub.filterKey,
-        correlationKey: sub.correlationKey,
-        heldCursor,
-        replayCursor: data.nextCursor,
-        // true: nothing was held, so this replay sets the cursor. If the panel's
-        // buffer already holds rows older than replayCursor, that is the split.
-        // false: the guard held and the deeper cursor survived.
-        takesIt,
-        reason: data.reason || 'history',
-      })
-    }
-  }
   if (!data.error && (data.requestBefore != null || sub.nextCursor == null)) {
     sub.nextCursor = data.nextCursor ?? null
     sub.hasMore = !!data.hasMore
