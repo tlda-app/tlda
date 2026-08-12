@@ -90,7 +90,7 @@ export class VoiceNoteTool extends StateNode {
     // No-op: let pointer flow to pointerUp for commit
   }
 
-  override onPointerUp = () => {
+  override onPointerUp = async () => {
     if (!this._shapeId) return
     const { editor } = this
     const id = this._shapeId
@@ -102,6 +102,22 @@ export class VoiceNoteTool extends StateNode {
     const transcript = getTranscript()
     this._clearInterval()
 
+    // Resolve the anchor before committing, the way MathNoteTool does, so the
+    // note is never written without one. This used to be attached afterwards by
+    // an unawaited promise: nothing retried it, nothing observed it, and its
+    // catch only logged — so a note whose resolve never settled stayed
+    // unanchored for good, silently. Anchoring on the commit point rather than
+    // the creation point is deliberate: the note follows the cursor while
+    // recording, so where it lands is what it is about.
+    let sourceAnchor: AnnotationSourceAnchor | null = null
+    if (currentDocumentInfo) {
+      try {
+        sourceAnchor = await annotationSourceAnchorAtCanvasPoint(editor, currentDocumentInfo, point.x, point.y)
+      } catch (e) {
+        console.warn('[voice-note] source anchor lookup failed:', (e as Error).message)
+      }
+    }
+
     // Commit shape at current position with final transcript — always expanded
     // so the user can immediately read and edit what was recorded
     editor.updateShape({
@@ -110,23 +126,8 @@ export class VoiceNoteTool extends StateNode {
       x: point.x - NOTE_W / 2,
       y: point.y - 10,
       props: { text: transcript, collapsed: false },
-      meta: { voiceNote: true, rawTranscript: transcript } as Partial<JsonObject>,
+      meta: { voiceNote: true, rawTranscript: transcript, ...(sourceAnchor ? { sourceAnchor } : {}) } as Partial<JsonObject>,
     } as unknown as TLShapePartial)
-
-    // Async: resolve source anchor and attach it
-    if (currentDocumentInfo) {
-      annotationSourceAnchorAtCanvasPoint(editor, currentDocumentInfo, point.x, point.y)
-        .then((sourceAnchor: AnnotationSourceAnchor | null) => {
-          if (sourceAnchor) {
-            editor.updateShape({
-              id,
-              type: 'math-note',
-              meta: { voiceNote: true, rawTranscript: transcript, sourceAnchor } as Partial<JsonObject>,
-            } as unknown as TLShapePartial)
-          }
-        })
-        .catch(e => console.warn('[voice-note] update shape failed:', e.message))
-    }
 
     // One edit, computed by voice.mjs, spliced into the note's text. This used
     // to keep a frozen `base` and write `base + wholeSpokenText` every update,
