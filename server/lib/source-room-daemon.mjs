@@ -40,9 +40,15 @@ function bufferFromBase64(value) {
   return Buffer.from(String(value || ''), 'base64')
 }
 
-function fileTextFromRevision(revision, filePath) {
+function fileTextFromSnapshot(revision, filePath) {
   const file = revision?.files?.find(candidate => candidate.path === filePath)
   return file ? bufferFromBase64(file.content).toString('utf8') : ''
+}
+
+function sourceRoomFileText(lifecycle, { revisionId = null, filePath }) {
+  if (revisionId) return fileTextFromSnapshot(lifecycle.readRevision(revisionId), filePath)
+  const current = lifecycle.readCurrentFile(filePath)
+  return current?.content ? current.content.toString('utf8') : ''
 }
 
 function hasConflictMarkers(text) {
@@ -136,8 +142,7 @@ export function createSourceRoomDaemon({
     if (existsSync(paths.yjs)) {
       Y.applyUpdate(ydoc, new Uint8Array(readFileSync(paths.yjs)), SERVER_ORIGIN)
     } else {
-      const current = lifecycle.readCurrentFile(filePath)
-      const text = current?.content ? current.content.toString('utf8') : ''
+      const text = sourceRoomFileText(lifecycle, { filePath })
       ytext.insert(0, text)
       atomicWrite(paths.yjs, Buffer.from(Y.encodeStateAsUpdate(ydoc)))
       atomicWrite(paths.working, text)
@@ -276,9 +281,8 @@ export function createSourceRoomDaemon({
     const conflicted = []
     for (const room of targetRooms) {
       const lifecycle = await sourceLifecycleStore(room.project)
-      const previous = message.previousRevision ? lifecycle.readRevision(message.previousRevision) : null
       const file = (message.files || []).find(candidate => candidate?.path === room.filePath)
-      const base = fileTextFromRevision(previous, room.filePath)
+      const base = sourceRoomFileText(lifecycle, { revisionId: message.previousRevision, filePath: room.filePath })
       const incoming = file ? bufferFromBase64(file.content).toString('utf8') : ''
       const merged = mergeText({ base, current: room.ytext.toString(), incoming, project: room.project, filePath: room.filePath })
       if (!merged.ok) {
