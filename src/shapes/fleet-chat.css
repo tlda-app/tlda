@@ -1957,8 +1957,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape:hover .fleet-agents-footer {
   opacity: var(--fleet-agents-chrome-rest);
 }
-body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-footer:has(.fleet-agents-spawn-btns.is-open) {
-  opacity: var(--fleet-agents-chrome-full);
+.fleet-agents-shape .fleet-agents-footer:has(.fleet-agents-spawn-btns.is-open) {
+  opacity: 1;
 }
 /* --- Agent row (expandable 1→3 lines) --- */
 
@@ -2556,7 +2556,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   background: var(--surface);
   border-top: 1px solid var(--border);
   box-shadow: 0 -4px 12px var(--shadow-lg, rgba(0,0,0,0.3));
-  opacity: var(--fleet-agents-chrome-full);
+  opacity: 1;
 }
 .fleet-agents-shape .fleet-agents-mint-fields {
   display: flex;
