@@ -31,6 +31,7 @@ export function ProblemMarking() {
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [error, setError] = useState('')
   const [returned, setReturned] = useState('')
+  const [returning, setReturning] = useState(false)
 
   useEffect(() => {
     const onReturned = (event: Event) => {
@@ -128,6 +129,31 @@ export function ProblemMarking() {
 
   const problemOptions = useMemo(() => view?.problems.map(p => p.problemId) ?? [], [view])
 
+  const returnCurrent = async () => {
+    if (!answer || returning) return
+    try {
+      setError('')
+      setReturning(true)
+      const submission = await classroomApi.returnFeedback(assignmentId, answer.studentId)
+      setView(current => current ? {
+        ...current,
+        problems: current.problems.map(candidate => ({
+          ...candidate,
+          answers: candidate.answers.map(candidateAnswer => candidateAnswer.studentId === answer.studentId
+            ? { ...candidateAnswer, gradingStatus: submission.gradingStatus }
+            : candidateAnswer),
+        })),
+      } : current)
+      // Release the spatial marks only after the server has recorded the
+      // return. A failed return must leave the instructor's draft marks draft.
+      window.dispatchEvent(new CustomEvent(RETURN_MARKS_EVENT))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setReturning(false)
+    }
+  }
+
   if (error && !view) return <main className="classroomWorkspace"><p className="classroomError">{error}</p></main>
   if (!view) return <main className="classroomWorkspace">Loading {assignmentId}…</main>
   if (!problem) return <main className="classroomWorkspace"><p>No submissions yet for {view.assignment.title}.</p></main>
@@ -150,8 +176,9 @@ export function ProblemMarking() {
       <span>{answer?.displayName} · {studentIndex + 1} of {problem.answers.length}</span>
       <button onClick={() => step(1)} aria-label="Next student">→</button>
       {answer && <span className="statusChip">{answer.gradingStatus}</span>}
-      <button onClick={() => window.dispatchEvent(new CustomEvent(RETURN_MARKS_EVENT))}>Return marks</button>
+      <button onClick={() => void returnCurrent()} disabled={!answer || returning}>{returning ? 'Returning…' : 'Return marks'}</button>
       {returned && <span>{returned}</span>}
+      {error && <span className="classroomError">{error}</span>}
     </aside>
   </>
 }
