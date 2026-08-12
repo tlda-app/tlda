@@ -1518,6 +1518,7 @@ function broadcastEvent(type, data) {
 serverTimerScheduler = new ServerTimerScheduler({
   store: fleetStore,
   broadcast: broadcastEvent,
+  notify: (to, text, source) => requestWake(to, text, null, null, source || {}),
 })
 // Not awaited: this is module top level, where there is no async context to
 // await into. A failing first refresh is reported rather than becoming an
@@ -5247,12 +5248,11 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
   const sockets = openFleetSocketsForAgent(agent.id)
   if (!sockets.length) return { ok: false, reason: 'no-open-mcp-socket' }
   const ackId = `${traceId || createTraceId('wake')}:mcp:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
-  const text = [agentReturnNotice(agent), nudgeText].filter(Boolean).join('\n\n')
   const payload = JSON.stringify({
     event: 'channel-notification',
     data: {
       recipient: agent.id,
-      text,
+      text: nudgeText,
       metadata: {
         type: 'wake_nudge',
         delivery: 'mcp',
@@ -6815,7 +6815,15 @@ async function handleFleetWsMessage(ws, msg) {
     for (const r of perRecipient) {
       if (!r.deliveryDecision) continue
       if (r.deliveryDecision.delivery === 'notified') {
-        if (!r.nativeNeedsParent) {
+        if (r.nativeNeedsParent) {
+          wakeRequests.push({
+            to: r.nativeParentId,
+            text: `${NOTIFICATION_MARKER} Message queued for native subagent ${r.recipientAgent.friendly_name || r.to}.`,
+            asker: from,
+            traceId,
+            source: { sourceEventId: eventId, priority: basePriority },
+          })
+        } else {
           wakeRequests.push({ to: r.to, text: await chatWakeText(text, r.to, from), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
         }
       }

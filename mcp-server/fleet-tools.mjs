@@ -5333,27 +5333,6 @@ export function classifyChannelNoticeDedupe({ eventId, deliveredIds, wakeAckId, 
   };
 }
 
-const SYSTEM_NOTIFICATION_CHAT_TYPES = new Set([
-  'build_result',
-  'scratch_build_failed',
-  'sync_error',
-  'fleet_runtime_error',
-  'fleet_incident',
-  'fleet_incident_clear',
-  'wake_failed',
-])
-
-export function shouldDeliverChannelTurn({ eventType, data = {}, fromId = '', isDirectTarget = false } = {}) {
-  if (!isDirectTarget) return false;
-  if (eventType === 'delegate') return true;
-  if (eventType === 'chat') {
-    if (fromId === 'fleet:tlda') return false;
-    if (SYSTEM_NOTIFICATION_CHAT_TYPES.has(data.metadata?.type)) return false;
-    return true;
-  }
-  return eventType === 'channel-notification' && !!data.metadata?.wake_ack_id;
-}
-
 function inboxCallText(action = 'see it') {
   return `call inbox() to ${action}.`;
 }
@@ -5406,7 +5385,21 @@ async function acknowledgeWakeChannelNotice(agentId, wakeAckId) {
 }
 
 async function _flushUnread() {
-  return;
+  const agentId = activeAgentId();
+  if (!agentId || !_channelRWS?.connected) return;
+  try {
+    const data = await mcpFleetTransport.ephemeral('my-task', {
+      agent: agentId,
+      peek: true,
+      notification_flush: true,
+    }, { deadlineMs: FLEET_TOOL_READ_WAIT_MS });
+    const msgs = (data?.messages || []).filter(m => !m.read);
+    if (msgs.length === 0) return;
+    const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
+    await deliverChannelNotice(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`, { event_type: 'flush' });
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] unread flush notification failed: ${e.message}\n`);
+  }
 }
 
 async function handleChannelMessage(msg) {
@@ -5419,10 +5412,12 @@ async function handleChannelMessage(msg) {
       ? 'channel-notification'
       : '';
   if (!eventType) return;
-  if (!['channel-notification', 'chat', 'delegate'].includes(eventType)) return;
+  if (!['channel-notification', 'chat', 'delegate', 'task_done', 'timer'].includes(eventType)) return;
 
   const data = msg.data || {};
-  if (msg.event === 'event-update') return;
+  const isTimerFire = eventType === 'timer' && data.metadata?.state === 'fired';
+  if (msg.event === 'event-update' && !isTimerFire) return;
+  if (eventType === 'timer' && !isTimerFire) return;
 
   const wiretapCc = data.metadata?.wiretap_cc || [];
   const isDirectTarget = directRecipients(data).includes(agentId);
@@ -5430,8 +5425,7 @@ async function handleChannelMessage(msg) {
   if (!isDirectTarget && !isWiretapTarget) return;
 
   const fromId = data.from || data.from_id || '';
-  if (!shouldDeliverChannelTurn({ eventType, data, fromId, isDirectTarget })) return;
-  if (fromId === agentId) return;
+  if (fromId === agentId && eventType !== 'timer') return;
   if (data.metadata?.source === 'terminal') return;
 
   const eventId = channelEventId(msg, data);
@@ -5458,6 +5452,11 @@ async function handleChannelMessage(msg) {
   } else if (eventType === 'delegate') {
     const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
     content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} task from ${fromLabel}: ${previewForChannel(data.description || data.text || '')} — ${inboxCallText('see it')}`;
+  } else if (eventType === 'task_done') {
+    const fromLabel = data.metadata?.fromLabel || fromId?.replace(/^fleet:/, '') || 'unknown';
+    content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} update from ${fromLabel}: ${previewForChannel(data.description || data.text || 'Task update')} — ${inboxCallText('see it')}`;
+  } else if (eventType === 'timer' && data.metadata?.state === 'fired') {
+    content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} timer: ${previewForChannel(data.text || data.message || data.metadata?.message || 'Timer fired')} — ${inboxCallText('triage')}`;
   }
   if (!content) return;
 

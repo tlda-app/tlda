@@ -44,6 +44,9 @@ export class ServerTimerScheduler {
   }) {
     this.store = store
     this.broadcast = broadcast
+    // A fired timer must reach the agent, not just the connected browsers.
+    // broadcast() is a websocket push; it cannot wake a hibernating agent, so
+    // firing without this reported notified:true while telling nobody.
     this.notify = notify
     this.now = now
     this.setTimeoutFn = setTimeoutFn
@@ -118,7 +121,10 @@ export class ServerTimerScheduler {
     })
     if (!claimed) return { ok: true, to, notified: false, duplicate: true }
     this.broadcast?.('event-update', timerFireBroadcast({ event, to, metadataPatch, message }))
-    const notified = false
+    await this.notify?.(to, message || event.text || event.metadata?.message || 'Timer fired', {
+      sourceEventId: Number(eventId),
+      sourceTaskId: taskId || null,
+    })
     const repeatSeconds = Number(event.metadata?.repeat_seconds)
     if (Number.isFinite(repeatSeconds) && repeatSeconds > 0) {
       const nextFireAt = new Date(nowMs + repeatSeconds * 1000).toISOString()
@@ -154,10 +160,10 @@ export class ServerTimerScheduler {
           })
         }
         await this.refresh()
-        return { ok: true, to, notified, recurring: true, next_fire_at: nextFireAt }
+        return { ok: true, to, notified: true, recurring: true, next_fire_at: nextFireAt }
       }
     }
-    return { ok: true, to, notified, recurring: false }
+    return { ok: true, to, notified: true, recurring: false }
   }
 
   async cancel(eventId) {

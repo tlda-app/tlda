@@ -1,4 +1,27 @@
-export async function scheduleSubscriptionWakes() {
-  // Observer subscriptions keep messages discoverable in inbox/history. They do
-  // not create turns; only a message addressed to the agent may wake it.
+export async function scheduleSubscriptionWakes({
+  deliveries,
+  eventId,
+  text,
+  from,
+  traceId,
+  priority,
+  wakeRequests,
+  wakeText,
+  agentDisplayName,
+  previewForWake,
+  queueBatchWake,
+}) {
+  for (const delivery of deliveries) {
+    if (delivery.delivery === 'notified') {
+      wakeRequests.push({
+        to: delivery.recipient,
+        text: wakeText({ what: `a message from ${await agentDisplayName(from)}`, preview: previewForWake(text) }),
+        asker: from,
+        traceId,
+        source: { sourceEventId: eventId, priority, subscriptionId: delivery.subscription_id },
+      })
+    } else if (delivery.delivery === 'batched' && delivery.notifyBy) {
+      queueBatchWake({ delivery, eventId, text, from, traceId, priority })
+    }
+  }
 }

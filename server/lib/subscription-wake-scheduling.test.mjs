@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { scheduleSubscriptionWakes } from './subscription-wake-scheduling.mjs'
 
-test('an observer-only immediate subscription does not schedule a wake', async () => {
+test('an observer-only subscription schedules its immediate wake from the event-level delivery list', async () => {
   const wakeRequests = []
   const queuedBatches = []
   const observer = {
@@ -26,11 +26,17 @@ test('an observer-only immediate subscription does not schedule a wake', async (
     queueBatchWake: args => queuedBatches.push(args),
   })
 
-  assert.deepEqual(wakeRequests, [])
+  assert.deepEqual(wakeRequests, [{
+    to: 'fleet:observer',
+    text: 'a message from b4-live-writer: between-thread traffic',
+    asker: 'fleet:writer',
+    traceId: 'trace-1',
+    source: { sourceEventId: 2342370, priority: 'normal', subscriptionId: 34407 },
+  }])
   assert.deepEqual(queuedBatches, [])
 })
 
-test('an observer-only batched subscription does not schedule a wake batch', async () => {
+test('an observer-only batched subscription schedules its batch from the event-level delivery list', async () => {
   const wakeRequests = []
   const queuedBatches = []
   const delivery = {
@@ -55,5 +61,12 @@ test('an observer-only batched subscription does not schedule a wake batch', asy
   })
 
   assert.deepEqual(wakeRequests, [])
-  assert.deepEqual(queuedBatches, [])
+  assert.deepEqual(queuedBatches, [{
+    delivery,
+    eventId: 2342370,
+    text: 'between-thread traffic',
+    from: 'fleet:writer',
+    traceId: 'trace-1',
+    priority: 'normal',
+  }])
 })
