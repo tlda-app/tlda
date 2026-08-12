@@ -157,17 +157,10 @@ const ALLOWED = {
       'Agent registration at launch. One-shot connect with no reconnect at all, which ' +
       'is why it looks unlike the others; it still speaks the fleet wire.',
   },
-  'packages/bot/index.mjs': {
-    count: 1,
-    category: 'product',
-    reason:
-      'Bot fleet channel, reached through a `WebSocketClass` alias. Hand-rolled ' +
-      'reconnect delay plus a handshake timeout -- both of which ResilientWS has as ' +
-      'connectAttemptTimeoutMs and the backoff ramp.',
-  },
 
   // --- tooling: test and script clients that speak the wire on purpose -----
   'bin/delegate-spawn-shell-e2e-test.mjs': { count: 2, category: 'tooling', reason: 'E2E client: drives /ws/fleet and /ws/fleet-daemon directly to test the wire.' },
+  'bin/server-originated-claude-mint-real-daemon-test.mjs': { count: 1, category: 'tooling', reason: 'Real-daemon mint test: one /ws/fleet client in openFleet(), same shape as the spawn tests beside it.' },
   'bin/filter-expr-integration.mjs': { count: 1, category: 'tooling', reason: 'Integration client for filter expressions over the live fleet socket.' },
   'bin/spawn-collision-test.mjs': { count: 2, category: 'tooling', reason: 'Spawn collision test: needs two independent raw connections to race them.' },
   'bin/spawn-mailbox-outcome-test.mjs': { count: 2, category: 'tooling', reason: 'Mailbox outcome test: agent and daemon sockets, asserted against directly.' },
@@ -175,7 +168,8 @@ const ALLOWED = {
   'bin/test-refevent-amend.mjs': { count: 1, category: 'tooling', reason: 'Ref-event amend test client.' },
   'bin/test-source-roundtrip.mjs': { count: 1, category: 'tooling', reason: 'Source roundtrip test client.' },
   'scripts/smoke-test.mjs': { count: 1, category: 'tooling', reason: 'Smoke test: constructs the socket inside browser-evaluated source, in the page.' },
-  'server/lib/fleet-inbox-delivery.test.mjs': { count: 2, category: 'tooling', reason: 'Delivery test: two clients to observe fan-out.' },
+  'server/lib/fleet-inbox-delivery.test.mjs': { count: 1, category: 'tooling', reason: 'Delivery test: one openFleetWs() helper, called per client to observe fan-out.' },
+  'server/lib/fleet-login-route-gate.test.mjs': { count: 1, category: 'tooling', reason: 'Login route gate test: one /ws/fleet client in openFleetWs(), asserted against directly.' },
   'server/lib/fleet-store-offloop.test.mjs': { count: 1, category: 'tooling', reason: 'Off-loop store test client.' },
 }
 

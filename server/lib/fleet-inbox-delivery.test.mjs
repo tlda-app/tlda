@@ -61,6 +61,18 @@ function getJson(url) {
   })
 }
 
+// One construction site for the whole file. Eleven copies of this three-line
+// open-and-await had drifted in against an allowlist pinning two, which is how
+// the boundary guard's count stops meaning anything.
+async function openFleetWs(port) {
+  const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve)
+    ws.once('error', reject)
+  })
+  return ws
+}
+
 function request(ws, id, type, payload) {
   return new Promise((resolve, reject) => {
     const onMessage = raw => {
@@ -246,11 +258,7 @@ test('my-task delivers unread messages and ack-inbox clears only returned ids', 
   })
   try {
     await waitForServer(child)
-    const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      ws.once('open', resolve)
-      ws.once('error', reject)
-    })
+    const ws = await openFleetWs(port)
     const before = await request(ws, 1, 'my-task', { agent: 'fleet:recipient', peek: true })
     assert.deepEqual(before.messages.map(message => message.id), [Number(delivered.id)])
     assert.equal(before.counts.messages, 1)
@@ -313,11 +321,7 @@ test('codex recipients use the MCP ACK path before daemon fallback', async () =>
   let lateAckId = null
   try {
     await waitForServer(child)
-    recipientWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      recipientWs.once('open', resolve)
-      recipientWs.once('error', reject)
-    })
+    recipientWs = await openFleetWs(port)
     await request(recipientWs, 1, 'login', {
       agent_id: 'fleet:recipient',
       machine_id: 'mini',
@@ -330,11 +334,7 @@ test('codex recipients use the MCP ACK path before daemon fallback', async () =>
       }
     })
 
-    senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      senderWs.once('open', resolve)
-      senderWs.once('error', reject)
-    })
+    senderWs = await openFleetWs(port)
     const sent = await request(senderWs, 2, 'chat', {
       from: 'fleet:sender',
       to: 'recipient',
@@ -402,11 +402,7 @@ test('explicit deliveryChannel tmux does not bypass the MCP ACK path', async () 
   let wakeAckSeen = false
   try {
     await waitForServer(child)
-    recipientWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      recipientWs.once('open', resolve)
-      recipientWs.once('error', reject)
-    })
+    recipientWs = await openFleetWs(port)
     await request(recipientWs, 1, 'login', {
       agent_id: 'fleet:recipient',
       machine_id: 'mini',
@@ -417,11 +413,7 @@ test('explicit deliveryChannel tmux does not bypass the MCP ACK path', async () 
       if (frame.event === 'channel-notification' && frame.data?.metadata?.wake_ack_id) wakeAckSeen = true
     })
 
-    senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      senderWs.once('open', resolve)
-      senderWs.once('error', reject)
-    })
+    senderWs = await openFleetWs(port)
     const sent = await request(senderWs, 2, 'chat', {
       from: 'fleet:sender',
       to: 'recipient',
@@ -481,22 +473,14 @@ test('an open MCP channel must ACK notification delivery or fall through to daem
   let senderWs
   try {
     await waitForServer(child)
-    recipientWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      recipientWs.once('open', resolve)
-      recipientWs.once('error', reject)
-    })
+    recipientWs = await openFleetWs(port)
     await request(recipientWs, 1, 'login', {
       agent_id: 'fleet:recipient',
       machine_id: 'mini',
       env_name: 'testing',
     })
 
-    senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      senderWs.once('open', resolve)
-      senderWs.once('error', reject)
-    })
+    senderWs = await openFleetWs(port)
     const sent = await request(senderWs, 2, 'chat', {
       from: 'fleet:sender',
       to: 'recipient',
@@ -555,11 +539,7 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
   let senderWs
   try {
     await waitForServer(child)
-    recipientWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      recipientWs.once('open', resolve)
-      recipientWs.once('error', reject)
-    })
+    recipientWs = await openFleetWs(port)
     await request(recipientWs, 1, 'login', {
       agent_id: 'fleet:recipient',
       machine_id: 'mini',
@@ -578,11 +558,7 @@ test('an MCP channel ACK prevents redundant daemon wake', async () => {
       }
     })
 
-    senderWs = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      senderWs.once('open', resolve)
-      senderWs.once('error', reject)
-    })
+    senderWs = await openFleetWs(port)
     const sent = await request(senderWs, 2, 'chat', {
       from: 'fleet:sender',
       to: 'recipient',
@@ -633,11 +609,7 @@ test('chat reply names a resolved recipient with no direct subscription', async 
   })
   try {
     await waitForServer(child)
-    const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      ws.once('open', resolve)
-      ws.once('error', reject)
-    })
+    const ws = await openFleetWs(port)
     const sent = await request(ws, 1, 'chat', {
       from: 'fleet:sender',
       to: 'recipient',
@@ -708,11 +680,7 @@ test('chat to a pending shell is accepted without reporting delivery or wake', a
   })
   try {
     await waitForServer(child)
-    const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet`, { rejectUnauthorized: false })
-    await new Promise((resolve, reject) => {
-      ws.once('open', resolve)
-      ws.once('error', reject)
-    })
+    const ws = await openFleetWs(port)
     const sent = await request(ws, 1, 'chat', {
       from: 'fleet:sender',
       to: 'recipient',
