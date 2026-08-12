@@ -5,7 +5,7 @@
  * and how to encode them for upload.
  */
 
-import { readdirSync, readFileSync, existsSync } from 'fs'
+import { readdirSync, readFileSync, existsSync, realpathSync, statSync } from 'fs'
 import { isAbsolute, join, relative, sep } from 'path'
 import { createHash } from 'crypto'
 import {
@@ -121,13 +121,33 @@ export function collectSpecificFiles(dir, paths) {
   return files
 }
 
+export function splitServerSourcePathsByManifest(serverHashes, finalManifest) {
+  const final = new Set(finalManifest || [])
+  const survivingServerPaths = []
+  const staleServerPaths = []
+  for (const path of Object.keys(serverHashes || {})) {
+    if (final.has(path)) survivingServerPaths.push(path)
+    else staleServerPaths.push(path)
+  }
+  return { survivingServerPaths, staleServerPaths }
+}
+
 function walkCollect(root, dir, files, context) {
+  const sourceRoot = realpathSync(root)
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
+    let resolved
+    try {
+      resolved = realpathSync(full)
+    } catch {
+      continue
+    }
+    if (!insideSourceRoot(sourceRoot, resolved)) continue
+    const stats = statSync(full)
+    if (stats.isDirectory()) {
       if (isIgnoredSourceDir(entry.name)) continue
       walkCollect(root, full, files, context)
-    } else {
+    } else if (stats.isFile()) {
       const rel = full.slice(root.length + 1)
       if (!isSourceFilePath(rel, context)) continue
       files.push({ path: rel, ...readForUpload(full) })
@@ -136,15 +156,29 @@ function walkCollect(root, dir, files, context) {
 }
 
 function walkHash(root, dir, hashes, context) {
+  const sourceRoot = realpathSync(root)
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
+    let resolved
+    try {
+      resolved = realpathSync(full)
+    } catch {
+      continue
+    }
+    if (!insideSourceRoot(sourceRoot, resolved)) continue
+    const stats = statSync(full)
+    if (stats.isDirectory()) {
       if (isIgnoredSourceDir(entry.name)) continue
       walkHash(root, full, hashes, context)
-    } else {
+    } else if (stats.isFile()) {
       const rel = full.slice(root.length + 1)
       if (!isSourceFilePath(rel, context)) continue
       hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
     }
   }
+}
+
+function insideSourceRoot(sourceRoot, target) {
+  const rel = relative(sourceRoot, target)
+  return rel === '' || (rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\'))
 }

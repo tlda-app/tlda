@@ -958,6 +958,20 @@ async function main() {
     assert.equal(readSourceFile('markdown-readme', 'README.md'), null)
     assert.deepEqual(await readClientSourceManifest('markdown-readme'), [])
 
+    createProject({ name: 'qmd-book-main-yml', title: 'QMD book', mainFile: '_quarto_book.yml', format: 'qmd' })
+    await updateProject('qmd-book-main-yml', { pages: 1, buildStatus: 'success' })
+    result = await processProjectPush('qmd-book-main-yml', {
+      expectedRevision: null,
+      files: [
+        { path: '_quarto_book.yml', content: 'project:\n  type: book\n' },
+        { path: 'chapter.qmd', content: '# Chapter\n' },
+      ],
+      sourceManifest: ['_quarto_book.yml', 'chapter.qmd'],
+    })
+    assert.equal(result.ok, true, result.error)
+    assert.deepEqual(await readClientSourceManifest('qmd-book-main-yml'), ['_quarto_book.yml', 'chapter.qmd'])
+    assert.equal(readSourceFile('qmd-book-main-yml', '_quarto_book.yml'), 'project:\n  type: book\n')
+
     createProject({ name: 'zero-first', title: 'Zero', mainFile: 'main.tex', format: 'svg' })
     await updateProject('zero-first', { pages: 1, buildStatus: 'success' })
     filterBuildsAway('zero-first')

@@ -2,7 +2,6 @@ export const SOURCE_EXTENSIONS = new Set([
   '.tex', '.bib', '.sty', '.cls', '.bst', '.def',
   '.svg', '.png', '.jpg', '.jpeg', '.eps',
   '.tikz', '.pgf', '.dtx', '.ins', '.fd',
-  '.md',
 ])
 
 const MARKDOWN_DEPENDENCY_EXTENSIONS = new Set([
@@ -127,6 +126,7 @@ export function isSourceFilePath(path, context = {}) {
   const rel = normalizePath(path)
   if (!rel || isBuildJunkPath(rel)) return false
   const ctx = sourceManifestContext(context)
+  if (rel === ctx.mainFile) return true
   // A chat reference makes a file a member whatever its extension. This is the
   // route `b4-outline.md` came in by and the one that did not exist: a Markdown
   // outline beside a LaTeX paper failed the extension test below, so it was
@@ -148,10 +148,6 @@ export function isSourceFilePath(path, context = {}) {
   const ext = extname(rel).toLowerCase()
   if (ctx.format === 'markdown') return MARKDOWN_DEPENDENCY_EXTENSIONS.has(ext)
   if (!SOURCE_EXTENSIONS.has(ext)) return false
-
-  if (ext === '.md') {
-    return ctx.format === 'markdown' || rel === ctx.mainFile
-  }
 
   return true
 }

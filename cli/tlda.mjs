@@ -14,7 +14,7 @@ import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
-import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles, withReferencedRoots } from './lib/source-files.mjs'
+import { collectSourceFiles, collectProjectSourceHashes, collectSpecificFiles, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
 import { diffSourceHashes, isIgnoredSourceDir, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
@@ -810,7 +810,8 @@ async function cmdCreate() {
     }))
     const finalManifest = normalizeSourceManifest(qmdFiles.map(file => file.path), qmdContext)
     const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
-    const currentPaths = new Set(Object.keys(serverHashes))
+    const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, finalManifest)
+    const currentPaths = new Set(survivingServerPaths)
     let expectedRevision = await currentSourceRevision(name)
     const priority = new Set([mainFile, '_quarto.yml', '_quarto_book.yml', 'development.qmd', 'scratch/fall-2026-development-schedule.html'])
     qmdFiles.sort((a, b) => Number(priority.has(b.path)) - Number(priority.has(a.path)) || a.path.localeCompare(b.path))
@@ -842,7 +843,7 @@ async function cmdCreate() {
       expectedRevision = result.sourceRevision || await currentSourceRevision(name)
       console.log(dim(`  ${index + 1}/${batches.length}: ${files.length} file(s)`))
     }
-    const staleFiles = [...currentPaths].filter(path => !finalManifest.includes(path))
+    const staleFiles = staleServerPaths
     if (staleFiles.length > 0) {
       await api('POST', `/api/projects/${name}/push`, {
         files: [],
