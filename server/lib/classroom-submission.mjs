@@ -12,6 +12,7 @@ import path from 'node:path'
 const JUNK = /(^|\/)(__MACOSX\/|\.DS_Store$|Thumbs\.db$)/
 // Markdown images: ![alt](target "title"). The target stops at whitespace or ).
 const MARKDOWN_IMAGE = /!\[[^\]]*\]\(\s*<?([^)>\s]+)>?[^)]*\)/g
+const QUARTO_INCLUDE = /\{\{<\s*include\s+(?:"([^"]+)"|'([^']+)'|([^\s>]+))\s*>\}\}/g
 // Answer blocks carry the exercise id that problem-by-problem marking groups by.
 const ANSWER_ID = /:::\s*\{[^}]*#(ans-[A-Za-z0-9_-]+)[^}]*\}/g
 const REMOTE = /^(https?:|data:|mailto:|#)/i
@@ -84,12 +85,18 @@ function withoutCode(source) {
 
 export function parseQmdReferences(source) {
   const images = []
-  for (const match of withoutCode(source).matchAll(MARKDOWN_IMAGE)) {
+  const includes = []
+  const prose = withoutCode(source)
+  for (const match of prose.matchAll(MARKDOWN_IMAGE)) {
     const target = decodeURIComponent(match[1].trim())
     if (!REMOTE.test(target)) images.push(target)
   }
+  for (const match of prose.matchAll(QUARTO_INCLUDE)) {
+    const target = decodeURIComponent((match[1] || match[2] || match[3]).trim())
+    if (!REMOTE.test(target)) includes.push(target)
+  }
   const answerIds = [...source.matchAll(ANSWER_ID)].map(match => match[1])
-  return { images, answerIds }
+  return { images, includes, answerIds }
 }
 
 /**
@@ -121,23 +128,44 @@ export function inspectSubmissionArchive(bytes, { template = null } = {}) {
   const qmds = names.filter(name => name.toLowerCase().endsWith('.qmd'))
 
   if (qmds.length === 0) errors.push('The archive has no .qmd file. Upload the assignment document you filled in, with any images alongside it.')
-  if (qmds.length > 1) errors.push(`The archive has ${qmds.length} .qmd files (${qmds.join(', ')}). It should hold exactly one.`)
-  if (qmds.length !== 1) return { ok: false, errors, qmdPath: null, answerIds: [], files: names }
+  if (qmds.length === 0) return { ok: false, errors, qmdPath: null, answerIds: [], files: names }
 
-  const qmdPath = qmds[0]
-  const { images, answerIds } = parseQmdReferences(strFromU8(unpacked[qmdPath]))
+  const answerFiles = qmds.map(name => ({ name, ...parseQmdReferences(strFromU8(unpacked[name])) }))
+    .filter(file => file.answerIds.length > 0)
+  if (answerFiles.length !== 1) {
+    errors.push(answerFiles.length === 0
+      ? 'The archive has no QMD with answer blocks. Upload the assignment document you filled in.'
+      : `The archive has answer blocks in ${answerFiles.length} QMD files (${answerFiles.map(file => file.name).join(', ')}). It should hold one assignment QMD plus any included QMD files.`)
+    return { ok: false, errors, qmdPath: null, answerIds: [], files: names }
+  }
+
+  const qmdPath = answerFiles[0].name
+  const answerIds = answerFiles[0].answerIds
 
   // Image targets are written relative to the .qmd, which is how the student
   // sees them in their own editor.
-  const base = path.posix.dirname(qmdPath)
   const present = new Set(names)
-  const missing = [...new Set(images.filter(target => {
-    const resolved = path.posix.normalize(base === '.' ? target : `${base}/${target}`)
-    return !present.has(resolved)
-  }))]
+  const missing = []
+  const pending = [qmdPath]
+  const checked = new Set()
+  while (pending.length) {
+    const current = pending.shift()
+    if (checked.has(current)) continue
+    checked.add(current)
+    const base = path.posix.dirname(current)
+    const { images, includes } = parseQmdReferences(strFromU8(unpacked[current]))
+    for (const target of [...new Set([...images, ...includes])]) {
+      const resolved = path.posix.normalize(base === '.' ? target : `${base}/${target}`)
+      if (!present.has(resolved)) {
+        missing.push(target)
+      } else if (includes.includes(target) && resolved.toLowerCase().endsWith('.qmd')) {
+        pending.push(resolved)
+      }
+    }
+  }
 
   if (missing.length) {
-    errors.push(`${qmdPath} references ${missing.length === 1 ? 'an image that is not' : 'images that are not'} in the archive: ${missing.join(', ')}. Add ${missing.length === 1 ? 'it' : 'them'} next to the .qmd and zip it again.`)
+    errors.push(`${qmdPath} references ${missing.length === 1 ? 'a file that is not' : 'files that are not'} in the archive: ${[...new Set(missing)].join(', ')}. Add ${missing.length === 1 ? 'it' : 'them'} next to the .qmd and zip it again.`)
   }
   for (const stray of strayAnswers(strFromU8(unpacked[qmdPath]), template)) {
     errors.push(`Your answer to ${stray.id.replace(/^ans-/, '')} is underneath the answer box rather than inside it, so it would not be marked — "${stray.firstLine}…". Move it between the \`:::\` lines.`)

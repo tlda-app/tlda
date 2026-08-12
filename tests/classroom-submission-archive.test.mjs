@@ -43,11 +43,34 @@ test('macOS archive junk does not count against them', () => {
   assert.equal(result.ok, true, result.errors.join(' '))
 })
 
-test('an archive with no .qmd, or more than one, is refused', () => {
+test('an archive with no answer-bearing QMD, or more than one, is refused', () => {
   assert.equal(inspectSubmissionArchive(zip({ 'answers.docx': PNG })).ok, false)
   const two = inspectSubmissionArchive(zip({ 'a.qmd': strToU8(ANSWERED), 'b.qmd': strToU8(ANSWERED), 'markov.jpg': PNG }))
   assert.equal(two.ok, false)
-  assert.match(two.errors.join(' '), /exactly one/)
+  assert.match(two.errors.join(' '), /one assignment QMD/)
+})
+
+test('included QMD files are accepted and their dependency closure is checked', () => {
+  const root = `${ANSWERED}\n{{< include parts/shared.qmd >}}`
+  const shared = '{{< include nested.qmd >}}\n![](inside.png)'
+  const complete = inspectSubmissionArchive(zip({
+    'hw5.qmd': strToU8(root),
+    'markov.jpg': PNG,
+    'parts/shared.qmd': strToU8(shared),
+    'parts/nested.qmd': strToU8('Shared text.'),
+    'parts/inside.png': PNG,
+  }))
+  assert.equal(complete.ok, true, complete.errors.join(' '))
+  assert.equal(complete.qmdPath, 'hw5.qmd')
+
+  const missing = inspectSubmissionArchive(zip({
+    'hw5.qmd': strToU8(root),
+    'markov.jpg': PNG,
+    'parts/shared.qmd': strToU8(shared),
+  }))
+  assert.equal(missing.ok, false)
+  assert.match(missing.errors.join(' '), /nested\.qmd/)
+  assert.match(missing.errors.join(' '), /inside\.png/)
 })
 
 test('replacing the answer callouts instead of filling them in is refused', () => {

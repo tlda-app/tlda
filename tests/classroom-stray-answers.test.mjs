@@ -19,6 +19,7 @@ import { createClassroomRouter } from '../server/routes/classroom.mjs'
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 const hw9 = readFileSync(join(fixtures, 'hw9-causality.handout.qmd'), 'utf8')
 const week0 = readFileSync(join(fixtures, 'week0-homework.handout.qmd'), 'utf8')
+const sharedCode = new Uint8Array(Buffer.from('Shared setup.'))
 
 const underTheBox = (source, answer = 'The answer is 42.') =>
   source.replace(/(\*\(your answer here\)\*\n\n:::)/, `$1\n\n${answer}\n`)
@@ -63,7 +64,10 @@ test('a skipped question is allowed', () => {
 })
 
 test('the upload refuses the archive and names the exercise', () => {
-  const archive = zipSync({ 'hw9-causality.qmd': new Uint8Array(Buffer.from(underTheBox(hw9))) })
+  const archive = zipSync({
+    'hw9-causality.qmd': new Uint8Array(Buffer.from(underTheBox(hw9))),
+    'shared-code.qmd': sharedCode,
+  })
   const rejected = inspectSubmissionArchive(archive, { template: hw9 })
   assert.equal(rejected.ok, false)
   assert.equal(rejected.errors.length, 1)
@@ -92,7 +96,7 @@ test('an image shown in backticks is not a missing image', () => {
 
 test('an untouched handout uploads clean', () => {
   for (const [name, source] of [['hw9-causality.qmd', hw9], ['week0-homework.qmd', week0]]) {
-    const archive = zipSync({ [name]: new Uint8Array(Buffer.from(source)) })
+    const archive = zipSync({ [name]: new Uint8Array(Buffer.from(source)), 'shared-code.qmd': sharedCode })
     const inspection = inspectSubmissionArchive(archive, { template: source })
     assert.deepEqual(inspection.errors, [], `${name} should upload clean`)
     assert.ok(inspection.answerIds.length > 0, `${name} should carry answer ids`)
@@ -130,7 +134,10 @@ test('an edit to the handout after the freeze is not blamed on the student', asy
       }))
       const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)) })
       try {
-        const archive = zipSync({ 'week0-homework.qmd': new Uint8Array(Buffer.from(week0)) })
+        const archive = zipSync({
+          'week0-homework.qmd': new Uint8Array(Buffer.from(week0)),
+          'shared-code.qmd': sharedCode,
+        })
         const response = await fetch(`http://127.0.0.1:${server.address().port}/api/classroom/assignments/hw9/submissions/ada/upload`, {
           method: 'POST', headers: { 'content-type': 'application/zip' }, body: archive,
         })

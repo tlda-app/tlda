@@ -24,8 +24,28 @@ My answer.
 test('references match the server rules and ignore shown code', () => {
   assert.deepEqual(parseQmdReferences(qmd), {
     images: ['photo', 'figs/plot.png'],
+    includes: [],
     answerIds: ['ans-one'],
   })
+})
+
+test('packages Quarto includes and their referenced files', async () => {
+  const source = qmd.replace('photo one.png', 'photo.png') + '\n{{< include parts/shared.qmd >}}\n'
+  const assets = new Map([
+    ['photo.png', new Uint8Array([1, 2, 3])],
+    ['figs/plot.png', new Uint8Array([4, 5])],
+    ['parts/shared.qmd', new Uint8Array(Buffer.from('{{< include nested.qmd >}}\n![](inside.png)'))],
+    ['parts/nested.qmd', new Uint8Array(Buffer.from('Shared text.'))],
+    ['parts/inside.png', new Uint8Array([6, 7])],
+  ])
+  const result = await buildSubmissionArchive({
+    qmdName: 'homework.qmd',
+    source,
+    readAsset: async name => assets.get(name),
+  })
+  assert.deepEqual(result.files.sort(), [
+    'figs/plot.png', 'homework.qmd', 'parts/inside.png', 'parts/nested.qmd', 'parts/shared.qmd', 'photo.png',
+  ])
 })
 
 test('builds one QMD plus each unique referenced asset', async () => {
