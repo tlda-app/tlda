@@ -41,6 +41,7 @@ const PROJECT = 'sync-editor-race-probe'
 const FILE = 'notes.md'
 const SHAPE = 'shape:live-editor-acceptance'
 const SERVER = getServerUrl().replace(/\/$/, '')
+console.log(`server: ${SERVER}`)
 const IDLE_WRITE_MS = 4000 // FleetSourceEditorShape idleWriteMs() default
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -121,8 +122,10 @@ assert.ok(
 )
 assert.ok(
   project.ok,
-  `${PROJECT} does not exist on ${SERVER}. Create it before running this — pw setup only `
-  + 'navigates, and a missing project renders a 404 that reads as an empty canvas.',
+  `${PROJECT} does not exist on ${SERVER}. That server is chosen by the environment, not by\n`
+  + `    this script — the probe project lives on testing, so run it as TLDA_ENV=testing if you\n`
+  + '    are pointed at stable. If you are already on testing, create the project first: pw setup\n'
+  + '    only navigates, and a missing project renders a 404 that reads as an empty canvas.',
 )
 
 const files = await getJson(api('/files'))
