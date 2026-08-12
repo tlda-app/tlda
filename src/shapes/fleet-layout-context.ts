@@ -44,8 +44,10 @@ export function buildFleetLayoutPlanInput({
   agents,
   variant,
   myId,
+  myName,
   myDevice,
   docBounds,
+  events,
   makeSlotId,
   viewport,
 }: {
@@ -53,15 +55,19 @@ export function buildFleetLayoutPlanInput({
   agents: any[]
   variant: FleetLayoutVariant | string
   myId: string
+  myName?: string
   myDevice: string
   docBounds: DocumentPageBounds
+  events?: any[]
   makeSlotId: (slot: string) => string
   viewport?: FleetLayoutViewportBounds
 }): FleetLayoutPlanInput {
   const panelCount = fleetLayoutPanelCount(variant)
   const [filter1 = [], filter2 = [], filter3 = [], filter4 = []] = defaultFleetLayoutChatFilters({
     agents,
+    events,
     humanId: myId,
+    humanName: myName,
     panelCount,
   })
 

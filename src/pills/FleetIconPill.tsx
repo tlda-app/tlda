@@ -16,7 +16,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
-import { currentFleetAgents, useAwakeFleetAgentCount, useFleetConnection, useFleetIdentity } from '../fleet-data-adapter'
+import { currentFleetAgents, currentFleetEvents, useAwakeFleetAgentCount, useFleetConnection, useFleetIdentity } from '../fleet-data-adapter'
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { createFleetLayoutDetailed, getDocumentPageBounds, isFleetShapeForOwnerKey, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
@@ -240,7 +240,7 @@ function applyFleetLayoutPreset({
   const applyWhenReady = async () => {
     // createFleetLayoutDetailed is async (awaits whenDeviceReady before stamping
     // ownership) — must await so `created` is the boolean result, not a Promise.
-    const result = await createFleetLayoutDetailed(mainEditor, agents, presetId)
+    const result = await createFleetLayoutDetailed(mainEditor, agents, presetId, currentFleetEvents())
     lastResult = result
     if (result.created) {
       completed = true

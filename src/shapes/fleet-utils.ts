@@ -1,7 +1,7 @@
 import type { Editor, TLShape, TLShapeId, TLShapePartial, TLViewportId } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { isDocumentPageShape } from './document-pages'
@@ -442,12 +442,12 @@ function layoutSlotId(userId: string, deviceId: string, slot: string) {
   return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`) as unknown as string
 }
 
-export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
-  const result = await createFleetLayoutDetailed(editor, agents, variant)
+export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col', events: any[] = []): Promise<boolean> {
+  const result = await createFleetLayoutDetailed(editor, agents, variant, events)
   return result.created
 }
 
-export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<FleetLayoutCreateResult> {
+export async function createFleetLayoutDetailed(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col', events: any[] = []): Promise<FleetLayoutCreateResult> {
   await whenDeviceReady()
   const myId = getHumanId()
   if (!myId) return makeFleetLayoutResult(editor, variant, 'identity-missing', myId, getDeviceId())
@@ -457,7 +457,7 @@ export async function createFleetLayoutDetailed(editor: Editor, agents: any[], v
   _layoutInFlight = true
 
   try {
-    return _createFleetLayoutInner(editor, agents, variant, myId, myDevice)
+    return _createFleetLayoutInner(editor, agents, variant, myId, myDevice, events)
   } finally {
     _layoutInFlight = false
   }
@@ -492,7 +492,7 @@ function makeFleetLayoutResult(
   }
 }
 
-function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string): FleetLayoutCreateResult {
+function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string, events: any[] = []): FleetLayoutCreateResult {
   const docBounds = getDocumentPageBounds(editor)
   if (!docBounds) {
     console.warn('[FleetLayout] Refusing to create default layout before document page bounds are ready')
@@ -524,8 +524,10 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       agents,
       variant,
       myId,
+      myName: getHumanName(),
       myDevice,
       docBounds,
+      events,
       makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
     }))
     editor.createShapes(layoutPlan.shapes as any)

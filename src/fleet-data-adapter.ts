@@ -42,6 +42,7 @@ import {
   fleetFilterHasMatchingAgent,
   getAwakeFleetAgentCount,
   getFleetAgents,
+  getFleetEvents,
   getFilteredFleetEvents,
   getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
@@ -565,6 +566,10 @@ export function useFleetFilterHasMatchingAgent(dnfFilter?: [string, string][][] 
 
 export function currentFleetAgents(): any[] {
   return [...getFleetAgents()]
+}
+
+export function currentFleetEvents(): any[] {
+  return [...getFleetEvents()]
 }
 
 export function useAwakeFleetAgentCount(frameId?: string): number {
