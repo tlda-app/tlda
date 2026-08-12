@@ -361,7 +361,16 @@ export function startFreezeCensus(getLastEventId) {
         panelId,
         lastDbId: st.lastDbId,
         messageCount: st.count,
-        behindBy: lastEventId - st.eventIdAtLastChange,
+        // NULL, not a number, when this panel has no baseline. `eventIdAtLastChange`
+        // is whatever the mark read when the tail last moved, and a panel whose tail
+        // last moved before the tab's first live push captured 0 — so the subtraction
+        // reports the whole event-id space as lag. Observed the hour the mark was
+        // restored: `lastEventId=2665434` with `behindBy=2665434` on both panels of a
+        // two-minute-old session, and it persists until that panel next advances,
+        // which on a quiet panel is exactly the case a census is read to investigate.
+        // A number computed from a baseline that does not exist is worse than the
+        // constant 0 this replaced, because it reads as a finding.
+        behindBy: st.eventIdAtLastChange ? lastEventId - st.eventIdAtLastChange : null,
         staleMs: now - st.tAtLastChange,
         stalled: st.stalled,
       })
