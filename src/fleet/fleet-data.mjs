@@ -1122,6 +1122,28 @@ export function connect() {
         // The server's membership verdict for a subscribed filter, and now the
         // panel's only live source: dispatchFilterEvent hands it to the
         // subscription's onEvents, which puts it in that panel's buffer.
+        //
+        // Also the high-water mark. b51f60a93 deleted the browser's global event
+        // intake, and with it the one line that advanced _lastEventId — leaving
+        // the variable, getLastEventId(), and all four readers in place reporting
+        // a constant 0. chat-freeze-probe's census is built to read as "panel tail
+        // flat, lastEventId climbing"; with the climbing half stuck at 0 a quiet
+        // filter and a dead feed produce identical records, and on 2026-08-12 that
+        // was read as a stalled panel when the agent it filtered on had simply
+        // gone to sleep.
+        //
+        // This is the same mark in the only form the tab can still see. It is NOT
+        // the old global one: after the intake was deleted, `fleet-event` no
+        // longer reaches the browser, so the newest id this socket has seen is the
+        // union of THIS TAB's subscriptions. A tab whose every filter is quiet
+        // therefore reports a flat mark, which is the honest answer rather than a
+        // borrowed one — and it is why this cannot resolve a single-panel tab.
+        // History pages deliberately do not advance it: the question is whether
+        // the stream is moving now, and an older page is not evidence that it is.
+        const filterEventId = Number(data?.event?.id ?? data?.event?._dbId)
+        if (Number.isFinite(filterEventId) && filterEventId > _lastEventId) {
+          _lastEventId = filterEventId
+        }
         dispatchFilterEvent(data)
         return
       } else if (eventType === 'filter-events') {
