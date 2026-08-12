@@ -658,8 +658,17 @@ function reclaimTabs(tabs, { maxIdleMs = PW_STALE_TAB_MS, aggressive = false } =
     const reason = tabReclaimReason(tab, touches, { maxIdleMs, aggressive })
     if (!reason) continue
     const key = tabMarkerKey(tab)
-    pw(['tab-select', String(tab.index)], { stdio: 'ignore' })
-    pw(['goto', 'about:blank'], { stdio: 'ignore' })
+    // Clear the record only once the park has actually happened. Clearing it
+    // regardless is what turned a transient failure into a permanent one: the
+    // tab kept its URL, lost its record, and so matched the recordless branch on
+    // every later sweep, with no age grace, forever. A park that did not happen
+    // leaves the record alone, so the tab keeps its ordinary idle clock.
+    const selected = pw(['tab-select', String(tab.index)], { stdio: 'ignore' })
+    const parked = selected.status === 0 ? pw(['goto', 'about:blank'], { stdio: 'ignore' }) : selected
+    if (parked.status !== 0) {
+      console.error(`pw: could not park tab #${tab.index}${key ? ` (${key})` : ''} — leaving it and its touch record intact`)
+      continue
+    }
     clearTouchKey(key)
     reclaimed.push({ index: tab.index, key, reason })
   }
@@ -668,9 +677,18 @@ function reclaimTabs(tabs, { maxIdleMs = PW_STALE_TAB_MS, aggressive = false } =
 
 // Claim the daemon's CURRENT page as mine by stamping the marker into its title
 // (same-origin about:blank → settable). Lets isMine find it before first goto.
+//
+// Stamping the touch record HERE is what makes `tabReclaimReason`'s
+// "no touch record" branch sound. That branch reclaims without consulting the
+// clock, so it is only correct if a marked tab always has a record — otherwise
+// it fires on a live agent, and it did: app-chief3's tab was parked to
+// about:blank while they were awake and using it. The claim and the record are
+// the same event, so they are written in the same place.
 function claimCurrentWindow() {
   const out = pw(['eval', `() => { document.title = 'pwtab=${myTabKey()}'; return 'PWCLAIM_OK'; }`]).stdout || ''
-  return out.includes('PWCLAIM_OK')
+  if (!out.includes('PWCLAIM_OK')) return false
+  touchMine()
+  return true
 }
 
 // Parse `tab-list` → [{ index, current, title, url }]. Format per line:
