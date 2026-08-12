@@ -135,15 +135,25 @@ words" warns about, in the daemon transport: the ACK reports that the dispatcher
 did not fail, and it is read as evidence the work happened. **Adding a message
 type without adding its handler is therefore silent in both directions.**
 
-**The live instance: moving a project loses its version history.** On a source
-link the daemon exports the shadow-history bundle and sends
-`adopt-shadow-history` (`bin/fleet-daemon.mjs:587`). The server-side function
-that would apply it, `adoptShadowHistory` (`server/lib/build-runner.mjs:150`),
-**has no caller anywhere in the repository**, and the wire name appears exactly
-twice in the tree — once where the daemon sends it, and nowhere else. So the
-bundle is sent, positively acknowledged, and dropped.
+**The instance that proved it, and the shape of its fix.** From 2026-08-10 the
+daemon sent `adopt-shadow-history` on every source link and no server received
+it: the wire name occurred once in the whole tree, at the send site, and
+`adoptShadowHistory` had no caller. Every moved project lost its history, and
+the transport reported success throughout.
 
-Not fixed as of 2026-08-12. The design is right and the wire is not there.
+`9983c2cd8` fixed it, and **how** is the part worth keeping. The confirmation
+could not be an ACK — the outbox ACK travels its own path keyed by `outbox_id`
+and would acknowledge a message the handler never saw, which is exactly what
+shipped the defect. So the link's gate is a reply that **only the handler can
+send**, carrying the version count the server read back off its own disk after
+adopting (`server/unified-server.mjs:9146`). The binding is written after the
+history lands, so a failed link leaves no row rather than needing a rollback path
+that can itself fail.
+
+**The general rule above is unchanged and still live:** the transport still
+acknowledges every envelope it accepts, including one whose type no handler
+claims. Anything that needs to know the work happened must carry an answer from
+the handler.
 
 ## Persistent state and transient signals
 
