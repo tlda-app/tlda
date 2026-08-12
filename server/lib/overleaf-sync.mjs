@@ -518,7 +518,8 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     overleafConflictFiles: [],
   })
   log.info('synced', { name, changed: files.length, deleted: deletedPaths.length, head: head.slice(0, 7) })
-  return { name, changed: files.length, deleted: deletedPaths.length, head, building: result?.building }
+  Object.assign(result, { name, changed: files.length, deleted: deletedPaths.length, head, building: result?.building })
+  return result
 }
 
 /**

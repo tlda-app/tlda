@@ -906,36 +906,42 @@ export function setAcceptedSourceMutationHandler(handler) {
   acceptedSourceMutationHandler = typeof handler === 'function' ? handler : null
 }
 
-export async function runSerializedProjectSourceOperation(name, operation) {
+export async function runSerializedProjectSourceOperation(name, operation, options = {}) {
   const previous = sourcePushQueues.get(name) || Promise.resolve()
   let release
   const current = new Promise(resolve => { release = resolve })
   sourcePushQueues.set(name, current)
   await previous
+  let result
   try {
-    return await operation()
+    result = await operation()
   } finally {
     release()
     if (sourcePushQueues.get(name) === current) sourcePushQueues.delete(name)
   }
+  if (result?.ok && result.acceptedSourceMutation && acceptedSourceMutationHandler) {
+    await acceptedSourceMutationHandler({
+      project: name,
+      ...result.acceptedSourceMutation,
+      sourceRevision: result.sourceRevision || result.acceptedSourceMutation.sourceRevision,
+      sourceDaemonKey: options.sourceDaemonKey || null,
+      requestId: options.requestId || null,
+    })
+  }
+  return result
 }
 
 export async function processProjectPush(name, body, transactionTest = {}) {
   const result = await runSerializedProjectSourceOperation(
     name,
     () => processProjectPushSerialized(name, body, transactionTest),
+    {
+      sourceDaemonKey: body?.sourceDaemonKey || null,
+      requestId: body?.requestId || null,
+    },
   )
   if (result.ok && (((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
     result.sourceRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
-  }
-  if (result.ok && result.acceptedSourceMutation && acceptedSourceMutationHandler) {
-    await acceptedSourceMutationHandler({
-      project: name,
-      ...result.acceptedSourceMutation,
-      sourceRevision: result.sourceRevision || result.acceptedSourceMutation.sourceRevision,
-      sourceDaemonKey: body?.sourceDaemonKey || null,
-      requestId: body?.requestId || null,
-    })
   }
   emitSourceEditEvent({
     emit: emitGlobalEvent,

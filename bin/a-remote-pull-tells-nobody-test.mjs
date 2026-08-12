@@ -1,0 +1,176 @@
+#!/usr/bin/env node
+// Your collaborator pushes to Overleaf. Nobody's checkout is told.
+//
+// ---------------------------------------------------------------------------
+// The story
+//
+// Alice has a paper linked to a git remote -- Overleaf, or any linked remote.
+// Her collaborator, who does not use tlda at all, pushes a chapter to it from
+// their own machine. tlda polls, pulls the change, and writes it into the
+// project's source.
+//
+// Alice's laptop has that project linked. Her daemon is connected. She is not
+// told. She keeps editing on a revision the project has already moved past,
+// and she finds out by being refused -- or does not find out at all, because a
+// clean three-way rebase quietly reconciles it and the version she was writing
+// against is simply gone.
+//
+// ---------------------------------------------------------------------------
+// Where it is, in one line each
+//
+// An accepted push notifies every linked machine: `processProjectPush`
+// (server/routes/projects.mjs) calls `acceptedSourceMutationHandler`, and
+// unified-server fans `apply-source-update` out to every connected daemon.
+// That is how one person's push reaches everybody else's checkout.
+//
+// The Overleaf pull path does not go through that function. It applies the
+// remote's change with `processProjectPushSerialized` -- the inner function the
+// wrapper calls inside the lock (server/lib/overleaf-sync.mjs). The handler
+// lives on the wrapper. So the pull lands on the source authority and the fan-
+// out never runs.
+//
+// This is not about the source room. The room would inherit it, not cause it.
+// It is shipped behaviour and it affects anyone with a linked project today.
+//
+// ---------------------------------------------------------------------------
+// FAILS ON MAIN BY DESIGN -- it asserts what should happen.
+//
+// It is `-test.mjs` so it will be discovered, which is deliberate: unlike a
+// test for a feature that does not exist yet, this describes something people
+// are using tonight. If that is the wrong call, rename it rather than weaken
+// the assertion.
+import assert from 'assert/strict'
+import { execFileSync } from 'child_process'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+import {
+  closeProjectStore,
+  createProject,
+  initProjectStore,
+  outputDir,
+  projectDir,
+  readSourceFile,
+  sourceDir,
+  sourceLifecycleStore,
+  updateClientSourceManifest,
+  updateProject,
+} from '../server/lib/project-store.mjs'
+import { syncOverleaf } from '../server/lib/overleaf-sync.mjs'
+import { setAcceptedSourceMutationHandler } from '../server/routes/projects.mjs'
+
+const root = mkdtempSync(join(tmpdir(), 'tlda-remote-pull-'))
+await initProjectStore(root)
+
+const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const write = (path, content) => writeFileSync(path, content)
+
+const NAME = 'a-paper-with-a-collaborator'
+const MANIFEST = ['main.tex', 'notes.tex']
+
+function suppressBuilds(name) {
+  mkdirSync(outputDir(name), { recursive: true })
+  writeFileSync(join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
+}
+
+// The same fixture shape bin/source-manifest-contract-test.mjs uses for its
+// Overleaf stories: a bare remote, a seed clone, and a project wired to it.
+async function paperWithARemote(name) {
+  const remote = join(root, `${name}.git`)
+  const seed = join(root, `${name}-seed`)
+  mkdirSync(seed, { recursive: true })
+  git(['init'], seed)
+  git(['config', 'user.email', 'test@example.invalid'], seed)
+  git(['config', 'user.name', 'test'], seed)
+  write(join(seed, 'main.tex'), 'old main\n')
+  write(join(seed, 'notes.tex'), 'old notes\n')
+  git(['add', 'main.tex', 'notes.tex'], seed)
+  git(['commit', '-m', 'seed'], seed)
+  git(['init', '--bare', remote], root)
+  git(['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/master'], root)
+  git(['remote', 'add', 'origin', remote], seed)
+  git(['push', '-u', 'origin', 'HEAD:master'], seed)
+
+  createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
+  await updateProject(name, { pages: 1, buildStatus: 'success', overleafRemote: remote, autoSync: true })
+  suppressBuilds(name)
+  write(join(sourceDir(name), 'main.tex'), 'old main\n')
+  write(join(sourceDir(name), 'notes.tex'), 'old notes\n')
+  await updateClientSourceManifest(name, MANIFEST)
+  const bootstrap = (await sourceLifecycleStore(name)).bootstrap({
+    expectedRevision: null,
+    sourceManifest: MANIFEST,
+    files: MANIFEST.map(path => ({ path, content: readSourceFile(name, path) })),
+  })
+  assert.equal(bootstrap.ok, true, 'the fixture needs a source authority to start from')
+
+  const clone = join(projectDir(name), 'overleaf-clone')
+  git(['clone', remote, clone], root)
+  git(['config', 'user.email', 'test@example.invalid'], clone)
+  git(['config', 'user.name', 'test'], clone)
+  return { remote, startRevision: bootstrap.authority.currentRevision }
+}
+
+/** Someone who does not use tlda, pushing to the shared remote. */
+function theCollaboratorPushes(remote) {
+  const checkout = join(root, 'collaborators-machine')
+  git(['clone', remote, checkout], root)
+  git(['config', 'user.email', 'collaborator@example.invalid'], checkout)
+  git(['config', 'user.name', 'collaborator'], checkout)
+  write(join(checkout, 'main.tex'), 'the collaborator rewrote the introduction\n')
+  git(['add', 'main.tex'], checkout)
+  git(['commit', '-m', 'rewrite the introduction'], checkout)
+  git(['push', 'origin', 'HEAD:master'], checkout)
+}
+
+// Every linked machine hears about an accepted change through this handler --
+// unified-server registers one and fans `apply-source-update` out to every
+// connected daemon. Standing in for that here, so "was anybody told" is a fact
+// this test can observe rather than infer.
+const toldTheMachines = []
+setAcceptedSourceMutationHandler(async payload => { toldTheMachines.push(payload) })
+
+try {
+  const { remote, startRevision } = await paperWithARemote(NAME)
+
+  theCollaboratorPushes(remote)
+  const before = toldTheMachines.length
+
+  // tlda polls and pulls it in.
+  await syncOverleaf(NAME)
+
+  // The pull itself worked -- without this, the rest proves nothing, because
+  // "nobody was told" and "nothing happened" look identical.
+  assert.equal(
+    readSourceFile(NAME, 'main.tex'),
+    'the collaborator rewrote the introduction\n',
+    'the pull did not reach the project source at all, so this test is not exercising what it claims',
+  )
+  const authority = (await sourceLifecycleStore(NAME)).readAuthority()
+  assert.notEqual(
+    authority.currentRevision,
+    startRevision,
+    'the source authority did not move, so nothing was accepted and there would be nothing to announce',
+  )
+
+  // And every machine with this project linked has to hear about it.
+  const told = toldTheMachines.slice(before)
+  assert.ok(
+    told.length > 0,
+    'the remote advanced, tlda pulled it, the source authority moved -- and no linked machine was told.\n'
+    + "    Alice keeps editing on a revision the project has already left behind. She finds out by being\n"
+    + '    refused, or not at all if it rebases cleanly and her version is quietly gone.',
+  )
+  assert.equal(told[0].project, NAME)
+  assert.equal(
+    told[0].sourceRevision,
+    authority.currentRevision,
+    'the machines were told about a revision other than the one the pull actually landed on',
+  )
+
+  console.log('a remote pull tells every linked machine')
+} finally {
+  setAcceptedSourceMutationHandler(null)
+  await closeProjectStore()
+}
