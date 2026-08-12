@@ -47,6 +47,8 @@ import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
 import { shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
 // @ts-ignore — vanilla JS module
+import { watchChatStrandedRows } from '../fleet/chat-stranded-row-probe.mjs'
+// @ts-ignore — vanilla JS module
 import { nextChatVirtuosoFirstItemIndex, VIRTUOSO_STATUS_ITEM_KEY } from './chatVirtuosoIndex.mjs'
 // @ts-ignore — vanilla JS module
 import {
@@ -4093,6 +4095,23 @@ function FleetChatInner({ shape }: { shape: any }) {
     observer.observe(list)
     return () => observer.disconnect()
   }, [chatLogEl, reconcileViewportGeometry])
+
+  // Read the panel's current render state at record time rather than closing
+  // over it, so the observer below survives every item-array change instead of
+  // being torn down and rebuilt on each one.
+  const virtuosoItemKeysRef = useRef<(string | number)[]>(nextVirtuosoItemKeys)
+  virtuosoItemKeysRef.current = nextVirtuosoItemKeys
+  const virtuosoFirstItemIndexReadRef = useRef(virtuosoFirstItemIndex)
+  virtuosoFirstItemIndexReadRef.current = virtuosoFirstItemIndex
+  useLayoutEffect(() => {
+    const list = chatLogEl?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
+    if (!list) return
+    return watchChatStrandedRows(list, {
+      panelId: String(shape.id),
+      itemKeys: () => virtuosoItemKeysRef.current,
+      firstItemIndex: () => virtuosoFirstItemIndexReadRef.current,
+    })
+  }, [chatLogEl, shape.id])
 
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // This panel's composer text survives any shape recreation. See composerDraftStore.
