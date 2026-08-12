@@ -194,12 +194,6 @@ export class MintStore {
     return this.get(mintId)
   }
 
-  delete(mintId) {
-    if (!mintId) return false
-    const result = this.db.prepare('DELETE FROM daemon_mints WHERE mint_id = ?').run(mintId)
-    return result.changes > 0
-  }
-
   close() {
     this.db.close()
   }

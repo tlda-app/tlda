@@ -5070,7 +5070,7 @@ const FLEET_RESOLVE_DEADLINE_MS = 5_000;
 // 15s is roughly four times p99, so a send that would have succeeded still does;
 // what changes is that one which never would now says "queued" instead of
 // hanging until the host kills the tool call.
-const FLEET_DURABLE_SEND_DEADLINE_MS = Number(process.env.TLDA_FLEET_DURABLE_SEND_DEADLINE_MS || 15_000);
+const FLEET_DURABLE_SEND_DEADLINE_MS = 15_000;
 
 const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRWS?.connected });
 
