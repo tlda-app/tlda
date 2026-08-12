@@ -5247,12 +5247,14 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
   const sockets = openFleetSocketsForAgent(agent.id)
   if (!sockets.length) return { ok: false, reason: 'no-open-mcp-socket' }
   const ackId = `${traceId || createTraceId('wake')}:mcp:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
-  const text = [agentReturnNotice(agent), nudgeText].filter(Boolean).join('\n\n')
+  // No return notice here. This path runs only while the agent's own MCP socket
+  // is open, so the agent was never away; the daemon path says it, and only when
+  // it actually started a process that was not running.
   const payload = JSON.stringify({
     event: 'channel-notification',
     data: {
       recipient: agent.id,
-      text,
+      text: nudgeText,
       metadata: {
         type: 'wake_nudge',
         delivery: 'mcp',
