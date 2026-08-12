@@ -76,7 +76,12 @@ declare global {
   interface Window {
     __tlda_wm_hud__?: FleetHudLayerState
     __tldaFleetHudSuppressCameraTrackingUntil?: number
+    __tldaCameraRestoredAt?: number
   }
+}
+
+function isDocumentCameraRestored(): boolean {
+  return typeof window !== 'undefined' && !!window.__tldaCameraRestoredAt
 }
 
 /**
@@ -480,11 +485,22 @@ export function FleetHUD({
   }, [])
   const hudAnchorRef = useRef<FleetHudAnchor | null>(null)
   const hudBaseCameraRef = useRef<{ x: number; y: number; z: number }>(mainEditor.getCamera())
+  const [cameraReady, setCameraReady] = useState(isDocumentCameraRestored)
   const lastHudDiagSigRef = useRef('')
   const lastHudAnchorStateSigRef = useRef('')
   const hudCameraDivergedRef = useRef(false)
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady
+
+  useEffect(() => {
+    if (isDocumentCameraRestored()) {
+      setCameraReady(true)
+      return
+    }
+    const onCameraRestored = () => setCameraReady(true)
+    window.addEventListener('camera-restored', onCameraRestored)
+    return () => window.removeEventListener('camera-restored', onCameraRestored)
+  }, [])
 
   const logHudAnchorStateChange = useCallback((site: string, flowAxis: Axis | null) => {
     const humanId = getHumanId()
@@ -702,7 +718,7 @@ export function FleetHUD({
   // adopt-anchor-on-late-arrival listener so a late-syncing anchor can't
   // snap the HUD back after the user has intentionally moved it.
   const userPannedRef = useRef(false)
-  if (!ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
+  if (cameraReady && !ignoreSavedAnchorRef.current && hudAnchorRef.current === null) {
     const { saved } = readAnchorShapeForTelemetry(mainEditor, 'render-initial-saved-anchor', signature => {
       if (signature === lastAnchorReadMetricRef.current) return false
       lastAnchorReadMetricRef.current = signature
@@ -713,13 +729,13 @@ export function FleetHUD({
   const activeTopPad = TOP_PAD
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
-    if (!bounds || !docShapesReady) return false
+    if (!bounds || !docShapesReady || !cameraReady) return false
     const anchor = defaultAnchorForBounds(bounds)
     if (!anchor) return false
     applyHudAnchor(anchor, { syncViewport: false })
     userPannedRef.current = false
     return true
-  }, [applyHudAnchor, defaultAnchorForBounds, docShapesReady])
+  }, [applyHudAnchor, cameraReady, defaultAnchorForBounds, docShapesReady])
 
   useEffect(() => {
     if (!identityId || !deviceReady || !docShapesReady || fleetBounds) return
@@ -977,13 +993,10 @@ export function FleetHUD({
       y: initialCamera.y,
       z: initialCamera.z,
     }
-    const readinessWindow = window as Window & {
-      __tldaCameraRestoredAt?: number
-    }
-    let cameraRestored = !!readinessWindow.__tldaCameraRestoredAt
+    const readinessWindow = window
+    let cameraRestored = isDocumentCameraRestored()
     const onCameraRestored = () => { cameraRestored = true }
     window.addEventListener('camera-restored', onCameraRestored)
-    const fallbackTimer = setTimeout(() => { cameraRestored = true }, 5000)
     let frame: number | null = null
     let pendingCam: { x: number; y: number; z: number } | null = null
     let lastViewportCamera: { x: number; y: number; z: number } | null = null
@@ -1085,7 +1098,6 @@ export function FleetHUD({
       stop()
       if (frame !== null) cancelAnimationFrame(frame)
       window.removeEventListener('camera-restored', onCameraRestored)
-      clearTimeout(fallbackTimer)
     }
   }, [activeTopPad, docShapesReady, fleetBounds, mainEditor, expanded, hudWm, logHudAnchorStateChange, readHudCameraAnchor, readMaintainedFleetBounds, viewportId])
 
@@ -1106,6 +1118,7 @@ export function FleetHUD({
       ]
       for (const r of arrivals as any[]) {
         if (isMyAnchor(r)) {
+          if (!cameraReady) break
           const saved = anchorMeta(r.meta)
           if (!saved) break
           const hudCameraAnchor = readHudCameraAnchor()
@@ -1117,7 +1130,7 @@ export function FleetHUD({
       }
     }, { source: 'all', scope: 'document' })
     return unsub
-  }, [applyHudAnchor, mainEditor, readHudCameraAnchor, recenterHudForBounds])
+  }, [applyHudAnchor, cameraReady, mainEditor, readHudCameraAnchor, recenterHudForBounds])
 
   // Block HTML5 file/chip drops on fleet shapes (except chat input areas).
   // With the full-viewport overlay, we check if the drop target is inside
@@ -1420,7 +1433,7 @@ export function FleetHUD({
     // Guard: if SVG/HTML page shapes haven't loaded yet (browser restore path),
     // defer until docShapesReady — avoids the window.innerWidth/2 fallback that
     // placed fleet shapes in the middle of the document text.
-    if (!docShapesReady) return null
+    if (!docShapesReady || !cameraReady) return null
     // Compensate this (identity, device)'s horizontal layout offset so the
     // viewer's OWN shapes render in their canonical doc-relative position no
     // matter which horizontal zone they physically occupy. The VERTICAL offset
