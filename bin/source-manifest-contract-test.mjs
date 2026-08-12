@@ -74,7 +74,12 @@ async function snapshotProject(name) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
       if (rel === '.source-transactions' || rel === 'overleaf-clone/.git') continue
+      // Rollback restores authority.json and the source tree; it does not chase
+      // the immutable, content-addressed records a rolled-back push wrote,
+      // because nothing references them and nothing reads them. `blobs` is the
+      // third of those and this list was written before it existed.
       if (rel === '.source-lifecycle/revisions' || rel === '.source-lifecycle/evidence') continue
+      if (rel === '.source-lifecycle/blobs') continue
       const full = path.join(current, entry.name)
       if (entry.isDirectory()) walkProject(full, rel)
       else projectFiles[rel] = fs.readFileSync(full).toString('base64')
