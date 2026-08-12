@@ -12,7 +12,7 @@ import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host
 import { writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import './SyncErrorPill.css'
 
-interface SyncError { message?: string; file?: string; kind?: 'overleaf-conflict' | 'sync-error' }
+interface SyncError { message?: string; file?: string; kind?: 'source-conflict' | 'sync-error'; owner?: any }
 
 export function SyncErrorPill() {
   const editor = useEditor()
@@ -44,21 +44,17 @@ export function SyncErrorPill() {
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
         if (cancelled) return
-        if (info?.overleafSyncStatus !== 'conflict') {
+        const conflicts = Array.isArray(info?.sourceSyncConflicts) ? info.sourceSyncConflicts : []
+        if (conflicts.length === 0) {
           setProjectErrors([])
           return
         }
-        const files = Array.isArray(info?.overleafConflictFiles) ? info.overleafConflictFiles : []
-        const conflictErrors = files.length > 0
-          ? files.map((file: string) => ({
-              kind: 'overleaf-conflict' as const,
-              file,
-              message: `Git conflict: ${file}`,
-            }))
-          : [{
-              kind: 'overleaf-conflict' as const,
-              message: 'Git conflict',
-            }]
+        const conflictErrors = conflicts.map((conflict: any) => ({
+          kind: 'source-conflict' as const,
+          file: conflict.file,
+          owner: conflict.owner,
+          message: `Git conflict: ${conflict.file}`,
+        }))
         setProjectErrors(conflictErrors)
       } catch {
         if (!cancelled) setProjectErrors([])
@@ -107,7 +103,7 @@ export function SyncErrorPill() {
   return (
     <div className="sync-error-container" ref={containerRef}>
       <span
-        className={'sync-error-badge' + (errors.some(e => e.kind === 'overleaf-conflict') ? ' sync-error-badge-conflict' : '')}
+        className={'sync-error-badge' + (errors.some(e => e.kind === 'source-conflict') ? ' sync-error-badge-conflict' : '')}
         onClick={() => setShowList(s => !s)}
         onPointerDown={e => e.stopPropagation()}
         title="Source sync blocked"
@@ -115,19 +111,19 @@ export function SyncErrorPill() {
       {showList && (
         <div className="sync-error-list" onPointerDown={e => e.stopPropagation()}>
           <div className="sync-error-head">
-            {errors.some(e => e.kind === 'overleaf-conflict') ? 'Source sync blocked' : 'Mirror sync failed'}
+            {errors.some(e => e.kind === 'source-conflict') ? 'Source sync blocked' : 'Mirror sync failed'}
           </div>
           {errors.map((err, i) => (
             <div
               key={i}
-              className={'sync-error-item' + (err.kind === 'overleaf-conflict' ? ' clickable' : '')}
-              onClick={err.kind === 'overleaf-conflict' ? () => openConflictInSourceEditor(err.file) : undefined}
+              className={'sync-error-item' + (err.kind === 'source-conflict' ? ' clickable' : '')}
+              onClick={err.kind === 'source-conflict' ? () => openConflictInSourceEditor(err.file) : undefined}
             >
               {String(err?.message ?? err)}
             </div>
           ))}
           <div className="sync-error-note">
-            {errors.some(e => e.kind === 'overleaf-conflict')
+            {errors.some(e => e.kind === 'source-conflict')
               ? 'Resolve the conflict markers, then push the resolved source through tlda.'
               : 'Your working copy may be out of step with the build. This clears automatically on the next clean sync.'}
           </div>

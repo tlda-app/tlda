@@ -59,6 +59,7 @@ import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
+import { clearSourceSyncConflicts, recordSourceSyncConflicts, sourceConflictOwner } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
@@ -1380,7 +1381,17 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 }))
 
 setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
-  await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
+  const roomResult = await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
+  if (Array.isArray(roomResult?.conflicted) && roomResult.conflicted.length > 0) {
+    await recordSourceSyncConflicts(message.project, roomResult.conflicted.map(file => ({
+      file,
+      owner: sourceConflictOwner({ daemonKey: `source-room:${message.project}` }),
+      source: 'source-room',
+    })))
+  }
+  if (Array.isArray(roomResult?.applied) && roomResult.applied.length > 0) {
+    await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
+  }
   const keys = [...daemonConnections.keys()].filter(key => key !== sourceDaemonKey)
   if (keys.length === 0) return
   const settled = await Promise.allSettled(keys.map(key =>
@@ -1388,14 +1399,32 @@ setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
       .then(result => ({ key, result })),
   ))
   const failed = []
+  const cleanByOwner = []
+  const conflicts = []
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i]
     if (outcome.status === 'rejected') {
       failed.push(`${keys[i]} (${outcome.reason?.message || outcome.reason})`)
-    } else if (outcome.value.result?.ok === false && outcome.value.result?.reason !== 'project-not-watched') {
-      failed.push(`${keys[i]} (${outcome.value.result?.reason || 'declined'})`)
+      continue
+    }
+    const owner = sourceConflictOwner({ daemonKey: outcome.value.key })
+    const result = outcome.value.result || {}
+    if (Array.isArray(result.conflicted) && result.conflicted.length > 0) {
+      conflicts.push(...result.conflicted.map(file => ({
+        file,
+        owner,
+        source: 'accepted-source-update',
+      })))
+    }
+    if (Array.isArray(result.applied) && result.applied.length > 0) {
+      cleanByOwner.push({ owner, files: result.applied })
+    }
+    if (result?.ok === false && result?.reason !== 'project-not-watched') {
+      failed.push(`${keys[i]} (${result?.reason || 'declined'})`)
     }
   }
+  for (const clean of cleanByOwner) await clearSourceSyncConflicts(message.project, clean.files, clean.owner)
+  if (conflicts.length > 0) await recordSourceSyncConflicts(message.project, conflicts)
   if (failed.length > 0) {
     console.error(`[source-sync] accepted source update for ${message.project} did not reach all linked checkouts: ${failed.join(', ')}`)
   }

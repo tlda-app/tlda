@@ -782,8 +782,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const info = await res.json()
         projectInfoRef.current = info
         if (cancelled) return
-        const files = info?.overleafSyncStatus === 'conflict' && Array.isArray(info?.overleafConflictFiles)
-          ? info.overleafConflictFiles.map(normalizeFile)
+        const files = Array.isArray(info?.sourceSyncConflicts)
+          ? info.sourceSyncConflicts.map((conflict: any) => conflict?.file).filter(Boolean).map(normalizeFile)
           : []
         setServerConflictFiles(files)
       } catch {

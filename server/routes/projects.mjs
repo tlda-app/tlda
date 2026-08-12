@@ -58,6 +58,7 @@ import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
+import { clearSourceSyncConflicts, recordSourceSyncConflicts, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
 import { activeSourceEditors } from '../lib/source-edit-activity.mjs'
 
 const router = Router()
@@ -900,6 +901,14 @@ function withAcceptedSourceMutation(result, mutation) {
   return result
 }
 
+function conflictFilesFromLifecycleResult(result) {
+  const classifications = result?.evidence?.classifications
+  if (!Array.isArray(classifications)) return []
+  return classifications
+    .filter(item => item?.status === 'conflict' && typeof item.path === 'string')
+    .map(item => item.path)
+}
+
 let acceptedSourceMutationHandler = null
 
 export function setAcceptedSourceMutationHandler(handler) {
@@ -959,6 +968,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
   const { files, deletedFiles, sourceManifest, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
+  const conflictOwner = sourceConflictOwner(body || {})
 
   const recoveries = await recoverProjectSourceTransactions(name)
   const unresolved = recoveries.find(item => item.state === 'recovery-required')
@@ -1181,6 +1191,10 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         console.error(`[${name}] edit-event attribution record failed: ${attributionError.message}`)
       }
     }
+    await clearSourceSyncConflicts(name, [
+      ...(changedPushFiles || []).map(file => file.path),
+      ...(deletedFiles || []),
+    ], conflictOwner)
   } catch (e) {
     if (remotePublished) {
       try {
@@ -1219,10 +1233,23 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     }
     if (Array.isArray(e.overleafConflictFiles) && e.overleafConflictFiles.length > 0) {
       await updateProject(name, {
-        overleafSyncStatus: 'conflict',
+        overleafSyncStatus: 'error',
         overleafSyncError: e.message,
-        overleafConflictFiles: e.overleafConflictFiles,
+        overleafConflictFiles: [],
       })
+      await recordSourceSyncConflicts(name, e.overleafConflictFiles.map(file => ({
+        file,
+        owner: conflictOwner,
+        source: 'overleaf',
+      })))
+    }
+    const lifecycleConflictFiles = conflictFilesFromLifecycleResult(e.lifecycleResult)
+    if (lifecycleConflictFiles.length > 0) {
+      await recordSourceSyncConflicts(name, lifecycleConflictFiles.map(file => ({
+        file,
+        owner: conflictOwner,
+        source: 'source-authority',
+      })))
     }
     console.error(`[${name}] Source transaction failed: ${e.message}`)
     return {

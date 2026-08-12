@@ -3,7 +3,7 @@ import assert from 'assert/strict'
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { closeProjectStore, createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, writeSourceFile } from '../server/lib/project-store.mjs'
+import { closeProjectStore, createProject, initProjectStore, readProject, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, writeSourceFile } from '../server/lib/project-store.mjs'
 import { processProjectPush } from '../server/routes/projects.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-source-http-'))
@@ -99,26 +99,44 @@ const stale = await processProjectPush('authority-http', {
   expectedRevision: first.sourceRevision,
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'stale incoming\n' }],
+  editedBy: 'bob',
+  sourceDaemonKey: 'mini:testing:bob',
 })
 assert.equal(stale.status, 409)
 assert.equal(stale.lifecycleStatus, 'stale-base')
 assert.equal(readSourceFile('authority-http', 'main.tex'), 'current\n')
 assert.equal((await sourceLifecycleStore('authority-http')).readAuthority().currentRevision, deleted.sourceRevision)
+let conflictState = (await readProject('authority-http')).sourceSyncConflicts
+assert.equal(conflictState.length, 1)
+assert.equal(conflictState[0].file, 'main.tex')
+assert.equal(conflictState[0].owner.daemonKey, 'mini:testing:bob')
+assert.equal(conflictState[0].source, 'source-authority')
 const evidenceRoot = join(root, 'authority-http', '.source-lifecycle', 'evidence')
 assert.ok(existsSync(evidenceRoot) && readdirSync(evidenceRoot).length === 1, 'stale evidence must survive transaction rollback')
 
-const failed = await processProjectPush('authority-http', {
+const resolved = await processProjectPush('authority-http', {
   expectedRevision: deleted.sourceRevision,
+  sourceManifest: ['main.tex'],
+  files: [{ path: 'main.tex', content: 'resolved\n' }],
+  editedBy: 'bob',
+  sourceDaemonKey: 'mini:testing:bob',
+})
+assert.equal(resolved.status, 200)
+conflictState = (await readProject('authority-http')).sourceSyncConflicts
+assert.deepEqual(conflictState, [], 'cleanly accepted file clears its owned source conflict')
+
+const failed = await processProjectPush('authority-http', {
+  expectedRevision: resolved.sourceRevision,
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'must roll back\n' }],
 }, { failAt: 'manifest' })
 assert.equal(failed.status, 409)
-assert.equal(readSourceFile('authority-http', 'main.tex'), 'current\n')
-assert.equal((await sourceLifecycleStore('authority-http')).readAuthority().currentRevision, deleted.sourceRevision)
+assert.equal(readSourceFile('authority-http', 'main.tex'), 'resolved\n')
+assert.equal((await sourceLifecycleStore('authority-http')).readAuthority().currentRevision, resolved.sourceRevision)
 const revisionsRoot = join(root, 'authority-http', '.source-lifecycle', 'revisions')
 assert.ok(readdirSync(revisionsRoot).length >= 4, 'immutable incoming revision must survive authority rollback')
 
 const authority = JSON.parse(readFileSync(join(root, 'authority-http', '.source-lifecycle', 'authority.json'), 'utf8'))
-assert.equal(authority.currentRevision, deleted.sourceRevision)
+assert.equal(authority.currentRevision, resolved.sourceRevision)
 console.log('source lifecycle HTTP/rollback tests passed')
 await closeProjectStore()
