@@ -147,6 +147,42 @@ RUN . /etc/os-release \
     && echo "RENV_CONFIG_REPOS_OVERRIDE=https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest" \
       >> "$(R RHOME)/etc/Renviron.site"
 
+# Classroom handouts are executable .qmd with R chunks, and they are NOT renv
+# projects — nothing restores a library for them, so they render against the
+# site library only. Without these four, `quarto render` hands the document to
+# knitr, knitr is absent, and the render dies in two seconds with
+# `there is no package called 'rmarkdown'`. That is not hypothetical: it is what
+# `submission-fall-readiness-test-qtm285:fall-role-probe-rw` did on 2026-08-12,
+# and the failure was invisible from `project status` and `project errors`,
+# which both still read clean afterwards.
+#
+# knitr and rmarkdown are the engine; ggplot2 and purrr are what the Homework 2
+# handout actually calls in its first chunk. This is the real runtime set for
+# that assignment rather than a guessed minimum.
+#
+# The repo is named explicitly rather than relying on Renviron.site above: that
+# variable is `RENV_CONFIG_*` and only renv reads it, so a plain
+# install.packages() would otherwise fall back to source from a default CRAN
+# mirror. Same P3M binary source and the same read-the-codename rule as the
+# apt suite, for the same reason — a source build of these is minutes a person
+# is waiting on.
+#
+# `type = 'source'` is required and is NOT a request to compile. Rprofile.site
+# above sets `pkgType = "both"` for renv's benefit, and a plain
+# install.packages() inherits it and dies with "type == 'both' can only be used
+# in R builds that have well-defined binary type" — R on Linux has no binary
+# type, so `both` is only meaningful to callers that resolve it themselves.
+# P3M still serves prebuilt binaries here: that comes from the `__linux__/
+# <codename>` URL and the site user agent, not from `type`. Naming `source`
+# overrides the inherited option without changing what actually arrives.
+#
+# ASSERTED, not merely installed, the same way the R version above is. An
+# install.packages() that fails to compile one package still exits 0, so the
+# only thing that catches it at build time is loading each namespace.
+RUN . /etc/os-release \
+    && Rscript -e "install.packages(c('knitr','rmarkdown','ggplot2','purrr'), repos = 'https://packagemanager.posit.co/cran/__linux__/${VERSION_CODENAME}/latest', type = 'source')" \
+    && Rscript -e 'pkgs <- c("knitr","rmarkdown","ggplot2","purrr"); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop("classroom R runtime incomplete, these namespaces will not load: ", paste(missing, collapse = ", ")); cat("classroom R runtime OK:", paste(pkgs, collapse = " "), "\n")'
+
 # Keep the restored packages on the persistent volume. Without this the renv
 # cache lives in the container filesystem and every machine replacement pays the
 # full restore again; with it, the first render on a new machine is the only slow
