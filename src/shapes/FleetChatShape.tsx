@@ -3210,6 +3210,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       const colonIdx = inner.indexOf(':')
       const typePrefix = colonIdx >= 0 ? inner.slice(0, colonIdx) : ''
       const display = (colonIdx >= 0 ? inner.slice(colonIdx + 1) : inner).replace(/#[^#»]+$/, '')
+      if (typePrefix === 'msg' || typePrefix === 'activity' || typePrefix === 'tool') {
+        return token.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
       if (typePrefix === 'bullet') {
         // Bullet cards are rendered server-side in chat-render.mjs using metadata.
         // If a «bullet:ID» token reaches here, the metadata was missing — show as plain text.
