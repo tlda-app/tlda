@@ -118,11 +118,14 @@ try {
     // last push reads as convergent on disk today and destroys the other five
     // the next time anyone rebases against it.
     const authority = await authorityOf(name)
-    const stored = (await sourceLifecycleStore(name)).readRevision(authority.currentRevision)
-    const byPath = new Map(stored.files.map(file => [file.path, Buffer.from(file.content, 'base64').toString()]))
+    const lifecycle = await sourceLifecycleStore(name)
+    // readRevisionFile, not readRevision().files[].content. Contents moved out
+    // of the snapshot record into content-addressed blobs, so reading the
+    // representation broke here while the property it was asserting did not.
+    // This asks for one file's bytes and lets the store decide where they live.
     daemons.forEach((daemon, index) => {
       assert.equal(
-        byPath.get(manifest[index]),
+        String(lifecycle.readRevisionFile(authority.currentRevision, manifest[index])),
         `${daemon.who} wrote this\n`,
         `the recorded revision does not contain ${daemon.who}'s ${manifest[index]}, so the next rebase will drop it`,
       )
