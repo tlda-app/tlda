@@ -198,6 +198,34 @@ assert.equal(seeded.status, 200, `could not seed ${FILE}: ${JSON.stringify(seede
 // blank buffer is the failure mode that reads as "nothing happened" — note
 // innerText returns '' for an element that is off-screen, so this uses
 // textContent and asserts on it before anything else runs.
+// Before anything is read from the page, establish that there is a page. A
+// parked tab on about:blank answers every question with a well-formed zero —
+// no HUD, no shapes, no CodeMirror — and that reads exactly like an app in
+// which nothing works. This cost a false finding tonight: `hudOpen: false`
+// from a blank tab, reported as "the pool runs with the HUD closed" when the
+// pool actually lands HUD-open, which is Skip's configuration.
+const pageState = inPage(function () {
+  const ed = window.__tldraw_editor__
+  return {
+    url: location.href,
+    hasEditor: !!ed,
+    shapes: ed ? ed.getCurrentPageShapes().length : 0,
+    hudOpen: document.body.classList.contains('fleet-hud-open'),
+    hudWraps: document.querySelectorAll('.fleet-hud-wrap').length,
+  }
+})
+assert.ok(
+  pageState.hasEditor && !/^about:/.test(pageState.url),
+  `The tab is not on the app — url ${JSON.stringify(pageState.url)}, editor `
+  + `${pageState.hasEditor ? 'present' : 'absent'}. A parked tab answers every question with a\n`
+  + '    well-formed zero, and nothing below could tell that apart from a broken app.',
+)
+// Recorded every run, because how many times the editor renders is part of
+// what is being measured: the HUD is a second viewport over the same store, so
+// with it open each shape renders twice, each copy with its own CodeMirror.
+console.log(`page: ${pageState.shapes} shapes, HUD ${pageState.hudOpen ? 'OPEN' : 'closed'} `
+  + `(${pageState.hudWraps} wrap${pageState.hudWraps === 1 ? '' : 's'})`)
+
 const mounted = inPage(function () {
   const ed = window.__tldraw_editor__
   if (!ed) return { error: 'no tldraw editor on window' }
@@ -241,11 +269,18 @@ assert.ok(
   + 'Nothing below this line would mean anything.',
 )
 
+// Reads every rendered copy, not the first. With the HUD open the shape exists
+// twice and `querySelector` would silently pick one of them — which is the
+// difference between "the editor was told" and "one of the two editors was
+// told", and only the second is a real answer.
 const readBuffer = () => inPage(function () {
-  const el = document.querySelector('[data-shape-id="shape:live-editor-acceptance"]')
-  const content = el && el.querySelector('.cm-content')
-  const status = el && el.querySelector('.fleet-source-editor-status')
-  return { text: content ? content.textContent : null, status: status ? status.textContent : null }
+  const els = [...document.querySelectorAll('[data-shape-id="shape:live-editor-acceptance"]')]
+  const copies = els.map(el => {
+    const content = el.querySelector('.cm-content')
+    const status = el.querySelector('.fleet-source-editor-status')
+    return { text: content ? content.textContent : null, status: status ? status.textContent : null }
+  })
+  return { copies, text: copies.map(c => c.text).join(' | '), status: copies.map(c => c.status).join(' | ') }
 })
 
 const failures = []
