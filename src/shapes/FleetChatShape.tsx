@@ -5254,9 +5254,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const dropRegistrationRef = useRef<(() => void) | null>(null)
   const setShapeContainer = useCallback((element: HTMLDivElement | null) => {
     shapeContainerRef.current = element
-    // Detach the old registration first: two live registrations for one shape
-    // would leave the stale one resolving against a detached node, which is the
-    // bug this exists to prevent.
+    // Detach the old registration first. Do not call the target's leave()
+    // from this ref callback: leave() clears React hover state, and this
+    // callback runs while React is attaching/replacing the DOM node.
     dropRegistrationRef.current?.()
     dropRegistrationRef.current = null
     if (!element) return
@@ -5283,7 +5283,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         payload.data.value,
         payload.data.pagePoint,
       ),
-    })
+    }, { notifyLeaveOnUnregister: false })
   }, [])
 
   // Auto-open filter mode when pill hovers over this chat

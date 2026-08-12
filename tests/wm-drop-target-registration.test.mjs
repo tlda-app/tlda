@@ -60,6 +60,10 @@ test('the chat registers its pill drop target from the callback ref, so it follo
     'the previous registration must be detached before a new one is attached',
   )
   assert.match(
+    cb, /notifyLeaveOnUnregister:\s*false/,
+    'ref-callback registration cleanup must not call leave(), because leave() clears React state during commit',
+  )
+  assert.match(
     source, /ref=\{setShapeContainer\}/,
     'the container must take the callback ref, since assigning a ref object renews nothing',
   )

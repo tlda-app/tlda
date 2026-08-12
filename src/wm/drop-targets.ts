@@ -15,11 +15,15 @@ export type WMDropTarget<T = unknown> = {
 const targets = new WeakMap<HTMLElement, WMDropTarget<any>>()
 let active: { element: HTMLElement; target: WMDropTarget<any> } | null = null
 
-export function registerWMDropTarget<T>(element: HTMLElement, target: WMDropTarget<T>) {
+export function registerWMDropTarget<T>(
+  element: HTMLElement,
+  target: WMDropTarget<T>,
+  options: { notifyLeaveOnUnregister?: boolean } = {},
+) {
   targets.set(element, target)
   return () => {
     if (active?.element === element) {
-      active.target.leave?.()
+      if (options.notifyLeaveOnUnregister !== false) active.target.leave?.()
       active = null
     }
     targets.delete(element)
