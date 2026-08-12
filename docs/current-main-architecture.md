@@ -107,6 +107,29 @@ What the file still does is raise `invalid-project-source-environment-owner`
 when it names an environment that `daemon.yaml` does not configure. That
 warning is real; the ownership filter behind it is not.
 
+### A daemon message is acknowledged when the dispatcher returns, not when it is handled
+
+`handleDaemonOutboxEnvelope` in `server/lib/daemon-ws-control-plane.mjs:187`
+awaits the message handler, and if that call returns without throwing it marks
+the message processed and sends a positive ACK. **A message whose type nothing
+matches returns normally**, so it is acknowledged exactly like one that was
+acted on. Only a thrown error produces an error ACK.
+
+This is the vocabulary collapse `AGENTS.md` §"Fleet communication uses mail
+words" warns about, in the daemon transport: the ACK reports that the dispatcher
+did not fail, and it is read as evidence the work happened. **Adding a message
+type without adding its handler is therefore silent in both directions.**
+
+**The live instance: moving a project loses its version history.** On a source
+link the daemon exports the shadow-history bundle and sends
+`adopt-shadow-history` (`bin/fleet-daemon.mjs:587`). The server-side function
+that would apply it, `adoptShadowHistory` (`server/lib/build-runner.mjs:150`),
+**has no caller anywhere in the repository**, and the wire name appears exactly
+twice in the tree — once where the daemon sends it, and nowhere else. So the
+bundle is sent, positively acknowledged, and dropped.
+
+Not fixed as of 2026-08-12. The design is right and the wire is not there.
+
 ## Persistent state and transient signals
 
 Document shapes use Yjs. State that must still be correct after a disconnect
