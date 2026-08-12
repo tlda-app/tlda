@@ -177,14 +177,20 @@ try {
   }
 
   // ---------------------------------------------------------------------
-  // Bob's daemon has been running since this morning and has pushed nothing.
-  // Alice has pushed four times since. Bob finally saves a file — and because
-  // a daemon never receives, the revision Bob is holding is from breakfast.
+  // Bob has been on a plane. His machine has pushed nothing since breakfast,
+  // so the revision it holds is from breakfast, while Alice has pushed four
+  // times. He lands, opens his laptop, and saves a file before anything has
+  // caught him up.
   //
   // Every one of Alice's four revisions has to survive Bob's arrival.
+  //
+  // This is a claim about a stale base, not about what a client can receive.
+  // The per-machine daemon does have a receive side — `applyAcceptedSourceUpdate`
+  // in daemon/source-sync.mjs — and being several revisions behind is simply
+  // where any client sits between updates.
   // ---------------------------------------------------------------------
   {
-    const name = 'a-daemon-that-has-been-asleep'
+    const name = 'a-machine-that-has-been-offline'
     const manifest = ['main.tex', 'notes.tex', 'refs.tex']
     await paper(name, manifest, path => `opening ${path}\n`)
 
@@ -199,7 +205,7 @@ try {
       assert.equal(result.status, 200, `${alice.describe} could not push round ${round}: ${result.error}`)
     }
 
-    assert.equal(bob.heldRevision, breakfast, 'the daemon received someone else\'s revision, which it has no path to do')
+    assert.equal(bob.heldRevision, breakfast, "the fixture is wrong: Bob's participant moved off the revision it started on without pushing")
 
     const bobResult = await bob.edits('refs.tex', 'bob adds a citation\n').pushes()
     assert.equal(bobResult.status, 200, `${bob.describe} was refused for being four revisions behind on a file Alice never touched`)
@@ -208,7 +214,7 @@ try {
     assert.equal(
       readSourceFile(name, 'main.tex'),
       'alice, revision 4\n',
-      "bob's stale daemon overwrote main.tex with the copy it had from breakfast",
+      "bob's stale push overwrote main.tex with the copy his machine had from breakfast",
     )
   }
 

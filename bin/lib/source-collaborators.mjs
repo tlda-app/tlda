@@ -1,18 +1,18 @@
-// People, their machines, and what their daemons actually do.
+// People, their machines, and the pushes they make.
 //
-// A daemon participant here is not a stand-in for a browser. It is what
-// cli/lib/watcher.mjs does, and it is deliberately faithful to two things
-// about that file that are easy to model away:
+// A participant holds its own idea of the current revision and pushes whole
+// files at it. That is the contract every client of the source push route
+// keeps — the per-machine daemon in daemon/source-sync.mjs, the browser's
+// source editor, and `tlda watch` — so what these stories assert is the
+// server's half, which all of them reach through processProjectPush.
 //
-//   - It is push-only. `loadExpectedRevision` reads the current revision once,
-//     when the daemon arrives, and after that the only thing that ever moves
-//     it is the daemon's own successful push. Nothing applies anyone else's
-//     changes back into the checkout. A daemon finds out it is behind by being
-//     refused, and in no other way.
-//
-//   - It pushes whole files from its own checkout, not diffs. So a daemon that
-//     has been sitting on a stale copy pushes stale bytes for every file it
-//     touches, and the server's three-way merge is what saves it.
+// What this deliberately does NOT model is any client's receive side, and it
+// must not be read as evidence that clients lack one. daemon/source-sync.mjs
+// has `applyAcceptedSourceUpdate` and `writeConflictsToWorkingCopy`; it takes
+// other people's accepted changes into the working copy and writes the merge
+// on a refusal. A participant here simply holds its revision until its own
+// push moves it, which is the state any client is in between updates, and the
+// state that makes a stale push worth testing.
 //
 // The count of participants is a loop bound, not a mechanism. Two daemons and
 // five daemons run the same code.
