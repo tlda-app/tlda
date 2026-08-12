@@ -165,6 +165,7 @@ test('the daemon adds a new chat root and its closure to the live watcher', asyn
     writeFileSync(join(root, 'notes/unreferenced.md'), '# nobody points here\n')
 
     sync.bindSource('daemon-live-reference', root)
+    assert.equal(sync.getSourceDir('daemon-live-reference'), root, 'a new binding is available before its first server sync')
     sync.sync([{ name: 'daemon-live-reference', ...LATEX, sourceRevision: null, sourceManifest: [LATEX.mainFile] }])
     assert.equal(watchers.at(-1).length, 1, 'precondition: before the chat reference only the main file is watched')
 

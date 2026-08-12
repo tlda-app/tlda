@@ -999,7 +999,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
 
   function getSourceDir(project) {
-    return sourceWatchers.get(project)?.sourceDir || null
+    const watched = sourceWatchers.get(project)?.sourceDir
+    if (watched) return watched
+    const bound = loadSourceBindings()[project]
+    return bound ? path.resolve(bound) : null
   }
 
   function sourceFileForAbsolutePath(filePath) {
