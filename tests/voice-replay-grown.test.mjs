@@ -86,3 +86,56 @@ test('Deepgram grown final replaces the voice-painted interim after speech is in
     __test.setRecording(false)
   }
 })
+
+test('Deepgram eventless textarea echo cannot replay the interim on final', async () => {
+  installBrowserGlobals()
+  const voice = await import('../src/voice.mjs')
+  const { __test, setVoiceTarget } = voice
+
+  try {
+    __test.resetForVoiceTest()
+    __test.forceDeepgram()
+    __test.setRecording(true)
+
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    setVoiceTarget(textarea, {
+      getSendTargets: () => ['fleet:test'],
+      getAgentNames: () => ({ 'fleet:test': 'test' }),
+    })
+
+    const epoch = __test.state().speechEpoch
+    __test.deepgramMessage({
+      type: 'transcript',
+      epoch,
+      text: 'alpha',
+      is_final: true,
+      speech_final: false,
+    })
+    __test.deepgramMessage({
+      type: 'transcript',
+      epoch,
+      text: 'beta',
+      is_final: false,
+      speech_final: false,
+    })
+
+    assert.equal(textarea.value, 'alphabeta')
+
+    __test.enterEdit()
+    assert.equal(__test.state().state, 'speech')
+
+    __test.deepgramMessage({
+      type: 'transcript',
+      epoch,
+      text: 'beta',
+      is_final: true,
+      speech_final: false,
+    })
+
+    assert.equal(textarea.value, 'alpha beta')
+    assert.doesNotMatch(textarea.value, /betabeta|beta beta/)
+  } finally {
+    __test.setRecording(false)
+  }
+})

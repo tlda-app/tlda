@@ -96,7 +96,7 @@ assert.doesNotMatch(voiceSource, /if \([^)]*msg\.speech_final/)
 // by comparing DOM text to the voice buffers. Only browser-trusted input events are user
 // edits; untrusted ones are downstream echoes and leave speech state intact.
 assert.match(voiceSource, /function isDownstreamInputDuringSpeech\(trigger\) \{[\s\S]*?trigger\.type === 'input'[\s\S]*?trigger\.isTrusted === false/)
-assert.match(voiceSource, /if \(isDownstreamInputDuringSpeech\(trigger\)\) \{\s+return\s+\}/)
+assert.match(voiceSource, /if \(isDownstreamInputDuringSpeech\(trigger\) \|\| isEventlessVoiceEchoDuringSpeech\(trigger\)\) \{\s+return\s+\}/)
 assert.doesNotMatch(voiceSource, /origin === 'input' && _state === 'speech' && _activeTextarea\?\.value === currentVoiceCompositionText\(\)/)
 // The duplicate-append detector is the discriminator the whole instrument exists for.
 assert.match(voiceSource, /_asmLeftNorm\.endsWith\(normalizedFinal\)/)

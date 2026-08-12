@@ -1431,6 +1431,13 @@ function isDownstreamInputDuringSpeech(trigger) {
     trigger.isTrusted === false
 }
 
+function isEventlessVoiceEchoDuringSpeech(trigger) {
+  return _backend === 'deepgram' &&
+    _state === 'speech' &&
+    (!trigger || trigger === 'unknown') &&
+    _activeTextarea?.value === currentVoiceCompositionText()
+}
+
 // Previous value of _left, so a write that shortens or rewrites COMMITTED text can be
 // told apart from ordinary interim revision. Committed words must only grow or be
 // deliberately cleared.
@@ -1469,12 +1476,13 @@ function enterEdit(trigger = 'unknown') {
     })
   }
   // Deepgram voice writes already dispatch a synthetic textarea `input` event,
-  // and React/downstream code can re-emit one after `_filling` has dropped.
+  // and React/downstream code can re-emit one after `_filling` has dropped or
+  // without preserving the original InputEvent.
   // Do not infer authorship from text equality here: punctuation, autocorrect,
   // or an empty field can make the DOM differ from the voice buffers while the
   // event is still downstream of our own write. Browser-trusted `input` events
   // are user edits and interrupt speech; untrusted ones are programmatic echoes.
-  if (isDownstreamInputDuringSpeech(trigger)) {
+  if (isDownstreamInputDuringSpeech(trigger) || isEventlessVoiceEchoDuringSpeech(trigger)) {
     return
   }
   // Whisper-stream: flush the bridge — drops old audio output for ~4s
@@ -1570,7 +1578,7 @@ export function setVoiceTarget(textarea, targetHandle) {
       const onKeydown = (e) => {
         if (_filling) return
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
-          enterEdit()
+          enterEdit(e)
         }
       }
       textarea.addEventListener('input', onEdit)
@@ -2750,7 +2758,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     if (msg.type === 'proxy_status') {
       if (relay !== _deepgramWs) return
       _lastProxyTelemetry = { ...(msg.proxy || {}), receivedAt: Date.now() }
-      // Skip's retained Fly session had no durable proxy records, even though
+      // Skip's stored Fly session had no durable proxy records, even though
       // live-perf ordinarily persists this snapshot. Logging receipt directly
       // separates a missing sampler record from a missing proxy_status message.
       // The relay reports only while it is BUFFERING (before upstream opens) and
