@@ -6,12 +6,18 @@ Deploying is a push to the deployment repository:
 git push /Users/skip/work/deploy/testing HEAD:refs/heads/main
 ```
 
+If a push needs to abort, wait for it to finish; killing the client does not stop the server-side deploy.
+
 `/Users/skip/work/deploy/testing` deploys `fly.live.toml`, the Fly app
 `tldraw-sync-skip` at `https://tlda-fly.cormorant-matrix.ts.net`.
 
 `/Users/skip/work/deploy/stable` deploys `fly.stable.toml`, the Fly app
 `tldraw-sync-skip-stable` at `https://tlda-fly-stable.cormorant-matrix.ts.net`.
 `stable` only accepts a commit that `testing` has already deployed successfully.
+That means the `testing` ref, `testing/deploy-state/last-successful-sha`, and
+the deployed commit object must agree. The stable gate reads the marker and
+requires the candidate commit to be an ancestor of it, so the hook writes the
+marker only after the ref is reconciled.
 
 The deploy repositories reject pushes with:
 
