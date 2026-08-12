@@ -116,7 +116,7 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
   }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, dispatchSubmissionBuild = dispatchBuild } = {}) {
   const router = Router()
   router.use((req, res, next) => {
     const principal = resolvePrincipal(req, store)
@@ -262,15 +262,6 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
     res.json(row)
   })
 
-  router.post('/assignments/:assignmentId/submit', (req, res) => {
-    const p = req.classroomPrincipal
-    const studentId = p.role === 'student' ? p.studentId : req.body?.studentId
-    if (!studentId || !allowedStudent(p, studentId)) return res.status(403).json({ error: 'Forbidden' })
-    const contentRef = String(req.body?.contentRef || '').trim()
-    if (!contentRef) return res.status(400).json({ error: 'contentRef is required' })
-    res.json(store.submit({ assignmentId: req.params.assignmentId, studentId, contentRef }))
-  })
-
   // A submission arrives as an archive, not a file: an answer done on paper is
   // photographed and included with ordinary markdown image syntax, so the .qmd
   // cannot travel alone.
@@ -321,7 +312,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
         // fails leaves the work stored and re-renderable, where waiting on the
         // build would lose it.
         res.json({ ...submission, qmdPath: inspection.qmdPath, answerIds: inspection.answerIds })
-        dispatchBuild(contentRef).catch(error => console.error(`[classroom] render failed for ${contentRef}:`, error))
+        dispatchSubmissionBuild(contentRef).catch(error => console.error(`[classroom] render failed for ${contentRef}:`, error))
       } catch (error) {
         console.error(`[classroom] could not store submission ${contentRef}:`, error)
         fail(500, { error: 'The submission could not be stored. Nothing was recorded — please try again.' })

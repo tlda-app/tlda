@@ -42,6 +42,18 @@ test('student can read own submission but not another student or instructor draf
   } finally { f.close() }
 })
 
+test('a student cannot bypass archive hand-in with an arbitrary document key', async () => {
+  const f = await serverFixture()
+  try {
+    const response = await f.request('/assignments/hw1/submit', 'grace', {
+      method: 'POST',
+      body: JSON.stringify({ contentRef: 'anything-I-name' }),
+    })
+    assert.equal(response.status, 404)
+    assert.equal(f.store.getSubmission('hw1', 'grace'), null)
+  } finally { f.close() }
+})
+
 test('only instructor can read gradebook and return feedback', async () => {
   const f = await serverFixture()
   try {
