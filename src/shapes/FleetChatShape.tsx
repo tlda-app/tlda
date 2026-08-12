@@ -2700,19 +2700,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   const docRef = useRef<typeof doc>(doc)
   useEffect(() => { docRef.current = doc }, [doc])
-  // Callback ref, not a plain ref, because the pill drop target is registered
-  // against this exact DOM node. A ref assignment does not re-run effects, so if
-  // React ever replaced this node the registration kept pointing at the old one
-  // and the resolver's `!element.isConnected` check silently returned null
-  // forever after: the chat stopped opening its filter overlay, with no error,
-  // recoverable only by remount. Driving a state value makes the registration
-  // follow the node.
-  const shapeContainerRef = useRef<HTMLDivElement | null>(null)
-  const [shapeContainerEl, setShapeContainerEl] = useState<HTMLDivElement | null>(null)
-  const setShapeContainer = useCallback((element: HTMLDivElement | null) => {
-    shapeContainerRef.current = element
-    setShapeContainerEl(element)
-  }, [])
+  const shapeContainerRef = useRef<HTMLDivElement>(null)
 
   const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
     openChatMarkdownColumn({
@@ -5144,7 +5132,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [pillOver, setPillOver] = useState<{ role: 'to' | 'from'; value: string; displayName: string; pillType: string; clientPoint: { x: number; y: number } } | null>(null)
 
   useEffect(() => {
-    const element = shapeContainerEl
+    const element = shapeContainerRef.current
     if (!element) return
     return registerWMDropTarget<FleetPillDropData>(element, {
       accepts: (payload: WMDropPayload): payload is WMDropPayload<FleetPillDropData> => {
@@ -5170,7 +5158,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         payload.data.pagePoint,
       ),
     })
-  }, [shape.id, shapeContainerEl])
+  }, [shape.id])
 
   // Auto-open filter mode when pill hovers over this chat
   useEffect(() => {
@@ -6512,7 +6500,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }}
     >
       <div
-        ref={setShapeContainer}
+        ref={shapeContainerRef}
         className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}`}
         style={{
           ...fleetStyleVars,
