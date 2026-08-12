@@ -764,17 +764,32 @@ async function cmdCreate() {
     // saves asks the same function, so a file this drops does not come back
     // through the other door.
     const qmdFiles = []
-    function collectQmdDir(base, prefix = '') {
+    const sourceRoot = realpathSync(dir)
+    const insideSourceRoot = target => {
+      const rel = relative(sourceRoot, target)
+      return rel === '' || (rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\'))
+    }
+    function collectQmdDir(base, prefix = '', ancestors = new Set([sourceRoot])) {
       for (const entry of readdirSync(join(base, prefix), { withFileTypes: true })) {
         const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
-        if (entry.isDirectory()) {
+        const fullPath = join(base, relPath)
+        let resolvedPath
+        try {
+          resolvedPath = realpathSync(fullPath)
+        } catch {
+          continue
+        }
+        if (!insideSourceRoot(resolvedPath)) continue
+        const isDirectory = statSync(fullPath).isDirectory()
+        if (isDirectory) {
           if (entry.name === '.git' || isIgnoredSourceDir(entry.name)) continue
-          collectQmdDir(base, relPath)
+          if (ancestors.has(resolvedPath)) continue
+          collectQmdDir(base, relPath, new Set([...ancestors, resolvedPath]))
         } else {
           if (isQuartoRenderOutput(relPath, mainFile)) continue
           qmdFiles.push({
             path: relPath,
-            content: readFileSync(join(base, relPath)).toString('base64'),
+            content: readFileSync(fullPath).toString('base64'),
             encoding: 'base64',
           })
         }
@@ -782,12 +797,50 @@ async function cmdCreate() {
     }
     collectQmdDir(dir)
 
-    console.log(`Pushing ${qmdFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, {
-      files: qmdFiles,
-      sourceManifest: sourceManifestForFiles(qmdFiles, { format: 'qmd', mainFile }),
-      expectedRevision: await currentSourceRevision(name),
-    })
+    const qmdContext = { format: 'qmd', mainFile }
+    const finalManifest = sourceManifestForFiles(qmdFiles, qmdContext)
+    const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
+    const currentPaths = new Set(Object.keys(serverHashes))
+    let expectedRevision = await currentSourceRevision(name)
+    const priority = new Set([mainFile, '_quarto.yml', '_quarto_book.yml', 'development.qmd', 'scratch/fall-2026-development-schedule.html'])
+    qmdFiles.sort((a, b) => Number(priority.has(b.path)) - Number(priority.has(a.path)) || a.path.localeCompare(b.path))
+    const batches = []
+    const maxRawBytes = 20 * 1024 * 1024
+    let batch = []
+    let batchBytes = 0
+    for (const file of qmdFiles) {
+      const bytes = Buffer.byteLength(file.content, 'base64')
+      if (batch.length > 0 && batchBytes + bytes > maxRawBytes) {
+        batches.push(batch)
+        batch = []
+        batchBytes = 0
+      }
+      batch.push(file)
+      batchBytes += bytes
+    }
+    if (batch.length > 0) batches.push(batch)
+
+    console.log(`Pushing ${qmdFiles.length} file(s) in ${batches.length} bounded request(s)...`)
+    for (let index = 0; index < batches.length; index++) {
+      const files = batches[index]
+      for (const file of files) currentPaths.add(file.path)
+      const result = await api('POST', `/api/projects/${name}/push`, {
+        files,
+        sourceManifest: normalizeSourceManifest([...currentPaths], qmdContext),
+        expectedRevision,
+      })
+      expectedRevision = result.sourceRevision || await currentSourceRevision(name)
+      console.log(dim(`  ${index + 1}/${batches.length}: ${files.length} file(s)`))
+    }
+    const staleFiles = [...currentPaths].filter(path => !finalManifest.includes(path))
+    if (staleFiles.length > 0) {
+      await api('POST', `/api/projects/${name}/push`, {
+        files: [],
+        deletedFiles: staleFiles,
+        sourceManifest: finalManifest,
+        expectedRevision,
+      })
+    }
     console.log(green('Quarto project processed.'))
 
     const server = getServer()
