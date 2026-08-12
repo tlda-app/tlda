@@ -12,8 +12,12 @@ export function isUsableIdentityName(name) {
   return !!clean && clean !== 'none' && clean !== 'null' && clean !== 'undefined'
 }
 
-export function shouldAutoAssignTemporaryIdentity({ needsIdentity, id, name }) {
+export function shouldUseRequestedIdentity({ needsIdentity, id, name }) {
   return !!needsIdentity && !id && !isUsableIdentityName(name)
+}
+
+export function shouldAutoAssignTemporaryIdentity({ identityResolved, needsIdentity, id, name }) {
+  return !!identityResolved && !!needsIdentity && !id && !isUsableIdentityName(name)
 }
 
 export function temporaryIdentityName() {

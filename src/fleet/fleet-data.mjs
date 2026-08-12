@@ -73,6 +73,7 @@ const _store = makeEventStore()
 // and flow through the same channel as chat — no separate store needed.
 let _humanId = null
 let _humanName = null
+let _identityResolved = false
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
 let _identityRetryTimer = null
@@ -185,6 +186,7 @@ export function getLastEventId() { return _lastEventId }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
+export function isIdentityResolved() { return _identityResolved }
 
 // Fetch the next bounded live-agent page only when a list view reaches it.
 // Dead agents are intentionally not hydrated into the browser roster.
@@ -259,6 +261,7 @@ if (typeof window !== 'undefined') {
   window.__tldaFleetIdentity = () => ({
     id: _humanId,
     name: _humanName,
+    identityResolved: _identityResolved,
     identifyPending: _identifyPending,
     connected: _connected,
     wsReadyState: _ws?.readyState ?? null,
@@ -397,10 +400,7 @@ function readStoredIdentity() {
   try {
     const stored = localStorage.getItem('tlda-identity')
     const clean = sanitizeIdentityName(stored)
-    if (!isUsableIdentityName(clean)) {
-      if (stored) localStorage.removeItem('tlda-identity')
-      return null
-    }
+    if (!isUsableIdentityName(clean)) return null
     return clean
   }
   catch {
@@ -451,11 +451,12 @@ export async function login(name) {
   const res = await browserFleetTransport.durable('login', { name: clean })
   _humanId = res.id
   _humanName = res.name
+  _identityResolved = true
   _identifyPending = false
   clearIdentityRetry()
   writeStoredIdentity(res.name)
   clearTemporaryIdentity()
-  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName, identityResolved: true })
   bumpIdentityEpoch()
   _startHeartbeat()
   return res
@@ -470,6 +471,7 @@ export async function registerHuman(name, { persist = true } = {}) {
   const res = await browserFleetTransport.durable('register', { agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
+  _identityResolved = true
   _identifyPending = false
   clearIdentityRetry()
   if (persist) {
@@ -478,7 +480,7 @@ export async function registerHuman(name, { persist = true } = {}) {
   } else {
     writeTemporaryIdentity(sanitized)
   }
-  notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  notify('identity', { type: 'identity', id: _humanId, name: _humanName, identityResolved: true })
   bumpIdentityEpoch()
   _startHeartbeat()
   return res
@@ -494,7 +496,7 @@ function retryStoredIdentity(storedName) {
     if (_humanId && _humanName === storedName) return
     login(storedName).catch(() => {
       _identifyPending = true
-      notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+      notify('identity', { type: 'identity', id: null, name: storedName, identityResolved: _identityResolved, needsIdentity: true })
       retryStoredIdentity(storedName)
     })
   }, 5000)
@@ -1015,12 +1017,13 @@ export function connect() {
     // this tab and must beat stale browser storage.
     const urlName = readUrlIdentity()
     const storedName = urlName || readStoredIdentity()
+    _identityResolved = true
     if (storedName) {
       _identifyPending = true
       const hasCurrentStoredIdentity = !!_humanId && _humanName === storedName
       if (!hasCurrentStoredIdentity) {
         _humanName = storedName
-        notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+        notify('identity', { type: 'identity', id: null, name: storedName, identityResolved: true, needsIdentity: true })
       }
       login(storedName).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
@@ -1029,7 +1032,7 @@ export function connect() {
         if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
           _identifyPending = true
           if (!_humanId || _humanName !== storedName) {
-            notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+            notify('identity', { type: 'identity', id: null, name: storedName, identityResolved: true, needsIdentity: true })
           }
           retryStoredIdentity(storedName)
           return
@@ -1040,13 +1043,13 @@ export function connect() {
         registerHuman(storedName, { persist: !urlName }).catch(() => {
           _identifyPending = true
           if (!_humanId || _humanName !== storedName) {
-            notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+            notify('identity', { type: 'identity', id: null, name: storedName, identityResolved: true, needsIdentity: true })
           }
         })
       })
     } else {
       _identifyPending = true
-      notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
+      notify('identity', { type: 'identity', id: null, name: null, identityResolved: true, needsIdentity: true })
     }
     // Roster/task lists are loaded independently; the socket stays clear for
     // request replies and incremental deltas. Chat panels resubscribe above;

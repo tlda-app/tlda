@@ -15,6 +15,7 @@ import {
   getItems,
   getHumanId,
   getHumanName,
+  isIdentityResolved,
   loadNextAgentsPage,
   hydrateFleetAgentsForFilter,
   needsIdentity as _needsIdentity,
@@ -1043,8 +1044,8 @@ export function useFleetConnection(): boolean {
 
 // --- Identity hook ---
 
-export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string, options?: { persist?: boolean }) => Promise<any> } {
-  const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
+export function useFleetIdentity(): { id: string | null, name: string | null, identityResolved: boolean, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string, options?: { persist?: boolean }) => Promise<any> } {
+  const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), identityResolved: isIdentityResolved(), needsIdentity: _needsIdentity() })
 
   useEffect(() => {
     let unsub: (() => void) | null = null
@@ -1052,9 +1053,9 @@ export function useFleetIdentity(): { id: string | null, name: string | null, ne
 
     ensureInit().then(() => {
       if (cancelled) return
-      setIdentity({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
+      setIdentity({ id: getHumanId(), name: getHumanName(), identityResolved: isIdentityResolved(), needsIdentity: _needsIdentity() })
       unsub = subscribe('identity', null, (ev: any) => {
-        setIdentity({ id: ev.id || getHumanId(), name: ev.name || getHumanName(), needsIdentity: !!ev.needsIdentity })
+        setIdentity({ id: ev.id || getHumanId(), name: ev.name || getHumanName(), identityResolved: ev.identityResolved ?? isIdentityResolved(), needsIdentity: !!ev.needsIdentity })
       })
     })
 
