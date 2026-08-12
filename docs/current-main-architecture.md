@@ -82,6 +82,21 @@ operations such as source synchronization, agent lifecycle, terminal access,
 and artifact materialization. If the owning daemon route is unavailable, the
 operation fails. The server does not fall back to processing a local lookalike.
 
+### A deployed sha says nothing about the code a daemon is running
+
+Every environment's daemon executes the same file out of Skip's shared checkout.
+All three LaunchAgents — `com.tlda.fleet-daemon.testing`, `.stable`, and `.pic` —
+run `/Users/skip/work/tlda/bin/fleet-daemon.mjs`.
+
+So a daemon runs **whatever the working tree held when its process started**. It
+does not track `main`, it is not shipped by a deploy, and a commit's presence in
+a deployed server tree is not corroboration for anything a daemon does. Restart
+is the only thing that changes daemon-loaded code.
+
+This is `AGENTS.md` §"Verify the relevant surface" pointing the other way: a
+deployed sha is not a loaded module, and here the mismatch is invisible from any
+sha at all. One daemon carried 34 hours of staleness that nothing could reveal.
+
 ### Which environment owns a checkout is decided by the binding files
 
 `~/.config/tlda/source-bindings.<environment>.json` is the authority. A daemon
