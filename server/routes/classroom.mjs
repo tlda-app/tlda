@@ -117,9 +117,10 @@ async function frozenTemplateSource(store, assignmentId, resolveTemplateSource) 
   }
 }
 
-export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, dispatchSubmissionBuild = dispatchBuild } = {}) {
+export function createClassroomRouter({ store = new ClassroomStore(), resolvePrincipal = classroomPrincipal, resolveRegistrationAccess = req => ['read', 'rw'].includes(validateToken(extractToken(req))), resolveTemplateVersion = classroomTemplateVersion, resolveTemplateSource = classroomTemplateSource, dispatchSubmissionBuild = dispatchBuild } = {}) {
   const router = Router()
   router.post('/courses/:courseId/register', (req, res) => {
+    if (!resolveRegistrationAccess(req)) return res.status(401).json({ error: 'Unauthorized' })
     const displayName = String(req.body?.displayName || '').trim()
     const universityLogin = String(req.body?.universityLogin || '').trim().toLowerCase()
     if (!displayName || !universityLogin) return res.status(400).json({ error: 'displayName and universityLogin are required' })
