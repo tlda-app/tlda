@@ -2539,9 +2539,9 @@ function deepgramRecognizerConnected() {
 // frame whose RMS clears `resumeRms` — see the `if (idleClosed)` resume in
 // deepgram-sdk-bridge.mjs. So while it is idle it is not deaf; it is listening
 // for exactly one thing. Gating our send on `connected` withheld that one thing
-// and parked his speech in the backlog, which prunes at 3s: the frame the bridge
-// was waiting for was the frame we had decided not to send, both sides waited
-// forever, and only a fresh `start` from the mic button broke the tie.
+// and parked his speech in the backlog: the frame the bridge was waiting for
+// was the frame we had decided not to send, both sides waited forever, and only
+// a fresh `start` from the mic button broke the tie.
 //
 // 'error' stays excluded on purpose — that upstream is not idle-closed and does
 // not resume on audio, so it has its own reconnect and frames would be wasted.
@@ -3434,7 +3434,7 @@ async function startDeepgramMic() {
     // SUCCESSFUL send, so it reads healthy in exactly one of them and dead in the
     // other; the gate terms below say which:
     //   readyEpoch !== speechEpoch  → client gate shut, audio going into the backlog
-    //                                 (which prunes at 3s — his words are being erased here)
+    //                                 (bounded — old audio is still erased here)
     //   readyEpoch === speechEpoch but no transcripts → we are sending and the far
     //                                 side is dropping (see the bridge's `recovering` state)
     const backlog = _deepgramAudioBacklog.snapshot(Date.now())

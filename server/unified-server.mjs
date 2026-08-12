@@ -5174,10 +5174,10 @@ server.on('upgrade', async (req, socket, head) => {
     return
   }
 
-  // /voice/deepgram-sdk — same-origin relay to the local (SDK) Deepgram bridge.
-  // A device that can't reach 127.0.0.1 (the iPad, where localhost is the iPad
-  // itself) connects here over the TLS the page is already authenticated on; we
-  // preserve binary PCM + text control framing both ways.
+  // /voice/deepgram-sdk — same-origin relay to the SDK Deepgram bridge.
+  // A device that can't reach the bridge directly connects here over the TLS the
+  // page is already authenticated on; we preserve binary PCM + text control
+  // framing both ways.
   if (url.pathname === '/voice/deepgram-sdk') {
     const bridgeUrl = DEEPGRAM_SDK_BRIDGE_URL
     const ensureBridge = ensureDeepgramSdkBridge
@@ -5189,8 +5189,8 @@ server.on('upgrade', async (req, socket, head) => {
       let pendingBytes = 0
       let droppedFrames = 0
       let flushedFrames = 0
-      const maxPendingBytes = 16000 * 2 * 3
-      const maxPendingAgeMs = 3000
+      const maxPendingAgeMs = 180000
+      const maxPendingBytes = 16000 * 2 * (maxPendingAgeMs / 1000)
 
       const proxySnapshot = () => ({
         pendingFrames: pending.length,

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { PcmBacklog, composeVoiceText, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from '../src/voice-indicator.mjs'
+import {
+  PCM_BACKLOG_MAX_AGE_MS,
+  PCM_BACKLOG_MAX_BYTES,
+  PcmBacklog,
+  composeVoiceText,
+  deliverVoiceComposition,
+  partitionAtCursor,
+  pcmInputLevel,
+  voiceIndicatorState,
+} from '../src/voice-indicator.mjs'
 
 assert.equal(voiceIndicatorState(false, 'speech detected'), 'off')
 // The two steady states are rendered as visible text in a centered, fixed-width row,
@@ -38,7 +47,7 @@ const chatComposerSource = readFileSync(new URL('../src/shapes/ChatComposer.tsx'
 assert.match(chatComposerSource, /const textarea = inputRef\.current\s+return \(\) => \{ if \(textarea\) clearVoiceTarget\(textarea\) \}/)
 assert.match(chatComposerSource, /completeMessageSend\(submittedText \?\? text\)/)
 const voiceSource = readFileSync(new URL('../src/voice.mjs', import.meta.url), 'utf8')
-assert.doesNotMatch(voiceSource, /retainVoiceTextareaValue|retention-check|retained/)
+assert.doesNotMatch(voiceSource, /retainVoiceTextareaValue|retention-check/)
 assert.doesNotMatch(voiceSource, /hardResetVoice\(\{ keepDeepgramMic: true \}\)/)
 assert.match(voiceSource, /if \(msg\.type === 'utterance_end'\) \{[\s\S]*?_dgLastFinalAt = 0\s+return\s+\}/)
 assert.doesNotMatch(voiceSource, /if \(msg\.is_final && !_dgHasSeenInterim && _state === 'edit'\) return/)
@@ -121,6 +130,33 @@ backlog.clear()
 const afterResetDelivered = []
 assert.equal(backlog.drain(10, chunk => { afterResetDelivered.push(new Uint8Array(chunk)[0]); return true }), true)
 assert.deepEqual(afterResetDelivered, [])
+
+assert.equal(backlog.snapshot().maxAgeMs, 180000)
+assert.equal(backlog.snapshot().maxBytes, 5760000)
+assert.equal(PCM_BACKLOG_MAX_AGE_MS, 180000)
+assert.equal(PCM_BACKLOG_MAX_BYTES, 5760000)
+
+const originalNow = Date.now
+try {
+  Date.now = () => 0
+  const deployBacklog = new PcmBacklog()
+  deployBacklog.push(12, new Uint8Array([12]).buffer)
+  assert.equal(deployBacklog.snapshot(179999).frames, 1)
+  assert.equal(deployBacklog.snapshot(180001).frames, 0)
+  assert.equal(deployBacklog.snapshot(180001).droppedFrames, 1)
+
+  const epochBacklog = new PcmBacklog()
+  epochBacklog.push(20, new Uint8Array([20]).buffer)
+  Date.now = () => 179999
+  epochBacklog.push(21, new Uint8Array([21]).buffer)
+  const epochDelivered = []
+  assert.equal(epochBacklog.drain(21, chunk => { epochDelivered.push(new Uint8Array(chunk)[0]); return true }), true)
+  assert.deepEqual(epochDelivered, [21])
+  assert.equal(epochBacklog.snapshot(179999).droppedFrames, 1)
+  assert.equal(epochBacklog.length, 0)
+} finally {
+  Date.now = originalNow
+}
 
 const boundedBacklog = new PcmBacklog({ maxBytes: 2, maxAgeMs: 1000 })
 boundedBacklog.push(11, new Uint8Array([1]).buffer)

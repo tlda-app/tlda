@@ -133,8 +133,11 @@ export function deliverVoiceComposition(textarea, composition, write) {
   }
 }
 
+export const PCM_BACKLOG_MAX_AGE_MS = 180000
+export const PCM_BACKLOG_MAX_BYTES = 16000 * 2 * (PCM_BACKLOG_MAX_AGE_MS / 1000)
+
 export class PcmBacklog {
-  constructor({ maxBytes = 16000 * 2 * 3, maxAgeMs = 3000 } = {}) {
+  constructor({ maxBytes = PCM_BACKLOG_MAX_BYTES, maxAgeMs = PCM_BACKLOG_MAX_AGE_MS } = {}) {
     this.chunks = []
     this.maxBytes = maxBytes
     this.maxAgeMs = maxAgeMs
