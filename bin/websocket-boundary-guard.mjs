@@ -174,8 +174,6 @@ const ALLOWED = {
   'bin/suggestions-test.mjs': { count: 1, category: 'tooling', reason: 'Suggestions test client.' },
   'bin/test-refevent-amend.mjs': { count: 1, category: 'tooling', reason: 'Ref-event amend test client.' },
   'bin/test-source-roundtrip.mjs': { count: 1, category: 'tooling', reason: 'Source roundtrip test client.' },
-  'scripts/add-annotation.mjs': { count: 1, category: 'tooling', reason: 'Annotation script: connects to a Yjs sync room, which is the binary protocol the library does not carry.' },
-  'scripts/e2e-test.mjs': { count: 3, category: 'tooling', reason: 'E2E suite: Yjs sync rooms, including a legacy-room case that must open its own socket.' },
   'scripts/smoke-test.mjs': { count: 1, category: 'tooling', reason: 'Smoke test: constructs the socket inside browser-evaluated source, in the page.' },
   'server/lib/fleet-inbox-delivery.test.mjs': { count: 2, category: 'tooling', reason: 'Delivery test: two clients to observe fan-out.' },
   'server/lib/fleet-store-offloop.test.mjs': { count: 1, category: 'tooling', reason: 'Off-loop store test client.' },
