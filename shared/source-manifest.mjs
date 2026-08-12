@@ -10,6 +10,7 @@ const MARKDOWN_DEPENDENCY_EXTENSIONS = new Set([
   '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf',
   '.css', '.js', '.json', '.csv', '.txt',
   '.mp4', '.webm', '.mp3', '.wav',
+  '.vsix',
 ])
 
 export const TEXT_EXTENSIONS = new Set([

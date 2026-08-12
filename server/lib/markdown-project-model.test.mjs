@@ -28,12 +28,14 @@ test('Markdown projects capture the local transitive closure as separate documen
     '[Appendix](appendix.markdown)',
     '[Data](../assets/data.json)',
     '[Generated PDF](../assets/generated.pdf)',
+    '[Positron extension](../assets/classroom.vsix)',
     '[Unsupported](../assets/unsupported.bin)',
   ].join('\n'))
   writeFileSync(join(source, 'chapters', 'appendix.markdown'), '# Appendix\n[Cycle](one.md)\n')
   writeFileSync(join(source, 'assets', 'plot.png'), Buffer.from([0, 1, 2]))
   writeFileSync(join(source, 'assets', 'data.json'), '{"ok":true}\n')
   writeFileSync(join(source, 'assets', 'generated.pdf'), Buffer.from([3, 4, 5]))
+  writeFileSync(join(source, 'assets', 'classroom.vsix'), Buffer.from([9, 10, 11]))
   writeFileSync(join(source, 'assets', 'unsupported.bin'), Buffer.from([6, 7, 8]))
 
   await initProjectStore(projects)
@@ -44,7 +46,7 @@ test('Markdown projects capture the local transitive closure as separate documen
 
   const closure = scanMarkdownDependencyClosure('README.md', source)
   assert.deepEqual(closure.markdown, ['README.md', 'chapters/appendix.markdown', 'chapters/one.md'])
-  assert.deepEqual(closure.assets, ['assets/data.json', 'assets/plot.png'])
+  assert.deepEqual(closure.assets, ['assets/classroom.vsix', 'assets/data.json', 'assets/plot.png'])
 
   const columns = await listDocumentColumns('notes', {
     project: { name: 'notes', format: 'markdown', mainFile: 'README.md' },
