@@ -2454,51 +2454,17 @@ async function cmdBot() {
   process.exit(1)
 }
 
-async function cmdWatch() {
-  const arg1 = getPositional(0)
+async function cmdDaemon() {
+  const sub = getPositional(0)
 
-  // Fleet-daemon dispatch — `tlda daemon start/stop/status/log/run`
   const daemonSubs = new Set(['start', 'restart', 'stop', 'status', 'log', 'logs', 'run', 'install', 'uninstall', 'write-test-plist'])
-  if (daemonSubs.has(arg1)) {
-    return cmdFleetWatch(arg1)
+  if (daemonSubs.has(sub)) {
+    return cmdFleetWatch(sub)
   }
 
-  let texPath, name, dir
-
-  if (arg1 && existsSync(arg1) && arg1.endsWith('.tex')) {
-    texPath = resolve(arg1)
-    dir = dirname(texPath)
-    name = getPositional(1) || basename(texPath, '.tex')
-  } else if (arg1) {
-    name = arg1
-    dir = resolve(getFlag('dir') || '.')
-  } else {
-    dir = resolve('.')
-    const mainFile = findMainTex(dir)
-    if (!mainFile) { console.error('No .tex file found in current directory'); process.exit(1) }
-    texPath = join(dir, mainFile)
-    name = basename(mainFile, '.tex')
-  }
-
-  // Verify project exists on server
-  try {
-    await api('GET', `/api/projects/${name}`)
-  } catch {
-    console.error(red(`Project "${name}" not found on server.`))
-    console.error(`  Run \`tlda project link ${name}\` first, or did you mean \`tlda daemon start\`?`)
-    process.exit(1)
-  }
-
-  const debounceMs = parseInt(getFlag('debounce') || '200', 10)
-
-  console.log(`Watching ${dir} → ${bold(name)}`)
-  console.log(dim(`  Server: ${getServer()}`))
-  console.log(dim(`  Debounce: ${debounceMs}ms`))
-  console.log()
-
-  const { startWatcher, installProcessHandlers } = await import('./lib/watcher.mjs')
-  installProcessHandlers()
-  await startWatcher({ dir, name, debounceMs, getServer, getToken })
+  if (sub) console.error(`Unknown subcommand: tlda daemon ${sub}`)
+  console.error('Usage: tlda daemon [start|restart|stop|status|log|run|install|uninstall]')
+  process.exit(1)
 }
 
 // `tlda daemon` is now an alias for `tlda daemon start/stop/status` —
@@ -5925,7 +5891,7 @@ async function main() {
       case 'link':   await cmdLink(); break
       case 'unlink': await cmdUnlink(); break
       case 'init':   await cmdInit(); break
-      case 'daemon': await cmdWatch(); break
+      case 'daemon': await cmdDaemon(); break
       case 'bot': await cmdBot(); break
       case 'env': printEnvironments(); break
       case 'open':   await cmdOpen(); break

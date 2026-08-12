@@ -197,7 +197,6 @@ function advanceRemote(root, remote, { resetTo = null } = {}) {
 function assertPushSuppliersCarryManifest() {
   const checks = [
     ['cli/tlda.mjs', line => line.includes('/push') && line.includes('files')],
-    ['cli/lib/watcher.mjs', line => line.includes('/push')],
     ['daemon/source-sync.mjs', line => line.includes("type: 'source-change'")],
     ['server/unified-server.mjs', line => line.includes('processProjectPush(project')],
     ['server/lib/overleaf-sync.mjs', line => line.includes('processProjectPush(name')],
