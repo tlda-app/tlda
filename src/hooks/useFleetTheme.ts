@@ -2,7 +2,7 @@
  * useFleetTheme — restores theme on mount before DarkModeToggle renders (no flash).
  *
  * Two orthogonal axes:
- *   family  — 'fog' | 'warm' | 'lilac' | 'mono' | 'blue' | null (default tldraw)
+ *   family  — 'fog' | 'warm' | 'power' | 'lilac' | 'mono' | 'blue' | null (default tldraw)
  *   scheme  — 'dark' | 'light' | 'system'
  *
  * Body class is derived from family + resolved dark/light at runtime.
@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from 'react'
 
-export type ThemeFamily = 'fog' | 'warm' | 'lilac' | 'mono' | 'blue' | null
+export type ThemeFamily = 'fog' | 'warm' | 'power' | 'lilac' | 'mono' | 'blue' | null
 export type ColorScheme = 'dark' | 'light' | 'system'
 
 export const FAMILY_KEY = 'tlda-theme-family'
@@ -20,12 +20,13 @@ export const SCHEME_KEY = 'tlda-color-scheme'
 const FAMILY_BODY_CLASS: Record<string, { dark: string | null; light: string | null }> = {
   fog:  { dark: 'fog-dark-mode',  light: 'fog-light-mode' },
   warm: { dark: 'warm-dark-mode', light: 'warm-light-mode' },
+  power: { dark: 'power-dark-mode', light: 'power-light-mode' },
   lilac: { dark: 'lilac-dark-mode', light: 'lilac-light-mode' },
   mono: { dark: 'mono-dark-mode', light: 'mono-light-mode' },
   blue: { dark: 'blue-dark-mode', light: 'blue-light-mode' },
 }
 
-const ALL_BODY_CLASSES = ['fog-dark-mode', 'fog-light-mode', 'warm-dark-mode', 'warm-light-mode', 'lilac-dark-mode', 'lilac-light-mode', 'mono-dark-mode', 'mono-light-mode', 'blue-dark-mode', 'blue-light-mode']
+const ALL_BODY_CLASSES = ['fog-dark-mode', 'fog-light-mode', 'warm-dark-mode', 'warm-light-mode', 'power-dark-mode', 'power-light-mode', 'lilac-dark-mode', 'lilac-light-mode', 'mono-dark-mode', 'mono-light-mode', 'blue-dark-mode', 'blue-light-mode']
 
 function migrate() {
   if (localStorage.getItem(FAMILY_KEY) !== null) return
@@ -44,7 +45,7 @@ function migrate() {
 export function getStoredFamily(): ThemeFamily {
   migrate()
   const v = localStorage.getItem(FAMILY_KEY)
-  if (v === 'fog' || v === 'warm' || v === 'lilac' || v === 'mono' || v === 'blue') return v
+  if (v === 'fog' || v === 'warm' || v === 'power' || v === 'lilac' || v === 'mono' || v === 'blue') return v
   return null
 }
 
