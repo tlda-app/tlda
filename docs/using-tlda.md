@@ -100,6 +100,16 @@ tlda project unlink eiv-paper /path/to/eiv-paper/least-squares.tex
 tlda project unlink eiv-paper https://git.overleaf.com/project-id
 ```
 
+**Relinking a project to a different server does not bring its version history.**
+The daemon exports the project's history and sends it, but no server code
+receives the message, so the destination starts from one version while the source
+keeps all of it. **Unlink and relink, or move a project between environments, and
+the history you had does not arrive.** This has been the behaviour since
+2026-08-10 and is a defect rather than a design: the receiving function exists
+and is never called. See
+[Current architecture](current-main-architecture.md) §"A daemon message is
+acknowledged when the dispatcher returns".
+
 Local and browser edits submit through a revision-checked source transaction
 boundary. The server polls and pushes a linked Git remote through its own clone,
 so concurrent remote edits may require ordinary Git conflict resolution.

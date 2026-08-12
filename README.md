@@ -238,6 +238,13 @@ shape handles for dragging or resizing it. The × button closes it. Some shapes
 add other buttons. Chat adds <img src="public/chat-filter.svg" width="16"
 alt="Edit traffic filter" /> for editing its traffic filter.
 
+When you drag one shape near another, it leans toward lining up with its
+neighbour's edge, centre, or an equal gap, and draws a thin line at whatever it
+is pulling toward. It is a pull rather than a jump, so you can always overrule
+it. If it is too weak or too strong, **Snap strength** in the Settings tab ⚙ of
+the table of contents panel changes it — the value is in `em`, so it follows your
+text size rather than a fixed number of pixels, and `0` turns it off.
+
 On a phone or iPad, simple gestures control your view and layout.
 
 - On the canvas, use two fingers to pan and pinch to zoom.
