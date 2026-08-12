@@ -52,6 +52,7 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
 import { log } from '../logger'
+import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
@@ -101,7 +102,7 @@ const nickMap = new Map<string, string>()
 const nickHexMap = new Map<string, string>()
 let nickIdx = 0
 
-function makeChatCtx(agents: any[], tasks: any[]) {
+function makeChatCtx(agents: any[], tasks: any[], preambleMacros: Record<string, string>) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
@@ -130,7 +131,7 @@ function makeChatCtx(agents: any[], tasks: any[]) {
     renderMarkdown: inboxRenderMarkdown,
     highlightSyntax,
     langFromFilePath,
-    preambleMacros: {},
+    preambleMacros,
   }
 }
 
@@ -408,7 +409,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   const agents = useFleetAgents()
   const tasks = useFleetTasks()
-  const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
+  const preambleMacros = useProjectPreambleMacros(projectName)
+  const ctx = useMemo(() => makeChatCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
   // Drag a partner name → spawn a filtered chat (same pill drag as the agents panel).
   const { startDrag } = usePillDrag()
 

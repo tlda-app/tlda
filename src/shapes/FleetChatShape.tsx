@@ -46,6 +46,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
 import { shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
+import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import { watchChatStrandedRows } from '../fleet/chat-stranded-row-probe.mjs'
 // @ts-ignore — vanilla JS module
@@ -2639,15 +2640,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     }, { source: 'all', scope: 'document' })
   }, [editor])
 
-  // Preamble macros — fetched once per doc from /api/projects/:name/macros
-  const [preambleMacros, setPreambleMacros] = useState<Record<string, string>>({})
-  useEffect(() => {
-    if (!doc?.projectName) return
-    fetch(`/api/projects/${doc.projectName}/macros`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data?.macros) setPreambleMacros(data.macros) })
-      .catch(e => console.warn('[fleet-chat] macros fetch failed:', e.message))
-  }, [doc?.projectName])
+  const preambleMacros = useProjectPreambleMacros(doc?.projectName)
 
   // Per-sender preamble: each message carries metadata.preambleRef.doc (the
   // sender's preamble document). We render that message's math with that doc's

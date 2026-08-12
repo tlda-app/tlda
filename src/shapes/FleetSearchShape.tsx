@@ -19,7 +19,7 @@ import * as autocompleteCore from '@algolia/autocomplete-core'
 import { createFleetShape, agentDisplayLabel, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import { searchFleet, useFleetAgents, useFleetProjects, useFleetTasks } from '../fleet-data-adapter'
 import { fleetSearchResultAgentChatFilter } from '../../shared/filter-semantics.mjs'
@@ -46,6 +46,8 @@ import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } f
 import { dragCoordinator } from './dragCoordinator'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { FleetSearchResultsView, visibleFleetSearchResultCount } from './FleetSearchResultsView'
+import { ProjectContext } from '../PanelContext'
+import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -211,7 +213,7 @@ function usePillDrag() {
   return { startDrag }
 }
 
-function makeChatCtx(agents: any[], tasks: any[]) {
+function makeChatCtx(agents: any[], tasks: any[], preambleMacros: Record<string, string>) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     const a = agents.find((a: any) => a.id === id)
@@ -240,7 +242,7 @@ function makeChatCtx(agents: any[], tasks: any[]) {
     renderMarkdown: searchRenderMarkdown,
     highlightSyntax,
     langFromFilePath,
-    preambleMacros: {},
+    preambleMacros,
   }
 }
 
@@ -351,7 +353,9 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const agents = useFleetAgents()
   const projects = useFleetProjects()
   const tasks = useFleetTasks()
-  const ctx = useMemo(() => makeChatCtx(agents, tasks), [agents, tasks])
+  const docCtx = useContext(ProjectContext)
+  const preambleMacros = useProjectPreambleMacros(docCtx?.projectName)
+  const ctx = useMemo(() => makeChatCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
   const { startDrag } = usePillDrag()
   const [query, setQuery] = useState('')
   const [autocomplete, setAutocomplete] = useState(SEARCH_AUTOCOMPLETE_INITIAL_VIEW_STATE)

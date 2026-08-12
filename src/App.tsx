@@ -42,6 +42,7 @@ import { renderActivityGroup } from './fleet/activity-render.mjs'
 import { renderMarkdown as renderMarkdownUtil } from './fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { toggleRecording, isRecording, onRecordingChange, maybeShowRadioSubtitleForIncomingChat, setRadioReplyHandler, setRadioDraftText, commitRadioDraft, setVoiceTarget, completeMessageSend } from './voice.mjs'
+import { useProjectPreambleMacros } from './fleet/useProjectPreambleMacros'
 import './App.css'
 import './themes.css'
 import './shapes/fleet-chat.css'
@@ -772,7 +773,7 @@ function fleetChatFilterForAgent(row: FleetAgentDirectoryRowModel | null): Fleet
   return buildFleetAgentFilter(row.exactName) as FleetChatFilter
 }
 
-function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>, sendTargets: string[]) {
+function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: ReturnType<typeof useFleetIdentity>, sendTargets: string[], preambleMacros: Record<string, string>) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
     if (identity.id && id === identity.id) return identity.name || 'You'
@@ -791,10 +792,10 @@ function makeIndexChatRenderContext(agents: any[], tasks: any[], identity: Retur
     getTasks: () => tasks,
     sendTargets,
     tldaToken: null,
-    renderMarkdown: (input: string) => renderMarkdownUtil(input),
+    renderMarkdown: (input: string) => renderMarkdownUtil(input, preambleMacros),
     highlightSyntax: (code: string) => esc(code),
     langFromFilePath: () => '',
-    preambleMacros: {},
+    preambleMacros,
   }
 }
 
@@ -1032,6 +1033,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
     const recipientId = indexSelectedAgentRecipientId(selectedAgent)
     return recipientId ? [recipientId] : []
   }, [selectedAgent?.id])
+  const selectedAgentProject = selectedAgent?.project || ''
+  const preambleMacros = useProjectPreambleMacros(selectedAgentProject)
   // The React Compiler bails out here — `react-hooks/preserve-manual-memoization`
   // reports "Compilation Skipped: Existing memoization could not be preserved"
   // against this dep array — so this component does not get compiler
@@ -1044,8 +1047,8 @@ function DocumentPicker({ isDark, manifest, onSelect }: {
   // chat rendering against a version the compiler accepts. If you are here
   // because rendering is slow, this is a real lead and it has not been chased.
   const chatRenderContext = useMemo(
-    () => makeIndexChatRenderContext(agents, tasks, identity, sendTargets),
-    [agents, tasks, identity, sendTargets],
+    () => makeIndexChatRenderContext(agents, tasks, identity, sendTargets, preambleMacros),
+    [agents, tasks, identity, sendTargets, preambleMacros],
   )
   const selectedChatRows = useMemo(() => {
     if (!selectedAgent) return []

@@ -476,10 +476,19 @@ export function toolContentDetail(name, input) {
 //   - Blank lines → <br>
 //   - Comment lines → shown as-is (dimmed)
 //   - Structural commands (\begin, \end, \section, etc.) → <code>
-//   - Display math $$...$$ or \[...\] → KaTeX display mode
+//   - Display math $$...$$ or \[...\], including multiline blocks → KaTeX display mode
 //   - Other lines → inline $...$ segments rendered, rest as escaped text
-function renderTexLines(content, macros) {
-  return content.split('\n').map(line => {
+export function renderTexLines(content, macros) {
+  const rendered = []
+  const lines = content.split('\n')
+  let display = null
+
+  const renderDisplay = (tex, fallbackLines) => {
+    try { return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, macros }) }
+    catch { return fallbackLines.map(line => esc(line)).join('<br>') }
+  }
+
+  const renderLine = (line) => {
     const trimmed = line.trim()
     if (!trimmed) return '<br>'
     if (trimmed.startsWith('%')) return `<span class="tex-comment">${esc(line)}</span>`
@@ -502,7 +511,57 @@ function renderTexLines(content, macros) {
       }
       return esc(p)
     }).join('')
-  }).join('<br>')
+  }
+
+  for (const line of lines) {
+    if (display) {
+      const closeIndex = line.indexOf(display.close)
+      display.raw.push(line)
+      if (closeIndex >= 0) {
+        display.tex.push(line.slice(0, closeIndex))
+        rendered.push(renderDisplay(display.tex.join('\n'), display.raw))
+        const rest = line.slice(closeIndex + display.close.length)
+        display = null
+        if (rest.trim()) rendered.push(renderLine(rest))
+      } else {
+        display.tex.push(line)
+      }
+      continue
+    }
+
+    const trimmed = line.trim()
+    const bracketOpen = line.indexOf('\\[')
+    const dollarOpen = line.indexOf('$$')
+    const hasBracketOpen = bracketOpen >= 0 && (dollarOpen < 0 || bracketOpen < dollarOpen)
+    const open = hasBracketOpen
+      ? { start: '\\[', close: '\\]', index: bracketOpen }
+      : dollarOpen >= 0 ? { start: '$$', close: '$$', index: dollarOpen } : null
+
+    if (!open || (trimmed.startsWith('%')) || (/^\\(begin|end|documentclass|usepackage|chapter|section|subsection|paragraph|label|item|caption)\b/.test(trimmed))) {
+      rendered.push(renderLine(line))
+      continue
+    }
+
+    const before = line.slice(0, open.index)
+    if (before.trim()) rendered.push(renderLine(before))
+    const texStart = open.index + open.start.length
+    const closeIndex = line.indexOf(open.close, texStart)
+    if (closeIndex >= 0) {
+      rendered.push(renderDisplay(line.slice(texStart, closeIndex), [line]))
+      const rest = line.slice(closeIndex + open.close.length)
+      if (rest.trim()) rendered.push(renderLine(rest))
+      continue
+    }
+
+    display = {
+      close: open.close,
+      tex: [line.slice(texStart)],
+      raw: [line],
+    }
+  }
+
+  if (display) rendered.push(...display.raw.map(line => esc(line)))
+  return rendered.join('<br>')
 }
 
 export function renderEditDiff(input, ctx, opts = {}) {
