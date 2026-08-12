@@ -136,7 +136,10 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     if (entry.content !== undefined) {
       return Buffer.isBuffer(entry.content) ? entry.content : Buffer.from(String(entry.content), 'base64')
     }
-    return entry.sha256 ? readBlob(entry.sha256) : null
+    if (!entry.sha256) throw new Error(`Corrupt revision file entry: ${entry.path || '<unknown>'} has neither content nor sha256`)
+    const blob = readBlob(entry.sha256)
+    if (!blob) throw new Error(`Corrupt revision file entry: ${entry.path || '<unknown>'} blob ${entry.sha256} is missing`)
+    return blob
   }
 
   /**

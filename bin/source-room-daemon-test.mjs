@@ -173,6 +173,32 @@ try {
   assert.equal(secondRoom.ytext.toString(), 'stored\nunsent\n')
   assert.equal(readFileSync(join(projectDir(durable), '.source-room', 'working', 'main.tex'), 'utf8'), 'stored\nunsent\n')
 
+  const corrupt = 'source-room-corrupt-revision'
+  createProject({ name: corrupt, title: corrupt, mainFile: 'main.tex', format: 'svg' })
+  await updateProject(corrupt, { pages: 1, buildStatus: 'success' })
+  suppressBuilds(corrupt)
+  const corruptStart = await acceptedPush(corrupt, {
+    expectedRevision: null,
+    sourceManifest: ['main.tex'],
+    files: [{ path: 'main.tex', content: 'not blank\n' }],
+  })
+  const corruptSnapshotPath = join(
+    projectDir(corrupt),
+    '.source-lifecycle',
+    'revisions',
+    encodeURIComponent(corruptStart.sourceRevision),
+    'snapshot.json',
+  )
+  const corruptSnapshot = JSON.parse(readFileSync(corruptSnapshotPath, 'utf8'))
+  delete corruptSnapshot.files[0].content
+  delete corruptSnapshot.files[0].sha256
+  writeFileSync(corruptSnapshotPath, JSON.stringify(corruptSnapshot, null, 2))
+  const corruptDaemon = makeRoomDaemon()
+  await assert.rejects(
+    () => corruptDaemon.getRoom(corrupt, 'main.tex'),
+    /Corrupt revision file entry: main\.tex has neither content nor sha256/,
+  )
+
   const socketProject = 'source-room-socket'
   createProject({ name: socketProject, title: socketProject, mainFile: 'main.tex', format: 'svg' })
   await updateProject(socketProject, { pages: 1, buildStatus: 'success' })
