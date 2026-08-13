@@ -1,12 +1,10 @@
 import {
-	createLayerMembership,
 	createLayerOwner,
 	createWMCore,
 	type Camera,
 	type Layer,
 	type LayerEffectiveTransform,
 	type LayerLayout,
-	type LayerMembership,
 	type LayerOwner,
 	type AxisTrackPolicy,
 	type Point,
@@ -45,7 +43,6 @@ export interface FleetHudLayerState {
 	layer: Layer
 	transform: LayerEffectiveTransform
 	owner: LayerOwner
-	membership: LayerMembership
 	zBand: typeof FLEET_HUD_Z_BAND
 	hitPolicy: typeof FLEET_HUD_HIT_POLICY
 }
@@ -152,7 +149,6 @@ export function readFleetHudOverlayLayer(
 		layer: wm.getLayer(FLEET_HUD_OVERLAY_LAYER_ID),
 		transform: transformInfo,
 		owner,
-		membership: createLayerMembership(FLEET_HUD_OVERLAY_LAYER_ID, owner),
 		zBand: FLEET_HUD_Z_BAND,
 		hitPolicy: FLEET_HUD_HIT_POLICY,
 	}
