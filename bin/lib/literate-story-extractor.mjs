@@ -67,6 +67,21 @@ export function extractStoriesFromFile(file, rootDir = process.cwd()) {
   return extractStories(readFileSync(file, 'utf8'), relative(rootDir, file))
 }
 
+/**
+ * Every state line the catalogue could not print, with where it came from.
+ *
+ * The rule and the rendering pull in opposite directions and both are right: a
+ * story line must never contain interpolation, and the catalogue must never go
+ * dark because one line does. So extraction reports the offender in place and
+ * this is how a caller fails on it — the reader always gets a list, and an
+ * author still gets told.
+ */
+export function invalidStoryLines(stories) {
+  return stories.flatMap(story => story.steps.flatMap(step => step.states
+    .filter(state => state.invalid)
+    .map(state => ({ story: story.title, file: story.file, line: state.line, text: state.text }))))
+}
+
 export function extractStories(source, file = '<inline>') {
   const lines = source.split('\n')
   const headings = commentHeadings(source)
@@ -91,8 +106,13 @@ export function extractStories(source, file = '<inline>') {
       ...assertions
         .filter(assertion => assertion.line > heading.line && assertion.line < endLine)
         .map(assertion => {
+          // Interpolation cannot be a story line — it renders as source to a
+          // reader. But refusing to print the whole catalogue over one bad
+          // message is the worse failure, and it is the second time this tool
+          // has gone dark for a single unusual entry. Report the offender in
+          // place, where it is visible and attributable, and keep going.
           if (assertion.message.includes('${')) {
-            throw new Error(`${file}:${assertion.line}: assertion message contains interpolation and cannot be a story line: ${assertion.message}`)
+            return { text: `[unprintable: interpolation in ${file}:${assertion.line}]`, line: assertion.line, invalid: true }
           }
           return { text: catalogueLine(assertion.message), line: assertion.line }
         }),

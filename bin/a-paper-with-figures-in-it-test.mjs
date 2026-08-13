@@ -61,8 +61,8 @@ try {
     sourceManifest: MANIFEST,
     files: MANIFEST.map(path => ({ path, ...opening(path) })),
   })
-  assert.equal(started.status, 200,
-    `the paper had to exist with its figures before anyone could edit it: ${started.error}`)
+  assert.deepEqual({ status: started.status, error: started.error }, { status: 200, error: undefined },
+    'the paper — exists with its figures, before anyone edits it')
 
   // ## Two people edit different chapters of a paper that has figures in it
 
@@ -75,14 +75,14 @@ try {
 
   // ### Alice pushes her chapter
   const hers = await alice.pushes.call(alice.edits('intro.tex', 'alice rewrites the introduction\n'))
-  assert.equal(hers.status, 200,
-    `Alice's daemon on her laptop was refused, and she was the first to push: ${hers.error}`)
+  assert.deepEqual({ status: hers.status, error: hers.error }, { status: 200, error: undefined },
+    "Alice's laptop — lands her chapter; otherwise she was refused and she pushed first")
 
   // ### Bob pushes a different chapter, still holding the draft they both pulled
   const his = await bob.pushes.call(bob.edits('method.tex', 'bob rewrites the method\n'))
-  assert.equal(his.status, 200,
-    `Bob's daemon on his desktop was refused, though he touched a file nobody else did `
-    + `and the only unmergeable files in this paper are figures neither of them opened: ${his.error}`)
+  assert.deepEqual({ status: his.status, error: his.error }, { status: 200, error: undefined },
+    "Bob's desktop — lands his chapter; otherwise he was refused though he touched a file nobody else did, "
+    + 'and the only unmergeable files in this paper are figures neither of them opened')
 
   // ### The paper has both chapters, and the figures are untouched
   const lifecycle = await sourceLifecycleStore(PROJECT)
@@ -97,7 +97,61 @@ try {
       `${figure} — is the bytes it always was, carried across the rebase rather than merged`)
   }
 
-  console.log('a paper with figures in it: two chapters land, and the figures are carried')
+  // ## The same paper, with its chapters and figures in folders
+  //
+  // Every fixture in this suite is flat, and no real paper is. The figure defect
+  // survived every test we had because the fixtures could not represent a paper
+  // with figures; a fixture that cannot represent a paper with directories is
+  // the same gap one step along, and the only way to know is to write it down.
+  //
+  // Counterfactual run 2026-08-13, on this exact manifest but standalone —
+  // reverting the lifecycle fails the flat story above first, so the nested case
+  // has to be run on its own to be isolated. Against the lifecycle as it was
+  // before `9657e586a`, the second push is refused 409 stale-base with
+  // `figures/plot.png` classified `classification-unavailable` while every other
+  // path is a clean-rebase candidate. So this shape can fail, which is the only
+  // reason its passing means anything.
+  {
+    const NESTED = ['main.tex', 'chapters/intro.tex', 'chapters/method.tex', 'figures/plot.png', 'bib/refs.bib'].sort()
+    const NESTED_PROJECT = 'paper-with-folders'
+    createProject({ name: NESTED_PROJECT, title: NESTED_PROJECT, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(NESTED_PROJECT, { pages: 1, buildStatus: 'success' })
+    mkdirSync(outputDir(NESTED_PROJECT), { recursive: true })
+    writeFileSync(join(outputDir(NESTED_PROJECT), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
+
+    // ### The paper exists, with its figure a directory away from its chapters
+    const begun = await processProjectPush(NESTED_PROJECT, {
+      expectedRevision: null,
+      sourceManifest: NESTED,
+      files: NESTED.map(path => ({ path, ...opening(path) })),
+    })
+    assert.deepEqual({ status: begun.status, error: begun.error }, { status: 200, error: undefined },
+      'the paper — exists with chapters and figures in folders, the shape every real paper has')
+
+    // ### Two people edit different chapters, neither of them touching the figure
+    const ada = daemonOn('Ada', 'her laptop', NESTED_PROJECT, NESTED)
+    const raj = daemonOn('Raj', 'his desktop', NESTED_PROJECT, NESTED)
+    await everyoneArrivesAt(ada, raj)
+    const first = await ada.pushes.call(ada.edits('chapters/intro.tex', 'ada rewrites the introduction\n'))
+    assert.deepEqual({ status: first.status, error: first.error }, { status: 200, error: undefined },
+      "Ada's laptop — lands her chapter from inside a folder")
+    const second = await raj.pushes.call(raj.edits('chapters/method.tex', 'raj rewrites the method\n'))
+    assert.deepEqual({ status: second.status, error: second.error }, { status: 200, error: undefined },
+      "Raj's desktop — lands his chapter too; otherwise a figure one directory away refused a push it has "
+      + 'nothing to do with, which is the defect this whole file exists for, wearing a folder')
+
+    // ### The paper has both chapters and the figure is untouched bytes
+    const nestedLifecycle = await sourceLifecycleStore(NESTED_PROJECT)
+    const at = nestedLifecycle.readAuthority().currentRevision
+    assert.equal(nestedLifecycle.readRevisionFile(at, 'chapters/intro.tex').toString('utf8'),
+      'ada rewrites the introduction\n', "the paper — kept Ada's chapter through Raj's rebase")
+    assert.equal(nestedLifecycle.readRevisionFile(at, 'chapters/method.tex').toString('utf8'),
+      'raj rewrites the method\n', "the paper — has Raj's chapter")
+    assert.deepEqual([...nestedLifecycle.readRevisionFile(at, 'figures/plot.png')], [...PNG],
+      'the figure — is the bytes it always was, carried across a rebase from another directory')
+  }
+
+  console.log('a paper with figures in it: two chapters land, the figures are carried, and folders change nothing')
 } finally {
   await closeProjectStore?.()
   rmSync(root, { recursive: true, force: true })

@@ -40,6 +40,7 @@ import {
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
 import { processProjectPush } from '../server/routes/projects.mjs'
+import { clearSourceSyncRefusal, recordSourceSyncRefusal, sourceSyncIsStale, sourceSyncLedger } from '../server/lib/source-sync-conflicts.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-reached-nowhere-'))
 await initProjectStore(root)
@@ -153,7 +154,89 @@ try {
     )
   }
 
-  console.log('an edit that reached nowhere: the window exists, and it ends')
+  // ## When the checkpoint fails, the window does not end
+  //
+  // The story above holds only while the push succeeds. A non-conflict failure
+  // — the server busy, the store closed, anything that is not somebody else's
+  // edit — sets the room's `queued` flag and schedules nothing: the flush timer
+  // is armed by a local edit and by the tail of a successful push, and this is
+  // neither. So the text sits in the room until somebody happens to type again.
+  //
+  // The people with the file open see an error. Nobody else learns anything,
+  // and by the criterion at the top of this file that is the losable kind.
+  // What follows asserts the record, not a retry: this domain is detection
+  // rather than prevention, so the requirement is that the paper knows.
+  {
+    const name = 'the-checkpoint-that-failed'
+    await paper(name, 'opening\n')
+    let refuse = true
+    const roomDaemon = createSourceRoomDaemon({
+      projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
+      pushDelayMs: 25,
+      log: { error() {} },
+      recordHeldEdit: recordSourceSyncRefusal,
+      clearHeldEdit: clearSourceSyncRefusal,
+      processProjectPush: async (project, body) => (refuse
+        ? { status: 500, ok: false, error: 'the paper is being rebuilt' }
+        : processProjectPush(project, body)),
+    })
+    daemons.push(roomDaemon)
+    const room = await roomDaemon.getRoom(name, 'main.tex')
+
+    // ### The person types, and the checkpoint fails for a reason nobody chose
+    room.ytext.insert('opening\n'.length, 'a paragraph nobody else is touching\n')
+    await new Promise(resolve => setTimeout(resolve, 400))
+
+    // ### The paper does not have it, and nothing is going to try again
+    assert.equal(readSourceFile(name, 'main.tex').includes('a paragraph nobody else is touching'), false,
+      'the paper — does not have the paragraph, because the checkpoint failed')
+    await new Promise(resolve => setTimeout(resolve, 400))
+    assert.equal(readSourceFile(name, 'main.tex').includes('a paragraph nobody else is touching'), false,
+      'the paper — still does not have it however long anyone waits; otherwise this story is about a retry '
+      + 'that exists, and the whole point is that the flush timer is only armed by a keystroke')
+
+    // ### The paper knows the live editor is holding an edit
+    const held = sourceSyncLedger(await readProject(name), Date.now())
+    assert.equal(held.entries.length, 1,
+      'the ledger — holds it; otherwise a paragraph sits in server memory with the error shown only to the '
+      + 'people who already have the file open, and every instrument outside that room says the paper is fine')
+    assert.equal(held.entries[0].file, 'main.tex',
+      'the entry — names the file, because for a room that is what one stuck thing is')
+    assert.equal(held.entries[0].owner.participant, 'the live editor',
+      'the entry — says the live editor is holding it, so it points at where the text actually is')
+
+    // ### An hour later it is a problem rather than a moment
+    const anHourOn = sourceSyncLedger(await readProject(name), Date.now() + 60 * 60_000)
+    assert.equal(sourceSyncIsStale(anHourOn, 30 * 60_000), true,
+      'the paper — raises, because an edit held for an hour is not a checkpoint in progress')
+
+    // ### The next keystroke that succeeds carries it in, and the ledger lets go
+    refuse = false
+    room.ytext.insert(room.ytext.length, 'and one more line\n')
+    const deadline = Date.now() + 15_000
+    let landed = false
+    while (Date.now() < deadline) {
+      if (readSourceFile(name, 'main.tex').includes('a paragraph nobody else is touching')) { landed = true; break }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    assert.ok(landed,
+      'the paper — gets the held paragraph when a later checkpoint succeeds, because the room pushes its '
+      + 'whole text rather than the one edit that failed')
+    // The clear runs after the push returns, so the text reaching disk is not
+    // the moment the record is gone. Polling the thing being asserted rather
+    // than sleeping past it.
+    const clearedBy = Date.now() + 15_000
+    let settled = sourceSyncLedger(await readProject(name), Date.now() + 60 * 60_000)
+    while (settled.entries.length > 0 && Date.now() < clearedBy) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      settled = sourceSyncLedger(await readProject(name), Date.now() + 60 * 60_000)
+    }
+    assert.deepEqual(settled.entries, [],
+      'the ledger — is empty once the text reached the paper; otherwise it reports a room as stuck forever '
+      + 'and an alarm that never clears is one nobody reads')
+  }
+
+  console.log('an edit that reached nowhere: the window exists, it ends, and a failed checkpoint is recorded')
 } finally {
   for (const daemon of daemons) daemon.closeAll()
   await closeProjectStore()

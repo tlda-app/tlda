@@ -59,7 +59,7 @@ import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
-import { clearSourceSyncConflicts, recordSourceSyncConflicts, sourceConflictOwner } from './lib/source-sync-conflicts.mjs'
+import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
@@ -228,6 +228,8 @@ const sourceRoomDaemon = createSourceRoomDaemon({
   sourceLifecycleStore,
   readClientSourceManifest,
   processProjectPush,
+  recordHeldEdit: recordSourceSyncRefusal,
+  clearHeldEdit: clearSourceSyncRefusal,
 })
 
 function activityDeliverySnapshot() {
@@ -868,6 +870,47 @@ setInterval(() => {
   const cutoff = Date.now() - CHAT_TEMPID_TTL_MS
   for (const [k, v] of _chatTempIds) { if (v.ts < cutoff) _chatTempIds.delete(k) }
 }, 30_000).unref?.()
+
+// Work that has not reached a paper, and how long it has been waiting.
+//
+// Skip's criterion for sync: "the goal is to not lose fucking data." Git is the
+// floor, so the only losable edit is one that never got there -- sitting on a
+// laptop that was refused, or in an editor room whose checkpoint failed. Both
+// are recorded when they happen; neither writes anything at the moment it
+// becomes old, so something has to look at the clock. This is that.
+//
+// One store call rather than a file read per project, and it logs nothing at
+// all while nobody is stuck, which is almost always.
+const SOURCE_SYNC_STUCK_MS = Number(process.env.TLDA_SOURCE_SYNC_STUCK_MS || 30 * 60_000)
+const SOURCE_SYNC_SWEEP_MS = Number(process.env.TLDA_SOURCE_SYNC_SWEEP_MS || 5 * 60_000)
+let lastStuckSourceSyncKeys = ''
+async function sweepStuckSourceSync() {
+  try {
+    const stuck = staleSourceSyncEntries(await listProjects(), SOURCE_SYNC_STUCK_MS)
+    // Say it when it changes, not every five minutes forever. A line repeated
+    // until somebody mutes it is a line nobody reads.
+    const key = stuck.map(entry => `${entry.project}\0${entry.stuckKey || entry.ownerKey}\0${entry.file}`).join('|')
+    if (key === lastStuckSourceSyncKeys) return
+    lastStuckSourceSyncKeys = key
+    if (stuck.length === 0) {
+      console.warn('[source-sync-stuck] nothing is waiting any more')
+      return
+    }
+    for (const entry of stuck) console.warn(`[source-sync-stuck] ${describeStuckEntry(entry)}`)
+    recordServerPerfEvent('source-sync-stuck', {
+      count: stuck.length,
+      oldestWaitingMs: stuck[0]?.waitingMs ?? null,
+      unknownAge: stuck.filter(entry => entry.waitingMs == null).length,
+      entries: stuck.slice(0, 20).map(entry => ({
+        project: entry.project, file: entry.file, waitingMs: entry.waitingMs, reason: entry.reason || null,
+      })),
+    })
+  } catch (error) {
+    // The instrument must never be the thing that takes the server down.
+    console.error(`[source-sync-stuck] sweep failed: ${error?.message || error}`)
+  }
+}
+setInterval(() => { void sweepStuckSourceSync() }, SOURCE_SYNC_SWEEP_MS).unref?.()
 
 const _subscriptionBatchWakes = new Map()
 

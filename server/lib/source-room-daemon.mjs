@@ -108,6 +108,13 @@ export function createSourceRoomDaemon({
   sourceLifecycleStore,
   readClientSourceManifest,
   processProjectPush,
+  // How the room says it is holding an edit that never reached the paper, and
+  // that it has stopped. Injected like everything else this file touches: the
+  // room tests stand up their own project store, so importing the real
+  // recorder would write these into a different store than the one under test
+  // and report nothing while looking wired.
+  recordHeldEdit = null,
+  clearHeldEdit = null,
   pushDelayMs = 250,
   log = console,
 }) {
@@ -217,6 +224,43 @@ export function createSourceRoomDaemon({
     return [...new Set([...current, room.filePath])].sort()
   }
 
+  /**
+   * The room is holding an edit that did not reach the paper.
+   *
+   * A non-conflict push failure sets `queued` and schedules nothing: the flush
+   * timer is only armed by a new local edit, so the text sits in the room until
+   * somebody types another character. The people with the file open see an
+   * error status; nobody else learns anything, and by Skip's criterion this is
+   * the losable kind — it never reached the floor.
+   *
+   * Recorded rather than retried. This domain is detection, not prevention:
+   * the ask is to find out from the app instead of from a missing paragraph.
+   */
+  async function noteRoomIsHolding(room, reason) {
+    if (!recordHeldEdit) return
+    try {
+      await recordHeldEdit(room.project, {
+        owner: { sourceDaemonKey: sourceRoomDaemonKey(room.project), participant: 'the live editor' },
+        file: room.filePath,
+        files: [room.filePath],
+        reason,
+      })
+    } catch (error) {
+      // Recording is an instrument. It must never be the thing that breaks a
+      // push path, and least of all one that is already failing.
+      log.error?.(`[source-room] ${room.project}:${room.filePath} could not record a held edit: ${error?.message || error}`)
+    }
+  }
+
+  async function noteRoomIsClear(room) {
+    if (!clearHeldEdit) return
+    try {
+      await clearHeldEdit(room.project, { sourceDaemonKey: sourceRoomDaemonKey(room.project) }, room.filePath)
+    } catch (error) {
+      log.error?.(`[source-room] ${room.project}:${room.filePath} could not clear a held edit: ${error?.message || error}`)
+    }
+  }
+
   async function flushRoom(room) {
     if (room.pending || room.blocked) return
     room.queued = false
@@ -239,6 +283,7 @@ export function createSourceRoomDaemon({
         room.pending = null
         room.blocked = hasConflictMarkers(room.ytext.toString())
         persistRoom(room)
+        await noteRoomIsClear(room)
         broadcast(room, { type: 'status', status: 'synced', sourceRevision: room.heldRevision, building: Boolean(result.building) })
         if (room.queued || room.ytext.toString() !== content) await flushRoom(room)
         return
@@ -256,6 +301,7 @@ export function createSourceRoomDaemon({
       room.pending = null
       room.queued = true
       persistRoom(room)
+      await noteRoomIsHolding(room, result.error || `source room push failed with ${result.status}`)
       broadcast(room, {
         type: 'status',
         status: 'error',
@@ -266,6 +312,7 @@ export function createSourceRoomDaemon({
       room.pending = null
       room.queued = true
       persistRoom(room)
+      await noteRoomIsHolding(room, error?.message || String(error))
       broadcast(room, {
         type: 'status',
         status: 'error',

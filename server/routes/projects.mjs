@@ -58,7 +58,7 @@ import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
-import { clearSourceSyncConflicts, recordSourceSyncConflicts, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
+import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
 import { activeSourceEditors } from '../lib/source-edit-activity.mjs'
 
 const router = Router()
@@ -1195,6 +1195,16 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       ...(changedPushFiles || []).map(file => file.path),
       ...(deletedFiles || []),
     ], conflictOwner)
+    // This owner's work reached the paper, so they are no longer stuck —
+    // whichever files it was. A refusal is recorded per person rather than per
+    // file, so it clears on any accepted push from them.
+    //
+    // Guarded on the project already read for this request rather than calling
+    // unconditionally, because clearing reads the project again and every
+    // accepted push would pay for it. Almost no push has anything to clear: a
+    // refusal is recorded before the retry that clears it, so the read at the
+    // top of this request already sees it.
+    if (project?.sourceSyncRefusals?.length) await clearSourceSyncRefusal(name, conflictOwner)
   } catch (e) {
     if (remotePublished) {
       try {
@@ -1250,6 +1260,28 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         owner: conflictOwner,
         source: 'source-authority',
       })))
+    } else if (e.lifecycleResult?.status === 'stale-base') {
+      // A refusal that produced no markers used to record nothing at all, so a
+      // person stuck outside the paper left no trace: the pusher learned from
+      // their HTTP status and nobody else learned ever. Measured on a real
+      // paper, 2026-08-13, on a bibliography nobody else had touched.
+      // Wrapped because this runs inside the failure path's own catch: a throw
+      // here would escape before the 409 is built, turning a refusal the caller
+      // can act on into a 500 it cannot. An instrument must not be able to
+      // change the answer it is recording.
+      try {
+        await recordSourceSyncRefusal(name, {
+          owner: conflictOwner,
+          reason: e.lifecycleResult.status,
+          files: (changedPushFiles || []).map(file => file.path),
+        })
+      } catch (recordError) {
+        // Swallowed on purpose: this is a best-effort record of a refusal that
+        // has already happened, and the caller is owed the 409 that explains it.
+        // Rethrowing would replace an answer they can act on with one they
+        // cannot, to report that the note-taking failed.
+        console.error(`[${name}] could not record a stale-base refusal: ${recordError.message}`)
+      }
     }
     console.error(`[${name}] Source transaction failed: ${e.message}`)
     return {

@@ -473,6 +473,47 @@ export function sourceFileBatches(files, maxRawBytes = SOURCE_PUSH_MAX_RAW_BYTES
   return batches
 }
 
+/**
+ * Say which file is too big to carry, before the push that cannot carry it.
+ *
+ * SOURCE_PUSH_MAX_RAW_BYTES is a *batching* bound, not a file-size limit. Its
+ * job is to stop a 488-file project going out as one enormous request: fill a
+ * request, start another. It says nothing about how big any one file may be.
+ *
+ * And it cannot. `sourceFileBatches` starts a new batch only when the current
+ * one is non-empty — correct, because a file cannot be split across two
+ * requests — so a file larger than the bound becomes a batch of one and the
+ * bound does nothing at all. The body is base64 inside JSON, so raw bytes leave
+ * as about four thirds of themselves.
+ *
+ * So the warning must not call this a push limit. Describing a batching
+ * heuristic as a rule about files tells people something false about every file
+ * they have.
+ *
+ * Measured 2026-08-12 on a 488-file course book: a 33 MB file produced roughly
+ * a 44 MB body, under the server's `express.json({ limit: '50mb' })`, and the
+ * box went down — `exit_code=137, oom_killed=true`, health included. So the
+ * failure is not a rejection anybody can read; it is the server dying, and the
+ * person who ran the push has no way to know which file did it.
+ *
+ * This warns rather than refuses, and the warning is a plaster on the real
+ * defect: the transport dies instead of saying no. A file that cannot be
+ * carried should be refused, or carried by something that is not JSON. Picking
+ * the refusal threshold means measuring where the box actually runs out of
+ * memory, and a bound guessed at the wrong value blocks a push that would have
+ * worked. Naming the file costs nothing and cannot do that.
+ */
+export function warnAboutFilesTooBigToCarry(files) {
+  const oversized = (files || []).filter(file => Number(file?.size) > SOURCE_PUSH_MAX_RAW_BYTES)
+  if (oversized.length === 0) return
+  const mb = bytes => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  console.warn(yellow(`  ! ${oversized.length} file(s) are bigger than one whole request:`))
+  for (const file of oversized) console.warn(yellow(`      ${file.path} — ${mb(Number(file.size))}`))
+  console.warn(yellow(`    Files are grouped into requests of ${mb(SOURCE_PUSH_MAX_RAW_BYTES)}, and a file cannot be split,`))
+  console.warn(yellow('    so each of these goes out alone as a request about four thirds its size.'))
+  console.warn(yellow('    A file this large has taken the server down rather than being rejected.'))
+}
+
 async function pushSourceFileBatches(name, files, {
   context,
   initialManifestPaths,
@@ -483,6 +524,7 @@ async function pushSourceFileBatches(name, files, {
 }) {
   const currentPaths = new Set(initialManifestPaths)
   const batches = sourceFileBatches(files)
+  warnAboutFilesTooBigToCarry(files)
   let result = null
   for (let index = 0; index < batches.length; index++) {
     const batch = batches[index]

@@ -88,18 +88,124 @@ Whoever takes it: this is a change to who receives a notification, which is
 closer to a product decision than a sync fix, so it wants a judgement before it
 lands rather than after.
 
-And a second gap in the same family, found on a real paper rather than in a
-fixture: **a stale-base refusal with no textual conflict records nothing.**
+A second gap in the same family was found on a real paper rather than in a
+fixture: **a stale-base refusal with no textual conflict recorded nothing.**
 Conflict state is written from the classifications that came back as `conflict`
 — files with marker text in them. A refusal where nothing produced markers (a
-binary both sides replaced, or any refusal the rebase could not settle) leaves
-`sourceSyncConflicts` empty, so the pill stays quiet and the paper looks fine.
+binary both sides replaced, or any refusal the rebase could not settle) left
+`sourceSyncConflicts` empty, so the pill stayed quiet and the paper looked fine.
+The person who pushed learned by their HTTP status; nobody else learned at all.
+Measured on 2026-08-13: a participant holding a stale revision edited a
+bibliography nobody had touched, was refused, and the project's conflict state
+stayed empty.
 
-The person who pushed learns by their HTTP status. Nobody else learns at all,
-including the people who would want to know the paper has a participant stuck
-outside it. Measured on 2026-08-13: a participant holding a stale revision
-edited a bibliography nobody had touched, was refused, and the project's
-conflict state stayed empty.
+**The record now exists. What is shown has not changed.** A refusal with no
+conflict files is written to `sourceSyncRefusals` by the push route, and
+`sourceSyncLedger` reads both fields. Three things about its shape:
+
+- **It is per person, not per file.** Being stuck is a fact about a participant
+  whose machine cannot reach the paper, so repeated refusals collapse to one row
+  keeping the *first* timestamp — the age that matters is how long they have
+  been stuck rather than when they last retried. Any accepted push from them
+  clears it.
+- **It can name no file and still be a row.** A conflict without a file is
+  nothing; a refusal without one is still somebody outside the paper.
+- **It is deliberately not `sourceSyncConflicts`.** That field is what the
+  conflict pill reads, and what a person is shown is a product decision rather
+  than a sync one. Deciding to surface these is a separate change with a
+  separate judgement.
+
+`bin/a-refusal-that-left-no-trace-test.mjs` is the story, and it crosses the
+push route because the recording is something the route does with what the
+lifecycle refused — calling both halves from one process would prove both halves
+and nothing about whether a refusal reaches the record.
+
+### A failed checkpoint leaves the editor room holding the text
+
+The same family, one layer up. When a source room's checkpoint fails for a
+reason that is *not* a conflict — the server busy, the store closed, anything
+that is not somebody else's edit — `flushRoom` sets `room.queued` and schedules
+nothing. The flush timer is armed by a local edit and by the tail of a
+successful push, and a failure is neither, **so the text sits in the room until
+somebody happens to type again.**
+
+Everyone with that file open sees an `error` status. Nobody else sees anything,
+and the text has not reached the authority, so it is losable in the sense that
+matters here: a server restart takes it.
+
+The room now records that it is holding an edit, per file, and clears it on the
+next successful checkpoint. **It does not retry**, deliberately — this domain is
+detection rather than prevention, and adding a retry loop to a push path is a
+behaviour change that wants deciding on its own rather than smuggled in behind
+an instrument. Whoever picks that up: the room already pushes its whole text
+rather than the failed edit, so a later successful checkpoint carries the held
+paragraph in by itself. That is what the story asserts.
+
+The recorders reach the room by injection (`recordHeldEdit`, `clearHeldEdit`)
+like everything else that file touches. That is not ceremony: the room tests
+stand up their own project store, so a direct import would write these into a
+different store than the one under test and report nothing while looking wired.
+
+The story is the third section of `bin/an-edit-that-reached-nowhere-test.mjs`,
+which is also where the checkpoint window itself is measured.
+
+### Something has to look at the clock
+
+Both records above are written when the failure happens. **Neither writes
+anything at the moment it becomes old**, and the alarm here is age, so a ledger
+with no sweep is a data structure rather than an instrument.
+
+`staleSourceSyncEntries` is that sweep, kept pure, ordered oldest first across
+every project — the question a person asks is *what is worst*, not *what is
+where*. The server runs it on a timer (`TLDA_SOURCE_SYNC_SWEEP_MS`, five
+minutes; `TLDA_SOURCE_SYNC_STUCK_MS`, thirty) off one `listProjects()` call
+rather than a file read per project, logs `[source-sync-stuck]` with a sentence
+per entry, and records a `source-sync-stuck` perf event.
+
+Three things about it are deliberate:
+
+- **It speaks when the set changes, not every five minutes.** A line repeated
+  until somebody mutes it is a line nobody reads. It also says so when the last
+  thing clears, because silence that means "fixed" and silence that means
+  "nothing ran" are otherwise the same.
+- **An entry younger than the threshold is not news**, but one with **no
+  readable age always is** — the thing nobody can say is fine must not be
+  averaged in with the thing that is.
+- **A failing sweep logs and continues.** An instrument must never be what takes
+  the server down.
+
+`bin/a-refusal-that-left-no-trace-test.mjs` runs the sweep through
+`listProjects()`, the same call the timer makes, because a field that did not
+survive the store read would leave it reporting an empty fleet forever while
+every assertion against a hand-built project object still passed.
+
+**What the sweep still cannot see, and why it is a bigger piece than it sounds.**
+Both entries above start from something the server watched happen. The third
+losable state does not: **a linked checkout with local edits that has simply
+stopped pushing** — the daemon quiet, asleep, offline, or never having tried.
+Nothing was refused, so nothing was recorded, and the sweep reports the paper as
+clean.
+
+The server cannot compute this. A daemon being behind the current revision is
+ordinary and harmless on its own; it is only losable when that checkout **also
+holds unsubmitted local edits**, and the pending set is knowledge the daemon has
+and the server does not. So closing it is not another read over project state —
+it needs the daemon to report *"I am holding N changes, the oldest since T"*,
+a receive path for that, and the ledger merging it with what is already there.
+
+Three things to get right, for whoever takes it:
+
+- **The daemon reports, the server records.** Per §"The server reports daemon
+  facts; it does not own daemon state" — the server must not model which
+  checkouts exist or infer staleness from silence.
+- **Silence is the case that matters, and a report cannot cover it.** A daemon
+  that never speaks is exactly the daemon whose laptop is closed. So the record
+  has to age the *last* report rather than wait for the next one, which is the
+  same rule as everything else here: an instrument that only knows what it was
+  told must not read absence as health.
+- **It ships on a different clock.** The daemon half is deployed by restart from
+  the shared checkout, not by a server deploy, so the two halves are live at
+  different times and each has to behave alone.
 
 ## Applying an accepted remote revision locally
 

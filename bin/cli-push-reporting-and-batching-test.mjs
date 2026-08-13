@@ -10,7 +10,7 @@ import { join } from 'node:path'
 
 import { daemonLifecycleSocketPath } from '../shared/daemon-socket-path.mjs'
 
-const { sourceFileBatches } = await import(`../cli/tlda.mjs?push-reporting-test=${Date.now()}`)
+const { sourceFileBatches, warnAboutFilesTooBigToCarry } = await import(`../cli/tlda.mjs?push-reporting-test=${Date.now()}`)
 
 assert.deepEqual(
   sourceFileBatches([
@@ -127,3 +127,44 @@ try {
 }
 
 console.log('PASS cli push reporting and batching')
+
+// ## A file too big to carry says which file it is
+
+// ### The bound cannot help a file bigger than itself
+assert.deepEqual(
+  sourceFileBatches([{ path: 'data.csv', size: 33 }, { path: 'main.tex', size: 1 }], 10)
+    .map(batch => batch.map(file => file.path)),
+  [['data.csv'], ['main.tex']],
+  'the oversized file — goes out alone in a batch three times the bound; otherwise a file could be split '
+  + 'across requests, which is not a thing that can be done to a file')
+
+// ### So the person is told which one, before the push that cannot carry it
+const warnings = []
+const realWarn = console.warn
+console.warn = (line) => warnings.push(String(line))
+try {
+  warnAboutFilesTooBigToCarry([
+    { path: 'figures/scan.tiff', size: 33 * 1024 * 1024 },
+    { path: 'main.tex', size: 2048 },
+  ])
+} finally {
+  console.warn = realWarn
+}
+assert.equal(warnings.some(line => line.includes('figures/scan.tiff') && line.includes('33.0 MB')), true,
+  'the warning — names the file and its size; otherwise the person watches a server disappear with no way '
+  + 'to know which of 488 files did it, which is what happened on 2026-08-12')
+assert.equal(warnings.some(line => line.includes('main.tex')), false,
+  'the ordinary files — are not named, because a warning listing everything names nothing')
+
+// ### Nothing is said when nothing is too big
+const quiet = []
+console.warn = (line) => quiet.push(String(line))
+try {
+  warnAboutFilesTooBigToCarry([{ path: 'main.tex', size: 2048 }])
+} finally {
+  console.warn = realWarn
+}
+assert.deepEqual(quiet, [],
+  'an ordinary push — says nothing at all, so the warning means something when it appears')
+
+console.log('cli push batching: an oversized file is named before the push that cannot carry it')

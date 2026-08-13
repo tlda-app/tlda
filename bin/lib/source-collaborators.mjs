@@ -29,10 +29,15 @@ export function daemonOn(who, where, project, manifest) {
   const checkout = new Map()
   let staged = new Map()
   let heldRevision = null
+  // A push carries who made it, because a refusal that cannot name a machine
+  // reports that somebody is stuck without saying who — which is most of the
+  // way to reporting nothing.
+  const machineId = `${who}-${where}`.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 
   return {
     who,
     where,
+    machineId,
     get describe() { return `${who}'s daemon on ${where}` },
     get heldRevision() { return heldRevision },
 
@@ -43,9 +48,16 @@ export function daemonOn(who, where, project, manifest) {
     },
 
     /** Someone saves a file in their editor. The daemon has not pushed yet. */
-    edits(path, text) {
-      checkout.set(path, text)
-      staged.set(path, text)
+    edits(path, text, options = {}) {
+      // Text is the ordinary case and stays a bare string. Bytes have to say so:
+      // a push that hands over a Buffer without declaring base64 stores
+      // String(buffer), and the figure that comes back is not the one that went
+      // in.
+      const content = options.encoding === 'base64'
+        ? { content: Buffer.from(text).toString('base64'), encoding: 'base64' }
+        : { content: text }
+      checkout.set(path, content)
+      staged.set(path, content)
       return this
     },
 
@@ -54,11 +66,12 @@ export function daemonOn(who, where, project, manifest) {
      * revision it last heard about.
      */
     async pushes() {
-      const files = [...staged].map(([path, content]) => ({ path, content }))
+      const files = [...staged].map(([path, content]) => ({ path, ...content }))
       staged = new Map()
       const result = await processProjectPush(project, {
         expectedRevision: heldRevision,
         sourceManifest: manifest,
+        sourceMachineId: machineId,
         files,
       })
       if (result.status === 200) heldRevision = result.sourceRevision
@@ -66,7 +79,7 @@ export function daemonOn(who, where, project, manifest) {
     },
 
     /** What this person would see if they looked at their own checkout. */
-    checkoutHas(path) { return checkout.get(path) },
+    checkoutHas(path) { return checkout.get(path)?.content },
   }
 }
 
