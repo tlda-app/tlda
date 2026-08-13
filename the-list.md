@@ -1,24 +1,23 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `54af0a767`, 16 commits
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `9657e586a`, 24 commits
 ahead** — anything that landed tonight is on `main` and not on your screen. Status re-baselined
-against those two at 01:35 EDT.
+against those two at 02:10 EDT.
 
 **Status:** ✅ working on your box · ⚠️ built, not on your box · 🔨 being worked now · ○ not
-started.
+started · ? nobody could establish it.
 
-**93 things**, counted at write time. It was 94 until the schedule and the course website merged into one row. The merging below is real, and so is this count now — I said 71 first and had not counted it. What merged and what was added is at the
-bottom, so you can check it rather than take it.
+**92 things**, counted at write time. **Every row was re-checked tonight by four verifiers reading diffs, not subjects.** A `?` means nobody could establish it either way — that is a real answer and there are 4 of them.
 
 ## Chat and scrolling
 
 | | | |
 |---|---|---|
-| 🔨 | **Chat jerks while you read it, with no input from you** | 688 corrections in your own session, 9 with any input. The correction writes to `scrollTop` and the scroller never moves — measured, 200 consecutive writes at one position. **A branch (`rc/anchored-list`) deletes this machinery rather than repairing it** — `captureViewportAnchor`, `restoreViewportAnchor` and `checkFollowInvariant` are gone on it. `scroll-owner` decides whether that lands |
-| 🔨 | **Sometimes you can't scroll up** | Sourced tonight from `react-virtuoso`'s own code: the repair aims at Virtuoso's model of the bottom, the gap is measured from the DOM's. Any height in the DOM the model doesn't know about is a permanent residual, so the repair fires every 500ms forever and you are scrolling against a writer that never stops. **Fix committed on a branch, not on your box** — and the same branch above may delete the writer entirely. `scroll-owner` |
-| 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design. Chat is migrated and running — it removes 1,198 lines and adds 2,463 across 18 files, so it is a replacement, not a reduction. Pan-mode scrolling is dead on that branch and is being wired now. Never rendered in front of you. `list-component` |
+| 🔨 | **Chat jerks while you read it, with no input from you** | The measurement is real; **whose session it is, is not established.** 688 corrections, 9 with input, scroller never moves, 200 consecutive writes at one position — but the session is attributed to you **by a shape id containing your name**, and both bursty sessions are `isTouch` while you are on the Air. **That inference is the one an agent was killed for tonight.** Treat the mechanism as sound and the attribution as open. Unowned — `scroll-owner` is gone |
+| 🔨 | **Sometimes you can't scroll up, and it's worse than it used to be** | Your words: *"it's kind of unusable now because it fucking limits what I can actually fucking see."* **A regression claim, and nobody has treated it as one.** The mechanism previously on this row ended at a scrollbar drag — you're on Safari, there is no scrollbar, and you have never touched one, so it explained nothing you have experienced. A commit for it landed and I reverted it off `main` for that reason (`5a1089f0d` → `a47b438e5`). `chat-scroll` |
+| 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design, on `rc/anchored-list`, 8 commits, none on `main` or your box. **Measured now: 16 files, +1796/−1240** — my earlier 18/+2463/−1198 was wrong. It also deletes two test files, so it removes the machinery and its coverage together. `list-component` |
 | ○ | Scroll-back prefetch | Your design is written down. Nothing built against it |
-| ○ | **Make the layer abstraction real** — a layer is a camera and a store | The largest thing on this list |
+| ⚠️ | **Make the layer abstraction real** — a layer is a camera and a store | **Built, on `rc/wm-layers`, not on `main` and not on your box.** The window manager says which layer a shape is in, shape membership is answered at the editor's core, and two things were deleted including a drop-point conversion that could never run. **This row said "not started, the largest thing on this list" until you asked whether someone had already fixed the window manager. You were right and the row was wrong.** Nobody has judged whether the branch should land |
 | ✅ | Thread cards expand and collapse again | `f8da9eb67`. Both controls. Was marked untouched; it had shipped |
 | ✅ | Fleet panels render once instead of twice | |
 
@@ -26,14 +25,14 @@ bottom, so you can check it rather than take it.
 
 | | | |
 |---|---|---|
-| 🔨 | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | Two network round-trips before anything appears, no pending state on the chip, no guard — so each extra click starts a whole new chain. **This is what filled your canvas tonight.** `markdown-chip-owner` |
-| 🔨 | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | Same owner, same worktree |
-| ○ | **Snap to grid draws a grid and does not snap to it** | **A row said this was fixed. Your report tonight says it is not, so the row is wrong and it is now open.** Neither snapping system found can draw many lines or draw a line it won't land on — there is a third source and nobody has found it. Unowned |
+| ⚠️ | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | Two network round-trips before anything appears, no pending state on the chip, no guard — so each extra click starts a whole new chain. **This is what filled your canvas tonight.** `markdown-chip-owner` **Fixed in `5e67afccb`, which is on `main` and not on your box** — its own message says "Not deployed." Both chip rows are that one commit |
+| ⚠️ | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | Same owner, same worktree **Fixed in `5e67afccb`, which is on `main` and not on your box** — its own message says "Not deployed." Both chip rows are that one commit |
+| ○ | **Snap to grid draws a grid and does not snap to it** | **A lead for whoever takes it:** nothing in our source ever *sets* `isGridMode` — the vendored tldraw schema defaults it **true**, while the pref we deliberately turned off is the other one, `isSnapMode`. Grid drawing and grid snapping are governed by the one nobody wrote. Not run, so a lead and not a cause. Unowned |
 | ○ | The layout button after a vertical split crashes the page | |
 | ○ | A two-margin layout renders into one margin with a gap on refresh | |
 | ✅ | Every sticky note anchors, not just voice notes | `91c77faf0` |
 | ✅ | Highlights stop drifting on refresh | |
-| ✅ | Shapes stop drifting on reload | `b75e0048a`. Was marked untouched; you call it a regression |
+| ? | Shapes stop drifting on reload | **The sha I cited was wrong.** `b75e0048a` gates *fleet HUD* anchors on camera restore — one file, `FleetHUD.tsx`, and it does not touch document shapes. If the row means the HUD, done. **If it means shapes in your document, nothing was found that fixes it** |
 | ○ | Notes written on the iPad while Yjs is offline are stranded | No longer unrecoverable — the emergency dump appears on the sync-failure screen. The stranding itself is unfixed |
 | ○ | Place-stack forward/back over documents | Built on a branch, never landed |
 | ○ | Pen/handwriting correction | Built on a branch, never landed |
@@ -43,7 +42,7 @@ bottom, so you can check it rather than take it.
 
 | | | |
 |---|---|---|
-| 🔨 | **The document panel shows the readme plus fourteen other documents' headings** | The build concatenates every linked document's headings into one TOC — 176 entries. Chapters-get-their-own-page is book behaviour running on something that is not a book. All documents belong on one canvas page. `doc-panel-owner` |
+| 🔨 | **The document panel shows the readme plus fourteen other documents' headings** | The build concatenates every linked document's headings into one TOC — 176 entries. Chapters-get-their-own-page is book behaviour running on something that is not a book. All documents belong on one canvas page. `doc-panel-owner` **A fix landed and was reverted with no reason recorded** (`5a539ad6a` → `883303c01`). |
 | ✅ | Figures render in colour, and have since `e69313a28` deployed | **Your figures are svglite markup inlined into the page SVG, not figure shapes** — zero `svg-figure` shapes among 548 on your `balancing-act` canvas, while page 16 carries Figure 1 as 116 polylines and 24 polygons inside the page itself. That commit removed the invert from the page container and the container was inverting them too. Everyone was looking at a shape type your paper does not contain. **What is left is smaller: the authored greys may read low-contrast on a dark family**, being looked at on the real page rather than argued from hex. `theme-palette-warm` |
 
 ## Themes and appearance
@@ -64,7 +63,7 @@ bottom, so you can check it rather than take it.
 
 | | | |
 |---|---|---|
-| ✅ | The settings panel regrouped; nine dead controls deleted or wired | 45 counted, 8 were inert |
+| ✅ | The settings panel regrouped; **six** dead controls deleted or wired | **The row said nine and the diff says six** — four features removed (five pref keys; the corner rail owns two) and two wired. **Two of the eight known-inert controls are still unaccounted for** and nobody could identify which |
 | ✅ | The composer rail uses your touch-target setting | |
 | ✅ | Download everything to a file, in the settings panel | |
 
@@ -77,11 +76,11 @@ bottom, so you can check it rather than take it.
 | ✅ | Moving a project keeps its history | Four versions in, four out |
 | ✅ | The linked-git and Overleaf tests | You called them important three times |
 | ✅ | The source editor works with two people in it | |
-| ✅ | The classroom book pushes, which it never could | 525 MB → 259 KB |
+| ✅ | The classroom book pushes, which it never could | 527 MB, not the 525 the row said. The cause was a push filter sending `.pdf` and `.log` files the manifest then dropped — a 409, not an out-of-memory |
 | ✅ | Quarto's cache stopped shipping in uploads | 212 MB, 54% of the payload |
 | ○ | Squash tlda's shadow commits the way Overleaf does | |
 | ○ | Create an Overleaf project from a git repo | |
-| ○ | Build the arXiv format as well as the journal one; `xr` compatibility | |
+| ? | Build the arXiv format as well as the journal one | **The `xr` half shipped in May and nobody noticed** — `detectXrSiblings()` scans for `\\externaldocument{}` and sorts targets so a dependent builds after the one whose `.aux` it reads. Nothing tests it. **Whether the app should emit both outputs, rather than you toggling a macro, is the other half and is not established.** This row is two things |
 
 ## Fleet, agents and bots
 
@@ -91,24 +90,23 @@ bottom, so you can check it rather than take it.
 | ○ | A handoff through Todd never works | Reported three times across three days. **Nobody has found a cause.** An inherited note said Todd was not running on `testing`; that is false — `fleet-todd` has been up since 22:27 and has been sending check-ins all night |
 | ○ | A bot's tmux session should die with the bot | You said "go for it" on 08-10. **My earlier wording was wrong: no session from July exists.** What exists is a *process* from 31 July — pid 800, **12 days elapsed, 195 minutes of CPU and still climbing** — waiting on `tmux wait-for` for a session name that was never created. The absent session is exactly why it never exits |
 | ○ | Bots have no real options | |
-| ○ | Reanimate does nothing and says nothing | |
+| ? | Reanimate does nothing and says nothing | **The "says nothing" half is fixed and on your box** — `3f6251e28` added the whole reanimate feedback path, pending/queued/error with a rendered status message, and server-side reasons. **"Does nothing" is not established:** the fleet has zero dead agents and killing one to test was out of scope |
 | ○ | Minting sonnet and terra agents fails silently | |
-| ○ | You sometimes load as a generated name instead of yourself | |
-| ○ | Name generation for first-time users was deleted | |
+| ? | **You sometimes load as a generated name, and name generation was deleted** | **These two rows contradict each other** — one says a generated name appears, the other says the generator is gone. Neither could be established: searches for the generator found nothing, but nobody could show the search would have found it under another name. **Merged, and both halves are unverified** |
 | ○ | Read receipts are gone — the UI is there, disconnected | |
-| ○ | A notification that fails to arrive must be noticed by the system | |
+| 🔨 | A notification that fails to arrive must be noticed by the system | **The noticing shipped and the reading did not.** `c330f231b` is on your box: the server requires an MCP ACK and builds a `notification_failure` onto the wake payload. **That literal appears exactly once outside tests — the writer.** Nobody reads it, so the system notices, tells the daemon, and the daemon drops it |
 | ○ | Unexplained wakes; build notices fan out to everyone who ever touched the project | |
-| ○ | `involving:(nobody & bot)` finds nothing for an agent you can name | |
+| ○ | `involving:(nobody & bot)` finds nothing for an agent you can name | **The cause is sharper than the row:** `nobody` is a real living agent, but `involving:nobody` returns rows belonging to a *different* agent, `pull-tells-nobody` — an exact name resolves to a substring match on somebody else, so the agent you named is never reached |
 | ○ | Inbox affordances: archive/delete, drag a sticky to an agent, task from a note | |
 | ○ | The history endpoint should announce pagination the way `thread` does | |
-| ○ | The build pill should name who sent it and who is responsible | |
-| ○ | Edit attribution for builds, shown in history | |
+| ○ | **Who caused a build, shown on the pill and in history** | Nothing implements it. **Merged from two rows** — the build pill naming who sent it and edit attribution in history are one ask wearing two surfaces. Split them again if you meant two |
 | ○ | The paper dependency graph, and edit-implication notices | Two things, your ruling |
 | ○ | Take build success away as a completion signal; an edit creates an obligation sized by its diff | |
 | ✅ | A fresh agent gets your project's macros | The photoshoot failure |
 | ✅ | Todd talks again, with a wake budget you set at 20 and `shut-up-todd` as a label | |
 | ✅ | A label dragged out of a chat filters, same as one from the agents panel | `5e6d3a4e9`. Was marked untouched |
 | ✅ | A live agent is never told it was hibernating | Was marked untouched |
+| ✅ | A message with unavailable macros warns instead of being refused | **It warns and sends** — `shared/chat-render-check.mjs` has an undefined-macro branch, the warning is appended to the result *after* the post and quotes the event id, which only exists because it sent. **Was marked not-started.** *(This was filed under Voice; it is about sending a message, and you asked why)* |
 | ✅ | Macros display in an agent's edits | Was marked untouched |
 
 ## Voice
@@ -117,9 +115,8 @@ bottom, so you can check it rather than take it.
 |---|---|---|
 | ✅ | Enter waits for your dictated tail to finalise | The message-repeating-itself thing |
 | ○ | Message send lag; you suspect the voice box config | |
-| ○ | The voice buffer cap, and a HUD that says which of two things is wrong | |
-| ○ | The voice provider picker: hide unconfigured, surface configured-but-unreachable | |
-| ○ | A message with unavailable macros was refused instead of warned | |
+| ✅ | The voice buffer cap, and a HUD that says which of two things is wrong | **Both halves shipped and are on your box** (`8b1decf8d`) — a 64 MiB `PcmBacklog` with a pref and a daemon-config key, and a HUD that returns exactly two failures, `buffered` versus `mic dead`, deliberately the same width so it does not strobe. **Was marked not-started.** Nothing tests it |
+| ✅ | The voice provider picker: hide unconfigured, surface configured-but-unreachable | **Both halves on your box.** Deepgram is offered only if its bridge URL is configured; unreachability is answered at connect time with a 503 rather than the option vanishing, plus a loading/ready/error state so uncertainty says so. **Was marked not-started** |
 
 ## Deploy and infrastructure
 
@@ -130,7 +127,7 @@ bottom, so you can check it rather than take it.
 | ○ | Zero magic numbers; limits in config files, not environment variables | |
 | ○ | Move the server and daemon JavaScript to TypeScript, gradually | |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
-| ✅ | A deploy can no longer report success on a box that is off | Ran twice, 10s and 20s. **It has never seen the failure it was written for**, so it is proven not to get in the way, not proven to catch anything |
+| ✅ | A deploy can no longer report success on a box that is off | **The fix is not in git** — it is `verify_serving()` in the deploy hooks, which polls your box for the pushed sha and fails the push otherwise. No `git log` can find it. It has run twice, 10s and 20s, both successes, so **it has still never seen the failure it was written for** |
 | ✅ | Push-to-deploy is cut over; the lying `deploy:live` alias is gone | |
 | ✅ | `config apply` retries its own I/O error | |
 
@@ -154,7 +151,7 @@ bottom, so you can check it rather than take it.
 | ✅ | The window manager, with its errata | |
 | ✅ | What an advocate is for, for chiefs and for advocates | Your 23:46 ruling |
 | ✅ | Naming errata — the list exists | You said fix it or at least write it down |
-| ○ | The README merge, then the photoshoot | Images are still July 1 |
+| ○ | The README merge, then the photoshoot | **The images are not "still July 1" as the row said** — all 50 run 2026-04-28 to 2026-07-29. Either way they predate every theme that shipped on 08-11 and 08-12, so they show a UI that no longer exists |
 | ○ | Documentation taxonomy, and an Overleaf onboarding section | |
 | ○ | GitHub release: push, tag a late-alpha | Tagging waits on you |
 | ○ | Submit tlda to JOSS | What the release is for |
