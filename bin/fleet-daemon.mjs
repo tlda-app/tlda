@@ -1085,6 +1085,14 @@ async function rpcMint(params = {}) {
     fleet_id: facts.fleetId,
     agent_id: facts.fleetId,
     name: facts.friendlyName,
+    // Which daemon prepared this mint. The bot path above already hands these
+    // three to wsMintShell, so the daemon has always known them — it just did
+    // not say so on the way back. Their absence is why the route-proof gate was
+    // reverted twice on 08-11: the real success path returned no proof and so
+    // failed identically to the denial path, which no denial test can catch.
+    machine_id: MACHINE_ID,
+    env_name: ACTIVE_ENV,
+    daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
     tmux_session: facts.processState?.tmux_session || null,
     session_id: facts.sessionId,
     joined: !!facts.joinedAt,
