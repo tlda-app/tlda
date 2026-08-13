@@ -31,6 +31,7 @@ import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES, placeFleetShapeAtScreenPoint } from './fleet-utils'
 import { getHudEditor } from '../wm/editor-host-bridge'
 import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { completeFleetAgentChatDrop } from '../fleet/fleet-onboarding'
 import { pagePointToClient } from '../wm/viewport-coordinates'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
@@ -485,6 +486,11 @@ export async function dropPillOnTarget(
   showError?: (message: string) => void,
 ) {
   const draggedPillType = (editor.getShape(pillId)?.props as { pillType?: string } | undefined)?.pillType
+  const completeAgentDropGuide = () => {
+    if (draggedPillType === 'agent') {
+      completeFleetAgentChatDrop(getHumanId(), getDeviceId())
+    }
+  }
   // Prefer the main editor for shape creation — the calling editor may be a
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
@@ -556,6 +562,7 @@ export async function dropPillOnTarget(
       })
       applyFilterPreviewWithIntent(previewEditor as unknown as FleetFilterIntentEditor, targetChat, preview, intent)
       chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', { detail: { chatId: targetChat.id } }))
+      completeAgentDropGuide()
       return
     }
   }
@@ -606,6 +613,7 @@ export async function dropPillOnTarget(
         chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
           detail: { chatId: hitShape.id },
         }))
+        completeAgentDropGuide()
         return
       }
     }

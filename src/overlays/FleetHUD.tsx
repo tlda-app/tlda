@@ -12,6 +12,13 @@ import { react } from 'tldraw'
 import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
+import { FleetBasestarGlyph } from '../pills/FleetIconPill'
+import {
+  dismissFleetGuide,
+  FLEET_AGENT_CHAT_DROP_EVENT,
+  readFleetGuideState,
+  startFleetGuide,
+} from '../fleet/fleet-onboarding'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes } from '../shapes/fleet-utils'
@@ -358,8 +365,12 @@ function getFleetHudDiagnostic(editor: Editor) {
 
 function FleetHudEmptyDiagnostic({
   diagnostic,
+  hasLayout,
+  onDismiss,
 }: {
   diagnostic: ReturnType<typeof getFleetHudDiagnostic>
+  hasLayout: boolean
+  onDismiss: () => void
 }) {
   const devices = diagnostic.sameUserDevices.length > 0
     ? diagnostic.sameUserDevices.join(', ')
@@ -368,27 +379,33 @@ function FleetHudEmptyDiagnostic({
   return (
     <div className="fleet-hud-diagnostic-wrap">
       <div className="fleet-hud-diagnostic" role="status" aria-live="polite">
-        <div className="fleet-hud-diagnostic-title">Fleet shapes are not visible on this device</div>
+        <button className="fleet-hud-guide-dismiss" type="button" onClick={onDismiss} aria-label="Dismiss fleet guide">×</button>
+        <div className="fleet-hud-diagnostic-title">
+          {hasLayout ? 'Talk to someone else' : 'Set up your workspace'}
+        </div>
         <div className="fleet-hud-diagnostic-body">
-          <p>
-            This browser has no owned fleet layout. TLDraw is loaded, but fleet
-            shapes are scoped by identity and device so another device's panels
-            are hidden instead of sharing touch targets.
-          </p>
-          <p>
-            Choose a default fleet layout from the fleet button to create panels
-            for this device.
-          </p>
-          <dl>
-            <div><dt>identity</dt><dd>{diagnostic.humanId || 'unresolved'}</dd></div>
-            <div><dt>device</dt><dd>{diagnostic.deviceId || 'unresolved'}</dd></div>
-            <div><dt>owned fleet shapes</dt><dd>{diagnostic.myFleetShapeCount}</dd></div>
-            <div><dt>same-user other-device shapes</dt><dd>{diagnostic.sameUserOtherDeviceCount}</dd></div>
-            <div><dt>other devices</dt><dd>{devices}</dd></div>
-            <div><dt>anchor exists</dt><dd>{diagnostic.anchorExists ? 'yes' : 'no'}</dd></div>
-            <div><dt>same-user anchors</dt><dd>{diagnostic.sameUserAnchorCount}</dd></div>
-            <div><dt>orphan fleet shapes</dt><dd>{diagnostic.orphanFleetShapeCount}</dd></div>
-          </dl>
+          {hasLayout ? (
+            <p>In <strong>Agents</strong>, find the person or agent you want. Drag their name onto a chat panel.</p>
+          ) : (
+            <div className="fleet-hud-guide-step">
+              <FleetBasestarGlyph size={28} />
+              <p><strong>Drag left on the ship button</strong> in the bottom right, then release over a layout.</p>
+            </div>
+          )}
+          <details className="fleet-hud-technical-details">
+            <summary>Technical details</summary>
+            <p>This browser's fleet panels are scoped to this identity and device.</p>
+            <dl>
+              <div><dt>identity</dt><dd>{diagnostic.humanId || 'unresolved'}</dd></div>
+              <div><dt>device</dt><dd>{diagnostic.deviceId || 'unresolved'}</dd></div>
+              <div><dt>owned fleet shapes</dt><dd>{diagnostic.myFleetShapeCount}</dd></div>
+              <div><dt>same-user other-device shapes</dt><dd>{diagnostic.sameUserOtherDeviceCount}</dd></div>
+              <div><dt>other devices</dt><dd>{devices}</dd></div>
+              <div><dt>anchor exists</dt><dd>{diagnostic.anchorExists ? 'yes' : 'no'}</dd></div>
+              <div><dt>same-user anchors</dt><dd>{diagnostic.sameUserAnchorCount}</dd></div>
+              <div><dt>orphan fleet shapes</dt><dd>{diagnostic.orphanFleetShapeCount}</dd></div>
+            </dl>
+          </details>
         </div>
       </div>
     </div>
@@ -415,6 +432,7 @@ export function FleetHUD({
   const layoutStoreEditorRef = useRef<Editor | null>(null)
   const layoutStoreUnsubRef = useRef<(() => void) | null>(null)
   const viewportId = FLEET_HUD_VIEWPORT_ID
+  const guideDeviceId = deviceReady ? getDeviceId() : ''
   const hudWm = useMemo(() => {
     const wm = getEditorWMCore(mainEditor)
     ensureFleetHudLayers(wm)
@@ -480,11 +498,41 @@ export function FleetHUD({
   const hudAnchorRef = useRef<FleetHudAnchor | null>(null)
   const hudBaseCameraRef = useRef<{ x: number; y: number; z: number }>(mainEditor.getCamera())
   const [cameraReady, setCameraReady] = useState(isDocumentCameraRestored)
+  const [guideActive, setGuideActive] = useState(false)
   const lastHudDiagSigRef = useRef('')
   const lastHudAnchorStateSigRef = useRef('')
   const hudCameraDivergedRef = useRef(false)
   const fleetBoundsTrackerRef = useRef<ReturnType<typeof createFleetBoundsTracker<any>> | null>(null)
   const gesturesEnabled = expanded && !!fleetBounds && docShapesReady && cameraReady
+
+  useEffect(() => {
+    if (!identityId || !guideDeviceId) {
+      setGuideActive(false)
+      return
+    }
+    const state = readFleetGuideState(identityId, guideDeviceId)
+    if (state === 'active') {
+      setGuideActive(true)
+      return
+    }
+    if (state === 'not-started' && !fleetBounds && docShapesReady && cameraReady) {
+      startFleetGuide(identityId, guideDeviceId)
+      setGuideActive(true)
+      return
+    }
+    setGuideActive(false)
+  }, [cameraReady, docShapesReady, fleetBounds, guideDeviceId, identityId])
+
+  useEffect(() => {
+    const onAgentChatDrop = () => setGuideActive(false)
+    window.addEventListener(FLEET_AGENT_CHAT_DROP_EVENT, onAgentChatDrop)
+    return () => window.removeEventListener(FLEET_AGENT_CHAT_DROP_EVENT, onAgentChatDrop)
+  }, [])
+
+  const dismissGuide = useCallback(() => {
+    dismissFleetGuide(identityId || '', guideDeviceId)
+    setGuideActive(false)
+  }, [guideDeviceId, identityId])
 
   useEffect(() => {
     if (isDocumentCameraRestored()) {
@@ -1383,10 +1431,12 @@ export function FleetHUD({
   // the room, but none are owned by this (identity, device), so the main canvas
   // hides them and the HUD has no bounds to render.
   if (!fleetBounds) {
-    if (expanded) {
+    if (guideActive && identityId && guideDeviceId) {
       return (
         <FleetHudEmptyDiagnostic
           diagnostic={getFleetHudDiagnostic(mainEditor)}
+          hasLayout={false}
+          onDismiss={dismissGuide}
         />
       )
     }
@@ -1395,7 +1445,13 @@ export function FleetHUD({
 
   // Collapsed: nothing — FleetIconPill in the build-pills-row handles show/hide
   if (!expanded) {
-    return null
+    return !guideActive ? null : (
+      <FleetHudEmptyDiagnostic
+        diagnostic={getFleetHudDiagnostic(mainEditor)}
+        hasLayout={true}
+        onDismiss={dismissGuide}
+      />
+    )
   }
 
   const activeFleetBounds = readMaintainedFleetBounds() || fleetBounds
@@ -1462,6 +1518,13 @@ export function FleetHUD({
   })
   return (
     <>
+      {guideActive && (
+        <FleetHudEmptyDiagnostic
+          diagnostic={getFleetHudDiagnostic(mainEditor)}
+          hasLayout={true}
+          onDismiss={dismissGuide}
+        />
+      )}
       <div
         className="fleet-hud-wrap"
         ref={hudRef}

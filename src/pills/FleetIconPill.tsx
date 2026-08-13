@@ -40,6 +40,17 @@ const BASESTAR_PATHS = (
   </>
 )
 
+export function FleetBasestarGlyph({ size = 20 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 960 960" width={size} height={size} aria-hidden="true"
+      style={{ display: 'block', flexShrink: 0 }}>
+      <g fill="currentColor">
+        <g transform="translate(0,960) scale(1,-1)">{BASESTAR_PATHS}</g>
+      </g>
+    </svg>
+  )
+}
+
 const FLEET_DISCONNECTED_CONDITION = 'fleet-socket-disconnected'
 
 const DRAG_THRESHOLD = 6   // px before drag activates
