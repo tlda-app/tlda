@@ -78,9 +78,8 @@ not live on your box, and one of those is a documentation file.
 | ✅ | The source editor works with two people in it | |
 | ✅ | The classroom book pushes, which it never could | 527 MB, not the 525 the row said. The cause was a push filter sending `.pdf` and `.log` files the manifest then dropped — a 409, not an out-of-memory |
 | ✅ | Quarto's cache stopped shipping in uploads | 212 MB, 54% of the payload |
-| ○ | Squash tlda's shadow commits the way Overleaf does | |
 | ○ | Create an Overleaf project from a git repo | |
-| ? | Build the arXiv format as well as the journal one | **The `xr` half shipped in May and nobody noticed** — `detectXrSiblings()` scans for `\\externaldocument{}` and sorts targets so a dependent builds after the one whose `.aux` it reads. Nothing tests it. **Whether the app should emit both outputs, rather than you toggling a macro, is the other half and is not established.** This row is two things |
+| ○ | Build the arXiv format as well as the journal one | **It builds what the LaTeX document asks for.** The `xr` half shipped in May and nobody noticed — `detectXrSiblings()` scans for `\externaldocument{}` and sorts targets so a dependent builds after the one whose `.aux` it reads. Nothing tests it |
 
 ## Fleet, agents and bots
 
