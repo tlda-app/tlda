@@ -202,6 +202,25 @@ We deploy several times a night and tabs stay open for days, so this is a standi
 hazard rather than a hypothetical: **changing a custom shape's props is also a
 change that can permanently disconnect every tab already open.**
 
+Two things follow that are easy to get wrong in opposite directions.
+
+**The remedy on offer is destructive and the problem is not.** A stranded tab is
+running older code than the server. Nothing is broken and nothing needs clearing,
+yet the error surface carries a "Clear broken shapes" action. A version mismatch
+is the one case where deleting the user's shapes cannot be the answer, because
+their work is intact on both sides of the wire.
+
+**And the fix is not to reload the tab.** An open tab must never reload under
+someone — see the deploy runbook and the ruling behind it. What a stranded tab can
+honestly do is say what happened, keep the work readable, and leave the timing to
+the person: this tab is running code older than the server, nothing is lost, open
+a new one when it suits you.
+
+The other half is prevention, and it is already in place: a shape's props are
+defined once in `shared/shapes/` and imported by both the client utility and the
+server schema, so the two cannot drift apart by being edited separately. A new
+custom shape that defines its props twice reintroduces this class.
+
 ## Projects, documents, and navigation
 
 A project is the shared world. A document is a place within that project.
