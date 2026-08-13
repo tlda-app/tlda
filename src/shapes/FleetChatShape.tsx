@@ -95,6 +95,7 @@ import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
 // @ts-ignore — vanilla JS module
 import { decideFollowTransition, isTrueBottomGap } from './chatScrollIntent.mjs'
+import { prettyFoldKey } from './fleet-chat-fold-key.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { Terminal } from 'xterm'
@@ -1750,28 +1751,6 @@ function addEventParticipantIds(ids: Set<string>, event: any) {
       if (typeof id === 'string' && id) ids.add(id)
     }
   }
-}
-
-// The remembered-expansion key for a gap marker or its rows. Both halves of the
-// pair carry the same `data-fold-id`, so the click that expands and the restore
-// that re-expands after a re-render name the same thing without either of them
-// counting siblings. They used to: the click indexed the button among the row's
-// `.pretty-expand-btn`, the restore indexed the rows among the view's
-// `.pretty-more-rows`, and the two agreed only while a row held exactly one
-// expand button. A thread whose front rows contain a search activity renders a
-// second one, so the marker was written under `:pretty:1` and read back under
-// `:pretty:0` -- the expansion was remembered and never found again, which is
-// the card growing and collapsing a frame later.
-//
-// The card's own semantic key qualifies it so two thread cards merged into one
-// chat row do not share a fold. The positional fallback is for markup that
-// predates the attribute.
-function prettyFoldKey(itemKey: string, el: HTMLElement, fallbackIndex: number) {
-  const foldId = el.dataset.foldId
-  if (!foldId) return `${itemKey}:pretty:${fallbackIndex}`
-  const card = el.closest('.semantic-operation-body') as HTMLElement | null
-  const semanticKey = card?.dataset.semanticKey || ''
-  return `${itemKey}:pretty:${semanticKey}:${foldId}`
 }
 
 function agentRenderSignature(agent: any) {

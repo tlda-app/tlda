@@ -170,3 +170,110 @@ test('a collapsed thread does not render the floating collapse control', () => {
   // And that class is actually toggled, or the rule above is decoration.
   assert.match(component, /thread-middle-open/)
 })
+
+// The expansion has to survive the card being re-rendered under it, and it was
+// remembered under a key each side computed by counting siblings: the click
+// indexed the button among the ROW's `.pretty-expand-btn`, the restore indexed
+// the rows among the VIEW's `.pretty-more-rows`. Those agree only while a row
+// holds exactly one expand button -- and a thread whose front rows carry a
+// search activity renders a second one, so the marker was written under
+// `:pretty:1` and read back under `:pretty:0`. Skip, 8/12 17:15:36 EDT: "I got
+// the collapse button, but nothing else changed other than a flicker. So it
+// grew instantaneously and then collapsed back."
+//
+// The pairing is now in the markup, so pin the markup.
+test('the gap marker and its rows name each other without counting siblings', () => {
+  const html = renderThreadRows(threadRows(1, 16), ctx)
+
+  assert.match(html, /class="pretty-expand-btn" data-fold-id="thread-middle"/)
+  assert.match(html, /class="pretty-more-rows" data-fold-id="thread-middle"/)
+
+  // The count that used to shift the key. A second expand button ahead of the
+  // marker must not change what either side calls it.
+  const withSearch = renderThreadRows([
+    { timestamp: '9:00:00 AM', activity: { _toolName: 'mcp__tlda__search', _toolInput: { query: 'x' }, type: 'tool', from: 'a' } },
+    ...threadRows(1, 15),
+  ], ctx)
+  assert.equal((withSearch.match(/pretty-expand-btn/g) || []).length, 2)
+  assert.equal((withSearch.match(/data-fold-id="thread-middle"/g) || []).length, 2)
+})
+
+// Two thread cards merged into one chat row must not share a fold, so the key
+// carries the card's own semantic key. The bare mount point is still bare of a
+// shell -- this is an identifier, not a control.
+test('a thread mount point carries its semantic key', () => {
+  const source = readFileSync(new URL('../src/fleet/activity-render.mjs', import.meta.url), 'utf8')
+  assert.match(source, /class="semantic-operation-body" data-semantic-key="\$\{key\}"/)
+})
+
+// One function, called by both sides. Two call sites computing a key
+// independently is what broke, and a second implementation would break it the
+// same way whatever the markup says.
+test('the click and the restore compute the fold key with the same function', () => {
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+  assert.equal((source.match(/prettyFoldKey\(itemKey, /g) || []).length, 2)
+  assert.doesNotMatch(source, /`\$\{itemKey\}:pretty:\$\{i\}`/)
+})
+
+// The two sides start from different elements -- the click holds the button,
+// the restore holds the rows -- and reach the key through different roots. Run
+// the real function over the real markup from both ends and from both roots.
+test('the button and the rows resolve to one key, whatever is rendered around them', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { prettyFoldKey } = await import('../src/shapes/fleet-chat-fold-key.mjs')
+
+  const card = (rows) => `<div class="semantic-operation-body" data-semantic-key="T1">${renderThreadRows(rows, ctx)}</div>`
+  const searchActivity = { timestamp: '9:00:00 AM', activity: { _toolName: 'mcp__tlda__search', _toolInput: { query: 'x' }, type: 'tool', from: 'a' } }
+
+  for (const [label, rows] of [
+    ['plain thread', threadRows(1, 16)],
+    ['a search activity ahead of the marker', [searchActivity, ...threadRows(1, 15)]],
+  ]) {
+    const dom = new JSDOM(`<div data-item-key="row-7">${card(rows)}</div>`)
+    const row = dom.window.document.querySelector('[data-item-key]')
+    const view = dom.window.document.querySelector('.semantic-operation-body')
+    const btn = view.querySelector('.pretty-expand-btn[data-fold-id="thread-middle"]')
+    const moreRows = view.querySelector('.pretty-more-rows')
+
+    // What the click writes, indexing across the whole row.
+    const allBtns = [...row.querySelectorAll('.pretty-expand-btn')]
+    const written = prettyFoldKey('row-7', btn, Math.max(0, allBtns.indexOf(btn)))
+    // What the restore reads, from the view and from the row -- both callers.
+    const fromView = prettyFoldKey('row-7', moreRows, [...view.querySelectorAll('.pretty-more-rows')].indexOf(moreRows))
+    const fromRow = prettyFoldKey('row-7', moreRows, [...row.querySelectorAll('.pretty-more-rows')].indexOf(moreRows))
+
+    assert.equal(written, fromView, label)
+    assert.equal(written, fromRow, label)
+    assert.equal(written, 'row-7:pretty:T1:thread-middle', label)
+  }
+})
+
+// And two thread cards in one row do not share a fold.
+test('merged thread cards keep separate folds', async () => {
+  const { JSDOM } = await import('jsdom')
+  const { prettyFoldKey } = await import('../src/shapes/fleet-chat-fold-key.mjs')
+
+  const dom = new JSDOM(`<div data-item-key="row-7">
+    <div class="semantic-operation-body" data-semantic-key="T1">${renderThreadRows(threadRows(1, 16), ctx)}</div>
+    <div class="semantic-operation-body" data-semantic-key="T2">${renderThreadRows(threadRows(1, 16), ctx)}</div>
+  </div>`)
+  const [a, b] = [...dom.window.document.querySelectorAll('.pretty-more-rows')]
+  assert.notEqual(prettyFoldKey('row-7', a, 0), prettyFoldKey('row-7', b, 1))
+})
+
+// A tap makes the browser send its own click after the one we re-dispatch, for
+// any element it treats as clickable -- not only the <button> targets the
+// re-dispatch excludes. Both ran, so every toggle undid itself on iPad and pen.
+// The follow-up is swallowed above the target, which is what keeps it away from
+// the code-block fold's inline onclick as well as this handler.
+test('the re-dispatched tap does not leave a second click behind', () => {
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /redispatchedTapTarget = hit\s*\n\s*hit\.click\(\)/)
+  assert.match(source, /const onClickCapture = \(e: MouseEvent\) => \{/)
+  // Capture phase, or it arrives after the inline handler it has to stop.
+  assert.match(source, /addEventListener\('click', onClickCapture, true\)/)
+  assert.match(source, /removeEventListener\('click', onClickCapture, true\)/)
+  // Only the browser's own follow-up, never our re-dispatch.
+  assert.match(source, /if \(!e\.isTrusted \|\| Date\.now\(\) >= redispatchedTapUntil\) return/)
+})
