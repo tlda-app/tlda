@@ -1,11 +1,11 @@
 # The list {#the-list}
 
-**72 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**74 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **7 of the 54 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
-**⚠️ built and finished, but not on your box — 2 rows as of 19:52 EDT**, against the box named below. **From where you sit it is indistinguishable from not-done.** That count moves whenever
+**⚠️ built and finished, but not on your box — 2 rows as of 19:53 EDT**, against the box named below. **From where you sit it is indistinguishable from not-done.** That count moves whenever
 anything merges, so it is re-derived every time this file is written. · **✓? built and on your box,
 and nobody has confirmed it works for you** — each of these says on its own row what would retire
 it. ·
@@ -19,10 +19,10 @@ module — **the tab you are reading this in is still running the bundle it load
 the eight `✓?` rows reach your screen until you refresh. Nothing here says you have seen any of it.
 
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
-gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 72 are things you asked for.**
+gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 74 are things you asked for.**
 
-Your box runs `7bfdc285c`, read from `/api/build-info` at 19:52 EDT — **it deployed at 23:00 and most of
-tonight reached you.** `main` is `ba15b337a`, **4 commits ahead, of which 1 changes code, in 1 code file.** **Code means everything that is not `*.md` and not under `docs/`; a
+Your box runs `7bfdc285c`, read from `/api/build-info` at 19:53 EDT — **it deployed at 23:00 and most of
+tonight reached you.** `main` is `c8c9f0cf9`, **4 commits ahead, of which 1 changes code, in 1 code file.** **Code means everything that is not `*.md` and not under `docs/`; a
 test means `bin/`, `*.test.*` or `*-test.mjs`.** Every number is re-derived on each write.
 
 ## Chat and scrolling
@@ -44,6 +44,8 @@ test means `bin/`, `*.test.*` or `*-test.mjs`.** Every number is re-derived on e
 
 | | | |
 |---|---|---|
+| ○ | **The snapping lines are still too loud** | **You raised this twice.** At 03:20 this morning: *"the lines are just, like, really hyper visible. And annoying"*, *"they should be subtle fucking guides."* **That produced a fix** — neutral grey at rest, on `main`. **Tonight, using it:** *"snapping lines should be subtler. That's been discussed. Much subtler."* **So this is not a new complaint and not an unfixed one — it is a fix that did not go far enough**, and the §Decided entry that said not to reopen it has been corrected. **No owner.** *Leaves the list when you stop noticing them.* |
+| ○ | **The guides do not say which line you will actually snap to** | **Your words:** *"there should be some visual indication that you're gonna snap to one. Like, which lines you're snapping to."* **So the guides currently say that guides exist rather than what is about to happen.** **And you gave the constraint on the fix in the same breath, which is the part to keep:** *"maybe not thickened — that would change what you're snapping to — but they should be made more bold or whatever."* **Thickening a guide moves the line it represents, so the indicator would alter the thing it indicates.** **The emphasis has to be weight, opacity or colour — not width.** Without that on the row the first person to build it reaches for stroke width, which is the obvious move and the wrong one. **This is a different ask from making them subtler** — that one is *quieter*, this one is *say which one is live* — **and they pull against each other, so whoever takes both should know that.** **No owner.** *Leaves the list when you can see which line you are about to snap to.* |
 | ○ | **Multi-touch resize and move do not snap** | **Your words:** *"the sort of, like, multi touch resize and move — when we do layout changes using touch, we don't get the snapping behavior. Which we would like."* **Resize and move both, multi-touch specifically. Not urgent — you said so.** **This is not missing snapping:** resize snapping landed tonight as `0049622e4`, *"a resized panel's edge snaps to its neighbours, not just a moved one"*, carrying the guides that persisted after a drag that touched nothing. **So it is snapping that does not reach the touch path.** **Same shape as the PIP row above and deliberately not merged with it** — different code, but two surfaces tonight where a feature works on pointer and not on touch, **so whoever picks up either should read the other first.** **No owner.** *Leaves the list when a two-finger resize or move snaps the way a pointer one does.* |
 | ⚠️ | **The picture-in-picture does not respond to touch or stylus** | **Your report, iPad, tonight:** *"the picture in picture viewer has no response to touch or stylus, so I have no idea whether that's miscalibrated or what."* **Chat and the main document both behave correctly on the same device**, so it is the PIP and not the tablet. **On your box now.** **A lead, `app-fix-forward`'s and not established:** `TldrawViewport.tsx:143` gates its pointer path on `event.pointerType !== 'touch'`, **and a stylus reports `pen`** — and `52fc2ef5e` fixed the wheel path only. **No owner.** *Leaves the list when a touch and a stylus move the PIP the way they move the document.* |
 | ⚠️ | **Scroll direction depends on which device you use** | **Same build, same three surfaces, tonight:** mouse wheel — all three agree, *"everything lines up now with mouse wheel"*; **trackpad — chat goes backward**; iPad touch — chat and the document correct, PIP dead. **Nothing in the source differs per device**, which is why six code changes tonight could not settle it. **On your box now. No owner.** *Leaves the list when the three surfaces agree on a trackpad and on touch, not only on a wheel.* |
@@ -271,8 +273,11 @@ it.
 anymore."* Recorded, not acted on — it is a bot, and it is one of only two readers of the per-bot
 prefs, so retiring it touches the bots-options row. Somebody will ask you what you meant.
 
-**The snap guides were too loud and are now neutral grey at rest** — your complaint, your fix, on
-`main`. Nobody should reopen *"the guides are too visible"*.
+**The snap guides were made neutral grey at rest after you called them too loud** — your complaint,
+your fix, on `main`. **You reopened it tonight and this entry no longer forecloses it:** *"snapping
+lines should be subtler. That's been discussed. Much subtler."* **So the fix landed and did not go
+far enough**, which is a row now rather than a settled question. **Kept here rather than deleted so
+nobody re-derives the first round.**
 
 **A pinned annotation viewer pans, it does not scroll itself.** Your ruling: *"it should PAN"* —
 the viewer is a window onto the canvas, not a panel with its own scrollbar. The behaviour that
