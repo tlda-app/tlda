@@ -20,7 +20,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
 invented — the arXiv build — and it is gone. **The other 51 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 06:13 EDT; `main` is `63b573d11`, 3 ahead — all
+Your box runs `2e763c010`, read from `/api/build-info` at 06:17 EDT; `main` is `c45f88167`, 4 ahead — all
 of it list-keeping, no unshipped fixes.
 
 ## Chat and scrolling
@@ -46,7 +46,7 @@ of it list-keeping, no unshipped fixes.
 | ✓? | **Resize snapping** | **The only open part of snapping, and it merged tonight** — `0049622e4`, *"a resized panel's edge snaps to its neighbours, not just a moved one"*, which also carries the guides that persisted after a drag that touched nothing. **On your box since the 06:04 deploy.** *Leaves the list when a resize snaps on your box and no guide is left behind.* `panel-snap` |
 | ⏸ | **Shapes drift into the document on reload** | **Tabled by you, and your reason:** *"I tabled the second because I think it's I didn't observe it."* You reloaded twice and highlights held — once on Markdown, once on **balancing act** — so both render paths were tried. **Two clean observations are not an absence**, and drift is the class that returns intermittently. **No reproduction exists**, which is the difference between this and the two-margin row. *Comes back if it moves again.* |
 | ⏸ | **Notes written on the iPad while Yjs is offline are stranded** | **Tabled by you, not fixed** — *"the stranding thing is fucking fine. I guess."* The stranding itself is unfixed; what makes it survivable is that the emergency dump appears on the sync-failure screen and notes export to markdown. **I deleted this earlier as finished and that was wrong** — you decided it does not matter, which is not the same as it being done. *Comes back if you lose work to it.* |
-| 🔨 | **The layout button after a vertical split crashes the page** | **Fixed and on `main`: `0f8b13c13`**, *"the doc viewer's layout button no longer remounts it to death"*, one file, `FleetDocViewShape.tsx`. **On your box now — the deploy at 06:04 serves `2e763c010`, which contains it.** `wm-layers-rc` has a run where the click demonstrably engaged and is building a control, so this is being worked rather than waiting. **Reproduced, with a cause and a control.** On `eiv-paper`: **51 remounts against React's limit of 50.** The control — the same sequence on a chat panel — does not crash. **The row said nobody looked and that is no longer true.** Not fixed. *Leaves the list when the sequence stops remounting past the limit and you can split without it going white.* `canvas-bugs` |
+| 🔨 | **The layout button after a vertical split crashes the page** | **Fixed and on `main`: `0f8b13c13`**, *"the doc viewer's layout button no longer remounts it to death"*, one file, `FleetDocViewShape.tsx`. **On your box now — the deploy at 06:04 serves `2e763c010`, which contains it.** **That verification was withdrawn by the agent who ran it.** The control read identical to the treatment — *fix build: 0 mounts, 0 removals, no crash; control build with the fix reverted: the same* — **and identical numbers from opposite builds means the rig measured nothing.** **Why, and this is what the next attempt needs first:** `FleetDocViewShape.tsx:711` mounts `CanvasClipPanel` only when `bounds && docviewSurface && mainEditor && (targetShapeId \|\| svgReady)`, so **a default-layout docview has no target and no bounds and the nested viewport never mounts** — the ⊞ click engaged on a panel with nothing inside it. **`nestedViewport: false` is the discriminator: assert it is `true` before measuring, rather than discovering afterwards that it was not.** **`canvas-bugs`' original measurement is untouched** — 51 mounts against React's 50-deep limit on `eiv-paper`, with a chat-panel control that did not crash. The gap was the scratch project, not their finding. **Landed and unverified; a void measurement is not evidence in either direction.** **Reproduced, with a cause and a control.** On `eiv-paper`: **51 remounts against React's limit of 50.** The control — the same sequence on a chat panel — does not crash. **The row said nobody looked and that is no longer true.** Not fixed. *Leaves the list when the sequence stops remounting past the limit and you can split without it going white.* `canvas-bugs` |
 | ⏸ | **A two-margin layout renders into one margin with a gap on refresh** | **Tabled by you:** *"we can probably table the two margin layout thing. Because, like, I haven't seen it for a while."* **Unlike the drift row, this one has a reproduction** — `canvas-bugs` reproduced it — so it is parked with a way back in, not parked for lack of evidence. *Comes back if you see it again, and there is already a repro to start from.* |
 | ○ | **Why your iPad did not reconnect** | **Nobody has checked.** Agents have speculated the shape schema changed; **that is speculation nobody has tested, and it is on this row as speculation, not as a cause.** *Leaves the list when someone reads the session record for that reconnect and can say what happened.* |
 | ○ | Place-stack forward/back over documents | Built on a branch, never landed |
@@ -208,6 +208,14 @@ own opinions into his. **The evidence half was added on 2026-08-13** when a row 
 command he ran rather than by a ruling: the rule as first written would have forced that fact out
 of the section entirely, which is how a true finding gets deleted silently instead of recorded.
 **Eight entries quote him; two cite evidence and name who produced it; checked.**
+
+**Run a case whose answer you already know, before you believe the one you don't.** That is the
+cheapest reliable check anyone here has found, and it has now caught two failures of opposite
+kinds. **A search that found nothing:** an `-iE` flag this seat passed to `git log --grep` was
+invalid, stderr was swallowed, and all 56 open rows came back "nothing" — a control row with a
+known match exposed it. **A test that found nothing:** a crash-fix rig reported 0 mounts and no
+crash, and so did the same rig with the fix reverted, because the panel under test never mounted.
+**Neither was visible from its own output.** Both were one known-answer case away from obvious.
 
 **A grep is evidence about a pattern, not about a fact — and shipped code is minified.** A first
 bundle check tonight reported the entire deploy missing: `0.0375` ships as `.0375`, and
