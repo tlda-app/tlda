@@ -369,11 +369,22 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   }, [bounds, doc])
   // Start ready when the SVG is already in the store, rather than false-then-true
   // one effect later. Starting false renders the placeholder for a frame, which
-  // unmounts the clip panel's nested viewport; remounting that viewport measures
-  // and re-registers it, and a re-registration changes what the outer viewport
-  // considers visible, which remounts this shape — resetting this state to false
-  // again. That is a cycle, and React ends it by killing the page at its
-  // update-depth limit. The initializer only runs on mount, so a page that
+  // unmounts the clip panel's nested viewport.
+  //
+  // Measured on the ⊞ layout button, one click, before this change: 51 mounts of
+  // .clip-panel against React's nested-update limit of 50, and 103 flips of this
+  // state. The effect below ran 104 times and took the have-svg branch every
+  // time, on one doc object — so nothing called setSvgReady(false) and the resets
+  // are remounts, which is what useState(false) does on a fresh mount.
+  //
+  // What remounts the shape is NOT established. Two mechanisms were proposed and
+  // both are dead: an equality guard in the fork's TldrawViewport cannot help
+  // (a fresh mount starts at useState(null), so the new Box is never equal), and
+  // re-registration does not drive it either (notVisibleShapes returns prevValue
+  // when the set is unchanged, so an identical registration emits nothing).
+  // Removing the flip is the same move as 1517e7378, which fixed this remount
+  // class for chat and agents by de-duplicating by value; see the note at
+  // CanvasClipPanel.tsx:266. The initializer only runs on mount, so a page that
   // genuinely has no SVG yet is still the effect's business, unchanged.
   const [svgReady, setSvgReady] = useState(() => {
     if (boundsPageIdx < 0) return false
