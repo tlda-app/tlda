@@ -23,7 +23,6 @@ import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { agentDisplayLabel } from '../shapes/fleet-utils'
 // @ts-ignore - vanilla JS module
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
-import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import {
   DEFAULT_READABILITY_PROFILE,
   getCurrentReadabilityDeviceId,
@@ -32,13 +31,6 @@ import {
 } from '../readabilityProfile'
 
 type DeviceRecord = { lastSeen: string }
-
-const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
-const SOURCE_LABELS: Record<(typeof ALL_SOURCES)[number], string> = {
-  ref: 'References',
-  proof: 'Proofs',
-  errors: 'Errors',
-}
 
 const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
 
@@ -52,12 +44,12 @@ type PrefsSectionId = 'account' | 'appearance' | 'reading' | 'input' | 'panels' 
 const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
   account: 'account user identity devices switch device name',
   appearance: 'appearance theme colour color scheme dark light system one fog lilac warm power mono blue text font size line height faint opacity chrome content',
-  reading: 'reading document toc hover region table of contents stingy doc viewer sources references proofs errors ribbon provenance slide advance fragments note color voice notes',
-  input: 'input touch target pointer thumb highlighter edge zone corner controls voice slider response curve editor vim',
+  reading: 'reading document toc hover region table of contents stingy doc viewer ribbon provenance note color voice notes',
+  input: 'input touch target pointer thumb highlighter edge zone response curve editor vim',
   panels: 'panels fleet layout height rail chat margin aspect snap strength nudge tool output fold bash write markdown diff thread card messages',
   voice: 'voice backend meter submit phrases ignored deepgram idle cutoff preroll endpointing',
   radio: 'radio agent subtitles card dwell',
-  bots: 'bots self check countdown model',
+  bots: 'bots self check countdown',
 }
 type VoiceBackendOption = { value: string; label: string; available: boolean }
 type SpeechRecognitionWindow = Window & {
@@ -272,7 +264,6 @@ function CollapsiblePrefsSection({
 function readAll() {
   return {
     openSections: getPref('prefs-open-sections') as PrefsSectionId[],
-    sources: getPref('docview-sources'),
     voiceColor: getPref('voice-note-color'),
     curve: getPref('response-curve'),
     knownDevices: getPref('known-devices'),
@@ -307,26 +298,20 @@ function readAll() {
     semanticOperationPageSize: getPref('semantic-operation-page-size'),
     documentStingyMode: getPref('document-stingy-mode'),
     hlZone: getPref('hl-zone-enabled'),
-    cornerRail: getPref('corner-rail-enabled'),
-    cornerSize: getPref('corner-control-size'),
-    slidesNavigationMode: getPref('slides-navigation-mode'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
     selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
     botSelfCheckEnabled: getPref('bot-self-check-enabled'),
     botSelfCheckCountdown: getPref('bot-self-check-countdown-sec'),
-    botModel: getPref('bot-model'),
     loadError: getPrefsLoadError(),
   }
 }
 
 export function PrefsTab({ query = '' }: { query?: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
   const { backends: voiceBackends, status: voiceBackendsStatus } = useVoiceBackends()
-  const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
 
@@ -359,13 +344,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
     root.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => root.removeEventListener('wheel', onWheel, true)
   }, [])
-
-  const toggleSource = useCallback((src: string) => {
-    const next = prefs.sources.includes(src)
-      ? prefs.sources.filter(s => s !== src)
-      : [...prefs.sources, src]
-    setPref('docview-sources', next)
-  }, [prefs.sources])
 
   const handleVoiceColor = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setPref('voice-note-color', e.target.value)
@@ -443,14 +421,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
 
   const setBotCountdown = useCallback((botId: string, seconds: number) => {
     setPref('bot-self-check-countdown-sec', { ...(getPref('bot-self-check-countdown-sec') as Record<string, number>), [botId]: seconds })
-  }, [])
-
-  const setBotModel = useCallback((botId: string, model: string) => {
-    const current = getPref('bot-model') as Record<string, string>
-    const next = { ...current }
-    if (model) next[botId] = model
-    else delete next[botId]
-    setPref('bot-model', next)
   }, [])
 
   return (
@@ -547,19 +517,11 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           </div>
         </PrefSubsection>
 
-        <PrefSubsection title="Doc viewer sources">
+        <PrefSubsection title="Doc viewer">
           <label className="prefs-check">
             <input type="checkbox" checked={prefs.documentStingyMode} onChange={e => setPref('document-stingy-mode', e.target.checked)} />
             <span>Stingy mode</span>
           </label>
-          <div className="prefs-source-checks">
-            {ALL_SOURCES.map(src => (
-              <label key={src} className="prefs-check">
-                <input type="checkbox" checked={prefs.sources.includes(src)} onChange={() => toggleSource(src)} />
-                <span>{SOURCE_LABELS[src]}</span>
-              </label>
-            ))}
-          </div>
         </PrefSubsection>
 
         <PrefSubsection title="Ribbon provenance">
@@ -571,22 +533,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           </select>
         </PrefSubsection>
 
-        <PrefSubsection title="Slide advance">
-          <label className="prefs-row">
-            <span>Mode</span>
-            <select
-              value={prefs.slidesNavigationMode}
-              onChange={e => {
-                const mode = e.target.value === 'orthogonal-fragments' ? 'orthogonal-fragments' : 'inline-fragments'
-                setPref('slides-navigation-mode', mode)
-              }}
-              className="prefs-select"
-            >
-              <option value="inline-fragments">Click through fragments</option>
-              <option value="orthogonal-fragments">Slides left/right, fragments vertical</option>
-            </select>
-          </label>
-        </PrefSubsection>
 
         <PrefSubsection title="Note color">
           <div className="prefs-color-row">
@@ -673,7 +619,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
         open={prefs.openSections.includes('radio')}
         onToggle={toggleSection}
       >
-        <PrefSubsection title="Radio">
+        <PrefSubsection title="Subtitles">
           <label className="prefs-check">
             <input type="checkbox" checked={prefs.radioSubtitlesEnabled} onChange={e => setPref('radio-subtitles-enabled', e.target.checked)} />
             <span>Agent subtitles</span>
@@ -717,29 +663,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           </label>
         </PrefSubsection>
 
-        <PrefSubsection title="Corner controls">
-          <label className="prefs-check">
-            <input
-              type="checkbox"
-              checked={prefs.cornerRail}
-              onChange={e => setPref('corner-rail-enabled', e.target.checked)}
-            />
-            <span>Voice slider</span>
-          </label>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Corner size</span>
-            <input
-              type="number"
-              min={0}
-              max={88}
-              step={4}
-              value={prefs.cornerSize}
-              onChange={e => setPref('corner-control-size', Number(e.target.value))}
-              className="prefs-num"
-            />
-            <span className="prefs-num-unit">{prefs.cornerSize ? 'px' : 'auto'}</span>
-          </div>
-        </PrefSubsection>
 
         <PrefSubsection title="Edge-zone response curve">
           <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
@@ -844,7 +767,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           const botId = bot.id as string
           const enabled = prefs.botSelfCheckEnabled[botId] ?? prefs.selfCheckEnabled
           const countdown = prefs.botSelfCheckCountdown[botId] ?? prefs.selfCheckCountdown
-          const model = availableModels.includes(prefs.botModel[botId]) ? prefs.botModel[botId] : ''
           return (
             <PrefSubsection key={botId} title={agentDisplayLabel(bot, agents)}>
               <label className="prefs-check">
@@ -855,13 +777,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
                 <span className="prefs-num-label">Countdown</span>
                 <input type="number" min={5} max={300} step={5} value={countdown} onChange={e => setBotCountdown(botId, Number(e.target.value))} className="prefs-num" />
                 <span className="prefs-num-unit">sec</span>
-              </div>
-              <div className="prefs-num-row">
-                <span className="prefs-num-label">Model</span>
-                <select value={model} onChange={e => setBotModel(botId, e.target.value)} className="prefs-select">
-                  <option value="">Default</option>
-                  {availableModels.map(alias => <option key={alias} value={alias}>{alias}</option>)}
-                </select>
               </div>
             </PrefSubsection>
           )
