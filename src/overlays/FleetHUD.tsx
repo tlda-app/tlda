@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { react } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLShapeId, TLStateNodeConstructor, TLViewportId } from 'tldraw'
+import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -207,9 +207,6 @@ function cameraDiff(a: CameraLike, b: CameraLike) {
 
 interface FleetHUDProps {
   mainEditor: Editor
-  shapeUtils: TLAnyShapeUtilConstructor[]
-  tools: TLStateNodeConstructor[]
-  licenseKey: string
 }
 
 interface FleetHudAnchor {
@@ -400,9 +397,6 @@ function FleetHudEmptyDiagnostic({
 
 export function FleetHUD({
   mainEditor,
-  shapeUtils,
-  tools,
-  licenseKey,
 }: FleetHUDProps) {
   const { id: identityId } = useFleetIdentity()
   const [deviceReady, setDeviceReady] = useState(isDeviceReady())
@@ -1477,9 +1471,6 @@ export function FleetHUD({
           mainEditor={mainEditor}
           viewportId={viewportId}
           bounds={activeFleetBounds}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={licenseKey}
           panelWidth={window.innerWidth}
           maxHeightFraction={1}
           lockCamera={true}

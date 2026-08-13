@@ -1024,9 +1024,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
         <ScreenshotCapture
           mainEditor={editorRef.current}
           capture={screenshotCapture}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={LICENSE_KEY}
           onClose={() => setScreenshotCapture(null)}
         />
       )}
@@ -1034,12 +1031,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
         <ScrollyOverlay mainEditor={editorRef.current} />
       )}
       {editorRef.current && (
-        <AnnotationViewer
-          mainEditor={editorRef.current}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={LICENSE_KEY}
-        />
+        <AnnotationViewer mainEditor={editorRef.current} />
       )}
       {shadowVisible && shadowTimeBounds && (
         <ShadowHistoryOverlay
@@ -1074,12 +1066,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
         {/* Build errors: red BuildErrorPill (reads errorsJson from the doc-version sentinel) */}
       </div>
       {editorRef.current && (
-        <FleetHUD
-          mainEditor={editorRef.current}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={LICENSE_KEY}
-        />
+        <FleetHUD mainEditor={editorRef.current} />
       )}
     </div>
   )
