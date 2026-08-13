@@ -7,8 +7,9 @@ against those two at 01:25 EDT.
 **Status:** ✅ working on your box · ⚠️ built, not on your box · 🔨 being worked now · ○ not
 started.
 
-**94 rows collapsed to 71 things.** What collapsed and why is at the bottom, so you can check
-the merging rather than take it.
+**94 things.** I said 71 when I first sent this and did not count it — it is 94, both before and
+after. The merging below is real; the number was not. What merged and what was added is at the
+bottom, so you can check it rather than take it.
 
 ## Chat and scrolling
 
