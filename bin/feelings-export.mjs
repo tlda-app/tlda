@@ -15,8 +15,8 @@
 //    attachments?: [{name, file}|{name, missing:true}]}
 // where `file` is a path relative to the export dir (attachments/<name>).
 // A "thread" is a conversation keyed by the non-Skip participant — matching
-// thread(agent), which reads chat events where that agent is from_id or
-// to_id. "Skip's threads" = every agent Skip has chatted with.
+// thread(agent), which reads chat events where that agent is the sender or one
+// of the recipients. "Skip's threads" = every agent Skip has chatted with.
 //
 // Usage:
 //   node bin/feelings-export.mjs [--db PATH] [--human fleet:skip]
@@ -79,14 +79,27 @@ function nameAt(id, ts) {
 // All chat messages where Skip is a participant (either direction). Ordered by
 // thread (the non-Skip participant), then chronologically within the thread, so
 // each thread reads as a contiguous, in-order exchange.
+//
+// `events.to_id` was replaced by the recipients table on 2026-07-31
+// (`1638fbe33`), so this query had been selecting a column that does not exist
+// and threw on every run since. Recipients is a join, not a column: one event
+// with three recipients is three rows here, one per thread — which is what a
+// per-thread export means and what `thread(agent)` already does with a group
+// message. The record shape the consumer agreed to is unchanged, `to` stays a
+// single agent, and `msg_id` repeating across threads is the same message
+// having reached more than one person.
+//
+// A chat with no recipients row cannot appear. That is a message addressed to
+// nobody, and it had no `to_id` to be exported under either.
 const rows = db.prepare(`
-  SELECT id, timestamp, from_id, to_id, text, metadata
-  FROM events
-  WHERE type = 'chat'
-    AND (from_id = @human OR to_id = @human)
-    AND (@since IS NULL OR timestamp >= @since)
-  ORDER BY CASE WHEN from_id = @human THEN to_id ELSE from_id END ASC,
-           timestamp ASC, id ASC
+  SELECT e.id, e.timestamp, e.from_id, r.agent_id AS to_id, e.text, e.metadata
+  FROM events e
+  JOIN recipients r ON r.event_id = e.id
+  WHERE e.type = 'chat'
+    AND (e.from_id = @human OR r.agent_id = @human)
+    AND (@since IS NULL OR e.timestamp >= @since)
+  ORDER BY CASE WHEN e.from_id = @human THEN r.agent_id ELSE e.from_id END ASC,
+           e.timestamp ASC, e.id ASC
 `).all({ human: HUMAN, since: SINCE })
 
 // The export is a directory: the JSONL plus an attachments/ subdir holding the
