@@ -2416,7 +2416,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const el = scrollerRef.current
     if (!el) return
     const nextSensorTop = el.scrollTop
-    const delta = sensorTopRef.current - nextSensorTop
+    const delta = nextSensorTop - sensorTopRef.current
     sensorTopRef.current = nextSensorTop
     if (Math.abs(delta) > 0.5) {
       const previousTop = modelTopRef.current
