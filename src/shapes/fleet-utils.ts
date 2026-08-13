@@ -71,14 +71,6 @@ type FleetNudgeRect = {
   centerY: number
 }
 
-/**
- * How much of the remaining gap a soft snap closes: the pull is proportional,
- * so a panel never jumps to an edge, it leans toward it. This is the shape of
- * the pull, not a distance — the distance is the readability profile's nudge
- * strength, and the capture zone follows from the two.
- */
-const FLEET_PANEL_NUDGE_FRACTION = 0.35
-
 /** The page-space line a nudge is pulling toward, for drawing the guide. */
 export type FleetNudgeGuide = {
   axis: 'x' | 'y'
@@ -109,10 +101,21 @@ function keepClosest(match: FleetNudgeMatch, current: FleetNudgeMatch | null): F
   return current
 }
 
-function pressureDelta(match: FleetNudgeMatch | null, threshold: number, cap: number): number {
-  if (match === null || Math.abs(match.delta) > threshold) return 0
-  const nudge = Math.min(Math.abs(match.delta) * FLEET_PANEL_NUDGE_FRACTION, cap)
-  return Math.sign(match.delta) * nudge
+/**
+ * Inside the capture zone the panel goes to the line. Outside it, nothing
+ * happens. There is no third state: a match that is taken is drawn, and a match
+ * that is drawn is taken, which is why this single test decides both.
+ *
+ * It used to move a fixed 35% of the way and never accumulate — every frame
+ * recomputes the dragged rect from the pointer, so the partial is never fed
+ * back. The panel therefore settled 65% short of the guide it had just been
+ * shown, however long you held it: "the places the fucking shape jumps to are
+ * not aligned with the fucking lines". A pull worth drawing a guide for is worth
+ * completing.
+ */
+function takenMatch(match: FleetNudgeMatch | null, threshold: number): FleetNudgeMatch | null {
+  if (match === null || Math.abs(match.delta) > threshold) return null
+  return match
 }
 
 function fleetNudgeRectForShape(editor: Editor, shape: TLShape): FleetNudgeRect | null {
@@ -271,27 +274,28 @@ export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, curr
   }
 
   const zoom = editor.getZoomLevel() || 1
-  // The strength is the furthest a panel may be pulled. The capture zone is
-  // where a proportional pull would reach exactly that far, so the two knobs
-  // stay consistent with each other and only one of them is a setting.
-  const cap = strength / zoom
-  const threshold = cap / FLEET_PANEL_NUDGE_FRACTION
+  // The strength is the capture zone: how close the panel has to be before the
+  // snap takes. Screen px, so it is the same apparent distance at any zoom.
+  const threshold = strength / zoom
   const { dx, dy } = closestFleetPanelNudge(dragged, candidates, threshold)
-  const nudgeX = pressureDelta(dx, threshold, cap)
-  const nudgeY = pressureDelta(dy, threshold, cap)
+
+  // One decision, read twice. The guide and the move cannot disagree about
+  // whether a match was taken, because they are the same value.
+  const takenX = takenMatch(dx, threshold)
+  const takenY = takenMatch(dy, threshold)
 
   setFleetNudgeGuides(editor, [
-    ...(nudgeX !== 0 && dx ? [{ axis: dx.axis, line: dx.line, spanFrom: dx.spanFrom, spanTo: dx.spanTo }] : []),
-    ...(nudgeY !== 0 && dy ? [{ axis: dy.axis, line: dy.line, spanFrom: dy.spanFrom, spanTo: dy.spanTo }] : []),
+    ...(takenX ? [{ axis: takenX.axis, line: takenX.line, spanFrom: takenX.spanFrom, spanTo: takenX.spanTo }] : []),
+    ...(takenY ? [{ axis: takenY.axis, line: takenY.line, spanFrom: takenY.spanFrom, spanTo: takenY.spanTo }] : []),
   ])
 
-  if (nudgeX === 0 && nudgeY === 0) return
+  if (!takenX && !takenY) return
 
   return {
     id: current.id,
     type: current.type,
-    x: current.x + nudgeX,
-    y: current.y + nudgeY,
+    x: current.x + (takenX ? takenX.delta : 0),
+    y: current.y + (takenY ? takenY.delta : 0),
   } as TLShapePartial
 }
 
