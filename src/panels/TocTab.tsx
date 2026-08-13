@@ -676,7 +676,11 @@ const SCHEME_STEPS: { value: ColorScheme; icon: string; label: string }[] = [
 ]
 
 const FAMILY_STEPS: { value: ThemeFamily; icon: string; label: string }[] = [
-  { value: null,   icon: '○',      label: 'Default' },
+  // "One", not "Default" — Skip, 2026-08-12 17:29:07 EDT: "can we just, like,
+  // stop calling this fucking thing the default theme? Like, I have said, call
+  // it fucking one, like, about a thousand times". The stored family is still
+  // `null`; only the label changed.
+  { value: null,   icon: '○',      label: 'One' },
   { value: 'fog',  icon: '\u{1F30A}', label: 'Fog' },
   { value: 'lilac', icon: '◌',      label: 'Lilac' },
   { value: 'warm', icon: '☀︎',     label: 'Warm' },
