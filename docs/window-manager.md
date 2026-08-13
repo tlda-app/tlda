@@ -203,11 +203,38 @@ the pointer event's own `clientX`/`clientY`, which are true screen coordinates
 with no frame to get wrong. `FleetChatShape` and `FleetAgentsShape` both do this
 at every drop site.
 
-A third way to ask exists and no grep will find it: **branch on the layer you are
-on.** `FleetChatShape.tsx:6701` picks its converter from `drag._onMain` —
-`clientPointToPage` when the dragged pill has left the panel for the canvas,
-`fleetPointerEventPagePoint` while it is still inside. That asks, correctly, and
-counting `viewportId` arguments scores it as a site that does not.
+**There are four ways to ask, and a grep for `viewportId` finds one of them.**
+Counting arguments undercounted correct code three times in one night, so the
+other three are written down here:
+
+- **Pass a viewport id.** `BrowseIdle.ts:229`, `fleet-utils.ts:446`.
+- **Branch on the layer you are on.** `FleetChatShape.tsx:6701` picks its
+  converter from `drag._onMain` — `clientPointToPage` once the dragged pill has
+  left the panel for the canvas, `fleetPointerEventPagePoint` while it is still
+  inside.
+- **Scope the selector.** `useFleetGestures.ts:337` queries
+  `.fleet-hud-wrap [data-shape-id]`, which names its layer in CSS. The inverse
+  names the canvas: a clip panel puts `data-viewport-id` on its container, so
+  `!el.closest('[data-viewport-id]')` is "the main canvas's copy" —
+  `SlidesNavigator.ts` and `usePanPerfLog.ts` both select that way.
+- **Ask the element.** Start from a node you already have and walk up:
+  `placeholder.closest('.fleet-chat-log')` is the scroller containing that
+  placeholder, in whichever copy of the panel is mounted, and needs no knowledge
+  of layers at all. `useYjsSignals.ts` does this.
+
+**And a layer-blind query is only a crossing if what it reads is
+layer-dependent.** Intrinsic SVG user space — `getAttribute('x')`,
+`viewBox.baseVal`, `getComputedTextLength()` — is identical in every copy of an
+element, so `highlighterSnap`'s document-wide page lookup and `SvgDocument`'s
+text-column measurement are correct despite matching more than one node. Client
+rects, element identity, and anything posted to a `contentWindow` are not.
+
+**`highlighterSnap.ts:120-124` carries the copy-store belief** — *"the HUD's copy
+store renders a duplicate"* — in a file this errata does not otherwise list. The
+HUD has no copy store, and it renders no document shapes at all: its predicate
+`shouldRenderLockedFleetViewportShape` rejects every type not starting with
+`fleet-`. Duplicates of a page shape come from **nested clip panels**, which is a
+different mechanism with the same symptom. Noted rather than chased.
 
 ---
 
