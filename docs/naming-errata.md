@@ -44,3 +44,8 @@ new place by someone who believes it is harmless.**
 
 **A better name would say which of the three it is and that it discards work.** Splitting the
 unknown case out is probably the bigger half of the fix.
+
+**The evidence that it is a bad name and not merely an ugly one:** Skip found it in an agent's
+chat message, where that agent was reasoning about the function and had got its behaviour wrong.
+**It was not leaking into a user surface — it failed on a reader who had the source open.** A
+name only has one job and this is what failing at it looks like.
