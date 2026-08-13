@@ -3978,6 +3978,29 @@ function FleetChatInner({ shape }: { shape: any }) {
   // The geometry seam records the scrollTop it writes. The next matching scroll
   // event updates measurements but cannot be interpreted as reader intent.
   const geometryReconcileScrollTopRef = useRef<number | null>(null)
+  // Set by every scrollTop write this component makes, cleared by the resize
+  // that write provokes. `geometryReconcileScrollTopRef` above closes the same
+  // hazard on the scroll handler — our write emits a scroll event that must not
+  // read as reader intent — and the resize path is its second entrance.
+  //
+  // PRECAUTIONARY, AND NOT MEASURED. The loop it guards is structurally
+  // available — a write renders a different row window, those rows measure
+  // differently than estimated, the item list changes height, the observer
+  // fires — but it has never been observed. `scrollHeight` is constant across
+  // every burst measured on this build: 172981 for all 59 corrections at
+  // scrollTop 170710, and likewise in each of the others, while the observer
+  // fired dozens of times. So no re-measurement was occurring.
+  //
+  // The reason it cannot be occurring is the open bug: across 23 to 88
+  // consecutive corrections, `scrollTop` does not change at all, read back on
+  // the statement after the write. Our write is not moving the scroller, so the
+  // feedback path has nothing to close. Whether it is refused or restored within
+  // the frame is unknown — the record cannot yet tell those apart.
+  //
+  // Kept rather than deleted because the day the write starts landing, this
+  // becomes load-bearing, and rediscovering it then means rediscovering it with
+  // less evidence than this comment carries.
+  const selfWriteResizePendingRef = useRef(false)
   const panelPointerIdsRef = useRef<Set<number>>(new Set())
   const deferredGeometryReconcileRef = useRef(false)
   // Reactive bottom-position state. Drives the unified follow/jump button:
@@ -4093,16 +4116,38 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
       return false
     }
-    geometryReconcileScrollTopRef.current = el.scrollTop + delta
+    // Read before the write, so the record can say whether the write took. With
+    // only the post-write value, a refused write and a write restored inside the
+    // frame produce an identical record, and they are different bugs.
+    const scrollTopBefore = el.scrollTop
+    const requested = scrollTopBefore + delta
+    geometryReconcileScrollTopRef.current = requested
     el.scrollTop += delta
     geometryReconcileScrollTopRef.current = el.scrollTop
+    selfWriteResizePendingRef.current = true
     log.metric('chat-anchor', 'preserved viewport across content resize', {
       panelId: String(shape.id),
       anchorKey,
       delta: Math.round(delta),
-      // The write landed or it did not, and a glide moving against it is
-      // visible as scrollTop diverging from this across consecutive records.
-      // Inferring that from delta alone took a velocity curve and an argument.
+      // `scrollTop` is read after the write, on the statement after it, so
+      // `requested !== scrollTop` means the assignment did not take. Across
+      // every burst measured before this field existed, `scrollTop` was constant
+      // for 23 to 88 consecutive corrections, which is the open bug.
+      scrollTopBefore: Math.round(scrollTopBefore),
+      requested: Math.round(requested),
+      // `delta` varies while `scrollTop` and `scrollHeight` hold still, and
+      // `delta` is measured against this — the panel's position on screen, not
+      // the content's. If the panel is moving or resizing on the canvas while
+      // its content is still, that alone produces a changing delta, a firing
+      // observer, and an unchanged scrollHeight. These two say so directly
+      // rather than by elimination.
+      viewportTop: Math.round(viewportTop),
+      rowTop: Math.round(row.getBoundingClientRect().top),
+      // Whether the element is still a scroll container. `scrollTop` values in
+      // the hundreds of thousands prove it is one today; a computed value is
+      // what catches it ceasing to be one mid-session, which no structural
+      // argument about the element can.
+      overflowY: getComputedStyle(el).overflowY,
       scrollTop: Math.round(el.scrollTop),
       scrollHeight: Math.round(el.scrollHeight),
       clientHeight: Math.round(el.clientHeight),
@@ -4144,6 +4189,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollHeight
     el.scrollTop = el.scrollHeight
     geometryReconcileScrollTopRef.current = el.scrollTop
+    selfWriteResizePendingRef.current = true
   }, [captureViewportAnchor, restoreViewportAnchor, shape.id])
 
   // Release one deferred correction once the scroller is the panel's again. A
@@ -4202,12 +4248,37 @@ function FleetChatInner({ shape }: { shape: any }) {
     const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!el || !list) return
     const observer = new ResizeObserver(() => {
+      // Diagnostics first and unconditionally: a suppressed firing is exactly
+      // the one worth seeing, and this is how the two candidate causes get told
+      // apart — a row that changed height, or a list that changed height with
+      // every row the same.
       recordRowResizes()
+      if (selfWriteResizePendingRef.current) {
+        selfWriteResizePendingRef.current = false
+        // The same write also emits a scroll event, and the scroll handler runs
+        // the identical restore behind the identical input guard in this frame,
+        // so the correction still happens and what this skips is a second forced
+        // layout over every rendered row.
+        //
+        // That argument holds while writes do not land. If one lands and real
+        // content changes in the same frame, this drops that correction rather
+        // than deferring it — there is no flush behind this return. Whoever
+        // makes writes take effect owns closing that, and the record below is
+        // how you will see it: a skip with no correction after it.
+        log.metric('chat-anchor', 'skipped resize caused by our own scroll write', {
+          panelId: String(shape.id),
+          scrolledUp: userScrolledUpRef.current,
+        })
+        return
+      }
       reconcileViewportGeometry()
     })
     observer.observe(list)
-    return () => observer.disconnect()
-  }, [chatLogEl, reconcileViewportGeometry, recordRowResizes])
+    return () => {
+      observer.disconnect()
+      selfWriteResizePendingRef.current = false
+    }
+  }, [chatLogEl, reconcileViewportGeometry, recordRowResizes, shape.id])
 
   useEffect(() => {
     const el = chatLogEl
