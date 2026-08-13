@@ -4630,20 +4630,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           scrolledUp: userScrolledUpRef.current,
           hardLocked: hardLockedRef.current,
           geometryReconciliation,
-          // A held pointer is the reader too. Without this term the only inputs
-          // that can change mode are a wheel and a finger, because those are the
-          // only two events that set the refs above — so a scrollbar drag or a
-          // selection dragged past the edge moves the reader up the history while
-          // the panel still believes it is following, and checkFollowInvariant
-          // repairs to the tail 500ms later. Measured across the readable window:
-          // 105 repairs, 101 of them with no follow-off in the preceding 10s, and
-          // decideFollowTransition accounting for 12 of 293 mode changes.
-          // .fleet-chat-log carries scrollbar-width/scrollbar-gutter, so the
-          // scrollbar this misses is a real one on every panel.
-          userInputActive:
-            touchScrollActiveRef.current
-            || explicitScrollInputRef.current
-            || panelPointerIdsRef.current.size > 0,
+          userInputActive: touchScrollActiveRef.current || explicitScrollInputRef.current,
         },
       )
       lastTop = top
