@@ -945,7 +945,7 @@ html[data-theme="dark"] .toc-drop-hint {
 
 .search-input::placeholder {
   color: inherit;
-  opacity: 1;
+  opacity: var(--ui-tone-dormant);
 }
 
 .search-input:focus {

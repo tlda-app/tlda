@@ -33,7 +33,7 @@ import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { ProjectContext } from '../PanelContext'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
 import { subscribePref } from '../preferences'
-import { readabilityStyleVars } from '../readabilityProfile'
+import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
 import {
   FleetAgentDirectoryRow,
   fleetAgentCategory,
@@ -417,6 +417,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const editor = useEditor()
   const { w, h } = shape.props
   const styleVars = useFleetStyleVars()
+  const [readabilityProfile, setReadabilityProfile] = useState(getReadabilityProfile)
+  useEffect(() => subscribePref(() => setReadabilityProfile(getReadabilityProfile())), [])
   const containerRef = useRef<HTMLDivElement>(null)
   const isSelectedRef = useRef(false)
   isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
@@ -737,7 +739,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     >
       <div
         ref={containerRef}
-        className="fleet-shape fleet-agents-shape"
+        className={`fleet-shape fleet-agents-shape${readabilityProfile.faint ? ' fleet-faint' : ''}`}
         style={{
           ...styleVars,
           width: '100%',

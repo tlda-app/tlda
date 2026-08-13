@@ -115,7 +115,7 @@
 }
 .fleet-search-shape input::placeholder {
   color: var(--text-dim, #8888a0);
-  opacity: var(--ui-tone-rest);
+  opacity: calc(var(--ui-tone-dormant) * var(--fleet-chrome-alpha, 1));
 }
 
 
@@ -354,7 +354,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 .fleet-chat-shape .fleet-filter-chip-ghost,
 .fleet-inbox-shape .fleet-filter-chip-ghost {
-  opacity: var(--ui-tone-rest);
+  opacity: calc(var(--ui-tone-dormant) * var(--fleet-chrome-alpha, 1));
   border-style: dashed;
 }
 .fleet-chat-shape .fleet-filter-chip-role,
@@ -2705,7 +2705,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: calc(var(--fleet-base-font, 11px) * 0.727273);
   font-family: inherit;
   color: var(--text-dim);
-  opacity: var(--fleet-agents-content-active);
+  opacity: var(--fleet-agents-chrome-dormant);
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
