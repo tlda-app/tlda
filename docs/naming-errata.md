@@ -101,3 +101,15 @@ reasoning about what reaches `client.log` from the top of that file gets the wro
 **The fix is deleting one parenthetical at `:58`** — a comment edit in a live path, no behaviour
 change. It has not been made because `logger.ts` was outside the scope of the work that found
 this, and per this file's own preamble the knowledge is worth having now either way.
+
+## `amendEventText` in `server/lib/fleet-store.mjs`
+
+**It is not how an amend works, and calling it would produce the behaviour its name promises —
+which is the opposite of what the live path does.** It runs `UPDATE events SET text = ?`, mutating
+the original row in place. The live amend path is `unified-server.mjs` `type === 'amend'`, which
+writes a **new** event carrying `metadata.amends = <original id>` and **never mutates the
+original**, because the original is an accountability trail the client folds into a version
+stepper.
+
+Reading `amendEventText` to understand amend behaviour sent an agent to the wrong conclusion on
+2026-08-13, in a report that reached Skip. Two implementations exist; one is live.
