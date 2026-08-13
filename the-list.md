@@ -1,6 +1,6 @@
 # The list {#the-list}
 
-**58 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**60 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **7 of the 54 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
@@ -18,9 +18,9 @@ module — **the tab you are reading this in is still running the bundle it load
 the eight `✓?` rows reach your screen until you refresh. Nothing here says you have seen any of it.
 
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
-gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 58 are things you asked for.**
+gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 60 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 09:32 EDT; `main` is `7254e0ebf`, 64 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 09:35 EDT; `main` is `9eeac2105`, 65 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
@@ -71,6 +71,8 @@ Your box runs `2e763c010`, read from `/api/build-info` at 09:32 EDT; `main` is `
 
 | | | |
 |---|---|---|
+| ? | **A Fly personal auth token was reported leaked on 2026-07-31 and nobody has established whether it is still live** | **Raised 2026-07-31 18:11 EDT by `opus-chief-successor`, who delegated it to itself and hibernated — 303 hours with no work on it.** **Nothing tracked in the repo carries a token and no rotation commit exists**, so both *where it leaked* and *whether it is still valid* are open. **It is your personal credential and it is the deploy path**, which is why it is here rather than buried in a task queue. **Being established read-only — nobody is rotating anything.** *Leaves the list when someone can say whether that token is live, and it has been rotated if it is.* `quiet-the-box` |
+| ○ | **A second list exists and nobody reads it** | **34 open fleet tasks, 26 of them stale, the oldest 328 hours** — and **every one has an owner who is hibernating, so abandoned work reads as *someone is on it*.** That is the same tense failure this list was audited for, at fleet scale and two weeks deep. **Real work is sitting in it**: an index-page rebuild to your spec, a composer slider on touch, a gesture classifier, runaway voice on `testing`, a search that fails between two parties. **They are not imported here** — this file is the durable artifact and mirroring the task queue into it would make both wrong — **but a task with no reader is the same thing as a row nobody inherits.** **No owner.** *Leaves the list when a stale task with a hibernating owner is visible as abandoned rather than as in-progress.* |
 | 🔨 | **The agent read path does not fold amends** | **`thread()` returns raw events, so an amended message comes back as two bodies with two timestamps** — and two agents reading the same message get the pre-amend text, the post-amend text, or both, **each correct about what they read and none of them seeing what you see.** **Your app is not affected and this row does not claim it is:** `unified-server.mjs:6613` makes an amend a new event referencing the original, the original is never mutated because it is an accountability trail, and the client folds them into one message with a version stepper (`FleetChatShape.tsx:3074`, `chat-render.mjs:891`). **What it cost tonight:** three reversals and a phantom row created inside the audit that exists to remove phantoms — **an amend looks like a failed write to every agent who checks one.** *Leaves the list when an agent reading an amended message through `thread()` sees what you see.* `app-fix-forward` |
 | ? | **A bot loses its own name to its mint's shell row** | **The mechanism, from the daemon ledger:** when a mint launches the process, the bot takes the minted id and keeps its canonical name — `todd`, `chat-lint`. **When the bot is already running, the mint's row squats the name and the bot is assigned `quiet-<name>` and goes inert** — `dev`, `nobody`, `grammar`, `teacher`. **So a bot has two rows and the shell's row wins.** **`quiet-` therefore has two causes and only one was known**: the sanctioned stop for a runaway bot, and this. **Killing the squatter does not hold — one was killed at 12:58 and a new mint held the name 96 seconds later**, so the next person's instinct to kill it again is already known to fail. **The question is yours and nobody has decided it: should a bot mint adopt the id in the bot's idfile rather than allocate a new one, so a bot has one row for its whole life?** `app-fix-forward` recommends yes, from your own principle — *"nothing's gonna label a fucking bot a bot except the fucking bot"*, and the idfile is the bot asserting which being it is. **Identity is yours, so nobody has acted.** *Leaves the list when a bot keeps its name across a mint.* |
 | ○ | **An inert `dev` reclaims no disk** | `node_modules` eviction against a 50 GB budget, preview reaping and the `pw` pool **all arm in `onOpen` and are correctly gated** — so an inert `dev` sweeps nothing. **The box is carrying 38 GB of worktrees across 536.** **This is not a bug in the gate:** the gate is the contract working, and this is what the contract costs while a bot cannot hold its own name. **Blocked by the row above and not independently actionable** — no owner. *Leaves the list when a canonical `dev` sweeps again.* |
