@@ -32,6 +32,15 @@ html {
 html[data-theme="light"] {
   --text-bright: #222;
 }
+/* data-theme is written from an effect, so the first paint has none. A stored
+   scheme of 'system' — what anyone who has not chosen gets — resolves through
+   prefers-color-scheme, so CSS can answer it before the effect does. The :not
+   keeps this to that first paint rather than fighting the attribute after. */
+@media (prefers-color-scheme: light) {
+  html:not([data-theme]) {
+    --text-bright: #222;
+  }
+}
 
 /* Pan mode: override cursor to grab when active */
 body.tlda-pan-mode,
