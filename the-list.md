@@ -1,27 +1,28 @@
 # The list {#the-list}
 
-**49 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**50 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
-**6 of the 49 are parked rather than closed — you tabled them, which is not the same as done.**
+**8 of the 50 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
 **⚠️ built and finished, but not on your box — so from where you sit it is indistinguishable from
 not-done, which makes it the one mark that misleads you.** Five of the six are on `main` and clear
 the moment anything deploys; the sixth is on a branch and needs merging first. · **✓? built and
 already on your box, but nobody has confirmed it works for you** · 🔨 being worked now · ○ not
-started · ⏸ tabled — not finished, nobody on it, can come back · ? nobody could establish it
-either way
+started · **⏸ parked by you** — *tabled* and *deferred* are both your words and share one mark
+here; not finished, nobody on it, and every row says which word you used and why · ? nobody could
+establish it either way
 
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
-invented — the arXiv build — and it is gone. **The other 49 are things you asked for.**
+invented — the arXiv build — and it is gone. **The other 50 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `0049622e4`, 60 ahead. Checked 05:44 EDT.
+Your box runs `3d10cb3ef`; `main` is `7d94faff5`, 61 ahead. Checked 05:48 EDT.
 
 ## Chat and scrolling
 
 | | | |
 |---|---|---|
-| ○ | **A tool call we do not recognise renders as a wall** | **Captured from his own DOM before deploying, since a deploy would have destroyed it:** `wait: cell_id: 73, yield_time_ms: 30000, max_tokens: 5000, _raw: cell_id=73 … (+56 more)` — **one card's detail body is 11,951 characters**, beside a Claude card reading `Bash: command: …`. **The mechanism is in `src/fleet/activity-render.mjs`, not inferred:** `toolToCommand` switches on known tool names and returns `''` by default (line 406), so an unrecognised tool gets no summary and falls through to `toolCallArgs`, which prints **every** entry — its only filter drops `_semantic*` keys, so a sender's `_raw` is printed beside the arguments it duplicates, and an empty value still renders its key (`chars: ,`). **Your framing sets the order:** *"I think we kind of have to try to keep up"*, and *"gpt5.6-sol agents do quirky shit… this week they're using these other calls."* **So three, in this order: (1) fix the fallback** — an unrecognised tool renders like a recognised one, name, the argument that carries meaning, fold, never `_raw`; **(2) count the unrecognised tools**, because right now the only detector is you reading your chat and seeing something ugly, which is why this took a week to surface; **(3) teach it this week's codex calls** — `wait`, `write_stdin`, `cell_id`, `session_id` — third because it goes stale. *Leaves the list when an unknown tool folds like a known one and somebody can say how often unknowns appear.* Unowned |
+| ⏸ | **A tool call we do not recognise renders as a wall** | **You looked and ranked it, rather than nobody having looked:** *"it can sit on the list for now I guess"*, then *"same w codex shit"* — **deferred, your word.** **Everything below stays because deferred with the evidence intact beats deleted** — whoever picks it up should not have to re-derive it from your DOM. **Captured from his own DOM before deploying, since a deploy would have destroyed it:** `wait: cell_id: 73, yield_time_ms: 30000, max_tokens: 5000, _raw: cell_id=73 … (+56 more)` — **one card's detail body is 11,951 characters**, beside a Claude card reading `Bash: command: …`. **The mechanism is in `src/fleet/activity-render.mjs`, not inferred:** `toolToCommand` switches on known tool names and returns `''` by default (line 406), so an unrecognised tool gets no summary and falls through to `toolCallArgs`, which prints **every** entry — its only filter drops `_semantic*` keys, so a sender's `_raw` is printed beside the arguments it duplicates, and an empty value still renders its key (`chars: ,`). **Your framing sets the order:** *"I think we kind of have to try to keep up"*, and *"gpt5.6-sol agents do quirky shit… this week they're using these other calls."* **So three, in this order: (1) fix the fallback** — an unrecognised tool renders like a recognised one, name, the argument that carries meaning, fold, never `_raw`; **(2) count the unrecognised tools**, because right now the only detector is you reading your chat and seeing something ugly, which is why this took a week to surface; **(3) teach it this week's codex calls** — `wait`, `write_stdin`, `cell_id`, `session_id` — third because it goes stale. *Leaves the list when an unknown tool folds like a known one and somebody can say how often unknowns appear.* Unowned |
 | 🔨 | **Chat jerks while you read it, with no input from you** | The measurement is real; **whose session it is, is not established.** 688 corrections, 9 with input, scroller never moves, 200 consecutive writes at one position — but the session is attributed to you **by a shape id containing your name**, and both bursty sessions are `isTouch` while you are on the Air. **That inference is the one an agent was killed for tonight.** Treat the mechanism as sound and the attribution as open **You have this one.** The only part left with us is merging what comes out |
 | 🔨 | **Sometimes you can't scroll up, and it's worse than it used to be** | **Nobody knows why. Two mechanisms have been offered on this row and both are dead.** The scrollbar-drag one died because you are on Safari and there is no scrollbar; that commit is reverted off `main`. **The buffer-trim one is retracted too — your sessions never reached the 500-event cap it depended on.** A fix sits on a branch that was typechecked and never run, against a cause that no longer stands. **Nobody found a commit that made it worse and nobody claimed one.** **You have this one.** The only part left with us is merging what comes out |
 | 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design, on `rc/anchored-list`, none of it on `main` or your box. **It does not fix "can't scroll up"** — the buffer, the trim and the history cursor are upstream of everything it changes, so it pages into the same hole. **The two fixes are independent and both are needed**, which also means your symptom may have had two causes the whole time, and no anchor telemetry could ever have shown the buffer one. **Five things elsewhere in the app were reaching into the old scroller and would have broken silently** — pan mode twice, the history paging guard, a screenshot overlay, and the suggestion tip, which hid on wheel and so worked on a trackpad and not under a finger. **All five found by reading, none by anything failing**; the build, the tests and the app were green throughout. Swept systematically rather than sampled, so the count is five and not "five so far" — though a consumer reaching the scroller some other way would not be in that sweep. `list-component` |
@@ -34,6 +35,7 @@ Your box runs `3d10cb3ef`; `main` is `0049622e4`, 60 ahead. Checked 05:44 EDT.
 
 | | | |
 |---|---|---|
+| ⏸ | **The spatial view in the project tab is junk** | **Deferred, your word, and your dismissal with it:** *"the spatial view in the like, project tab is so junk. but whatever… who cares"*, then *"just add that to the list as like, deferred."* **The row exists so nobody rediscovers it as a find in three weeks — not so it gets worked.** Nobody looked at why, and you did not ask anyone to. |
 | ⚠️ | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | **Read, not watched.** Two round-trips, no in-flight state, no key a second click could find — read in `openMarkdownChipFromTarget` and `openChatMarkdownColumn`. **Nobody has watched a second click produce a second object.** The row used to say *"this is what filled your canvas tonight"*; **that is struck** — see the row below, where the only record of that minute shows one drag and one pill. What you reported is a slow click you repeated and a trail of name cards. Fixed in `5e67afccb`, on `main`, not on your box. `markdown-chip-owner` |
 | ⚠️ | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | **Watched, in your own `client.log` on the Fly box** — 04:54:20→27, **2,993 `wm-drop-resolve` samples, every one `resolved:false`**, hitting an `iframe` and the annotation-viewer nav button, and **exactly one `pill deleted`, `deleter: "drag-drop"`, clean.** So the store never held many objects that minute. **Whether the trail you saw was paint over an iframe or one card seen repeatedly, nobody would assert.** Same commit as the row above. `markdown-chip-owner` |
 | ⚠️ | **Resize snapping** | **The only open part of snapping.** Built on `panel-snap-resize`, **not on your box.** The guides that persisted after a drag that touched nothing are fixed on the same branch — **one branch and one deploy away, not a separate thing.** *Leaves the list when a resize snaps and no guide is left behind.* `panel-snap` |
@@ -151,8 +153,12 @@ generator. **That is the mirror of the defect he caught at midnight:** then, fin
 checked and unstarted ones were not; now the unstarted ones assert absence and nobody checks
 those either. **A row saying nothing exists is a claim, and it gets verified before it goes on.**
 
-**A tabled row says why it was tabled.** Unobserved, no energy, not important right now — those
-are different states and only one of them means come back to this soon. **6 rows are ⏸** and each carries its reason.
+**A parked row says why you parked it, in your word.** Unobserved, no energy, not important right
+now, looked-at-and-ranked — those are different, and only some of them mean come back soon.
+**`tabled` and `deferred` share one mark, deliberately.** They are two words you used for one
+state — not being worked, not finished, parked by you — and the difference between *he stopped it*
+and *he ranked it* lives in the row's reason, where it can be read, rather than in a second symbol
+nobody could tell apart. **One honest mark beats two that blur.**
 
 **No row goes on without saying what would make it leave.** A row that cannot be retired will be
 on the next list.
