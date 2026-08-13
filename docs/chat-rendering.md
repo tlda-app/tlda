@@ -665,10 +665,44 @@ delta        -5 -7 -8 -9 -9   -11 -19 -43 -83 -130 -179 -224
   overwhelmingly input-free. This is the check §"How this path is instrumented"
   said would become possible on `794e585cc` and later, and it has.
 
-**One thing here is new and unexplained.** `delta` **grows** monotonically to
-−224 rather than decaying. The 03:10 burst on the older sha decayed 69 → −2. So
-there are at least two shapes of burst, and a mechanism that explains a decaying
-error does not automatically explain a diverging one.
+**Every burst in his session diverges, and each one is a straight line.** All 688
+records grouped into bursts at a 100ms gap; the 15 bursts of 5 or more records:
+
+| | |
+|---|---|
+| bursts that diverge | **15 of 15** — none converge, none stay flat |
+| bursts where `scrollTop` changes | **0 of 15** |
+| bursts where `scrollHeight` changes | **0 of 15** |
+| bursts spanning more than one anchor row | **0 of 15** |
+| growth rate | **~0.5–5px per frame**, i.e. 18–309px/s, mostly near 100–150px/s |
+| linearity of `delta` against frame index | **R² 0.83–0.99** in 12 of 13 bursts long enough to fit |
+| worst | 130 records at `scrollTop 15800`, `delta` 163 → **401px** |
+
+So the converging shape the night's analysis was built on — 69 → −2 — **does not
+occur anywhere in his session**. Every burst starts within a pixel or two of
+correct and drifts away at a constant rate for half a second to two seconds. A
+mechanism that explains a decaying error does not explain this, and this is the
+worse of the two: a converging error settles and stops being felt, a diverging one
+does not.
+
+**A code fact that fits the signature, stated as a fact and not as the cause.** The
+anchor arithmetic is done entirely in **screen coordinates** — `captureViewportAnchor`
+and `restoreViewportAnchor` both measure with `getBoundingClientRect()`
+(`:4040`, `:4085`, `:4102`) — and the result is written into `scrollTop`, which is
+in the element's own **unscaled layout coordinates**. A chat panel renders inside
+tldraw's `HTMLContainer` (`:6794`), which sits in the camera-transformed
+`.tl-html-layer`, so those two spaces differ by the camera's zoom factor whenever
+it is not 1. **At any zoom, a screen-space delta is not a valid `scrollTop`
+delta**, and while the camera is animating — `zoomToBounds` runs a 300ms animation
+at `:3347` — the same fixed layout distance produces a *changing* screen distance,
+with `scrollTop` and `scrollHeight` untouched. That is the shape of all 15 bursts.
+
+**It is a hypothesis about `delta` and it does not explain the unmoved scroller.**
+Under it the write would still move the scroller, by the wrong amount. These stay
+two separate open facts: `delta` may be a phantom, and the write does not land.
+`viewportTop` and `rowTop`, added in `3bc8615fc`, test the first directly — if
+`viewportTop` moves across consecutive records while `scrollTop` and `scrollHeight`
+hold still, the anchor math is reading screen movement as content displacement.
 
 **What this does not establish.** That these bursts are what Skip sees. It
 establishes that the correction is running hundreds of times against a scroller
