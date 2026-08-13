@@ -1,9 +1,9 @@
 # The list {#the-list}
 
-**50 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**51 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
-**8 of the 50 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
+**8 of the 51 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
 **⚠️ built and finished, but not on your box — so from where you sit it is indistinguishable from
 not-done, which makes it the one mark that misleads you.** **All seven are on `main` now** — the last one on a branch merged tonight — so they clear together
@@ -14,9 +14,9 @@ here; not finished, nobody on it, and every row says which word you used and why
 establish it either way
 
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
-invented — the arXiv build — and it is gone. **The other 50 are things you asked for.**
+invented — the arXiv build — and it is gone. **The other 51 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `9b1bac2a2`, 87 ahead. Checked 05:50 EDT.
+Your box runs `3d10cb3ef`; `main` is `747649b70`, 89 ahead. Checked 05:57 EDT.
 
 ## Chat and scrolling
 
@@ -90,6 +90,7 @@ Your box runs `3d10cb3ef`; `main` is `9b1bac2a2`, 87 ahead. Checked 05:50 EDT.
 
 | | | |
 |---|---|---|
+| ○ | **Depend on the tldraw fork directly, not on a committed tarball** | **Your ruling:** *"we should depend on the fork directly… like that's why it's on github bro."* Today `package.json:42` reads `"@tldraw/editor": "file:vendor/tldraw-editor-5.2.0-tlda.11.tgz"` — **a 1.7 MB binary committed into the repo**, built from our own fork at `git@github.com:tlda-app/tldraw-fork.git`. **What makes it urgent rather than tidy:** tonight's wheel fix is **uncommitted in that fork checkout** — `M packages/editor/src/lib/components/TldrawViewport.tsx`, still dirty as of 05:52 — **so the source of a fix about to reach your box exists only as a working file.** The tarball carries the built output and the fork repo carries nothing; clean that checkout and the source is gone. **Two things nobody should have to re-derive:** the pin must name **a commit, not a branch**, or builds stop being reproducible; and `docs/vendored-tldraw-editor.md` gets **rewritten, not amended** — its premise at line 18 is *"needs no external publish"*, which stops being true, and its §*"The tarball cannot rebuild itself"* describes a tarball that will not exist. *Leaves the list when `package.json` resolves the editor from the fork repo at a pinned commit and `vendor/*.tgz` is gone.* Unowned |
 | ⏸ | Zero magic numbers; limits in config files, not environment variables | **Tabled — but hedged.** Your word was *"I guess, table"*, not the flat *table* you gave TypeScript, so this is the one to raise again sooner. Nobody on it. `infra-rows` |
 | ⏸ | Move the server and daemon JavaScript to TypeScript, gradually | **Tabled**, your word, flatly. Nobody on it. `infra-rows` |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
