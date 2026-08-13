@@ -7,8 +7,7 @@
  * On tap: the shape is committed in place. On ESC: shape is deleted if empty.
  */
 import { StateNode, createShapeId, type TLShapeId, type TLShapePartial, type JsonObject } from 'tldraw'
-import { currentDocumentInfo } from '../svgDocumentLoader'
-import { annotationSourceAnchorAtCanvasPoint, type AnnotationSourceAnchor } from '../annotationSourceAnchor'
+import { noteSourceAnchorMeta } from '../noteSourceAnchor'
 import { getTranscript, resetTranscript, setVoiceAccumulator } from '../voice.mjs'
 import { log } from '../logger'
 import { getPref } from '../preferences'
@@ -109,14 +108,7 @@ export class VoiceNoteTool extends StateNode {
     // unanchored for good, silently. Anchoring on the commit point rather than
     // the creation point is deliberate: the note follows the cursor while
     // recording, so where it lands is what it is about.
-    let sourceAnchor: AnnotationSourceAnchor | null = null
-    if (currentDocumentInfo) {
-      try {
-        sourceAnchor = await annotationSourceAnchorAtCanvasPoint(editor, currentDocumentInfo, point.x, point.y)
-      } catch (e) {
-        console.warn('[voice-note] source anchor lookup failed:', (e as Error).message)
-      }
-    }
+    const anchorMeta = await noteSourceAnchorMeta(editor, point.x, point.y)
 
     // Commit shape at current position with final transcript — always expanded
     // so the user can immediately read and edit what was recorded
@@ -126,7 +118,7 @@ export class VoiceNoteTool extends StateNode {
       x: point.x - NOTE_W / 2,
       y: point.y - 10,
       props: { text: transcript, collapsed: false },
-      meta: { voiceNote: true, rawTranscript: transcript, ...(sourceAnchor ? { sourceAnchor } : {}) } as Partial<JsonObject>,
+      meta: { voiceNote: true, rawTranscript: transcript, ...anchorMeta } as Partial<JsonObject>,
     } as unknown as TLShapePartial)
 
     // One edit, computed by voice.mjs, spliced into the note's text. This used

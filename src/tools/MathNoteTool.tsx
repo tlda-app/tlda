@@ -1,15 +1,9 @@
 import { StateNode, createShapeId, DefaultColorStyle, type JsonObject } from 'tldraw'
-import { currentDocumentInfo } from '../svgDocumentLoader'
-import { annotationSourceAnchorAtCanvasPoint, type AnnotationSourceAnchor } from '../annotationSourceAnchor'
+import { noteSourceAnchorMeta, annotationAnchorLabel } from '../noteSourceAnchor'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 
 const NOTE_W = 200
 const NOTE_H = 50
-
-function annotationAnchorLabel(anchor: AnnotationSourceAnchor): string {
-  if (anchor.anchored === false) return anchor.reason
-  return `${anchor.file}:${anchor.line}`
-}
 
 export class MathNoteTool extends StateNode {
   static override id = 'math-note'
@@ -65,17 +59,14 @@ export class MathNoteTool extends StateNode {
     const id = createShapeId()
 
     // Try to get source anchor for this position
-    let sourceAnchor: AnnotationSourceAnchor | null = null
-    if (currentDocumentInfo) {
-      sourceAnchor = await annotationSourceAnchorAtCanvasPoint(editor, currentDocumentInfo, point.x, point.y)
-    }
+    const anchorMeta = await noteSourceAnchorMeta(editor, point.x, point.y)
 
     editor.createShape({
       id,
       type: 'math-note' as any,
       x: point.x - NOTE_W / 2,
       y: point.y - NOTE_H / 2,
-      meta: { createdAt: Date.now(), ...(sourceAnchor ? { sourceAnchor } : {}) } as unknown as Partial<JsonObject>,
+      meta: { createdAt: Date.now(), ...anchorMeta } as unknown as Partial<JsonObject>,
       props: {
         w: NOTE_W,
         h: NOTE_H,
@@ -85,8 +76,8 @@ export class MathNoteTool extends StateNode {
     })
 
     // Log anchor for debugging
-    if (sourceAnchor) {
-      console.log(`[Anchor] Note anchored to ${annotationAnchorLabel(sourceAnchor)}`)
+    if (anchorMeta.sourceAnchor) {
+      console.log(`[Anchor] Note anchored to ${annotationAnchorLabel(anchorMeta.sourceAnchor)}`)
     }
 
     editor.setEditingShape(id)

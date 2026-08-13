@@ -12,7 +12,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import type { Editor, TLShape, TLShapeId } from 'tldraw'
+import type { Editor, JsonObject, TLShape, TLShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
@@ -37,6 +37,7 @@ import {
 } from './fleet-filter-intent-telemetry'
 import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filter-drop-preview'
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
+import { noteSourceAnchorMeta } from '../noteSourceAnchor'
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
 import { finishFleetPillTranslation } from './fleet-pill-lifecycle'
 import { markFleetPillActive, markFleetPillInactive } from './fleet-pill-transient'
@@ -664,14 +665,17 @@ export async function dropPillOnTarget(
     } else if (docValue.startsWith('file:')) {
       const filePath = docValue.slice(5)
       ;(async () => {
+        const noteX = createPagePoint.x - 5
+        const noteY = createPagePoint.y - 5
+        const anchorMeta = await noteSourceAnchorMeta(createEditor, noteX, noteY)
         try {
           const res = await fetch(`/api/read-file?path=${encodeURIComponent(filePath)}`)
           const text = res.ok ? await res.text() : `# ${displayName}\n\n(Could not read file)`
           createEditor.createShape({
             id: createShapeId(),
             type: 'math-note' as any,
-            x: createPagePoint.x - 5,
-            y: createPagePoint.y - 5,
+            x: noteX,
+            y: noteY,
             isLocked: false,
             props: {
               w: 300,
@@ -681,14 +685,15 @@ export async function dropPillOnTarget(
               autoSize: true,
               collapsed: false, // open sticky, not a touch-untappable dot
             },
+            meta: { ...anchorMeta } as unknown as Partial<JsonObject>,
           })
         } catch (e) {
           console.error('[fleet] Failed to read file for membrane drop:', e)
           createEditor.createShape({
             id: createShapeId(),
             type: 'math-note' as any,
-            x: createPagePoint.x - 5,
-            y: createPagePoint.y - 5,
+            x: noteX,
+            y: noteY,
             isLocked: false,
             props: {
               w: 300,
@@ -698,6 +703,7 @@ export async function dropPillOnTarget(
               autoSize: true,
               collapsed: false, // open sticky, not a touch-untappable dot
             },
+            meta: { ...anchorMeta } as unknown as Partial<JsonObject>,
           })
         }
       })()
@@ -717,11 +723,14 @@ export async function dropPillOnTarget(
       '#22c55e': 'green', '#3b82f6': 'blue', '#8b5cf6': 'violet',
     }
     const noteColor = hexToName[colorHex] || 'light-blue'
+    const noteX = createPagePoint.x - 5
+    const noteY = createPagePoint.y - 5
+    const anchorMeta = await noteSourceAnchorMeta(createEditor, noteX, noteY)
     createEditor.createShape({
       id: createShapeId(),
       type: 'math-note' as any,
-      x: createPagePoint.x - 5,
-      y: createPagePoint.y - 5,
+      x: noteX,
+      y: noteY,
       isLocked: false,
       props: {
         w: 200,
@@ -731,6 +740,7 @@ export async function dropPillOnTarget(
         autoSize: true,
         collapsed: true,
       },
+      meta: { ...anchorMeta } as unknown as Partial<JsonObject>,
     })
   } else if (!content && (!hitShape || hitShape.type !== 'fleet-agents')) {
     await createFleetShape(createEditor, 'fleet-chat', createPagePoint.x, createPagePoint.y, {

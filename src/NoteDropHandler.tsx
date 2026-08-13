@@ -7,6 +7,7 @@
 import { useEffect } from 'react'
 import { useEditor, createShapeId } from 'tldraw'
 import { FLEET_INTERACTION_SHAPE_SELECTOR } from './shapes/fleet-utils'
+import { noteSourceAnchorMeta } from './noteSourceAnchor'
 
 export function NoteDropHandler() {
   const editor = useEditor()
@@ -84,29 +85,33 @@ export function NoteDropHandler() {
             const shapeId = createShapeId()
             const lineCount = dropData.content.split('\n').length
             const h = Math.min(600, Math.max(200, lineCount * 16 + 40))
-            editor.createShape({
-              id: shapeId,
-              type: 'math-note',
-              x: point.x,
-              y: point.y,
-              opacity: 1,
-              props: {
-                text: dropData.content,
-                color: 'violet',
-                w: 300,
-                h,
-                collapsed: false,
-              },
-              meta: {
-                createdAt: Date.now(),
-                copiedFromDoc: 'fleet',
-                copiedFromShapeId: '',
-                copiedFromTimestamp: Date.now(),
-                fleetSource: JSON.stringify({ type: 'scratch-doc', name: dropData.name, path: dropData.path }),
-                projectName: dropData.name,
-                docPath: dropData.path,
-              },
-            } as any)
+            void (async () => {
+              const anchorMeta = await noteSourceAnchorMeta(editor, point.x, point.y)
+              editor.createShape({
+                id: shapeId,
+                type: 'math-note',
+                x: point.x,
+                y: point.y,
+                opacity: 1,
+                props: {
+                  text: dropData.content,
+                  color: 'violet',
+                  w: 300,
+                  h,
+                  collapsed: false,
+                },
+                meta: {
+                  createdAt: Date.now(),
+                  copiedFromDoc: 'fleet',
+                  copiedFromShapeId: '',
+                  copiedFromTimestamp: Date.now(),
+                  fleetSource: JSON.stringify({ type: 'scratch-doc', name: dropData.name, path: dropData.path }),
+                  projectName: dropData.name,
+                  docPath: dropData.path,
+                  ...anchorMeta,
+                },
+              } as any)
+            })()
             return
           }
         } catch {
@@ -127,27 +132,31 @@ export function NoteDropHandler() {
           const w = 250
           const h = 150
 
-          editor.createShape({
-            id: shapeId,
-            type: 'math-note',
-            x: point.x,
-            y: point.y,
-            opacity: 1,
-            props: {
-              text,
-              color: 'blue',
-              w,
-              h,
-              collapsed: false,
-            },
-            meta: {
-              createdAt: Date.now(),
-              copiedFromDoc: 'fleet',
-              copiedFromShapeId: item.source || item.shareId || '',
-              copiedFromTimestamp: Date.now(),
-              fleetSource: JSON.stringify(item),
-            },
-          } as any)
+          void (async () => {
+            const anchorMeta = await noteSourceAnchorMeta(editor, point.x, point.y)
+            editor.createShape({
+              id: shapeId,
+              type: 'math-note',
+              x: point.x,
+              y: point.y,
+              opacity: 1,
+              props: {
+                text,
+                color: 'blue',
+                w,
+                h,
+                collapsed: false,
+              },
+              meta: {
+                createdAt: Date.now(),
+                copiedFromDoc: 'fleet',
+                copiedFromShapeId: item.source || item.shareId || '',
+                copiedFromTimestamp: Date.now(),
+                fleetSource: JSON.stringify(item),
+                ...anchorMeta,
+              },
+            } as any)
+          })()
         } catch {
           // Accepted fleet attachment drops have no owned non-modal error surface
           // in this document-level handler; leave the failed note uncreated.
@@ -189,10 +198,16 @@ export function NoteDropHandler() {
         ? { ...srcProps }
         : { text: data.text || '', color: data.color || 'orange', w: 200, h: 150, collapsed: false }
 
-      // Flatten any nested objects in meta to pass TLDraw validation
+      // Flatten any nested objects in meta to pass TLDraw validation. The
+      // anchor is exempt: it is a structured value the remap path reads
+      // field-by-field, and stringifying it produced a string whose `.anchored`
+      // is undefined — which reads as anchored and resolves to nothing. The
+      // dropped copy is a new note in a new place, so it anchors where it
+      // landed rather than inheriting the original's line.
       const flatMeta: Record<string, unknown> = { createdAt: Date.now() }
       if (srcMeta) {
         for (const [k, v] of Object.entries(srcMeta)) {
+          if (k === 'sourceAnchor') continue
           flatMeta[k] = (v !== null && typeof v === 'object') ? JSON.stringify(v) : v
         }
       }
@@ -200,15 +215,18 @@ export function NoteDropHandler() {
       flatMeta.copiedFromShapeId = data.sourceShapeId || ''
       flatMeta.copiedFromTimestamp = Date.now()
 
-      editor.createShape({
-        id: shapeId,
-        type: data.shapeType || 'math-note',
-        x: point.x,
-        y: point.y,
-        opacity: 1,
-        props,
-        meta: flatMeta,
-      } as any)
+      void (async () => {
+        const anchorMeta = await noteSourceAnchorMeta(editor, point.x, point.y)
+        editor.createShape({
+          id: shapeId,
+          type: data.shapeType || 'math-note',
+          x: point.x,
+          y: point.y,
+          opacity: 1,
+          props,
+          meta: { ...flatMeta, ...anchorMeta },
+        } as any)
+      })()
     }
 
     // Capture phase so we get events before TLDraw's pointer system
