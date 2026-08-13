@@ -16,7 +16,7 @@ import {
   type TLShapeId,
 } from 'tldraw'
 import * as autocompleteCore from '@algolia/autocomplete-core'
-import { createFleetShape, agentDisplayLabel, nudgeFleetPanelTranslate } from './fleet-utils'
+import { createFleetShape, agentDisplayLabel, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
@@ -305,6 +305,7 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => true
   override canResize = () => true
   override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
+  override onResize = (shape: any, info: any) => nudgeFleetPanelResize(this.editor, shape, info)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true

@@ -23,7 +23,7 @@ import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetContext, us
 import { dropPillOnTarget } from './FleetPillShape'
 import { deleteFleetPill } from './fleet-pill-forensics'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
-import { agentDisplayLabel, nudgeFleetPanelTranslate } from './fleet-utils'
+import { agentDisplayLabel, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
 import { FleetHudRenderGate, useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -237,6 +237,7 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => true
   override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
+  override onResize = (shape: any, info: any) => nudgeFleetPanelResize(this.editor, shape, info)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
