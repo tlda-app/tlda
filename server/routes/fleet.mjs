@@ -9,6 +9,7 @@
  */
 
 import { Router } from 'express'
+import { announcePageJson } from '../../shared/pagination-announce.mjs'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -641,6 +642,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         matched: page.matched,
         nextCursor: page.nextCursor,
         page_limited: true,
+        // `page_limited: true` and a `nextCursor` were already here, and an agent
+        // still called this with limit=500, got 500 of 2154, and told Skip the
+        // fleet had zero dead agents. Machine fields only work on a reader that
+        // knows to look for them. This is the same two claims in a sentence, so
+        // the response says what it is to anyone who reads it at all.
+        pagination: announcePageJson({
+          shown: summary.shown,
+          total: page.matched,
+          noun: 'agent row',
+          nextCursor: page.nextCursor,
+          nextCall: page.nextCursor
+            ? `GET /api/fleet-table?limit=${limit}${req.query.filter ? `&filter=${encodeURIComponent(req.query.filter)}` : ''}&cursor=${encodeURIComponent(page.nextCursor)}`
+            : null,
+        }),
       })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
@@ -681,6 +696,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         wholeFleet: await fleetStore.getAgentSummary?.() || null,
         nextCursor: page.nextCursor,
         page_limited: true,
+        pagination: announcePageJson({
+          shown: summary.shown,
+          total: page.matched,
+          noun: 'agent row',
+          nextCursor: page.nextCursor,
+          nextCall: page.nextCursor
+            ? `GET /api/fleet-roster-truth?limit=${limit}${req.query.filter ? `&filter=${encodeURIComponent(req.query.filter)}` : ''}&cursor=${encodeURIComponent(page.nextCursor)}`
+            : null,
+        }),
       })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
