@@ -345,6 +345,32 @@ export function setFleetEventBufferPinned(bufferKey: string | null | undefined, 
   if (buffer.pinned) trimEventBuffer(buffer)
 }
 
+/**
+ * The timestamp of the oldest row this buffer holds — where its scrollback ends.
+ *
+ * This is the paging boundary, and it is READ rather than stored. A live-tail
+ * trim moves it forward in time, and a stored copy did not move with it: the
+ * subscription's cursor kept pointing older than anything still on screen, so
+ * scrolling up asked for rows BELOW the gap the trim had made and nothing ever
+ * asked for the gap.
+ *
+ * Every event the buffer holds counts, not only the ones the panel renders.
+ * Using the oldest RENDERED row would leave the types the panel drops sitting
+ * below the boundary, and a page that returns only those makes no progress —
+ * the boundary would not move and the next request would repeat it.
+ */
+export function oldestBufferedEventTimestamp(bufferKey: string | null | undefined): string | null {
+  if (!bufferKey) return null
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer) return null
+  let oldest: FleetEvent | null = null
+  for (const event of buffer.store.all()) {
+    if (!oldest || compareFleetEvents(event, oldest) < 0) oldest = event
+  }
+  const timestamp = oldest?.timestamp
+  return typeof timestamp === 'string' && timestamp ? timestamp : null
+}
+
 export function clearFleetEventBuffer(bufferKey: string | null | undefined): void {
   if (!bufferKey) return
   const buffer = eventBuffers.get(bufferKey)
