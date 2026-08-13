@@ -1,18 +1,18 @@
 # The list {#the-list}
 
-**48 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**47 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
-**6 of the 48 are parked rather than closed — you tabled them, which is not the same as done.**
+**6 of the 47 are parked rather than closed — you tabled them, which is not the same as done.**
 
 ⚠️ built, not reaching you yet · **✓? built and already on your box, but nobody has confirmed it
 works for you** · 🔨 being worked now · ○ not started · ⏸ tabled — not finished, nobody on it, can
 come back · ? nobody could establish it either way
 
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
-invented — the arXiv build — and it is gone. **The other 48 are things you asked for.**
+invented — the arXiv build — and it is gone. **The other 47 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `b39493bb0`, 51 ahead. Checked 05:02 EDT.
+Your box runs `3d10cb3ef`; `main` is `68098881a`, 53 ahead. Checked 05:10 EDT.
 
 ## Chat and scrolling
 
@@ -83,7 +83,6 @@ Your box runs `3d10cb3ef`; `main` is `b39493bb0`, 51 ahead. Checked 05:02 EDT.
 
 | | | |
 |---|---|---|
-| ○ | **If the bot manager dies, only you can bring it back** | **The row's old premise is solved.** You said *"I thought we fucking wrote, like, a bot manager or whatever, and, like, we weren't gonna fucking have each bot in the fucking launch deconfig anymore"* — and you did: `runBotManager` re-reads `bots.yaml` **every poll pass** (`cli/tlda.mjs:2008–2011`) and one launchd job supervises all bots, so adding, changing or removing a bot needs no apply. **What survives is smaller:** `config apply` is the launchd *job-set* reconciler and the one Aqua gate is `cli/tlda.mjs:1830` inside it — **so if the manager job stops, no verb restarts it supervised.** **A claim that the old per-bot jobs are still enabled beside it did not survive checking:** `~/Library/LaunchAgents` holds five live plists — the manager, three daemons, grafana — and **every per-bot file there is a timestamped backup** (`.bak-envrename-20260726T154408` and similar, eight of them), which launchd does not load. If `launchctl` still reports those labels, that is the enabled-database remembering a name, not a job that supervises anything, and **nobody has established which.** *Leaves the list when some verb can restart the manager supervised.* `infra-rows` |
 | ⏸ | Zero magic numbers; limits in config files, not environment variables | **Tabled — but hedged.** Your word was *"I guess, table"*, not the flat *table* you gave TypeScript, so this is the one to raise again sooner. Nobody on it. `infra-rows` |
 | ⏸ | Move the server and daemon JavaScript to TypeScript, gradually | **Tabled**, your word, flatly. Nobody on it. `infra-rows` |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
@@ -170,9 +169,20 @@ failed the check and was deleted**: the arXiv build, which existed because an ag
 feature. **A row nobody can trace to him cannot be finished and cannot be retired, so it rides
 every rebuild forever.** That is the two-thirds.
 
-**A §Decided entry must carry his own words.** Without a quotation it is not a decision, it is an
-agent's judgement — and that belongs on a row where somebody can argue with it. **All 8 entries quote him; checked.** This is the guard that stops that section becoming the place
-agents launder their own opinions into his.
+**A §Decided entry carries his own words, or the evidence and who produced it — and says which.**
+Without one of those it is an agent's judgement, and that belongs on a row where somebody can
+argue with it. This is the guard that stops that section becoming the place agents launder their
+own opinions into his. **The evidence half was added on 2026-08-13** when a row was settled by a
+command he ran rather than by a ruling: the rule as first written would have forced that fact out
+of the section entirely, which is how a true finding gets deleted silently instead of recorded.
+**Eight entries quote him; one cites a command and names who ran it; checked.**
+
+**A claim about machine state says how it was known.** Read from a log, run just now, relayed by
+somebody else — those are different, and only the middle one is evidence you can stand behind.
+Three claims tonight were asserted as established and then disproved by somebody checking, and
+all three could have been reported as read instead. **This seat cannot run `launchctl` at all** —
+zero jobs visible, `com.apple` included — so anything launchd here is relayed by construction and
+says so.
 
 ## Loose in the tree {#loose}
 
@@ -219,4 +229,14 @@ the fucking bot."* **All seven configured bots already do it** — each declares
 in its own login payload: `todd`, `grammar`, `chat-lint`, `dev`, `teacher`, `nobody`, `debt`
 (checked one by one against `bots.yaml`, with a control). **So nobody should build a manager-side
 labeller** — the thing already works the way you said it should.
+
+**The four `com.tlda.bot.*` launchd labels look like stale jobs and are not.** They are launchd
+remembering an enable/disable state for labels whose plists were renamed away months ago —
+bookkeeping in its own database, nothing on the machine. **`config apply` correctly ignores them:**
+his own dry run returned `Update: 0  Remove: 0  Unchanged: 4` over exactly the right set — the
+three `fleet-daemon` jobs and `com.tlda.bot-manager`. **Settled by that command, relayed by
+`app-fix-forward`; this seat has no launchd domain and could not run it.** **And `config apply` is
+not broken** — it needs `managername = Aqua`, which is your terminal, and that is the design.
+**The row it closes** — one manager supervising all bots, rather than every bot in the launch
+config — **is the thing you half-remembered building, and you did build it.**
 
