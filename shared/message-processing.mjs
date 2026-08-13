@@ -4,6 +4,9 @@ import fs from 'fs'
 import path from 'path'
 import { guessMimeType, resolveFilePath, uploadFileToServer } from './chat-file-processing.mjs'
 import { sha256Buffer } from './inbox-reference-materialization.mjs'
+import { canonicalEventReference } from './canonical-references.mjs'
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg)$/i
 
 const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd'
 const pathRe = new RegExp(
@@ -136,7 +139,15 @@ export function detectAttachments(message, agentCwd, serverBaseUrl = null, optio
       typeof options.preserveBarePath === 'function' &&
       options.preserveBarePath({ raw: match, filePath, resolved, agentCwd })
     ) {
-      return match
+      // Preserving a bare path exists so a same-machine peer can open the
+      // file directly, with no upload round-trip. An image is the one case
+      // where the raw path also dominates the message text it sits in, so it
+      // gets the compact `image#<id>` form instead — still resolving to the
+      // literal local path for anyone reading it, never an upload.
+      if (!IMAGE_EXT_RE.test(resolved)) return match
+      const id = attIdx++
+      inlineAttachments.push({ type: 'file', id, path: resolved, name: path.basename(resolved), local: true })
+      return canonicalEventReference('image', id)
     }
     const id = attIdx++
     if (fs.existsSync(resolved)) {
@@ -158,6 +169,10 @@ export function detectAttachments(message, agentCwd, serverBaseUrl = null, optio
 // If upload fails, marks att.broken = true so the renderer shows a broken-chip style.
 export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
   for (const att of inlineAttachments) {
+    // A `local` attachment is a preserved bare path wearing the compact
+    // `image#<id>` form — the whole point was no upload round-trip, so it
+    // stays local and resolves to its literal path for same-machine readers.
+    if (att.local) continue
     if (att.path && fs.existsSync(att.path)) {
       try {
         const { url } = await uploadFileToServer(att.path, serverBaseUrl)

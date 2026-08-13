@@ -23,6 +23,7 @@ import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_n
 import { uniqueLiveAgentForLabel } from './send-target-binding.mjs'
 import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 import { terminalGlyphHtml } from './terminal-glyph.mjs'
+import { expandImageRefsToAttachmentTokens } from '../../shared/canonical-references.mjs'
 
 const BIG_CHAT_GAP_SECONDS = 1800
 
@@ -160,6 +161,15 @@ function attachmentTokenHtml(message, inlineAttachments, idx) {
     const fileUrl = att.url ? esc(att.url) : ''
     const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
     if (isImage && fileUrl) return { html: `<img class="chat-image" src="${fileUrl}" alt="${name}">`, pending: false }
+    // A same-machine preserved bare path never gets uploaded — that's the
+    // point, no round-trip — so it has no fileUrl to render an <img> from
+    // here. It isn't broken; say so plainly instead of "unavailable".
+    if (att.local) {
+      return {
+        html: `<span class="ref-chip ref-chip-doc" title="local file on the sender's machine: ${filePath}"><span class="ref-chip-doc-icon">${isImage ? '🖼️' : '📎'}</span>${name}</span>`,
+        pending: false,
+      }
+    }
     const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
     const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
     const projectRef = recipientAttachmentProjectRef(message, idx)
@@ -254,7 +264,7 @@ function countdownLabel(ts, now = Date.now()) {
 // whole message. renderMarkdown is the same function passed via ctx to renderChatLine.
 export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown, message = null) {
   // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
-  let processed = text
+  let processed = expandImageRefsToAttachmentTokens(text)
   if (inlineAttachments?.length) {
     processed = processed.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
       const att = inlineAttachments[+idx]
@@ -636,7 +646,7 @@ export function renderChatLine(m, ctx) {
   // Pre-process: resolve image attachments in markdown image syntax before renderMarkdown.
   // ![alt]({{att:N}}) → ![alt](URL) so marked renders a real <img src="URL"> that DOMPurify accepts.
   // Without this, DOMPurify strips the invalid {{att:N}} src, leaving a broken image icon.
-  let processedText = rawText
+  let processedText = expandImageRefsToAttachmentTokens(rawText)
   if (m._inlineAttachments?.length) {
     processedText = processedText.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
       const att = m._inlineAttachments[+idx]
