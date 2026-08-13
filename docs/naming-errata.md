@@ -113,3 +113,21 @@ stepper.
 
 Reading `amendEventText` to understand amend behaviour sent an agent to the wrong conclusion on
 2026-08-13, in a report that reached Skip. Two implementations exist; one is live.
+
+## `FLY_API_TOKEN`
+
+**It does not set the token `flyctl` uses.** `flyctl` answers from the ambient login and ignores
+the variable, so a wrong value, a garbage value and the empty string all authenticate — verified
+here on 2026-08-13:
+
+```
+FLY_API_TOKEN=fm2_garbage… fly auth whoami   → davidahirshberg@gmail.com
+FLY_API_TOKEN=""           fly auth whoami   → davidahirshberg@gmail.com
+fly auth whoami --access-token fm2_garbage…  → You must be authenticated to view this.
+```
+
+**So a check written as `FLY_API_TOKEN=$candidate fly auth whoami` proves nothing about the
+candidate** — it reports whoever is logged in. The discriminating form is
+`fly auth whoami --access-token <tok>`, which rejects garbage. An agent establishing whether a
+leaked credential was still live nearly reported a false positive from the first form and caught
+it by adding garbage controls.
