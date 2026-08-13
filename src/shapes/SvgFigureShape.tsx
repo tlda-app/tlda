@@ -275,6 +275,10 @@ function SvgFigureComponent({ shape }: { shape: any }) {
           height: shape.props.h,
           overflow: 'hidden',
           pointerEvents,
+          // Only under a drawn figure — the placeholder is a missing figure,
+          // not a blank one, and should not read as an empty white box.
+          background: svgContent ? 'var(--tlda-figure-plate)' : undefined,
+          borderRadius: svgContent ? 4 : undefined,
         }}
         onPointerDown={onPointerDown}
         onPointerUp={isPenMode ? undefined : stopEventPropagation}
@@ -287,7 +291,6 @@ function SvgFigureComponent({ shape }: { shape: any }) {
               height: shape.props.h,
               transform: `scale(${view.zoom}) translate(${view.panX}px, ${view.panY}px)`,
               transformOrigin: '0 0',
-              filter: isDark ? 'invert(0.88) hue-rotate(180deg)' : 'none',
             }}
           />
         ) : (

@@ -27,13 +27,20 @@
   overflow: hidden;
 }
 
+/* The backdrop here is always dark, so the figure carries its own light field
+   rather than being inverted to suit one. An <img> inherits nothing and themes
+   nothing; the plate is the only lever, and it is the same one the figure
+   shapes use. Padding because this figure stands alone rather than sitting in
+   a page, so its edges want air. */
 .scrolly-figure {
   max-width: 100%;
   max-height: calc(100vh - 200px);
   display: block;
   object-fit: contain;
   transition: opacity 0.25s ease;
-  filter: invert(0.88) hue-rotate(180deg);
+  background: var(--tlda-figure-plate);
+  padding: 12px;
+  border-radius: 6px;
 }
 
 .scrolly-figure[data-fading] {

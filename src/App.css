@@ -14,6 +14,10 @@
   --tlda-z-top-control-popover: 11001;
   --tlda-z-modal: 12000;
   --tlda-canvas-background: #fff;
+  /* The field a figure was authored against. Fixed, not themed: a figure's
+     colours — including its black axes — only mean what the author meant if
+     what is behind them is the white page they were drawn on. */
+  --tlda-figure-plate: #ffffff;
   --ui-tone-hidden: 0;
   --ui-tone-dormant: 0.2;
   --ui-tone-rest: 0.55;
