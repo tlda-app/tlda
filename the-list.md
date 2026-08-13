@@ -17,7 +17,7 @@ started · ? nobody could establish it.
 | 🔨 | **Sometimes you can't scroll up, and it's worse than it used to be** | Your words: *"it's kind of unusable now because it fucking limits what I can actually fucking see."* **A regression claim, and nobody has treated it as one.** The mechanism previously on this row ended at a scrollbar drag — you're on Safari, there is no scrollbar, and you have never touched one, so it explained nothing you have experienced. A commit for it landed and I reverted it off `main` for that reason (`5a1089f0d` → `a47b438e5`). `chat-scroll` |
 | 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design, on `rc/anchored-list`, 8 commits, none on `main` or your box. **Measured now: 16 files, +1796/−1240** — my earlier 18/+2463/−1198 was wrong. It also deletes two test files, so it removes the machinery and its coverage together. `list-component` |
 | ○ | Scroll-back prefetch | Your design is written down. Nothing built against it |
-| ⚠️ | **Make the layer abstraction real** — a layer is a camera and a store | **Built, on `rc/wm-layers`, not on `main` and not on your box.** The window manager says which layer a shape is in, shape membership is answered at the editor's core, and two things were deleted including a drop-point conversion that could never run. **This row said "not started, the largest thing on this list" until you asked whether someone had already fixed the window manager. You were right and the row was wrong.** Nobody has judged whether the branch should land |
+| ⚠️ | **Make the layer abstraction real** — a layer is a camera and a store | **The shape-membership half is built on `rc/wm-layers`** — the window manager can say which layer a shape is in, with 329 lines of tests, and five errata entries are marked resolved *on that branch and nowhere else*. **Not on `main`, not on your box.** `verify-canvas-rows` read the same branch and called it groundwork rather than the abstraction; the branch's own commit is titled *"…and what still does not"*. **So: one half built, the store half not, and the largest thing on this list is still open** |
 | ✅ | Thread cards expand and collapse again | `f8da9eb67`. Both controls. Was marked untouched; it had shipped |
 | ✅ | Fleet panels render once instead of twice | |
 
@@ -63,7 +63,7 @@ started · ? nobody could establish it.
 
 | | | |
 |---|---|---|
-| ✅ | The settings panel regrouped; **six** dead controls deleted or wired | **The row said nine and the diff says six** — four features removed (five pref keys; the corner rail owns two) and two wired. **Two of the eight known-inert controls are still unaccounted for** and nobody could identify which |
+| ✅ | The settings panel regrouped; **all eight inert controls disposed of** | Four features removed — the three doc-viewer-source checkboxes sharing one key, slide advance, two corner controls, the bots model picker — and two wired, line height and touch target. **A previous version of this row said two were still unaccounted for. That was false and there is no remainder** — it subtracted six *features* from eight *controls*, which are different units |
 | ✅ | The composer rail uses your touch-target setting | |
 | ✅ | Download everything to a file, in the settings panel | |
 
@@ -127,7 +127,7 @@ started · ? nobody could establish it.
 | ○ | Zero magic numbers; limits in config files, not environment variables | |
 | ○ | Move the server and daemon JavaScript to TypeScript, gradually | |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
-| ✅ | A deploy can no longer report success on a box that is off | **The fix is not in git** — it is `verify_serving()` in the deploy hooks, which polls your box for the pushed sha and fails the push otherwise. No `git log` can find it. It has run twice, 10s and 20s, both successes, so **it has still never seen the failure it was written for** |
+| ⚠️ | A deploy can no longer report success on a box that is off | **Not on your box, and not in git either** — it is `verify_serving()` in the deploy hooks, which polls your box for the pushed sha and fails the push otherwise, so no `git log` can find it. **✅ here would have meant "working on your box", which it isn't** — it runs on the deploying machine. It has run twice, 10s and 20s, both successes, so **it has still never seen the failure it was written for** |
 | ✅ | Push-to-deploy is cut over; the lying `deploy:live` alias is gone | |
 | ✅ | `config apply` retries its own I/O error | |
 
