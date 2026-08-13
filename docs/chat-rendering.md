@@ -425,6 +425,42 @@ What does reach it, all `ns: "chat-anchor"`:
 Plus `ns: "chat-stranded-row"` from `chat-stranded-row-probe.mjs`, which is
 record-only by design.
 
+### How these instruments have misled, with instances
+
+Every wrong answer on this path in 2026-08-12/13 came from an instrument that
+returned cleanly. None came from a missing record. Read this before trusting a
+count from the table above.
+
+- **A counter blind to the mechanism reports silence as evidence.** 221
+  `chat-activity-render` records showed every rise in `rawActivityItems` matched by
+  a rise in `itemCount`, which was read as disproving Skip's account of activity
+  growing inside a card. Those counters see a new *item* joining a group; the
+  mechanism is an item already on screen getting taller. **Neither counter can
+  move when it happens.** His account was right.
+- **A guard's own deferral count cannot tell you the window was empty.**
+  `8543d9048` recorded **one deferral against 211 corrections** and read as
+  working. The window it watched — pointers currently down — does not open during
+  an iOS momentum glide, which is the entire case it existed for.
+- **`log.debug` does not reach this file**, so absence of `chat-scroll` records and
+  absence of touch records mean nothing at all. This is stated above and is worth
+  repeating here: **it has been misread as absence of input at least once.**
+- **One burst is not a population.** The `03:10:54` burst — 58 corrections, `delta`
+  decaying 69 → −2 — carried the night's framing: a velocity curve, a
+  momentum-glide story, the 2896px → 71px ratio. Sweeping all 62 bursts of that
+  session showed it is **1 of 10 converging against 49 diverging**. Every
+  interpretation hung on its decay came from an atypical sample.
+- **And the sweep that caught it got its own framing wrong twice** — reporting "15
+  of 15 diverging" from a classification that folded a sign-crossing burst in, and
+  "does not occur anywhere in his session" from one of his two sessions.
+- **Two agents agreeing is not verification.** Both errors above were endorsed
+  upward before being checked, by someone who then had to withdraw the
+  endorsement. Independent arrival at the same answer is evidence; it is not a
+  measurement, and it does not substitute for re-running the query.
+
+The common shape: **an instrument that cannot see the mechanism returns a clean
+result, and a clean result reads as a negative finding.** Before citing any count
+here, ask what it would look like if the thing you are testing for were happening.
+
 ---
 
 ## Errata
