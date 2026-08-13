@@ -258,3 +258,44 @@ test('a human participant is not a bot and does not get the label', async t => {
   assert.ok(register)
   assert.deepEqual(register.labels, [])
 })
+
+// Skip, 2026-08-13: "Inertness should gate the entirety of bot behavior." A bot
+// silenced by rename was still running whatever it armed in `onOpen` — dev's
+// preview sweep, for one. These pin the gate to the harness.
+test('an inert bot never runs its open hook, so its own work never starts', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  let opened = 0
+  const bot = createBot({
+    name: 'fixture',
+    fleetId: 'fleet:inert-fixture',
+    pidFile: join(directory, 'inert.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).onOpen(() => { opened++ }).start()
+  t.after(() => bot.stop())
+
+  // The allocator hands back a name that is not the one asked for — the
+  // sanctioned stop for a runaway bot.
+  await login(transport.sockets[0], 'quiet-fixture', 'fleet:inert-fixture')
+  assert.equal(bot.canonical, false)
+  assert.equal(opened, 0)
+})
+
+test('a canonical bot still runs its open hook', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  let opened = 0
+  const bot = createBot({
+    name: 'fixture',
+    fleetId: 'fleet:live-fixture',
+    pidFile: join(directory, 'live.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).onOpen(() => { opened++ }).start()
+  t.after(() => bot.stop())
+
+  await login(transport.sockets[0], 'fixture', 'fleet:live-fixture')
+  assert.equal(bot.canonical, true)
+  assert.equal(opened, 1)
+})

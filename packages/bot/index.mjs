@@ -144,7 +144,24 @@ export function createBot({
       log(`connected to ${WS_URL}`);
       try {
         const result = await loginFleet();
-        fire('open', result);
+        // Inertness gates the whole bot, not just its mouth. Skip, 2026-08-13:
+        // "Inertness should gate the entirety of bot behavior … if a bot is
+        // fucking up, you make them inert by changing their name."
+        //
+        // `onOpen` is where a bot starts its periodic work — dev arms its preview
+        // sweep here, nobody its poll — so a renamed bot that still ran this hook
+        // was silenced at the fleet surface and carried on working locally. That
+        // is the state `quiet-dev` was in: unreachable and still sweeping.
+        //
+        // Placed here rather than in each bot's callback because the next bot
+        // written would not know to add the check. `nobody` already opens with
+        // `if (!bot.isCanonical()) return`, which is this rule discovered once and
+        // not shared; that line becomes redundant rather than wrong.
+        //
+        // Safe at this point specifically: `loginFleet` has resolved, so the
+        // assigned name — and therefore canonicality — is known. Earlier in the
+        // socket's life it is not.
+        if (isCanonical()) fire('open', result);
       } catch (e) {
         log(`login failed: ${e.message}`);
         // reconnect(), not close(): close() disarms the retry loop entirely.
