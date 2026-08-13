@@ -16,7 +16,7 @@ establish it either way
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
 invented — the arXiv build — and it is gone. **The other 51 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `747649b70`, 89 ahead. Checked 05:57 EDT.
+Your box runs `3d10cb3ef`; `main` is `06fd735f3`, 90 ahead. Checked 05:59 EDT.
 
 ## Chat and scrolling
 
@@ -90,7 +90,7 @@ Your box runs `3d10cb3ef`; `main` is `747649b70`, 89 ahead. Checked 05:57 EDT.
 
 | | | |
 |---|---|---|
-| ○ | **Depend on the tldraw fork directly, not on a committed tarball** | **Your ruling:** *"we should depend on the fork directly… like that's why it's on github bro."* Today `package.json:42` reads `"@tldraw/editor": "file:vendor/tldraw-editor-5.2.0-tlda.11.tgz"` — **a 1.7 MB binary committed into the repo**, built from our own fork at `git@github.com:tlda-app/tldraw-fork.git`. **What makes it urgent rather than tidy:** tonight's wheel fix is **uncommitted in that fork checkout** — `M packages/editor/src/lib/components/TldrawViewport.tsx`, still dirty as of 05:52 — **so the source of a fix about to reach your box exists only as a working file.** The tarball carries the built output and the fork repo carries nothing; clean that checkout and the source is gone. **Two things nobody should have to re-derive:** the pin must name **a commit, not a branch**, or builds stop being reproducible; and `docs/vendored-tldraw-editor.md` gets **rewritten, not amended** — its premise at line 18 is *"needs no external publish"*, which stops being true, and its §*"The tarball cannot rebuild itself"* describes a tarball that will not exist. *Leaves the list when `package.json` resolves the editor from the fork repo at a pinned commit and `vendor/*.tgz` is gone.* Unowned |
+| 🔨 | **Depend on the tldraw fork directly, not on a committed tarball** | **Your ruling:** *"we should depend on the fork directly… like that's why it's on github bro."* Today `package.json:42` reads `"@tldraw/editor": "file:vendor/tldraw-editor-5.2.0-tlda.11.tgz"` — **a 1.7 MB binary committed into the repo**, built from our own fork at `git@github.com:tlda-app/tldraw-fork.git`. **What makes it urgent rather than tidy:** tonight's wheel fix is **uncommitted in that fork checkout** — `M packages/editor/src/lib/components/TldrawViewport.tsx`, still dirty as of 05:52 — **so the source of a fix about to reach your box exists only as a working file.** The tarball carries the built output and the fork repo carries nothing; clean that checkout and the source is gone. **Two things nobody should have to re-derive:** the pin must name **a commit, not a branch**, or builds stop being reproducible; and `docs/vendored-tldraw-editor.md` gets **rewritten, not amended** — its premise at line 18 is *"needs no external publish"*, which stops being true, and its §*"The tarball cannot rebuild itself"* describes a tarball that will not exist. **One real check before it can land, and it is a verification rather than a deferral:** `Dockerfile.live:241–243` copies `server/package.json` and runs `npm install --production`, so a git dependency needs credentials the deploy image may not have — **and that class fails as a crash-loop, not as a build error**, which this repo has hit before. *Leaves the list when `package.json` resolves the editor from the fork repo at a pinned commit and `vendor/*.tgz` is gone.* `wm-layers-rc` |
 | ⏸ | Zero magic numbers; limits in config files, not environment variables | **Tabled — but hedged.** Your word was *"I guess, table"*, not the flat *table* you gave TypeScript, so this is the one to raise again sooner. Nobody on it. `infra-rows` |
 | ⏸ | Move the server and daemon JavaScript to TypeScript, gradually | **Tabled**, your word, flatly. Nobody on it. `infra-rows` |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
@@ -161,6 +161,13 @@ see, and `git show <sha>` answers what changed without anyone re-deriving it. **
 `⚠️`**, where *is this real* is a live question. **A wrong sha is worse than none, because it looks
 like proof:** `main` here is assembled by cherry-pick, so ancestry lies and the check is
 `git log --oneline main --grep=<subject>`.
+
+**"Not tonight" has to justify itself, and the reason has to be his.** A row parked on his word
+is a fact about what he decided. **A row an agent parked because it looked hard is that agent's
+judgement wearing his authority** — the same shape as a decision recorded without a quotation, and
+it costs more, because nobody re-opens a thing the list says he deferred. His own words for it,
+2026-08-13: *"STOP 'NOT DOING IT TONIGHT'ING ME."* **If the reason on a `⏸` row is not traceable
+to him, the row is not parked — it is unowned, and it says so.**
 
 **A parked row says why you parked it, in your word.** Unobserved, no energy, not important right
 now, looked-at-and-ranked — those are different, and only some of them mean come back soon.
