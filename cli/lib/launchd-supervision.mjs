@@ -25,6 +25,22 @@ export function launchctlFailureMessage(error) {
     String(error)
 }
 
+/**
+ * launchd fails a bootstrap with errno 5 (EIO) transiently — the same plist
+ * bootstraps on the next attempt with nothing else changed. Skip hit this four
+ * times on 2026-08-10 and wrote a retry loop at his own terminal to get past it;
+ * this is that loop, in the code, so the retry is not his job.
+ */
+export function isLaunchdBootstrapIoError(error) {
+  const stderr = error?.stderr?.toString?.() || ''
+  const stdout = error?.stdout?.toString?.() || ''
+  const message = error?.message || ''
+  const text = `${stderr}\n${stdout}\n${message}`
+  return /Input\/output error/i.test(text) ||
+    /errno\s*=\s*5\b/i.test(text) ||
+    /Bootstrap failed:\s*5\b/i.test(text)
+}
+
 export function isLaunchdAlreadyLoaded(error) {
   const stderr = error?.stderr?.toString?.() || ''
   const stdout = error?.stdout?.toString?.() || ''
@@ -42,7 +58,22 @@ export async function bootstrapLaunchdJob({
   try {
     await runLaunchctl(['bootstrap', domain, plist])
   } catch (e) {
-    if (!isLaunchdAlreadyLoaded(e)) {
+    if (isLaunchdAlreadyLoaded(e)) {
+      // already loaded — kickstart below is the whole job
+    } else if (isLaunchdBootstrapIoError(e)) {
+      // One retry, immediately. There is no interval here on purpose: an
+      // interval would be a number nobody chose, and the failure Skip saw
+      // cleared on a plain re-run. Twice is loud.
+      try {
+        await runLaunchctl(['bootstrap', domain, plist])
+      } catch (retryError) {
+        if (!isLaunchdAlreadyLoaded(retryError)) {
+          throw new Error(
+            `${launchctlFailureMessage(retryError)} (retried once after: ${launchctlFailureMessage(e)})`
+          )
+        }
+      }
+    } else {
       throw new Error(launchctlFailureMessage(e))
     }
   }
