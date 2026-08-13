@@ -1,0 +1,214 @@
+diff --git a/mcp-server/fleet-tools.mjs b/mcp-server/fleet-tools.mjs
+index 36e5110af..36dd0f600 100644
+--- a/mcp-server/fleet-tools.mjs
++++ b/mcp-server/fleet-tools.mjs
+@@ -22,6 +22,7 @@ import { loadServerConfig } from '../shared/config.mjs';
+ import { formatViewingHint } from './viewing-hint.mjs';
+ import { parseTimestamp } from './lib/parse-timestamp.mjs';
+ import { processMessageText } from '../shared/message-processing.mjs';
++import { announcePageTop, announcePageBottom } from '../shared/pagination-announce.mjs';
+ import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
+ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
+ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
+@@ -2244,7 +2245,31 @@ export function formatRaisedUnreadText(rows = [], data = null, now = Date.now())
+   return lines.join('\n');
+ }
+ 
+-export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now(), briefSeen = null }) {
++/**
++ * The inbox's page, announced at both ends.
++ *
++ * The body already said "Page-limited: N/M unread messages shown" at the top and
++ * then stopped there — a warning with no instruction, and the reader who needs it
++ * is at the bottom, having just read the page. The continuation is `drain`
++ * rather than a cursor: paging here is oldest-first and acknowledges as it goes,
++ * so "the next page" for a backlog is the whole backlog written to a file.
++ */
++export function formatInboxText(opts) {
++  const body = formatInboxBody(opts);
++  const counts = opts?.counts || null;
++  if (!counts?.messages_truncated) return body;
++  const shown = (opts?.messages || []).length;
++  const total = Number(counts.messages);
++  const footer = announcePageBottom({
++    shown,
++    total,
++    noun: 'unread message',
++    nextCall: 'inbox({ drain: true }) — reads every page, acknowledging as it goes, and writes the lot to a file.',
++  });
++  return footer ? `${body}\n\n${footer}` : body;
++}
++
++function formatInboxBody({ mode, task, tasks, messages, counts = null, now = Date.now(), briefSeen = null }) {
+   const activeTasks = normalizeInboxTasks({ task, tasks });
+   const taskBlocks = inboxTaskBlocks(activeTasks, briefSeen);
+   const lines = [];
+@@ -4328,7 +4353,25 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
+       header += `\n⚠️ Output truncated (showing ${searchLines.length} of ${formatted.length} results). For full conversation context, use thread(agent) — search returns snippets, not complete conversations.`;
+     }
+ 
+-    return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}` }] };
++    // Two different cuts, and they continue differently. The byte budget drops
++    // results already fetched, so the continuation is a narrower query — there is
++    // no cursor to hand back and inventing one would be a call that fails. The
++    // limit is a page and continues by raising it. Both are stated at the bottom,
++    // where a reader who has read the results actually is.
++    const searchFooters = [];
++    if (searchTruncated) {
++      searchFooters.push(
++        `${formatted.length - searchLines.length} more result(s) fetched but not shown — cut by a ${SEARCH_MAX_BYTES / 1000}k output budget, not by the query. ` +
++        `This surface has no cursor: narrow with since:/before:, or read one conversation with thread(agent).`,
++      );
++    } else if (!isBoundedSearch && results.length >= limit) {
++      searchFooters.push(
++        `This is a full page of ${limit}, so there may be more. Next page: search({ query: ${JSON.stringify(args.query || '')}, limit: ${Math.min(limit * 2, 100)} }) — or bound it with since:/before:, which returns the full range.`,
++      );
++    }
++    const searchTail = searchFooters.length ? `\n\n⚠️ ${searchFooters.join('\n')}` : '';
++
++    return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}${searchTail}` }] };
+   }
+ 
+   // ---- thread ----
+@@ -4718,9 +4761,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
+     // it is finished the warning is far behind it — which is how a 208-message
+     // window got summarised from the 107 that fit. The last thing in the buffer
+     // is the thing in mind at the moment the decision is made.
++    // Two ways this reply is a page, and both need the footer. `truncatedAt` is
++    // the byte budget cutting inside the page; `overflow` is the page being full
++    // with more range behind it. Only the first was footed, so a full page that
++    // fit its budget announced the continuation at the top and nowhere else —
++    // which is the case this comment's own reasoning argues against.
+     const tail = truncatedAt
+       ? `\n${SEP}⚠️ END OF PAGE, NOT END OF RANGE — ${filtered.length - lines.length}+ messages after this one are unread.\n` +
+         `\`thread(${nextPageArg}, since: "${filtered[lines.length - 1]?.timestamp}"${untilHint})\``
++      : overflow
++      ? `\n${SEP}⚠️ END OF PAGE, NOT END OF RANGE — more messages exist after this one.\n` +
++        `\`thread(${nextPageArg}, since: "${newest}"${untilHint})\``
+       : '';
+     return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}${tail}` }] };
+   }
+@@ -4857,7 +4908,27 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
+         `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+       );
+       const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
+-      return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
++      // The page, said at the end as well as in the scope hint above. This is the
++      // surface the fleet-table incident came through: 500 rows of 2154 read as
++      // the whole fleet, and "zero dead agents" reported from it.
++      //
++      // The continuation is `limit`, not a cursor. `/api/fleet-table` returns a
++      // `nextCursor` and this tool has no parameter to pass it back — announcing
++      // one would print a call nobody can make. Raising the limit is the
++      // continuation that exists, and it tops out at 500.
++      const rosterShown = Number.isFinite(data.shown) ? data.shown : rows.length;
++      const rosterTotal = Number.isFinite(data.matched) ? data.matched : t.total;
++      const rosterLimit = Number(args.limit) || 50;
++      const rosterFooter = announcePageBottom({
++        shown: rosterShown,
++        total: rosterTotal,
++        noun: 'agent',
++        nextCall: rosterLimit >= 500
++          ? `no larger page exists — limit is capped at 500. ${rosterTotal - rosterShown} row(s) are unreachable through this tool; narrow with a filter.`
++          : `roster({ limit: ${Math.min(rosterTotal, 500)}${args.filter ? `, filter: ${JSON.stringify(args.filter)}` : ''} })`,
++      });
++      const rosterTail = rosterFooter ? `\n\n⚠️ ${rosterFooter}` : '';
++      return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}${rosterTail}` }] };
+     } catch (e) {
+       return { content: [{ type: 'text', text: `roster failed before transport ACK: ${e.message}` }], isError: true };
+     }
+diff --git a/server/routes/fleet.mjs b/server/routes/fleet.mjs
+index 8c965da6d..d42cfe146 100644
+--- a/server/routes/fleet.mjs
++++ b/server/routes/fleet.mjs
+@@ -9,6 +9,7 @@
+  */
+ 
+ import { Router } from 'express'
++import { announcePageJson } from '../../shared/pagination-announce.mjs'
+ import fs from 'fs'
+ import path from 'path'
+ import os from 'os'
+@@ -641,6 +642,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState,
+         matched: page.matched,
+         nextCursor: page.nextCursor,
+         page_limited: true,
++        // `page_limited: true` and a `nextCursor` were already here, and an agent
++        // still called this with limit=500, got 500 of 2154, and told Skip the
++        // fleet had zero dead agents. Machine fields only work on a reader that
++        // knows to look for them. This is the same two claims in a sentence, so
++        // the response says what it is to anyone who reads it at all.
++        pagination: announcePageJson({
++          shown: summary.shown,
++          total: page.matched,
++          noun: 'agent row',
++          nextCursor: page.nextCursor,
++          nextCall: page.nextCursor
++            ? `GET /api/fleet-table?limit=${limit}${req.query.filter ? `&filter=${encodeURIComponent(req.query.filter)}` : ''}&cursor=${encodeURIComponent(page.nextCursor)}`
++            : null,
++        }),
+       })
+     } catch (e) { res.status(500).json({ error: e.message }) }
+   })
+@@ -681,6 +696,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState,
+         wholeFleet: await fleetStore.getAgentSummary?.() || null,
+         nextCursor: page.nextCursor,
+         page_limited: true,
++        pagination: announcePageJson({
++          shown: summary.shown,
++          total: page.matched,
++          noun: 'agent row',
++          nextCursor: page.nextCursor,
++          nextCall: page.nextCursor
++            ? `GET /api/fleet-roster-truth?limit=${limit}${req.query.filter ? `&filter=${encodeURIComponent(req.query.filter)}` : ''}&cursor=${encodeURIComponent(page.nextCursor)}`
++            : null,
++        }),
+       })
+     } catch (e) { res.status(500).json({ error: e.message }) }
+   })
+diff --git a/server/routes/history.mjs b/server/routes/history.mjs
+index c38df750a..966afbc76 100644
+--- a/server/routes/history.mjs
++++ b/server/routes/history.mjs
+@@ -18,6 +18,7 @@ import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validate
+ import { dispatchBuild } from '../lib/build-dispatch.mjs'
+ import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
+ import { ensure, historicalCtx } from '../lib/ensure.mjs'
++import { announcePageJson } from '../../shared/pagination-announce.mjs'
+ import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
+ import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
+ 
+@@ -327,8 +328,31 @@ router.get('/shadow', requireRead, async (req, res) => {
+       const version = await versionAt(name, ts)
+       res.json({ version })
+     } else {
+-      const versions = await listVersions(name, { limit })
+-      res.json({ versions })
++      // Ask for one more than we will return, so overflow is known without a
++      // second count. `versions` is unchanged — the extra row is dropped here.
++      // Length alone cannot prove exhaustion, because listVersions filters the
++      // init commit out after its own limit, so only a strict overshoot is
++      // treated as "there is more".
++      const probed = await listVersions(name, { limit: limit + 1 })
++      const paged = probed.length > limit
++      const versions = paged ? probed.slice(0, limit) : probed
++      res.json({
++        versions,
++        page_limited: paged,
++        // No cursor exists on this surface: listVersions takes a limit and
++        // nothing else, so there is no way to ask for the page after this one.
++        // Saying that is the honest announcement; printing a cursor parameter
++        // that does not exist would be a call the reader cannot make.
++        pagination: announcePageJson({
++          shown: versions.length,
++          total: paged ? null : versions.length,
++          noun: 'version',
++          nextCursor: paged ? 'more' : null,
++          nextCall: paged
++            ? `GET ?limit=${limit * 2} — this surface has no cursor, so a larger limit is the only continuation.`
++            : null,
++        }),
++      })
+     }
+   } catch (e) {
+     res.status(500).json({ error: e.message })

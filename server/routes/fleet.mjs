@@ -510,6 +510,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         ...await fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }),
         totals: await fleetStore.getAliveAgentCounts(),
       }
+      // Cursor-paginated and, until now, silent about it. `totals.total` is the
+      // whole live fleet, so the page can state its own fraction rather than
+      // leaving a reader to infer one from an array length.
+      page.pagination = announcePageJson({
+        shown: page.agents?.length ?? 0,
+        total: Number.isFinite(page.totals?.total) ? page.totals.total : null,
+        noun: 'agent',
+        nextCursor: page.nextCursor,
+        nextCall: page.nextCursor
+          ? `GET /api/agents?limit=${limit}&cursor=${encodeURIComponent(page.nextCursor)}`
+          : null,
+      })
       res.json(req.query.view === 'activity-dashboard' ? projectAgentActivityPage(page) : page)
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
@@ -542,9 +554,22 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
     try {
       const page = await fleetStore.getActiveTasksPage({ limit, cursor: req.query.cursor || null })
+      const total = await fleetStore.getActiveTaskCount?.() ?? page.tasks.length
       res.json({
         ...page,
-        total: await fleetStore.getActiveTaskCount?.() ?? page.tasks.length,
+        total,
+        // This endpoint already carried the whole-fleet `total` next to a partial
+        // `tasks` array, which is the shape that reads as completeness. The
+        // sentence names the gap the two numbers imply.
+        pagination: announcePageJson({
+          shown: page.tasks?.length ?? 0,
+          total,
+          noun: 'active task',
+          nextCursor: page.nextCursor,
+          nextCall: page.nextCursor
+            ? `GET /api/tasks?limit=${limit}&cursor=${encodeURIComponent(page.nextCursor)}`
+            : null,
+        }),
       })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
