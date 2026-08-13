@@ -112,9 +112,17 @@ function setCameraKeepingDocumentMargin(
   const viewport = editor.getViewportScreenBounds()
   const z = camera.z || 1
   const targetScreenY = viewport.y + viewport.h * targetScreenYFraction
+  // Subtract the canvas origin before dividing by zoom. tldraw's projection is
+  // `(x + camera.x) * camera.z + screenBounds.x`, so its inverse has to remove
+  // screenBounds first; dividing a raw client coordinate by z treats the canvas
+  // as if it started at the window origin. That is true today, which is why this
+  // has never misbehaved — and it stops being true the moment the canvas is
+  // inset, at which point the camera lands somewhere plausible and wrong. The Y
+  // term already carried `viewport.y` into the numerator without ever taking it
+  // out again, so the two axes disagreed about their own convention.
   const nextCamera = {
-    x: sourceLeftScreen == null ? camera.x : sourceLeftScreen / z - targetShape.x,
-    y: targetScreenY / z - targetY,
+    x: sourceLeftScreen == null ? camera.x : (sourceLeftScreen - viewport.x) / z - targetShape.x,
+    y: (targetScreenY - viewport.y) / z - targetY,
     z,
   }
   editor.setCamera(nextCamera, animation ? { animation: { duration: 300 } } : undefined)
