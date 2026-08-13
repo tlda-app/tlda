@@ -2396,7 +2396,14 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     let changed = false
     const modelTop = modelTopRef.current
     for (const [key, row] of rowElsRef.current) {
-      const nextHeight = measureRowHeight(row)
+      // getBoundingClientRect, as it was at f34e43f77 — the state Skip asked
+      // for back. measureRowHeight (getComputedStyle) was introduced with the
+      // padding deletion; together they made reaching the bottom depend on
+      // momentum. His words: "give me my fucking shimmer back."
+      // The zoom-unit defect that motivated the change needs a chat panel on
+      // the canvas layer, which he says he has never seen and is not supposed
+      // to see. Do not trade this for that again.
+      const nextHeight = row.getBoundingClientRect().height
       if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
       const previousHeight = heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
       if (Math.abs(nextHeight - previousHeight) <= 0.5) continue
