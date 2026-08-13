@@ -20,7 +20,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
 invented — the arXiv build — and it is gone. **The other 50 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 07:03 EDT; `main` is `a3a27f704`, 21 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 07:04 EDT; `main` is `c8a339f7d`, 22 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
@@ -208,6 +208,22 @@ own opinions into his.
 renders duplicates — the copy-store model that was retired. **That file is not in the window
 manager's errata**, so the belief is sitting in the tree where the errata cannot warn anyone
 about it, and the next person to read that comment will believe it. Not a row; a pointer.
+
+
+**Three branches are unmerged, each for a reason, and none of them is "nobody got to it."** A
+branch that merely looks unlanded is how shipped work gets reverted here, so the reasons are
+written down rather than left to be re-derived:
+
+- **`rc/anchored-list`** — 14 commits off `main`, head `fc7b9f539`. **Waiting on `chat-jerks`, on
+  your instruction.** Not stalled.
+- **`bot-label-durable`** — 3 commits, head `c9c8a93a7`. **Unfinished.**
+- **`restore-chrome-faintness`** — 1 commit, head `4e65b69f1`. **Spent; merging it would revert the
+  vendored fork.** The §Decided entry below has the detail.
+
+**Two files are dirty in the shared checkout and neither is this seat's** —
+`docs/source-authority-state-machine.md` and `src/overlays/FleetNudgeGuides.css`. Both have copies
+under `deploy/_utils/rescued-uncommitted/`, so nothing is at risk; they are somebody's live work
+and are left alone.
 
 ## Decided, so nobody opens it again {#decided}
 
