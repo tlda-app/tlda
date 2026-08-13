@@ -72,10 +72,19 @@ export function classifyThreeWay({ base, current, incoming, binary = false }) {
   }
 }
 
+// A rebase is available when every path is settled: either merged cleanly, or
+// carried whole because only one side moved it. The second kind arrives as a
+// hash rather than bytes — canonicalSnapshot takes `{path, sha256}` as a
+// reference into the blob store — so a project's untouched files cost nothing
+// to carry across a rebase.
 function cleanRebaseFiles(classifications) {
   if (!classifications.length) return null
-  if (!classifications.every(item => item.status === 'clean-rebase-candidate' && typeof item.merged === 'string')) return null
-  return classifications.map(item => ({ path: item.path, content: item.merged, encoding: 'base64' }))
+  const settled = item => item.status === 'clean-rebase-candidate'
+    && (typeof item.merged === 'string' || typeof item.sha256 === 'string')
+  if (!classifications.every(settled)) return null
+  return classifications.map(item => (item.sha256
+    ? { path: item.path, sha256: item.sha256 }
+    : { path: item.path, content: item.merged, encoding: 'base64' }))
 }
 
 /**
@@ -244,6 +253,31 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     const paths = [...new Set(snapshots.flatMap(snapshot => (snapshot?.files || []).map(file => file.path)))].sort()
     return paths.map(path => {
       const entries = snapshots.map(snapshot => fileEntry(snapshot, path))
+      const [baseHash, currentHash, incomingHash] = snapshots.map(snapshot => revisionFileHash(snapshot, path))
+
+      // A path only needs merging if both sides moved away from the base. One
+      // side moving is not a merge, it is a choice with one option, and a path
+      // nobody moved is not a question at all.
+      //
+      // This is the whole of the bug it fixes. Classifying every path in the
+      // union meant one unmergeable sibling refused a push it had nothing to do
+      // with: a project with a single .png could never take the clean-rebase
+      // path, because the figure nobody touched came back
+      // `classification-unavailable` and cleanRebaseFiles requires every entry
+      // to be a candidate. It worked on a probe and failed on any real paper,
+      // which all have figures in them.
+      const settled = entry => ({
+        path,
+        status: 'clean-rebase-candidate',
+        ...(entry.sha256 ? { sha256: entry.sha256 } : { merged: entryContent(entry).toString('base64') }),
+      })
+      // Nobody disagrees: both sides hold the same bytes.
+      if (currentHash != null && currentHash === incomingHash) return settled(entries[2])
+      // Only the project moved. Their version stands; this push never touched it.
+      if (baseHash != null && baseHash === incomingHash && entries[1]) return settled(entries[1])
+      // Only this push moved. Its version stands; nobody else touched it.
+      if (baseHash != null && baseHash === currentHash && entries[2]) return settled(entries[2])
+
       if (entries.some(entry => entry == null)) return { path, status: 'classification-unavailable' }
       const contents = entries.map(entry => entryContent(entry))
       if (contents.some(value => value == null)) return { path, status: 'classification-unavailable' }
