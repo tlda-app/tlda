@@ -1012,6 +1012,53 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     const err = storeWithStatus.error
     const errMsg = err?.message || String(err) || 'Unknown sync error'
     const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
+
+    // A version mismatch is not a broken document, and it must not be offered a
+    // destructive remedy. `TLSyncRoom` closes with CLIENT_TOO_OLD when this tab
+    // predates a shape-schema change, or SERVER_TOO_OLD when the server was
+    // rolled back behind it. In both cases the work is intact on both sides of
+    // the wire and there is nothing to clear — "Clear broken shapes" would
+    // delete this document's shapes to fix a problem that is entirely about
+    // which code is loaded where.
+    //
+    // We deploy several times a night and tabs stay open for days, so this is
+    // the ordinary way a long-lived tab stops syncing rather than a rarity.
+    // See docs/current-main-architecture.md, "A schema change on deploy stops a
+    // long-lived tab forever".
+    //
+    // And the fix is not to reload underneath someone. The tab says what
+    // happened and leaves the timing to the person.
+    const reason = (err as { reason?: string } | undefined)?.reason || ''
+    const staleTab = reason === 'CLIENT_TOO_OLD' || errMsg.includes('CLIENT_TOO_OLD')
+    const staleServer = reason === 'SERVER_TOO_OLD' || errMsg.includes('SERVER_TOO_OLD')
+    if (staleTab || staleServer) {
+      return (
+        <div className="App">
+          <div className="ErrorScreen">
+            <div className="error-icon">⚠</div>
+            <h2 className="error-title">
+              {staleTab ? 'This tab is running older code than the server' : 'The server is running older code than this tab'}
+            </h2>
+            <p className="error-message">
+              Nothing is lost. Your work is on the server and this tab still holds what you were looking at —
+              they have just stopped talking, because a shape changed shape between the two of them.
+            </p>
+            <p className="error-message">
+              {staleTab
+                ? 'Open this document in a new tab whenever it suits you, and it will pick up where this one left off.'
+                : 'This clears itself when the server catches up. Nothing to do.'}
+            </p>
+            {editorRef.current && (
+              <EmergencyDumpRescue editor={editorRef.current} documentName={document.name} />
+            )}
+            <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+              <a className="error-home-link" href="/">← All documents</a>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className="App">
         <div className="ErrorScreen">
