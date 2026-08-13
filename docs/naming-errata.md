@@ -58,3 +58,46 @@ happen on the file system" — which is the fact that makes the claim impossible
 is the whole argument for this file, demonstrated at its own expense: **a name in a call site is
 not evidence about behaviour, and the cost of believing one is a false claim in a durable
 document.**
+
+---
+
+## The server-sink comment — `src/logger.ts:58`
+
+**Not a name, but the same class of defect and it belongs here:** a comment in a live path that
+states the opposite of what the code does, sixty lines above the code that contradicts it.
+
+**What it says:**
+
+> Every `log()` call (regardless of console threshold) is queued and flushed to
+> `~/.config/tlda/client.log` via the server.
+
+**What `:122` says, in the function that actually enqueues:**
+
+> Level gates BOTH the server sink AND the console (default threshold: warn). **Previously the
+> sink captured every call regardless of level**, so a chatty debug/diagnostic namespace flooded
+> `~/.config/tlda/client.log` … Now a namespace must be turned up.
+
+**`:58` describes the behaviour `:122` says was removed.** It was true before that fix and was
+not updated by it.
+
+**What is actually true**, from `:162`, `:53` and `:29-31` rather than from either comment:
+
+- `log.metric` calls `enqueue` **directly**, bypassing `shouldLog`, so it always reaches the
+  file. Its own docstring says so.
+- Every other logger goes through `shouldLog(ns, level)` against a default threshold of `warn`.
+  `LEVEL_ORDER` puts `info` at 1 and `warn` at 2, so **`log.debug` and `log.info` both write
+  nothing** without a URL parameter.
+- So **what reaches `client.log` is decided per call function, not per level and not per
+  namespace.** An `info`-level record in that file is a `metric` record.
+
+**The cost, which is why this is worth writing down.** Two agents debugging the chat scroll path
+on 2026-08-13 reasoned from `:58`, saw an `info`-level record in the log, and concluded the sink
+takes everything at `info` and above. Both inputs were consistent with the comment and the
+comment is false. One of them nearly skipped a namespace that does carry evidence; the other
+put "the `chat-scroll` diagnostics are invisible in production telemetry" into
+[Chat rendering](chat-rendering.md), which was too broad in the other direction. **Anyone
+reasoning about what reaches `client.log` from the top of that file gets the wrong answer.**
+
+**The fix is deleting one parenthetical at `:58`** — a comment edit in a live path, no behaviour
+change. It has not been made because `logger.ts` was outside the scope of the work that found
+this, and per this file's own preamble the knowledge is worth having now either way.
