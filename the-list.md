@@ -1,13 +1,13 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `cd6f4c324`, 41 commits ahead** — everything tonight is on `main` and none of it is on your
-screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 03:07 EDT.
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `0434db7cd`, 43 commits ahead** — everything tonight is on `main` and none of it is on your
+screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 03:16 EDT.
 
 **Status:** ✅ working · ⚠️ built, not reaching you yet · 🔨 being worked now · ○ not started ·
 ? nobody could establish it. **Where a thing lives is on the row** — three of these work but do
 not live on your box, and one of those is a documentation file.
 
-**91 things**, counted at write time. **Every row was re-checked tonight by four verifiers reading diffs, not subjects.** A `?` means nobody could establish it either way — that is a real answer and there are 4 of them.
+**92 things**, counted at write time. **Every row was re-checked tonight by four verifiers reading diffs, not subjects.** A `?` means nobody could establish it either way — that is a real answer and there are 4 of them.
 
 ## Chat and scrolling
 
@@ -27,7 +27,8 @@ not live on your box, and one of those is a documentation file.
 |---|---|---|
 | ⚠️ | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | Two network round-trips before anything appears, no pending state on the chip, no guard — so each extra click starts a whole new chain. **This is what filled your canvas tonight.** `markdown-chip-owner` **Fixed in `5e67afccb`, which is on `main` and not on your box** — its own message says "Not deployed." Both chip rows are that one commit |
 | ⚠️ | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | Same owner, same worktree **Fixed in `5e67afccb`, which is on `main` and not on your box** — its own message says "Not deployed." Both chip rows are that one commit |
-| ○ | **Snap to grid draws a grid and does not snap to it** | **Nobody has looked at your screen.** Nobody knows where those lines come from. A previous version of this row offered tldraw's own snap prefs as a lead — you don't use tldraw snapping, so that was a guess about the wrong system and it is gone. **The one thing nobody has done is read your live tab and count what is actually drawn**, which is a read-only inspection that needs nothing from you. Unowned |
+| ○ | **The grid draws because nobody ever turned it off, and it is a different record from the one we disabled** | **Cause found and verified in the vendored files, not inferred.** `@tldraw/tlschema` `TLInstance.mjs:57` defaults **`isGridMode: true`** — instance state. `src/SvgDocument.tsx:1228` sets `isSnapMode: false` — a *user preference*, a different record, and the one that governs snapping. **Nothing in `src/` ever sets `isGridMode`**; it is read once at `BrowseTool/BrowseIdle.ts:1015` and written nowhere. **So the grid draws because it was never turned off, and nothing snaps to it because what we disabled was never what snaps to it** — both halves of your report, from one default. **Ours is not the source:** `closestFleetPanelNudge` returns at most one match per axis, and `takenMatch` gates the guide and the move on the same value, so it cannot draw a line it will not land on. Two lines in vendored files; ten seconds to check; four hours to ask. Unowned |
+| ○ | **Snap guides persist after a drag that touched nothing** | Separate and smaller, found while looking for the grid. `nudgeFleetPanelTranslate` returns on four paths without clearing the store — wrong page, not a fleet shape, no candidates, no rect — and only `strength <= 0` clears. **The overlay keeps rendering the last pair**, so up to two hairlines sit there with nothing being dragged. **Not the grid and not "a lot"** — do not let it absorb the row above. Unowned |
 | ○ | The layout button after a vertical split crashes the page | **Nobody looked.** No commit mentions the layout button or a vertical split in three weeks, and nobody has opened the crash. This dot means untouched, not checked-and-untouched |
 | ○ | A two-margin layout renders into one margin with a gap on refresh | **Nobody looked.** No commit for it and no investigation. This dot means untouched, not checked-and-untouched |
 | ✅ | Every sticky note anchors, not just voice notes | `91c77faf0` |
