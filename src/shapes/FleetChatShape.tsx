@@ -1915,6 +1915,30 @@ function threadNick(id: any, periodName: any, nowName: any, agentLabel: (id: any
   return s
 }
 
+// One event, many recipients. A `fleet-search` row carries `recipients` with
+// parallel `toNames` / `toNamesNow`, and has carried no scalar `to_id` since the
+// recipients table replaced it on 2026-07-31 (`1638fbe33`). Reading the scalar
+// got `undefined`, `threadNick` returns '' on a falsy id, and every thread row
+// drew `from →` with nothing after the arrow — the recipient silently gone from
+// a transcript whose whole job is who said what to whom.
+//
+// Verified against a live `fleet-search` result rather than the type: the row's
+// keys are `from, fromName, recipients, toNames, toNamesNow` — no `to_id`, no
+// `to`, and the singular `toName`/`toNameNow` this used to read do not exist
+// either.
+function threadNicks(ids: any, periodNames: any, nowNames: any, agentLabel: (id: any) => string) {
+  const list = Array.isArray(ids) ? ids.filter(Boolean) : [ids].filter(Boolean)
+  return list
+    .map((id: any, i: number) => threadNick(
+      id,
+      Array.isArray(periodNames) ? periodNames[i] : periodNames,
+      Array.isArray(nowNames) ? nowNames[i] : nowNames,
+      agentLabel,
+    ))
+    .filter(Boolean)
+    .join(', ')
+}
+
 // Fleet events → the rows renderThreadRows draws. An activity event becomes the
 // item renderActivityGroup already knows how to draw; everything else is one
 // chat line.
@@ -1932,7 +1956,7 @@ function threadRowsFromEvents(events: any[], agentLabel: (id: any) => string) {
     return {
       timestamp,
       from: threadNick(e.from_id || e.from, e.fromName, e.fromNameNow, agentLabel),
-      to: threadNick(e.to_id || e.to, e.toName, e.toNameNow, agentLabel),
+      to: threadNicks(e.recipients ?? (e.to_id || e.to), e.toNames ?? e.toName, e.toNamesNow ?? e.toNameNow, agentLabel),
       body,
     }
   })
