@@ -84,6 +84,16 @@ const PW_STALE_TAB_MS = parsePositiveInt(process.env.TLDA_PW_STALE_TAB_MS, 15 * 
 const PW_VERB_TIMEOUT_MS = parsePositiveInt(process.env.TLDA_PW_VERB_TIMEOUT_MS, 120_000)
 const PW_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.TLDA_PW_OPEN_TIMEOUT_MS, 180_000)
 
+// `reap`'s graceful `close` is BEST EFFORT and therefore gets its own, much
+// shorter budget. The verb budget above is sized so a legitimate slow verb is
+// never false-killed; this one is sized for the opposite job. reap kills the
+// processes regardless, so waiting two minutes to discover that a wedged daemon
+// will not close politely spends the recovery verb's entire value — and the
+// wedged case is exactly the one reap exists for.
+// Measured: a healthy reap (probe + close + kill) completed in 14-18 s on a
+// loaded box, so the close itself is under ~18 s. 30 s is that with headroom.
+const PW_REAP_CLOSE_TIMEOUT_MS = parsePositiveInt(process.env.TLDA_PW_REAP_CLOSE_TIMEOUT_MS, 30_000)
+
 // Agents are deterministically sharded over a bounded session pool. Explicit
 // TLDA_PW_SESSION remains available for isolated/manual testing.
 const SESSION = process.env.TLDA_PW_SESSION || sessionForAgent()
@@ -409,12 +419,17 @@ function reapOrphanedSessionClis() {
 // a socket a wedged daemon will never answer, and SIGTERM is the signal such a
 // process is least likely to act on. A budget that expires without the child
 // actually dying re-creates the orphan with extra steps.
-function runPlaywrightCli(args, opts = {}) {
-  const timeout = args[0] === 'open' ? PW_OPEN_TIMEOUT_MS : PW_VERB_TIMEOUT_MS
+function runPlaywrightCli(args, { budgetName, ...opts } = {}) {
+  const isOpen = args[0] === 'open'
+  // A caller may pass its own `timeout` for a best-effort call (reap's close).
+  // `budgetName` travels with it so the failure message names the knob that
+  // actually applied rather than the default one it overrode.
+  const timeout = opts.timeout ?? (isOpen ? PW_OPEN_TIMEOUT_MS : PW_VERB_TIMEOUT_MS)
+  const budget = budgetName || (isOpen ? 'TLDA_PW_OPEN_TIMEOUT_MS' : 'TLDA_PW_VERB_TIMEOUT_MS')
   // cwd PINNED to the canonical workspace so this command targets the ONE shared
   // daemon regardless of where the agent invoked tlda-dev pw from (see PW_CWD).
   const result = spawnSync(playwrightCliBin(), args, {
-    encoding: 'utf8', cwd: PW_CWD, timeout, killSignal: 'SIGKILL', ...opts,
+    encoding: 'utf8', cwd: PW_CWD, killSignal: 'SIGKILL', ...opts, timeout,
   })
   const timedOut = result.error?.code === 'ETIMEDOUT' ||
     (result.status === null && result.signal === 'SIGKILL')
@@ -428,7 +443,7 @@ function runPlaywrightCli(args, opts = {}) {
     `pw: "${verb}" on session "${SESSION}" exceeded ${timeout < 1000 ? `${timeout}ms` : `${Math.round(timeout / 1000)}s`} and was killed — ` +
     `the pooled browser daemon is not answering. Try \`tlda-dev pw reap\` to restart it` +
     `${swept ? `; swept ${swept} orphaned ${SESSION} CLI process(es)` : ''}. ` +
-    `(budget: ${args[0] === 'open' ? 'TLDA_PW_OPEN_TIMEOUT_MS' : 'TLDA_PW_VERB_TIMEOUT_MS'})`
+    `(budget: ${budget})`
   )
   // spawnSync leaves `status` null on timeout, and callers do `.status ?? 0` —
   // which would report a killed verb as SUCCESS. Synthesize the failure.
@@ -1238,8 +1253,26 @@ export async function cmdPw(args, repoRoot) {
   }
 
   if (verb === 'reap') {
-    if (!sessionOpen()) console.log('browser already down')
-    else { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
+    // NO PROBE. reap kills this session's processes regardless, so asking a
+    // wedged daemon whether the browser is up spends a full verb budget to learn
+    // nothing that changes what happens next — and a wedged daemon is precisely
+    // what reap exists for, so its slowest path was its most important one.
+    // Attempt the graceful close directly on a short best-effort budget: it is
+    // deliverable when the daemon is healthy, pointless when it is not, and the
+    // kill below is what actually frees the session either way.
+    // Output captured rather than inherited because `close` exits 0 whether it
+    // closed a browser or found none, so the exit code cannot tell the two apart
+    // — it says so in words instead, the same way `list` is read elsewhere here.
+    // Reporting "browser reaped" for a session that was already down is a small
+    // lie of exactly the kind the rest of this change exists to remove.
+    const closed = pw(['close'], {
+      timeout: PW_REAP_CLOSE_TIMEOUT_MS,
+      budgetName: 'TLDA_PW_REAP_CLOSE_TIMEOUT_MS',
+    })
+    if (closed.stderr) process.stderr.write(closed.stderr)
+    if (closed.timedOut) console.log('browser did not close gracefully — killing it')
+    else if (/is not open/i.test(closed.stdout || '')) console.log('browser already down')
+    else console.log('browser reaped')
     const killed = reapSessionProcesses(SESSION)
     try { releaseLeases(lease => lease.metadata?.session === SESSION) } catch (error) { warnLeaseFailure('release session leases', error) }
     if (killed.length) console.log(`killed ${killed.length} playwright ${SESSION} process(es)`)
