@@ -12,6 +12,7 @@ import {
 } from 'tldraw'
 import { fleetSourceEditorProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { normalizeSourceManifest, referencedRootsFromPaths } from '../../shared/source-manifest.mjs'
+import { log } from '../logger'
 import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
@@ -1075,7 +1076,23 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           socket.addEventListener('open', () => {
             const sendLocalUpdate = (update: Uint8Array, origin: unknown) => {
               if (origin === 'source-room') return
-              if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'update', update: uint8ToBase64(update) }))
+              if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: 'update', update: uint8ToBase64(update) }))
+                return
+              }
+              // The only place in this path that discards a keystroke without a
+              // trace. It should be unreachable: the editor is built after the
+              // room syncs, and the unmount closes the socket and destroys the
+              // doc in one synchronous block a keystroke cannot interleave with.
+              //
+              // But "I cannot construct it" is weaker than "it cannot happen",
+              // so it says so rather than being argued about. If this never
+              // fires, the argument is confirmed by the running system; if it
+              // ever fires, that is an edit which reached nowhere, from a real
+              // session, and we have the case nobody could construct.
+              log.warn('source-room', 'dropped a local update: socket not open', {
+                file, readyState: socket.readyState, bytes: update.length,
+              })
             }
             ydoc.on('update', sendLocalUpdate)
           }, { once: true })
