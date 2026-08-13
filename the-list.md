@@ -5,9 +5,12 @@ finished ones were deleted rather than ticked, several pairs were merged into on
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **6 of the 47 are parked rather than closed — you tabled them, which is not the same as done.**
 
-⚠️ built, not reaching you yet · **✓? built and already on your box, but nobody has confirmed it
-works for you** · 🔨 being worked now · ○ not started · ⏸ tabled — not finished, nobody on it, can
-come back · ? nobody could establish it either way
+**⚠️ built and finished, but not on your box — so from where you sit it is indistinguishable from
+not-done, which makes it the one mark that misleads you.** Five of the six are on `main` and clear
+the moment anything deploys; the sixth is on a branch and needs merging first. · **✓? built and
+already on your box, but nobody has confirmed it works for you** · 🔨 being worked now · ○ not
+started · ⏸ tabled — not finished, nobody on it, can come back · ? nobody could establish it
+either way
 
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
 invented — the arXiv build — and it is gone. **The other 47 are things you asked for.**
