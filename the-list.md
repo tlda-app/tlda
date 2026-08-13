@@ -267,3 +267,10 @@ with nothing else in it. **This is a leak risk rather than an aesthetic one, and
 screenshot anybody publishes**, not only the README. Established by `readme-shots`' own three runs
 and relayed by `app-fix-forward`; this seat did not shoot them.
 
+**`restore-chrome-faintness` is spent, not merged, and merging it would have been a regression.**
+It was cut before the layer work, so a merge would have **reverted the vendored fork from `.11` to
+`.10` and removed 1,411 lines.** Its content reached `main` by another route — `63d7b9658`, *"let
+the faint preference reach the annotation viewer's nav buttons"*. **Recorded because a stale branch
+that looks unmerged is how shipped work gets reverted here**, and the branch will still be sitting
+there tomorrow looking like something nobody landed. Established by `app-fix-forward`.
+
