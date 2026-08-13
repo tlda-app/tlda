@@ -27,16 +27,16 @@ not live on your box, and one of those is a documentation file.
 |---|---|---|
 | ⚠️ | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | Two network round-trips before anything appears, no pending state on the chip, no guard — so each extra click starts a whole new chain. **This is what filled your canvas tonight.** `markdown-chip-owner` **Fixed in `5e67afccb`, which is on `main` and not on your box** — its own message says "Not deployed." Both chip rows are that one commit |
 | ⚠️ | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | Same owner, same worktree **Fixed in `5e67afccb`, which is on `main` and not on your box** — its own message says "Not deployed." Both chip rows are that one commit |
-| ○ | **Snap to grid draws a grid and does not snap to it** | **A lead for whoever takes it:** nothing in our source ever *sets* `isGridMode` — the vendored tldraw schema defaults it **true**, while the pref we deliberately turned off is the other one, `isSnapMode`. Grid drawing and grid snapping are governed by the one nobody wrote. Not run, so a lead and not a cause. Unowned |
-| ○ | The layout button after a vertical split crashes the page | |
-| ○ | A two-margin layout renders into one margin with a gap on refresh | |
+| ○ | **Snap to grid draws a grid and does not snap to it** | **Nobody has looked at your screen.** Nobody knows where those lines come from. A previous version of this row offered tldraw's own snap prefs as a lead — you don't use tldraw snapping, so that was a guess about the wrong system and it is gone. **The one thing nobody has done is read your live tab and count what is actually drawn**, which is a read-only inspection that needs nothing from you. Unowned |
+| ○ | The layout button after a vertical split crashes the page | **Nobody looked.** No commit mentions the layout button or a vertical split in three weeks, and nobody has opened the crash. This dot means untouched, not checked-and-untouched |
+| ○ | A two-margin layout renders into one margin with a gap on refresh | **Nobody looked.** No commit for it and no investigation. This dot means untouched, not checked-and-untouched |
 | ✅ | Every sticky note anchors, not just voice notes | `91c77faf0` |
 | ✅ | Highlights stop drifting on refresh | |
 | ? | Shapes stop drifting on reload | **The sha I cited was wrong.** `b75e0048a` gates *fleet HUD* anchors on camera restore — one file, `FleetHUD.tsx`, and it does not touch document shapes. If the row means the HUD, done. **If it means shapes in your document, nothing was found that fixes it** |
 | ○ | Notes written on the iPad while Yjs is offline are stranded | No longer unrecoverable — the emergency dump appears on the sync-failure screen. The stranding itself is unfixed |
 | ○ | Place-stack forward/back over documents | Built on a branch, never landed |
 | ○ | Pen/handwriting correction | Built on a branch, never landed |
-| ○ | The image/token syntax — chips in brackets, markdown for images | |
+| ○ | The image/token syntax — chips in brackets, markdown for images | **Nobody looked.** |
 
 ## Documents and markdown
 
@@ -78,7 +78,7 @@ not live on your box, and one of those is a documentation file.
 | ✅ | The source editor works with two people in it | |
 | ✅ | The classroom book pushes, which it never could | 527 MB, not the 525 the row said. The cause was a push filter sending `.pdf` and `.log` files the manifest then dropped — a 409, not an out-of-memory |
 | ✅ | Quarto's cache stopped shipping in uploads | 212 MB, 54% of the payload |
-| ○ | Create an Overleaf project from a git repo | |
+| ○ | Create an Overleaf project from a git repo | **Nobody looked.** |
 | ○ | Build the arXiv format as well as the journal one | **It builds what the LaTeX document asks for.** The `xr` half shipped in May and nobody noticed — `detectXrSiblings()` scans for `\externaldocument{}` and sorts targets so a dependent builds after the one whose `.aux` it reads. Nothing tests it |
 
 ## Fleet, agents and bots
@@ -88,19 +88,19 @@ not live on your box, and one of those is a documentation file.
 | ✅ | `thread()` asks for the two-party conversation | **Done tonight — `281e36039`, the behaviour and not just the docstring.** It reaches an agent when its MCP restarts, not on deploy, so agents minted from now already have it |
 | ○ | A handoff through Todd never works | Reported three times across three days. **Nobody has found a cause.** An inherited note said Todd was not running on `testing`; that is false — `fleet-todd` has been up since 22:27 and has been sending check-ins all night |
 | ○ | A bot's tmux session should die with the bot | You said "go for it" on 08-10. **My earlier wording was wrong: no session from July exists.** What exists is a *process* from 31 July — pid 800, **12 days elapsed, 195 minutes of CPU and still climbing** — waiting on `tmux wait-for` for a session name that was never created. The absent session is exactly why it never exits |
-| ○ | Bots have no real options | |
+| ○ | Bots have no real options | **Nobody looked.** |
 | ? | Reanimate does nothing and says nothing | **The "says nothing" half is fixed and on your box** — `3f6251e28` added the whole reanimate feedback path, pending/queued/error with a rendered status message, and server-side reasons. **"Does nothing" is not established:** the fleet has zero dead agents and killing one to test was out of scope |
-| ○ | Minting sonnet and terra agents fails silently | |
+| ○ | Minting sonnet and terra agents fails silently | **Nobody looked.** |
 | ? | **You sometimes load as a generated name, and name generation was deleted** | **These two rows contradict each other** — one says a generated name appears, the other says the generator is gone. Neither could be established: searches for the generator found nothing, but nobody could show the search would have found it under another name. **Merged, and both halves are unverified** |
-| ○ | Read receipts are gone — the UI is there, disconnected | |
+| ○ | Read receipts are gone — the UI is there, disconnected | **Nobody looked.** |
 | 🔨 | A notification that fails to arrive must be noticed by the system | **The noticing shipped and the reading did not.** `c330f231b` is on your box: the server requires an MCP ACK and builds a `notification_failure` onto the wake payload. **That literal appears exactly once outside tests — the writer.** Nobody reads it, so the system notices, tells the daemon, and the daemon drops it |
-| ○ | Unexplained wakes; build notices fan out to everyone who ever touched the project | |
+| ○ | Unexplained wakes; build notices fan out to everyone who ever touched the project | **Nobody looked.** |
 | ○ | `involving:(nobody & bot)` finds nothing for an agent you can name | **The cause is sharper than the row:** `nobody` is a real living agent, but `involving:nobody` returns rows belonging to a *different* agent, `pull-tells-nobody` — an exact name resolves to a substring match on somebody else, so the agent you named is never reached |
-| ○ | Inbox affordances: archive/delete, drag a sticky to an agent, task from a note | |
-| ○ | The history endpoint should announce pagination the way `thread` does | |
+| ○ | Inbox affordances: archive/delete, drag a sticky to an agent, task from a note | **Nobody looked.** |
+| ○ | The history endpoint should announce pagination the way `thread` does | **Nobody looked.** |
 | ○ | **Who caused a build, shown on the pill and in history** | Nothing implements it. **Merged from two rows** — the build pill naming who sent it and edit attribution in history are one ask wearing two surfaces. Split them again if you meant two |
 | ○ | The paper dependency graph, and edit-implication notices | Two things, your ruling |
-| ○ | Take build success away as a completion signal; an edit creates an obligation sized by its diff | |
+| ○ | Take build success away as a completion signal; an edit creates an obligation sized by its diff | **Nobody looked.** |
 | ✅ | A fresh agent gets your project's macros | The photoshoot failure |
 | ✅ | Todd talks again, with a wake budget you set at 20 and `shut-up-todd` as a label | |
 | ✅ | A label dragged out of a chat filters, same as one from the agents panel | `5e6d3a4e9`. Was marked untouched |
@@ -113,7 +113,7 @@ not live on your box, and one of those is a documentation file.
 | | | |
 |---|---|---|
 | ✅ | Enter waits for your dictated tail to finalise | The message-repeating-itself thing |
-| ○ | Message send lag; you suspect the voice box config | |
+| ○ | Message send lag; you suspect the voice box config | **Nobody looked.** |
 | ✅ | The voice buffer cap, and a HUD that says which of two things is wrong | **Both halves shipped and are on your box** (`8b1decf8d`) — a 64 MiB `PcmBacklog` with a pref and a daemon-config key, and a HUD that returns exactly two failures, `buffered` versus `mic dead`, deliberately the same width so it does not strobe. **Was marked not-started.** Nothing tests it |
 | ✅ | The voice provider picker: hide unconfigured, surface configured-but-unreachable | **Both halves on your box.** Deepgram is offered only if its bridge URL is configured; unreachability is answered at connect time with a 503 rather than the option vanishing, plus a loading/ready/error state so uncertainty says so. **Was marked not-started** |
 
@@ -122,9 +122,9 @@ not live on your box, and one of those is a documentation file.
 | | | |
 |---|---|---|
 | ○ | **Why your box stopped for six minutes tonight** | A machine was created and told to stop seven seconds later. Neither deploy config declares a service or a minimum machine count |
-| ○ | `config apply` must never be how you fix a running bot | |
-| ○ | Zero magic numbers; limits in config files, not environment variables | |
-| ○ | Move the server and daemon JavaScript to TypeScript, gradually | |
+| ○ | `config apply` must never be how you fix a running bot | **Nobody looked.** |
+| ○ | Zero magic numbers; limits in config files, not environment variables | **Nobody looked.** |
+| ○ | Move the server and daemon JavaScript to TypeScript, gradually | **Nobody looked.** |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
 | ✅ | A deploy can no longer report success on a box that is off | **Not on your box, and not in git either** — it is `verify_serving()` in the deploy hooks, which polls your box for the pushed sha and fails the push otherwise, so no `git log` can find it. **✅ here would have meant "working on your box", which it isn't** — it runs on the deploying machine. It has run twice, 10s and 20s, both successes, so **it has still never seen the failure it was written for** |
 | ✅ | Push-to-deploy is cut over; the lying `deploy:live` alias is gone | |
@@ -136,11 +136,11 @@ not live on your box, and one of those is a documentation file.
 |---|---|---|
 | ○ | The probability arc you designed on 08-10 | `fall-class` was told to find it and still has not been pointed at it |
 | ○ | **The course website, which is the schedule** — week by week, a date list, references into the book, an authorship overlay | *"without me having everything hand coded in a million different places."* **Merged from two rows** on your own framing that the schedule is structurally the website. Say the word and they split again |
-| ○ | The classroom common layer is the book layer; a demo student account | |
-| ○ | Homework structure: problems in narrative sections, stray text refuses upload | |
-| ○ | An errata page for the book, as annotations into it | |
-| ○ | Automatic lecture recording and Notability-style playback | |
-| ○ | A screen-reader-safe parallel version of the course content | |
+| ○ | The classroom common layer is the book layer; a demo student account | **Nobody looked.** |
+| ○ | Homework structure: problems in narrative sections, stray text refuses upload | **Nobody looked.** |
+| ○ | An errata page for the book, as annotations into it | **Nobody looked.** |
+| ○ | Automatic lecture recording and Notability-style playback | **Nobody looked.** |
+| ○ | A screen-reader-safe parallel version of the course content | **Nobody looked.** |
 
 ## Written down rather than built
 
@@ -151,7 +151,7 @@ not live on your box, and one of those is a documentation file.
 | ✅ | What an advocate is for, for chiefs and for advocates | Your 23:46 ruling |
 | ✅ | Naming errata — the list exists | You said fix it or at least write it down |
 | ○ | The README merge, then the photoshoot | **The images are not "still July 1" as the row said** — all 50 run 2026-04-28 to 2026-07-29. Either way they predate every theme that shipped on 08-11 and 08-12, so they show a UI that no longer exists |
-| ○ | Documentation taxonomy, and an Overleaf onboarding section | |
+| ○ | Documentation taxonomy, and an Overleaf onboarding section | **Nobody looked.** |
 | ○ | GitHub release: push, tag a late-alpha | Tagging waits on you |
 | ○ | Submit tlda to JOSS | What the release is for |
 
