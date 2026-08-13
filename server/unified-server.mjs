@@ -2006,6 +2006,33 @@ function deliverSpawnLaunchFailure(entry, detail) {
   )).catch(e => console.error(`[spawn-mailbox] failed to deliver ${entry.id}: ${e.message}`))
 }
 
+// The readiness settle — the mint launched, and the agent had not logged in by
+// the deadline. It is the ONLY settle with no delivery: the three launch-failure
+// sites above all reach the owner, and this one wrote a `to`-less record and
+// stopped. So the caller was told an outcome would arrive and, for a timeout,
+// none ever did — three mints died that way on 08-13 alone.
+//
+// This does NOT reclassify it. Skip's 7/22 decision is that a timeout is not a
+// failure, and it stands: the wording says the agent has not answered, not that
+// the mint failed, and it does not go through deliverSpawnLaunchFailure. His
+// reasoning was against manufacturing a failure out of a deadline; it was never
+// a reason to leave a waiting caller with nothing. (The `onExpire` no-op that
+// carries that decision is a different path and is untouched.)
+function deliverSpawnNoAnswer(entry, detail) {
+  if (entry.kind !== 'spawn' || !entry.ownerId) return
+  const label = detail.label || entry.meta?.name || entry.meta?.agentId || 'mint'
+  const agentId = detail.agentId || entry.meta?.agentId || null
+  // Not optional-chained, for the same reason the launch-failure delivery is not:
+  // a delivery that silently no-ops when the method is missing reproduces the
+  // exact defect it exists to close.
+  Promise.resolve(fleetStore.chat(
+    'fleet:tlda',
+    entry.ownerId,
+    `**\`${label}\` has not answered yet** — it launched, and did not log in before the deadline.\n\nIt may still arrive; the roster is where it shows up if it does.\n\nagent_id: \`${agentId || '(none)'}\` · mailbox: \`${entry.id}\` · ${detail.reason || 'login-timeout'}`,
+    { type: 'spawn_no_answer', mailbox_id: entry.id, agent_id: agentId, reason: detail.reason || 'login-timeout' },
+  )).catch(e => console.error(`[spawn-mailbox] failed to deliver no-answer for ${entry.id}: ${e.message}`))
+}
+
 // A spawn that SUCCEEDS with a narrower grant than was asked for is the quietest
 // failure this system has. `deliverSpawnMailboxCompletion` above is a record
 // addressed to nobody, so the caller is told the mint worked and never told the
@@ -2355,7 +2382,10 @@ async function performSpawnRelay(caller, msg) {
         if (!ready.ok) {
           if (pendingAgentId) await failServerMintShell(pendingAgentId, ready.reason)
           const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
-          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
+          if (settled) {
+            deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
+            deliverSpawnNoAnswer(settled, { ...ready, label: spawnName, agentId: pendingAgentId || targetAgentId || null })
+          }
           return
         }
       }
