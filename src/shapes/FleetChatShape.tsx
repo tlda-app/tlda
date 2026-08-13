@@ -3978,14 +3978,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // The geometry seam records the scrollTop it writes. The next matching scroll
   // event updates measurements but cannot be interpreted as reader intent.
   const geometryReconcileScrollTopRef = useRef<number | null>(null)
-  // Set by every scrollTop write this component makes, cleared by the resize
-  // that write provokes. `geometryReconcileScrollTopRef` above closes the same
-  // hazard on the scroll handler — our write emits a scroll event that must not
-  // read as reader intent — and the resize path is its second entrance, which
-  // nobody came back for: scrolling renders a different row window, those rows
-  // measure differently than they were estimated, and the item list changes
-  // height with the content untouched.
-  const selfWriteResizePendingRef = useRef(false)
   const panelPointerIdsRef = useRef<Set<number>>(new Set())
   const deferredGeometryReconcileRef = useRef(false)
   // Reactive bottom-position state. Drives the unified follow/jump button:
@@ -4104,7 +4096,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollTop + delta
     el.scrollTop += delta
     geometryReconcileScrollTopRef.current = el.scrollTop
-    selfWriteResizePendingRef.current = true
     log.metric('chat-anchor', 'preserved viewport across content resize', {
       panelId: String(shape.id),
       anchorKey,
@@ -4153,7 +4144,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollHeight
     el.scrollTop = el.scrollHeight
     geometryReconcileScrollTopRef.current = el.scrollTop
-    selfWriteResizePendingRef.current = true
   }, [captureViewportAnchor, restoreViewportAnchor, shape.id])
 
   // Release one deferred correction once the scroller is the panel's again. A
@@ -4212,31 +4202,12 @@ function FleetChatInner({ shape }: { shape: any }) {
     const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!el || !list) return
     const observer = new ResizeObserver(() => {
-      // Diagnostics first and unconditionally: a suppressed firing is exactly
-      // the one worth seeing, and this is how the two candidate causes get told
-      // apart — a row that changed height, or a list that changed height with
-      // every row the same.
       recordRowResizes()
-      if (selfWriteResizePendingRef.current) {
-        selfWriteResizePendingRef.current = false
-        // Nothing is lost by returning here. The same write also emits a scroll
-        // event, and the scroll handler runs the identical restore behind the
-        // identical input guard, in this frame. What this skips is a second
-        // forced layout over every rendered row, not a correction.
-        log.metric('chat-anchor', 'skipped resize caused by our own scroll write', {
-          panelId: String(shape.id),
-          scrolledUp: userScrolledUpRef.current,
-        })
-        return
-      }
       reconcileViewportGeometry()
     })
     observer.observe(list)
-    return () => {
-      observer.disconnect()
-      selfWriteResizePendingRef.current = false
-    }
-  }, [chatLogEl, reconcileViewportGeometry, recordRowResizes, shape.id])
+    return () => observer.disconnect()
+  }, [chatLogEl, reconcileViewportGeometry, recordRowResizes])
 
   useEffect(() => {
     const el = chatLogEl
