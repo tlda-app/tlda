@@ -190,6 +190,7 @@ function matchOnY(target: number, draggedFeature: number, dragged: FleetNudgeRec
 function closestFleetPanelNudge(
   dragged: FleetNudgeRect,
   candidates: FleetNudgeRect[],
+  threshold: number,
 ): { dx: FleetNudgeMatch | null; dy: FleetNudgeMatch | null } {
   let dx: FleetNudgeMatch | null = null
   let dy: FleetNudgeMatch | null = null
@@ -204,17 +205,31 @@ function closestFleetPanelNudge(
     dy = keepClosest(matchOnY(candidate.bottom, dragged.bottom, dragged, candidate), dy)
   }
 
+  // An edge or centre that lines up wins outright. Equal-gap spacing is only
+  // consulted on an axis that has no alignment to offer.
+  //
+  // These are not comparable by distance. Alignment gives at most six lines per
+  // panel; equal-gap gives two per panel per DISTINCT GAP IN THE SCENE, so with
+  // a screen of panels it is thousands of lines and one of them is nearly always
+  // nearer than the alignment you were reaching for. Taking the closest of the
+  // union means the obvious position loses to a spacing coincidence — which is
+  // "it doesn't wanna fucking snap there, despite everything being perfectly
+  // aligned" and "it wants to snap to a bunch of weird shit" in one behaviour.
+  const alignedX = dx && Math.abs(dx.delta) <= threshold ? dx : null
+  const alignedY = dy && Math.abs(dy.delta) <= threshold ? dy : null
+  if (alignedX && alignedY) return { dx: alignedX, dy: alignedY }
+
   const horizontalGaps = new Set<number>()
   const verticalGaps = new Set<number>()
   for (let i = 0; i < candidates.length; i++) {
     for (let j = i + 1; j < candidates.length; j++) {
       const a = candidates[i]
       const b = candidates[j]
-      if (sameBandOnY(a, b)) {
+      if (!alignedX && sameBandOnY(a, b)) {
         const gap = Math.max(a.left, b.left) - Math.min(a.right, b.right)
         if (gap > 0) horizontalGaps.add(gap)
       }
-      if (sameBandOnX(a, b)) {
+      if (!alignedY && sameBandOnX(a, b)) {
         const gap = Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom)
         if (gap > 0) verticalGaps.add(gap)
       }
@@ -222,13 +237,13 @@ function closestFleetPanelNudge(
   }
 
   for (const candidate of candidates) {
-    if (sameBandOnY(dragged, candidate)) {
+    if (!alignedX && sameBandOnY(dragged, candidate)) {
       for (const gap of horizontalGaps) {
         dx = keepClosest(matchOnX(candidate.right + gap, dragged.left, dragged, candidate), dx)
         dx = keepClosest(matchOnX(candidate.left - gap, dragged.right, dragged, candidate), dx)
       }
     }
-    if (sameBandOnX(dragged, candidate)) {
+    if (!alignedY && sameBandOnX(dragged, candidate)) {
       for (const gap of verticalGaps) {
         dy = keepClosest(matchOnY(candidate.bottom + gap, dragged.top, dragged, candidate), dy)
         dy = keepClosest(matchOnY(candidate.top - gap, dragged.bottom, dragged, candidate), dy)
@@ -236,7 +251,7 @@ function closestFleetPanelNudge(
     }
   }
 
-  return { dx, dy }
+  return { dx: alignedX ?? dx, dy: alignedY ?? dy }
 }
 
 export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, current: TLShape): TLShapePartial | void {
@@ -261,7 +276,7 @@ export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, curr
   // stay consistent with each other and only one of them is a setting.
   const cap = strength / zoom
   const threshold = cap / FLEET_PANEL_NUDGE_FRACTION
-  const { dx, dy } = closestFleetPanelNudge(dragged, candidates)
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, threshold)
   const nudgeX = pressureDelta(dx, threshold, cap)
   const nudgeY = pressureDelta(dy, threshold, cap)
 

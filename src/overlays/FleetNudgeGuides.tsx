@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import type { TLViewportId } from 'tldraw'
+import { getHudEditor } from '../wm/editor-host-bridge'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { pagePointToClient } from '../wm/viewport-coordinates'
 import {
   clearFleetNudgeGuides,
   getFleetNudgeGuides,
@@ -36,13 +40,21 @@ export function FleetNudgeGuides() {
         clearFleetNudgeGuides()
         return
       }
+      // A fleet panel is looked at through the HUD, which is a second viewport
+      // with its own camera over the same editor. Projecting with the main
+      // camera drew the hairline at coordinates for a canvas nobody is looking
+      // at, which is why the guides read as missing rather than misplaced.
+      // Same condition and same fallback as every other fleet-panel coordinate
+      // in this codebase — see `fleetShapeAtScreenPoint` in fleet-utils.
+      const viewportId = getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined
+      const toClient = (x: number, y: number) => pagePointToClient(held.editor, { x, y }, viewportId)
       setLines(held.guides.map((guide, i) => {
         const from = guide.axis === 'x'
-          ? held.editor.pageToScreen({ x: guide.line, y: guide.spanFrom })
-          : held.editor.pageToScreen({ x: guide.spanFrom, y: guide.line })
+          ? toClient(guide.line, guide.spanFrom)
+          : toClient(guide.spanFrom, guide.line)
         const to = guide.axis === 'x'
-          ? held.editor.pageToScreen({ x: guide.line, y: guide.spanTo })
-          : held.editor.pageToScreen({ x: guide.spanTo, y: guide.line })
+          ? toClient(guide.line, guide.spanTo)
+          : toClient(guide.spanTo, guide.line)
         return {
           key: `${guide.axis}-${i}`,
           x: from.x,
