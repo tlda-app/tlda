@@ -5443,14 +5443,45 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     deadline_ms: WAKE_MCP_ACK_DEADLINE_MS,
   }
   if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
+    const breaker = _wakeBreaker.get(agentId)
     if (traceId) {
       controlPlaneTraces.append({
         trace_id: traceId,
         component: 'server',
         operation: 'wake.request',
         status: 'breaker-open',
-        detail: { agent: agentId },
+        detail: { agent: agentId, until: new Date(breaker.nextTs).toISOString(), fails: breaker.fails },
       })
+    }
+    // Say so, on the same channel the failure path uses. One failed wake backs
+    // this agent off for five minutes, doubling to a two-hour ceiling, and every
+    // delegate arriving in that window used to return here having told nobody
+    // anything — while `delegate` had already replied ok to its caller. So a
+    // suppressed wake was indistinguishable from a wake that never needed to
+    // happen, both to the person who delegated and to the record: this is the
+    // only wake path that writes nothing durable, which is why 08-13 shows 73
+    // delegates and zero wake failures.
+    //
+    // Same per-agent throttle as the failure path, and it shares the map, so a
+    // backed-off agent cannot produce more chat than a failing one.
+    const now = Date.now()
+    if (!_wakeFailWarned.has(agentId) || now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
+      _wakeFailWarned.set(agentId, now)
+      const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
+      try {
+        deliverTldaFeedbackChat({
+          from: 'fleet:tlda',
+          to: notify,
+          text: `⚠️ Did not try to wake **${agent.friendly_name || agentId}** — ${breaker.fails} failed wake(s), backed off until ${new Date(breaker.nextTs).toISOString()}. Last error: ${breaker.lastError || '(none recorded)'}`,
+          metadata: { type: 'wake_suppressed', agentId, until: new Date(breaker.nextTs).toISOString(), fails: breaker.fails },
+        })
+      } catch (notifyErr) {
+        // Swallowed deliberately: this is a courtesy notice about a wake that was
+        // already suppressed. Letting it throw would take out requestWake for
+        // every other caller, so a failed notice must not become a failed wake
+        // path — the console line is the record that the notice itself was lost.
+        console.warn(`[respawn] could not surface suppressed wake for ${agentId}: ${notifyErr.message}`)
+      }
     }
     return
   }
