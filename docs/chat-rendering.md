@@ -457,9 +457,27 @@ count from the table above.
   endorsement. Independent arrival at the same answer is evidence; it is not a
   measurement, and it does not substitute for re-running the query.
 
+- **A field arrives when a device loads the page, not when the person is
+  working.** `viewportTop`, `rowTop`, `scrollTopBefore` and `requested` shipped in
+  `3bc8615fc` and are present in the served bundle — verified against the file
+  named by `dist/index.html`, `assets/index-BDfnpjpq.js`, rather than against a
+  deploy's exit code. **Both bursty sessions are `isTouch: true` phone sessions.**
+  So those fields appear only when his *phone* next loads the page, which is a
+  different event from him being active — he can work a whole night on a laptop
+  and produce none. **An empty result means he has not reloaded the phone. It never
+  means the field is missing.**
+
 The common shape: **an instrument that cannot see the mechanism returns a clean
 result, and a clean result reads as a negative finding.** Before citing any count
 here, ask what it would look like if the thing you are testing for were happening.
+
+**And the corollary for causes.** Nothing in this document attributes the
+coordinate-space mechanism to Skip. He described a snapping problem in a different
+subsystem on the same evening, and the resemblance is a coincidence of vocabulary.
+The mechanism was found from his telemetry and stands on 49-of-62 and 14-of-15
+bursts with `scrollTop` and `scrollHeight` frozen; **it does not need a quotation
+and would be weaker with a wrong one attached.** See `AGENTS.md` §"Never tell him
+he blessed something".
 
 ---
 
