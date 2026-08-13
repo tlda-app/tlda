@@ -5114,29 +5114,52 @@ export class FleetStore {
       .map(b => (before && (!b.to || b.to > before) ? { ...b, to: before } : b));
     if (!usable.length) return [];
     const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
+    const E = this._EVT;
     const parts = [];
     const params = [];
     for (const block of usable) {
       const ids = [...new Set(block.agentIds)];
       const ph = ids.map(() => '?').join(',');
+      const range = `${block.to ? ' AND timestamp < ?' : ''}${block.from ? ' AND timestamp >= ?' : ''}`;
+      const rangeParams = [];
+      if (block.to) rangeParams.push(block.to);
+      if (block.from) rangeParams.push(block.from);
+
+      // Sender and recipient are two SOURCES, and OR-ing them across one scan
+      // cannot use either one's sort order — SQLite falls back to walking every
+      // event of the type with a correlated subquery per row, then sorting in a
+      // temp b-tree. Measured at 64ms against 23ms for the unscoped query it was
+      // meant to beat. Pull n from each source's own (id, timestamp DESC) index
+      // instead and merge, exactly as the agent branch of queryChatHistory does
+      // and for the same reason.
       parts.push(`SELECT * FROM (
-          SELECT ${this._EVT} FROM events
-           WHERE type IN (${typePh})
-             AND (from_id IN (${ph}) OR agent_id IN (${ph})
-                  OR EXISTS (SELECT 1 FROM recipients rc
-                             WHERE rc.event_id = events.id AND rc.agent_id IN (${ph})))
-             ${block.to ? 'AND timestamp < ?' : ''}
-             ${block.from ? 'AND timestamp >= ?' : ''}
+          SELECT ${E} FROM events
+           WHERE type IN (${typePh}) AND from_id IN (${ph})${range}
            ORDER BY timestamp DESC LIMIT ?)`);
-      params.push(...CHAT_HISTORY_EVENT_TYPES, ...ids, ...ids, ...ids);
-      if (block.to) params.push(block.to);
-      if (block.from) params.push(block.from);
-      params.push(limit);
+      params.push(...CHAT_HISTORY_EVENT_TYPES, ...ids, ...rangeParams, limit);
+
+      parts.push(`SELECT * FROM (
+          SELECT ${E} FROM events
+           WHERE events.id IN (
+             SELECT event_id FROM recipients
+              WHERE agent_id IN (${ph})${block.to ? ' AND timestamp < ?' : ''}${block.from ? ' AND timestamp >= ?' : ''}
+              ORDER BY timestamp DESC LIMIT ?
+           ) AND type IN (${typePh})${range}
+           ORDER BY timestamp DESC LIMIT ?)`);
+      params.push(...ids, ...rangeParams, limit, ...CHAT_HISTORY_EVENT_TYPES, ...rangeParams, limit);
+
+      // `agent_id` is the actor on an activity-shaped row, which is neither
+      // sender nor recipient and has its own index.
+      parts.push(`SELECT * FROM (
+          SELECT ${E} FROM events
+           WHERE type IN (${typePh}) AND agent_id IN (${ph})${range}
+           ORDER BY timestamp DESC LIMIT ?)`);
+      params.push(...CHAT_HISTORY_EVENT_TYPES, ...ids, ...rangeParams, limit);
     }
     const outer = order === 'desc' ? 'DESC' : 'ASC';
     params.push(limit);
     const rows = this.db.prepare(
-      `SELECT * FROM (${parts.join(' UNION ALL ')})
+      `SELECT * FROM (${parts.join(' UNION ')})
         ORDER BY timestamp ${outer}, id ${outer} LIMIT ?`
     ).all(...params);
     // Same exit as queryChatHistory: `to_json` becomes the `recipients` array
