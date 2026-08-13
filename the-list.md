@@ -20,7 +20,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
 invented — the arXiv build — and it is gone. **The other 51 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 06:21 EDT; `main` is `87cfe58ec`, 5 ahead — all
+Your box runs `2e763c010`, read from `/api/build-info` at 06:23 EDT; `main` is `61f626811`, 6 ahead — all
 of it list-keeping, no unshipped fixes.
 
 ## Chat and scrolling
@@ -41,8 +41,8 @@ of it list-keeping, no unshipped fixes.
 | | | |
 |---|---|---|
 | ⏸ | **The spatial view in the project tab is junk** | **Deferred, your word, and your dismissal with it:** *"the spatial view in the like, project tab is so junk. but whatever… who cares"*, then *"just add that to the list as like, deferred."* **The row exists so nobody rediscovers it as a find in three weeks — not so it gets worked.** Nobody looked at why, and you did not ask anyone to. |
-| ✓? | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | **Read, not watched.** Two round-trips, no in-flight state, no key a second click could find — read in `openMarkdownChipFromTarget` and `openChatMarkdownColumn`. **Nobody has watched a second click produce a second object.** The row used to say *"this is what filled your canvas tonight"*; **that is struck** — see the row below, where the only record of that minute shows one drag and one pill. What you reported is a slow click you repeated and a trail of name cards. Fixed in `5e67afccb`, on `main`, and on your box since the 06:04 deploy. `markdown-chip-owner` |
-| ✓? | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | **Watched, in your own `client.log` on the Fly box** — 04:54:20→27, **2,993 `wm-drop-resolve` samples, every one `resolved:false`**, hitting an `iframe` and the annotation-viewer nav button, and **exactly one `pill deleted`, `deleter: "drag-drop"`, clean.** So the store never held many objects that minute. **Whether the trail you saw was paint over an iframe or one card seen repeatedly, nobody would assert.** Fixed in `5e67afccb`, the same commit as the row above — *"say the markdown chip click landed, and drag the doc viewer it opens"*. On your box since the 06:04 deploy. `markdown-chip-owner` |
+| ✓? | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | **Read, not watched.** Two round-trips, no in-flight state, no key a second click could find — read in `openMarkdownChipFromTarget` and `openChatMarkdownColumn`. **Nobody has watched a second click produce a second object.** The row used to say *"this is what filled your canvas tonight"*; **that is struck** — see the markdown-chip drag row, where the only record of that minute shows one drag and one pill. What you reported is a slow click you repeated and a trail of name cards. Fixed in `5e67afccb`, on `main`, and on your box since the 06:04 deploy. `markdown-chip-owner` |
+| ✓? | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | **Watched, in your own `client.log` on the Fly box** — 04:54:20→27, **2,993 `wm-drop-resolve` samples, every one `resolved:false`**, hitting an `iframe` and the annotation-viewer nav button, and **exactly one `pill deleted`, `deleter: "drag-drop"`, clean.** So the store never held many objects that minute. **Whether the trail you saw was paint over an iframe or one card seen repeatedly, nobody would assert.** Fixed in `5e67afccb`, the same commit as the markdown-chip click row — *"say the markdown chip click landed, and drag the doc viewer it opens"*. On your box since the 06:04 deploy. `markdown-chip-owner` |
 | ✓? | **Resize snapping** | **The only open part of snapping, and it merged tonight** — `0049622e4`, *"a resized panel's edge snaps to its neighbours, not just a moved one"*, which also carries the guides that persisted after a drag that touched nothing. **On your box since the 06:04 deploy.** *Leaves the list when a resize snaps on your box and no guide is left behind.* `panel-snap` |
 | ⏸ | **Shapes drift into the document on reload** | **Tabled by you, and your reason:** *"I tabled the second because I think it's I didn't observe it."* You reloaded twice and highlights held — once on Markdown, once on **balancing act** — so both render paths were tried. **Two clean observations are not an absence**, and drift is the class that returns intermittently. **No reproduction exists**, which is the difference between this and the two-margin row. *Comes back if it moves again.* |
 | ⏸ | **Notes written on the iPad while Yjs is offline are stranded** | **Tabled by you, not fixed** — *"the stranding thing is fucking fine. I guess."* The stranding itself is unfixed; what makes it survivable is that the emergency dump appears on the sync-failure screen and notes export to markdown. **I deleted this earlier as finished and that was wrong** — you decided it does not matter, which is not the same as it being done. *Comes back if you lose work to it.* |
@@ -224,8 +224,12 @@ work."** Check a shipped bundle for the transformed shape, or check the running 
 
 **A claim about machine state says how it was known.** Read from a log, run just now, relayed by
 somebody else — those are different, and only the middle one is evidence you can stand behind.
-Three claims tonight were asserted as established and then disproved by somebody checking, and
-all three could have been reported as read instead. **This seat cannot run `launchctl` at all** —
+**And the failures all have one shape: something answered confidently about a nearby artifact
+rather than the real one.** `node_modules` for a pin. A local `dist/` for a deployment. A grep for
+a minified literal. An empty doc-view for a crash. An invalid flag for a search. **Each was a true
+statement about the wrong object.** The question that catches it is not *am I sure* but *is this
+the thing itself, or something beside it.* Three claims tonight were asserted as established and
+then disproved by somebody checking, and all three could have been reported as read instead. **This seat cannot run `launchctl` at all** —
 zero jobs visible, `com.apple` included — so anything launchd here is relayed by construction and
 says so.
 
