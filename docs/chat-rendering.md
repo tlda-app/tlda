@@ -429,16 +429,19 @@ record-only by design.
 
 ## Errata
 
-**Checked on 2026-08-13 against `main` at `afba9ef66`**, which is also `HEAD` of
+**Checked on 2026-08-13 04:30 UTC against `main` at `afba9ef66`**, which is also `HEAD` of
 the shared checkout and the most recent commit touching any path described here.
 This says nothing about what is deployed: the last recorded observation of Skip's
-own tab reported `loadedSha 9d97454a6` at 2026-08-12 23:27 EDT, behind `main` by
-everything below it.
+own tab, session `c3a1abbb` at 04:27 UTC, is running `794e585cc` or `c951b38fa`
+— dated by which telemetry fields its records carry, since no `loadedSha` line
+survives in the readable window. So he is several commits behind `main` and, in
+particular, is not on `3bc8615fc`.
 
 **Every `file:line` in this document is as of that sha, and this file moved three
-times in the ninety minutes after the document was written.** `c951b38fa` shifted
-it fifteen lines, `69e4df695` and `3bc8615fc` shifted it forty more, and each time
-every citation here silently pointed one function too early. If the numbers do not
+times in the ninety minutes after the document was written.** `c951b38fa` added 31
+lines and removed 2, `69e4df695` reverted exactly that, and `3bc8615fc` added 77
+against 6 — and each time every citation here silently pointed one function too
+early, in the way that reads as correct. If the numbers do not
 match what you find, read the file at the sha in this header
 (`git show afba9ef66:src/shapes/FleetChatShape.tsx`) and re-pin rather than trust
 them. A line number in a hot file is a fact with a half-life measured in hours.
@@ -527,14 +530,25 @@ Three candidate readings, each separated by fields that exist only from
 | **loop** | no `rendered rows changed height`; `scrollTop` moves by the delta written; `scrollHeight` changes between consecutive records with nothing arriving |
 | **write never lands** | `scrollTop` flat across consecutive records while `delta` decays; `scrollHeight` static |
 
-**The loop reading carries a gap that has to travel with it.** It requires
-Virtuoso to hand back roughly **49px per frame**, and its author — who proposed it
-— has no mechanism for that. It is the weakest of the three, not the leading one,
-and citing it without the gap would make it look like the default answer.
+**The loop reading is now falsified everywhere it could be measured**, and the
+third row is the one that survived. The subsection below has the measurement:
+`scrollHeight` is constant within every burst, so the list was not changing height
+while the observer fired dozens of times and there was no loop to be in. It also
+always carried a gap — it requires Virtuoso to hand back roughly 49px per frame,
+and its author, who proposed it, never had a mechanism for that.
 
-**All three are open.** His tab reports `loadedSha 9d97454a6`, so none of these
-fields exist for his session yet. Anything this document said about the cause would
-be invention.
+**And as of 04:16–04:27 UTC this is measured in Skip's session too**, not only in
+agent sessions — his tab reloaded off `9d97454a6` and the fields now exist for him.
+§"It reproduces in Skip's session" has the numbers. All three readings die there on
+the same evidence, so the table above is now a record of what was ruled out rather
+than a live set of candidates.
+
+**What remains open is narrower and better posed than the table.** Not *which of
+these three*, but: the write does not move the scroller, and nobody can yet
+separate *refused* from *landed and written back inside the same frame* — the
+record logs `scrollTop` only after the assignment. `3bc8615fc` adds
+`scrollTopBefore` and `requested` for exactly that, and Skip's tab is not on it
+yet.
 
 Two things about the burst that any explanation has to fit: the motion was
 **monotone at roughly 1.2px per frame for four seconds**, which is neither a
@@ -547,10 +561,16 @@ flight`, so a burst that still produces corrections is proven input-free.
 ### `restoreViewportAnchor` has not been observed to move the scroller
 
 **Measured 2026-08-13 04:05–04:15 UTC on `794e585cc`, in agent sessions**
-(`7a75d31f`, `bdb70dd4`) — **not Skip's**, whose tab was still on `9d97454a6`. So
-this does not close his burst; the three readings above remain open *for his
-session*. What it does is settle two of them everywhere it could be measured, and
-invalidate a premise older than any of them.
+(`7a75d31f`, `bdb70dd4`) — **not Skip's**, whose tab was on `9d97454a6` when this
+was written. So this does not close his burst; the three readings above remain open
+*for his session*. What it does is settle two of them everywhere it could be
+measured, and invalidate a premise older than any of them.
+
+> **That scoping limit was correct when written and is now superseded by
+> measurement, not by argument.** His tab reloaded onto newer code at some point
+> before 04:16 UTC and the same finding reproduces in his own session — see
+> §"It reproduces in Skip's session" below. The rest of this subsection stands as
+> written.
 
 **`scrollTop` is invariant within every burst while `delta` varies frame to frame.**
 Per distinct `scrollTop`, the number of consecutive corrections at that exact
@@ -609,6 +629,51 @@ to apply it — four rewrites of the touch guard, a deferral, a re-entrancy guar
 hypotheses died on 2026-08-12/13 — content arrival, pan-mode autoscroll, clamping,
 and the loop — including both that led at different points in the night, and the
 cause remains unnamed.
+
+### It reproduces in Skip's session
+
+**Measured 2026-08-13 04:16–04:27 UTC**, session `c3a1abbb`, `isTouch: true`,
+panel `shape:fleet-chat-0-skip-efba6f45` — his. **688 `preserved viewport`
+corrections in that window, and the scroller does not move across any burst in
+it.** The longest run is **200 consecutive corrections at `scrollTop 15800`**;
+then 88 at `948`, 66 at `1452`, 52 at `868`, 46 at `5258`, 44 at `1236`, 41 at
+`11304`, 35 at `9943`.
+
+**His tab is dated by the fields, not by a `loadedSha` line.** These records carry
+`scrollTop`/`scrollHeight`/`clientHeight`, which `794e585cc` added, and do **not**
+carry `scrollTopBefore`/`requested`/`viewportTop`/`rowTop`, which `3bc8615fc`
+added. So he is on `794e585cc` or `c951b38fa` — no longer on `9d97454a6`, and not
+yet on the commit that separates *refused* from *restored within the frame*. That
+question stays open.
+
+Two readings die in his session on the same fields they died on elsewhere. One
+burst, at 04:26:33–36 on anchor `2729529`:
+
+```
+scrollTop   12879  constant across all 12 records
+scrollHeight 14997  constant
+clientHeight   606          → bottomGap 1512px
+delta        -5 -7 -8 -9 -9   -11 -19 -43 -83 -130 -179 -224
+```
+
+- **Clamping** — 1512px from the bottom, and 264px in the 04:16 burst. Nothing was
+  near a boundary.
+- **The re-measurement loop** — `scrollHeight` constant through every burst.
+- **Content growth** — only **3** `rendered rows changed height` records across all
+  688 corrections. It is real (see below) and it is not what drives these.
+- **Input** — only **9** deferrals across 688 corrections, so the bursts are
+  overwhelmingly input-free. This is the check §"How this path is instrumented"
+  said would become possible on `794e585cc` and later, and it has.
+
+**One thing here is new and unexplained.** `delta` **grows** monotonically to
+−224 rather than decaying. The 03:10 burst on the older sha decayed 69 → −2. So
+there are at least two shapes of burst, and a mechanism that explains a decaying
+error does not automatically explain a diverging one.
+
+**What this does not establish.** That these bursts are what Skip sees. It
+establishes that the correction is running hundreds of times against a scroller
+that does not move, in his session, on current code — not that this is the cause of
+any symptom he has described.
 
 ### Row height changes after measurement, and nothing in the model owns it
 
