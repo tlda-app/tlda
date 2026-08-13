@@ -599,7 +599,6 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-log-anchored {
   position: relative;
   overflow-y: auto;
-  padding: 4px 0;
   scrollbar-width: none;
 }
 

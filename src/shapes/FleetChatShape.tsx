@@ -2318,6 +2318,14 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     el.scrollTop = ANCHORED_SENSOR_MID
   }, [])
 
+  const measureRowHeight = useCallback((row: HTMLDivElement) => {
+    const computedHeight = Number.parseFloat(window.getComputedStyle(row).height)
+    const height = Number.isFinite(computedHeight) && computedHeight > 0
+      ? computedHeight
+      : row.offsetHeight || row.scrollHeight
+    return Number.isFinite(height) && height > 0 ? height : 0
+  }, [])
+
   const scrollToTail = useCallback(() => {
     setModelTop(Math.max(0, geometry.total - viewportHeight), { forceTail: true })
     const el = scrollerRef.current
@@ -2388,7 +2396,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     let changed = false
     const modelTop = modelTopRef.current
     for (const [key, row] of rowElsRef.current) {
-      const nextHeight = row.getBoundingClientRect().height
+      const nextHeight = measureRowHeight(row)
       if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
       const previousHeight = heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
       if (Math.abs(nextHeight - previousHeight) <= 0.5) continue
