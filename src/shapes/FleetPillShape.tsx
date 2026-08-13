@@ -13,6 +13,9 @@ import {
   useValue,
 } from 'tldraw'
 import type { Editor, JsonObject, TLShape, TLShapeId } from 'tldraw'
+import { useMemo } from 'react'
+// @ts-ignore — vanilla JS module
+import { renderMarkdownLine } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
@@ -57,6 +60,8 @@ const REPORT_ARTIFACT_W = 520
 const REPORT_ARTIFACT_H = 360
 const MARKDOWN_DOCVIEW_W = 650
 const MARKDOWN_DOCVIEW_H = 450
+// Opening lines of the file shown in the drag ghost — more than fills 450px.
+const GHOST_PREVIEW_LINES = 40
 const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
 const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_W = 800
@@ -751,6 +756,74 @@ export async function dropPillOnTarget(
   }
 }
 
+// The doc-viewer ghost for a dragged markdown chip: the frame the drop will
+// create, at the size it will be created, showing the file's own opening lines.
+// Line-level markdown only (headings, code, emphasis) — the ghost re-renders on
+// every pointer move of a drag, and it is escaped at source, so this stays off
+// the full marked/DOMPurify path the real document is rendered with.
+function MarkdownDocviewGhost({ title, markdown, color }: { title: string; markdown: string; color: string }) {
+  const body = useMemo(() => {
+    if (!markdown.trim()) return ''
+    return markdown
+      .split('\n')
+      .slice(0, GHOST_PREVIEW_LINES)
+      .map(line => (line.trim() ? renderMarkdownLine(line) : '&nbsp;'))
+      .join('<br>')
+  }, [markdown])
+
+  return (
+    <div
+      style={{
+        width: MARKDOWN_DOCVIEW_W,
+        height: MARKDOWN_DOCVIEW_H,
+        display: 'flex',
+        flexDirection: 'column',
+        borderRadius: 4,
+        border: `1px solid ${color}66`,
+        background: 'rgba(255, 255, 255, 0.9)',
+        boxShadow: `0 12px 32px ${color}30`,
+        color: '#202124',
+        overflow: 'hidden',
+        transform: 'translate(-5px, -5px)',
+        opacity: 0.85,
+        userSelect: 'none',
+      }}
+    >
+      <div
+        style={{
+          flex: '0 0 auto',
+          padding: '6px 10px',
+          borderBottom: `1px solid ${color}44`,
+          background: `${color}18`,
+          color: '#202124',
+          fontSize: 12,
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          fontFamily: "'SF Mono', Menlo, Consolas, monospace",
+        }}
+      >
+        {title}
+      </div>
+      <div
+        style={{
+          flex: '1 1 auto',
+          padding: '10px 14px',
+          fontSize: 12,
+          lineHeight: '18px',
+          overflow: 'hidden',
+          // The body is a preview of a longer document — fade it out rather than
+          // cutting a line in half at the frame edge.
+          maskImage: 'linear-gradient(to bottom, black 78%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, black 78%, transparent 100%)',
+        }}
+        dangerouslySetInnerHTML={{ __html: body }}
+      />
+    </div>
+  )
+}
+
 export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-pill' as const
   static override props = {
@@ -897,6 +970,29 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
         return sb && cx >= sb.x && cx <= sb.x + sb.w && cy >= sb.y && cy <= sb.y + sb.h
       })
     }, [editor, shape.id, isAgentPill])
+
+    // A markdown chip drops as a doc viewer over a materialized column, so its
+    // drag preview is a ghost of that doc viewer at the size it will be created.
+    // It used to be the same 300×86 name card every file-backed doc pill gets,
+    // which showed the file's name where the document was going to be.
+    if (isFileBackedDoc && shape.meta?.markdownChip === true) {
+      return (
+        <HTMLContainer
+          style={{
+            pointerEvents: 'none',
+            overflow: 'visible',
+            width: 0,
+            height: 0,
+          }}
+        >
+          <MarkdownDocviewGhost
+            title={displayName || 'Markdown'}
+            markdown={typeof shape.meta?.markdownPreview === 'string' ? shape.meta.markdownPreview : ''}
+            color={color}
+          />
+        </HTMLContainer>
+      )
+    }
 
     if (isFileBackedDoc) {
       return (

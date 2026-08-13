@@ -2699,7 +2699,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const shapeContainerRef = useRef<HTMLDivElement | null>(null)
 
   const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
-    openChatMarkdownColumn({
+    return openChatMarkdownColumn({
       editor,
       sourceShapeId: shape.id,
       title,
@@ -6474,6 +6474,26 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (shapeEl) shapeEl.style.boxShadow = ''
     }
 
+    // Every preview shape for one drag carries the same meta, including the two
+    // re-creations at the panel/main membrane. The main→panel re-creation used to
+    // build no meta at all, so a chip dragged out of the chat and back in lost
+    // markdownChip and filePath and stopped being a markdown chip on drop.
+    function dragPreviewMeta(drag: NonNullable<typeof dragRef.current>) {
+      return {
+        ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
+        ...(drag.filePath ? { filePath: drag.filePath } : {}),
+        ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
+        ...(drag.markdownChip ? { markdownChip: true } : {}),
+        // What the ghost renders. Bounded: this rides on a synced shape. A chip
+        // outside a code block has no source template, and there `content` is
+        // the file path — a path is not a preview of the document, so the ghost
+        // shows its frame and title alone rather than the path as a body.
+        ...(drag.markdownChip && drag.content && drag.content !== drag.filePath && drag.content !== drag.value
+          ? { markdownPreview: drag.content.slice(0, 2000) }
+          : {}),
+      }
+    }
+
     function onPointerMove(e: PointerEvent) {
       const drag = dragRef.current
       if (!drag) return
@@ -6497,12 +6517,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             displayName: drag.displayName,
             color: drag.color,
           }),
-          meta: {
-            ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
-            ...(drag.filePath ? { filePath: drag.filePath } : {}),
-            ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
-            ...(drag.markdownChip ? { markdownChip: true } : {}),
-          },
+          meta: dragPreviewMeta(drag),
         })
         drag.pillId = pillId as unknown as string
         markFleetPillActive(String(pillId))
@@ -6598,12 +6613,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 displayName: drag.displayName,
                 color: drag.color,
               }),
-              meta: {
-                ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
-                ...(drag.filePath ? { filePath: drag.filePath } : {}),
-                ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
-                ...(drag.markdownChip ? { markdownChip: true } : {}),
-              },
+              meta: dragPreviewMeta(drag),
             })
             drag._onMain = true
           } else if (!outside && onMain) {
@@ -6628,6 +6638,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 displayName: drag.displayName,
                 color: drag.color,
               }),
+              meta: dragPreviewMeta(drag),
             })
             drag._onMain = false
           } else if (onMain) {

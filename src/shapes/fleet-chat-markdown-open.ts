@@ -26,7 +26,33 @@ type ChipSource = {
 type OpenMarkdownChipOptions = {
   target: HTMLElement
   stopPropagation: () => void
-  openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement, source?: ChipSource) => void
+  openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement, source?: ChipSource) => void | Promise<void>
+}
+
+// Opening a chip is a fetch and then a materialize POST before anything appears
+// on screen. Nothing marked the chip as working and nothing kept a second click
+// from starting a second chain, so a click that looked ignored and was clicked
+// again materialized a second project part, a second column and a second viewer
+// request — one intent, N objects. One open per chip at a time, and the chip
+// says so for as long as it runs.
+const openingChips = new Set<string>()
+
+function chipOpenKey(url: string, path: string, section?: string) {
+  return `${url} | ${path} | ${section || ''}`
+}
+
+function beginChipOpen(chip: HTMLElement, key: string): boolean {
+  if (openingChips.has(key)) return false
+  openingChips.add(key)
+  chip.classList.add('chip-opening')
+  chip.setAttribute('aria-busy', 'true')
+  return true
+}
+
+function endChipOpen(chip: HTMLElement, key: string) {
+  openingChips.delete(key)
+  chip.classList.remove('chip-opening')
+  chip.removeAttribute('aria-busy')
 }
 
 function currentManagedSurfaceOwner() {
@@ -59,7 +85,7 @@ export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): 
   throw lastError instanceof Error ? lastError : new Error('markdown chip fetch failed')
 }
 
-export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
+export function openChatMarkdownColumn(options: MarkdownColumnOptions): Promise<void> {
   const { editor, sourceShapeId, title, markdown, sourceEl, placementEl, sourcePath, sourceSection, logPrefix } = options
   const sourceRect = sourceEl.getBoundingClientRect()
   const left = Math.max(12, sourceRect.left)
@@ -69,7 +95,9 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
 
   const projectName = new URLSearchParams(window.location.search).get('project')
 
-  void materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
+  // Returned, not voided: the caller's re-entrancy guard clears when this
+  // settles, so the chip stays marked for exactly as long as the work runs.
+  return materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
     if (!materialized.ok || !materialized.outputFile || !projectName) {
       console.warn(`[${logPrefix}] markdown materialize failed:`, materialized.error)
       return
@@ -120,6 +148,10 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
 
   if (mdChip.classList.contains('src-chip')) {
     stopPropagation()
+    const openKey = chipOpenKey(chipUrl, chipPath, chipSection)
+    // The click is consumed either way — a second click while the first is
+    // still running is the same intent, not a second document.
+    if (!beginChipOpen(mdChip, openKey)) return true
     const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
     // Provenance chips are a shared-file chip plus a section focus, not a
     // section-only snapshot — fetch the whole raw source file (same path as
@@ -133,6 +165,7 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
         title, path: chipPath, url: chipUrl, section: chipSection,
         error: err instanceof Error ? err.message : String(err),
       }))
+      .finally(() => endChipOpen(mdChip, openKey))
     return true
   }
 
@@ -141,6 +174,8 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
   if (!isMd || !fetchUrl) return false
 
   stopPropagation()
+  const openKey = chipOpenKey(chipUrl, chipPath)
+  if (!beginChipOpen(mdChip, openKey)) return true
   const title = mdChip.querySelector('.md-file-chip')?.textContent || mdChip.textContent || chipPath.split('/').pop() || 'file'
   fetchMarkdownChipText(chipUrl, chipPath)
     .then(text => {
@@ -149,7 +184,7 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
         if (src.startsWith('http') || src.startsWith('/')) return match
         return `![${alt}](${baseUrl}${src})`
       }) : text
-      openMarkdownColumn(title, resolved, mdChip, { path: chipPath })
+      return openMarkdownColumn(title, resolved, mdChip, { path: chipPath })
     })
     // Same rule as above: a failed fetch produces no document at all. A chip whose
     // path only exists on the sending agent's machine cannot resolve from the
@@ -159,5 +194,6 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
       title, path: chipPath, url: chipUrl,
       error: err instanceof Error ? err.message : String(err),
     }))
+    .finally(() => endChipOpen(mdChip, openKey))
   return true
 }

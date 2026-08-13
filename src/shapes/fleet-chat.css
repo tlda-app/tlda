@@ -614,6 +614,23 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   user-select: none;
 }
 
+/* A chip that has been clicked and is still fetching and materializing its
+   document. Two round-trips pass before anything appears on canvas, and with no
+   mark on the chip that reads as a click that did nothing — which is what
+   produced repeat clicks. Not scoped to .fleet-chat-shape: the same chips are
+   clicked in the inbox, search results and the source editor. */
+.chip-opening {
+  cursor: progress;
+  animation: chip-opening-pulse 1.1s ease-in-out infinite;
+}
+@keyframes chip-opening-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip-opening { animation: none; opacity: 0.55; }
+}
+
 /* Drag handle — thin left strip on activity cards, code block headers, tool lines.
    Same show/hide behavior as .fleet-btn-group: invisible by default, fades in on
    mouse movement + hover. No background — just barely-visible '::' colons on a
