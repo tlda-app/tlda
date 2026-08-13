@@ -19,7 +19,26 @@ export function createDaemonWakeCore({
     if (!identifier) throw new Error('wake requires a local mint, fleet, or friendly-name identifier')
     const facts = store.resolve(identifier)
     if (!facts) throw new Error(`no daemon mint facts for ${identifier}`)
-    if (!facts.sessionId) throw new Error(`mint ${facts.mintId} is not resumable: no session_id`)
+    // A mint with facts but no session is not unresumable — it is the partially
+    // minted agent: the daemon prepared it, the launch recipe is on disk, and no
+    // harness ever logged in to produce a session id. Finishing that is what the
+    // stored recipe is for, and it is the same call resume already makes, with
+    // `resumeId` null instead of a session to attach to.
+    //
+    // Skip, 2026-08-12 00:12 EDT: "the idea is, like, mint would finish minting a
+    // fucking agent that was, like, partially minted" — with "wake is idempotent,
+    // that's the design" (08-09 23:24) already true of everything below this line.
+    //
+    // Without a recipe there is nothing to finish, and that is the real
+    // unresumable case. Three mints hit the old throw on 08-12 alone.
+    //
+    // Relaunching cannot double-start: the daemon calls resumeSession with
+    // `exactTmuxSession`, so the session name is derived from the mint rather
+    // than made unique, and launchMintProcess refuses a session that already has
+    // a live harness runtime. A concurrent finish fails closed at the launcher.
+    if (!facts.sessionId && !facts.launchRecipe) {
+      throw new Error(`mint ${facts.mintId} is not resumable: no session_id and no launch recipe`)
+    }
 
     // `started` is what the notice is about: the agent was gone and is back. An
     // agent that never stopped gets the message and nothing else.
