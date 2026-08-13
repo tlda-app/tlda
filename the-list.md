@@ -222,6 +222,12 @@ bundle check tonight reported the entire deploy missing: `0.0375` ships as `.037
 `camera.y - delta.y` becomes `e.y+L.y/e.z`. **That would have gone to him as "the deploy did not
 work."** Check a shipped bundle for the transformed shape, or check the running surface instead.
 
+**The general forms of the three checking rules below now live in `AGENTS.md` §"Verify the
+relevant surface", where every agent in this repo loads them** — the nearby-artifact rule and the
+minification rule went in as `24d24c4a7`. **They are kept here because this file has to be
+readable without that one**, but `AGENTS.md` is the source: if they ever disagree, it wins, and a
+change belongs there first.
+
 **A claim about machine state says how it was known.** Read from a log, run just now, relayed by
 somebody else — those are different, and only the middle one is evidence you can stand behind.
 **And the failures all have one shape: something answered confidently about a nearby artifact
