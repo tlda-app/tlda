@@ -22,6 +22,7 @@ import type {
 } from '../wm/managed-surfaces'
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
+import { recordPlaceDeparture } from '../placeStack'
 import {
   activateSpatialDocument,
   currentSpatialDocument,
@@ -263,6 +264,7 @@ export function AnnotationViewer({
     const targetDocument = targetShapeId
       ? spatialDocuments.find(document => document.id === targetShapeId)
       : undefined
+    recordPlaceDeparture(mainEditor)
     prevViewStackRef.current = [
       ...prevViewStackRef.current,
       {

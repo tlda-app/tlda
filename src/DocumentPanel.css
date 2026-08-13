@@ -1780,6 +1780,18 @@ html[data-theme="dark"] .history-compare-btn.active {
   pointer-events: all;
 }
 
+/* Forward/back over documents. Weight matches the glyph toggles beside it;
+   the only addition is a disabled state, because unlike those two these have
+   nothing to toggle when the stack is empty. */
+.toc-place-nav {
+  cursor: pointer;
+}
+
+.toc-place-nav:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
 .toc-live-glyph {
   justify-content: center;
   width: 22px;

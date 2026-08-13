@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
 import { htmlIframeElements } from '../htmlIframeRegistry'
+import { recordPlaceDeparture } from '../placeStack'
 import {
   installHtmlNavigationHistory,
   recordHtmlNavigationEnd,
@@ -897,6 +898,12 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           })
           return
         }
+        // The place stack records where the reader was, on the path where a
+        // navigation actually happens. The branch this came from still had the
+        // older `if (!targetShape) return` above; main creates the document
+        // instead and returns, so that path is not a departure and never
+        // reaches here.
+        recordPlaceDeparture(editor)
         recordHtmlNavigationStart(editor)
         const sourceLeftScreen = isTemporaryMarkdownNavigation
           ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
@@ -974,6 +981,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
           const targetShape = samePageHtmlShapes[targetIdx]
           if (!targetShape) return
+          recordPlaceDeparture(editor)
           recordHtmlNavigationStart(editor)
           const sourceLeftScreen = isTemporaryMarkdownNavigation
             ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x

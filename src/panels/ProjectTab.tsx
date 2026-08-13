@@ -2,6 +2,7 @@ import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalSt
 import { useEditor, useValue, type Editor, type TLCamera } from 'tldraw'
 import { CanvasClipPanel } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
+import { recordPlaceDeparture } from '../placeStack'
 import {
   SPATIAL_MAP_ZOOM,
   activateSpatialDocument,
@@ -63,6 +64,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     const source = (saved?.sourceNodeId && nodes.find(candidate => candidate.id === saved.sourceNodeId))
       || currentSpatialDocument(editor, nodes)
     if (!source) return
+    recordPlaceDeparture(editor)
     selectSpatialWorldNode(node.id)
     savedMapCameras.delete(editor)
     suppressFleetHudCameraTracking()

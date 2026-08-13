@@ -13,6 +13,7 @@ import {
   applyThemeClass,
 } from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
+import { getPlaceStackDepth, subscribePlaceStack, goBackPlace, goForwardPlace } from '../placeStack'
 import {
   getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleCamera,
   probeLiveSessionConfig,
@@ -465,11 +466,49 @@ export function TocTab({ query = '' }: { query?: string }) {
         </div>
       )}
       <div className="toc-bottom-controls">
+        <PlaceStackNav />
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
       </div>
       {/* HideDefsToggle removed */}
     </div>
+  )
+}
+
+/**
+ * Forward and back over documents, at the bottom of the table of contents.
+ *
+ * Skip, 2026-08-11 04:51 EDT: "I think the plan was to base have these be at
+ * the bottom of the table of contents thing---like fwd/back buttons visible
+ * when you hover the toc" and "like at the bottom of the toc".
+ *
+ * Both arrows are always rendered so the row does not change width as you
+ * navigate — a control that moves out from under the pointer is worse than a
+ * dim one. They disable rather than disappear, which is also what a browser
+ * does with its own back and forward.
+ */
+export function PlaceStackNav() {
+  const editor = useEditor()
+  const depth = useSyncExternalStore(subscribePlaceStack, getPlaceStackDepth)
+  return (
+    <>
+      <button
+        className="toc-diff-hint toc-place-nav"
+        type="button"
+        disabled={depth.back === 0}
+        onClick={() => goBackPlace(editor)}
+        title="Back to the previous document"
+        aria-label="Back to the previous document"
+      >←</button>
+      <button
+        className="toc-diff-hint toc-place-nav"
+        type="button"
+        disabled={depth.forward === 0}
+        onClick={() => goForwardPlace(editor)}
+        title="Forward to the next document"
+        aria-label="Forward to the next document"
+      >→</button>
+    </>
   )
 }
 

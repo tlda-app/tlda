@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useEditor, useValue } from 'tldraw'
+import { recordPlaceDeparture } from '../placeStack'
 import {
   focusSpatialDocument,
   SPATIAL_MAP_ZOOM,
@@ -173,6 +174,7 @@ export function SpatialWorldMap({ projectName, projectTitle }: { projectName: st
               onFocus={() => hoverSpatialWorldNode(label.id)}
               onBlur={() => hoverSpatialWorldNode(null)}
               onClick={() => {
+                recordPlaceDeparture(editor)
                 selectSpatialWorldNode(label.id)
                 focusSpatialDocument(editor, label.node)
               }}
