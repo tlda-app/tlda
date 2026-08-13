@@ -36,7 +36,7 @@ import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { createOwnedFleetPanelShape, FLEET_SHAPE_TYPES, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
+import { createOwnedFleetPanelShape, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
@@ -413,13 +413,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   const errorHeaderH = 22
   const panelH = currentError ? h - errorHeaderH : h
 
-  const shapeUtils = useMemo(() => {
-    const all = (window as any).__tldraw_shape_utils__ || []
-    const excluded = new Set([...FLEET_SHAPE_TYPES, 'fleet-pill'])
-    return all.filter((u: any) => !excluded.has(u.type))
-  }, [])
-  const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
-
   const docviewSurface = useMemo<FleetDocviewSurfaceState | null>(() => {
     if (!mainEditor || !bounds) return null
     if (targetShapeId && targetShapePageBounds) {
@@ -719,9 +712,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
-            shapeUtils={shapeUtils}
-            tools={[]}
-            licenseKey={licenseKey}
             panelWidth={w}
             maxHeightFraction={1}
             readOnly

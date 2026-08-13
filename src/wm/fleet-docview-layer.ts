@@ -1,10 +1,8 @@
 import {
-	createLayerMembership,
 	createLayerOwner,
 	createWMCore,
 	type Camera,
 	type Layer,
-	type LayerMembership,
 	type LayerOwner,
 	type WMCore,
 } from './wm-core.ts'
@@ -42,7 +40,6 @@ export interface FleetDocviewSurfaceState {
 	camera: Camera
 	layer: Layer
 	owner: LayerOwner
-	membership: LayerMembership
 	bounds: FleetDocviewBounds
 	pageBounds: FleetDocviewBounds
 	source: string | null
@@ -91,7 +88,6 @@ export function createFleetDocviewSurface({
 		camera: { x: renderTransform.x, y: renderTransform.y, z: renderTransform.scale },
 		layer: wm.getLayer(surfaceId),
 		owner,
-		membership: createLayerMembership(surfaceId, owner),
 		bounds,
 		pageBounds,
 		source,

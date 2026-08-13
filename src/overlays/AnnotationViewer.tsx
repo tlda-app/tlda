@@ -10,7 +10,7 @@
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
  */
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { stopEventPropagation, useValue, type Editor, type TLAnyShapeUtilConstructor, type TLShapeId, type TLStateNodeConstructor } from 'tldraw'
+import { stopEventPropagation, useValue, type Editor, type TLShapeId } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import type {
   AnnotationViewerSurfaceKind,
@@ -41,9 +41,6 @@ const RETURN_HUD_SIZE = 72
 
 interface AnnotationViewerProps {
   mainEditor: Editor
-  shapeUtils: TLAnyShapeUtilConstructor[]
-  tools: TLStateNodeConstructor[]
-  licenseKey: string
 }
 
 interface ViewerData {
@@ -83,8 +80,6 @@ function phoneViewerSize() {
 
 export function AnnotationViewer({
   mainEditor,
-  shapeUtils,
-  licenseKey,
 }: AnnotationViewerProps) {
   type ViewSnapshot = {
     pageId: ReturnType<Editor['getCurrentPageId']>
@@ -576,9 +571,6 @@ export function AnnotationViewer({
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={clipBounds}
-          shapeUtils={shapeUtils}
-          tools={[]}
-          licenseKey={licenseKey}
           panelWidth={size.w}
           maxHeightFraction={isPhoneViewportSurface() ? 1 : 0.5}
           emphasizeShapeIds={data.shapeIds}

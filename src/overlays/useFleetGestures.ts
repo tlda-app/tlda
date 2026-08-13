@@ -23,8 +23,9 @@
  * the "snap-back" the old two-finger move exhibited).
  */
 import { useEffect } from 'react'
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape, TLViewportId } from 'tldraw'
 import { log } from '../logger'
+import { pagePointToClient } from '../wm/viewport-coordinates'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import {
   MOVE_LOCK_ON,
@@ -42,8 +43,6 @@ import {
   cornerControlAtPoint as gestureCornerControlAtPoint,
   describeElement,
   elementChainAt,
-  getGestureViewportCamera,
-  getGestureViewportContainer,
   screenPointToFramePage,
 } from '../wm'
 
@@ -466,9 +465,20 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
     const boundsX = bounds?.x ?? shape?.x
     const boundsWidth = rectWidth(bounds) || shapeWidth(shape)
     if (!(boundsWidth > 0)) return null
-    const cam = getGestureViewportCamera(overlay, viewportId)
-    const containerRect = getGestureViewportContainer(overlay, viewportId, FLEET_GESTURE_FRAME_SELECTORS).getBoundingClientRect()
-    const centerX = containerRect.left + (boundsX + boundsWidth / 2 + cam.x) * cam.z
+    // Ask the window manager for this viewport's projection instead of
+    // rebuilding it. `containerRect.left + (x + cam.x) * cam.z` is tldraw's
+    // `(x + camera.x) * camera.z + screenBounds.x` written out by hand, and it
+    // agrees with tldraw today — which is the whole danger.
+    // `tldraw-fork-viewport-adapter.ts:8` names the failure: a copy of this
+    // arithmetic keeps working until tldraw changes its own, and then lands
+    // somewhere plausible and wrong rather than visibly broken. Routing through
+    // the registered viewport layer also means the frame is re-read per
+    // conversion, so a panel that has moved cannot be split against a stale rect.
+    const centerX = pagePointToClient(
+      overlay,
+      { x: boundsX + boundsWidth / 2, y: 0 },
+      viewportId as TLViewportId | undefined,
+    ).x
     return centerX < docScreenMidX ? 'L' : 'R'
   }
   const seedSides = new Set([...seedIds].map(id => sideOf(id)).filter(Boolean) as ('L' | 'R')[])

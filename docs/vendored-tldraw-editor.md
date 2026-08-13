@@ -96,9 +96,90 @@ rather than silently if dropped — the exports simply will not resolve.
 - The gesture exports, plus the two defects above re-tested on a real iPad,
   since both were reported from Skip's device and neither is visible on desktop.
 
+## Where the fork checkout is
+
+`/Users/skip/work/tldraw-fork`, branch `tlda/gesture-transitions`, at
+`249a8acb6` when this was written — clean, with root `node_modules` present and
+`yarn@4.12.0`.
+
+**It is the one this tarball was packed from, not a lookalike.**
+`packages/editor/src/lib/components/TldrawViewport.tsx` is byte-identical to the
+`src/` shipped in `vendor/tldraw-editor-5.2.0-tlda.10.tgz`. That check is the one
+to repeat, because there are three near-misses beside it on the same machine:
+`tldraw-multicam-fork` and `tldraw-multicam-fork-pushfix` both differ by 48 lines
+in that file, and `tldraw-fork.wrong-20260727093621` says what it is in its name.
+Its top commits are the gesture work described in §"What the fork carries".
+
+This section used to say the location was unknown. It was a `find` away —
+`find ~ -name build-package.ts -path '*internal/scripts*'` — and the previous
+text discouraged assuming the fork could be rebuilt, which is not the same as
+discouraging a look.
+
+**It builds.** `yarn workspace @tldraw/editor run build` exits 0 and produces
+`dist-cjs/` and `dist-esm/`; `yarn pack` runs the `prepack` script and produces a
+tarball in about two minutes. Building leaves the checkout clean — `dist/` is
+ignored. **That was the other half of the open question and it is now answered
+rather than assumed.**
+
+## A defect in the fork, fixed at the root
+
+`TldrawViewport.tsx`'s wheel handler inverts pan relative to the main canvas.
+`normalizeWheel` already returns negated deltas (`{ x: -deltaX, y: -deltaY }`);
+`Editor.ts`'s wheel case **adds** them (`cx + dx * panSpeed / cz`) and the
+viewport handler **subtracts** them (`camera.x - delta.x / camera.z`). Same
+gesture, opposite directions.
+
+Skip reported it as *"scrolling on the canvas and scrolling in the thing are
+giving me opposite scroll directions"*. It reaches any `CanvasClipPanel` that
+passes `onCameraChange` without `lockCamera` — five of six consumers — but only
+in a non-`preview` interaction mode, because `handleReadOnlyWheelCapture` takes
+the wheel first in `preview` and routes it through `canvasClipWheelCamera`, which
+has the correct sign. **That is why the wheel is right while hovering and inverts
+the moment you pin.**
+
+**Fixed in `-tlda.11`**: the handler now adds the normalized delta, the way
+`Editor.ts` does. There is no workaround in `CanvasClipPanel` to unpick — the
+`handleReadOnlyWheelCapture` path was already correct and is unchanged.
+
+**On an upgrade, re-check it.** The bug is in fork-only code
+(`TldrawViewport.tsx` does not exist upstream), so a re-fork carries it forward
+unless someone looks. The comment at the site says why the sign is what it is.
+
+**One difference remains and is not a bug I fixed:** `Editor.ts` scales its pan
+by `cameraOptions.panSpeed` and the viewport handler does not. They agree while
+`panSpeed` is 1, which is the default. Left alone deliberately — matching the
+sign is the reported defect; adding a speed term is a change to how fast a
+viewport pans, and nobody asked for that.
+
+### Check a rebuild against the tarball it replaces
+
+A rebuild picks up whatever the fork checkout has, not what you changed. If the
+branch has moved since the last pack, the new tarball quietly carries that too —
+and a vendored artifact is the last place anyone looks for an unexplained change.
+
+So diff the two, unpacked, before pinning:
+
+```sh
+tar xzf vendor/tldraw-editor-5.2.0-tlda.10.tgz -C old   # git show works too
+tar xzf vendor/tldraw-editor-5.2.0-tlda.11.tgz -C new
+diff -rq old/package/src new/package/src
+diff -rq old/package/dist-esm new/package/dist-esm
+diff old/package/package.json new/package/package.json
+```
+
+For `-tlda.11` that was **one file in `src/`** (`TldrawViewport.tsx`), **two in
+each `dist/`** (the module and its sourcemap), and an **identical
+`package.json`** — so the checkout had not drifted and the toolchain produced
+byte-identical output everywhere else. **A clean diff is what makes a vendored
+rebuild trustworthy**; without it "I only changed one line" is a claim about the
+edit, not about the artifact.
+
 ## What is not established here
 
-Where the fork checkout lives, and whether it still builds. Nothing in this
-repository records it, and this document does not resolve that — it records that
-the question is open so the next person meets it before committing to a bump
-rather than an hour into one.
+Whether `-tlda.11` behaves correctly in a browser. The change is one sign,
+derived by reading both wheel paths end to end, and the tarball was verified to
+carry it in `src/`, `dist-esm/` and `dist-cjs/` — but **it has not been
+installed**. The worktree it was built for symlinks `node_modules` to the shared
+checkout, so installing would swap the editor under every other agent working
+there. The pin is bumped and the artifact is committed; the install belongs to
+whoever lands the branch.

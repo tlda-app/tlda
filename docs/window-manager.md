@@ -140,6 +140,102 @@ Separating them is what makes "where the panel is on screen" and "where its
 camera is looking" independently updatable; `refreshViewportFrame` re-reads the
 first on every conversion (`editor-wm.ts:22`).
 
+### Shapes belong to a layer
+
+§2.4 of the original design, and the half a reader will look for and not find in
+the sections above. A shape's layer is **resolved from the shape record**, by one
+host-supplied function per core (`wm-core.ts`, `setShapeLayerResolver`). It is
+not stored: a stored copy would have to be maintained against every create,
+delete, and prop change in the store, and the first time it disagreed with the
+record the WM would be authoritative about something it had got wrong.
+
+The core cannot read a host's records — it knows nothing about tldraw, fleet
+identity, or surface metadata — so tlda supplies the answer in
+`wm/tlda-shape-layers.ts`, as one rule: **a shape is in the coordinate layer of
+the viewport that projects it.** Everything is in `document-page`; the panels
+this browser owns are in the HUD viewport's own coordinate layer while the HUD
+is projecting them; a managed surface is in the layer its own `managedLayerId`
+names. Both of the first two take page coordinates, so a panel's `x` is the same
+number in either — what differs is the camera that puts them on screen, which is
+what a layer is, and why an operation reasoning in screen space has to ask.
+
+A shape the resolver does not place, or places in a layer this core has never
+defined, is in the root. The WM answers where it can back the answer with a
+transform rather than returning a layer id that every later `translate` throws
+on.
+
+On top of that: `layerIdOfShape`, `layerOfShape`, `sameLayer`, `shapeExtentIn`
+(a shape's extent read in its own layer and expressed in another), `hitTest`, and
+`moveToLayer` — the reparent, which restates a shape's coordinates against a
+different frame without moving it on screen.
+
+`window.__tlda_wm_core__.shapeLayerReport()` groups every shape on the page by
+its layer; `layerIdOfShape` on the same object answers for one. That is the
+readout, and it is a console query rather than a rig.
+
+**This is on `rc/wm-layers` and not on `main`** — see the errata entry
+[The layer model's shape-membership half has no consumer](#the-layer-models-shape-membership-half-has-no-consumer),
+which carries what did and did not land.
+
+### Which code can know its layer, and which cannot
+
+Two rules decide it, and both are structural rather than conventions — they
+follow from where a thing mounts and what hands it its arguments. Between them
+they settle a page↔screen conversion without tracing it.
+
+**A main-DOM overlay is in the main frame; a shape util is not.** `SvgDocument`
+mounts `SpatialWorldMap`, `RibbonLane`, `ProvenanceInline`, `RecognizeButton`,
+`DocumentPanel` and the rest as siblings, **once** (`:758`). The shape utils
+registered at `:847` are re-rendered inside **every viewport that draws their
+shape**. So an overlay converting against the main camera is right by
+construction and asking would be noise; a conversion inside a shape component is
+ambiguous until it names a viewport.
+
+**A tool gets the viewport from the event; a shape util does not.** `BrowseIdle`
+reads it off the DOM (`:228-229`) or off the event (`:599`). A `ShapeUtil`
+callback — `onTranslate`, `onTranslateEnd` — is per **editor**, while rendering
+is per **viewport**, so it has nothing to pass and no context to read. **That is
+a category, not a missing argument**, and a site in it cannot be repaired by
+adding a viewport id: it has to be restructured or to stop converting.
+
+The pattern that avoids the question entirely is the common one already: take
+the pointer event's own `clientX`/`clientY`, which are true screen coordinates
+with no frame to get wrong. `FleetChatShape` and `FleetAgentsShape` both do this
+at every drop site.
+
+**There are four ways to ask, and a grep for `viewportId` finds one of them.**
+Counting arguments undercounted correct code three times in one night, so the
+other three are written down here:
+
+- **Pass a viewport id.** `BrowseIdle.ts:229`, `fleet-utils.ts:446`.
+- **Branch on the layer you are on.** `FleetChatShape.tsx:6701` picks its
+  converter from `drag._onMain` — `clientPointToPage` once the dragged pill has
+  left the panel for the canvas, `fleetPointerEventPagePoint` while it is still
+  inside.
+- **Scope the selector.** `useFleetGestures.ts:337` queries
+  `.fleet-hud-wrap [data-shape-id]`, which names its layer in CSS. The inverse
+  names the canvas: a clip panel puts `data-viewport-id` on its container, so
+  `!el.closest('[data-viewport-id]')` is "the main canvas's copy" —
+  `SlidesNavigator.ts` and `usePanPerfLog.ts` both select that way.
+- **Ask the element.** Start from a node you already have and walk up:
+  `placeholder.closest('.fleet-chat-log')` is the scroller containing that
+  placeholder, in whichever copy of the panel is mounted, and needs no knowledge
+  of layers at all. `useYjsSignals.ts` does this.
+
+**And a layer-blind query is only a crossing if what it reads is
+layer-dependent.** Intrinsic SVG user space — `getAttribute('x')`,
+`viewBox.baseVal`, `getComputedTextLength()` — is identical in every copy of an
+element, so `highlighterSnap`'s document-wide page lookup and `SvgDocument`'s
+text-column measurement are correct despite matching more than one node. Client
+rects, element identity, and anything posted to a `contentWindow` are not.
+
+**`highlighterSnap.ts:120-124` carries the copy-store belief** — *"the HUD's copy
+store renders a duplicate"* — in a file this errata does not otherwise list. The
+HUD has no copy store, and it renders no document shapes at all: its predicate
+`shouldRenderLockedFleetViewportShape` rejects every type not starting with
+`fleet-`. Duplicates of a page shape come from **nested clip panels**, which is a
+different mechanism with the same symptom. Noted rather than chased.
+
 ---
 
 ## The fleet HUD is a second viewport on the same editor
@@ -500,6 +596,12 @@ touching any path described here is `85c06a69e`. This says nothing about what is
 deployed. These are mismatches between the design above and the code as it
 stands.
 
+**Five of them are resolved on the `rc/wm-layers` branch and on nothing else.**
+That branch is not merged and not deployed, so on `main` every entry below still
+reads as written. Each resolved entry says so in place, with the commit; the
+entry itself is left standing rather than deleted, because until the branch
+lands the mismatch is still what a reader of `main` will find.
+
 ### The code still describes a copy-store editor that no longer exists
 
 Three comment blocks describe the HUD as a second editor holding a synced copy of
@@ -531,6 +633,21 @@ historical residue; they are the source the next author reads, so each one
 reproduces itself. That is the argument for correcting them rather than leaving
 them as harmless.
 
+**Partly resolved on `rc/wm-layers`** (`1536d00f0`), and the rest deliberately
+not. `dropPillOnTarget` acted on this belief in code rather than in a comment:
+it converted the drop point when `mainEditor !== editor`, a condition that can
+never be true. That branch, `translateFleetHudDropPointWithWM`, and
+`translateFleetHudDropPoint` are deleted — and the branch was not merely
+unreachable but wrong if reached, since every caller builds the point with
+`fleetPointerEventPagePoint`, which already routes through the WM for whichever
+viewport the gesture happened in.
+
+**The three comment blocks are untouched, and so is the undo interception.**
+Deleting that interception is not the no-op this entry's wording suggests: it
+`preventDefault`s and exempts `.fleet-source-editor`, so removing it changes what
+Cmd+Z does inside HUD text inputs. That is a behaviour decision, not a stale
+comment, and it was left for whoever owns it.
+
 ### `.tool-passes-through` has CSS and no writer
 
 `FleetHUD.css:140-157` disables pointer events on eight panel types when the wrap
@@ -539,6 +656,12 @@ them. The only code that touches the class **removes** it unconditionally on
 every render (`FleetHUD.tsx:1178-1187`). The comment there records why: the
 tradeoff cost the ability to interact with chat without switching tools, and Skip
 judged it bad. Both halves of a reverted feature are still in the tree.
+
+**Resolved on `rc/wm-layers`** (`8fe717b31`). Nothing anywhere *adds* the class,
+so all eighteen selectors were unreachable and the effect took a class off an
+element that never had one. Both halves are gone. Why the feature was pulled is
+in the git history and in this entry; it does not need half an implementation
+left in the tree to stay findable.
 
 ### The layer model's shape-membership half has no consumer
 
@@ -550,6 +673,117 @@ surfaces; nothing re-expresses a shape's coordinates into a different layer.
 Two API entries from that design never landed at all: `wm.hitTest` and
 `wm.snapTargets`. Hit-testing is still the DOM walk in `drop-targets.ts` and the
 gesture layer.
+
+**Resolved on `rc/wm-layers`** (`f2c67ed36`, `dc5dbebae`). The reason the three
+had no callers is findable: they required a `layerId` on the record, and no real
+shape carries one, so the operation could not be called on anything that exists.
+Membership is now **resolved from the shape record** — the core holds one
+host-supplied function, because it cannot read a host's records itself, and the
+default reads `shape.layerId`. It is deliberately not a table: a table has to be
+maintained against every create, delete and prop change in the store, and the
+first time it disagreed the WM would be authoritative about something it had got
+wrong.
+
+tlda's answer is one rule — **a shape is in the coordinate layer of the viewport
+that projects it.** Everything is in `document-page`; the panels this browser
+owns are in the HUD viewport's own coordinate layer while the HUD is projecting
+them. Both take page coordinates, so a panel's `x` is the same number in either;
+what differs is the camera that puts them on screen, which is what a layer is. A
+managed surface already named its layer on its own record — `managedLayerId`,
+written by `managedSurfaceShapeMeta` — and that answer was being written and
+never read.
+
+`wm.hitTest` landed with it: the core converts one probe point into however many
+layers the candidates turn out to be in, so a hit is decided in the frame the
+shape lives in. `wm.snapTargets` did **not** — soft snap was held by another
+owner at the time and is not part of that branch. `drop-targets.ts` is unchanged.
+
+The readout is a console query rather than a rig:
+`window.__tlda_wm_core__.shapeLayerReport()` groups every shape on the page by
+its layer, and `layerIdOfShape` answers for one. **It has not been run on a
+served page** — `isMyFleetShape` needs a browser identity, so the fleet branch is
+unreachable from node, and that is the outstanding proof.
+
+Note the name collision that helped this read as "implemented, no callers"
+rather than "not built": `LayerMembership` in the code is
+`createLayerMembership(layerId, owner)` — *this layer belongs to this owner* —
+which is a different relation from the one §2.4 means. It is constructed at
+`fleet-hud-layer.ts:158` and `fleet-docview-layer.ts:94` and read nowhere.
+
+### Six places do not ask which layer they are on
+
+Skip, 2026-08-13, on where the whole class of coordinate-frame bug comes from:
+
+> Is it not true that we know what layer we're interacting with? And therefore
+> this isn't about chat or anything. **This is about being your fucking layer.**
+
+The mechanism to answer him already exists and predates this branch.
+`useVisibilityViewportId()` (`useIsInViewport.ts:23`) returns the viewport
+rendering a component, `undefined` meaning the main canvas; the DOM half is
+`[data-viewport-id]`, emitted by `CanvasClipPanel.tsx:535,572` and already read
+by `BrowseIdle.ts:228`. **Six scroll sites never call either.**
+
+| site | layer | can it know? |
+|---|---|---|
+| `FleetChatShape.tsx:4102,4125` — anchor correction | either | **It already holds it.** `FleetChatInner` opens at `:2364` and calls `useVisibilityViewportId()` at `:2368`; the anchor math is at `:4051-4125` in that same component. |
+| `CanvasClipPanel.tsx:192` — wheel to chat log | a clip viewport | **In scope.** And `:207-211`, fifteen lines below, already divides by that viewport's `camera.z` for the nested docview. |
+| `FleetInboxShape.tsx:879,880` — wheel | either | Available, never imported. |
+| `usePanMode.ts:221` — drag-scroll | either | Reachable: `chatLog.closest('[data-viewport-id]')`. |
+| `usePanMode.ts:117,136` — edge autoscroll | **unknowable as written** | `document.querySelectorAll('.fleet-chat-log')` puts every log on every layer through one arithmetic. |
+
+`usePanMode`'s query is worse than layer-blind: [chat rendering](chat-rendering.md)
+§"Two surfaces share the class name" records that `.fleet-chat-log` names a fleet
+panel's Virtuoso scroller **and** the index page's chat log, two different scroll
+implementations. A document-wide query collects both.
+
+**What is established and what is not**, because these were run together once and
+they are three claims:
+
+- **The sites do not ask.** Established, above.
+- **A configuration exists where the units genuinely differ.** Established.
+  `body.fleet-hud-open` is `!!(expanded && fleetBounds)` (`FleetHUD.tsx:896-901`),
+  the render gate returns `null` only when `!viewportId && hudOpen`
+  (`useIsInViewport.ts:44-51`), and the canvas copy is hidden only under that body
+  class — `FleetHUD.css`, the `body.fleet-hud-open .tl-canvas .fleet-shape` rule,
+  which is at `:238` on this branch and `:262` on `main` because this branch
+  deleted the 24-line `.tool-passes-through` block above it. **Cite the selector
+  rather than the line for anything this branch moves.** **So with the HUD closed a chat panel renders on the
+  canvas, visible, inside `.tl-html-layer` — which carries `scale(z)`**
+  (`TldrawViewport.tsx:99-102` in the vendored fork). `getBoundingClientRect` is
+  scaled by that transform and `scrollTop` is not.
+- **That this caused the reported scroll freeze.** *Not* established, and the
+  telemetry cannot decide it: no viewport id and no camera appears on any of the
+  1,982 records in the measured session. **A fleet chat panel carries a shape id
+  whichever camera drew it — the HUD renders the same store — so the shape id
+  distinguishes panel from index log, never canvas from HUD.** That inference was
+  made and retracted on 2026-08-13; do not make it again.
+
+**One conversion is open and it is a product question, not a coordinate one.**
+`MathNoteShape.tsx:207` builds a drop probe from a note's page centre through the
+main camera — `pagePointToClient(this.editor, …)`, no viewport — and hands it to
+`updateWMDrop`/`finishWMDrop`, which resolve by `elementsFromPoint` and therefore
+need true screen coordinates. It is called from `onTranslate`/`onTranslateEnd`,
+so by the rule above **it cannot name a viewport**.
+
+Both halves have to be settled together:
+
+- **It cannot ask.** A viewport id is not obtainable where it stands.
+- **The frame-free version changes behaviour.** Using the pointer's own
+  `clientX`/`clientY`, as every other drop site does, would aim the drop at the
+  pointer rather than at the note's centre. Those differ.
+
+**Reachable-looking, not reproduced.** `AnnotationViewer.tsx:569` is
+`readOnly={state === 'hovering'}` and renders math notes (`:174`), so pinned it
+is interactive and a note can be dragged inside a panel with its own camera.
+Whether a drag actually initiates there has not been confirmed. The predicted
+symptom is not a crash but a silence: `wm-drop-resolve` with
+`kind: "chat-composer-item"`, `resolved: false`, `registeredHitCount: 0`, and a
+drop into a chat composer that never happens.
+
+**Two mechanisms answer "which layer" and they are not the same object.**
+`useVisibilityViewportId()` is React context; `wm/tlda-shape-layers.ts` resolves
+through the WM's registered viewports. They agree today because both bottom out
+in the same viewport registration, and nothing makes them agree.
 
 ### The `viewport` backing is implemented and unmounted
 
@@ -687,15 +921,28 @@ is established.**
 ### Smaller mismatches
 
 - `repackFleetShapes` (`FleetHUD.tsx:229`) is exported, carries an
-  `eslint-disable` for being unused, and has no caller or test.
+  `eslint-disable` for being unused, and has no caller or test. **Left alone on
+  `rc/wm-layers`, deliberately.** `git log -S` puts it at `82e1f2e51`, "reflow
+  remaining shapes into clean grid on deletion" — it is the implementation of the
+  auto-reflow disabled two entries above, parked against that section's TODO to
+  reimplement add-and-delete as identity. Deleting it discards a parked
+  implementation of a named intent, which is a product call rather than a
+  cleanup.
 - `CanvasClipPanel` accepts `shapeUtils`, `tools`, and `licenseKey` and ignores
   them, marked "Legacy props … kept for consumer compatibility"
   (`CanvasClipPanel.tsx:116-119`). `FleetHUD` still passes all three
   (`FleetHUD.tsx:1495-1497`). `AGENTS.md` says this project does not preserve
-  compatibility shims without a current requirement.
+  compatibility shims without a current requirement. **Resolved on
+  `rc/wm-layers`** (`bf661eb56`): the props, five call sites, three components'
+  own props, and two locals are gone. `DocClipShape` and `FleetDocViewShape` each
+  computed a filtered `shapeUtils` list and hardcoded a duplicate tldraw licence
+  key solely to feed a parameter nobody read; no hardcoded key now remains under
+  `src/`, and the live `<Tldraw licenseKey={LICENSE_KEY}>` is untouched.
 - `WMCore.updateLayer` assigns the new parent before `assertAcyclic` runs
   (`wm-core.ts:243-267`), so a rejected re-parent throws with the bad parent
-  already written.
+  already written. **Resolved on `rc/wm-layers`** (`f2c67ed36`): the parent is
+  restored when the check throws, so a caught cycle error means the change did
+  not happen.
 - `scratch/wm-core-spec.md` (2026-06-20) is the design proposal this was built
   from. It is a *proposal*, several parts of which did not ship, and it is in
   `scratch/`. Do not cite it as a description of the system.

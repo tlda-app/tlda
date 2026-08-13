@@ -12,7 +12,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import type { Editor, JsonObject, TLShape, TLShapeId } from 'tldraw'
+import type { Editor, JsonObject, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { useMemo } from 'react'
 // @ts-ignore — vanilla JS module
 import { renderMarkdownLine } from '../fleet/utils.mjs'
@@ -20,8 +20,6 @@ import { renderMarkdownLine } from '../fleet/utils.mjs'
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { translateFleetHudDropPointWithWM } from '../wm/fleet-hud-layer'
-import { getEditorWMCore } from '../wm/editor-wm'
 import {
   createTemporaryMarkdownSurfaceRequest,
   temporaryMarkdownShapeMeta,
@@ -31,6 +29,9 @@ import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { parseCanonicalReference } from '../../shared/canonical-references.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES, placeFleetShapeAtScreenPoint } from './fleet-utils'
+import { getHudEditor } from '../wm/editor-host-bridge'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { pagePointToClient } from '../wm/viewport-coordinates'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
@@ -488,9 +489,12 @@ export async function dropPillOnTarget(
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
   const createEditor = mainEditor || editor
-  const createPagePoint = mainEditor && mainEditor !== editor
-    ? translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, pagePoint)
-    : pagePoint
+  // No conversion: `pagePoint` is already page coordinates. Every caller builds
+  // it with fleetPointerEventPagePoint, which routes through the WM for whatever
+  // viewport the gesture happened in, so the HUD's camera is already accounted
+  // for. There is also only one page — CanvasClipPanel hands consumers the main
+  // editor, so the HUD's editor and the main editor are the same object.
+  const createPagePoint = pagePoint
   // Isolate this drop as its own undo step. A pill drop creates a chat (or note,
   // or updates a filter) directly via createEditor.createShape — NOT through
   // createFleetShape — so without a mark here the new chat glues onto whatever
@@ -620,7 +624,19 @@ export async function dropPillOnTarget(
         await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, pill, content, showError)) {
       return
     }
-    const reportDropScreenPoint = hitEditor.pageToScreen(targetPagePoint)
+    // Project with the camera that will read it back. This point is handed to
+    // createReportArtifactShapeFromPill, which passes it to
+    // placeFleetShapeAtScreenPoint, which converts screen back to page through
+    // the HUD viewport whenever the HUD is open (`fleet-utils.ts`). Projecting
+    // here with the main camera and un-projecting there with the HUD's put the
+    // artifact off by the overlay transform — non-zero whenever the layout has
+    // ridden the document. Naming the same viewport on both sides makes the
+    // round trip the identity it was always assumed to be.
+    const reportDropScreenPoint = pagePointToClient(
+      hitEditor,
+      targetPagePoint,
+      getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined,
+    )
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
         await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill, content, showError)) {
       return
