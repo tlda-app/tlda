@@ -1,11 +1,11 @@
 # The list {#the-list}
 
-**62 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**63 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **7 of the 54 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
-**⚠️ built and finished, but not on your box — 4 rows as of 10:04 EDT**, against the box named
+**⚠️ built and finished, but not on your box — 4 rows as of 10:14 EDT**, against the box named
 below. **From where you sit it is indistinguishable from not-done.** That count moves whenever
 anything merges, so it is re-derived every time this file is written. · **✓? built and on your box,
 and nobody has confirmed it works for you** — each of these says on its own row what would retire
@@ -20,13 +20,15 @@ module — **the tab you are reading this in is still running the bundle it load
 the eight `✓?` rows reach your screen until you refresh. Nothing here says you have seen any of it.
 
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
-gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 62 are things you asked for.**
+gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 63 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 10:08 EDT. `main` is `11f703fc9` —
-**80 commits ahead, 31 of them changing code, across 58 distinct code files**; the other 49 are
-documentation only. **Code here means everything that is not `*.md` and not under `docs/`** — the
-definition matters, because three agents measuring this gap with three different path sets got
-three different answers. Every number on this line is re-derived each time the file is written.
+Your box runs `2e763c010`, read from `/api/build-info` at 10:14 EDT. `main` is `75f2439a7` —
+**81 commits ahead, 31 of them changing code and 28 changing code outside tests, across 58 code
+files of which 17 are tests**; the other 50 commits are documentation only. **Code means everything that is not
+`*.md` and not under `docs/`; a test means `bin/`, `*.test.*` or `*-test.mjs`.** Both definitions
+are stated because three agents measuring this gap with three path sets got three answers, and
+because a stated definition still is not self-interpreting — the test predicate moves the count
+again. Every number is re-derived on each write.
 
 ## Chat and scrolling
 
@@ -76,6 +78,7 @@ three different answers. Every number on this line is re-derived each time the f
 
 | | | |
 |---|---|---|
+| ○ | **`mint` and `delegate` report success for an agent that never joined** | **Only `wake` was fixed** — `69e9fa277`, *"a live process that never joined is not a woken agent"*, which touched `daemon/wake-core.mjs` and its tests **and nothing else.** **`joinedAt` is set in `daemon/mint-core.mjs` and gates a lifecycle event there (lines 117 and 143), not the return** — and **`delegate` never consults it at all**: zero references in `mcp-server/fleet-tools.mjs`. **So a caller is told the agent exists when it has no roster row and nobody can address it.** **This has already cost a morning:** `unlanded-branches`, `row-provenance` and `row-trace` were all reported as owners, all three resolved to nothing, and one of them sat on three rows of this list for forty minutes as though somebody were working them. **No owner.** *Leaves the list when a mint or delegate that produces no addressable agent says so.* |
 | ○ | **A codex partial mint gets `session_id: null` and nobody has confirmed that is harmless** | `freshSessionId` is generated for `claude` only, so a codex mint with a null `resumeId` also gets `session_id: null`. **It is believed identical to an ordinary fresh codex mint and that has not been confirmed** — the agent who found it said plainly they had not checked, which is why this is a row rather than a footnote on somebody's branch. **A test cannot close it:** the test that covers this path stubs `resumeSession`, so the behaviour under a real null `resumeId` is exactly what it does not reach. **No owner.** *Leaves the list when one real partial codex mint has been run and its seat is indistinguishable from an ordinary fresh one.* |
 | ? | **A Fly token was reported leaked on 2026-07-31, and the report itself has no record** | **The credential is live, mode 600, absent from git across all refs, and absent from every reachable place scanned** — history files, deploy tree, hooks, LaunchAgents. The 1,749 `fm2_` hits in agent logs are wireguard identifiers, **proved rather than assumed**: 45 characters against 641, not a prefix, rejected exactly as garbage is. **And the delegate that raised it has no body.** Thirteen days on there is no record of what was seen, where, or by whom — **so *leaked* rests on an observation nobody wrote down**, which is either a real exposure now invisible or a task raised on nothing, **and nobody will guess between them.** **The question for you, and it is one question:** do you remember what was seen on 7/31? **If you do, the decision is real; if nobody can say, that is the answer about what the premise is worth.** **The blast radius, so the question is a fair one:** rotating costs an interactive `fly auth login` in your own terminal and **breaks every deploy across 19 apps, including `tlda-pic`, the course box** — against an unquantified risk with no evidence behind it. **Nobody is rotating anything and nobody woke you for it.** *Leaves the list when you say whether you remember it.* `quiet-the-box` |
 | ○ | **A second list exists and nobody reads it** | **34 open fleet tasks, 26 of them stale, the oldest 328 hours** — and every one has an owner who is hibernating. **They are not all the same thing, and nobody knows which is which — that is the finding.** **Three kinds have already turned up in a sample of nine:** work that is *abandoned*, which needs an owner or a decision; work that is **finished and never closed**, which needs only a close and until then inflates the backlog and hides the real ones; and **eight of the nine that have no row here at all — invisible rather than duplicated**, which is the sharper version of the problem, since the risk is not that the queue mirrors this list but that it holds work this list has never heard of. **One of the nine was established done on inspection:** *build the gesture classifier in the tldraw fork*, open 276 hours — `GestureInterpreter.ts` is 418 lines, imported and instantiated on the live gesture path, and **tonight's wheel fix is built on top of it.** **That is not anyone's failure:** the work was done; finishing it and closing its task are two actions and only one of them was somebody's job. **The kinds cannot be told apart from titles** — this one only resolved because someone opened the file. **They are not imported here**, because this file is the durable artifact and mirroring the queue into it would make both wrong — **but a task with no reader is the same thing as a row nobody inherits.** **No owner.** *Leaves the list when a stale task is visible as abandoned, finished, or unheard-of, rather than uniformly as in-progress.* |
