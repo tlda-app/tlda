@@ -733,6 +733,20 @@ const _inboxBriefSeen = new Map();
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
+// What a mint caller is told about the outcome it has not got yet.
+//
+// This used to say "Mint completion or failure will arrive from the server
+// mailbox." That sentence was false from 8/8: the settle wrote a `spawn_mailbox`
+// event with no `to`, so share() built an empty recipient list and it reached no
+// inbox, and no reader of type `spawn_mailbox` existed. Callers waited on a
+// channel with no reader — four mints on 8/8 and three on 08-13.
+//
+// The server now delivers launch failures AND the readiness timeout to the
+// requester, so an outcome does arrive. What it will not do is promise a
+// specific channel: the honest statement is what the caller should watch, which
+// is the roster, and that a problem will reach them in chat.
+const MINT_OUTCOME_NOTE = 'The agent appears in the roster when it logs in. If it fails to launch, or launches and does not answer, that arrives in your chat.';
+
 
 // Per-doc macro cache. Paper-defined macros (e.g. \E, \chis) must be passed
 // to katex.renderToString so the chat linter doesn't false-positive on them.
@@ -2864,12 +2878,12 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       try {
         const { data, queued, operationId } = await delegateToResolvedAgent(shellAgentId, { agent_id: shellAgentId, friendly_name: agentName }, { allowPendingAgent: true });
         if (queued) {
-          return { content: [{ type: 'text', text: `Mint requested for ${agentName}; delegation queued durably for shell ${shellAgentId}: ${description}\noperation_id: ${data.operation_id || operationId}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nMint completion or failure will arrive from the server mailbox.` }] };
+          return { content: [{ type: 'text', text: `Mint requested for ${agentName}; delegation queued durably for shell ${shellAgentId}: ${description}\noperation_id: ${data.operation_id || operationId}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\n${MINT_OUTCOME_NOTE}` }] };
         }
         return {
           content: [{
             type: 'text',
-            text: `Mint requested for ${agentName}; delegated [${data.task_id}] to shell ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nMint completion or failure will arrive from the server mailbox.`,
+            text: `Mint requested for ${agentName}; delegated [${data.task_id}] to shell ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\n${MINT_OUTCOME_NOTE}`,
           }],
         };
       } catch (e) {
