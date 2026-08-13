@@ -77,7 +77,7 @@ import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { fleetFilterForPillDrop } from './fleet-pill-drop-filter'
-import { agentDisplayLabel, agentExactName, createFleetShape, isFleetShapeForOwnerKey, nudgeFleetPanelTranslate } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, createFleetShape, isFleetShapeForOwnerKey, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { usePillDrag, type FleetPillDropData } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer, type VoiceTargetHandle } from './ChatComposer'
@@ -1364,6 +1364,7 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canResize = () => true
   override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
+  override onResize = (shape: any, info: any) => nudgeFleetPanelResize(this.editor, shape, info)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
@@ -4059,6 +4060,10 @@ function FleetChatInner({ shape }: { shape: any }) {
           && Math.abs(top - previous.top) > 1) {
         log.metric('chat-anchor', 'anchor drifted with no input', {
           panelId: String(shape.id),
+          // Which layer drew this panel. Without it the record cannot say whether the
+          // canvas camera scaled the rects it is comparing, and a shape id cannot
+          // answer it — the HUD renders the same store, so both renderings carry one.
+          viewportId: viewportId ?? null,
           anchorKey: key,
           drift: Math.round(top - previous.top),
           scrollTop: Math.round(el.scrollTop),
@@ -4093,6 +4098,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       // has always been recorded; this is the other half of the same story.
       log.metric('chat-anchor', 'anchor row gone; viewport left uncorrected', {
         panelId: String(shape.id),
+        // Which layer drew this panel. Without it the record cannot say whether the
+        // canvas camera scaled the rects it is comparing, and a shape id cannot
+        // answer it — the HUD renders the same store, so both renderings carry one.
+        viewportId: viewportId ?? null,
         anchorKey,
         renderedRows: rows.length,
         top: el.scrollTop,
@@ -4107,6 +4116,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (Math.abs(delta) > available + 0.5) {
       log.metric('chat-anchor', 'anchor correction outside scroll range', {
         panelId: String(shape.id),
+        // Which layer drew this panel. Without it the record cannot say whether the
+        // canvas camera scaled the rects it is comparing, and a shape id cannot
+        // answer it — the HUD renders the same store, so both renderings carry one.
+        viewportId: viewportId ?? null,
         anchorKey,
         delta: Math.round(delta),
         available: Math.round(available),
@@ -4127,6 +4140,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     selfWriteResizePendingRef.current = true
     log.metric('chat-anchor', 'preserved viewport across content resize', {
       panelId: String(shape.id),
+      // Which layer drew this panel. Without it the record cannot say whether the
+      // canvas camera scaled the rects it is comparing, and a shape id cannot
+      // answer it — the HUD renders the same store, so both renderings carry one.
+      viewportId: viewportId ?? null,
       anchorKey,
       delta: Math.round(delta),
       // `scrollTop` is read after the write, on the statement after it, so
@@ -4171,6 +4188,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!deferredGeometryReconcileRef.current) {
         log.metric('chat-anchor', 'geometry reconcile deferred; reader input in flight', {
           panelId: String(shape.id),
+          // Which layer drew this panel. Without it the record cannot say whether the
+          // canvas camera scaled the rects it is comparing, and a shape id cannot
+          // answer it — the HUD renders the same store, so both renderings carry one.
+          viewportId: viewportId ?? null,
           pointerCount: panelPointerIdsRef.current.size,
           touchScrollActive: touchScrollActiveRef.current,
           explicitScrollInput: explicitScrollInputRef.current,

@@ -7,7 +7,7 @@ import {
   type TLPropsMigrations,
 } from 'tldraw'
 import { getLiveVideoTiles, subscribeLiveVideoTiles, type LiveVideoTile } from '../livekit/liveVideoRegistry'
-import { isMyFleetShape, nudgeFleetPanelTranslate } from './fleet-utils'
+import { isMyFleetShape, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { FleetHudRenderGate } from './useIsInViewport'
 import './fleet-video.css'
@@ -40,6 +40,7 @@ export class FleetVideoShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
+  override onResize = (shape: any, info: any) => nudgeFleetPanelResize(this.editor, shape, info)
   override canBind = () => false
   override hideRotateHandle = () => true
 

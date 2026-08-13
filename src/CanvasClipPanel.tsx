@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TldrawViewport, Vec, stopEventPropagation } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
+import type { Editor, TLShape, TLViewportId } from 'tldraw'
 import {
   canvasClipSurfaceCamera,
   createCanvasClipPanelPlan,
@@ -113,10 +113,6 @@ export interface ClipBounds {
 interface CanvasClipPanelProps {
   mainEditor: Editor
   bounds: ClipBounds | null
-  // Legacy props (accepted but ignored — kept for consumer compatibility)
-  shapeUtils?: TLAnyShapeUtilConstructor[]
-  tools?: TLStateNodeConstructor[]
-  licenseKey?: string
   panelWidth?: number
   maxHeightFraction?: number
   className?: string

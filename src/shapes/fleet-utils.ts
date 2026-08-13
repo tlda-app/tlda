@@ -1,5 +1,5 @@
-import type { Editor, TLShape, TLShapeId, TLShapePartial, TLViewportId } from 'tldraw'
-import { createShapeId } from 'tldraw'
+import type { Editor, TLBaseBoxShape, TLResizeInfo, TLShape, TLShapeId, TLShapePartial, TLViewportId } from 'tldraw'
+import { createShapeId, resizeBox } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getHumanName, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
@@ -81,7 +81,18 @@ export type FleetNudgeGuide = {
   spanTo: number
 }
 
-type FleetNudgeMatch = FleetNudgeGuide & { delta: number }
+/**
+ * The feature of the dragged rect a match pulls. Translate moves all six; a
+ * resize moves only the ones the grabbed handle carries, which is the whole
+ * difference between the two paths.
+ */
+type FleetNudgeFeature = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom'
+
+type FleetNudgeMatch = FleetNudgeGuide & { delta: number; feature: FleetNudgeFeature }
+
+const ALL_FLEET_NUDGE_FEATURES: ReadonlySet<FleetNudgeFeature> = new Set<FleetNudgeFeature>([
+  'left', 'centerX', 'right', 'top', 'centerY', 'bottom',
+])
 
 function overlapSize(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0))
@@ -118,15 +129,13 @@ function takenMatch(match: FleetNudgeMatch | null, threshold: number): FleetNudg
   return match
 }
 
-function fleetNudgeRectForShape(editor: Editor, shape: TLShape): FleetNudgeRect | null {
-  const bounds = editor.getShapePageBounds(shape.id)
-  if (!bounds) return null
-  const left = bounds.x
-  const top = bounds.y
-  const right = bounds.x + bounds.w
-  const bottom = bounds.y + bounds.h
+function fleetNudgeRectForBox(id: TLShapeId, x: number, y: number, w: number, h: number): FleetNudgeRect {
+  const left = x
+  const top = y
+  const right = left + w
+  const bottom = top + h
   return {
-    id: shape.id,
+    id,
     left,
     right,
     top,
@@ -136,24 +145,18 @@ function fleetNudgeRectForShape(editor: Editor, shape: TLShape): FleetNudgeRect 
   }
 }
 
+function fleetNudgeRectForShape(editor: Editor, shape: TLShape): FleetNudgeRect | null {
+  const bounds = editor.getShapePageBounds(shape.id)
+  if (!bounds) return null
+  return fleetNudgeRectForBox(shape.id, bounds.x, bounds.y, bounds.w, bounds.h)
+}
+
 function fleetNudgeRectForCurrentShape(shape: TLShape): FleetNudgeRect | null {
   const panel = shape as TLShape & { x: number; y: number; props?: { w?: number; h?: number } }
   const w = panel.props?.w
   const h = panel.props?.h
   if (typeof w !== 'number' || typeof h !== 'number') return null
-  const left = panel.x
-  const top = panel.y
-  const right = left + w
-  const bottom = top + h
-  return {
-    id: shape.id,
-    left,
-    right,
-    top,
-    bottom,
-    centerX: (left + right) / 2,
-    centerY: (top + bottom) / 2,
-  }
+  return fleetNudgeRectForBox(shape.id, panel.x, panel.y, w, h)
 }
 
 function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): FleetNudgeRect[] {
@@ -170,42 +173,53 @@ function collectFleetPanelNudgeCandidates(editor: Editor, current: TLShape): Fle
  * page coordinate the dragged feature is being pulled to, and spans both the
  * shape being dragged and the one it is lining up with.
  */
-function matchOnX(target: number, draggedFeature: number, dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
+function matchOnX(target: number, feature: 'left' | 'centerX' | 'right', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
   return {
     axis: 'x',
-    delta: target - draggedFeature,
+    feature,
+    delta: target - dragged[feature],
     line: target,
     spanFrom: Math.min(dragged.top, candidate.top),
     spanTo: Math.max(dragged.bottom, candidate.bottom),
   }
 }
 
-function matchOnY(target: number, draggedFeature: number, dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
+function matchOnY(target: number, feature: 'top' | 'centerY' | 'bottom', dragged: FleetNudgeRect, candidate: FleetNudgeRect): FleetNudgeMatch {
   return {
     axis: 'y',
-    delta: target - draggedFeature,
+    feature,
+    delta: target - dragged[feature],
     line: target,
     spanFrom: Math.min(dragged.left, candidate.left),
     spanTo: Math.max(dragged.right, candidate.right),
   }
 }
 
+/**
+ * `live` names the features that are free to move. A translate hands over all
+ * six; a resize hands over only the ones its handle carries, so the pull can
+ * never be offered on an edge that is standing still — which is the same
+ * taken-is-drawn invariant `takenMatch` keeps, one step earlier.
+ */
 function closestFleetPanelNudge(
   dragged: FleetNudgeRect,
   candidates: FleetNudgeRect[],
   threshold: number,
+  live: ReadonlySet<FleetNudgeFeature> = ALL_FLEET_NUDGE_FEATURES,
 ): { dx: FleetNudgeMatch | null; dy: FleetNudgeMatch | null } {
   let dx: FleetNudgeMatch | null = null
   let dy: FleetNudgeMatch | null = null
+  const on = (match: FleetNudgeMatch, current: FleetNudgeMatch | null) =>
+    live.has(match.feature) ? keepClosest(match, current) : current
 
   for (const candidate of candidates) {
-    dx = keepClosest(matchOnX(candidate.left, dragged.left, dragged, candidate), dx)
-    dx = keepClosest(matchOnX(candidate.centerX, dragged.centerX, dragged, candidate), dx)
-    dx = keepClosest(matchOnX(candidate.right, dragged.right, dragged, candidate), dx)
+    dx = on(matchOnX(candidate.left, 'left', dragged, candidate), dx)
+    dx = on(matchOnX(candidate.centerX, 'centerX', dragged, candidate), dx)
+    dx = on(matchOnX(candidate.right, 'right', dragged, candidate), dx)
 
-    dy = keepClosest(matchOnY(candidate.top, dragged.top, dragged, candidate), dy)
-    dy = keepClosest(matchOnY(candidate.centerY, dragged.centerY, dragged, candidate), dy)
-    dy = keepClosest(matchOnY(candidate.bottom, dragged.bottom, dragged, candidate), dy)
+    dy = on(matchOnY(candidate.top, 'top', dragged, candidate), dy)
+    dy = on(matchOnY(candidate.centerY, 'centerY', dragged, candidate), dy)
+    dy = on(matchOnY(candidate.bottom, 'bottom', dragged, candidate), dy)
   }
 
   // An edge or centre that lines up wins outright. Equal-gap spacing is only
@@ -242,14 +256,14 @@ function closestFleetPanelNudge(
   for (const candidate of candidates) {
     if (!alignedX && sameBandOnY(dragged, candidate)) {
       for (const gap of horizontalGaps) {
-        dx = keepClosest(matchOnX(candidate.right + gap, dragged.left, dragged, candidate), dx)
-        dx = keepClosest(matchOnX(candidate.left - gap, dragged.right, dragged, candidate), dx)
+        dx = on(matchOnX(candidate.right + gap, 'left', dragged, candidate), dx)
+        dx = on(matchOnX(candidate.left - gap, 'right', dragged, candidate), dx)
       }
     }
     if (!alignedY && sameBandOnX(dragged, candidate)) {
       for (const gap of verticalGaps) {
-        dy = keepClosest(matchOnY(candidate.bottom + gap, dragged.top, dragged, candidate), dy)
-        dy = keepClosest(matchOnY(candidate.top - gap, dragged.bottom, dragged, candidate), dy)
+        dy = on(matchOnY(candidate.bottom + gap, 'top', dragged, candidate), dy)
+        dy = on(matchOnY(candidate.top - gap, 'bottom', dragged, candidate), dy)
       }
     }
   }
@@ -257,26 +271,39 @@ function closestFleetPanelNudge(
   return { dx: alignedX ?? dx, dy: alignedY ?? dy }
 }
 
+/** The guide is the taken match and nothing else, on both paths. */
+function drawFleetNudgeGuides(editor: Editor, taken: (FleetNudgeMatch | null)[]) {
+  setFleetNudgeGuides(editor, taken
+    .filter((match): match is FleetNudgeMatch => match !== null)
+    .map(match => ({ axis: match.axis, line: match.line, spanFrom: match.spanFrom, spanTo: match.spanTo })))
+}
+
+/**
+ * The capture zone in page units: how close the feature has to be before the
+ * snap takes. The strength is screen px, so it is the same apparent distance at
+ * any zoom. Zero (the preference turned off) has no capture zone at all.
+ */
+function fleetNudgeThreshold(editor: Editor): number | null {
+  const strength = getFleetNudgeStrengthPx()
+  if (strength <= 0) return null
+  return strength / (editor.getZoomLevel() || 1)
+}
+
 export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, current: TLShape): TLShapePartial | void {
-  if (current.parentId !== editor.getCurrentPageId()) return
-  if (!isMyFleetShape(current)) return
+  // Every exit clears. A guide left standing outlives the drag that drew it and
+  // then points at nothing.
+  if (current.parentId !== editor.getCurrentPageId()) return clearFleetNudgeGuides()
+  if (!isMyFleetShape(current)) return clearFleetNudgeGuides()
 
   const candidates = collectFleetPanelNudgeCandidates(editor, current)
-  if (candidates.length === 0) return
+  if (candidates.length === 0) return clearFleetNudgeGuides()
 
   const dragged = fleetNudgeRectForCurrentShape(current)
-  if (!dragged) return
+  if (!dragged) return clearFleetNudgeGuides()
 
-  const strength = getFleetNudgeStrengthPx()
-  if (strength <= 0) {
-    clearFleetNudgeGuides()
-    return
-  }
+  const threshold = fleetNudgeThreshold(editor)
+  if (threshold === null) return clearFleetNudgeGuides()
 
-  const zoom = editor.getZoomLevel() || 1
-  // The strength is the capture zone: how close the panel has to be before the
-  // snap takes. Screen px, so it is the same apparent distance at any zoom.
-  const threshold = strength / zoom
   const { dx, dy } = closestFleetPanelNudge(dragged, candidates, threshold)
 
   // One decision, read twice. The guide and the move cannot disagree about
@@ -284,10 +311,7 @@ export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, curr
   const takenX = takenMatch(dx, threshold)
   const takenY = takenMatch(dy, threshold)
 
-  setFleetNudgeGuides(editor, [
-    ...(takenX ? [{ axis: takenX.axis, line: takenX.line, spanFrom: takenX.spanFrom, spanTo: takenX.spanTo }] : []),
-    ...(takenY ? [{ axis: takenY.axis, line: takenY.line, spanFrom: takenY.spanFrom, spanTo: takenY.spanTo }] : []),
-  ])
+  drawFleetNudgeGuides(editor, [takenX, takenY])
 
   if (!takenX && !takenY) return
 
@@ -297,6 +321,107 @@ export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, curr
     x: current.x + (takenX ? takenX.delta : 0),
     y: current.y + (takenY ? takenY.delta : 0),
   } as TLShapePartial
+}
+
+/**
+ * The features a resize handle actually moves. Grab the right edge and the left
+ * one stands still, so only `right` — and `centerX`, which travels with it — may
+ * be offered a pull. An edge handle locks the other axis outright, and a flipped
+ * drag (negative scale) turns the grabbed edge into the opposite one, so that
+ * axis sits the pull out rather than snapping to a line it would land past.
+ */
+function liveFleetResizeFeatures(handle: string, scaleX: number, scaleY: number): Set<FleetNudgeFeature> {
+  const live = new Set<FleetNudgeFeature>()
+  if (scaleX > 0) {
+    if (handle.includes('left')) live.add('left')
+    if (handle.includes('right')) live.add('right')
+    if (live.has('left') || live.has('right')) live.add('centerX')
+  }
+  if (scaleY > 0) {
+    if (handle.includes('top')) live.add('top')
+    if (handle.includes('bottom')) live.add('bottom')
+    if (live.has('top') || live.has('bottom')) live.add('centerY')
+  }
+  return live
+}
+
+/**
+ * Turn a match on a moving feature into the axis the resize should land on. The
+ * edge you did not grab is the anchor: pulling the grabbed edge by `delta` moves
+ * it by `delta`, and pulling the centre by `delta` moves that edge by twice it,
+ * because a centre travels half as fast as the edge under it. A pull that would
+ * invert the panel is refused, and refusing it here is what stops a guide being
+ * drawn for a move that will not happen.
+ */
+function pullResizedAxis(
+  match: FleetNudgeMatch | null,
+  start: number,
+  size: number,
+  startIsMoving: boolean,
+): { start: number; size: number } | null {
+  if (match === null) return null
+  const edgeDelta = match.feature === 'centerX' || match.feature === 'centerY' ? match.delta * 2 : match.delta
+  const next = startIsMoving
+    ? { start: start + edgeDelta, size: size - edgeDelta }
+    : { start, size: size + edgeDelta }
+  return next.size >= 1 ? next : null
+}
+
+/**
+ * The resize twin of `nudgeFleetPanelTranslate`, and the reason it is a separate
+ * function rather than the same one: a translate moves the whole rect, so a
+ * single delta applies to the shape, while a resize moves only the edge you
+ * grabbed, so the pull has to change `w`/`h` and not `x`/`y` alone. Everything
+ * that decides *whether* to pull — the matcher, the capture zone, the guides —
+ * is the one shared with translate.
+ *
+ * Returns the ordinary `resizeBox` result whenever nothing is pulling, so this
+ * is a drop-in for the `BaseBoxShapeUtil.onResize` it replaces.
+ */
+export function nudgeFleetPanelResize<T extends TLBaseBoxShape>(editor: Editor, shape: T, info: TLResizeInfo<T>): T {
+  // `resizeBox` builds a fresh record with fresh props every call, so the pull
+  // is written onto it rather than spread into another copy.
+  const box = resizeBox(shape, info)
+  const resized = () => {
+    clearFleetNudgeGuides()
+    return box
+  }
+
+  if (shape.parentId !== editor.getCurrentPageId()) return resized()
+  if (!isMyFleetShape(shape)) return resized()
+  // 'scale_shape' is a whole selection being scaled at once; the panels inside it
+  // are moving relative to each other's neighbours, not lining up with them.
+  if (info.mode !== 'resize_bounds') return resized()
+
+  const live = liveFleetResizeFeatures(info.handle, info.scaleX, info.scaleY)
+  if (live.size === 0) return resized()
+
+  const candidates = collectFleetPanelNudgeCandidates(editor, shape)
+  if (candidates.length === 0) return resized()
+
+  const threshold = fleetNudgeThreshold(editor)
+  if (threshold === null) return resized()
+
+  const dragged = fleetNudgeRectForBox(shape.id, box.x, box.y, box.props.w, box.props.h)
+  const { dx, dy } = closestFleetPanelNudge(dragged, candidates, threshold, live)
+
+  const takenX = takenMatch(dx, threshold)
+  const takenY = takenMatch(dy, threshold)
+  const pullX = pullResizedAxis(takenX, dragged.left, box.props.w, info.handle.includes('left'))
+  const pullY = pullResizedAxis(takenY, dragged.top, box.props.h, info.handle.includes('top'))
+
+  // Drawn only where the pull survived, so a refused pull leaves no line behind.
+  drawFleetNudgeGuides(editor, [pullX ? takenX : null, pullY ? takenY : null])
+
+  if (pullX) {
+    box.x = pullX.start
+    box.props.w = pullX.size
+  }
+  if (pullY) {
+    box.y = pullY.start
+    box.props.h = pullY.size
+  }
+  return box
 }
 
 /** Display-only label. Do not use this as a filter or routing value. */

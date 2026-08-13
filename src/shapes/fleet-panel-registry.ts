@@ -4,7 +4,7 @@ import {
   hostedPanelDefaultProps,
   hostedPanelSizeMap,
   type HostedPanelAppDefinition,
-} from '../wm/hosted-panel-registry'
+} from '../wm/hosted-panel-registry.ts'
 
 export type FleetPanelType =
   | 'fleet-chat'

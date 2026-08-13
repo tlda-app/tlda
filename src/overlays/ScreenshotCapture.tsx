@@ -6,21 +6,18 @@
  * Reuses the RefViewer visual style (same panel chrome, Go/dismiss buttons).
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
+import type { Editor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { writeSignal } from '../useYjsSync'
 import type { ScreenshotCaptureState } from '../hooks/useYjsSignals'
 interface ScreenshotCaptureProps {
   mainEditor: Editor
   capture: ScreenshotCaptureState
-  shapeUtils: TLAnyShapeUtilConstructor[]
-  tools: TLStateNodeConstructor[]
-  licenseKey: string
   onClose: () => void
 }
 
 export function ScreenshotCapture({
-  mainEditor, capture, shapeUtils, tools, licenseKey, onClose,
+  mainEditor, capture, onClose,
 }: ScreenshotCaptureProps) {
   const [panelEditor, setPanelEditor] = useState<Editor | null>(null)
   const capturedRef = useRef(false)
@@ -92,9 +89,6 @@ export function ScreenshotCapture({
       <CanvasClipPanel
         mainEditor={mainEditor}
         bounds={bounds}
-        shapeUtils={shapeUtils}
-        tools={tools}
-        licenseKey={licenseKey}
         panelWidth={400}
         requestedShapeIds={capture.shapeIds}
         requestedShapeTypes={capture.shapeTypes}

@@ -2,7 +2,7 @@
 import { getHumanId, getDeviceId, isDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { readIdentityEpoch } from '../fleet/identity-epoch.mjs'
-import { FLEET_SHAPE_TYPES } from './fleet-panel-registry'
+import { FLEET_SHAPE_TYPES } from './fleet-panel-registry.ts'
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
 

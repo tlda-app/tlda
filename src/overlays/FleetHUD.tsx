@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { react } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLShapeId, TLStateNodeConstructor, TLViewportId } from 'tldraw'
+import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -207,9 +207,6 @@ function cameraDiff(a: CameraLike, b: CameraLike) {
 
 interface FleetHUDProps {
   mainEditor: Editor
-  shapeUtils: TLAnyShapeUtilConstructor[]
-  tools: TLStateNodeConstructor[]
-  licenseKey: string
 }
 
 interface FleetHudAnchor {
@@ -400,9 +397,6 @@ function FleetHudEmptyDiagnostic({
 
 export function FleetHUD({
   mainEditor,
-  shapeUtils,
-  tools,
-  licenseKey,
 }: FleetHUDProps) {
   const { id: identityId } = useFleetIdentity()
   const [deviceReady, setDeviceReady] = useState(isDeviceReady())
@@ -1171,21 +1165,6 @@ export function FleetHUD({
     }
   }, [expanded])
 
-  // When the main editor is in a drawing/erasing tool, make fleet shapes
-  // pointer-events:none so the tool can operate over them directly instead of
-  // being intercepted by the chat's interactive elements. CSS uses the
-  // .tool-passes-through class on .fleet-hud-wrap to flip pointer-events.
-  useEffect(() => {
-    const el = hudRef.current
-    if (!el) return
-    // Tool-based pass-through trades one problem for another: when the user is
-    // in eraser/highlight, they can brush over chat — but they also lose the
-    // ability to interact with chat without switching tools. Skip judged the
-    // tradeoff bad. Reverting until we have a drag-only or pointer-down-only
-    // gate that keeps chat interactive on tap.
-    el.classList.remove('tool-passes-through')
-  }, [mainEditor])
-
   // Raise-on-interaction: pointer-down on a fleet shape in the HUD brings it to
   // the front so an overlapping fleet shape's controls/body are grabbable.
   // Scoped to the HUD wrap (never the main canvas) and to fleet shape types only
@@ -1492,9 +1471,6 @@ export function FleetHUD({
           mainEditor={mainEditor}
           viewportId={viewportId}
           bounds={activeFleetBounds}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={licenseKey}
           panelWidth={window.innerWidth}
           maxHeightFraction={1}
           lockCamera={true}

@@ -36,7 +36,7 @@ import { loadLookup } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { createOwnedFleetPanelShape, FLEET_SHAPE_TYPES, nudgeFleetPanelTranslate } from './fleet-utils'
+import { createOwnedFleetPanelShape, nudgeFleetPanelResize, nudgeFleetPanelTranslate } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
@@ -86,6 +86,7 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: DEFAULT_W, h: DEFAULT_H, sources: DEFAULT_REF_SOURCES, label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '', targetShapeId: '', useFullBounds: false }
   }
   override onTranslate = (initial: any, current: any) => nudgeFleetPanelTranslate(this.editor, initial, current)
+  override onResize = (shape: any, info: any) => nudgeFleetPanelResize(this.editor, shape, info)
   override canSnap = () => true
 
   component(shape: any) {
@@ -357,7 +358,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   // Prefetch SVG for the page the bounds point to — the clip panel needs it
   // loaded in svgTextStore even if the page is outside the main viewport.
   // Track readiness as state so the clip panel doesn't mount until the SVG is available.
-  const [svgReady, setSvgReady] = useState(false)
   const boundsPageIdx = useMemo(() => {
     if (!bounds || !doc?.pages?.length) return -1
     const centerY = bounds.y + bounds.h / 2
@@ -367,6 +367,19 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     }
     return -1
   }, [bounds, doc])
+  // Start ready when the SVG is already in the store, rather than false-then-true
+  // one effect later. Starting false renders the placeholder for a frame, which
+  // unmounts the clip panel's nested viewport; remounting that viewport measures
+  // and re-registers it, and a re-registration changes what the outer viewport
+  // considers visible, which remounts this shape — resetting this state to false
+  // again. That is a cycle, and React ends it by killing the page at its
+  // update-depth limit. The initializer only runs on mount, so a page that
+  // genuinely has no SVG yet is still the effect's business, unchanged.
+  const [svgReady, setSvgReady] = useState(() => {
+    if (boundsPageIdx < 0) return false
+    const sid = doc?.pages?.[boundsPageIdx]?.shapeId as string | undefined
+    return !!sid && !!getSvgText(sid)
+  })
 
   useEffect(() => {
     if (boundsPageIdx < 0 || !doc?.pages?.length || !doc?.projectName) { setSvgReady(false); return }
@@ -399,13 +412,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     : null
   const errorHeaderH = 22
   const panelH = currentError ? h - errorHeaderH : h
-
-  const shapeUtils = useMemo(() => {
-    const all = (window as any).__tldraw_shape_utils__ || []
-    const excluded = new Set([...FLEET_SHAPE_TYPES, 'fleet-pill'])
-    return all.filter((u: any) => !excluded.has(u.type))
-  }, [])
-  const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
 
   const docviewSurface = useMemo<FleetDocviewSurfaceState | null>(() => {
     if (!mainEditor || !bounds) return null
@@ -706,9 +712,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           <CanvasClipPanel
             mainEditor={mainEditor}
             bounds={bounds}
-            shapeUtils={shapeUtils}
-            tools={[]}
-            licenseKey={licenseKey}
             panelWidth={w}
             maxHeightFraction={1}
             readOnly

@@ -34,9 +34,10 @@ export function FleetNudgeGuides() {
     let raf = 0
     const project = () => {
       const held = stateRef.current
-      // The translate handler has no end hook, so the drag ending is what
-      // clears the guides.
-      if (held === null || !held.editor.isIn('select.translating')) {
+      // Neither handler has an end hook, so the drag ending is what clears the
+      // guides — and a resize is a drag, so `select.resizing` holds them up the
+      // same way `select.translating` does.
+      if (held === null || !(held.editor.isIn('select.translating') || held.editor.isIn('select.resizing'))) {
         clearFleetNudgeGuides()
         return
       }

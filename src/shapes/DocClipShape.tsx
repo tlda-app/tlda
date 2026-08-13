@@ -23,7 +23,6 @@ import { ProjectContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { FLEET_SHAPE_TYPES } from './fleet-utils'
 import { ensureLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 
 const BAR_H = 8
@@ -112,15 +111,7 @@ function DocClipComponent({ shape }: { shape: any }) {
       .catch(e => console.warn('[doc-clip] SVG fetch failed:', e.message))
   }, [doc, page])
 
-  const shapeUtils = useMemo(() => {
-    const all = (window as any).__tldraw_shape_utils__ || []
-    const EXCLUDE = new Set([...FLEET_SHAPE_TYPES, 'fleet-pill', 'doc-clip'])
-    return all.filter((u: any) => !EXCLUDE.has(u.type))
-  }, [])
-
-  const licenseKey = 'tldraw-2027-01-19/WyJhUGMwcWRBayIsWyIqLnF0bTI4NS5naXRodWIuaW8iXSw5LCIyMDI3LTAxLTE5Il0.Hq9z1V8oTLsZKgpB0pI3o/RXCoLOsh5Go7Co53YGqHNmtEO9Lv/iuyBPzwQwlxQoREjwkkFbpflOOPmQMwvQSQ'
-
-  const wmSurface = useMemo(() => {
+    const wmSurface = useMemo(() => {
     if (!mainEditor || !doc || !bounds || !svgReady) return null
     const pageIdx = page - 1
     const pg = doc.pages[pageIdx]
@@ -187,9 +178,6 @@ function DocClipComponent({ shape }: { shape: any }) {
         <CanvasClipPanel
           mainEditor={mainEditor}
           bounds={bounds}
-          shapeUtils={shapeUtils}
-          tools={[]}
-          licenseKey={licenseKey}
           panelWidth={w}
           maxHeightFraction={1}
           readOnly

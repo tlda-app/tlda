@@ -326,6 +326,34 @@ export function useYjsSignals({
       if (!signal.bounds) return
       const label = signal.agent ? `📷 ${signal.agent}` : '📷 screenshot'
 
+      // Follow the scroller that actually contains the placeholder.
+      //
+      // This used to bind to `document.querySelector('.fleet-chat-log')` — the
+      // first one in the document, which is not a rule anyone chose. With more
+      // than one chat panel open it is usually not the panel holding the
+      // placeholder, so scrolling the panel you are looking at moved nothing and
+      // scrolling an unrelated one recomputed a position that had not changed.
+      // The class also names two different scrollers with two different scroll
+      // implementations — see docs/chat-rendering.md §"Two surfaces share the
+      // class name" — so the first match could be the index page's log, which
+      // cannot contain a placeholder at all.
+      //
+      // The placeholder's own ancestor chain is the answer, and it needs no
+      // reasoning about layers: whichever copy of the panel is mounted is the
+      // one the placeholder is in.
+      let boundLog: Element | null = null
+      const onScroll = () => { void showAtPlaceholder() }
+      function followPlaceholderScroller(placeholder: HTMLElement) {
+        const log = placeholder.closest('.fleet-chat-log')
+        if (log === boundLog) return
+        scrollCleanup?.()
+        scrollCleanup = null
+        boundLog = log
+        if (!log) return
+        log.addEventListener('scroll', onScroll, { passive: true })
+        scrollCleanup = () => log.removeEventListener('scroll', onScroll)
+      }
+
       async function showAtPlaceholder() {
         await whenDeviceReady()
         // Find the most recent screenshot placeholder in any chat
@@ -335,6 +363,7 @@ export function useYjsSignals({
           // The agent gets the screenshot in their own chat; no floating panel here.
           return
         }
+        followPlaceholderScroller(placeholder)
         const rect = placeholder.getBoundingClientRect()
         // Only show if placeholder is visible
         if (rect.bottom < 0 || rect.top > window.innerHeight) {
@@ -358,14 +387,6 @@ export function useYjsSignals({
       }
 
       showAtPlaceholder()
-
-      // Track scroll in the chat log to move the overlay
-      const chatLog = window.document.querySelector('.fleet-chat-log')
-      if (chatLog) {
-        const onScroll = () => showAtPlaceholder()
-        chatLog.addEventListener('scroll', onScroll, { passive: true })
-        scrollCleanup = () => chatLog.removeEventListener('scroll', onScroll)
-      }
     })
 
     return () => {

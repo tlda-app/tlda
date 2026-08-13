@@ -39,7 +39,7 @@
     "@opentelemetry/sdk-node": "^0.220.0",
     "@replit/codemirror-vim": "^6.3.0",
     "@tanstack/react-virtual": "^3.13.23",
-    "@tldraw/editor": "file:vendor/tldraw-editor-5.2.0-tlda.10.tgz",
+    "@tldraw/editor": "file:vendor/tldraw-editor-5.2.0-tlda.11.tgz",
     "@tldraw/mermaid": "5.2.0",
     "@tldraw/state": "5.2.0",
     "@tldraw/store": "5.2.0",

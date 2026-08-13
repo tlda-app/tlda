@@ -63,11 +63,43 @@ submission. A second stale-base without a writable conflict blocks automatic
 submission until an authoritative project sync changes the known revision.
 
 Known follow-up: non-conflict source-change rejections now surface as critical
-daemon warnings, but the current warning route goes to the server owner. A
-validation rejection also belongs to the daemon/source owner that submitted the
-local change. Once the `{ file, owner, source }` ownership shape from the
-live-editor refusal path settles, route these warnings to that owner as well as
-the server owner.
+daemon warnings, but the warning goes to the server owner and not to whoever
+made the push that was rejected. So the person who can fix it is the one person
+not told.
+
+The ownership shape it was waiting on has since landed, and the remaining work
+is smaller than "route it to the owner" sounds — but not as small, and the
+recipient is the part to get right rather than the plumbing:
+
+- **Notify the actor, not the machine.** A push carries `editedBy`, which is a
+  fleet agent id: the daemon resolves it through `resolveEditor`, which returns
+  the agent whose session touched the file. That is one recipient and it is the
+  right one.
+- **Do not fan out by daemon key.** `getAgentsByDaemonKey` exists and is the
+  tempting route, but a daemon serves many agents, so that turns one person's
+  rejected push into a broadcast to everyone seated on their machine.
+- **The warning does not carry the actor yet.** `daemon-warning` is sent from
+  `handleSourceChangeResult`, which sees the server's response rather than the
+  push that caused it, so `editedBy` has to be threaded back through the
+  correlation that holds the in-flight payload. That is the actual work, and it
+  is a change to a delivery path rather than a one-line recipient edit.
+
+Whoever takes it: this is a change to who receives a notification, which is
+closer to a product decision than a sync fix, so it wants a judgement before it
+lands rather than after.
+
+And a second gap in the same family, found on a real paper rather than in a
+fixture: **a stale-base refusal with no textual conflict records nothing.**
+Conflict state is written from the classifications that came back as `conflict`
+— files with marker text in them. A refusal where nothing produced markers (a
+binary both sides replaced, or any refusal the rebase could not settle) leaves
+`sourceSyncConflicts` empty, so the pill stays quiet and the paper looks fine.
+
+The person who pushed learns by their HTTP status. Nobody else learns at all,
+including the people who would want to know the paper has a participant stuck
+outside it. Measured on 2026-08-13: a participant holding a stale revision
+edited a bibliography nobody had touched, was refused, and the project's
+conflict state stayed empty.
 
 ## Applying an accepted remote revision locally
 

@@ -149,9 +149,12 @@ body.tlda-pan-mode * {
   zoom: 0.6;
 }
 
-/* Tone down tldraw watermark to match fleet pills visual salience */
+/* Tone down tldraw watermark to match fleet pills visual salience.
+   A measured literal, not a tone: it is a licence term, so it must not go
+   lower, and `--ui-tone-dormant` (0.2) is the nearest named step rather than
+   this value. `30f766084` normalized it to that step and took it 67% brighter. */
 [class*="watermark"] {
-  opacity: var(--ui-tone-dormant) !important;
+  opacity: 0.12 !important;
   bottom: max(6px, env(safe-area-inset-bottom)) !important;
   left: max(16px, env(safe-area-inset-left)) !important;
   right: auto !important;

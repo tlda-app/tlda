@@ -18,6 +18,7 @@ import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validate
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { listVersions, versionAt, checkoutSource, getShadowRepoDir, getTimeBounds, adjacentVersion, ensureShadowDvi } from '../lib/shadow-repo.mjs'
 import { ensure, historicalCtx } from '../lib/ensure.mjs'
+import { announcePageJson } from '../../shared/pagination-announce.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
 
@@ -327,8 +328,31 @@ router.get('/shadow', requireRead, async (req, res) => {
       const version = await versionAt(name, ts)
       res.json({ version })
     } else {
-      const versions = await listVersions(name, { limit })
-      res.json({ versions })
+      // Ask for one more than we will return, so overflow is known without a
+      // second count. `versions` is unchanged — the extra row is dropped here.
+      // Length alone cannot prove exhaustion, because listVersions filters the
+      // init commit out after its own limit, so only a strict overshoot is
+      // treated as "there is more".
+      const probed = await listVersions(name, { limit: limit + 1 })
+      const paged = probed.length > limit
+      const versions = paged ? probed.slice(0, limit) : probed
+      res.json({
+        versions,
+        page_limited: paged,
+        // No cursor exists on this surface: listVersions takes a limit and
+        // nothing else, so there is no way to ask for the page after this one.
+        // Saying that is the honest announcement; printing a cursor parameter
+        // that does not exist would be a call the reader cannot make.
+        pagination: announcePageJson({
+          shown: versions.length,
+          total: paged ? null : versions.length,
+          noun: 'version',
+          nextCursor: paged ? 'more' : null,
+          nextCall: paged
+            ? `GET ?limit=${limit * 2} — this surface has no cursor, so a larger limit is the only continuation.`
+            : null,
+        }),
+      })
     }
   } catch (e) {
     res.status(500).json({ error: e.message })
