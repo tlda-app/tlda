@@ -1,13 +1,13 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `dde8216f4`, 30 commits ahead** — everything tonight is on `main` and none of it is on your
-screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 02:38 EDT.
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `cd6f4c324`, 41 commits ahead** — everything tonight is on `main` and none of it is on your
+screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 03:07 EDT.
 
 **Status:** ✅ working · ⚠️ built, not reaching you yet · 🔨 being worked now · ○ not started ·
 ? nobody could establish it. **Where a thing lives is on the row** — three of these work but do
 not live on your box, and one of those is a documentation file.
 
-**92 things**, counted at write time. **Every row was re-checked tonight by four verifiers reading diffs, not subjects.** A `?` means nobody could establish it either way — that is a real answer and there are 4 of them.
+**91 things**, counted at write time. **Every row was re-checked tonight by four verifiers reading diffs, not subjects.** A `?` means nobody could establish it either way — that is a real answer and there are 4 of them.
 
 ## Chat and scrolling
 
@@ -114,7 +114,6 @@ not live on your box, and one of those is a documentation file.
 | | | |
 |---|---|---|
 | ✅ | Enter waits for your dictated tail to finalise | The message-repeating-itself thing |
-| ○ | Message send lag; you suspect the voice box config | **Nobody looked.** |
 | ✅ | The voice buffer cap, and a HUD that says which of two things is wrong | **Both halves shipped and are on your box** (`8b1decf8d`) — a 64 MiB `PcmBacklog` with a pref and a daemon-config key, and a HUD that returns exactly two failures, `buffered` versus `mic dead`, deliberately the same width so it does not strobe. **Was marked not-started.** Nothing tests it |
 | ✅ | The voice provider picker: hide unconfigured, surface configured-but-unreachable | **Both halves on your box.** Deepgram is offered only if its bridge URL is configured; unreachability is answered at connect time with a 503 rather than the option vanishing, plus a loading/ready/error state so uncertainty says so. **Was marked not-started** |
 
