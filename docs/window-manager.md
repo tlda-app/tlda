@@ -177,6 +177,38 @@ readout, and it is a console query rather than a rig.
 [The layer model's shape-membership half has no consumer](#the-layer-models-shape-membership-half-has-no-consumer),
 which carries what did and did not land.
 
+### Which code can know its layer, and which cannot
+
+Two rules decide it, and both are structural rather than conventions — they
+follow from where a thing mounts and what hands it its arguments. Between them
+they settle a page↔screen conversion without tracing it.
+
+**A main-DOM overlay is in the main frame; a shape util is not.** `SvgDocument`
+mounts `SpatialWorldMap`, `RibbonLane`, `ProvenanceInline`, `RecognizeButton`,
+`DocumentPanel` and the rest as siblings, **once** (`:758`). The shape utils
+registered at `:847` are re-rendered inside **every viewport that draws their
+shape**. So an overlay converting against the main camera is right by
+construction and asking would be noise; a conversion inside a shape component is
+ambiguous until it names a viewport.
+
+**A tool gets the viewport from the event; a shape util does not.** `BrowseIdle`
+reads it off the DOM (`:228-229`) or off the event (`:599`). A `ShapeUtil`
+callback — `onTranslate`, `onTranslateEnd` — is per **editor**, while rendering
+is per **viewport**, so it has nothing to pass and no context to read. **That is
+a category, not a missing argument**, and a site in it cannot be repaired by
+adding a viewport id: it has to be restructured or to stop converting.
+
+The pattern that avoids the question entirely is the common one already: take
+the pointer event's own `clientX`/`clientY`, which are true screen coordinates
+with no frame to get wrong. `FleetChatShape` and `FleetAgentsShape` both do this
+at every drop site.
+
+A third way to ask exists and no grep will find it: **branch on the layer you are
+on.** `FleetChatShape.tsx:6701` picks its converter from `drag._onMain` —
+`clientPointToPage` when the dragged pill has left the panel for the canvas,
+`fleetPointerEventPagePoint` while it is still inside. That asks, correctly, and
+counting `viewportId` arguments scores it as a site that does not.
+
 ---
 
 ## The fleet HUD is a second viewport on the same editor
@@ -698,6 +730,28 @@ they are three claims:
   whichever camera drew it — the HUD renders the same store — so the shape id
   distinguishes panel from index log, never canvas from HUD.** That inference was
   made and retracted on 2026-08-13; do not make it again.
+
+**One conversion is open and it is a product question, not a coordinate one.**
+`MathNoteShape.tsx:207` builds a drop probe from a note's page centre through the
+main camera — `pagePointToClient(this.editor, …)`, no viewport — and hands it to
+`updateWMDrop`/`finishWMDrop`, which resolve by `elementsFromPoint` and therefore
+need true screen coordinates. It is called from `onTranslate`/`onTranslateEnd`,
+so by the rule above **it cannot name a viewport**.
+
+Both halves have to be settled together:
+
+- **It cannot ask.** A viewport id is not obtainable where it stands.
+- **The frame-free version changes behaviour.** Using the pointer's own
+  `clientX`/`clientY`, as every other drop site does, would aim the drop at the
+  pointer rather than at the note's centre. Those differ.
+
+**Reachable-looking, not reproduced.** `AnnotationViewer.tsx:569` is
+`readOnly={state === 'hovering'}` and renders math notes (`:174`), so pinned it
+is interactive and a note can be dragged inside a panel with its own camera.
+Whether a drag actually initiates there has not been confirmed. The predicted
+symptom is not a crash but a silence: `wm-drop-resolve` with
+`kind: "chat-composer-item"`, `resolved: false`, `registeredHitCount: 0`, and a
+drop into a chat composer that never happens.
 
 **Two mechanisms answer "which layer" and they are not the same object.**
 `useVisibilityViewportId()` is React context; `wm/tlda-shape-layers.ts` resolves
