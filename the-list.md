@@ -22,8 +22,9 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 62 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 10:04 EDT; `main` is `0e646965b`, 78 ahead —
-9 code files in the gap, all of it the scrollback work.
+Your box runs `2e763c010`, read from `/api/build-info` at 10:06 EDT. `main` is `9f880c862` —
+**79 commits ahead, 31 of them touching shipped code, across 52 distinct code files.** Three
+numbers with three different units, all re-derived every time this file is written.
 
 ## Chat and scrolling
 
