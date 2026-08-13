@@ -21,7 +21,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 56 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 08:42 EDT; `main` is `7d8c71c0f`, 43 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 08:51 EDT; `main` is `eca6921b9`, 45 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
@@ -125,8 +125,8 @@ is tlda capability that the classroom happens to need.**
 |---|---|---|
 | ⏸ | The README merge, then the photoshoot | **Tabled because you are out of energy, not because it does not matter:** *"It would be nice to do one, but, like, I just don't have the energy, bro."* The fifty images run 2026-04-28 to 2026-07-29, so every one predates the themes that shipped 08-11 and 08-12 — the README shows a UI that no longer exists. **An agent cannot shoot most of them without you.** `readme-shots` tried three framing runs on `eiv-paper` and every one pulled in whatever other agents had open — another agent's live terminal showing source and a `git status` line, and the inbox shape showing your own subject lines. **One image is shootable; the rest need a scratch project with nothing else in it, or you.** |
 | ○ | Documentation taxonomy, and an Overleaf onboarding section | **Nobody looked.** |
-| ○ | GitHub release: push, tag a late-alpha | Tagging waits on you |
-| ○ | Submit tlda to JOSS | What the release is for |
+| ○ | GitHub release: push, tag a late-alpha | Tagging waits on you. **Not a JOSS prerequisite** — the row that said so was a misreading. |
+| ○ | **DevBot should run full system tests against the running system** | **The ask, recovered by reading the window rather than the search hit.** Your sentence offered JOSS as a rationale, hedged twice — *"perhaps for like, submitting to joss orw whatever"* — **so JOSS is why you think testing matters, not a thing you asked anyone to do.** **The row it was written as — *submit tlda to JOSS* — was a subordinate clause promoted to a deliverable.** Nobody has looked at the testing ask. *Leaves the list when DevBot exercises the running system rather than a build.* |
 
 ## What I collapsed, so you can check it
 
@@ -324,3 +324,10 @@ failure then was that the check itself was wrong** — it asked whether a sessio
 whether a runtime was alive in it, so a dying runtime answered *already alive*. Established by
 `cchief`. **Kept apart from the CLI row so neither is read as evidence for the other.**
 
+**Submitting to JOSS was never asked for.** Your sentence was *"perhaps for like, submitting to
+joss orw whatever"* — **a subordinate clause, hedged twice, offering a rationale.** The ask in it
+is DevBot running full system tests against the running system; JOSS is why you think testing
+matters. **The row that said *submit tlda to JOSS* had promoted your rationale to a deliverable**,
+and a search for the word reads as a clean trace — only the surrounding window shows what it was
+attached to. **Repaired to the testing ask rather than retired**, since the ask underneath it is
+real.
