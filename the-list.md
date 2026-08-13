@@ -4,8 +4,9 @@
 ahead** — anything that landed tonight is on `main` and not on your screen. Status re-baselined
 against those two at 02:10 EDT.
 
-**Status:** ✅ working on your box · ⚠️ built, not on your box · 🔨 being worked now · ○ not
-started · ? nobody could establish it.
+**Status:** ✅ working · ⚠️ built, not reaching you yet · 🔨 being worked now · ○ not started ·
+? nobody could establish it. **Where a thing lives is on the row** — three of these work but do
+not live on your box, and one of those is a documentation file.
 
 **92 things**, counted at write time. **Every row was re-checked tonight by four verifiers reading diffs, not subjects.** A `?` means nobody could establish it either way — that is a real answer and there are 4 of them.
 
@@ -42,7 +43,7 @@ started · ? nobody could establish it.
 
 | | | |
 |---|---|---|
-| 🔨 | **The document panel shows the readme plus fourteen other documents' headings** | The build concatenates every linked document's headings into one TOC — 176 entries. Chapters-get-their-own-page is book behaviour running on something that is not a book. All documents belong on one canvas page. `doc-panel-owner` **A fix landed and was reverted with no reason recorded** (`5a539ad6a` → `883303c01`). |
+| ⚠️ | **The document panel shows the readme plus fourteen other documents' headings** | **Fixed in `338f81ea6`, on `main` and not on your box.** The loop that made every file reachable from the readme into a chapter is gone; a markdown project's document is its main file, and no condition was added — a book is a declared format, so nothing should infer chapter-hood from a link. Following a link to a document with no shape yet calls `createTemporaryMarkdownColumn`, the chip's own code path, so it lands away from you and appears in the project tab for the same reason a clicked file does. **The first attempt stacked the documents vertically, which in this app means one document; I reverted it** (`5a539ad6a` → `883303c01`) and it was rebuilt. Counterfactual run: unmodified code reproduces the welded TOC at fixture scale. **The canvas is unverified** — the link-follow crosses an iframe boundary and neither end has been exercised. `doc-panel-owner` |
 | ✅ | Figures render in colour, and have since `e69313a28` deployed | **Your figures are svglite markup inlined into the page SVG, not figure shapes** — zero `svg-figure` shapes among 548 on your `balancing-act` canvas, while page 16 carries Figure 1 as 116 polylines and 24 polygons inside the page itself. That commit removed the invert from the page container and the container was inverting them too. Everyone was looking at a shape type your paper does not contain. **What is left is smaller: the authored greys may read low-contrast on a dark family**, being looked at on the real page rather than argued from hex. `theme-palette-warm` |
 
 ## Themes and appearance
@@ -86,7 +87,7 @@ started · ? nobody could establish it.
 
 | | | |
 |---|---|---|
-| ⚠️ | `thread()` asks for the two-party conversation | **Done tonight — `281e36039`, the behaviour and not just the docstring.** It reaches an agent when its MCP restarts, not on deploy, so agents minted from now already have it |
+| ✅ | `thread()` asks for the two-party conversation | **Done tonight — `281e36039`, the behaviour and not just the docstring.** It reaches an agent when its MCP restarts, not on deploy, so agents minted from now already have it |
 | ○ | A handoff through Todd never works | Reported three times across three days. **Nobody has found a cause.** An inherited note said Todd was not running on `testing`; that is false — `fleet-todd` has been up since 22:27 and has been sending check-ins all night |
 | ○ | A bot's tmux session should die with the bot | You said "go for it" on 08-10. **My earlier wording was wrong: no session from July exists.** What exists is a *process* from 31 July — pid 800, **12 days elapsed, 195 minutes of CPU and still climbing** — waiting on `tmux wait-for` for a session name that was never created. The absent session is exactly why it never exits |
 | ○ | Bots have no real options | |
@@ -127,7 +128,7 @@ started · ? nobody could establish it.
 | ○ | Zero magic numbers; limits in config files, not environment variables | |
 | ○ | Move the server and daemon JavaScript to TypeScript, gradually | |
 | ○ | Token **permissions** — the switch for whether the app needs a token | Built on a branch, never merged |
-| ⚠️ | A deploy can no longer report success on a box that is off | **Not on your box, and not in git either** — it is `verify_serving()` in the deploy hooks, which polls your box for the pushed sha and fails the push otherwise, so no `git log` can find it. **✅ here would have meant "working on your box", which it isn't** — it runs on the deploying machine. It has run twice, 10s and 20s, both successes, so **it has still never seen the failure it was written for** |
+| ✅ | A deploy can no longer report success on a box that is off | **Not on your box, and not in git either** — it is `verify_serving()` in the deploy hooks, which polls your box for the pushed sha and fails the push otherwise, so no `git log` can find it. **✅ here would have meant "working on your box", which it isn't** — it runs on the deploying machine. It has run twice, 10s and 20s, both successes, so **it has still never seen the failure it was written for** |
 | ✅ | Push-to-deploy is cut over; the lying `deploy:live` alias is gone | |
 | ✅ | `config apply` retries its own I/O error | |
 
