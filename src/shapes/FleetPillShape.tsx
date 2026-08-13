@@ -17,8 +17,6 @@ import type { Editor, TLShape, TLShapeId } from 'tldraw'
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { translateFleetHudDropPointWithWM } from '../wm/fleet-hud-layer'
-import { getEditorWMCore } from '../wm/editor-wm'
 import {
   createTemporaryMarkdownSurfaceRequest,
   temporaryMarkdownShapeMeta,
@@ -482,9 +480,12 @@ export async function dropPillOnTarget(
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
   const createEditor = mainEditor || editor
-  const createPagePoint = mainEditor && mainEditor !== editor
-    ? translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, pagePoint)
-    : pagePoint
+  // No conversion: `pagePoint` is already page coordinates. Every caller builds
+  // it with fleetPointerEventPagePoint, which routes through the WM for whatever
+  // viewport the gesture happened in, so the HUD's camera is already accounted
+  // for. There is also only one page — CanvasClipPanel hands consumers the main
+  // editor, so the HUD's editor and the main editor are the same object.
+  const createPagePoint = pagePoint
   // Isolate this drop as its own undo step. A pill drop creates a chat (or note,
   // or updates a filter) directly via createEditor.createShape — NOT through
   // createFleetShape — so without a mark here the new chat glues onto whatever

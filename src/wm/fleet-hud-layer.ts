@@ -19,7 +19,6 @@ export const FLEET_HUD_ROOT_LAYER_ID = 'screen'
 export const FLEET_HUD_MAIN_CAMERA_LAYER_ID = 'main-camera'
 export const FLEET_HUD_OVERLAY_LAYER_ID = 'fleet-overlay'
 export const FLEET_HUD_DOCUMENT_LAYER_ID = 'document-page'
-const FLEET_HUD_DROP_OVERLAY_LAYER_ID = 'fleet-overlay:drop-page-adapter'
 export const FLEET_HUD_VIEWPORT_ID = 'wm:fleet-hud'
 export const FLEET_HUD_Z_BAND = 'hud-overlay'
 export const FLEET_HUD_HIT_POLICY = 'fleet-shapes-catch-layout-gestures'
@@ -55,8 +54,6 @@ export interface FleetHudProjectionEditor {
 	pageToScreen(point: Point): Point
 	screenToPage(point: Point): Point
 }
-
-export type FleetHudDropEditor = FleetHudProjectionEditor
 
 export function createFleetHudWMCore({
 	panOffset = 0,
@@ -204,48 +201,6 @@ export function projectFleetHudDocumentNearEdgeWithWM(
 	})
 	const point = axis === 'x' ? { x: docPageNear, y: 0 } : { x: 0, y: docPageNear }
 	return wm.translate(point, FLEET_HUD_DOCUMENT_LAYER_ID, FLEET_HUD_ROOT_LAYER_ID)[axis]
-}
-
-export function translateFleetHudDropPoint(
-	overlayEditor: FleetHudDropEditor,
-	documentEditor: FleetHudDropEditor,
-	overlayPagePoint: Point,
-): Point {
-	return translateFleetHudDropPointWithWM(
-		createWMCore({ rootLayerId: FLEET_HUD_ROOT_LAYER_ID }),
-		overlayEditor,
-		documentEditor,
-		overlayPagePoint,
-	)
-}
-
-export function translateFleetHudDropPointWithWM(
-	wm: WMCore,
-	overlayEditor: FleetHudDropEditor,
-	documentEditor: FleetHudDropEditor,
-	overlayPagePoint: Point,
-): Point {
-	ensureLayer(wm, FLEET_HUD_DROP_OVERLAY_LAYER_ID, {
-		parent: FLEET_HUD_ROOT_LAYER_ID,
-		backing: {
-			kind: 'page',
-			editor: {
-				pageToScreen: (point: Point) => overlayEditor.pageToScreen(point),
-				screenToPage: (point: Point) => overlayEditor.screenToPage(point),
-			},
-		},
-	})
-	ensureLayer(wm, FLEET_HUD_DOCUMENT_LAYER_ID, {
-		parent: FLEET_HUD_ROOT_LAYER_ID,
-		backing: {
-			kind: 'page',
-			editor: {
-				pageToScreen: (point: Point) => documentEditor.pageToScreen(point),
-				screenToPage: (point: Point) => documentEditor.screenToPage(point),
-			},
-		},
-	})
-	return wm.translate(overlayPagePoint, FLEET_HUD_DROP_OVERLAY_LAYER_ID, FLEET_HUD_DOCUMENT_LAYER_ID)
 }
 
 function fleetHudResizeCursorForPoint(rect: DOMRect, x: number, y: number): FleetHudResizeCursor | null {
