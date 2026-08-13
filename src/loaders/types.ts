@@ -25,11 +25,6 @@ export interface SvgPage {
   textData?: PageTextData | null
   tldrawPageId?: string  // TLDraw page ID for multipage HTML docs
   tldrawPageName?: string  // Display name for the TLDraw page
-  /** Set on every document of a project EXCEPT its main one. Those are separate
-   *  documents sharing the project's canvas page, so they are the project's
-   *  spatial-world places and the Project tab lists them under this title. The
-   *  main document is the primary node and carries the project's own title. */
-  spatialWorldTitle?: string
   targetBasePath?: string  // per-page basePath for multi-target docs
   pageInTarget?: number    // 1-based page number within the target
   targetName?: string      // which target this page belongs to

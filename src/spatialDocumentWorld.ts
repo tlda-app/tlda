@@ -23,7 +23,7 @@ const DOCUMENT_H = 1200
 type SpatialDocumentShape = TLShape & {
   x: number
   y: number
-  props: TLShape['props'] & { w?: number; h?: number; source?: string }
+  props: TLShape['props'] & { w?: number; h?: number }
   meta: TLShape['meta'] & {
     temporaryMarkdownColumn?: boolean
     spatialWorldDocument?: boolean
@@ -48,7 +48,7 @@ export type SpatialDocumentNode = {
   shape?: SpatialDocumentShape
   documentRef: {
     id: string
-    kind: 'primary' | 'materialized' | 'shared' | 'project'
+    kind: 'primary' | 'materialized' | 'shared'
     path?: string
     authorId?: string
   }
@@ -351,11 +351,7 @@ export function spatialWorldDocuments(
   primaryTitle = projectName,
 ): SpatialDocumentNode[] {
   const pages = editor.getCurrentPageShapes().filter(rawDocumentPage)
-  // The primary node is the project's MAIN document. The project's other
-  // documents share this canvas page and are their own nodes below.
-  const primaryPages = pages.filter(shape =>
-    !shape.meta?.temporaryMarkdownColumn && !shape.meta?.spatialWorldDocument
-  )
+  const primaryPages = pages.filter(shape => !shape.meta?.temporaryMarkdownColumn)
   const nodes: SpatialDocumentNode[] = []
   if (primaryPages.length > 0) {
     const bounds = primaryPages.map(shapeBounds)
@@ -374,28 +370,20 @@ export function spatialWorldDocuments(
     if (!shape.meta?.spatialWorldDocument) continue
     const materializedFile = typeof shape.meta.materializedFile === 'string' ? shape.meta.materializedFile : null
     const sharedDocPath = typeof shape.meta.sharedDocPath === 'string' ? shape.meta.sharedDocPath : null
-    // Neither: one of the project's own documents, which has no file outside the
-    // project to point at. Its place is this shape, and its path is its source.
-    const documentRef = materializedFile
-      ? { id: shape.id, kind: 'materialized' as const, path: materializedFile }
-      : sharedDocPath
-        ? {
-            id: shape.id,
-            kind: 'shared' as const,
-            path: sharedDocPath,
-            authorId: typeof shape.meta.authorId === 'string' ? shape.meta.authorId : undefined,
-          }
-        : {
-            id: shape.id,
-            kind: 'project' as const,
-            path: typeof shape.props.source === 'string' ? shape.props.source : undefined,
-          }
+    if (!materializedFile && !sharedDocPath) continue
     nodes.push({
       id: shape.id,
       bounds: shapeBounds(shape),
       title: typeof shape.meta.spatialWorldTitle === 'string' ? shape.meta.spatialWorldTitle : 'Shared document',
       shape,
-      documentRef,
+      documentRef: materializedFile
+        ? { id: shape.id, kind: 'materialized', path: materializedFile }
+        : {
+            id: shape.id,
+            kind: 'shared',
+            path: sharedDocPath || undefined,
+            authorId: typeof shape.meta.authorId === 'string' ? shape.meta.authorId : undefined,
+          },
     })
   }
   return nodes
