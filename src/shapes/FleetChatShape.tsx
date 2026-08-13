@@ -16,10 +16,9 @@ import {
   type TLShapeId,
 } from 'tldraw'
 import { fleetChatProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef, useImperativeHandle } from 'react'
 import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { probe } from '../perf-probe'
 import { isPhoneViewport } from '../phoneViewport'
 import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
@@ -45,12 +44,8 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { isReaderInputInFlight, shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
+import { isReaderInputInFlight } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
-// @ts-ignore — vanilla JS module
-import { watchChatStrandedRows } from '../fleet/chat-stranded-row-probe.mjs'
-// @ts-ignore — vanilla JS module
-import { nextChatVirtuosoFirstItemIndex, VIRTUOSO_STATUS_ITEM_KEY } from './chatVirtuosoIndex.mjs'
 // @ts-ignore — vanilla JS module
 import {
   FLEET_TEAM_FROM_ROLE,
@@ -93,8 +88,6 @@ import { loadLookup, type LookupData } from '../synctexLookup'
 import { getSourceAnchor } from '../synctexAnchor'
 import { log } from '../logger'
 import { linkifyDocRefs, linkifyArrowRefs, linkifyAtRefs, linkifyLabelRefs, linkifyRefCommands, buildRefResolver, refToCanvas, type DocRef, type ResolvedRef, type LabelRegionInfo, type TheoremMapEntry } from '../docLinks'
-// @ts-ignore — vanilla JS module
-import { decideFollowTransition, isTrueBottomGap } from './chatScrollIntent.mjs'
 import { prettyFoldKey } from './fleet-chat-fold-key.mjs'
 import { fetchProofInfo, fetchTheoremMap } from '../docInfoCache'
 import { PDF_HEIGHT } from '../layoutConstants'
@@ -129,18 +122,12 @@ const DEFAULT_W = 400
 const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 let consumedShareTargetToken: string | null = null
-// Quiet period after the last scroll event before a touch-driven scroll counts
-// as finished. A momentum glide emits scroll events continuously, so this only
-// has to outlast the gap between two of them.
-const TOUCH_SCROLL_SETTLE_MS = 150
-// Finger travel that counts as a drag rather than a tap. A drag is the touch
-// analogue of an upward wheel delta: enough of a gesture to ask the question.
-// Neither one answers it — enterReaderMode decides from where the scroller
-// ended up, so a drag or a tick that never left the bottom changes nothing.
-const TOUCH_READER_INTENT_PX = 8
-// Delay before the follow invariant repairs the tail. Also the re-arm interval
-// while an input gesture is in flight.
-const FOLLOW_INVARIANT_MS = 500
+const ANCHORED_STATUS_ITEM_KEY = '__status__'
+const ANCHORED_SENSOR_HEIGHT = 20_000_000
+const ANCHORED_SENSOR_MID = ANCHORED_SENSOR_HEIGHT / 2
+const ANCHORED_SENSOR_EDGE = 1_000_000
+const ANCHORED_ESTIMATED_ROW_HEIGHT = 80
+const ANCHORED_OVERSCAN_PX = 800
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 type TerminalAgent = {
@@ -167,6 +154,16 @@ type FleetChatRenderCounter = {
   events?: Array<{ type: 'render'; t: number; shapeId?: string }>
 }
 type TldrawEditorWindow = Window & { __tldraw_editor__?: Editor }
+type AnchoredChatItem = {
+  key: string | number
+  html?: string
+  _divider?: boolean
+  _status?: boolean
+}
+type AnchoredChatListHandle = {
+  scrollToTail: () => void
+  isAtTail: () => boolean
+}
 
 type ChatRenderProbeKind =
   | 'shape-render'
@@ -2219,6 +2216,232 @@ function SemanticChatOperationView({
   )
 }
 
+type AnchoredChatListProps<T extends AnchoredChatItem> = {
+  items: T[]
+  className?: string
+  style?: React.CSSProperties
+  resetKey: string
+  renderItem: (item: T) => React.ReactNode
+  onStartReached?: () => void
+  onAtBottomChange?: (atBottom: boolean) => void
+  onTailModeChange?: (followingTail: boolean) => void
+  setScroller?: (el: HTMLDivElement | null) => void
+}
+
+const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProps<AnchoredChatItem>>(function AnchoredChatList({
+  items,
+  className,
+  style,
+  resetKey,
+  renderItem,
+  onStartReached,
+  onAtBottomChange,
+  onTailModeChange,
+  setScroller,
+}, ref) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const sliceRef = useRef<HTMLDivElement | null>(null)
+  const heightByKeyRef = useRef<Map<string, number>>(new Map())
+  const rowElsRef = useRef<Map<string, HTMLDivElement>>(new Map())
+  const modelTopRef = useRef(0)
+  const sensorTopRef = useRef(ANCHORED_SENSOR_MID)
+  const tailModeRef = useRef(true)
+  const didStartReachRef = useRef(false)
+  const previousResetKeyRef = useRef(resetKey)
+  const previousKeysRef = useRef<string[]>([])
+  const [geometryVersion, setGeometryVersion] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
+
+  const itemKeys = useMemo(() => items.map(item => String(item.key)), [items])
+  const itemKeySignature = useMemo(() => itemKeys.join('\u0001'), [itemKeys])
+
+  const geometry = useMemo(() => {
+    const starts = new Map<string, number>()
+    let total = 0
+    for (const item of items) {
+      const key = String(item.key)
+      starts.set(key, total)
+      total += heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
+    }
+    return { starts, total }
+  }, [geometryVersion, items, itemKeySignature])
+
+  const clampTop = useCallback((top: number) => Math.max(0, Math.min(top, Math.max(0, geometry.total - viewportHeight))), [geometry.total, viewportHeight])
+
+  const setTailMode = useCallback((next: boolean) => {
+    if (tailModeRef.current === next) return
+    tailModeRef.current = next
+    onTailModeChange?.(next)
+  }, [onTailModeChange])
+
+  const setModelTop = useCallback((nextTop: number, opts?: { forceTail?: boolean }) => {
+    const top = clampTop(nextTop)
+    modelTopRef.current = top
+    const atBottom = Math.abs(top - Math.max(0, geometry.total - viewportHeight)) <= 1
+    if (opts?.forceTail || atBottom) setTailMode(true)
+    else setTailMode(false)
+    onAtBottomChange?.(atBottom)
+    if (top > ANCHORED_ESTIMATED_ROW_HEIGHT * 2) didStartReachRef.current = false
+    if (top <= ANCHORED_ESTIMATED_ROW_HEIGHT && !didStartReachRef.current) {
+      didStartReachRef.current = true
+      onStartReached?.()
+    }
+    setGeometryVersion(version => version + 1)
+  }, [clampTop, geometry.total, onAtBottomChange, onStartReached, setTailMode, viewportHeight])
+
+  const recenterSensor = useCallback((el: HTMLDivElement) => {
+    sensorTopRef.current = ANCHORED_SENSOR_MID
+    el.scrollTop = ANCHORED_SENSOR_MID
+  }, [])
+
+  const scrollToTail = useCallback(() => {
+    setModelTop(Math.max(0, geometry.total - viewportHeight), { forceTail: true })
+    const el = scrollerRef.current
+    if (el) recenterSensor(el)
+  }, [geometry.total, recenterSensor, setModelTop, viewportHeight])
+
+  const isAtTail = useCallback(() => {
+    const tailTop = Math.max(0, geometry.total - viewportHeight)
+    return Math.abs(modelTopRef.current - tailTop) <= 1
+  }, [geometry.total, viewportHeight])
+
+  useImperativeHandle(ref, () => ({ scrollToTail, isAtTail }), [isAtTail, scrollToTail])
+
+  const setScrollerRef = useCallback((el: HTMLDivElement | null) => {
+    scrollerRef.current = el
+    setScroller?.(el)
+    if (el) {
+      sensorTopRef.current = ANCHORED_SENSOR_MID
+      el.scrollTop = ANCHORED_SENSOR_MID
+      setViewportHeight(el.clientHeight)
+    }
+  }, [setScroller])
+
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const update = () => {
+      const nextHeight = el.clientHeight
+      setViewportHeight(nextHeight)
+      if (tailModeRef.current) modelTopRef.current = Math.max(0, geometry.total - nextHeight)
+      else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, Math.max(0, geometry.total - nextHeight)))
+      setGeometryVersion(version => version + 1)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [geometry.total])
+
+  useLayoutEffect(() => {
+    const wasReset = previousResetKeyRef.current !== resetKey
+    const previousKeys = previousKeysRef.current
+    previousResetKeyRef.current = resetKey
+    previousKeysRef.current = itemKeys
+    if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
+      scrollToTail()
+      return
+    }
+    const oldTop = modelTopRef.current
+    let anchorKey = previousKeys[0] || itemKeys[0]
+    let anchorOffset = 0
+    let cursor = 0
+    for (const key of previousKeys) {
+      const h = heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
+      if (cursor + h > oldTop) {
+        anchorKey = key
+        anchorOffset = oldTop - cursor
+        break
+      }
+      cursor += h
+    }
+    const newAnchorTop = anchorKey ? geometry.starts.get(anchorKey) : undefined
+    setModelTop((newAnchorTop ?? modelTopRef.current) + anchorOffset)
+  }, [itemKeySignature, resetKey])
+
+  useLayoutEffect(() => {
+    let topAdjustment = 0
+    let changed = false
+    const modelTop = modelTopRef.current
+    for (const [key, row] of rowElsRef.current) {
+      const nextHeight = row.getBoundingClientRect().height
+      if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue
+      const previousHeight = heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
+      if (Math.abs(nextHeight - previousHeight) <= 0.5) continue
+      const rowTop = geometry.starts.get(key) ?? 0
+      if (!tailModeRef.current && rowTop + previousHeight <= modelTop + 0.5) {
+        topAdjustment += nextHeight - previousHeight
+      }
+      heightByKeyRef.current.set(key, nextHeight)
+      changed = true
+    }
+    if (!changed) return
+    if (tailModeRef.current) modelTopRef.current = Math.max(0, geometry.total - viewportHeight)
+    else modelTopRef.current = clampTop(modelTopRef.current + topAdjustment)
+    setGeometryVersion(version => version + 1)
+  })
+
+  const onScroll = useCallback(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const nextSensorTop = el.scrollTop
+    const delta = nextSensorTop - sensorTopRef.current
+    sensorTopRef.current = nextSensorTop
+    if (Math.abs(delta) > 0.5) {
+      const previousTop = modelTopRef.current
+      const nextTop = clampTop(previousTop + delta)
+      if (Math.abs(nextTop - previousTop) > 0.5) setModelTop(nextTop)
+      else if (nextSensorTop !== ANCHORED_SENSOR_MID) recenterSensor(el)
+    }
+    if (nextSensorTop < ANCHORED_SENSOR_EDGE || nextSensorTop > ANCHORED_SENSOR_HEIGHT - ANCHORED_SENSOR_EDGE) recenterSensor(el)
+  }, [clampTop, recenterSensor, setModelTop])
+
+  const visibleStart = Math.max(0, modelTopRef.current - ANCHORED_OVERSCAN_PX)
+  const visibleEnd = modelTopRef.current + viewportHeight + ANCHORED_OVERSCAN_PX
+  const visibleItems = items.filter(item => {
+    const key = String(item.key)
+    const rowTop = geometry.starts.get(key) ?? 0
+    const rowBottom = rowTop + (heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT)
+    return rowBottom >= visibleStart && rowTop <= visibleEnd
+  })
+
+  return (
+    <div
+      ref={setScrollerRef}
+      className={['fleet-chat-log', 'fleet-chat-log-anchored', className].filter(Boolean).join(' ')}
+      style={style}
+      onScroll={onScroll}
+    >
+      <div className="fleet-chat-scroll-sensor" style={{ height: ANCHORED_SENSOR_HEIGHT }}>
+        <div
+          ref={sliceRef}
+          className="fleet-chat-anchored-slice"
+          style={{ transform: `translateY(${sensorTopRef.current - modelTopRef.current}px)` }}
+        >
+          {visibleItems.map(item => {
+            const key = String(item.key)
+            const y = geometry.starts.get(key) ?? 0
+            return (
+              <div
+                key={key}
+                ref={(el) => {
+                  if (el) rowElsRef.current.set(key, el)
+                  else rowElsRef.current.delete(key)
+                }}
+                className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
+                data-chat-item-key={key}
+                style={{ transform: `translateY(${y}px)` }}
+              >
+                {renderItem(item)}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+})
+
 // --- Virtual chat message row ---
 // Defined outside FleetChatInner so React.memo comparisons are stable.
 // Receives raw rendered HTML from renderChatLine/renderActivityGroup and a
@@ -2581,38 +2804,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
   }, [suggestionsAll, dnfFilter, agents])
 
-  const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+  const anchoredListRef = useRef<AnchoredChatListHandle | null>(null)
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
   // chatLogEl tracks the scroller element in state so effects can attach
-  // listeners as soon as Virtuoso mounts its scroll container.
+  // listeners as soon as the chat list mounts its scroll container.
   const [chatLogEl, setChatLogEl] = useState<HTMLDivElement | null>(null)
+  const setAnchoredChatScroller = useCallback((el: HTMLDivElement | null) => {
+    chatLogRef.current = el
+    setChatLogEl(el)
+  }, [])
   const suppressNativeChipClickUntilRef = useRef(0)
-
-  // Stable Scroller component for Virtuoso. Owns the .fleet-chat-log class
-  // (so CanvasClipPanel's wheel reroute keeps targeting it) and captures the
-  // element into chatLogRef / chatLogEl. Event listeners are attached in
-  // separate effects keyed off chatLogEl — keeps this component free of
-  // changing callback closures.
-  const ChatLogScroller = useMemo(
-    () => forwardRef<HTMLDivElement, any>(function ChatLogScroller(props, ref) {
-      return (
-        <div
-          {...props}
-          ref={(el: HTMLDivElement | null) => {
-            if (typeof ref === 'function') ref(el)
-            else if (ref) (ref as any).current = el
-            chatLogRef.current = el
-            setChatLogEl(el)
-          }}
-          className={['fleet-chat-log', props.className].filter(Boolean).join(' ')}
-          style={{ ...props.style, padding: '4px 0' }}
-        />
-      )
-    }),
-    [],
-  )
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
@@ -2853,10 +3056,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [amendView, setAmendView] = useState<Map<number, number>>(new Map())
 
   // Build per-item raw HTML array — each item is an independent renderable unit.
-  // This replaces the old joined renderedHtml string and enables virtualization.
+  // This replaces the old joined renderedHtml string and enables windowing.
   // Items tagged _queued render below the thinking indicator; _interrupt items
   // render between the indicator and the queue (they "jump the line"). The
-  // status row is a real measured item so Virtuoso remains the only scroll
+  // status row is a real measured item so the anchored list remains the scroll
   // authority when status/suggestions change height.
   type RawItem = { key: string; html: string; _queued?: boolean; _interrupt?: boolean; _divider?: boolean; _status?: boolean }
   const msgLineCacheLimit = useMemo(
@@ -3269,7 +3472,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // Mark the queue divider position inline — the last non-queued item before
   // the first queued item gets _divider: true. Status/suggestions stay in the
-  // measured list as the trailing row instead of a flex footer below Virtuoso.
+  // measured list as the trailing row instead of a flex footer below the scroller.
   const allItems = useMemo(() => {
     const items = [...rawItems]
     let firstQueuedIdx = -1
@@ -3279,7 +3482,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (firstQueuedIdx > 0) {
       items[firstQueuedIdx - 1] = { ...items[firstQueuedIdx - 1], _divider: true }
     }
-    items.push({ key: VIRTUOSO_STATUS_ITEM_KEY, html: '', _status: true })
+    items.push({ key: ANCHORED_STATUS_ITEM_KEY, html: '', _status: true })
     return items
   }, [rawItems])
   const rawActivityItemKeys = useMemo(
@@ -3316,26 +3519,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       lastEventId: getLastEventId(),
     })
   }, [allItems.length, chatEventBufferKey, chatLogEl, chatMessages.length, filterKey, rawActivityItemKeys, shape.id])
-  // Virtuoso needs a stable logical index when rows are prepended. Without it,
-  // loading the previous subscription page reinterprets the new first row as
-  // index zero and jumps the viewport to the oldest fetched message.
-  const virtuosoFirstItemIndexRef = useRef(1_000_000)
-  const previousVirtuosoItemKeysRef = useRef<string[]>([])
-  const previousVirtuosoFilterKeyRef = useRef(filterKey)
-  const nextVirtuosoItemKeys = allItems.map(item => item.key)
-  if (previousVirtuosoFilterKeyRef.current !== filterKey) {
-    previousVirtuosoFilterKeyRef.current = filterKey
-    virtuosoFirstItemIndexRef.current = 1_000_000
-  } else {
-    virtuosoFirstItemIndexRef.current = nextChatVirtuosoFirstItemIndex(
-      virtuosoFirstItemIndexRef.current,
-      previousVirtuosoItemKeysRef.current,
-      nextVirtuosoItemKeys,
-    )
-  }
-  previousVirtuosoItemKeysRef.current = nextVirtuosoItemKeys
-  const virtuosoFirstItemIndex = virtuosoFirstItemIndexRef.current
-  // Virtual scroll — only mount DOM nodes for visible messages.
+  // Anchored scroll — only mount DOM nodes for visible messages.
   // Handle clicks on ref-chip annotations → navigate to canvas bounds
   const handleRefChipClick = useCallback((e: React.MouseEvent) => {
     const chip = (e.target as HTMLElement).closest('.ref-chip-annotation') as HTMLElement | null
@@ -3968,40 +4152,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   // True while a finger-driven scroll is in flight: from touchdown through the
   // momentum glide that follows the release, until the scroller goes quiet.
   const touchScrollActiveRef = useRef(false)
-  // A scrollTop delta is not evidence of reader intent: Virtuoso re-anchors
-  // rows while their measured content changes, and those internal moves emit
-  // the same scroll event as a person. Only a live input gesture may change
-  // reader/follow mode.
+  // A scrollTop delta is not evidence of reader intent: the invisible native
+  // scroller supplies physics, while the anchored list owns reader position.
   const explicitScrollInputRef = useRef(false)
   const explicitScrollInputTimerRef = useRef(0)
   const followInvariantTimerRef = useRef(0)
   const goToTailRunRef = useRef(0)
-  // The geometry seam records the scrollTop it writes. The next matching scroll
-  // event updates measurements but cannot be interpreted as reader intent.
-  const geometryReconcileScrollTopRef = useRef<number | null>(null)
-  // Set by every scrollTop write this component makes, cleared by the resize
-  // that write provokes. `geometryReconcileScrollTopRef` above closes the same
-  // hazard on the scroll handler — our write emits a scroll event that must not
-  // read as reader intent — and the resize path is its second entrance.
-  //
-  // PRECAUTIONARY, AND NOT MEASURED. The loop it guards is structurally
-  // available — a write renders a different row window, those rows measure
-  // differently than estimated, the item list changes height, the observer
-  // fires — but it has never been observed. `scrollHeight` is constant across
-  // every burst measured on this build: 172981 for all 59 corrections at
-  // scrollTop 170710, and likewise in each of the others, while the observer
-  // fired dozens of times. So no re-measurement was occurring.
-  //
-  // The reason it cannot be occurring is the open bug: across 23 to 88
-  // consecutive corrections, `scrollTop` does not change at all, read back on
-  // the statement after the write. Our write is not moving the scroller, so the
-  // feedback path has nothing to close. Whether it is refused or restored within
-  // the frame is unknown — the record cannot yet tell those apart.
-  //
-  // Kept rather than deleted because the day the write starts landing, this
-  // becomes load-bearing, and rediscovering it then means rediscovering it with
-  // less evidence than this comment carries.
-  const selfWriteResizePendingRef = useRef(false)
   const panelPointerIdsRef = useRef<Set<number>>(new Set())
   const deferredGeometryReconcileRef = useRef(false)
   // Reactive bottom-position state. Drives the unified follow/jump button:
@@ -4032,274 +4188,14 @@ function FleetChatInner({ shape }: { shape: any }) {
   // same reason.
   const termHoverPinnedIdRef = useRef<string | null>(null)
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
-  const captureViewportAnchor = useCallback(() => {
-    const el = chatLogRef.current
-    if (!el || !userScrolledUpRef.current) {
-      viewportAnchorRef.current = null
-      return
-    }
-    const viewportTop = el.getBoundingClientRect().top
-    const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
-    for (const row of rows) {
-      const rect = row.getBoundingClientRect()
-      if (rect.bottom <= viewportTop + 0.5) continue
-      const key = row.dataset.chatItemKey || ''
-      const top = rect.top - viewportTop
-      const previous = viewportAnchorRef.current
-      // Observation only — this still re-baselines exactly as before, and that
-      // re-baselining is the bug: the anchored row moved with no gesture behind
-      // it, and recording the new position as the truth is what makes the drift
-      // permanent and silent. What is missing is not the correction, it is the
-      // measurement. `scrollTop`/`scrollHeight` are here because the last attempt
-      // to correct this asked for 450px of scroll from an element with roughly
-      // 106px of range, and that had to be inferred afterwards from a neighbouring
-      // record. With the pair on the record it is a measurement, not an inference:
-      // the correction is impossible whenever |drift| exceeds the range on offer.
-      if (previous && previous.key === key
-          && !(touchScrollActiveRef.current || explicitScrollInputRef.current)
-          && Math.abs(top - previous.top) > 1) {
-        log.metric('chat-anchor', 'anchor drifted with no input', {
-          panelId: String(shape.id),
-          // Which layer drew this panel. Without it the record cannot say whether the
-          // canvas camera scaled the rects it is comparing, and a shape id cannot
-          // answer it — the HUD renders the same store, so both renderings carry one.
-          viewportId: viewportId ?? null,
-          anchorKey: key,
-          drift: Math.round(top - previous.top),
-          scrollTop: Math.round(el.scrollTop),
-          scrollHeight: Math.round(el.scrollHeight),
-          clientHeight: Math.round(el.clientHeight),
-        })
-      }
-      viewportAnchorRef.current = { key, top }
-      return
-    }
-    viewportAnchorRef.current = null
-  }, [shape.id])
-
-  const restoreViewportAnchor = useCallback(() => {
-    const el = chatLogRef.current
-    const anchor = viewportAnchorRef.current
-    const anchorKey = anchor?.key
-    const anchorTop = anchor?.top
-    if (!el || !anchorKey || typeof anchorTop !== 'number' || !shouldPreserveChatViewport({
-      scrolledUp: userScrolledUpRef.current,
-      hardLocked: hardLockedRef.current,
-      hasAnchor: true,
-    })) return false
-    const viewportTop = el.getBoundingClientRect().top
-    const rows = el.querySelectorAll<HTMLElement>('[data-chat-item-key]')
-    const row = [...rows].find(candidate => candidate.dataset.chatItemKey === anchorKey)
-    if (!row) {
-      // The anchored row left the DOM. Virtuoso unmounts rows outside its render
-      // window, which is what a reanchor does — so this is the likely state
-      // exactly when the viewport most needs holding. Nothing corrects the
-      // position after this return and the reader drifts. The success case below
-      // has always been recorded; this is the other half of the same story.
-      log.metric('chat-anchor', 'anchor row gone; viewport left uncorrected', {
-        panelId: String(shape.id),
-        // Which layer drew this panel. Without it the record cannot say whether the
-        // canvas camera scaled the rects it is comparing, and a shape id cannot
-        // answer it — the HUD renders the same store, so both renderings carry one.
-        viewportId: viewportId ?? null,
-        anchorKey,
-        renderedRows: rows.length,
-        top: el.scrollTop,
-      })
-      return false
-    }
-    const delta = row.getBoundingClientRect().top - viewportTop - anchorTop
-    if (Math.abs(delta) <= 0.5) return true
-    const available = delta < 0
-      ? el.scrollTop
-      : Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
-    if (Math.abs(delta) > available + 0.5) {
-      log.metric('chat-anchor', 'anchor correction outside scroll range', {
-        panelId: String(shape.id),
-        // Which layer drew this panel. Without it the record cannot say whether the
-        // canvas camera scaled the rects it is comparing, and a shape id cannot
-        // answer it — the HUD renders the same store, so both renderings carry one.
-        viewportId: viewportId ?? null,
-        anchorKey,
-        delta: Math.round(delta),
-        available: Math.round(available),
-        scrollTop: Math.round(el.scrollTop),
-        scrollHeight: Math.round(el.scrollHeight),
-        clientHeight: Math.round(el.clientHeight),
-      })
-      return false
-    }
-    // Read before the write, so the record can say whether the write took. With
-    // only the post-write value, a refused write and a write restored inside the
-    // frame produce an identical record, and they are different bugs.
-    const scrollTopBefore = el.scrollTop
-    const requested = scrollTopBefore + delta
-    geometryReconcileScrollTopRef.current = requested
-    el.scrollTop += delta
-    geometryReconcileScrollTopRef.current = el.scrollTop
-    selfWriteResizePendingRef.current = true
-    log.metric('chat-anchor', 'preserved viewport across content resize', {
-      panelId: String(shape.id),
-      // Which layer drew this panel. Without it the record cannot say whether the
-      // canvas camera scaled the rects it is comparing, and a shape id cannot
-      // answer it — the HUD renders the same store, so both renderings carry one.
-      viewportId: viewportId ?? null,
-      anchorKey,
-      delta: Math.round(delta),
-      // `scrollTop` is read after the write, on the statement after it, so
-      // `requested !== scrollTop` means the assignment did not take. Across
-      // every burst measured before this field existed, `scrollTop` was constant
-      // for 23 to 88 consecutive corrections, which is the open bug.
-      scrollTopBefore: Math.round(scrollTopBefore),
-      requested: Math.round(requested),
-      // `delta` varies while `scrollTop` and `scrollHeight` hold still, and
-      // `delta` is measured against this — the panel's position on screen, not
-      // the content's. If the panel is moving or resizing on the canvas while
-      // its content is still, that alone produces a changing delta, a firing
-      // observer, and an unchanged scrollHeight. These two say so directly
-      // rather than by elimination.
-      viewportTop: Math.round(viewportTop),
-      rowTop: Math.round(row.getBoundingClientRect().top),
-      // Whether the element is still a scroll container. `scrollTop` values in
-      // the hundreds of thousands prove it is one today; a computed value is
-      // what catches it ceasing to be one mid-session, which no structural
-      // argument about the element can.
-      overflowY: getComputedStyle(el).overflowY,
-      scrollTop: Math.round(el.scrollTop),
-      scrollHeight: Math.round(el.scrollHeight),
-      clientHeight: Math.round(el.clientHeight),
-    })
-    return true
-  }, [shape.id])
-
-  const reconcileViewportGeometry = useCallback(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    // A held pointer is not the window that matters here. `touchScrollActive`
-    // spans the momentum glide that outlives the release, and that is when the
-    // compositor owns the scroller: `8543d9048` guarded on pointers-down alone
-    // and deferred once against 211 corrections on Skip's phone, because an iOS
-    // glide has no pointer down. This is the guard `7430200ad` deleted.
-    if (isReaderInputInFlight({
-      touchScrollActive: touchScrollActiveRef.current,
-      explicitScrollInput: explicitScrollInputRef.current,
-      pointerHeldInPanel: panelPointerIdsRef.current.size > 0,
-    })) {
-      if (!deferredGeometryReconcileRef.current) {
-        log.metric('chat-anchor', 'geometry reconcile deferred; reader input in flight', {
-          panelId: String(shape.id),
-          // Which layer drew this panel. Without it the record cannot say whether the
-          // canvas camera scaled the rects it is comparing, and a shape id cannot
-          // answer it — the HUD renders the same store, so both renderings carry one.
-          viewportId: viewportId ?? null,
-          pointerCount: panelPointerIdsRef.current.size,
-          touchScrollActive: touchScrollActiveRef.current,
-          explicitScrollInput: explicitScrollInputRef.current,
-          scrolledUp: userScrolledUpRef.current,
-          hardLocked: hardLockedRef.current,
-        })
-      }
-      deferredGeometryReconcileRef.current = true
-      return
-    }
-    if (userScrolledUpRef.current && !hardLockedRef.current) {
-      restoreViewportAnchor()
-      captureViewportAnchor()
-      return
-    }
-    geometryReconcileScrollTopRef.current = el.scrollHeight
-    el.scrollTop = el.scrollHeight
-    geometryReconcileScrollTopRef.current = el.scrollTop
-    selfWriteResizePendingRef.current = true
-  }, [captureViewportAnchor, restoreViewportAnchor, shape.id])
-
-  // Release one deferred correction once the scroller is the panel's again. A
-  // deferral with no flush is the failure one over from the one being fixed:
-  // the reader keeps the position he was left with and the correction never
-  // arrives. Every window that can end an in-flight gesture calls this — the
-  // touch settle timer, the wheel timer, and pointer release.
   const flushDeferredGeometry = useCallback(() => {
-    if (!deferredGeometryReconcileRef.current) return
     if (isReaderInputInFlight({
       touchScrollActive: touchScrollActiveRef.current,
       explicitScrollInput: explicitScrollInputRef.current,
       pointerHeldInPanel: panelPointerIdsRef.current.size > 0,
     })) return
     deferredGeometryReconcileRef.current = false
-    reconcileViewportGeometry()
-  }, [reconcileViewportGeometry])
-
-  // Which rendered rows changed height, for the resize the observer below only
-  // sees as a total. The observer watches the item list, so a firing says the
-  // list got taller or shorter and nothing about why. That leaves two very
-  // different causes indistinguishable: a row that grew after it was already
-  // measured, and a row Virtuoso rendered for the first time during a scroll.
-  // The first is a content bug upstream of every correction here; the second is
-  // virtualization working. A row absent from the previous snapshot is the
-  // second and is deliberately not reported as a change.
-  const renderedRowHeightsRef = useRef<Map<string, number>>(new Map())
-  const recordRowResizes = useCallback(() => {
-    const el = chatLogRef.current
-    if (!el) return
-    const previous = renderedRowHeightsRef.current
-    const next = new Map<string, number>()
-    const changed: { key: string; from: number; to: number }[] = []
-    for (const row of el.querySelectorAll<HTMLElement>('[data-chat-item-key]')) {
-      const key = row.dataset.chatItemKey || ''
-      const height = row.getBoundingClientRect().height
-      next.set(key, height)
-      const before = previous.get(key)
-      if (before !== undefined && Math.abs(height - before) > 0.5) {
-        changed.push({ key, from: Math.round(before), to: Math.round(height) })
-      }
-    }
-    renderedRowHeightsRef.current = next
-    if (changed.length === 0) return
-    log.metric('chat-anchor', 'rendered rows changed height', {
-      panelId: String(shape.id),
-      rows: changed.slice(0, 6),
-      changedCount: changed.length,
-      renderedCount: next.size,
-      firstRenderedCount: next.size - previous.size,
-    })
-  }, [shape.id])
-
-  useLayoutEffect(() => {
-    const el = chatLogEl
-    const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
-    if (!el || !list) return
-    const observer = new ResizeObserver(() => {
-      // Diagnostics first and unconditionally: a suppressed firing is exactly
-      // the one worth seeing, and this is how the two candidate causes get told
-      // apart — a row that changed height, or a list that changed height with
-      // every row the same.
-      recordRowResizes()
-      if (selfWriteResizePendingRef.current) {
-        selfWriteResizePendingRef.current = false
-        // The same write also emits a scroll event, and the scroll handler runs
-        // the identical restore behind the identical input guard in this frame,
-        // so the correction still happens and what this skips is a second forced
-        // layout over every rendered row.
-        //
-        // That argument holds while writes do not land. If one lands and real
-        // content changes in the same frame, this drops that correction rather
-        // than deferring it — there is no flush behind this return. Whoever
-        // makes writes take effect owns closing that, and the record below is
-        // how you will see it: a skip with no correction after it.
-        log.metric('chat-anchor', 'skipped resize caused by our own scroll write', {
-          panelId: String(shape.id),
-          scrolledUp: userScrolledUpRef.current,
-        })
-        return
-      }
-      reconcileViewportGeometry()
-    })
-    observer.observe(list)
-    return () => {
-      observer.disconnect()
-      selfWriteResizePendingRef.current = false
-    }
-  }, [chatLogEl, reconcileViewportGeometry, recordRowResizes, shape.id])
+  }, [])
 
   useEffect(() => {
     const el = chatLogEl
@@ -4341,23 +4237,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       deferredGeometryReconcileRef.current = false
     }
   }, [chatLogEl, flushDeferredGeometry])
-
-  // Read the panel's current render state at record time rather than closing
-  // over it, so the observer below survives every item-array change instead of
-  // being torn down and rebuilt on each one.
-  const virtuosoItemKeysRef = useRef<(string | number)[]>(nextVirtuosoItemKeys)
-  virtuosoItemKeysRef.current = nextVirtuosoItemKeys
-  const virtuosoFirstItemIndexReadRef = useRef(virtuosoFirstItemIndex)
-  virtuosoFirstItemIndexReadRef.current = virtuosoFirstItemIndex
-  useLayoutEffect(() => {
-    const list = chatLogEl?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
-    if (!list) return
-    return watchChatStrandedRows(list, {
-      panelId: String(shape.id),
-      itemKeys: () => virtuosoItemKeysRef.current,
-      firstItemIndex: () => virtuosoFirstItemIndexReadRef.current,
-    })
-  }, [chatLogEl, shape.id])
 
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // This panel's composer text survives any shape recreation. See composerDraftStore.
@@ -4439,9 +4318,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (goToTailRunRef.current !== run) return
 
       try {
-        virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+        anchoredListRef.current?.scrollToTail()
       } catch (e) {
-        log.metric('chat-scroll', 'go-to-tail scrollToIndex failed', {
+        log.metric('chat-scroll', 'go-to-tail scrollToTail failed', {
           panelId: String(shape.id), reason, e: String(e),
         })
         return
@@ -4450,9 +4329,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       requestAnimationFrame(() => {
         if (goToTailRunRef.current !== run) return
         const el = chatLogRef.current
-        const gap = el ? el.scrollHeight - (el.scrollTop + el.clientHeight) : Number.POSITIVE_INFINITY
         const height = el?.scrollHeight ?? -1
-        stableBottomFrames = isTrueBottomGap(gap) && height === lastHeight ? stableBottomFrames + 1 : 0
+        const modelAtTail = anchoredListRef.current?.isAtTail() ?? false
+        stableBottomFrames = modelAtTail && height === lastHeight ? stableBottomFrames + 1 : 0
         lastHeight = height
 
         if (stableBottomFrames >= 1) {
@@ -4466,7 +4345,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           log.metric('chat-scroll', 'go-to-tail stopped before stable true bottom', {
             panelId: String(shape.id),
             reason,
-            gap,
+            modelAtTail,
             height,
           })
         }
@@ -4476,247 +4355,25 @@ function FleetChatInner({ shape }: { shape: any }) {
     requestAnimationFrame(step)
   }, [shape.id, chatEventBufferKey])
 
-  const checkFollowInvariant = useCallback((reason: string) => {
-    if (followInvariantTimerRef.current) clearTimeout(followInvariantTimerRef.current)
-    const run = () => {
-      followInvariantTimerRef.current = 0
-      if (userScrolledUpRef.current && !hardLockedRef.current) return
-      const el = chatLogRef.current
-      if (!el) return
-      // An input gesture in flight is the reader, mid-move: repairing through it
-      // throws them to the tail with a finger still on the glass. Both flags
-      // clear on their own — touch settle, or 250ms after the last wheel — so
-      // wait rather than overrule a gesture that has not finished deciding.
-      if (touchScrollActiveRef.current || explicitScrollInputRef.current) {
-        followInvariantTimerRef.current = window.setTimeout(run, FOLLOW_INVARIANT_MS)
-        return
-      }
-      const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-      if (isTrueBottomGap(gap)) return
-      log.metric('chat-scroll', 'follow invariant violated; repairing tail', {
-        panelId: String(shape.id),
-        reason,
-        top: el.scrollTop,
-        height: el.scrollHeight,
-        clientHeight: el.clientHeight,
-        gap,
-        inputActive: touchScrollActiveRef.current || explicitScrollInputRef.current,
-      })
-      goToTail('follow-invariant-repair')
-    }
-    followInvariantTimerRef.current = window.setTimeout(run, FOLLOW_INVARIANT_MS)
-  }, [goToTail, shape.id])
-
   const scrollToBottom = useCallback(() => {
     goToTail('jump-button')
   }, [goToTail])
 
-  const enterReaderMode = useCallback((reason: string) => {
-    if (hardLockedRef.current || userScrolledUpRef.current) return
-    // Reader mode means "I am looking at something above the tail". At the
-    // bottom there is nothing above to look at, so no gesture may enter it —
-    // and the test lives here, in the one entry, rather than in each caller,
-    // because every input device arrives at the same place by a different
-    // route: a trackpad's sub-pixel ticks and a mouse's ~100px notches both
-    // land on deltaY < 0, and a finger's rubber-band drag at the tail clears
-    // TOUCH_READER_INTENT_PX without revealing anything.
-    // Entering anyway strands the reader: resuming needs one scroll event over
-    // UP_JITTER_EPS and there is no room below the bottom to produce one.
-    const el = chatLogRef.current
-    if (el && isTrueBottomGap(el.scrollHeight - (el.scrollTop + el.clientHeight))) return
-    goToTailRunRef.current += 1
-    userScrolledUpRef.current = true
-    setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
-    noteFollowTransition(String(shape.id), 'follow-off', {
-      reason,
-      bufferKey: chatEventBufferKey,
-    })
-  }, [shape.id, chatEventBufferKey])
-
-  // The exit, and the sibling of enterReaderMode: a gesture that settles at
-  // the true bottom IS the reader returning. One rule; each device's settle
-  // detector calls it, because "input finished" means something different to a
-  // wheel (no ticks for 250ms) than to a finger (lifted, and the glide stopped).
-  const resumeFollowIfSettledAtBottom = useCallback((reason: string) => {
-    const el = chatLogRef.current
-    if (!el || !userScrolledUpRef.current) return
-    const gap = el.scrollHeight - (el.scrollTop + el.clientHeight)
-    if (!isTrueBottomGap(gap)) return
-    noteFollowTransition(String(shape.id), 'follow-on', {
-      reason,
-      top: el.scrollTop,
-      height: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      gap,
-      bufferKey: chatEventBufferKey,
-    })
-    userScrolledUpRef.current = false
-    viewportAnchorRef.current = null
-    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-  }, [shape.id, chatEventBufferKey])
-
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
-    const markExplicitScrollInput = () => {
+    const handleAnchoredScroll = () => {
       explicitScrollInputRef.current = true
       if (explicitScrollInputTimerRef.current) clearTimeout(explicitScrollInputTimerRef.current)
       explicitScrollInputTimerRef.current = window.setTimeout(() => {
         explicitScrollInputTimerRef.current = 0
         explicitScrollInputRef.current = false
-        // Wheel and trackpad settle here. Touch does not: this timer counts
-        // from the last touchmove, and the momentum glide outlives it, so a
-        // finger settles through armSettle below instead.
-        if (!touchScrollActiveRef.current) resumeFollowIfSettledAtBottom('wheel-settle-at-bottom')
         flushDeferredGeometry()
       }, 250)
     }
-    const handleWheelCapture = (e: WheelEvent) => {
-      const target = e.target instanceof Element ? e.target : null
-      if (!target || !el.contains(target)) return
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      markExplicitScrollInput()
-      // Trackpad deltas commonly arrive below UP_JITTER_EPS one event at a
-      // time. The wheel event itself proves reader intent, so enter reader
-      // mode before Virtuoso can follow a concurrently arriving row — but
-      // scroll FIRST, because enterReaderMode's at-bottom test has to read
-      // where this tick landed, not where it started. Both statements run in
-      // one synchronous block, so Virtuoso still cannot interleave.
-      el.scrollTop += e.deltaY
-      if (e.deltaY < 0) {
-        enterReaderMode('wheel-up')
-        captureViewportAnchor()
-      }
-    }
-    // A touch-driven scroll runs past the release: the finger lifts and the
-    // scroller keeps gliding. Treat it as in flight until scroll events stop
-    // arriving, so nothing writes scrollTop and cancels the glide.
-    let fingerDown = false
-    let settleTimer = 0
-    const armSettle = () => {
-      if (settleTimer) clearTimeout(settleTimer)
-      settleTimer = window.setTimeout(() => {
-        settleTimer = 0
-        if (!fingerDown) {
-          touchScrollActiveRef.current = false
-          // Touch's settle detector. Same rule as the wheel's above.
-          resumeFollowIfSettledAtBottom('touch-settle-at-bottom')
-          // The glide is over, so the correction held during it is owed now.
-          flushDeferredGeometry()
-        }
-      }, TOUCH_SCROLL_SETTLE_MS)
-    }
-    // Where the finger went down, so a drag can be measured against it.
-    let touchStartY = 0
-    const onTouchStart = (e: TouchEvent) => {
-      fingerDown = true
-      touchScrollActiveRef.current = true
-      touchStartY = e.touches[0]?.clientY ?? 0
-      markExplicitScrollInput()
-      if (settleTimer) { clearTimeout(settleTimer); settleTimer = 0 }
-    }
-    // The touch counterpart of handleWheelCapture's enterReaderMode('wheel-up').
-    // Per-event scroll deltas from a finger arrive below UP_JITTER_EPS, and a
-    // live chat's content height moves on nearly every frame, so a genuine
-    // scroll-up often clears neither bar decideFollowTransition sets. The
-    // gesture itself is the evidence: a finger travelling DOWN the screen
-    // reveals older content, which is the reader leaving the tail.
-    const onTouchMove = (e: TouchEvent) => {
-      const y = e.touches[0]?.clientY
-      if (y === undefined) return
-      markExplicitScrollInput()
-      if (y - touchStartY > TOUCH_READER_INTENT_PX) enterReaderMode('touch-drag-up')
-    }
-    const onTouchEnd = () => {
-      fingerDown = false
-      armSettle()
-    }
-    let lastTop = el.scrollTop
-    let lastHeight = el.scrollHeight
-    const handle = () => {
-      if (touchScrollActiveRef.current) armSettle()
-      const top = el.scrollTop
-      const height = el.scrollHeight
-      const gap = el.scrollHeight - top - el.clientHeight
-      const previousTop = lastTop
-      const previousHeight = lastHeight
-      const reconcileTarget = geometryReconcileScrollTopRef.current
-      const geometryReconciliation = reconcileTarget !== null && Math.abs(top - reconcileTarget) <= 1
-      if (reconcileTarget !== null) geometryReconcileScrollTopRef.current = null
-      const { scrolledUp, action } = decideFollowTransition(
-        { top, height, clientHeight: el.clientHeight, lastTop: previousTop, lastHeight: previousHeight },
-        {
-          scrolledUp: userScrolledUpRef.current,
-          hardLocked: hardLockedRef.current,
-          geometryReconciliation,
-          userInputActive: touchScrollActiveRef.current || explicitScrollInputRef.current,
-        },
-      )
-      lastTop = top
-      lastHeight = height
-      if (action === 'follow-off') {
-        log.debug('chat-scroll', 'user scrolled UP → HOLD position, stop following (new messages will NOT yank)', { top, gap })
-        noteFollowTransition(String(shape.id), action, {
-          top,
-          height,
-          clientHeight: el.clientHeight,
-          gap,
-          lastTop: previousTop,
-          lastHeight: previousHeight,
-          bufferKey: chatEventBufferKey,
-        })
-        goToTailRunRef.current += 1
-        userScrolledUpRef.current = scrolledUp
-        captureViewportAnchor()
-        setFleetEventsLiveTailPinned(shape.id, false, chatEventBufferKey)
-      } else if (action === 'follow-on') {
-        if (!isTrueBottomGap(gap)) {
-          log.debug('chat-scroll', 'near-bottom scroll ignored until true bottom', { top, gap })
-          captureViewportAnchor()
-          return
-        }
-        log.debug('chat-scroll', 'user returned to true bottom → resume stick-to-bottom', { top, gap })
-        noteFollowTransition(String(shape.id), action, {
-          top,
-          height,
-          clientHeight: el.clientHeight,
-          gap,
-          lastTop: previousTop,
-          lastHeight: previousHeight,
-          bufferKey: chatEventBufferKey,
-        })
-        userScrolledUpRef.current = scrolledUp
-        viewportAnchorRef.current = null
-        setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-      }
-      if (userScrolledUpRef.current) {
-        // Same window as the reconcile hold above, through the same predicate.
-        // A pointer held with no scroll input does not reach this path, so that
-        // term stays out of this call rather than changing what it decides.
-        if (!isReaderInputInFlight({
-          touchScrollActive: touchScrollActiveRef.current,
-          explicitScrollInput: explicitScrollInputRef.current,
-        })) restoreViewportAnchor()
-        captureViewportAnchor()
-      }
-      else checkFollowInvariant('scroll-event')
-    }
-    document.addEventListener('wheel', handleWheelCapture, { capture: true, passive: false })
-    el.addEventListener('scroll', handle, { passive: true })
-    el.addEventListener('touchstart', onTouchStart, { passive: true })
-    el.addEventListener('touchmove', onTouchMove, { passive: true })
-    el.addEventListener('touchend', onTouchEnd, { passive: true })
-    el.addEventListener('touchcancel', onTouchEnd, { passive: true })
+    el.addEventListener('scroll', handleAnchoredScroll, { passive: true })
     return () => {
-      document.removeEventListener('wheel', handleWheelCapture, true)
-      el.removeEventListener('scroll', handle)
-      el.removeEventListener('touchstart', onTouchStart)
-      el.removeEventListener('touchmove', onTouchMove)
-      el.removeEventListener('touchend', onTouchEnd)
-      el.removeEventListener('touchcancel', onTouchEnd)
-      if (settleTimer) clearTimeout(settleTimer)
+      el.removeEventListener('scroll', handleAnchoredScroll)
       if (explicitScrollInputTimerRef.current) clearTimeout(explicitScrollInputTimerRef.current)
       if (followInvariantTimerRef.current) clearTimeout(followInvariantTimerRef.current)
       explicitScrollInputTimerRef.current = 0
@@ -4724,7 +4381,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       explicitScrollInputRef.current = false
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, restoreViewportAnchor, checkFollowInvariant, enterReaderMode, resumeFollowIfSettledAtBottom, reconcileViewportGeometry, flushDeferredGeometry])
+  }, [chatLogEl, flushDeferredGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {
@@ -5983,9 +5640,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   const filterHasMatchingAgent = useFleetFilterHasMatchingAgent(dnfFilter, frameId)
   const isImpossibleFilter = filter.length > 0 && !filterHasMatchingAgent
 
-  // Attach click/tap handlers to the Virtuoso-owned scroll container.
-  // Listener-based (not JSX prop) because the Scroller is memoized and
-  // doesn't close over changing callbacks.
+  // Attach click/tap handlers to the chat scroll container.
+  // Listener-based (not JSX prop) because the handlers need delegated access to
+  // HTML rows rendered from message markup.
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
@@ -6884,50 +6541,42 @@ function FleetChatInner({ shape }: { shape: any }) {
 
           <>
               {showUnreadAgentRail && <FleetUnreadAgentRail unreadCounts={unreadRailCounts} displayedUnreadSenderIds={displayedUnreadSenderIds} startDrag={startUnreadRailDrag} />}
-              {/* Messages — Virtuoso owns the scroll container and all virtualized
-                  item measurement, including the status/suggestions trailing row. */}
-              <Virtuoso
-            ref={virtuosoRef}
-            data={allItems}
-            firstItemIndex={virtuosoFirstItemIndex}
-            startReached={() => {
-              // The boundary is read from the buffer here, at the moment the
-              // reader reaches the top, rather than remembered by the
-              // subscription — the buffer is the only thing that knows where
-              // this panel's scrollback actually ends.
-              if (!chatEventBufferKey) return
-              requestEarlierChatHistory(
-                chatEventBufferKey,
-                oldestBufferedEventTimestamp(chatEventBufferKey),
-              )
-            }}
-            style={{ flex: 1, minHeight: 0 }}
-            initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-            alignToBottom
-            followOutput={() => (!userScrolledUpRef.current || hardLockedRef.current) ? 'auto' : false}
-            atBottomThreshold={1}
-            atBottomStateChange={(atBottom) => {
-              const t0 = probe.isEnabled('chat') ? performance.now() : 0
-              const el = chatLogEl
-              const gap = el ? (el.scrollHeight - (el.scrollTop + el.clientHeight)) : null
-              setAtBottom(atBottom)
-              if (probe.isEnabled('chat')) {
-                const dt = performance.now() - t0
-                if (dt > 1) {
-                  probe.record('chat', 'chat-at-bottom-change', dt, {
-                    atBottom,
-                    gap,
-                    itemCount: allItems.length,
+              <AnchoredChatList
+                ref={anchoredListRef}
+                items={allItems}
+                resetKey={filterKey}
+                style={{ flex: 1, minHeight: 0 }}
+                setScroller={setAnchoredChatScroller}
+                onStartReached={() => {
+                  if (!chatEventBufferKey) return
+                  requestEarlierChatHistory(
+                    chatEventBufferKey,
+                    oldestBufferedEventTimestamp(chatEventBufferKey),
+                  )
+                }}
+                onAtBottomChange={(atBottom) => {
+                  const t0 = probe.isEnabled('chat') ? performance.now() : 0
+                  setAtBottom(atBottom)
+                  if (probe.isEnabled('chat')) {
+                    const dt = performance.now() - t0
+                    if (dt > 1) {
+                      probe.record('chat', 'chat-at-bottom-change', dt, {
+                        atBottom,
+                        itemCount: allItems.length,
+                      })
+                    }
+                  }
+                }}
+                onTailModeChange={(followingTail) => {
+                  userScrolledUpRef.current = !followingTail
+                  if (followingTail) viewportAnchorRef.current = null
+                  setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || followingTail, chatEventBufferKey)
+                  noteFollowTransition(String(shape.id), followingTail ? 'follow-on' : 'follow-off', {
+                    reason: 'anchored-list',
+                    bufferKey: chatEventBufferKey,
                   })
-                }
-              }
-            }}
-            itemContent={(_index, item) => (
-              <div
-                className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
-                data-chat-item-key={String(item?.key ?? '')}
-              >
-                {item?._status ? (
+                }}
+                renderItem={(item) => item?._status ? (
                   <ThinkingStatus
                     thinkingAgents={thinkingAgents}
                     compactingAgents={compactingAgents}
@@ -6941,9 +6590,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                   />
                 ) : (
                   <ChatMessageRow
-                    html={item.html}
+                    html={item.html || ''}
                     postProcess={postProcess}
-                    itemKey={item.key}
+                    itemKey={String(item.key)}
                     expandedRowsRef={expandedRowsRef}
                     collapsedRowsRef={collapsedRowsRef}
                     semanticRenderCtx={ctx}
@@ -6952,12 +6601,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     semanticOperationPageSize={semanticOperationPageSize}
                   />
                 )}
-              </div>
-            )}
-            computeItemKey={(_index, item) => item?.key ?? _index}
-            components={{
-              Scroller: ChatLogScroller,
-            }}
               />
               {chatMessages.length === 0 && (
                 <div

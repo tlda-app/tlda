@@ -596,6 +596,34 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   overscroll-behavior: contain;
 }
 
+.fleet-chat-log-anchored {
+  position: relative;
+  overflow-y: auto;
+  padding: 4px 0;
+  scrollbar-width: none;
+}
+
+.fleet-chat-log-anchored::-webkit-scrollbar {
+  display: none;
+}
+
+.fleet-chat-scroll-sensor {
+  position: relative;
+  min-height: 100%;
+}
+
+.fleet-chat-anchored-slice {
+  position: absolute;
+  inset: 0 0 auto 0;
+  contain: layout;
+}
+
+.fleet-chat-anchored-slice .chat-row-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
 /* Countdown leaves keep fixed inline geometry while their text ticks. */
 .fleet-chat-shape .ticker-countdown {
   display: inline-block;
