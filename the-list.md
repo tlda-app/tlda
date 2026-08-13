@@ -1,13 +1,13 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `96ce21dcf`, 14 commits
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `54af0a767`, 16 commits
 ahead** — anything that landed tonight is on `main` and not on your screen. Status re-baselined
-against those two at 01:28 EDT.
+against those two at 01:35 EDT.
 
 **Status:** ✅ working on your box · ⚠️ built, not on your box · 🔨 being worked now · ○ not
 started.
 
-**93 things**, counted. It was 94 until the schedule and the course website merged into one row. The merging below is real, and so is this count now — I said 71 first and had not counted it. What merged and what was added is at the
+**93 things**, counted at write time. It was 94 until the schedule and the course website merged into one row. The merging below is real, and so is this count now — I said 71 first and had not counted it. What merged and what was added is at the
 bottom, so you can check it rather than take it.
 
 ## Chat and scrolling
@@ -72,7 +72,8 @@ bottom, so you can check it rather than take it.
 
 | | | |
 |---|---|---|
-| ○ | **Put a real paper on sync and watch it** | **The whole of what is left here, and nobody is on it.** The instruments are on your box: telemetry that reported "online" unconditionally is fixed, a dropped keystroke says so, an edit that reaches nowhere is timed. Nobody has run one |
+| ○ | **Put a real paper on sync and watch it** | **Waiting on your order, not on us** — *"having an instrumented version would help once I read the tests and feel okay about what the tests are doing."* Tests exist and are green, the editor is live and proven over the wire against the deployed build, the instrument is designed. **My earlier wording said nobody was on it, which billed you for your own sequencing.** `sync-pm` |
+| 🔨 | **One binary file makes a stale-base push unrebasable, forever** | Found tonight. `deriveClassifications` classifies the union of every path rather than the changed ones, `classifyThreeWay` returns `classification-unavailable` for binaries, and `cleanRebaseFiles` requires every classification to be a candidate — **so a single `.png` in the project poisons every rebase of files it has nothing to do with.** Text-only disjoint edits do merge, measured. **It works on a probe and fails on any paper with a figure in it.** `sync-pm` |
 | ✅ | Moving a project keeps its history | Four versions in, four out |
 | ✅ | The linked-git and Overleaf tests | You called them important three times |
 | ✅ | The source editor works with two people in it | |
@@ -88,7 +89,7 @@ bottom, so you can check it rather than take it.
 |---|---|---|
 | ⚠️ | `thread()` asks for the two-party conversation | **Done tonight — `281e36039`, the behaviour and not just the docstring.** It reaches an agent when its MCP restarts, not on deploy, so agents minted from now already have it |
 | ○ | A handoff through Todd never works | Reported three times across three days. **Nobody has found a cause.** An inherited note said Todd was not running on `testing`; that is false — `fleet-todd` has been up since 22:27 and has been sending check-ins all night |
-| ○ | A bot's tmux session should die with the bot | You said "go for it" on 08-10; a session from 31 July is still running |
+| ○ | A bot's tmux session should die with the bot | You said "go for it" on 08-10. **My earlier wording was wrong: no session from July exists.** What exists is a *process* from 31 July — pid 800, **12 days elapsed, 195 minutes of CPU and still climbing** — waiting on `tmux wait-for` for a session name that was never created. The absent session is exactly why it never exits |
 | ○ | Bots have no real options | |
 | ○ | Reanimate does nothing and says nothing | |
 | ○ | Minting sonnet and terra agents fails silently | |
