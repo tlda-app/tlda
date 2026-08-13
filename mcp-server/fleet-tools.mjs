@@ -4518,8 +4518,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           if (!filterExpression) {
             return { content: [{ type: 'text', text: `thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
           }
+          // `from:X` means the conversation between you and X. A thread is
+          // between two parties, so a bare one-sided read is not a thread —
+          // it is one agent talking to the whole fleet, and agents have acted
+          // on instructions in it that were addressed to somebody else.
+          // Rewriting is what makes the argument mean what it says; warning
+          // about it left the wrong read one typo away.
           const bareFrom = /^\s*from:\s*([^\s&|!()]+)\s*$/.exec(filterExpression);
-          if (bareFrom && bareFrom[1] !== 'me') oneSidedName = bareFrom[1];
+          if (bareFrom && bareFrom[1] !== 'me') {
+            oneSidedName = bareFrom[1];
+            filterExpression = `me <> ${bareFrom[1]}`;
+          }
           await fetchEventsForFilter(filterExpression);
         }
       } catch (e) {
@@ -4618,7 +4627,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       header = `${filtered.length} messages${rangeStr}`;
     }
     if (oneSidedName) {
-      header += `\n↳ This is ${oneSidedName} talking to everyone, not to you — most of it is addressed to other agents, so do not read it as instructions to you. For the conversation between you and ${oneSidedName}, use \`thread(agent: "${oneSidedName}")\`.`;
+      header += `\n↳ Read as the conversation between you and ${oneSidedName}, both directions — \`from:${oneSidedName}\` alone is ${oneSidedName} talking to the whole fleet, which is almost never what a thread means. To get that wider traffic deliberately, ask for \`from:${oneSidedName} | to:${oneSidedName}\` or another explicit filter.`;
     }
 
     // Fetch shadow commit log if project parameter provided
