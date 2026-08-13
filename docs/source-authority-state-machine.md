@@ -88,6 +88,19 @@ Whoever takes it: this is a change to who receives a notification, which is
 closer to a product decision than a sync fix, so it wants a judgement before it
 lands rather than after.
 
+And a second gap in the same family, found on a real paper rather than in a
+fixture: **a stale-base refusal with no textual conflict records nothing.**
+Conflict state is written from the classifications that came back as `conflict`
+— files with marker text in them. A refusal where nothing produced markers (a
+binary both sides replaced, or any refusal the rebase could not settle) leaves
+`sourceSyncConflicts` empty, so the pill stays quiet and the paper looks fine.
+
+The person who pushed learns by their HTTP status. Nobody else learns at all,
+including the people who would want to know the paper has a participant stuck
+outside it. Measured on 2026-08-13: a participant holding a stale revision
+edited a bibliography nobody had touched, was refused, and the project's
+conflict state stayed empty.
+
 ## Applying an accepted remote revision locally
 
 The local decision is per changed path. Let:
