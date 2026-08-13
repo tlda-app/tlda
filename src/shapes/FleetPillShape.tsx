@@ -12,7 +12,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import type { Editor, TLShape, TLShapeId } from 'tldraw'
+import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { myTldaUrl } from '../fleet/tldaUrl.mjs'
 // @ts-ignore — vanilla JS module
@@ -26,6 +26,9 @@ import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { parseCanonicalReference } from '../../shared/canonical-references.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES, placeFleetShapeAtScreenPoint } from './fleet-utils'
+import { getHudEditor } from '../wm/editor-host-bridge'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { pagePointToClient } from '../wm/viewport-coordinates'
 import { materializeMarkdownChip } from './markdown-chip-materialize'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
 import {
@@ -615,7 +618,19 @@ export async function dropPillOnTarget(
         await createMarkdownDocviewShapeFromPill(createEditor, createPagePoint, pill, content, showError)) {
       return
     }
-    const reportDropScreenPoint = hitEditor.pageToScreen(targetPagePoint)
+    // Project with the camera that will read it back. This point is handed to
+    // createReportArtifactShapeFromPill, which passes it to
+    // placeFleetShapeAtScreenPoint, which converts screen back to page through
+    // the HUD viewport whenever the HUD is open (`fleet-utils.ts`). Projecting
+    // here with the main camera and un-projecting there with the HUD's put the
+    // artifact off by the overlay transform — non-zero whenever the layout has
+    // ridden the document. Naming the same viewport on both sides makes the
+    // round trip the identity it was always assumed to be.
+    const reportDropScreenPoint = pagePointToClient(
+      hitEditor,
+      targetPagePoint,
+      getHudEditor() ? (FLEET_HUD_VIEWPORT_ID as TLViewportId) : undefined,
+    )
     if (isFleetPillRecord(pill) && (pillType === 'file' || pillType === 'doc') &&
         await createReportArtifactShapeFromPill(createEditor, reportDropScreenPoint, pill, content, showError)) {
       return
