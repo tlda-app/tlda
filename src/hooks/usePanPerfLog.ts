@@ -243,6 +243,20 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
       for (const el of document.querySelectorAll('[data-shape-id]')) {
         const id = el.getAttribute('data-shape-id')
         if (!id || !pageIds.has(id) || !el.querySelector('svg')) continue
+        // Main canvas only. A page shape renders again inside every clip panel
+        // showing it — a fleet-docview, an annotation viewer — and each copy has
+        // the same shape id and its own `<svg>`, so it passes both tests above.
+        // Its rect is then measured against `editor.getViewportScreenBounds()`,
+        // which is the main viewport, and a panel that happens to be on screen
+        // adds the page a second time. `visibleNodes` sums path/use/text/tspan
+        // across whatever this returns, so the node count inflates by a whole
+        // page — while a panel is open, which is when someone is most likely to
+        // be looking at pan cost in the first place.
+        //
+        // A clip panel puts `data-viewport-id` on its container, so the canvas's
+        // copy is the one with no such ancestor. That makes the element set and
+        // the viewport bounds it is tested against describe the same surface.
+        if (el.closest('[data-viewport-id]')) continue
         const rect = el.getBoundingClientRect()
         if (rect.right < viewport.x || rect.left > viewport.x + viewport.w || rect.bottom < viewport.y || rect.top > viewport.y + viewport.h) continue
         pages.push(el)
