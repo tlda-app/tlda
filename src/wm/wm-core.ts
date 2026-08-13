@@ -82,7 +82,45 @@ export interface LayeredShape {
 	id: string
 	x: number
 	y: number
+	layerId?: LayerId
+}
+
+/**
+ * Answers "which layer is this shape in" for one core.
+ *
+ * Membership is a property of the shape record, not a table the WM keeps
+ * alongside it. A table would have to be maintained against every create,
+ * delete, and prop change in the store, and the moment it disagreed with the
+ * record the WM would be authoritative about something it had got wrong. Asking
+ * the record cannot drift.
+ *
+ * The core cannot read a host's records — `wm-core.ts` is package core and knows
+ * nothing about tldraw, fleet identity, or surface metadata — so the host
+ * supplies the one function. Returning `null` means "this shape is not in any
+ * layer I place", and the caller gets the root.
+ */
+export type ShapeLayerResolver = (shape: unknown) => LayerId | null | undefined
+
+/** A shape that carries its own layer says so, and that is the whole default. */
+export function defaultShapeLayerResolver(shape: unknown): LayerId | null {
+	const layerId = (shape as { layerId?: unknown } | null | undefined)?.layerId
+	return typeof layerId === 'string' ? layerId : null
+}
+
+/** What a shape occupies, in the layer it is in. `w`/`h` are optional so a
+ *  caller with only an origin does not have to invent an extent. */
+export interface ShapeExtent {
+	x: number
+	y: number
+	w?: number
+	h?: number
+}
+
+export interface LayerHit<T> {
+	shape: T
 	layerId: LayerId
+	/** The probe point expressed in that shape's own layer. */
+	point: Point
 }
 
 export interface LayerOwner {
@@ -187,6 +225,7 @@ function cloneLayer(layer: Layer): Layer {
 export class WMCore {
 	readonly rootLayerId: LayerId
 	private readonly layers = new Map<LayerId, Layer>()
+	private resolveShapeLayer: ShapeLayerResolver = defaultShapeLayerResolver
 
 	constructor(options: WMCoreOptions = {}) {
 		this.rootLayerId = options.rootLayerId ?? 'root'
@@ -243,7 +282,17 @@ export class WMCore {
 		if (definition.parent !== undefined) {
 			if (!this.layers.has(definition.parent)) throw new Error(`Parent layer "${definition.parent}" is not defined.`)
 			if (definition.parent === id) throw new Error('A layer cannot be its own parent.')
+			// Check before assigning. Assigning first leaves the rejected parent
+			// written when assertAcyclic throws, so a caller that catches the error
+			// carries on against a layer graph the throw claimed to have refused.
+			const previousParent = layer.parent
 			layer.parent = definition.parent
+			try {
+				this.assertAcyclic(id)
+			} catch (error) {
+				layer.parent = previousParent
+				throw error
+			}
 		}
 		if (definition.policy !== undefined) {
 			layer.policy = normalizePolicy({ ...layer.policy, ...definition.policy })
@@ -270,10 +319,6 @@ export class WMCore {
 
 	getLayer(id: LayerId): Layer {
 		return cloneLayer(this.requireLayer(id))
-	}
-
-	layerOf(shape: { layerId?: LayerId }): Layer {
-		return this.getLayer(shape.layerId ?? this.rootLayerId)
 	}
 
 	removeLayer(id: LayerId): void {
@@ -352,10 +397,94 @@ export class WMCore {
 		layer.layout = { ...layout }
 	}
 
+	/** Install the host's answer to "which layer is this shape in". Passing
+	 *  `null` restores the default, which reads `shape.layerId`. */
+	setShapeLayerResolver(resolver: ShapeLayerResolver | null): void {
+		this.resolveShapeLayer = resolver ?? defaultShapeLayerResolver
+	}
+
+	/**
+	 * The layer a shape is in. A shape the resolver does not place, or places in
+	 * a layer this core has never defined, is in the root — the WM says where it
+	 * can and does not pretend to a membership it cannot back with a transform.
+	 */
+	layerIdOfShape(shape: unknown): LayerId {
+		const resolved = this.resolveShapeLayer(shape)
+		if (typeof resolved === 'string' && this.layers.has(resolved)) return resolved
+		return this.rootLayerId
+	}
+
+	layerOfShape(shape: unknown): Layer {
+		return this.getLayer(this.layerIdOfShape(shape))
+	}
+
+	/** True when both shapes are in the same layer. The question an operation
+	 *  asks before it lets two shapes affect each other. */
+	sameLayer(a: unknown, b: unknown): boolean {
+		return this.layerIdOfShape(a) === this.layerIdOfShape(b)
+	}
+
+	/** A shape's extent, read in its own layer and expressed in another. This is
+	 *  the conversion every consumer needs and the reason membership exists:
+	 *  the caller names the layer it wants to work in and stops choosing an
+	 *  editor for itself. */
+	shapeExtentIn(shape: unknown, extent: ShapeExtent, toLayer: LayerId): Bounds {
+		const fromLayer = this.layerIdOfShape(shape)
+		return this.translateBounds(
+			{ x: extent.x, y: extent.y, w: extent.w ?? 0, h: extent.h ?? 0 },
+			fromLayer,
+			toLayer,
+		)
+	}
+
+	/**
+	 * The shapes under a point, nearest-declared first, each with the point
+	 * expressed in its own layer.
+	 *
+	 * The core does not hold the store, so candidates are passed in; what it
+	 * supplies is the part no caller can do for itself — converting one probe
+	 * point into however many different layers the candidates turn out to be in,
+	 * so a hit is decided in the frame the shape actually lives in.
+	 */
+	hitTest<T>(
+		point: Point,
+		pointLayerId: LayerId,
+		candidates: readonly T[],
+		extentOf: (shape: T) => ShapeExtent | null | undefined,
+	): LayerHit<T>[] {
+		this.requireLayer(pointLayerId)
+		const hits: LayerHit<T>[] = []
+		const byLayer = new Map<LayerId, Point>()
+
+		for (const shape of candidates) {
+			const extent = extentOf(shape)
+			if (!extent) continue
+			const layerId = this.layerIdOfShape(shape)
+			let local = byLayer.get(layerId)
+			if (!local) {
+				local = this.translate(point, pointLayerId, layerId)
+				byLayer.set(layerId, local)
+			}
+			const w = extent.w ?? 0
+			const h = extent.h ?? 0
+			if (local.x < extent.x || local.x > extent.x + w) continue
+			if (local.y < extent.y || local.y > extent.y + h) continue
+			hits.push({ shape, layerId, point: clonePoint(local) })
+		}
+
+		return hits
+	}
+
+	/**
+	 * Re-express a shape's origin in another layer. §2.4 of the design, and the
+	 * same operation a window manager performs when it reparents a window: the
+	 * shape does not move on screen, its coordinates are restated against a
+	 * different frame.
+	 */
 	moveToLayer<T extends LayeredShape>(shape: T, targetLayerId: LayerId): T {
-		this.requireLayer(shape.layerId)
+		const fromLayer = this.layerIdOfShape(shape)
 		this.requireLayer(targetLayerId)
-		const point = this.translate({ x: shape.x, y: shape.y }, shape.layerId, targetLayerId)
+		const point = this.translate({ x: shape.x, y: shape.y }, fromLayer, targetLayerId)
 		return { ...shape, x: point.x, y: point.y, layerId: targetLayerId }
 	}
 
