@@ -8,6 +8,9 @@ interface EditorWMState {
 	wm: WMCore
 	viewportLayers: Map<string, RegisteredViewportLayer>
 	coordinateTraces: CoordinateTrace[]
+	/** Host-supplied readout of shape membership, published for inspection. The
+	 *  core cannot enumerate a host's store, so the host hands it in. */
+	shapeLayerReport?: () => unknown
 }
 
 export interface RegisteredViewportLayer {
@@ -71,8 +74,19 @@ function exposeState(state: EditorWMState) {
 			surfaceLayerId: registration.surfaceLayerId,
 		})),
 		layerCount: state.wm.layerCount(),
+		layerIds: state.wm.layerIds(),
+		// "Which layer is this shape in", answerable from the console against the
+		// running app rather than from a reading of the source.
+		layerIdOfShape: (shape: unknown) => state.wm.layerIdOfShape(shape),
+		shapeLayerReport: state.shapeLayerReport,
 	}
 	w.__tlda_wm_coordinate_traces__ = state.coordinateTraces
+}
+
+export function setShapeLayerReport(editor: Editor, report: () => unknown) {
+	const state = getEditorWMState(editor)
+	state.shapeLayerReport = report
+	exposeState(state)
 }
 
 export function getEditorWMState(editor: Editor): EditorWMState {

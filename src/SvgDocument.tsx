@@ -39,6 +39,7 @@ import { FleetReportArtifactShapeUtil } from './shapes/FleetReportArtifactShape'
 import { FleetSourceEditorShapeUtil } from './shapes/FleetSourceEditorShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { dispatchFleetHudReset } from './wm/editor-host-bridge'
+import { installTldaShapeLayers } from './wm/tlda-shape-layers'
 import { log } from './logger'
 import { dispatchShapeRenderError } from './shape-error-surface'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
@@ -1104,6 +1105,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
         getShapeVisibility={getShapeVisibility}
         onMount={(editor) => {
           const cleanupFleetPillReclaimer = installFleetPillReclaimer(editor)
+          // Give the window manager its layers and the resolver that says which
+          // one a shape is in, before anything asks. Every other WM consumer
+          // reaches this core through getEditorWMCore, so installing at mount is
+          // what makes membership a property of the editor rather than of
+          // whichever surface happened to mount first.
+          installTldaShapeLayers(editor)
           // Expose editor for debugging/puppeteer access
           ;(window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor

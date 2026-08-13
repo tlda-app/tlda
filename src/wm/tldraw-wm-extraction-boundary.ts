@@ -53,6 +53,12 @@ export const WM_EXTRACTION_MODULES = [
 		publicContract: 'DOM and TLDraw viewport frame helpers for gesture hit testing with host-supplied selectors.',
 	},
 	{
+		path: 'src/wm/tlda-shape-layers.ts',
+		classification: 'tlda-host-adapter',
+		publicContract: 'tlda shape-to-layer resolution, layer installation at editor mount, and the membership readout.',
+		remainingHostDependency: 'Fleet ownership predicates, managed-surface meta keys, and the HUD viewport id stay in tlda.',
+	},
+	{
 		path: 'src/wm/editor-host-bridge.ts',
 		classification: 'tlda-host-adapter',
 		publicContract: 'Current tlda host-editor globals and HUD reset/toggle event bridge.',

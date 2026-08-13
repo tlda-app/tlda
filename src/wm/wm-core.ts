@@ -275,6 +275,10 @@ export class WMCore {
 		return this.layers.size
 	}
 
+	layerIds(): LayerId[] {
+		return [...this.layers.keys()]
+	}
+
 	updateLayer(id: LayerId, definition: LayerDefinition = {}): Layer {
 		const layer = this.requireLayer(id)
 		if (id === this.rootLayerId) throw new Error('Cannot update the root layer.')
