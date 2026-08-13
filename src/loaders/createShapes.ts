@@ -199,6 +199,11 @@ export function createHtmlShapes(
     const targetPageId = page.tldrawPageId ? pageIdMap.get(page.tldrawPageId) : defaultPageId
     const existing = editor.getShape(page.shapeId) as HtmlPageShape | undefined
     const source = htmlPageSourceProp(page.source)
+    // Every document of the project other than its main one is a place in the
+    // project's world, which is what puts it on the Project tab.
+    const worldMeta = page.spatialWorldTitle
+      ? { spatialWorldDocument: true, spatialWorldTitle: page.spatialWorldTitle }
+      : undefined
     if (!existing) {
       createHtmlPageShape(editor, {
         id: page.shapeId,
@@ -207,6 +212,7 @@ export function createHtmlShapes(
         x: page.bounds.x,
         y: page.bounds.y,
         isLocked: true,
+        ...(worldMeta ? { meta: worldMeta } : {}),
         props: {
           w: page.bounds.w,
           h: page.bounds.h,
@@ -223,11 +229,13 @@ export function createHtmlShapes(
     const h = viewport && existing.y + existing.props.h < viewport.minY
       ? Math.max(existing.props.h, viewport.maxY - existing.y + 1)
       : existing.props.h
+    const existingMeta = (existing.meta || {}) as { spatialWorldTitle?: string }
     if (
       existing.parentId === targetPageId &&
       existing.x === page.bounds.x &&
       existing.y === page.bounds.y &&
       existing.isLocked === true &&
+      existingMeta.spatialWorldTitle === page.spatialWorldTitle &&
       existing.props?.w === page.bounds.w &&
       existing.props?.h === h &&
       existing.props?.url === page.src &&
@@ -239,6 +247,7 @@ export function createHtmlShapes(
       x: page.bounds.x,
       y: page.bounds.y,
       isLocked: true,
+      meta: { ...(existing.meta as Record<string, unknown> || {}), ...(worldMeta || {}) },
       props: {
         ...existing.props,
         w: page.bounds.w,
@@ -247,6 +256,19 @@ export function createHtmlShapes(
         source,
       },
     })
+    changed = true
+  }
+
+  // This document used to get one TLDraw page per entry. Those pages are now
+  // empty, and an empty canvas page left behind by a deleted path is exactly the
+  // stale garbage it reads as. Only pages this document created, only when they
+  // hold nothing, and never the one being looked at.
+  const livePageIds = new Set(document.pages.map(page => page.tldrawPageId))
+  for (const page of editor.getPages()) {
+    if (!String(page.id).startsWith(`page:${document.name}-ch-`)) continue
+    if (livePageIds.has(page.id) || page.id === editor.getCurrentPageId()) continue
+    if (editor.getPageShapeIds(page.id).size > 0) continue
+    editor.deletePage(page.id)
     changed = true
   }
 
