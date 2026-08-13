@@ -1,4 +1,6 @@
-import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useCallback, useContext, useEffect, useRef, type ReactNode } from 'react'
+import { useEditor } from 'tldraw'
+import { ProjectContext } from '../PanelContext'
 import {
   MAX_RADIO_SUBTITLE_DWELL_SEC,
   MIN_RADIO_SUBTITLE_DWELL_SEC,
@@ -9,6 +11,7 @@ import {
   subscribePref,
 } from '../preferences'
 import { setBackend as setVoiceBackend } from '../voice.mjs'
+import { downloadEmergencyDump } from '../emergencyDump'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
 import {
@@ -305,6 +308,40 @@ function readAll() {
     botSelfCheckCountdown: getPref('bot-self-check-countdown-sec'),
     loadError: getPrefsLoadError(),
   }
+}
+
+/**
+ * The emergency exit for content that cannot sync.
+ *
+ * An unsynced edit lives in the tldraw store in memory and nowhere else, so when the
+ * connection is down the only routes out were a screenshot or selecting the text by
+ * hand. Skip spent fifteen minutes doing the second one. This reads the local store
+ * and writes a file — no network in the path, which is the point.
+ *
+ * A plain button with a spoken label, so iPadOS Voice Control can trigger it by name.
+ * Do not turn it into an icon.
+ *
+ * It lives in Settings and it is not a setting. Skip, 2026-08-12 22:46 EDT: "I think
+ * it should be in the settings panel. I know it's, like, not a setting, but it's,
+ * like, it doesn't go where it fucking goes." So it sits below the sections rather
+ * than inside one, and outside the search filter — the moment you need it is the
+ * moment nothing else is working, and a disclosure triangle is one thing too many.
+ */
+function EmergencyDumpButton() {
+  const editor = useEditor()
+  const doc = useContext(ProjectContext)
+  const [saved, setSaved] = useState<string | null>(null)
+
+  const dump = useCallback(() => {
+    const name = downloadEmergencyDump(editor, doc?.projectName || 'document')
+    setSaved(name)
+  }, [editor, doc?.projectName])
+
+  return (
+    <button className="toc-diff-hint" onClick={dump} title="Write every note and the whole canvas to a Markdown file, without the server">
+      <span className="toc-toggle-icon">{'⤓'}</span> {saved ? `Saved ${saved}` : 'Download everything to a file'}
+    </button>
+  )
 }
 
 export function PrefsTab({ query = '' }: { query?: string }) {
@@ -785,6 +822,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
       {normalizedQuery && (Object.keys(PREFS_SEARCH_TEXT) as PrefsSectionId[]).every(id => !sectionVisible(id)) && (
         <div className="panel-empty">No settings found</div>
       )}
+
+      <PrefSubsection title="If something is wrong">
+        <EmergencyDumpButton />
+      </PrefSubsection>
     </div>
   )
 }
