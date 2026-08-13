@@ -238,6 +238,46 @@ body.tlda-pan-mode * {
   background: #dc2626;
 }
 
+/* The emergency exit on the sync-failure screen. The unsynced shapes are still in
+   memory here and this is the only way to get them out, so it comes first, reads as
+   the primary action, and is kept well clear of "Clear broken shapes" — a mistap
+   between the two is the difference between saving the work and destroying it. */
+.error-rescue {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e2e8f0;
+  width: 100%;
+  max-width: 400px;
+}
+
+.error-rescue-note {
+  font-size: 0.875rem;
+  color: #334155;
+  margin: 0;
+}
+
+/* Specificity note: `.ErrorScreen button` later in this file is (0,1,1) and beats a
+   lone class, so the rescue button is qualified by its wrapper to reach (0,2,0). It
+   must not end up sharing an appearance with the destructive button beside it. */
+.error-rescue .error-rescue-btn {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  background: #16a34a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.error-rescue .error-rescue-btn:hover {
+  background: #15803d;
+}
+
 .PickerScreen {
   font-family: system-ui, -apple-system, sans-serif;
   padding: 2rem;

@@ -15,6 +15,7 @@ import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { probe } from './perf-probe'
 import { installLivePerfProbe } from './livePerfProbe'
+import { downloadEmergencyDump } from './emergencyDump'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
 import { TocDropTargetShapeUtil } from './shapes/TocDropTargetShape'
 // noteThreading removed — no tabs
@@ -375,6 +376,30 @@ function VersionStamp({ document }: { document: SvgDocument }) {
 function SlideNavWrapper({ document }: { document: SvgDocument }) {
   const editor = useEditor()
   return <SlidesNavigator editor={editor} document={document} />
+}
+
+/**
+ * The emergency exit on the sync-failure screen.
+ *
+ * Takes the editor directly rather than through `useEditor`, because this renders
+ * outside the tldraw tree. It is only mounted when the editor already mounted — if
+ * sync died before that there is no store and nothing to save.
+ *
+ * It goes above the other two actions and behind a rule, so it is the first thing
+ * reached and nowhere near "Clear broken shapes".
+ */
+function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documentName: string }) {
+  const [saved, setSaved] = useState<string | null>(null)
+  return (
+    <div className="error-rescue">
+      <p className="error-rescue-note">
+        Anything you wrote that never synced is still in this tab. Save it before anything else.
+      </p>
+      <button className="error-rescue-btn" onClick={() => setSaved(downloadEmergencyDump(editor, documentName))}>
+        {saved ? `Saved ${saved}` : 'Download everything to a file'}
+      </button>
+    </div>
+  )
 }
 
 export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera, classroomMarking = false }: SvgDocumentEditorProps) {
@@ -977,6 +1002,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   // When the sync store hits an error (e.g. ValidationError from unknown shape types),
   // show an error screen instead of an infinite spinner. Keep this after all hooks
   // in SvgDocumentEditor so a later sync error does not change the hook count.
+  //
+  // The ToC panel's copy of the emergency exit is unreachable from here: DocumentPanel
+  // is a <Tldraw> components override, and this branch returns before <Tldraw> renders.
+  // So the one screen that means sync has failed permanently is the one screen the
+  // hatch was missing from, while the unsynced shapes are still in the store in memory
+  // and "Clear broken shapes" is on offer. Second call site, same function.
   if (storeWithStatus.status === 'error') {
     const err = storeWithStatus.error
     const errMsg = err?.message || String(err) || 'Unknown sync error'
@@ -992,6 +1023,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
               Schema validation error — a shape prop type mismatch between client and server.
               Check server logs for the specific field that failed validation.
             </p>
+          )}
+          {editorRef.current && (
+            <EmergencyDumpRescue editor={editorRef.current} documentName={document.name} />
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
             <button
