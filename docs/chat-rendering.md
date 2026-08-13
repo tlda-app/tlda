@@ -408,6 +408,11 @@ through `shouldLog(ns, level)` against a default threshold of `warn`
 `metric` record, not an `info` one — reading it as evidence that `info` passes the
 gate is a trap, and it has caught someone already.
 
+**Source that rule to `logger.ts:162` and `:53`, never to the comment at `:58`**,
+which says every call is queued regardless of threshold and describes behaviour the
+comment at `:122` says was removed. Two agents got opposite wrong answers out of it
+tonight. Recorded in [Naming errata](naming-errata.md).
+
 Two consequences that decide how records here should be read:
 
 - **A namespace is not uniformly visible.** `chat-scroll` has **4 `log.metric`
