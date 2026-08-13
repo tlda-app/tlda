@@ -64,7 +64,7 @@ A chat row is **not a React tree**. The pipeline is:
    indicator and suggestions. The status row is a real measured list item
    deliberately, "so Virtuoso remains the only scroll authority when
    status/suggestions change height" (`:2857-2859`).
-3. `Virtuoso` renders each item through `itemContent` (`:6843`) into a
+3. `Virtuoso` renders each item through `itemContent` (`:6885`) into a
    `.chat-row-wrap` carrying `data-chat-item-key` — the attribute every anchoring
    and measurement path in this file keys off.
 4. `ChatMessageRow` (`:2225`) writes the string with `dangerouslySetInnerHTML`.
@@ -77,7 +77,7 @@ message arriving:
 
 - **new or changed items** — React re-renders the row from a new `html` string;
 - **the row's own imperative handlers** — expand/collapse writes `style.display`
-  directly (`:4978` onward), with no React render involved;
+  directly (`:5020` onward), with no React render involved;
 - **the nested roots** — `ThreadChatOperationView` (`:1971`) issues an async
   `searchFleet`, renders `loading...`, and replaces it with a full thread render
   whenever that resolves (`:2027`). The row grows arbitrarily later, with nothing
@@ -100,8 +100,8 @@ Five claimants. Ranked by who wins when they disagree:
 | **the reader** | the browser's own scrolling, plus our wheel handler | always; every other writer defers to a gesture in flight |
 | **the compositor** | momentum glide after a finger lifts | always; nothing may write `scrollTop` during it |
 | **Virtuoso** | `followOutput`, `firstItemIndex`, `initialTopMostItemIndex`, `scrollToIndex` | only while following the tail — `followOutput` returns `false` in reader mode |
-| **our anchoring** | `restoreViewportAnchor` (`:4105`) | only in reader mode, not hard-locked, with an anchor held, and no input in flight |
-| **the follow repair** | `reconcileViewportGeometry`'s tail branch (`:4154`), `goToTail` (`:4366`) | only while following |
+| **our anchoring** | `restoreViewportAnchor` (`:4125`) | only in reader mode, not hard-locked, with an anchor held, and no input in flight |
+| **the follow repair** | `reconcileViewportGeometry`'s tail branch (`:4190`), `goToTail` (`:4408`) | only while following |
 
 The reader and the compositor are the same authority for our purposes: both are
 recognised through `isReaderInputInFlight` (`chatViewportAnchor.mjs:39`), and both
@@ -114,7 +114,7 @@ position unchanged with `deferred: true` rather than a delta of zero
 
 ## What Virtuoso is given, and what each prop answers
 
-`react-virtuoso@4.18.11`. The full prop set at `FleetChatShape.tsx:6815`:
+`react-virtuoso@4.18.11`. The full prop set at `FleetChatShape.tsx:6857`:
 
 | prop | value | the question it answers |
 |---|---|---|
@@ -154,28 +154,28 @@ rows are re-measured while the reader is scrolled up.**
 
 It is a capture/restore pair over a single row:
 
-- `captureViewportAnchor` (`:4019`) — find the first row whose bottom is at or
+- `captureViewportAnchor` (`:4034`) — find the first row whose bottom is at or
   below the viewport top, and record `{key, top}` where `top` is its offset from
   the viewport top. It is a no-op that clears the anchor unless the reader is
   scrolled up.
-- `restoreViewportAnchor` (`:4060`) — find that same row by key, measure how far
+- `restoreViewportAnchor` (`:4075`) — find that same row by key, measure how far
   it has moved, and add that delta to `scrollTop`.
 
 Three ways it declines, each instrumented because each is a silent failure:
 
 - **the guard says no** — `shouldPreserveChatViewport` (`chatViewportAnchor.mjs:22`)
   requires scrolled-up, not hard-locked, and an anchor held.
-- **the anchored row left the DOM** (`:4073-4085`) — Virtuoso unmounts rows
+- **the anchored row left the DOM** (`:4088-4100`) — Virtuoso unmounts rows
   outside its render window, which is exactly what a re-anchor does, so this is
   likely precisely when the viewport most needs holding. Nothing corrects the
   position after this return.
-- **the correction is larger than the scroll range on offer** (`:4092-4102`) —
+- **the correction is larger than the scroll range on offer** (`:4107-4117`) —
   recorded with the `scrollTop`/`scrollHeight`/`clientHeight` triple so it is a
   measurement rather than an inference.
 
 `captureViewportAnchor` also carries a pure observation: if the anchored row moved
 by more than 1px with no input in flight, it records `anchor drifted with no
-input` (`:4045`). The comment there is blunt about what it is not — it still
+input` (`:4060`). The comment there is blunt about what it is not — it still
 re-baselines, and the re-baselining is the bug.
 
 ---
@@ -186,10 +186,10 @@ Four inside the component:
 
 | site | writes | guarded by |
 |---|---|---|
-| `restoreViewportAnchor` `:4105` | `+= delta` | `shouldPreserveChatViewport`, plus the input check in each caller |
-| `reconcileViewportGeometry` `:4154` | `= scrollHeight` (tail branch) | `isReaderInputInFlight` at `:4130` |
-| `handleWheelCapture` `:4524` | `+= e.deltaY` | none — this **is** the reader |
-| `goToTail` `:4379` | `scrollToIndex({index:'LAST'})` via Virtuoso | a run token (`goToTailRunRef`) that any reader-mode entry invalidates |
+| `restoreViewportAnchor` `:4125` | `+= delta` | `shouldPreserveChatViewport`, plus the input check in each caller |
+| `reconcileViewportGeometry` `:4190` | `= scrollHeight` (tail branch) | `isReaderInputInFlight` at `:4166` |
+| `handleWheelCapture` `:4566` | `+= e.deltaY` | none — this **is** the reader |
+| `goToTail` `:4421` | `scrollToIndex({index:'LAST'})` via Virtuoso | a run token (`goToTailRunRef`) that any reader-mode entry invalidates |
 
 Three outside it, writing the same element through the class name:
 
@@ -249,8 +249,8 @@ concern:
 
 | woken by a write | where | what it does |
 |---|---|---|
-| the panel's scroll handler | `FleetChatShape.tsx:4644` | the follow/read decision and the anchor restore — **the only one this document's guards cover** |
-| the item-list `ResizeObserver` | `:4214` | `reconcileViewportGeometry`, behind the self-write latch |
+| the panel's scroll handler | `FleetChatShape.tsx:4686` | the follow/read decision and the anchor restore — **the only one this document's guards cover** |
+| the item-list `ResizeObserver` | `:4250` | `reconcileViewportGeometry`, behind the self-write latch |
 | the stranded-row `MutationObserver` | `chat-stranded-row-probe.mjs:202` | record-only. A write renders a different row window, which is `childList` churn on the observed list |
 | Virtuoso's own scroll and resize listeners | inside `react-virtuoso` | its scroll model, `atBottomStateChange`, and `followOutput`'s at-bottom argument |
 | a screenshot-bounds overlay | `useYjsSignals.ts:366` | repositions itself on every chat scroll |
@@ -269,23 +269,35 @@ The two guards are not symmetric and the asymmetry is deliberate:
   reader scroll that happens to land in the same frame is still read as the
   reader.
 - `selfWriteResizePendingRef` is a **boolean latch**. It drops one firing
-  unconditionally. The commit that added it (`c951b38fa`) argues nothing is lost:
-  the same write also emits a scroll event, and the scroll handler runs the
-  identical restore behind the identical input guard in the same frame, so what
-  is skipped is a second forced layout over every rendered row, not a correction.
+  unconditionally. Nothing is lost by that: the same write also emits a scroll
+  event, and the scroll handler runs the identical restore behind the identical
+  input guard in the same frame, so what is skipped is a second forced layout over
+  every rendered row, not a correction.
 
-**The observer's diagnostics run before its guard** (`:4219`), deliberately: a
-suppressed firing is exactly the one worth seeing, and `recordRowResizes` (`:4184`)
+**That latch is precautionary, not measured, and its history says why that
+distinction is worth keeping.** It shipped in `c951b38fa` arguing it interrupted a
+re-measurement loop — our write renders a different row window, the rows measure
+differently, the list changes height, the observer fires. `69e4df695` reverted it
+on the telemetry its own sibling commit shipped: **`scrollHeight` is constant
+within every measured burst**, so the list was not changing height while the
+observer fired dozens of times, and there was no loop to interrupt. `3bc8615fc`
+then restored the guard with the true reason — it saves a forced layout — rather
+than the falsified one. The object this repository keeps paying for is a guard
+that reads as load-bearing while watching a window that never opens; see
+`8543d9048` in the errata.
+
+**The observer's diagnostics run before its guard** (`:4255`), deliberately: a
+suppressed firing is exactly the one worth seeing, and `recordRowResizes` (`:4220`)
 is how the two candidate causes get told apart — a row that changed height, versus
 a list that changed height with every row the same. A row absent from the previous
 snapshot is not reported as a change, because that is virtualization working
 rather than content growing.
 
 **Deferral and flush.** When input is in flight, `reconcileViewportGeometry`
-records `deferredGeometryReconcileRef` and returns (`:4135-4146`). Every window
-that can end a gesture calls `flushDeferredGeometry` (`:4164`): the touch settle
-timer (`:4544`), the wheel settle timer (`:4508`), and pointer release/cancel/blur
-(`:4241-4280`). A deferral with no flush is the failure one over from the one being
+records `deferredGeometryReconcileRef` and returns (`:4171-4182`). Every window
+that can end a gesture calls `flushDeferredGeometry` (`:4200`): the touch settle
+timer (`:4586`), the wheel settle timer (`:4550`), and pointer release/cancel/blur
+(`:4293-4305`). A deferral with no flush is the failure one over from the one being
 fixed — the reader keeps the position they were left with and the correction never
 arrives.
 
@@ -303,11 +315,11 @@ allowed**, or windows during which a scroll event may be believed:
 | ref | line | what it means | what it gates |
 |---|---|---|---|
 | `userScrolledUpRef` | 3965 | reader mode | `followOutput`, whether anchoring runs at all, `checkFollowInvariant` |
-| `hardLockedRef` | 4349 | an explicit forced-follow preference, persisted in `localStorage` | overrides reader mode in `followOutput` and in `shouldPreserveChatViewport` |
+| `hardLockedRef` | 4391 | an explicit forced-follow preference, persisted in `localStorage` | overrides reader mode in `followOutput` and in `shouldPreserveChatViewport` |
 | `touchScrollActiveRef` | 3969 | a finger-driven scroll, **from touchdown through the momentum glide**, until the scroller goes quiet | defers every geometry write |
 | `explicitScrollInputRef` | 3974 | a wheel/trackpad/touch event within the last 250ms | defers geometry writes; also the `userInputActive` term that lets a scroll event change mode |
 | `geometryReconcileScrollTopRef` | 3980 | the `scrollTop` our last write produced | suppresses mode change on the scroll event that write causes |
-| `selfWriteResizePendingRef` | 3988 | our last write has an unconsumed resize | drops one `ResizeObserver` firing |
+| `selfWriteResizePendingRef` | 4003 | our last write has an unconsumed resize | drops one `ResizeObserver` firing |
 
 `touchScrollActiveRef` spanning the glide rather than "a pointer is currently
 down" is the entire point. An iOS glide runs with the finger already lifted, and a
@@ -336,27 +348,27 @@ from the scroll handler. It changes nothing unless `userInputActive` is true:
 finger arrive below `UP_JITTER_EPS` one at a time, and a live chat's content height
 moves on nearly every frame, so a genuine scroll-up often clears neither bar:
 
-- `handleWheelCapture` (`:4511`) — a wheel event with `deltaY < 0` is reader
+- `handleWheelCapture` (`:4553`) — a wheel event with `deltaY < 0` is reader
   intent. It scrolls **first**, then calls `enterReaderMode`, because the
   at-bottom test has to read where the tick landed rather than where it started.
   Both run in one synchronous block, so Virtuoso cannot interleave.
-- `onTouchMove` (`:4563`) — a finger travelling more than `TOUCH_READER_INTENT_PX`
+- `onTouchMove` (`:4605`) — a finger travelling more than `TOUCH_READER_INTENT_PX`
   (8px) *down the screen* reveals older content, which is the reader leaving the
   tail.
 
-**`enterReaderMode`** (`:4451`) holds the one rule both shortcuts share: at the
+**`enterReaderMode`** (`:4493`) holds the one rule both shortcuts share: at the
 true bottom there is nothing above to look at, so no gesture may enter reader mode
 there. Entering anyway strands the reader — resuming needs one scroll event over
 `UP_JITTER_EPS` and there is no room below the bottom to produce one.
 
-**`resumeFollowIfSettledAtBottom`** (`:4477`) is the exit, and it requires the
+**`resumeFollowIfSettledAtBottom`** (`:4519`) is the exit, and it requires the
 *true* bottom (8px), not the near bottom. Each device's settle detector calls it,
 because "input finished" means something different to a wheel (no ticks for 250ms)
 than to a finger (lifted, and the glide stopped).
 
 ### The repair
 
-`checkFollowInvariant` (`:4416`) is a 500ms-delayed assertion that a panel which
+`checkFollowInvariant` (`:4458`) is a 500ms-delayed assertion that a panel which
 believes it is following is actually at the bottom. It re-arms rather than firing
 while a gesture is in flight, because repairing through a gesture throws the reader
 to the tail with a finger still on the glass. On violation it calls `goToTail`,
@@ -375,7 +387,7 @@ They are all in play at once and they are not interchangeable:
 
 The 120px one is deliberately loose and the 8px one deliberately tight: a gesture
 aiming at the bottom is recognised early, but follow only resumes once the reader
-is genuinely there (`:4611-4616`).
+is genuinely there (`:4653-4658`).
 
 ---
 
@@ -402,13 +414,13 @@ What does reach it, all `ns: "chat-anchor"`:
 
 | record | written at | what it establishes |
 |---|---|---|
-| `preserved viewport across content resize` | `:4108` | a correction ran, with its delta — and since `794e585cc`, the `scrollTop`/`scrollHeight`/`clientHeight` triple |
-| `anchor row gone; viewport left uncorrected` | `:4079` | a correction was owed and impossible |
-| `anchor correction outside scroll range` | `:4093` | the correction exceeded the range on offer |
-| `anchor drifted with no input` | `:4045` | the anchored row moved with nothing driving it |
-| `geometry reconcile deferred; reader input in flight` | `:4136` | a correction was held for a gesture, naming which flag held it |
-| `rendered rows changed height` | `:4201` | which rows changed height, and how many were rendered for the first time |
-| `skipped resize caused by our own scroll write` | `:4226` | the self-write latch consumed a firing |
+| `preserved viewport across content resize` | `:4128` | a correction ran, with its delta — and since `794e585cc`, the `scrollTop`/`scrollHeight`/`clientHeight` triple |
+| `anchor row gone; viewport left uncorrected` | `:4094` | a correction was owed and impossible |
+| `anchor correction outside scroll range` | `:4108` | the correction exceeded the range on offer |
+| `anchor drifted with no input` | `:4060` | the anchored row moved with nothing driving it |
+| `geometry reconcile deferred; reader input in flight` | `:4172` | a correction was held for a gesture, naming which flag held it |
+| `rendered rows changed height` | `:4237` | which rows changed height, and how many were rendered for the first time |
+| `skipped resize caused by our own scroll write` | `:4268` | the self-write latch consumed a firing |
 
 Plus `ns: "chat-stranded-row"` from `chat-stranded-row-probe.mjs`, which is
 record-only by design.
@@ -417,11 +429,19 @@ record-only by design.
 
 ## Errata
 
-**Checked on 2026-08-13 against `main` at `c951b38fa`**, which is also `HEAD` of
+**Checked on 2026-08-13 against `main` at `afba9ef66`**, which is also `HEAD` of
 the shared checkout and the most recent commit touching any path described here.
 This says nothing about what is deployed: the last recorded observation of Skip's
-own tab is in `c951b38fa`'s message, which says it reported `loadedSha 9d97454a6`
-at 2026-08-12 23:27 EDT — behind `main` by the four commits below it.
+own tab reported `loadedSha 9d97454a6` at 2026-08-12 23:27 EDT, behind `main` by
+everything below it.
+
+**Every `file:line` in this document is as of that sha, and this file moved three
+times in the ninety minutes after the document was written.** `c951b38fa` shifted
+it fifteen lines, `69e4df695` and `3bc8615fc` shifted it forty more, and each time
+every citation here silently pointed one function too early. If the numbers do not
+match what you find, read the file at the sha in this header
+(`git show afba9ef66:src/shapes/FleetChatShape.tsx`) and re-pin rather than trust
+them. A line number in a hot file is a fact with a half-life measured in hours.
 
 Measurements below are `chat-flick-live`'s, with the query behind each one in
 `scratch/chat-anchor-findings-for-doc-2026-08-13.md`. Skip's session that night:
@@ -430,7 +450,7 @@ Measurements below are `chat-flick-live`'s, with the query behind each one in
 
 ### The `ResizeObserver` cannot attribute a resize
 
-The observer at `:4214` watches `[data-testid="virtuoso-item-list"]` — Virtuoso's
+The observer at `:4250` watches `[data-testid="virtuoso-item-list"]` — Virtuoso's
 item list, not the scroller and not the panel. **A firing says the rendered list
 changed total height and nothing about which row or why.** That leaves two causes
 that demand opposite responses indistinguishable: a row that grew after it was
@@ -440,7 +460,7 @@ working).
 
 Until `794e585cc` there was no per-row height record at all, so **every diagnosis
 of this path for a week was inference from a total**, including two of
-`chat-flick-live`'s own. `recordRowResizes` (`:4184`) now supplies the attribution,
+`chat-flick-live`'s own. `recordRowResizes` (`:4220`) now supplies the attribution,
 and it is one night old.
 
 ### The touch guard has been written four times
@@ -494,9 +514,9 @@ The ratio has a precise meaning and is easy to overstate:
 landing. `794e585cc` adds `scrollTop`/`scrollHeight`/`clientHeight` for exactly
 that reason.
 
-`c951b38fa` states plainly that its own fix is not the cause: when the anchor is
-already in place `restoreViewportAnchor` returns at the 0.5px epsilon and writes
-nothing, so a self-caused resize was never the expensive case.
+The self-write resize guard was never the cause either, in either direction: when
+the anchor is already in place `restoreViewportAnchor` returns at the 0.5px
+epsilon and writes nothing, so a self-caused resize was never the expensive case.
 
 Three candidate readings, each separated by fields that exist only from
 `794e585cc` onward:
@@ -611,7 +631,7 @@ imperative paths in `FleetChatShape.tsx`:
 - **Thread cards load asynchronously.** `ThreadChatOperationView` (`:1971`) renders
   a one-line `loading...`, issues `searchFleet`, and replaces it with a full thread
   render at `:2027`. Growth from one line to a full thread, with nothing arriving.
-- **Expand/collapse mutates the DOM directly.** `:4978` onward writes
+- **Expand/collapse mutates the DOM directly.** `:5020` onward writes
   `style.display` on `.pretty-more-rows` and `.semantic-operation-body` with no
   React render, so the height changes between Virtuoso's measurement and its next
   one.
@@ -698,9 +718,9 @@ with nothing on the mouse.
 
 `decideFollowTransition` requires `userInputActive` to change mode
 (`chatScrollIntent.mjs:41,53`), and that term is exactly
-`touchScrollActive || explicitScrollInput` (`:4591`). So a pan-mode scroll upward
+`touchScrollActive || explicitScrollInput` (`:4633`). So a pan-mode scroll upward
 through the chat cannot enter reader mode, and the scroll handler falls to
-`checkFollowInvariant('scroll-event')` (`:4641`), which after 500ms finds the
+`checkFollowInvariant('scroll-event')` (`:4683`), which after 500ms finds the
 panel off the bottom while believing it follows, and calls `goToTail`. **Following
 this through the code, pan-mode scrolling up in a followed chat is snapped back to
 the tail half a second later.** This is derived from the paths above, not observed
@@ -709,7 +729,7 @@ in a session.
 `CanvasClipPanel.tsx:196` is the third writer. It is reachable only for a
 `.fleet-chat-log` that is not inside a mounted `FleetChatShape`: that component
 attaches its own wheel handler on `document` with capture and calls
-`stopImmediatePropagation` (`:4516`), and document-level capture precedes the
+`stopImmediatePropagation` (`:4558`), and document-level capture precedes the
 panel element's, so the clip panel's chat branch never runs for a live panel. It
 does serve the index page's log, which carries the same class.
 
@@ -766,7 +786,7 @@ churn lands directly on the machinery here.
 - Each mounted thread card attaches its own `ResizeObserver` **on the shared
   scroller** to position its floating collapse button (`:2041-2049`). Every chat
   panel resize therefore fires one state update per mounted thread card.
-- `handleWheelCapture` (`:4511`) calls `preventDefault` unconditionally for any
+- `handleWheelCapture` (`:4553`) calls `preventDefault` unconditionally for any
   wheel over the log, with no `scrollHeight > clientHeight` test — the
   corresponding path in `CanvasClipPanel.tsx:192` has one. A wheel over a chat
   short enough not to scroll is swallowed rather than passed to the canvas.
