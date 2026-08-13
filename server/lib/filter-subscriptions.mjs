@@ -46,6 +46,52 @@ function termKey(term) {
   return String(term)
 }
 
+/**
+ * Cut a history range into blocks over which the filter's agent set is FIXED.
+ *
+ * Membership only changes at a span endpoint, so those endpoints are the only
+ * places a block can begin or end. Within a block the agent list is EXACT — it
+ * is the right list, not a candidate set the predicate narrows afterwards.
+ * Resolving over the whole range instead would produce a superset and throw that
+ * property away, which is the mistake this function exists to make impossible.
+ *
+ * Newest first, matching the direction history is read. `to: null` means "now",
+ * `from: null` means "the beginning", so the blocks tile the range with no gap
+ * for a row to fall through.
+ *
+ * A block can legitimately come back with no agents: nobody held the filter's
+ * labels then. That is exact, not a failure — nothing in that range can match.
+ */
+export function membershipBlocks(spans, labels, { before = null, humanId = null } = {}) {
+  const labelSet = new Set(labels || [])
+  const relevant = (spans || []).filter(span => labelSet.has(span?.label) && span?.fleet_id)
+  const points = new Set()
+  for (const span of relevant) {
+    if (span.from_ts && (!before || span.from_ts < before)) points.add(span.from_ts)
+    if (span.to_ts && (!before || span.to_ts < before)) points.add(span.to_ts)
+  }
+  const edges = [before ?? null, ...[...points].sort().reverse()]
+  // A fleet id named directly by the filter, and the viewer's own id, are in
+  // every block: they are not label membership and do not change at a boundary.
+  const always = new Set()
+  if (humanId) always.add(humanId)
+  for (const label of labelSet) if (String(label).startsWith('fleet:')) always.add(label)
+
+  const blocks = []
+  for (let i = 0; i < edges.length; i++) {
+    const to = edges[i]
+    const from = edges[i + 1] ?? null
+    const agentIds = new Set(always)
+    for (const span of relevant) {
+      if (to && span.from_ts >= to) continue
+      if (from && span.to_ts && span.to_ts <= from) continue
+      agentIds.add(span.fleet_id)
+    }
+    blocks.push({ from, to, agentIds: [...agentIds] })
+  }
+  return blocks
+}
+
 class TemporalMembership {
   constructor(filter) {
     this.labels = fleetFilterLabels(filter)
@@ -320,12 +366,20 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
    * queryPage({ before, agentIds, limit }) -> rows, newest-first. It is the
    * caller's SQL; this function never interprets it beyond ordering.
    *
-   * OVER-FETCHES. The exact predicate runs after the query's LIMIT, so a naive
-   * single pass returns a short page with a cursor that looks correct — the
-   * defect that shipped in the old direct-history path. This asks for more until
-   * the page fills or the source is exhausted, and reports the cursor from the
-   * oldest row EXAMINED rather than the oldest row kept, so the next page
-   * cannot skip the rows this one rejected.
+   * BLOCKS, NOT GUESSES. Membership is constant between two label-change
+   * events, so the range cuts at span endpoints into blocks over which the
+   * filter's agent set is exact. The query is a disjunction over those
+   * (time range, agent set) pairs, so the database returns rows involving the
+   * right agents instead of everything in the range.
+   *
+   * The predicate still decides — which clause matched, the negatives, `dm:`
+   * scoping are not "involves one of these agents" — but it is no longer handed
+   * a time range's worth of rows to say no to.
+   *
+   * What this replaces: `agentIds: []` plus a page-size loop whose growth was
+   * written as exponential and clamped flat (400, 400, 800, 1000, then 21 more
+   * passes at 1000), reading up to ~23,600 rows to return 100. That loop existed
+   * only to compensate for asking the database the wrong question.
    */
   async function history(filter, {
     humanId = null, humanName = null, before = null, limit = 50,
@@ -334,34 +388,34 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
     if (typeof queryPage !== 'function') throw new Error('history requires queryPage()')
     const entry = byFilter.get(filterKey(filter))
     const temporal = entry?.temporal || new TemporalMembership(filter)
+    const labels = [...temporal.labels]
+
+    // Every span that could touch this filter at or before the cursor. Their
+    // endpoints are the label-change events, and so the block boundaries.
+    const spans = await loadMembershipSpans(labels, { from: null, to: before })
+    temporal.extend(spans, null, before)
+    const blocks = membershipBlocks(spans, labels, { before, humanId })
+
     const kept = []
     let cursor = before
     let exhausted = false
-    let passes = 0
-    while (kept.length < limit && !exhausted && passes < maxPasses) {
-      passes++
-      // Count is post-filter, so the time range cannot be known in advance.
-      // Walk indexed time chunks, extend this filter instance's temporal join
-      // table to the chunk, then keep only joined matches.
-      const want = Math.min(1000, Math.max(
-        200,
-        (limit - kept.length) * 4,
-        200 * (2 ** Math.min(passes - 1, 3)),
-      ))
-      const rows = (await queryPage({ before: cursor, agentIds: [], limit: want })) || []
+    let reads = 0
+
+    // Narrowing to the right agents does not make the predicate a no-op: which
+    // clause matched, the negatives and `dm:` scoping are still its decision, so
+    // a page can come back short with matching rows still older. Continue from
+    // the last row EXAMINED until the page fills or the source runs out.
+    //
+    // This is a continuation, not the page-size heuristic it replaces: it asks
+    // for what is still needed, from where it got to, and never guesses a size.
+    while (kept.length < limit && !exhausted && reads < maxPasses) {
+      reads++
+      const rows = (await queryPage({ before: cursor, blocks, limit })) || []
       if (rows.length === 0) { exhausted = true; break }
-      const sourceExhausted = rows.length < want
       const participantIds = [...new Set(rows.flatMap(row => [
         row?.from, row?.from_id, ...(row?.recipients || []), row?.agent, row?.agent_id,
       ]).filter(Boolean))]
       temporal.observe(await getAgentsByIds(participantIds) || [])
-      const oldest = rows[rows.length - 1]?.timestamp || cursor
-      const upper = cursor || new Date().toISOString()
-      const spans = await loadMembershipSpans([...temporal.labels], {
-        from: oldest,
-        to: upper,
-      })
-      temporal.extend(spans, oldest, upper)
       let examined = 0
       for (const row of rows) {
         examined++
@@ -374,17 +428,19 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
         }
         if (kept.length >= limit) break
       }
-      if (sourceExhausted && examined === rows.length) exhausted = true
+      if (rows.length < limit && examined === rows.length) exhausted = true
     }
-    // Ran out of passes with the page unfilled: say so rather than implying the
-    // source is exhausted. A caller that ignores this is asking for the short
-    // page this function exists to prevent.
-    const truncated = passes >= maxPasses && kept.length < limit && !exhausted
+
+    // Unfilled and not exhausted: say so rather than implying the source ran
+    // out. Reporting "no more" while matching rows remain is the failure that
+    // loses someone's history.
+    const truncated = reads >= maxPasses && kept.length < limit && !exhausted
     return {
       events: kept,
       hasMore: !exhausted,
       nextCursor: exhausted ? null : cursor,
-      passes,
+      blocks: blocks.length,
+      reads,
       truncated,
     }
   }

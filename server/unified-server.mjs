@@ -8104,8 +8104,13 @@ async function handleFleetWsMessage(ws, msg) {
           humanId, humanName, limit: window, before: msg.before || null,
           // history() walks newest-first and cuts at `limit`, so it asks for
           // newest-first — from SQL, not by reversing an array afterwards.
-          queryPage: ({ before, agentIds, limit }) =>
-            fleetStore.queryChatHistory({ before, agents: agentIds, limit, order: 'desc' }),
+          // Blocks carry their own exact agent list per time range, so the
+          // query is that disjunction. `agentIds` remains for the callers that
+          // still hand a flat set.
+          queryPage: ({ before, blocks, agentIds, limit }) =>
+            blocks?.length
+              ? fleetStore.queryChatHistoryBlocks({ blocks, limit, order: 'desc' })
+              : fleetStore.queryChatHistory({ before, agents: agentIds || [], limit, order: 'desc' }),
         }).then(async page => {
           if (ws.readyState !== 1) return
           // Chronological for the panel, which renders oldest at the top. This

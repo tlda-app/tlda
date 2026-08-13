@@ -136,6 +136,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'pruneTransportOperations',
   'pushExisting',
   'queryChatHistory',
+  'queryChatHistoryBlocks',
   'recentDocAgents',
   'recordRuntimeState',
   'recordTransportOperationResult',

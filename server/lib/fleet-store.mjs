@@ -5089,6 +5089,55 @@ export class FleetStore {
   // decides how the already-selected page is sorted on the way out. Doing it
   // here means no caller reverses an array: the subscription's history walker
   // wants newest-first, the panel wants chronological, and both just ask.
+  /**
+   * Chat history over (time range, agent list) blocks, as one disjunction.
+   *
+   * Each block carries the agent list that was exact over its own range, so this
+   * reads the rows that involve the right agents rather than everything in the
+   * range. One statement, not one per block — the blocks ARE the disjunction.
+   *
+   * A block with an empty agent list is dropped rather than queried: nobody held
+   * the filter's labels then, so nothing in that range can match. That pruning
+   * is exact, not a heuristic.
+   *
+   * Each disjunct is bounded and limited on its own so SQLite can walk each
+   * agent's `(id, timestamp)` index instead of materialising the range.
+   */
+  queryChatHistoryBlocks({ blocks, limit = 50, order = 'asc' } = {}) {
+    const usable = (blocks || []).filter(b => Array.isArray(b?.agentIds) && b.agentIds.length);
+    if (!usable.length) return [];
+    const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
+    const parts = [];
+    const params = [];
+    for (const block of usable) {
+      const ids = [...new Set(block.agentIds)];
+      const ph = ids.map(() => '?').join(',');
+      parts.push(`SELECT * FROM (
+          SELECT ${this._EVT} FROM events
+           WHERE type IN (${typePh})
+             AND (from_id IN (${ph}) OR agent_id IN (${ph})
+                  OR EXISTS (SELECT 1 FROM recipients rc
+                             WHERE rc.event_id = events.id AND rc.agent_id IN (${ph})))
+             ${block.to ? 'AND timestamp < ?' : ''}
+             ${block.from ? 'AND timestamp >= ?' : ''}
+           ORDER BY timestamp DESC LIMIT ?)`);
+      params.push(...CHAT_HISTORY_EVENT_TYPES, ...ids, ...ids, ...ids);
+      if (block.to) params.push(block.to);
+      if (block.from) params.push(block.from);
+      params.push(limit);
+    }
+    const outer = order === 'desc' ? 'DESC' : 'ASC';
+    params.push(limit);
+    const rows = this.db.prepare(
+      `SELECT * FROM (${parts.join(' UNION ALL ')})
+        ORDER BY timestamp ${outer}, id ${outer} LIMIT ?`
+    ).all(...params);
+    // Same exit as queryChatHistory: `to_json` becomes the `recipients` array
+    // here or not at all. Returning raw rows leaves every `to:` term matching
+    // nothing, which is silent history loss rather than an error.
+    return FleetStore.hydrateEvents(rows);
+  }
+
   queryChatHistory({ before, agents, limit = 50, order = 'asc' } = {}) {
     const outer = order === 'desc' ? 'DESC' : 'ASC';
     let rows;
