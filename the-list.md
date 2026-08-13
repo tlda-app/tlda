@@ -20,7 +20,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 57 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 09:28 EDT; `main` is `8a591a2e9`, 62 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 09:29 EDT; `main` is `04d568a09`, 63 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
@@ -353,9 +353,15 @@ amend reports success without changing anything. **It was checked and the amend 
 message 2750883 carries its corrected body in your thread at the original timestamp. **The row is
 deleted, and recorded here rather than dropped, because it was a phantom created inside the audit
 that exists to remove phantoms** — and because the next person to see a stale-looking amend will
-otherwise open it again. **One code fact that made the false report plausible, and it is not a
-defect anyone has observed:** `amendEventText` at `server/lib/fleet-store.mjs:5032` returns `true`
-after its `UPDATE` without checking that any row changed. **What is genuinely unsettled is
-narrower and nobody has established it:** whether some view can show an amended message's original
-body while the store holds the correction.
+otherwise open it again. **One code fact that made the false report plausible, and it is
+now partly exonerated:** `amendEventText` at `server/lib/fleet-store.mjs:5032` returns `true` after
+its `UPDATE` without checking that any row changed — **a latent reporting weakness, and the cause
+of nothing anybody has seen**, since the amend it was supposed to explain did write. **What is
+genuinely unsettled has since moved and is not view-versus-store:** a second agent reproduced a
+real no-write on a message that had been read, while the amend to you — unread — landed. **The
+live hypothesis is that an amend silently refuses to rewrite an already-read message**, which
+would mean the documented rule *amend only what has not been read* is enforced rather than
+advisory, and the defect is the success return rather than a missing write. **Nobody has
+established it and there is deliberately no row**; it gets one when a message to an agent known
+not to have read it is tested.
 
