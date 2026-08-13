@@ -866,11 +866,11 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   mkdirSync(outDir, { recursive: true })
   const columns = await listDocumentColumns(name, { project, srcDir })
   const closure = scanMarkdownDependencyClosure(mainFile, srcDir)
-  const toc = []
-  for (let i = 0; i < columns.length; i++) {
-    const columnSource = readFileSync(join(srcDir, columns[i].sourceFile), 'utf8')
-    toc.push(...markdownTocForSource(columnSource, i + 1))
-  }
+  // This document's table of contents is this document's headings. Merging
+  // several documents' structure into one TOC is book assembly, and a book is a
+  // declared format with a config file — not something a markdown project falls
+  // into by linking to another file.
+  const toc = markdownTocForSource(source, 1)
 
   for (const rel of closure.assets) {
     const from = join(srcDir, rel)
