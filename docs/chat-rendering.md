@@ -398,13 +398,24 @@ Every diagnosis of this path is made from `~/.config/tlda/client.log` on the
 It is roughly 9 GB with no read route, so it is read by bounded `tail -c` and
 `grep`, never whole.
 
-**Only `log.metric` reaches it.** The default namespace threshold is `warn` and
-`shouldLog` returns before enqueue, so `log.debug` writes nothing without a URL
-parameter no user will set. Two consequences that decide how records here should
-be read:
+**Only `log.metric` reaches it, and the rule is per call function — not per level
+and not per namespace.** `log.metric` calls `enqueue` directly
+(`logger.ts:162`), stamping `level: 'info'` and **bypassing `shouldLog` entirely**;
+its docstring says "ALWAYS captured … (no threshold)". Every other logger goes
+through `shouldLog(ns, level)` against a default threshold of `warn`
+(`logger.ts:31,53`), and since `LEVEL_ORDER` puts `info` at 1 below `warn` at 2,
+**`log.info` does not arrive either.** An `info`-level record in this file is a
+`metric` record, not an `info` one — reading it as evidence that `info` passes the
+gate is a trap, and it has caught someone already.
 
-- The `chat-scroll` namespace in `FleetChatShape.tsx` is mostly `log.debug`, so
-  **the follow/read decisions are invisible in production telemetry.**
+Two consequences that decide how records here should be read:
+
+- **A namespace is not uniformly visible.** `chat-scroll` has **4 `log.metric`
+  sites and 3 `log.debug` sites**, so it does carry evidence — but the three
+  invisible ones are exactly the follow/read *decisions* (`:4639`, `:4655`,
+  `:4659`), while the four that arrive are failures and repairs (`:2814`, `:4423`,
+  `:4445`, `:4475`). **The namespace is present in the log and the decisions
+  within it are not.**
 - `onTouchStart` and `onTouchMove` log nothing at all, and scrolling while
   *already* in reader mode emits no follow transition. So **the absence of input
   records is not evidence of absence of input** — for the 03:10 burst below, the
@@ -894,8 +905,36 @@ through the chat cannot enter reader mode, and the scroll handler falls to
 `checkFollowInvariant('scroll-event')` (`:4683`), which after 500ms finds the
 panel off the bottom while believing it follows, and calls `goToTail`. **Following
 this through the code, pan-mode scrolling up in a followed chat is snapped back to
-the tail half a second later.** This is derived from the paths above, not observed
-in a session.
+the tail half a second later.** The pan-mode *trigger* is derived from the paths
+above and not observed.
+
+**The repair itself is observed, in Skip's session, and it is the only writer
+tonight seen to move his scroller at all.** One record in `c3a1abbb`:
+
+```
+04:22:46.645  follow invariant violated; repairing tail
+panelId shape:fleet-chat-0-skip-efba6f45   reason scroll-event
+top 13146   height 13848   clientHeight 606   gap 96   inputActive false
+```
+
+`checkFollowInvariant` decided he was off the tail while believing it follows, and
+called `goToTail` — **with no input in flight, mid-session, while he was reading**,
+from 96px away. Three things follow, and the first is the sharpest statement of the
+open fact in this document:
+
+- **The scroller can be moved; it is `restoreViewportAnchor` specifically whose
+  writes do not land.** This path reaches it through Virtuoso's `scrollToIndex`
+  rather than by assigning `scrollTop` — Virtuoso moving its own scroller instead
+  of us writing to it.
+- It is **input-free**, so it is in the same class as the bursts: something moving
+  his view with nothing arriving and no gesture.
+- It is a **jump, not a drift**. The bursts are 0.5–5px per frame; this is 96px at
+  once, which is a different shape of disturbance entirely.
+
+**Not claimed:** that this caused anything he reported. It is one record, and at
+`gap: 96` repairing may be correct behaviour. What is established is that a fifth
+writer acts on his scroller input-free, and that no hypothesis in this document
+accounts for its trigger.
 
 `CanvasClipPanel.tsx:196` is the third writer. It is reachable only for a
 `.fleet-chat-log` that is not inside a mounted `FleetChatShape`: that component
