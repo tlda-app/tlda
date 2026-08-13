@@ -342,7 +342,7 @@ const STARTER_SERVER_YAML = `# tlda server settings. The file itself is required
 
 # Turn token auth off entirely — true where the server is gated at the NETWORK
 # layer instead, e.g. behind Tailscale, where the tailnet is the auth posture.
-# authDisabled: false
+# tokenGating: false
 
 # Take the read/RW tokens ONLY from TLDA_TOKEN_READ/TLDA_TOKEN_RW in the
 # environment, never from this machine's tokens.json, and refuse to start if

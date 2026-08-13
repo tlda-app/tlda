@@ -1,40 +1,48 @@
 /**
- * Bearer token authentication.
+ * Token gating.
  *
  * Two tokens:
  *   - Read token (TLDA_TOKEN_READ / config.tokenRead): GET routes, /docs/*, WebSocket
  *   - RW token (TLDA_TOKEN_RW / config.tokenRw): everything including POST/DELETE API routes
  *
- * When no tokens are configured, auth is disabled (backward-compatible local use).
+ * `tokenGating` (server.yaml, default false) is what turns that read versus
+ * read-write distinction on for HTTP mutations. It is NOT authentication and is
+ * deliberately not named as though it were: this system does not do auth, and the
+ * real boundary is the network — the tailnet, plus bearer secrets. A switch named
+ * `auth…` imports a model the system does not have, and everything downstream then
+ * reasons with that model.
  *
  * The tokens themselves stay in the environment — they are secrets, delivered by
  * `fly secrets`, and a secret does not belong in a config file. The two POSTURE
- * decisions do not: `authDisabled` and `tokensFromEnvironmentOnly` are server.yaml
+ * decisions do not: `tokenGating` and `tokensFromEnvironmentOnly` are server.yaml
  * keys. `tokensFromEnvironmentOnly` used to be inferred from TLDA_FLEET_SERVER
  * being set, which is a URL that says nothing about tokens — so the rule "a
  * hosted box takes tokens only from its secrets" was carried by a variable named
  * after something else, and would have silently changed meaning the moment that
  * URL moved.
+ *
+ * The same defect used to sit one screen below this comment: a non-standard PORT
+ * silently switched gating off, so "is gating on?" could not be answered from
+ * configuration — the same config answered differently on a worktree port. It is
+ * gone, and it costs nothing, because gating is now off unless a config file turns
+ * it on: a dev or worktree server needs no escape hatch. The other silent path is
+ * gone too — gating turned on with no token configured is an error, not a no-op.
  */
 
-import { getReadToken, getRwToken, loadServerConfig, DEFAULT_PORT } from '../../shared/config.mjs'
+import { getReadToken, getRwToken, loadServerConfig } from '../../shared/config.mjs'
 
 let tokenRead = null
 let tokenRw = null
-let authEnabled = false
+let gatingEnabled = false
 
 export function initAuth() {
   const serverConfig = loadServerConfig()
 
-  if (serverConfig.authDisabled) {
-    authEnabled = false
-    return
-  }
+  tokenRead = null
+  tokenRw = null
 
-  // Non-standard port = dev/worktree server, skip auth so agents aren't blocked
-  if ((process.env.PORT || String(DEFAULT_PORT)) !== String(DEFAULT_PORT)) {
-    console.log('[auth] Dev port detected — auth disabled')
-    authEnabled = false
+  if (!serverConfig.tokenGating) {
+    gatingEnabled = false
     return
   }
 
@@ -42,24 +50,25 @@ export function initAuth() {
   tokenRead = process.env.TLDA_TOKEN_READ || (envTokensOnly ? null : getReadToken())
   tokenRw = process.env.TLDA_TOKEN_RW || (envTokensOnly ? null : getRwToken())
 
-  if (envTokensOnly && !tokenRead && !tokenRw) {
-    throw new Error('[auth] server.yaml sets tokensFromEnvironmentOnly but no TLDA_TOKEN_READ/TLDA_TOKEN_RW secrets are configured')
+  // Gating on with nothing to check is the one state that must never be reached
+  // quietly: it reads as protected and behaves as open. Fail loudly instead.
+  if (!tokenRead && !tokenRw) {
+    throw new Error(envTokensOnly
+      ? '[tokens] server.yaml sets tokensFromEnvironmentOnly but no TLDA_TOKEN_READ/TLDA_TOKEN_RW secrets are configured'
+      : '[tokens] server.yaml sets tokenGating but no read or RW token is configured')
   }
 
-  authEnabled = !!(tokenRead || tokenRw)
-
-  if (authEnabled) {
-    console.log('[auth] Token auth enabled')
-    if (!tokenRead) console.warn('[auth] Warning: no read token configured')
-    if (!tokenRw) console.warn('[auth] Warning: no RW token configured')
-  }
+  gatingEnabled = true
+  console.log('[tokens] Token gating enabled')
+  if (!tokenRead) console.warn('[tokens] Warning: no read token configured')
+  if (!tokenRw) console.warn('[tokens] Warning: no RW token configured')
 }
 
-export function isAuthEnabled() { return authEnabled }
+export function isTokenGatingEnabled() { return gatingEnabled }
 
 /** Returns 'rw' | 'read' | null */
 export function validateToken(token) {
-  if (!authEnabled) return 'rw'
+  if (!gatingEnabled) return 'rw'
   if (!token) return null
   if (tokenRw && token === tokenRw) return 'rw'
   if (tokenRead && token === tokenRead) return 'read'
@@ -110,7 +119,7 @@ export function loginRoute(req, res) {
 
 /** Express middleware: require at least read access */
 export function requireRead(req, res, next) {
-  if (!authEnabled) return next()
+  if (!gatingEnabled) return next()
   const token = extractToken(req)
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
@@ -127,7 +136,7 @@ export function requireRead(req, res, next) {
 
 /** Express middleware: require RW access */
 export function requireRw(req, res, next) {
-  if (!authEnabled) return next()
+  if (!gatingEnabled) return next()
   const token = extractToken(req)
   const level = validateToken(token)
   if (level !== 'rw') {

@@ -17,7 +17,7 @@ deepgramBridgeUrl: ws://tlda-voice.internal:8180
 # It was also a departure from the project's stated position — "we do not do
 # auth" — and this box was the one place it had crept in. The talk is meant to be
 # opened by anyone with the URL, which is the whole point of registering one.
-authDisabled: true
+# Token gating stays off here: `tokenGating` defaults false and is not set.
 
 # Take tokens only from TLDA_TOKEN_READ/TLDA_TOKEN_RW (`fly secrets`), never
 # from a tokens.json on the box.

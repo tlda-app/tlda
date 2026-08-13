@@ -9,12 +9,12 @@
 deepgramBridgeUrl: ws://tlda-voice.internal:8180
 
 # The server is gated at the NETWORK layer by Tailscale — only tailnet devices
-# can reach it — so it runs open inside the tailnet. The tailnet IS the auth.
-authDisabled: true
+# can reach it — so it runs open inside the tailnet. The tailnet IS the boundary.
+# Token gating stays off here: `tokenGating` defaults false and is not set.
 
 # Take tokens only from TLDA_TOKEN_READ/TLDA_TOKEN_RW (`fly secrets`), never
-# from a tokens.json on the box. Unreachable while authDisabled is true, and
-# recorded so turning auth back on does not silently start trusting a file.
+# from a tokens.json on the box. Unreachable while token gating is off, and
+# recorded so turning gating on does not silently start trusting a file.
 tokensFromEnvironmentOnly: true
 
 # Uploads must land on the persistent volume; the container wipes anything else

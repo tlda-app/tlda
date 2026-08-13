@@ -47,7 +47,7 @@ variable names are gone — nothing reads them, and there is no alias.
 | `TLDA_VOICE_BRIDGE_URL` | `server.yaml: deepgramBridgeUrl` | **Required.** Unset used to fall through to "does this server hold a Deepgram key", so a missing address presented as a missing feature. |
 | `TLDA_VOICE_DIRECT_URL` | `server.yaml: deepgramDirectUrl` | Optional; absent = the browser uses the same-origin proxy. Was never set anywhere. |
 | `TLDA_UPLOAD_DIR` | `server.yaml: uploadDir` | Absent = `~/.config/tlda/uploads`. |
-| `TLDA_NO_AUTH` | `server.yaml: authDisabled` | Was a `'1'` string compare; now a boolean. |
+| `TLDA_NO_AUTH` | `server.yaml: tokenGating` | Was a `'1'` string compare, then the boolean `authDisabled`, now **`tokenGating` — positively named and defaulting false.** The old name was wrong twice: the tokens are not an authentication boundary (the network is), and a negatively-named flag meant the safe state was a double negative and "is gating on?" could not be read off the config. Turning `tokenGating` on enables the read versus read-write distinction on HTTP mutations. |
 | `TLDA_FLEET_SERVER` | `server.yaml: tokensFromEnvironmentOnly` | **Renamed, because the old name was wrong.** The server process read this URL *only* as a boolean "am I a hosted deploy, so take tokens from secrets and not from `tokens.json`". `/api/fleet-config` never read it — that comes from `daemon.yaml`'s `database`. The entrypoint's other use of it, templating `daemon.yaml`, is gone with the templating. |
 | `TLDA_ENV` (per deployment) | `daemon.yaml: environments.default` | Still exists as a per-run override (`tlda --env <name>`), but no longer carries a deployment's identity. No `fly*.toml` sets it. |
 

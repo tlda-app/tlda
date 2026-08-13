@@ -8,8 +8,14 @@
 # everywhere.
 deepgramBridgeUrl: ws://tlda-voice.internal:8180
 
-# Unlike the tailnet boxes this one is on the public internet, so token auth
+# Unlike the tailnet boxes this one is on the public internet, so token gating
 # stays ON and the tokens come only from `fly secrets`.
+#
+# This used to be carried by the ABSENCE of `authDisabled`, which meant the only
+# gated deployment was the one that said nothing about gating. `tokenGating`
+# defaults false, so it is stated here instead — the posture of a public box is
+# now readable in its config rather than inferred from a missing key.
+tokenGating: true
 tokensFromEnvironmentOnly: true
 
 # No uploadDir: the default ~/.config/tlda/uploads is already the persistent

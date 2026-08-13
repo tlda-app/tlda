@@ -67,7 +67,7 @@ export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // Turn token auth off entirely. True where the server is gated at the NETWORK
   // layer instead — the Fly boxes sit behind Tailscale, and the tailnet IS the
   // auth posture (Skip's chosen model).
-  'authDisabled',
+  'tokenGating',
   // Take the read/RW tokens ONLY from the environment (`fly secrets`), never from
   // this machine's tokens.json, and refuse to start if neither is present. True on
   // a hosted deployment, where a token file on the box would be the wrong
@@ -155,7 +155,7 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
   if (config.uploadDir !== undefined && (typeof config.uploadDir !== 'string' || !config.uploadDir.trim())) {
     throw new Error(`${label}: "uploadDir" must be a nonempty path`)
   }
-  for (const key of ['authDisabled', 'tokensFromEnvironmentOnly']) {
+  for (const key of ['tokenGating', 'tokensFromEnvironmentOnly']) {
     if (config[key] !== undefined && typeof config[key] !== 'boolean') {
       throw new Error(`${label}: "${key}" must be a boolean`)
     }

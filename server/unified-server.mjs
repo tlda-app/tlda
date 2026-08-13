@@ -68,7 +68,7 @@ import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
-import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
+import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
@@ -3371,7 +3371,7 @@ app.get('/auth/login', loginRoute)
 
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', async (req, res) => {
-  if (!isAuthEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
+  if (!isTokenGatingEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
   const token = extractToken(req)
   const level = validateToken(token)
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
@@ -4851,7 +4851,7 @@ server.on('upgrade', async (req, socket, head) => {
   // misconfigured token should not be allowed to silently kill the local
   // daemon and take down activity cards / terminal cards. Token rotation
   // affects new connections only — established daemons stay up.
-  if (isAuthEnabled() && !url.pathname.startsWith('/ws/fleet') && url.pathname !== '/ws/fleet-daemon') {
+  if (isTokenGatingEnabled() && !url.pathname.startsWith('/ws/fleet') && url.pathname !== '/ws/fleet-daemon') {
     const token = extractToken(req)
     if (!validateToken(token)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
