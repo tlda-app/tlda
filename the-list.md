@@ -1,8 +1,7 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `9657e586a`, 24 commits
-ahead** — anything that landed tonight is on `main` and not on your screen. Status re-baselined
-against those two at 02:10 EDT.
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `dde8216f4`, 30 commits ahead** — everything tonight is on `main` and none of it is on your
+screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 02:38 EDT.
 
 **Status:** ✅ working · ⚠️ built, not reaching you yet · 🔨 being worked now · ○ not started ·
 ? nobody could establish it. **Where a thing lives is on the row** — three of these work but do
@@ -73,7 +72,7 @@ not live on your box, and one of those is a documentation file.
 | | | |
 |---|---|---|
 | ○ | **Put a real paper on sync and watch it** | **Waiting on your order, not on us** — *"having an instrumented version would help once I read the tests and feel okay about what the tests are doing."* Tests exist and are green, the editor is live and proven over the wire against the deployed build, the instrument is designed. **My earlier wording said nobody was on it, which billed you for your own sequencing.** `sync-pm` |
-| 🔨 | **One binary file makes a stale-base push unrebasable, forever** | Found tonight. `deriveClassifications` classifies the union of every path rather than the changed ones, `classifyThreeWay` returns `classification-unavailable` for binaries, and `cleanRebaseFiles` requires every classification to be a candidate — **so a single `.png` in the project poisons every rebase of files it has nothing to do with.** Text-only disjoint edits do merge, measured. **It works on a probe and fails on any paper with a figure in it.** `sync-pm` |
+| ⚠️ | **One binary file made a stale-base push unrebasable, forever** | **Found and fixed tonight — `9657e586a`, on `main` and not on your box.** Classification ran over the union of every path rather than the changed ones, and one unmergeable sibling failed the whole batch, **so a single `.png` poisoned every rebase of files it had nothing to do with.** It worked on a probe and failed on any paper with a figure in it. **Now run rather than read** (`d21c9f0c6`): a paper with three figures and a bibliography nobody touches, two people editing different chapters from their own machines, through the real push route — before the fix, refused as `stale-base`; after it, both chapters land and the figures are carried. The run also found that a text-only fixture **cannot** produce this class, which is why the suite never caught it. `sync-pm` |
 | ✅ | Moving a project keeps its history | Four versions in, four out |
 | ✅ | The linked-git and Overleaf tests | You called them important three times |
 | ✅ | The source editor works with two people in it | |
