@@ -20,7 +20,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 52 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 07:51 EDT; `main` is `0f5ed9efe`, 27 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 07:53 EDT; `main` is `9a5a97d0e`, 28 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
@@ -193,11 +193,21 @@ only inside a row dies when the row does, and then it gets re-litigated.
 **Anything that looks like a defect and is not gets recorded as decided, not deleted.** Delete it
 and it comes back as a new row in three weeks. That is the whole two-thirds.
 
-**Every row has been traced to something he asked for.** Checked once, 2026-08-13 04:55, against
-his own thread and the reconstruction he called fine — not against a previous list. **One row
-failed the check and was deleted**: the arXiv build, which existed because an agent invented the
-feature. **A row nobody can trace to him cannot be finished and cannot be retired, so it rides
-every rebuild forever.** That is the two-thirds.
+**Every row traces to something he asked for, and a row that cannot be traced cannot be finished
+or retired — so it rides every rebuild forever.** Two have failed that check: the arXiv build, a
+feature an agent invented, and the `snuffy-k3x9` row, built from an example in the README and
+written up as something that happened to him. **Both were phrased as fact and neither was traced
+when it went on.** `row-provenance` is now checking every row against his own messages.
+
+**A provenance verdict has four outcomes and they are not interchangeable:**
+
+- **traces to him** — nothing to do.
+- **does not trace** — phantom. It goes, and §Decided carries the trace so it cannot come back.
+- **could not establish** — genuinely different from a phantom. Some of what he asks for is said
+  by voice in a session nobody logged, so an untraceable row is not thereby an invented one. **It
+  stays, and it says that nobody could establish where it came from.**
+- **traces but has drifted** — he reported X and the row says Y. **That is a corrupted row, not an
+  invented one, and retiring it would throw away a real report.** It gets repaired to his words.
 
 **A §Decided entry carries his own words, or the evidence and who produced it — and says which.**
 Without one of those it is an agent's judgement, and that belongs on a row where somebody can
