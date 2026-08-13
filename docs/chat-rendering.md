@@ -665,25 +665,42 @@ delta        -5 -7 -8 -9 -9   -11 -19 -43 -83 -130 -179 -224
   overwhelmingly input-free. This is the check §"How this path is instrumented"
   said would become possible on `794e585cc` and later, and it has.
 
-**Every burst in his session diverges, and each one is a straight line.** All 688
-records grouped into bursts at a 100ms gap; the 15 bursts of 5 or more records:
+**Almost every burst diverges, and each one is a straight line.** Both of his
+sessions, grouped into bursts at a 100ms gap, bursts of 5 or more records,
+classified by whether `|delta|` ends larger or smaller than it started:
 
-| | |
-|---|---|
-| bursts that diverge | **15 of 15** — none converge, none stay flat |
-| bursts where `scrollTop` changes | **0 of 15** |
-| bursts where `scrollHeight` changes | **0 of 15** |
-| bursts spanning more than one anchor row | **0 of 15** |
-| growth rate | **~0.5–5px per frame**, i.e. 18–309px/s, mostly near 100–150px/s |
-| linearity of `delta` against frame index | **R² 0.83–0.99** in 12 of 13 bursts long enough to fit |
-| worst | 130 records at `scrollTop 15800`, `delta` 163 → **401px** |
+| session | build | records | span | rate | bursts | diverging | converging | sign-crossing |
+|---|---|---|---|---|---|---|---|---|
+| `325dc382` | pre-`794e585cc` | 1262 | 48.2 min | 26/min | 62 | **49** | 10 | 3 |
+| `c3a1abbb` | `794e585cc`/`c951b38fa` | 688 | 11.4 min | 60/min | 15 | **14** | 0 | 1 |
 
-So the converging shape the night's analysis was built on — 69 → −2 — **does not
-occur anywhere in his session**. Every burst starts within a pixel or two of
-correct and drifts away at a constant rate for half a second to two seconds. A
-mechanism that explains a decaying error does not explain this, and this is the
-worse of the two: a converging error settles and stops being felt, a diverging one
-does not.
+And in `c3a1abbb`, where the fields exist to check: `scrollTop` changes in **0 of
+15** bursts, `scrollHeight` in **0 of 15**, and **0 of 15** span more than one
+anchor row. `delta` grows at **0.5–5px per frame** — 18–309px/s, mostly near
+100–150 — and grows **linearly**, R² **0.83–0.99** in 12 of the 13 long enough to
+fit. Worst: 130 records at `scrollTop 15800` taking `delta` from 163 to **401px**.
+
+**Three things follow, and the second corrects the framing this document had.**
+
+- **The linear divergence is the main event, not a new development.** It was
+  already 49 of 62 bursts on the older build. Nothing about `794e585cc` produced
+  it.
+- **The converging shape is real, is his, and belongs in the record.** The
+  `03:10:54` burst the night's analysis was built on came from `325dc382` — same
+  phone, same panel — which has ten of them. It is a genuine minority shape, not an
+  artifact, and it has stopped appearing on the newer build. With 15 bursts on one
+  build that is something to re-check rather than a fix working.
+- **The correction rate roughly doubled**, 26/min to 60/min. Usage differs between
+  the two windows and little should be read into it — but nobody should take
+  "converging bursts vanished" as improvement while the total rate went up.
+
+`325dc382` carries **no `scrollTop` field at all** in any of its 1262 records,
+which independently confirms it predates `794e585cc` — and means the unmoved
+scroller cannot be checked on it.
+
+A mechanism that explains a decaying error does not explain a diverging one, and
+the diverging one is both dominant and the worse of the two: a converging error
+settles and stops being felt, a growing one does not.
 
 **A code fact that fits the signature, stated as a fact and not as the cause.** The
 anchor arithmetic is done entirely in **screen coordinates** — `captureViewportAnchor`
@@ -695,7 +712,8 @@ tldraw's `HTMLContainer` (`:6794`), which sits in the camera-transformed
 it is not 1. **At any zoom, a screen-space delta is not a valid `scrollTop`
 delta**, and while the camera is animating — `zoomToBounds` runs a 300ms animation
 at `:3347` — the same fixed layout distance produces a *changing* screen distance,
-with `scrollTop` and `scrollHeight` untouched. That is the shape of all 15 bursts.
+with `scrollTop` and `scrollHeight` untouched. That is the shape of the linear
+bursts on both builds — 49 of 62, then 14 of 15.
 
 **It is a hypothesis about `delta` and it does not explain the unmoved scroller.**
 Under it the write would still move the scroller, by the wrong amount. These stay
