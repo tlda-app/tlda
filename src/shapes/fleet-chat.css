@@ -599,17 +599,6 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-log-anchored {
   position: relative;
   overflow-y: auto;
-  /* This padding is slack, and the slack is load-bearing. It counts toward
-     scrollHeight and toward none of the at-bottom terms, so it absorbs the
-     fractional gap between the summed row heights and the real scroll height.
-     Without it the at-bottom test — |top - (total - viewportHeight)| <= 1 —
-     has one pixel to work with, and a sum landing short leaves you stopped
-     above the end with no way to settle. Skip: "keeps you from actually
-     hitting the bottom, which is worse."
-     It also allows a few px of overscroll that springs back. That is the
-     quirk he reported; fix it by widening the tolerance, not by deleting
-     this. */
-  padding: 4px 0;
   scrollbar-width: none;
 }
 
