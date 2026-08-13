@@ -651,6 +651,56 @@ rather than "not built": `LayerMembership` in the code is
 which is a different relation from the one §2.4 means. It is constructed at
 `fleet-hud-layer.ts:158` and `fleet-docview-layer.ts:94` and read nowhere.
 
+### Six places do not ask which layer they are on
+
+Skip, 2026-08-13, on where the whole class of coordinate-frame bug comes from:
+
+> Is it not true that we know what layer we're interacting with? And therefore
+> this isn't about chat or anything. **This is about being your fucking layer.**
+
+The mechanism to answer him already exists and predates this branch.
+`useVisibilityViewportId()` (`useIsInViewport.ts:23`) returns the viewport
+rendering a component, `undefined` meaning the main canvas; the DOM half is
+`[data-viewport-id]`, emitted by `CanvasClipPanel.tsx:535,572` and already read
+by `BrowseIdle.ts:228`. **Six scroll sites never call either.**
+
+| site | layer | can it know? |
+|---|---|---|
+| `FleetChatShape.tsx:4102,4125` — anchor correction | either | **It already holds it.** `FleetChatInner` opens at `:2364` and calls `useVisibilityViewportId()` at `:2368`; the anchor math is at `:4051-4125` in that same component. |
+| `CanvasClipPanel.tsx:192` — wheel to chat log | a clip viewport | **In scope.** And `:207-211`, fifteen lines below, already divides by that viewport's `camera.z` for the nested docview. |
+| `FleetInboxShape.tsx:879,880` — wheel | either | Available, never imported. |
+| `usePanMode.ts:221` — drag-scroll | either | Reachable: `chatLog.closest('[data-viewport-id]')`. |
+| `usePanMode.ts:117,136` — edge autoscroll | **unknowable as written** | `document.querySelectorAll('.fleet-chat-log')` puts every log on every layer through one arithmetic. |
+
+`usePanMode`'s query is worse than layer-blind: [chat rendering](chat-rendering.md)
+§"Two surfaces share the class name" records that `.fleet-chat-log` names a fleet
+panel's Virtuoso scroller **and** the index page's chat log, two different scroll
+implementations. A document-wide query collects both.
+
+**What is established and what is not**, because these were run together once and
+they are three claims:
+
+- **The sites do not ask.** Established, above.
+- **A configuration exists where the units genuinely differ.** Established.
+  `body.fleet-hud-open` is `!!(expanded && fleetBounds)` (`FleetHUD.tsx:896-901`),
+  the render gate returns `null` only when `!viewportId && hudOpen`
+  (`useIsInViewport.ts:44-51`), and the canvas copy is hidden only under that body
+  class (`FleetHUD.css:238`). **So with the HUD closed a chat panel renders on the
+  canvas, visible, inside `.tl-html-layer` — which carries `scale(z)`**
+  (`TldrawViewport.tsx:99-102` in the vendored fork). `getBoundingClientRect` is
+  scaled by that transform and `scrollTop` is not.
+- **That this caused the reported scroll freeze.** *Not* established, and the
+  telemetry cannot decide it: no viewport id and no camera appears on any of the
+  1,982 records in the measured session. **A fleet chat panel carries a shape id
+  whichever camera drew it — the HUD renders the same store — so the shape id
+  distinguishes panel from index log, never canvas from HUD.** That inference was
+  made and retracted on 2026-08-13; do not make it again.
+
+**Two mechanisms answer "which layer" and they are not the same object.**
+`useVisibilityViewportId()` is React context; `wm/tlda-shape-layers.ts` resolves
+through the WM's registered viewports. They agree today because both bottom out
+in the same viewport registration, and nothing makes them agree.
+
 ### The `viewport` backing is implemented and unmounted
 
 `LayerBacking: {kind: 'viewport'}` was routed through `wm-core` from the start
