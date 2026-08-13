@@ -2318,14 +2318,6 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     el.scrollTop = ANCHORED_SENSOR_MID
   }, [])
 
-  const measureRowHeight = useCallback((row: HTMLDivElement) => {
-    const computedHeight = Number.parseFloat(window.getComputedStyle(row).height)
-    const height = Number.isFinite(computedHeight) && computedHeight > 0
-      ? computedHeight
-      : row.offsetHeight || row.scrollHeight
-    return Number.isFinite(height) && height > 0 ? height : 0
-  }, [])
-
   const scrollToTail = useCallback(() => {
     setModelTop(Math.max(0, geometry.total - viewportHeight), { forceTail: true })
     const el = scrollerRef.current
