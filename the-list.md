@@ -1,7 +1,7 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `0434db7cd`, 43 commits ahead** — everything tonight is on `main` and none of it is on your
-screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 03:16 EDT.
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `2cb6cac1e`, 46 commits ahead** — everything tonight is on `main` and none of it is on your
+screen. **That is deliberate: you said not to deploy, so nobody has.** Re-derived at 03:20 EDT.
 
 **Status:** ✅ working · ⚠️ built, not reaching you yet · 🔨 being worked now · ○ not started ·
 ? nobody could establish it. **Where a thing lives is on the row** — three of these work but do
@@ -99,7 +99,7 @@ not live on your box, and one of those is a documentation file.
 | ○ | Unexplained wakes; build notices fan out to everyone who ever touched the project | **Nobody looked.** |
 | ○ | `involving:(nobody & bot)` finds nothing for an agent you can name | **The cause is sharper than the row:** `nobody` is a real living agent, but `involving:nobody` returns rows belonging to a *different* agent, `pull-tells-nobody` — an exact name resolves to a substring match on somebody else, so the agent you named is never reached |
 | ○ | Inbox affordances: archive/delete, drag a sticky to an agent, task from a note | **Nobody looked.** |
-| 🔨 | **Everything that paginates announces it, at the top and at the bottom** | **Your rule, 03:04–03:05, and it is general — not a fix to `roster`.** The top says it is paginated; **the bottom tells you how to get the next page.** **This row cost you something tonight, hours after it was written.** I asked the fleet table how many dead agents there are, read the 500 rows it returned, and told you zero. There are **2,154 across five pages** and it never said there was a second one. `thread` announces its pages; `roster` and the history endpoint do not. **The row was already on your list saying nobody had looked — and then it happened to me, while I was using the list to answer you.** Nobody has looked at the code |
+| ⚠️ | **Everything that paginates announces it, at the top and at the bottom** | **Done — `2cb6cac1e`, on `main`, not on your box.** Your rule, 03:04–03:05: the top says it is paginated, the bottom says how to get the next page. **8 paginated surfaces; `tasks` already did it correctly and was left alone as the shape to match.** Two cannot hand back a cursor and say so rather than invent one — `roster` has no parameter to pass `/api/fleet-table`'s cursor back, and `search`'s byte budget drops results already fetched. **And a correction to what I told you about my own mistake: `/api/fleet-table` *did* announce it.** It returned `page_limited: true` and a `nextCursor`, my own output printed `nextCursor: True`, and I read 500 of 2,154 and told you zero anyway. **So the machine fields were never the gap — I was.** That is the argument for saying it in words next to them. `chat-render-doc` |
 | ○ | **Who caused a build, shown on the pill and in history** | Nothing implements it. **Merged from two rows** — the build pill naming who sent it and edit attribution in history are one ask wearing two surfaces. Split them again if you meant two |
 | ○ | The paper dependency graph, and edit-implication notices | Two things, your ruling |
 | ○ | Take build success away as a completion signal; an edit creates an obligation sized by its diff | **Nobody looked.** |
