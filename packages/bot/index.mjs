@@ -359,6 +359,11 @@ export function runBot(opts) { return createBot(opts).start(); }
 export { createCommandRegistry, generateCommandMarkdown } from './commands.mjs';
 export { configTypes, defineConfig, generateConfigMarkdown, parseConfig } from './config.mjs';
 export { createTransportFixture } from './fixture.mjs';
+// dev's worktree sweep. Re-exported rather than imported by subpath because
+// package.json restricts `exports` to ".", so `@tlda/bot/worktree-content.mjs`
+// fails with ERR_PACKAGE_PATH_NOT_EXPORTED — and a bot that cannot resolve an
+// import does not start.
+export { classifyIgnoredPath, classifyWorktreeIgnored, IGNORED_STATUS_ARGS } from './worktree-content.mjs';
 
 // ── App surface for out-of-repo bots ────────────────────────────────────────
 //
