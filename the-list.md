@@ -1,23 +1,22 @@
 # The list {#the-list}
 
-**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `fc16046ef`, 12 commits
+**Deployed on your box: `3d10cb3ef`** (built 04:35:18Z). **`main` is `96ce21dcf`, 14 commits
 ahead** — anything that landed tonight is on `main` and not on your screen. Status re-baselined
-against those two at 01:25 EDT.
+against those two at 01:28 EDT.
 
 **Status:** ✅ working on your box · ⚠️ built, not on your box · 🔨 being worked now · ○ not
 started.
 
-**94 things.** I said 71 when I first sent this and did not count it — it is 94, both before and
-after. The merging below is real; the number was not. What merged and what was added is at the
+**93 things**, counted. It was 94 until the schedule and the course website merged into one row. The merging below is real, and so is this count now — I said 71 first and had not counted it. What merged and what was added is at the
 bottom, so you can check it rather than take it.
 
 ## Chat and scrolling
 
 | | | |
 |---|---|---|
-| 🔨 | **Chat jerks while you read it, with no input from you** | 688 corrections in your own session, 9 with any input. The correction writes to `scrollTop` and the scroller never moves — measured, 200 consecutive writes at one position. `scroll-owner` |
-| 🔨 | **Sometimes you can't scroll up** | Sourced tonight from `react-virtuoso`'s own code: the repair aims at Virtuoso's model of the bottom, the gap is measured from the DOM's. Any height in the DOM the model doesn't know about is a permanent residual, so the repair fires every 500ms forever and you are scrolling against a writer that never stops. **Fix committed on a branch, not on your box.** `scroll-owner` |
-| 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design. Chat is migrated and running, −1096 lines. Pan-mode scrolling is dead on that branch and is being wired now. Never rendered in front of you. `list-component` |
+| 🔨 | **Chat jerks while you read it, with no input from you** | 688 corrections in your own session, 9 with any input. The correction writes to `scrollTop` and the scroller never moves — measured, 200 consecutive writes at one position. **A branch (`rc/anchored-list`) deletes this machinery rather than repairing it** — `captureViewportAnchor`, `restoreViewportAnchor` and `checkFollowInvariant` are gone on it. `scroll-owner` decides whether that lands |
+| 🔨 | **Sometimes you can't scroll up** | Sourced tonight from `react-virtuoso`'s own code: the repair aims at Virtuoso's model of the bottom, the gap is measured from the DOM's. Any height in the DOM the model doesn't know about is a permanent residual, so the repair fires every 500ms forever and you are scrolling against a writer that never stops. **Fix committed on a branch, not on your box** — and the same branch above may delete the writer entirely. `scroll-owner` |
+| 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design. Chat is migrated and running — it removes 1,198 lines and adds 2,463 across 18 files, so it is a replacement, not a reduction. Pan-mode scrolling is dead on that branch and is being wired now. Never rendered in front of you. `list-component` |
 | ○ | Scroll-back prefetch | Your design is written down. Nothing built against it |
 | ○ | **Make the layer abstraction real** — a layer is a camera and a store | The largest thing on this list |
 | ✅ | Thread cards expand and collapse again | `f8da9eb67`. Both controls. Was marked untouched; it had shipped |
@@ -45,7 +44,7 @@ bottom, so you can check it rather than take it.
 | | | |
 |---|---|---|
 | 🔨 | **The document panel shows the readme plus fourteen other documents' headings** | The build concatenates every linked document's headings into one TOC — 176 entries. Chapters-get-their-own-page is book behaviour running on something that is not a book. All documents belong on one canvas page. `doc-panel-owner` |
-| ○ | Figures render in colour | **The row said "on a white plate right now" and that describes a shape type your paper does not contain** — zero `svg-figure` shapes in 465 on your live `balancing-act` canvas. What actually paints a figure in a LaTeX project has not been established. `theme-palette-warm` |
+| ✅ | Figures render in colour, and have since `e69313a28` deployed | **Your figures are svglite markup inlined into the page SVG, not figure shapes** — zero `svg-figure` shapes among 548 on your `balancing-act` canvas, while page 16 carries Figure 1 as 116 polylines and 24 polygons inside the page itself. That commit removed the invert from the page container and the container was inverting them too. Everyone was looking at a shape type your paper does not contain. **What is left is smaller: the authored greys may read low-contrast on a dark family**, being looked at on the real page rather than argued from hex. `theme-palette-warm` |
 
 ## Themes and appearance
 
@@ -88,7 +87,7 @@ bottom, so you can check it rather than take it.
 | | | |
 |---|---|---|
 | ⚠️ | `thread()` asks for the two-party conversation | **Done tonight — `281e36039`, the behaviour and not just the docstring.** It reaches an agent when its MCP restarts, not on deploy, so agents minted from now already have it |
-| ○ | A handoff through Todd never works | Reported three times across three days. Todd is not running on `testing` at all — its tmux session only exists for `stable` |
+| ○ | A handoff through Todd never works | Reported three times across three days. **Nobody has found a cause.** An inherited note said Todd was not running on `testing`; that is false — `fleet-todd` has been up since 22:27 and has been sending check-ins all night |
 | ○ | A bot's tmux session should die with the bot | You said "go for it" on 08-10; a session from 31 July is still running |
 | ○ | Bots have no real options | |
 | ○ | Reanimate does nothing and says nothing | |
@@ -139,8 +138,7 @@ bottom, so you can check it rather than take it.
 | | | |
 |---|---|---|
 | ○ | The probability arc you designed on 08-10 | `fall-class` was told to find it and still has not been pointed at it |
-| ○ | The schedule, week by week, with an authorship overlay | |
-| ○ | The course website: a date list and references into the book | |
+| ○ | **The course website, which is the schedule** — week by week, a date list, references into the book, an authorship overlay | *"without me having everything hand coded in a million different places."* **Merged from two rows** on your own framing that the schedule is structurally the website. Say the word and they split again |
 | ○ | The classroom common layer is the book layer; a demo student account | |
 | ○ | Homework structure: problems in narrative sections, stray text refuses upload | |
 | ○ | An errata page for the book, as annotations into it | |
