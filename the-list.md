@@ -1,9 +1,9 @@
 # The list {#the-list}
 
-**47 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**48 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
-**6 of the 47 are parked rather than closed — you tabled them, which is not the same as done.**
+**6 of the 48 are parked rather than closed — you tabled them, which is not the same as done.**
 
 **⚠️ built and finished, but not on your box — so from where you sit it is indistinguishable from
 not-done, which makes it the one mark that misleads you.** Five of the six are on `main` and clear
@@ -13,9 +13,9 @@ started · ⏸ tabled — not finished, nobody on it, can come back · ? nobody 
 either way
 
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
-invented — the arXiv build — and it is gone. **The other 47 are things you asked for.**
+invented — the arXiv build — and it is gone. **The other 48 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `68098881a`, 53 ahead. Checked 05:10 EDT.
+Your box runs `3d10cb3ef`; `main` is `a36670c4e`, 55 ahead. Checked 05:18 EDT.
 
 ## Chat and scrolling
 
@@ -64,6 +64,7 @@ Your box runs `3d10cb3ef`; `main` is `68098881a`, 53 ahead. Checked 05:10 EDT.
 
 | | | |
 |---|---|---|
+| 🔨 | **Bots that aren't all fucked up** | **Your framing:** *"that's a fucking item, right — to have bots that aren't all fucked up."* **One item, not five.** **Four bots are silenced** — `quiet-grammar`, `quiet-teacher`, `quiet-nobody`, `quiet-dev` — and **why is unknown**; `quiet-` is the sanctioned stop for a runaway bot, so this may be entirely correct. **Three produce zero lines after login**, confirmed from their own logs, which is the mechanism working. **`dev` is the contract violation:** inert on the fleet surface, still running local sweeps. Your words: *"Inertness should gate the entirety of bot behavior. That's the fucking contract."* **The destructive part of that sweep is already stopped, and this row does not claim otherwise** — the worktree removal in the code the running bot actually loads is disabled behind a stop-loss that classifies and logs instead, and it already records every candidate rather than only failures. **What is genuinely open is yours to answer**, and the code says so: the sweep cannot tell ignored *build cache*, which is reclaimable, from ignored *agent content*, which is somebody's work — so removal stays off until you say what the sweep is for. **The two bot rows above are part of this item, not separate ones:** todd never completing a handoff, and the settings tab writing per-bot preferences six of seven bots do not read. *Leaves the list when every bot is either working or deliberately silent — and silent means silent.* `fleet-bugs` |
 | 🔨 | **A handoff through Todd never works** | **Found, watched on the live socket.** Your *"Todd, let's do a Direct handoff"* was delivered — todd's heartbeat wrote `fleet-event` the same second. **The payload carries `recipients: [...]` and no `to_id`.** todd reads `to_id = rawData.to_id ?? rawData.to`, gets `undefined`, and **all 17 of its addressing gates go false.** The boundary is `1638fbe33`/`ed96a97bc`, *"Group send: recipients table replaces events.to_id"*, 31 July — and todd's ledger holds **no action derived from a message of yours since 28 July.** Rotate, disinherit, escalation, poke and QA dispatch are the same gate. *Leaves the list when todd reads `recipients` and a handoff you type produces a `handoff-direct` record.* `fleet-bugs` |
 | 🔨 | **A tmux session should die with the agent it was made for** | **Watched: 48 sessions, 16 belong to agents whose row is `dead: true`, 8 more resolve to no row at all, and 15 of the dead ones still hold a live pane process — 719 MB between them.** **An earlier version of this row was wrong and dangerous:** it named pid 800 as a wedged launcher. **Pid 800 is the tmux server** — parented to launchd, 47 children, every agent shell on the machine. A tmux server keeps its first client's argv forever, so `ps` still shows a July launch that is a fossil; the dot-versus-underscore detail chased for hours was an artifact of reading it. *Leaves the list when a dead agent has no session.* `fleet-bugs` |
 | 🔨 | **Bots have no real options** | **Found, and it is an inversion.** `PrefsTab.tsx:803–819` maps over running bots and emits **the same two hardcoded controls for each** — self-check poke, countdown — with only the pref key varying by bot id. **Exactly one bot reads those keys: `todd`.** The other reader, `disposition`, is in neither the `bots:` map nor either environment list in `bots.yaml` and has no process — a repo nobody launches. Live, the tab renders three bots: `todd` works; `debt` runs `edit-debt-bot.mjs`, which reads neither key, so **both its controls are inert**; and `sodd` runs todd's code but logs `inert: requested "todd", assigned "quiet-todd"` under the alternate-name guard, so it acts on nothing and its two are inert as well. **So it is not "some bots' controls are inert" — it is every bot in the tab but one, and every configured bot but one.** **And the inversion is sharper than it looked:** `dev`, `nobody`, `grammar` and `edit-debt` each export a typed `defineConfig` schema with descriptions and `env:` keys, **nothing in `src/` or `server/` reads a schema at all** (verified with a control), and `todd` — the one bot the tab shows controls for — declares none. **Making them real is reading a schema that is already written.** **Which way it resolves is not settled.** You said *"either we fucking expose something or we don't"* and then said you had been misunderstood, so **no ruling is recorded here** — exposing the declared options and removing the two hardcoded controls are both live. *Leaves the list when the tab is coherent either way: every bot's declared options shown, or none shown for any of them.* `fleet-bugs` |
