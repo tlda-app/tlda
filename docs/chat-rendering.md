@@ -454,8 +454,8 @@ count from the table above.
   mechanism is an item already on screen getting taller. **Neither counter can
   move when it happens.** His account was right.
 - **A guard's own deferral count cannot tell you the window was empty.**
-  `8543d9048` recorded **one deferral against 211 corrections** and read as
-  working. The window it watched — pointers currently down — does not open during
+  `8543d9048` recorded **one deferral against 211 corrections** (session
+  unverified) and read as working. The window it watched — pointers currently down — does not open during
   an iOS momentum glide, which is the entire case it existed for.
 - **`log.debug` does not reach this file**, so absence of `chat-scroll` records and
   absence of touch records mean nothing at all. This is stated above and is worth
@@ -556,8 +556,10 @@ function**, then asserted the correction was written anyway. So the suite was gr
 on the behaviour that put a jitter under Skip's finger.
 
 `8543d9048` is the other instructive one: a correct-looking guard that recorded
-**one deferral against 211 corrections** on Skip's phone, because the window it
-watched was empty during exactly the gesture it existed for. Its ref carries the
+**one deferral against 211 corrections**, because the window it watched was empty
+during exactly the gesture it existed for. **That figure is inherited and its
+session is unverified** — it predates the readable telemetry window, so it is
+evidence about the guard and not about Skip. See §"Whose session is it". Its ref carries the
 same name as the one `7430200ad` deleted, so it reads as the original.
 
 `chatViewportAnchor.mjs:14-20` now carries the distinction all three missed —
@@ -841,8 +843,8 @@ This is the gap the document cannot close by describing it: the model says
 Virtuoso measures rows, and in practice a measured row is a mutable DOM subtree
 with two other renderers writing into it.
 
-**And the growth is unbounded.** Measured at `03:22:23` in another session
-(`bdb70dd4`, panel `shape:fleet-chat-1-fleet_9c80d6bc-2e223938`): key
+**And the growth is unbounded — measured in an agent's session, not Skip's.**
+`03:22:23`, session `bdb70dd4`, panel `shape:fleet-chat-1-fleet_9c80d6bc-2e223938`: key
 `activity:db2728214` went **94px → 4676px** with `firstRenderedCount=0` — no new
 row, one existing row fifty-fold taller as output streamed into it. Also
 `activity:db2727948`, 1565 → 1757 → 2004px. Bounding what an activity card can
