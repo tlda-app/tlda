@@ -194,3 +194,67 @@ test('bot login route proof also works from machine and env when daemon key is a
   assert.equal(login.daemon_key, undefined)
   assert.equal(loginRouteProof(login).daemon_key, 'mini:testing')
 })
+
+// Skip, 2026-08-13: "I think all bots should probably carry the bot label." The
+// label is what todd's don't-nudge-a-bot guard tests, so a caller that forgets it
+// produces a bot that gets kicked like a person. These pin the assertion to the
+// harness rather than to every bot's call site.
+test('a bot carries the bot label even when the caller asks for none', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'forgetful',
+    labels: [],
+    fleetId: 'fleet:forgetful-fixture',
+    pidFile: join(directory, 'forgetful.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).start()
+  t.after(() => bot.stop())
+
+  await turn()
+  const login = transport.sockets[0].sent.find(message => message.type === 'login')
+  assert.ok(login)
+  // Not merely "contains bot" — an empty array is truthy, and the server's login
+  // writes `labels || existing.labels || []`, so sending [] would clear the row.
+  assert.deepEqual(login.labels, ['bot'])
+})
+
+test('the bot label leads, and the caller’s own labels survive beside it', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'teacher',
+    labels: ['drill'],
+    fleetId: 'fleet:teacher-fixture',
+    pidFile: join(directory, 'teacher.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).start()
+  t.after(() => bot.stop())
+
+  await turn()
+  const login = transport.sockets[0].sent.find(message => message.type === 'login')
+  assert.ok(login)
+  assert.deepEqual(login.labels, ['bot', 'drill'])
+})
+
+test('a human participant is not a bot and does not get the label', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'skip',
+    human: true,
+    labels: [],
+    fleetId: 'fleet:human-fixture',
+    pidFile: join(directory, 'human.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+  }).start()
+  t.after(() => bot.stop())
+
+  await turn()
+  const register = transport.sockets[0].sent.find(message => message.type === 'register')
+  assert.ok(register)
+  assert.deepEqual(register.labels, [])
+})

@@ -23,8 +23,20 @@ import { getServerUrl } from '../../shared/config.mjs';
 import { ResilientWS } from '../../shared/resilient-ws.mjs';
 import { createCommandRegistry } from './commands.mjs';
 
-function registrationLabels(labels, key) {
-  const out = [];
+// A bot carries `bot`, and it is not the caller's to leave off. Skip, 2026-08-13:
+// "I think all bots should probably carry the bot label … obviously it's the
+// implementer's choice, but that's my choice."
+//
+// It is load-bearing rather than descriptive: todd's don't-nudge-a-bot guard tests
+// this exact string (`bots/todd/lib/kicks.mjs`), so a bot without it gets kicked
+// like a person. Adding it here rather than at each call site means the assertion
+// rides every login — the payload is rebuilt on each connect — so a row that loses
+// the label recovers on the next reconnect instead of staying wrong until somebody
+// reads the roster.
+//
+// Humans are untouched: a `human` participant is not a bot and does not get it.
+function registrationLabels(labels, key, { human = false } = {}) {
+  const out = human ? [] : ['bot'];
   for (const label of Array.isArray(labels) ? labels : []) {
     if (!label || label === key || out.includes(label)) continue;
     out.push(label);
@@ -60,7 +72,7 @@ export function createBot({
   const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null;
   const id = fleetId || process.env.FLEET_ID;
   if (!/^fleet:[a-zA-Z0-9_-]+$/.test(id || '')) throw new Error('bot harness requires FLEET_ID');
-  const explicitLabels = registrationLabels(labels, key);
+  const explicitLabels = registrationLabels(labels, key, { human });
   const allowSet = allow ? new Set(allow) : null;
   const registry = createCommandRegistry(commands);
 
