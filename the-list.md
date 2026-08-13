@@ -1,9 +1,9 @@
 # The list {#the-list}
 
-**48 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**49 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
-**6 of the 48 are parked rather than closed — you tabled them, which is not the same as done.**
+**6 of the 49 are parked rather than closed — you tabled them, which is not the same as done.**
 
 **⚠️ built and finished, but not on your box — so from where you sit it is indistinguishable from
 not-done, which makes it the one mark that misleads you.** Five of the six are on `main` and clear
@@ -13,14 +13,15 @@ started · ⏸ tabled — not finished, nobody on it, can come back · ? nobody 
 either way
 
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
-invented — the arXiv build — and it is gone. **The other 48 are things you asked for.**
+invented — the arXiv build — and it is gone. **The other 49 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `a36670c4e`, 55 ahead. Checked 05:18 EDT.
+Your box runs `3d10cb3ef`; `main` is `0049622e4`, 60 ahead. Checked 05:44 EDT.
 
 ## Chat and scrolling
 
 | | | |
 |---|---|---|
+| ○ | **A tool call we do not recognise renders as a wall** | **Captured from his own DOM before deploying, since a deploy would have destroyed it:** `wait: cell_id: 73, yield_time_ms: 30000, max_tokens: 5000, _raw: cell_id=73 … (+56 more)` — **one card's detail body is 11,951 characters**, beside a Claude card reading `Bash: command: …`. **The mechanism is in `src/fleet/activity-render.mjs`, not inferred:** `toolToCommand` switches on known tool names and returns `''` by default (line 406), so an unrecognised tool gets no summary and falls through to `toolCallArgs`, which prints **every** entry — its only filter drops `_semantic*` keys, so a sender's `_raw` is printed beside the arguments it duplicates, and an empty value still renders its key (`chars: ,`). **Your framing sets the order:** *"I think we kind of have to try to keep up"*, and *"gpt5.6-sol agents do quirky shit… this week they're using these other calls."* **So three, in this order: (1) fix the fallback** — an unrecognised tool renders like a recognised one, name, the argument that carries meaning, fold, never `_raw`; **(2) count the unrecognised tools**, because right now the only detector is you reading your chat and seeing something ugly, which is why this took a week to surface; **(3) teach it this week's codex calls** — `wait`, `write_stdin`, `cell_id`, `session_id` — third because it goes stale. *Leaves the list when an unknown tool folds like a known one and somebody can say how often unknowns appear.* Unowned |
 | 🔨 | **Chat jerks while you read it, with no input from you** | The measurement is real; **whose session it is, is not established.** 688 corrections, 9 with input, scroller never moves, 200 consecutive writes at one position — but the session is attributed to you **by a shape id containing your name**, and both bursty sessions are `isTouch` while you are on the Air. **That inference is the one an agent was killed for tonight.** Treat the mechanism as sound and the attribution as open **You have this one.** The only part left with us is merging what comes out |
 | 🔨 | **Sometimes you can't scroll up, and it's worse than it used to be** | **Nobody knows why. Two mechanisms have been offered on this row and both are dead.** The scrollbar-drag one died because you are on Safari and there is no scrollbar; that commit is reverted off `main`. **The buffer-trim one is retracted too — your sessions never reached the 500-event cap it depended on.** A fix sits on a branch that was typechecked and never run, against a cause that no longer stands. **Nobody found a commit that made it worse and nobody claimed one.** **You have this one.** The only part left with us is merging what comes out |
 | 🔨 | **A list component that behaves** — one abstract component with a signature, everything implements it | Your 23:27 design, on `rc/anchored-list`, none of it on `main` or your box. **It does not fix "can't scroll up"** — the buffer, the trim and the history cursor are upstream of everything it changes, so it pages into the same hole. **The two fixes are independent and both are needed**, which also means your symptom may have had two causes the whole time, and no anchor telemetry could ever have shown the buffer one. **Five things elsewhere in the app were reaching into the old scroller and would have broken silently** — pan mode twice, the history paging guard, a screenshot overlay, and the suggestion tip, which hid on wheel and so worked on a trackpad and not under a finger. **All five found by reading, none by anything failing**; the build, the tests and the app were green throughout. Swept systematically rather than sampled, so the count is five and not "five so far" — though a consumer reaching the scroller some other way would not be in that sweep. `list-component` |
@@ -108,7 +109,7 @@ is tlda capability that the classroom happens to need.**
 
 | | | |
 |---|---|---|
-| ⏸ | The README merge, then the photoshoot | **Tabled because you are out of energy, not because it does not matter:** *"It would be nice to do one, but, like, I just don't have the energy, bro."* The fifty images run 2026-04-28 to 2026-07-29, so every one predates the themes that shipped 08-11 and 08-12 — the README shows a UI that no longer exists. **You are the blocker for roughly ten of the fifty**, the ones showing real work on a real paper; the rest are the app doing ordinary things and an agent can shoot them without you. |
+| ⏸ | The README merge, then the photoshoot | **Tabled because you are out of energy, not because it does not matter:** *"It would be nice to do one, but, like, I just don't have the energy, bro."* The fifty images run 2026-04-28 to 2026-07-29, so every one predates the themes that shipped 08-11 and 08-12 — the README shows a UI that no longer exists. **Correction to what this row said an hour ago:** it claimed an agent could shoot most of them without you. **That is wrong.** `readme-shots` tried three framing runs on `eiv-paper` and every one pulled in whatever other agents had open — another agent's live terminal showing source and a `git status` line, and the inbox shape showing your own subject lines. **One image is shootable; the rest need a scratch project with nothing else in it, or you.** |
 | ○ | Documentation taxonomy, and an Overleaf onboarding section | **Nobody looked.** |
 | ○ | GitHub release: push, tag a late-alpha | Tagging waits on you |
 | ○ | Submit tlda to JOSS | What the release is for |
@@ -179,7 +180,7 @@ argue with it. This is the guard that stops that section becoming the place agen
 own opinions into his. **The evidence half was added on 2026-08-13** when a row was settled by a
 command he ran rather than by a ruling: the rule as first written would have forced that fact out
 of the section entirely, which is how a true finding gets deleted silently instead of recorded.
-**Eight entries quote him; one cites a command and names who ran it; checked.**
+**Eight entries quote him; two cite evidence and name who produced it; checked.**
 
 **A claim about machine state says how it was known.** Read from a log, run just now, relayed by
 somebody else — those are different, and only the middle one is evidence you can stand behind.
@@ -243,4 +244,12 @@ three `fleet-daemon` jobs and `com.tlda.bot-manager`. **Settled by that command,
 not broken** — it needs `managername = Aqua`, which is your terminal, and that is the design.
 **The row it closes** — one manager supervising all bots, rather than every bot in the launch
 config — **is the thing you half-remembered building, and you did build it.**
+
+**Never screenshot a shared room for publication.** `readme-shots` tried three framing runs on
+`eiv-paper` and each pulled in whatever other agents had open — **another agent's live terminal
+with source and a `git status` line, and the inbox shape showing your own subject lines.** **Panel
+crops are the only safe frame**; anything wide enough to show the canvas needs a scratch project
+with nothing else in it. **This is a leak risk rather than an aesthetic one, and it applies to any
+screenshot anybody publishes**, not only the README. Established by `readme-shots`' own three runs
+and relayed by `app-fix-forward`; this seat did not shoot them.
 
