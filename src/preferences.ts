@@ -54,6 +54,15 @@ const DEFAULTS = {
   // keeps cutting off the tail of a sentence.
   'voice-endpointing': 300 as number,
   'voice-utterance-end-ms': 1000 as number,
+  // Enter waits for the dictated tail to finalize before it sends, so the message
+  // carries Deepgram's revision rather than the provisional interim that was on
+  // screen. These two bound that wait; neither is a pacing knob.
+  // carry-backstop = the bridge's own forward-release of a carried epoch.
+  // finalize-wait = how long Enter holds before sending what he has anyway. It sits
+  // above the bridge's backstop on purpose, so the bridge releases first and this is
+  // a last resort. Enter ALWAYS sends when it elapses — it never swallows a send.
+  'voice-carry-backstop-ms': 800 as number,
+  'voice-finalize-wait-ms': 1500 as number,
   'readability-profiles': DEFAULT_READABILITY_PROFILES as ReadabilityProfiles,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
