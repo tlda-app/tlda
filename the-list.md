@@ -1,6 +1,6 @@
 # The list {#the-list}
 
-**58 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**57 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **7 of the 54 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
@@ -18,9 +18,9 @@ module — **the tab you are reading this in is still running the bundle it load
 the eight `✓?` rows reach your screen until you refresh. Nothing here says you have seen any of it.
 
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
-gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 58 are things you asked for.**
+gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 57 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 09:27 EDT; `main` is `e4777c195`, 61 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 09:28 EDT; `main` is `8a591a2e9`, 62 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
@@ -71,7 +71,6 @@ Your box runs `2e763c010`, read from `/api/build-info` at 09:27 EDT; `main` is `
 
 | | | |
 |---|---|---|
-| 🔨 | **An amend reports success and the message does not change** | **Observed:** a message to you was amended to correct a wrong disk figure, the tool returned *"Amended message 2750883 in place"*, and **the thread was read twice afterwards with both the original number and the original urgency still there.** A new message was sent instead. **Why the content did not change is not established, and nobody is inventing a reason.** **What is established about the report:** `amendEventText` in `server/lib/fleet-store.mjs:5032` returns `true` unconditionally after its `UPDATE` — it never checks whether the statement affected anything — **so a success report is structurally incapable of distinguishing changed from unchanged.** That is a fact about the report, not a diagnosis of the failure. **Why it is worse than it sounds: an amend never re-notifies.** So a silently failed amend leaves the wrong text in front of you **permanently**, while the sender's own account says it was corrected — **a green send with nothing behind it, on the one surface where you cannot check us.** **And a second half makes the first unfixable by care alone.** The rule is *amend only a message that has not been read*, **and read state cannot answer that**: from the bundle your browser loads, *"a receipt is a snapshot from your last history load and nothing on the wire can move it."* **So the precondition for amending safely is not observable, and an amend can be perfectly reliable and still silently correct nothing you will ever see again.** **Standing practice until this is fixed: corrections to you go as new messages**, and amend only for a typo within seconds of sending. *Leaves the list when an amend that reports success is shown to have changed the message, or reports failure when it has not.* `app-fix-forward` |
 | ? | **A bot loses its own name to its mint's shell row** | **The mechanism, from the daemon ledger:** when a mint launches the process, the bot takes the minted id and keeps its canonical name — `todd`, `chat-lint`. **When the bot is already running, the mint's row squats the name and the bot is assigned `quiet-<name>` and goes inert** — `dev`, `nobody`, `grammar`, `teacher`. **So a bot has two rows and the shell's row wins.** **`quiet-` therefore has two causes and only one was known**: the sanctioned stop for a runaway bot, and this. **Killing the squatter does not hold — one was killed at 12:58 and a new mint held the name 96 seconds later**, so the next person's instinct to kill it again is already known to fail. **The question is yours and nobody has decided it: should a bot mint adopt the id in the bot's idfile rather than allocate a new one, so a bot has one row for its whole life?** `app-fix-forward` recommends yes, from your own principle — *"nothing's gonna label a fucking bot a bot except the fucking bot"*, and the idfile is the bot asserting which being it is. **Identity is yours, so nobody has acted.** *Leaves the list when a bot keeps its name across a mint.* |
 | ○ | **An inert `dev` reclaims no disk** | `node_modules` eviction against a 50 GB budget, preview reaping and the `pw` pool **all arm in `onOpen` and are correctly gated** — so an inert `dev` sweeps nothing. **The box is carrying 38 GB of worktrees across 536.** **This is not a bug in the gate:** the gate is the contract working, and this is what the contract costs while a bot cannot hold its own name. **Blocked by the row above and not independently actionable** — no owner. *Leaves the list when a canonical `dev` sweeps again.* |
 | ○ | **A shared parent for the fleet panels** | **You asked, 2026-08-13 03:43:12:** *"why is this not just in all or, like, some parent of the fucking …"* — **and the answer at the time was *not doing it unasked*, when you had just asked.** **The gap is real and I checked it:** all **10** `Fleet*` shapes extend `BaseBoxShapeUtil` directly, **30 shape files do**, and **no intermediate class exists anywhere in `src/shapes/`** — so there is nowhere to put shared behaviour. **Its failure mode is one this list already carries three times tonight:** behaviour repeated at every site is behaviour that will silently be missing at one — the ghost tone, todd's `to_id`, the layer-blind DOM queries. **No owner.** *Leaves the list when the fleet panels share a parent and something can be fixed in one place.* |
@@ -347,4 +346,16 @@ appears on the sync-failure screen and notes export to markdown, which you noted
 breath. **It was deleted once, restored as parked, and is deleted again** — parked would mean you
 want to come back to it, and you said it is fine. **The reconnect question you raised alongside it
 is a separate row and stays open.**
+
+**`chat({ amend_id })` works; the report that it silently failed was wrong.** A message to you was
+amended, reported as landed, and then read as unchanged — so a row went on this list saying an
+amend reports success without changing anything. **It was checked and the amend had landed:**
+message 2750883 carries its corrected body in your thread at the original timestamp. **The row is
+deleted, and recorded here rather than dropped, because it was a phantom created inside the audit
+that exists to remove phantoms** — and because the next person to see a stale-looking amend will
+otherwise open it again. **One code fact that made the false report plausible, and it is not a
+defect anyone has observed:** `amendEventText` at `server/lib/fleet-store.mjs:5032` returns `true`
+after its `UPDATE` without checking that any row changed. **What is genuinely unsettled is
+narrower and nobody has established it:** whether some view can show an amended message's original
+body while the store holds the correction.
 
