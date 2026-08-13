@@ -13,7 +13,7 @@ import ts from 'typescript'
 // write both halves, always.
 export const LITERATE_STORY_LIMITS = [
   'Only `// ##` story comments and `// ###` step comments in test files are story structure.',
-  'Every `// ###` step must expose at least one `assert.*` message directly under that step.',
+  'A `// ###` step with `assert.*` messages under it contributes their state lines. A step with none is an action — the server dies, Alice pushes — and renders as itself; its consequences belong to the step that follows.',
   'Assertions hidden inside helpers do not appear in the catalogue; add a visible step assertion for the state the helper proves.',
   'Bare assertions with no message do not appear; story assertions need a reader-facing state message.',
   'Assertion messages must be plain strings or concatenated plain strings; interpolation is refused because source values belong to assert output, not the catalogue.',
@@ -97,9 +97,17 @@ export function extractStories(source, file = '<inline>') {
           return { text: catalogueLine(assertion.message), line: assertion.line }
         }),
     )
-    if (currentStep.states.length === 0) {
-      throw new Error(`${file}:${heading.line}: story step "${heading.title}" has no visible assertion messages`)
-    }
+    // A step with no assertions is an ACTION — "the server dies before the
+    // checkpoint", "Alice pushes", "Carol types" — whose consequences are
+    // asserted in the step after it. That is correct writing, so it renders as
+    // itself with nothing under it and a reader reads on.
+    //
+    // It used to throw, and the throw took the whole catalogue down: one
+    // unusual step and nine stories emitted nothing. A tool whose job is to
+    // produce a readable list must never answer "nothing" because one entry
+    // surprised it. An empty step is visible in the output — which is also the
+    // honest report of a step that lost its assertions — and a hard throw is
+    // not.
   }
   return stories.filter(story => story.steps.length)
 }
