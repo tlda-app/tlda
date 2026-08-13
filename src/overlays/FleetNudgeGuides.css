@@ -1,3 +1,16 @@
+/* Theme tokens live above the overlay so a theme can replace them. */
+:root {
+  --fleet-nudge-guide-color: #2f80ed;
+  --fleet-nudge-guide-tone: var(--ui-tone-dormant);
+  --fleet-nudge-guide-snap-target-color: #2f80ed;
+  --fleet-nudge-guide-snap-target-tone: var(--ui-tone-rest);
+}
+
+html[data-theme="dark"] {
+  --fleet-nudge-guide-color: #7aa9f7;
+  --fleet-nudge-guide-snap-target-color: #7aa9f7;
+}
+
 /* Fixed, so pageToScreen coordinates land directly — the guides can come from
    the HUD editor, whose container is not this overlay's offset parent. */
 .fleet-nudge-guides {
@@ -7,17 +20,18 @@
   z-index: var(--tlda-z-canvas-overlay);
 }
 
-/* One hairline, at the app's active tone — present enough to answer "what is
-   it lining up with", quiet enough not to compete with the document. */
+/* Theme-owned guide paint. A snap target changes tone and colour, never width:
+   thickening the hairline would move the line it represents. */
 .fleet-nudge-guide {
   position: absolute;
   background: currentColor;
-  color: #2f80ed;
-  opacity: var(--ui-tone-active);
+  color: var(--fleet-nudge-guide-color);
+  opacity: var(--fleet-nudge-guide-tone);
   width: 1px;
   height: 1px;
 }
 
-.tl-theme__dark .fleet-nudge-guide {
-  color: #7aa9f7;
+.fleet-nudge-guide--snap-target {
+  color: var(--fleet-nudge-guide-snap-target-color);
+  opacity: var(--fleet-nudge-guide-snap-target-tone);
 }

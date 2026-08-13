@@ -77,7 +77,7 @@ export function FleetNudgeGuides() {
       {lines.map(line => (
         <div
           key={line.key}
-          className="fleet-nudge-guide"
+          className="fleet-nudge-guide fleet-nudge-guide--snap-target"
           style={{
             left: line.x,
             top: line.y,
