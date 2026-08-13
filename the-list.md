@@ -22,7 +22,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 70 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 19:26 EDT. `main` is `9ee03b3fc` —
+Your box runs `2e763c010`, read from `/api/build-info` at 19:26 EDT. `main` is `3718982b5` —
 **81 commits ahead, 31 of them changing code and 28 changing code outside tests, across 58 code
 files of which 17 are tests**; the other 50 commits are documentation only. **Code means everything that is not
 `*.md` and not under `docs/`; a test means `bin/`, `*.test.*` or `*-test.mjs`.** Both definitions
@@ -75,7 +75,7 @@ again. Every number is re-derived on each write.
 
 | | | |
 |---|---|---|
-| ⚠️ | **A source change to `tlda` is being refused because its manifest lists deleted files** | **Your report, verbatim:** *"mirror sync fails. Source change for tilde was rejected by the server. Source manifest still contains deleted fi[les]."* **So the server is refusing a source change of yours because the manifest still names files that no longer exist** — a stale manifest rather than a session hiccup, **which means it does not clear by reloading.** **This is blocking a real thing: while it holds, your edits to `tlda` sources are not reaching the paper.** **On your box now. No owner.** **One thing nearby, and it did not cause this:** `760f9e395` writes `sourceSyncRefusals` while the pill reads `sourceSyncConflicts`, **so a refusal can be recorded under one name and displayed under another** — you are seeing this error, so something is displaying it, but anyone reading the refusal record should know two names are in play. *Leaves the list when a source change to `tlda` is accepted and the manifest lists only files that exist.* |
+| ⚠️ | **Clicking a shared markdown chip breaks the project's source sync** | **One click, and it reproduces.** An agent put the filename `AGENTS.md` in chat, where it renders as a clickable chip; **you clicked it, which added it to the `tlda` project; mirror sync then failed.** Your words: *"I fucking added agents dot m d by clicking on your fucking agents dot m d link… that was the markdown file you shared with me, so that was what I fucking did."* **And the error, verbatim:** *"mirror sync fails. Source change for tilde was rejected by the server. Source manifest still contains deleted fi[les]."* **You were doing exactly what the chip is for** — the filename was put in chat twice because you asked for a markdown file to test with. **Clicking it is the feature working; the sync failure is not.** **So this is not a manifest that drifted on its own**, and it will not clear by reloading. **While it holds, your edits to `tlda` sources are not reaching the paper.** **Adjacent to the markdown-chip click row, and deliberately not merged with it:** that one is about feedback and drag and was fixed in `5e67afccb`; **this is about what the click writes into the manifest.** **One thing nearby that did not cause it:** `760f9e395` writes `sourceSyncRefusals` while the pill reads `sourceSyncConflicts`, so a refusal can be recorded under one name and shown under another. **On your box now. No owner.** *Leaves the list when clicking a shared markdown chip does not break the project's source sync.* |
 | ○ | Create an Overleaf project from a git repo | **Nobody looked.** |
 
 ## Fleet, agents and bots
