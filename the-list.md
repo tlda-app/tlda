@@ -5,9 +5,11 @@ finished ones were deleted rather than ticked, several pairs were merged into on
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **7 of the 54 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
-**⚠️ built and finished, but not on your box — 4 rows carry this**, all merged after the 06:04
-deploy. From where you sit it is indistinguishable from not-done. · **✓? built and on your box, and
-nobody has confirmed it works for you** — each of these says on its own row what would retire it. ·
+**⚠️ built and finished, but not on your box — 4 rows as of 10:04 EDT**, against the box named
+below. **From where you sit it is indistinguishable from not-done.** That count moves whenever
+anything merges, so it is re-derived every time this file is written. · **✓? built and on your box,
+and nobody has confirmed it works for you** — each of these says on its own row what would retire
+it. ·
 🔨 being worked now · ○ not started · **⏸ parked by you** — *tabled* and *deferred* are both your
 words and share one mark here; not finished, nobody on it, and every row says which word you used
 and why · **? nobody could establish it either way** — including whether a thing you specified was ever
@@ -20,7 +22,7 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 62 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 10:01 EDT; `main` is `7147551eb`, 77 ahead —
+Your box runs `2e763c010`, read from `/api/build-info` at 10:04 EDT; `main` is `0e646965b`, 78 ahead —
 9 code files in the gap, all of it the scrollback work.
 
 ## Chat and scrolling
