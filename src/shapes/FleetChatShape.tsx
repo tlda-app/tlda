@@ -45,7 +45,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
+import { isReaderInputInFlight, shouldPreserveChatViewport } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import { watchChatStrandedRows } from '../fleet/chat-stranded-row-probe.mjs'
@@ -1752,6 +1752,28 @@ function addEventParticipantIds(ids: Set<string>, event: any) {
   }
 }
 
+// The remembered-expansion key for a gap marker or its rows. Both halves of the
+// pair carry the same `data-fold-id`, so the click that expands and the restore
+// that re-expands after a re-render name the same thing without either of them
+// counting siblings. They used to: the click indexed the button among the row's
+// `.pretty-expand-btn`, the restore indexed the rows among the view's
+// `.pretty-more-rows`, and the two agreed only while a row held exactly one
+// expand button. A thread whose front rows contain a search activity renders a
+// second one, so the marker was written under `:pretty:1` and read back under
+// `:pretty:0` -- the expansion was remembered and never found again, which is
+// the card growing and collapsing a frame later.
+//
+// The card's own semantic key qualifies it so two thread cards merged into one
+// chat row do not share a fold. The positional fallback is for markup that
+// predates the attribute.
+function prettyFoldKey(itemKey: string, el: HTMLElement, fallbackIndex: number) {
+  const foldId = el.dataset.foldId
+  if (!foldId) return `${itemKey}:pretty:${fallbackIndex}`
+  const card = el.closest('.semantic-operation-body') as HTMLElement | null
+  const semanticKey = card?.dataset.semanticKey || ''
+  return `${itemKey}:pretty:${semanticKey}:${foldId}`
+}
+
 function agentRenderSignature(agent: any) {
   return [
     agent.id,
@@ -2280,7 +2302,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
     // again once the view has drawn them.
     const restorePrettyExpansions = (root: HTMLElement) => {
       root.querySelectorAll<HTMLElement>('.pretty-more-rows').forEach((moreRows, i) => {
-        const key = `${itemKey}:pretty:${i}`
+        const key = prettyFoldKey(itemKey, moreRows, i)
         if (expanded.has(key) || expanded.has(itemKey)) {
           moreRows.style.display = ''
           const btn = moreRows.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
@@ -4099,6 +4121,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       panelId: String(shape.id),
       anchorKey,
       delta: Math.round(delta),
+      // The write landed or it did not, and a glide moving against it is
+      // visible as scrollTop diverging from this across consecutive records.
+      // Inferring that from delta alone took a velocity curve and an argument.
+      scrollTop: Math.round(el.scrollTop),
+      scrollHeight: Math.round(el.scrollHeight),
+      clientHeight: Math.round(el.clientHeight),
     })
     return true
   }, [shape.id])
@@ -4106,11 +4134,22 @@ function FleetChatInner({ shape }: { shape: any }) {
   const reconcileViewportGeometry = useCallback(() => {
     const el = chatLogRef.current
     if (!el) return
-    if (panelPointerIdsRef.current.size > 0) {
+    // A held pointer is not the window that matters here. `touchScrollActive`
+    // spans the momentum glide that outlives the release, and that is when the
+    // compositor owns the scroller: `8543d9048` guarded on pointers-down alone
+    // and deferred once against 211 corrections on Skip's phone, because an iOS
+    // glide has no pointer down. This is the guard `7430200ad` deleted.
+    if (isReaderInputInFlight({
+      touchScrollActive: touchScrollActiveRef.current,
+      explicitScrollInput: explicitScrollInputRef.current,
+      pointerHeldInPanel: panelPointerIdsRef.current.size > 0,
+    })) {
       if (!deferredGeometryReconcileRef.current) {
-        log.metric('chat-anchor', 'geometry reconcile deferred; panel pointer active', {
+        log.metric('chat-anchor', 'geometry reconcile deferred; reader input in flight', {
           panelId: String(shape.id),
           pointerCount: panelPointerIdsRef.current.size,
+          touchScrollActive: touchScrollActiveRef.current,
+          explicitScrollInput: explicitScrollInputRef.current,
           scrolledUp: userScrolledUpRef.current,
           hardLocked: hardLockedRef.current,
         })
@@ -4128,24 +4167,74 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollTop
   }, [captureViewportAnchor, restoreViewportAnchor, shape.id])
 
+  // Release one deferred correction once the scroller is the panel's again. A
+  // deferral with no flush is the failure one over from the one being fixed:
+  // the reader keeps the position he was left with and the correction never
+  // arrives. Every window that can end an in-flight gesture calls this — the
+  // touch settle timer, the wheel timer, and pointer release.
+  const flushDeferredGeometry = useCallback(() => {
+    if (!deferredGeometryReconcileRef.current) return
+    if (isReaderInputInFlight({
+      touchScrollActive: touchScrollActiveRef.current,
+      explicitScrollInput: explicitScrollInputRef.current,
+      pointerHeldInPanel: panelPointerIdsRef.current.size > 0,
+    })) return
+    deferredGeometryReconcileRef.current = false
+    reconcileViewportGeometry()
+  }, [reconcileViewportGeometry])
+
+  // Which rendered rows changed height, for the resize the observer below only
+  // sees as a total. The observer watches the item list, so a firing says the
+  // list got taller or shorter and nothing about why. That leaves two very
+  // different causes indistinguishable: a row that grew after it was already
+  // measured, and a row Virtuoso rendered for the first time during a scroll.
+  // The first is a content bug upstream of every correction here; the second is
+  // virtualization working. A row absent from the previous snapshot is the
+  // second and is deliberately not reported as a change.
+  const renderedRowHeightsRef = useRef<Map<string, number>>(new Map())
+  const recordRowResizes = useCallback(() => {
+    const el = chatLogRef.current
+    if (!el) return
+    const previous = renderedRowHeightsRef.current
+    const next = new Map<string, number>()
+    const changed: { key: string; from: number; to: number }[] = []
+    for (const row of el.querySelectorAll<HTMLElement>('[data-chat-item-key]')) {
+      const key = row.dataset.chatItemKey || ''
+      const height = row.getBoundingClientRect().height
+      next.set(key, height)
+      const before = previous.get(key)
+      if (before !== undefined && Math.abs(height - before) > 0.5) {
+        changed.push({ key, from: Math.round(before), to: Math.round(height) })
+      }
+    }
+    renderedRowHeightsRef.current = next
+    if (changed.length === 0) return
+    log.metric('chat-anchor', 'rendered rows changed height', {
+      panelId: String(shape.id),
+      rows: changed.slice(0, 6),
+      changedCount: changed.length,
+      renderedCount: next.size,
+      firstRenderedCount: next.size - previous.size,
+    })
+  }, [shape.id])
+
   useLayoutEffect(() => {
     const el = chatLogEl
     const list = el?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!el || !list) return
-    const observer = new ResizeObserver(reconcileViewportGeometry)
+    const observer = new ResizeObserver(() => {
+      recordRowResizes()
+      reconcileViewportGeometry()
+    })
     observer.observe(list)
     return () => observer.disconnect()
-  }, [chatLogEl, reconcileViewportGeometry])
+  }, [chatLogEl, reconcileViewportGeometry, recordRowResizes])
 
   useEffect(() => {
     const el = chatLogEl
     if (!el) return
     const active = panelPointerIdsRef.current
-    const flushDeferred = () => {
-      if (active.size > 0 || !deferredGeometryReconcileRef.current) return
-      deferredGeometryReconcileRef.current = false
-      reconcileViewportGeometry()
-    }
+    const flushDeferred = flushDeferredGeometry
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target
       const panel = shapeContainerRef.current ?? el
@@ -4180,7 +4269,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       active.clear()
       deferredGeometryReconcileRef.current = false
     }
-  }, [chatLogEl, reconcileViewportGeometry])
+  }, [chatLogEl, flushDeferredGeometry])
 
   // Read the panel's current render state at record time rather than closing
   // over it, so the observer below survives every item-array change instead of
@@ -4408,6 +4497,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         // from the last touchmove, and the momentum glide outlives it, so a
         // finger settles through armSettle below instead.
         if (!touchScrollActiveRef.current) resumeFollowIfSettledAtBottom('wheel-settle-at-bottom')
+        flushDeferredGeometry()
       }, 250)
     }
     const handleWheelCapture = (e: WheelEvent) => {
@@ -4442,6 +4532,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           touchScrollActiveRef.current = false
           // Touch's settle detector. Same rule as the wheel's above.
           resumeFollowIfSettledAtBottom('touch-settle-at-bottom')
+          // The glide is over, so the correction held during it is owed now.
+          flushDeferredGeometry()
         }
       }, TOUCH_SCROLL_SETTLE_MS)
     }
@@ -4529,7 +4621,13 @@ function FleetChatInner({ shape }: { shape: any }) {
         setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
       }
       if (userScrolledUpRef.current) {
-        if (!(touchScrollActiveRef.current || explicitScrollInputRef.current)) restoreViewportAnchor()
+        // Same window as the reconcile hold above, through the same predicate.
+        // A pointer held with no scroll input does not reach this path, so that
+        // term stays out of this call rather than changing what it decides.
+        if (!isReaderInputInFlight({
+          touchScrollActive: touchScrollActiveRef.current,
+          explicitScrollInput: explicitScrollInputRef.current,
+        })) restoreViewportAnchor()
         captureViewportAnchor()
       }
       else checkFollowInvariant('scroll-event')
@@ -4555,7 +4653,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       explicitScrollInputRef.current = false
       touchScrollActiveRef.current = false
     }
-  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, restoreViewportAnchor, checkFollowInvariant, enterReaderMode, resumeFollowIfSettledAtBottom, reconcileViewportGeometry])
+  }, [chatLogEl, shape.id, chatEventBufferKey, captureViewportAnchor, restoreViewportAnchor, checkFollowInvariant, enterReaderMode, resumeFollowIfSettledAtBottom, reconcileViewportGeometry, flushDeferredGeometry])
 
   // A committed filter change is a new conversation view and starts following.
   useEffect(() => {
@@ -4922,7 +5020,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
           if (itemKey) {
             const allBtns = Array.from(expandBtn.closest('[data-item-key]')?.querySelectorAll('.pretty-expand-btn') || [])
-            const key = `${itemKey}:pretty:${Math.max(0, allBtns.indexOf(expandBtn))}`
+            const key = prettyFoldKey(itemKey, expandBtn, Math.max(0, allBtns.indexOf(expandBtn)))
             if (wasExpanded) expandedRowsRef.current.delete(key)
             else expandedRowsRef.current.add(key)
           }
@@ -4968,6 +5066,26 @@ function FleetChatInner({ shape }: { shape: any }) {
       tapDownX = e.clientX
       tapDownY = e.clientY
     }
+    // The re-dispatch below is not the only click the tap produces: a browser
+    // sends its own compatibility click afterwards for ANY element it considers
+    // clickable, not only the <button> targets excluded there. So the handler
+    // ran twice on one tap and every toggle undid itself -- expand then
+    // collapse, which is the thread card growing and snapping back. Swallow the
+    // follow-up in the capture phase, above the target, so it reaches neither
+    // this delegated handler nor an inline onclick (the code-block fold has
+    // one, and it would otherwise fold straight back).
+    let redispatchedTapUntil = 0
+    let redispatchedTapTarget: HTMLElement | null = null
+    const onClickCapture = (e: MouseEvent) => {
+      if (!e.isTrusted || Date.now() >= redispatchedTapUntil) return
+      const target = redispatchedTapTarget
+      const clicked = e.target as Node | null
+      if (!target || !clicked || !target.contains(clicked)) return
+      redispatchedTapUntil = 0
+      redispatchedTapTarget = null
+      e.stopPropagation()
+      e.preventDefault()
+    }
     const onTapUp = (e: PointerEvent) => {
       if (Math.abs(e.clientX - tapDownX) > 16 || Math.abs(e.clientY - tapDownY) > 16) return
       const t = e.target as HTMLElement
@@ -4984,14 +5102,20 @@ function FleetChatInner({ shape }: { shape: any }) {
       const hit = t.closest(
         '.code-block-toggle, .build-result-header, .pretty-expand-btn, .lc-message, .lc-terminal-card, .bullet-card-go, .plan-badge-click',
       ) as HTMLElement | null
-      if (hit) hit.click()
+      if (hit) {
+        redispatchedTapUntil = Date.now() + 700
+        redispatchedTapTarget = hit
+        hit.click()
+      }
     }
     logEl.addEventListener('pointerdown', onTapDown)
     logEl.addEventListener('pointerup', onTapUp)
+    logEl.addEventListener('click', onClickCapture, true)
     logEl.addEventListener('click', onClick)
     return () => {
       logEl.removeEventListener('pointerdown', onTapDown)
       logEl.removeEventListener('pointerup', onTapUp)
+      logEl.removeEventListener('click', onClickCapture, true)
       logEl.removeEventListener('click', onClick)
     }
 	  }, [chatLogEl, chatEventBufferKey, sendWithFailedRetry])
