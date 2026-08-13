@@ -524,6 +524,72 @@ not established** — see §"How this path is instrumented". On `794e585cc` and 
 it becomes checkable: a hold logs `geometry reconcile deferred; reader input in
 flight`, so a burst that still produces corrections is proven input-free.
 
+### `restoreViewportAnchor` has not been observed to move the scroller
+
+**Measured 2026-08-13 04:05–04:15 UTC on `794e585cc`, in agent sessions**
+(`7a75d31f`, `bdb70dd4`) — **not Skip's**, whose tab was still on `9d97454a6`. So
+this does not close his burst; the three readings above remain open *for his
+session*. What it does is settle two of them everywhere it could be measured, and
+invalidate a premise older than any of them.
+
+**`scrollTop` is invariant within every burst while `delta` varies frame to frame.**
+Per distinct `scrollTop`, the number of consecutive corrections at that exact
+value, the `delta` range across them, and the distance from the bottom:
+
+```
+top=170392  n=88  delta -128..-3   bottomGap=1983
+top=170710  n=59  delta  -67..-2   bottomGap=1665
+top=90824   n=62  delta  -84..-1   bottomGap=426
+top=87306   n=50  delta  -78..-1   bottomGap=2432
+top=89305   n=37  delta  -48..-1   bottomGap=1122
+top=30434   n=35  delta  -32..-6   bottomGap=781
+```
+
+`scrollTop` is read **after** `el.scrollTop += delta`, on the next synchronous
+statement, so nothing can intervene. **88 consecutive corrections asked the
+scroller to move by −128 to −3px and it did not move.**
+
+Three things die here, each on one field:
+
+- **Scroll clamping** — that a trailing row shrinking reduces `scrollHeight` and
+  the browser clamps `scrollTop` silently. **`bottomGap` is 148–4442px in every
+  burst**, never within 24px of the maximum. Nothing was clamped.
+- **The re-measurement loop** — **`scrollHeight` is constant within each burst**
+  (172981 across all 59 at `top=170710`). The list did not change height while
+  the observer fired 59 times, so there was no re-measurement to interrupt. This
+  is why `c951b38fa`'s guard is precautionary rather than measured; its comment
+  now says so.
+- **"`.fleet-chat-log` is not a scroll container"** — a tempting reading of a
+  write that does nothing, and false. **A non-scrollable element returns 0 from
+  `scrollTop` and no-ops on the setter.** These values are in the hundreds of
+  thousands and differ between bursts (170392 → 170710 is 318px of real
+  movement). It is a genuine scroller and always has been.
+
+**What is not resolved: refused versus restored.** The record logs `scrollTop` only
+after the write, so *the assignment was refused* and *the assignment landed and
+something wrote it back inside the same frame* produce an identical record. They
+are different bugs. `scrollTopBefore` and `requested`, added in `3bc8615fc`,
+separate them. **Virtuoso is the candidate for the second** — it owns this
+`Scroller` and has its own scroll and resize listeners on it (see
+§"The re-entrancy map"), and a write-back within the frame would look exactly like
+rejection.
+
+**One fact still wants a cause: `delta` varies while `scrollTop` and `scrollHeight`
+both hold still.** `delta` is measured against `viewportTop` — `el.getBoundingClientRect().top`,
+the panel's position **on screen**, not the content's. A panel moving or resizing
+on the canvas while its content is still would produce a changing `delta`, a
+firing `ResizeObserver`, and an unchanged `scrollHeight` together. `viewportTop`
+and `rowTop` in `3bc8615fc` test that directly. **It is a hypothesis and it does
+not explain the unmoved scroller.**
+
+**Why this entry matters more than a cause would have.** Every fix on this path
+since `d6ca3c8c3` (08-06) has assumed the correction works and argued about *when*
+to apply it — four rewrites of the touch guard, a deferral, a re-entrancy guard.
+**None of them could have mattered if the write never moves the scroller.** Four
+hypotheses died on 2026-08-12/13 — content arrival, pan-mode autoscroll, clamping,
+and the loop — including both that led at different points in the night, and the
+cause remains unnamed.
+
 ### Row height changes after measurement, and nothing in the model owns it
 
 The `ResizeObserver` reacts to it. Nothing prevents it. Four sources, all live:
