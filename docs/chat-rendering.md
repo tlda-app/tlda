@@ -241,6 +241,28 @@ has its own guard:
                  before reconcileViewportGeometry
 ```
 
+### Everything a `scrollTop` write wakes
+
+The diagram above shows the two paths that come back to *this component*. A write
+wakes more than that, and the rest is unguarded because it was never anybody's
+concern:
+
+| woken by a write | where | what it does |
+|---|---|---|
+| the panel's scroll handler | `FleetChatShape.tsx:4644` | the follow/read decision and the anchor restore — **the only one this document's guards cover** |
+| the item-list `ResizeObserver` | `:4214` | `reconcileViewportGeometry`, behind the self-write latch |
+| the stranded-row `MutationObserver` | `chat-stranded-row-probe.mjs:202` | record-only. A write renders a different row window, which is `childList` churn on the observed list |
+| Virtuoso's own scroll and resize listeners | inside `react-virtuoso` | its scroll model, `atBottomStateChange`, and `followOutput`'s at-bottom argument |
+| a screenshot-bounds overlay | `useYjsSignals.ts:366` | repositions itself on every chat scroll |
+| the suggestion tip | `FleetChatShape.tsx:1593` | `window` scroll listener **with capture**, so it fires for this element's scroll too, and dismisses the tip |
+| the search shape's caret tracker | `FleetSearchShape.tsx:426` | also `window` + capture; recomputes on any scroll anywhere, including ours |
+
+The last three are the ones worth knowing about, because they do not look like
+subscribers to this element. **Two are `window` listeners registered with capture**,
+which catches scroll events from any descendant even though scroll does not
+bubble — so a chat scroll runs code in an unrelated shape. Neither is a defect on
+its own; both mean a `scrollTop` write here is not a local act.
+
 The two guards are not symmetric and the asymmetry is deliberate:
 
 - `geometryReconcileScrollTopRef` holds a **value** and matches on it (±1px), so a
@@ -624,6 +646,18 @@ attaches its own wheel handler on `document` with capture and calls
 `stopImmediatePropagation` (`:4516`), and document-level capture precedes the
 panel element's, so the clip panel's chat branch never runs for a live panel. It
 does serve the index page's log, which carries the same class.
+
+### The screenshot overlay binds to the first chat log on the page
+
+`useYjsSignals.ts:363` reaches its scroller with
+`window.document.querySelector('.fleet-chat-log')` — **singular**, so it takes
+whichever chat log appears first in the DOM, not the one whose message the
+screenshot belongs to. With one chat panel open it is correct by accident. With
+two, the overlay tracks the wrong panel's scrolling, and on the index page it can
+bind to the non-virtualized log at `App.tsx:1376` instead of a panel at all.
+
+Same root as the writer entries above: the element is addressed by CSS class from
+another subsystem, with nothing establishing which one was meant.
 
 ### `fleet-user-scroll` is dispatched and nothing listens
 
