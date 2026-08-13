@@ -6,8 +6,8 @@ deleted as never your ask, and four left tonight because you said the book is no
 **8 of the 50 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
 **⚠️ built and finished, but not on your box — so from where you sit it is indistinguishable from
-not-done, which makes it the one mark that misleads you.** Five of the six are on `main` and clear
-the moment anything deploys; the sixth is on a branch and needs merging first. · **✓? built and
+not-done, which makes it the one mark that misleads you.** **All seven are on `main` now** — the last one on a branch merged tonight — so they clear together
+the moment anything deploys. **Each carries the sha that fixed it**, so you can check any of them. · **✓? built and
 already on your box, but nobody has confirmed it works for you** · 🔨 being worked now · ○ not
 started · **⏸ parked by you** — *tabled* and *deferred* are both your words and share one mark
 here; not finished, nobody on it, and every row says which word you used and why · ? nobody could
@@ -16,7 +16,7 @@ establish it either way
 **Every row here was checked against your own messages.** One turned out to be a feature an agent
 invented — the arXiv build — and it is gone. **The other 50 are things you asked for.**
 
-Your box runs `3d10cb3ef`; `main` is `7d94faff5`, 61 ahead. Checked 05:48 EDT.
+Your box runs `3d10cb3ef`; `main` is `63d7b9658`, 86 ahead. Checked 05:49 EDT.
 
 ## Chat and scrolling
 
@@ -38,10 +38,10 @@ Your box runs `3d10cb3ef`; `main` is `7d94faff5`, 61 ahead. Checked 05:48 EDT.
 | ⏸ | **The spatial view in the project tab is junk** | **Deferred, your word, and your dismissal with it:** *"the spatial view in the like, project tab is so junk. but whatever… who cares"*, then *"just add that to the list as like, deferred."* **The row exists so nobody rediscovers it as a find in three weeks — not so it gets worked.** Nobody looked at why, and you did not ask anyone to. |
 | ⚠️ | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | **Read, not watched.** Two round-trips, no in-flight state, no key a second click could find — read in `openMarkdownChipFromTarget` and `openChatMarkdownColumn`. **Nobody has watched a second click produce a second object.** The row used to say *"this is what filled your canvas tonight"*; **that is struck** — see the row below, where the only record of that minute shows one drag and one pill. What you reported is a slow click you repeated and a trail of name cards. Fixed in `5e67afccb`, on `main`, not on your box. `markdown-chip-owner` |
 | ⚠️ | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | **Watched, in your own `client.log` on the Fly box** — 04:54:20→27, **2,993 `wm-drop-resolve` samples, every one `resolved:false`**, hitting an `iframe` and the annotation-viewer nav button, and **exactly one `pill deleted`, `deleter: "drag-drop"`, clean.** So the store never held many objects that minute. **Whether the trail you saw was paint over an iframe or one card seen repeatedly, nobody would assert.** Same commit as the row above. `markdown-chip-owner` |
-| ⚠️ | **Resize snapping** | **The only open part of snapping.** Built on `panel-snap-resize`, **not on your box.** The guides that persisted after a drag that touched nothing are fixed on the same branch — **one branch and one deploy away, not a separate thing.** *Leaves the list when a resize snaps and no guide is left behind.* `panel-snap` |
+| ⚠️ | **Resize snapping** | **The only open part of snapping, and it merged tonight** — `0049622e4`, *"a resized panel's edge snaps to its neighbours, not just a moved one"*, which also carries the guides that persisted after a drag that touched nothing. **On `main`, not yet on your box.** *Leaves the list when a resize snaps on your box and no guide is left behind.* `panel-snap` |
 | ⏸ | **Shapes drift into the document on reload** | **Tabled by you, and your reason:** *"I tabled the second because I think it's I didn't observe it."* You reloaded twice and highlights held — once on Markdown, once on **balancing act** — so both render paths were tried. **Two clean observations are not an absence**, and drift is the class that returns intermittently. **No reproduction exists**, which is the difference between this and the two-margin row. *Comes back if it moves again.* |
 | ⏸ | **Notes written on the iPad while Yjs is offline are stranded** | **Tabled by you, not fixed** — *"the stranding thing is fucking fine. I guess."* The stranding itself is unfixed; what makes it survivable is that the emergency dump appears on the sync-failure screen and notes export to markdown. **I deleted this earlier as finished and that was wrong** — you decided it does not matter, which is not the same as it being done. *Comes back if you lose work to it.* |
-| 🔨 | **The layout button after a vertical split crashes the page** | **Reproduced, with a cause and a control.** On `eiv-paper`: **51 remounts against React's limit of 50.** The control — the same sequence on a chat panel — does not crash. **The row said nobody looked and that is no longer true.** Not fixed. *Leaves the list when the sequence stops remounting past the limit and you can split without it going white.* `canvas-bugs` |
+| ⚠️ | **The layout button after a vertical split crashes the page** | **Fixed and on `main`: `0f8b13c13`**, *"the doc viewer's layout button no longer remounts it to death"*, one file, `FleetDocViewShape.tsx`. **Not on your box yet.** **Reproduced, with a cause and a control.** On `eiv-paper`: **51 remounts against React's limit of 50.** The control — the same sequence on a chat panel — does not crash. **The row said nobody looked and that is no longer true.** Not fixed. *Leaves the list when the sequence stops remounting past the limit and you can split without it going white.* `canvas-bugs` |
 | ⏸ | **A two-margin layout renders into one margin with a gap on refresh** | **Tabled by you:** *"we can probably table the two margin layout thing. Because, like, I haven't seen it for a while."* **Unlike the drift row, this one has a reproduction** — `canvas-bugs` reproduced it — so it is parked with a way back in, not parked for lack of evidence. *Comes back if you see it again, and there is already a repro to start from.* |
 | ○ | **Why your iPad did not reconnect** | **Nobody has checked.** Agents have speculated the shape schema changed; **that is speculation nobody has tested, and it is on this row as speculation, not as a cause.** *Leaves the list when someone reads the session record for that reconnect and can say what happened.* |
 | ○ | Place-stack forward/back over documents | Built on a branch, never landed |
@@ -152,6 +152,14 @@ looked* about something already built and running — the arXiv build, the edit-
 generator. **That is the mirror of the defect he caught at midnight:** then, finished rows were
 checked and unstarted ones were not; now the unstarted ones assert absence and nobody checks
 those either. **A row saying nothing exists is a claim, and it gets verified before it goes on.**
+
+**A row that lands carries the sha, and the sha is checked against `main` by subject first.** His
+instruction: *"plz keep list updated, cool? … perhaps even tag w/ commits or whatever for
+record-keeping."* **The sha is a footnote, never a changelog** — the row still says what he would
+see, and `git show <sha>` answers what changed without anyone re-deriving it. **It matters most on
+`⚠️`**, where *is this real* is a live question. **A wrong sha is worse than none, because it looks
+like proof:** `main` here is assembled by cherry-pick, so ancestry lies and the check is
+`git log --oneline main --grep=<subject>`.
 
 **A parked row says why you parked it, in your word.** Unobserved, no energy, not important right
 now, looked-at-and-ranked — those are different, and only some of them mean come back soon.
