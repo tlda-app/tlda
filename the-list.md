@@ -1,11 +1,11 @@
 # The list {#the-list}
 
-**64 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
+**65 things**, from 92 at the start of the night. **The difference is not one subtraction:** 41
 finished ones were deleted rather than ticked, several pairs were merged into one row, one was
 deleted as never your ask, and four left tonight because you said the book is not this list's.
 **7 of the 54 are parked rather than closed — you tabled or deferred them, which is not the same as done.**
 
-**⚠️ built and finished, but not on your box — 4 rows as of 10:21 EDT**, against the box named
+**⚠️ built and finished, but not on your box — 4 rows as of 19:14 EDT**, against the box named
 below. **From where you sit it is indistinguishable from not-done.** That count moves whenever
 anything merges, so it is re-derived every time this file is written. · **✓? built and on your box,
 and nobody has confirmed it works for you** — each of these says on its own row what would retire
@@ -20,9 +20,9 @@ module — **the tab you are reading this in is still running the bundle it load
 the eight `✓?` rows reach your screen until you refresh. Nothing here says you have seen any of it.
 
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
-gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 64 are things you asked for.**
+gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 65 are things you asked for.**
 
-Your box runs `2e763c010`, read from `/api/build-info` at 10:21 EDT. `main` is `1c7227ca5` —
+Your box runs `2e763c010`, read from `/api/build-info` at 19:14 EDT. `main` is `45b4d3b74` —
 **81 commits ahead, 31 of them changing code and 28 changing code outside tests, across 58 code
 files of which 17 are tests**; the other 50 commits are documentation only. **Code means everything that is not
 `*.md` and not under `docs/`; a test means `bin/`, `*.test.*` or `*-test.mjs`.** Both definitions
@@ -48,6 +48,7 @@ again. Every number is re-derived on each write.
 
 | | | |
 |---|---|---|
+| ○ | **A picture-in-picture is a window onto the canvas, and one physics should serve both** | **Your abstraction, tonight:** *"the picture in picture view is a window through which you touch another part of the canvas"* and *"physics have to match what happens when you touch the actual canvas"* — with the part that makes it precise: *"imagine different places on the canvas were not connected… i know that's inconsistent with the map phenomenon, but like, they're far apart."* **So the window keeps its own camera** — it looks somewhere far enough away that moving it is not moving where you are standing. **The rule is about physics, not cameras: the same gesture does at that place what it would do if you were standing there** — direction, speed, zoom curve, limits. **What that rules out is two implementations of one physics, hand-synced**, which is what exists: `Editor.ts`'s wheel case (`:11163`, panning by `cameraOptions.panSpeed`) and `TldrawViewport.tsx`'s own handler, which `preventDefault`s at `:110` and re-derives the maths, **including its own zoom clamp and curve at `:131` — `Math.max(0.05, Math.min(8, camera.z * Math.exp(-delta.y / 500)))`.** **Where they stand: they agree on direction, they do not agree on speed by design, and they have never been compared on zoom.** `52fc2ef5e` fixed the direction and **its own message records that it deliberately did not match speed** — the handler has no `panSpeed`, and the two agree only at the default of 1. **That was the right minimal fix for what you reported and this row does not call it wrong.** *Leaves the list when a gesture in a PIP does what it does on the canvas because one implementation serves both — not because two were matched by hand.* **No owner.** |
 | ⏸ | **The spatial view in the project tab is junk** | **Deferred, your word, and your dismissal with it:** *"the spatial view in the like, project tab is so junk. but whatever… who cares"*, then *"just add that to the list as like, deferred."* **The row exists so nobody rediscovers it as a find in three weeks — not so it gets worked.** Nobody looked at why, and you did not ask anyone to. |
 | ✓? | **Clicking a shared markdown chip does nothing for seconds, then does everything at once** | **Read, not watched.** Two round-trips, no in-flight state, no key a second click could find — read in `openMarkdownChipFromTarget` and `openChatMarkdownColumn`. **Nobody has watched a second click produce a second object.** What you reported is a slow click you repeated and a trail of name cards. Fixed in `5e67afccb`, on `main`, and on your box since the 06:04 deploy. `markdown-chip-owner` |
 | ✓? | **Dragging a markdown chip drops a name pill, not a doc-viewer ghost** | **Watched, in your own `client.log` on the Fly box** — 04:54:20→27, **2,993 `wm-drop-resolve` samples, every one `resolved:false`**, hitting an `iframe` and the annotation-viewer nav button, and **exactly one `pill deleted`, `deleter: "drag-drop"`, clean.** So the store never held many objects that minute. **Whether the trail you saw was paint over an iframe or one card seen repeatedly, nobody would assert.** Fixed in `5e67afccb`, the same commit as the markdown-chip click row — *"say the markdown chip click landed, and drag the doc viewer it opens"*. On your box since the 06:04 deploy. `markdown-chip-owner` |
@@ -64,7 +65,7 @@ again. Every number is re-derived on each write.
 
 | | | |
 |---|---|---|
-| ✓? | **The document panel shows the readme plus fourteen other documents' headings** | **Fixed in `338f81ea6`, on `main`, and on your box since the 06:04 deploy.** The loop that made every file reachable from the readme into a chapter is gone; a markdown project's document is its main file, and no condition was added — a book is a declared format, so nothing should infer chapter-hood from a link. Following a link to a document with no shape yet calls `createTemporaryMarkdownColumn`, the chip's own code path, so it lands away from you and appears in the project tab for the same reason a clicked file does. **The first attempt stacked the documents vertically, which in this app means one document; I reverted it** (`5a539ad6a` → `883303c01`) and it was rebuilt. Counterfactual run: unmodified code reproduces the welded TOC at fixture scale. **The canvas is unverified** — the link-follow crosses an iframe boundary and neither end has been exercised. `doc-panel-owner` |
+| 🔨 | **The document panel shows the readme plus fourteen other documents' headings** | **`338f81ea6` is on `main` and on your box since the 06:04 deploy** — it removes the loop that made every linked file a chapter of the document that linked it, 176 headings from documents nobody named, **citing you at 01:58:** *"the only way we have of creating a fucking book is fucking, like, quarto fucking book like config yaml files. it's a fucking format… That's the design."* **Your choice between the two options is recorded** — *"I think the second one is the one that makes more sense to me"*, the second being **multiple documents, horizontally laid out, chosen through the projects tab.** **The vertical-stacking build was the other option and it was reverted at 01:48** (`5a539ad6a` → `883303c01`), then rebuilt as this. **What is unestablished is whether `338f81ea6` implements your choice or only stops implementing the one you did not pick** — removing the compound-document inference is necessary for the horizontal layout and is not the same thing as building it. **So this is not done and it is not wrong.** *Leaves the list when a project's documents lay out horizontally and you choose among them from the projects tab.* `doc-panel-owner` |
 
 
 
