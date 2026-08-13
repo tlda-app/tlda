@@ -51,6 +51,39 @@ const PW_MAX_TABS_PER_SESSION = parsePositiveInt(process.env.TLDA_PW_MAX_TABS_PE
 const PW_BLOCK_OPEN_PRESSURE = parsePressure(process.env.TLDA_PW_BLOCK_OPEN_PRESSURE, 0.9)
 const PW_STALE_TAB_MS = parsePositiveInt(process.env.TLDA_PW_STALE_TAB_MS, 15 * 60_000)
 
+// Every playwright-cli invocation is bounded, because an UNBOUNDED one is how a
+// wedged daemon turns each verb into a permanent orphan: `spawnSync` with no
+// timeout blocks forever, and when the calling agent's command is interrupted
+// the child re-parents to init and never exits. On 2026-08-13 that put 35 hung
+// `tab-list` processes (1,167 MB) on the Mini, regrowing at ~2.5/min ≈ 5.5 GB an
+// hour, which drove the box into swap — load 30 at 125 MB/s of pagein while the
+// CPU sat half idle.
+//
+// These budgets are NOT an SLA and must not be tightened into one. Their only
+// job is to guarantee TERMINATION, which converts unbounded growth into a small
+// bounded steady state. A budget that is too tight kills legitimate work — a
+// real regression — while a generous one solves the leak just as completely.
+//
+// The defaults are measured, not picked, so the next person can re-derive them
+// rather than treat them as magic. Measured on the Mini, 2026-08-13, idle (load
+// ~10) and again under ordinary fleet load (~25 agents working):
+//                                          idle     loaded
+//   cold `open` (launch headed chromium)   37.2 s   94 s
+//   `eval` (slowest daemon RPC verb)       20.4 s   35 s
+//   `status`                               12.2 s
+//   raw `tab-list`                          4.9 s
+// Measure under LOAD or you will pick a number that breaks the box it is meant
+// to protect: idle `open` at 37 s says "60 s is plenty" and the loaded 94 s says
+// it is not. The defaults sit ~2x over the loaded worst case and ~3x for verbs.
+// `open` is a process LAUNCH and the rest are RPC to an already-running daemon,
+// which is why they get separate budgets.
+//
+// Deliberately NOT taken from `lockWithWait`'s existing 20 s: that value is
+// already shorter than a real `eval` on an idle box, so reusing it here would
+// have false-killed legitimate verbs. See the note on lockWithWait.
+const PW_VERB_TIMEOUT_MS = parsePositiveInt(process.env.TLDA_PW_VERB_TIMEOUT_MS, 120_000)
+const PW_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.TLDA_PW_OPEN_TIMEOUT_MS, 180_000)
+
 // Agents are deterministically sharded over a bounded session pool. Explicit
 // TLDA_PW_SESSION remains available for isolated/manual testing.
 const SESSION = process.env.TLDA_PW_SESSION || sessionForAgent()
@@ -227,7 +260,10 @@ function warnLeaseFailure(action, error) {
 }
 
 function renewSessionLease() {
-  const procs = listSessionProcesses(SESSION)
+  // The lease records the session's LONG-LIVED processes. `listSessionProcesses`
+  // also reports the transient per-verb `cli` processes, which are usually gone
+  // within seconds — recording those would fill process_pids with dead pids.
+  const procs = listSessionProcesses(SESSION).filter(p => p.kind !== 'cli')
   const browser = procs.find(p => p.kind === 'browser')
   try {
     acquireLease({ kind: 'playwright-session', resource_id: sessionLeaseId(), owner: { id: 'tlda-dev', type: 'system' }, metadata: { cwd: AGENT_CWD, session: SESSION, pid: browser?.pid || null, process_pids: procs.map(p => p.pid) }, policy: { ttl_ms: 20 * 60_000, idle_policy: 'expire-after-all-tabs-parked' } })
@@ -344,10 +380,63 @@ function playwrightCliRealPath() {
   try { return realpathSync(which) } catch { return null }
 }
 
-function pw(args, opts = {}) {
+// Conventional shell exit code for "killed by a timeout" (what GNU `timeout`
+// returns). Anything non-zero would stop the silent-success bug below; using the
+// standard one means a caller reading the code gets the usual meaning.
+const PW_EXIT_TIMEOUT = 124
+
+// Sweep this session's ORPHANED playwright-cli processes — the ones whose agent
+// is already gone. Called after a budget expires, because killing our own child
+// is not enough on its own: earlier interrupted verbs have left their own strays
+// blocked on the same wedged daemon, and nothing else ever reaps them.
+// Live CLIs (a real parent) are another agent's in-flight verb and are left be.
+function reapOrphanedSessionClis() {
+  let killed = 0
+  for (const p of listSessionProcesses(SESSION)) {
+    if (p.kind !== 'cli' || !p.orphaned || p.pid === process.pid) continue
+    killProcess(p.pid)
+    killed++
+  }
+  return killed
+}
+
+// THE one place spawnSync touches playwright-cli, so no call site can
+// accidentally reintroduce an unbounded wait (both `sessionOpen` and
+// `sessionUserDataDir` used to have their own, and `reap` could therefore hang
+// on the wedged daemon before it ever reached the kill).
+//
+// `killSignal: 'SIGKILL'` on purpose: the process this bounds is blocked reading
+// a socket a wedged daemon will never answer, and SIGTERM is the signal such a
+// process is least likely to act on. A budget that expires without the child
+// actually dying re-creates the orphan with extra steps.
+function runPlaywrightCli(args, opts = {}) {
+  const timeout = args[0] === 'open' ? PW_OPEN_TIMEOUT_MS : PW_VERB_TIMEOUT_MS
   // cwd PINNED to the canonical workspace so this command targets the ONE shared
   // daemon regardless of where the agent invoked tlda-dev pw from (see PW_CWD).
-  return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', cwd: PW_CWD, ...opts })
+  const result = spawnSync(playwrightCliBin(), args, {
+    encoding: 'utf8', cwd: PW_CWD, timeout, killSignal: 'SIGKILL', ...opts,
+  })
+  const timedOut = result.error?.code === 'ETIMEDOUT' ||
+    (result.status === null && result.signal === 'SIGKILL')
+  if (!timedOut) return result
+  // FAIL LOUDLY. A verb that gives up silently is the same disease as the wedge
+  // itself: the caller learns nothing and reports healthy. Say what timed out,
+  // for how long, and which knob moves it.
+  const verb = args.find(a => !a.startsWith('-')) || args[0] || '(none)'
+  const swept = reapOrphanedSessionClis()
+  console.error(
+    `pw: "${verb}" on session "${SESSION}" exceeded ${timeout < 1000 ? `${timeout}ms` : `${Math.round(timeout / 1000)}s`} and was killed — ` +
+    `the pooled browser daemon is not answering. Try \`tlda-dev pw reap\` to restart it` +
+    `${swept ? `; swept ${swept} orphaned ${SESSION} CLI process(es)` : ''}. ` +
+    `(budget: ${args[0] === 'open' ? 'TLDA_PW_OPEN_TIMEOUT_MS' : 'TLDA_PW_VERB_TIMEOUT_MS'})`
+  )
+  // spawnSync leaves `status` null on timeout, and callers do `.status ?? 0` —
+  // which would report a killed verb as SUCCESS. Synthesize the failure.
+  return { ...result, status: PW_EXIT_TIMEOUT, timedOut: true }
+}
+
+function pw(args, opts = {}) {
+  return runPlaywrightCli([`-s=${SESSION}`, ...args], opts)
 }
 
 export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION) {
@@ -370,6 +459,16 @@ export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION)
     const hm = command.match(/\/daemon\/([0-9a-f]{16})\/ud-/)
     return { kind: 'browser', pid, ppid, command, hash: hm ? hm[1] : null }
   }
+  // A forwarded verb's own `playwright-cli -s=<session> …` process. These are
+  // normally short-lived, so the ones worth knowing about are the ORPHANS: a
+  // ppid of 1 means the agent that launched it is gone and nothing will ever
+  // read its output, but a wedged daemon leaves it blocked forever. That is the
+  // leak the verb budgets above exist to bound, and `orphaned` is what lets the
+  // expiry path sweep the strays without touching a live agent's in-flight verb.
+  if (isNode && /(^|\/)playwright-cli(\s|$)/.test(command) &&
+      new RegExp(`-s=${escapeRegex(session)}(?:\\s|$)`).test(command)) {
+    return { kind: 'cli', pid, ppid, command, orphaned: ppid === 1 }
+  }
   return null
 }
 
@@ -386,9 +485,15 @@ function killProcess(pid) {
 function reapSessionProcesses(session = SESSION) {
   const procs = listSessionProcesses(session)
   // Kill daemon first so it cannot respawn or reattach while browsers are dying.
-  for (const p of procs.filter(p => p.kind === 'daemon')) killProcess(p.pid)
-  for (const p of procs.filter(p => p.kind === 'browser')) killProcess(p.pid)
-  return procs
+  const daemons = procs.filter(p => p.kind === 'daemon')
+  const browsers = procs.filter(p => p.kind === 'browser')
+  for (const p of daemons) killProcess(p.pid)
+  for (const p of browsers) killProcess(p.pid)
+  // Return what was actually KILLED, not everything classified. `listSessionProcesses`
+  // also reports `cli` processes, which this deliberately leaves alone — and the
+  // caller prints this array's length as "killed N", so returning the classified
+  // set would overcount by exactly the ones it spared.
+  return [...daemons, ...browsers]
 }
 
 function enforceCanonicalSession() {
@@ -469,6 +574,16 @@ function unlock(repoRoot, me) {
 // Acquire the short lock, waiting up to ~timeoutMs for another agent's verb to
 // finish. Verbs queue instead of failing — the lock is held only for the
 // duration of one (select-tab → verb) pair, so waits are brief.
+//
+// KNOWN, MEASURED, NOT FIXED HERE: "brief" no longer holds. On an idle Mini on
+// 2026-08-13 a single `eval` took 20.4 s and `status` 12.2 s, so this 20 s
+// budget is already shorter than one legitimate verb — meaning agents sharing a
+// session can give up on each other's real work and report a false conflict.
+// Left alone deliberately: raising it changes queueing behaviour for every
+// agent, which is a separate change needing its own decision, not a drive-by in
+// a leak fix. It is written down here so the next person measures instead of
+// trusting the word "brief". This is also why the verb budgets above are NOT
+// derived from this number.
 function lockWithWait(repoRoot, me, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs
   if (tryLock(repoRoot, me)) return true
@@ -481,8 +596,21 @@ function lockWithWait(repoRoot, me, timeoutMs = 20000) {
 
 // ---- session + tabs ----
 
+// TRI-STATE, and the third state is the point: true = open, false = not open,
+// null = COULD NOT TELL because the probe itself timed out.
+//
+// Collapsing null into false is how a timeout becomes a lie. `ensureOpen` reads
+// false as "no browser, launch one" and would start a SECOND browser on top of a
+// live one whose daemon merely went quiet; `status` would print the confident
+// words "browser: down" on no evidence at all. Both are worse than the wedge.
+//
+// null is deliberately FALSY so the recovery paths keep working untouched: reap
+// skips the graceful `close` it can't deliver anyway and goes straight to killing
+// the processes, which is exactly right when the daemon is not answering.
 function sessionOpen() {
-  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8', cwd: PW_CWD }).stdout || ''
+  const result = runPlaywrightCli(['list'])
+  if (result.timedOut) return null
+  const out = result.stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
   return m ? m[1] === 'open' : false
 }
@@ -541,7 +669,7 @@ function ensureNoRaisePatch() {
 
 // The session's Chrome profile dir, parsed from `playwright-cli list`.
 function sessionUserDataDir() {
-  const out = spawnSync(playwrightCliBin(), ['list'], { encoding: 'utf8', cwd: PW_CWD }).stdout || ''
+  const out = runPlaywrightCli(['list']).stdout || ''
   const m = out.match(new RegExp(`- ${SESSION}:[\\s\\S]*?- user-data-dir:\\s*(\\S+)`, 'm'))
   return m ? m[1] : null
 }
@@ -583,7 +711,19 @@ function openArgs(repoRoot) {
 }
 
 function ensureOpen(repoRoot) {
-  if (sessionOpen()) { renewSessionLease(); return false }
+  const open = sessionOpen()
+  if (open) { renewSessionLease(); return false }
+  // Undetermined is NOT "closed". Launching here on a timed-out probe is how one
+  // wedged daemon becomes two browsers on a box already short of memory — the
+  // same shape as the leak this file's budgets exist to stop. Refuse, loudly, and
+  // point at the verb that actually recovers a wedged session.
+  if (open === null) {
+    throw new Error(
+      `cannot tell whether the pooled browser for session "${SESSION}" is up — the daemon did not answer in time. ` +
+      'Refusing to open a second browser on top of a possibly-live one. ' +
+      'Run `tlda-dev pw reap` to clear the wedged session, then retry.'
+    )
+  }
   assertCanCreateBrowserLoad({ action: `open pooled browser for session "${SESSION}"` })
   // If the playwright-cli binary can't even be resolved, `open` will "fail" for a
   // reason that has nothing to do with a zombie profile lock — and the recover
@@ -1015,7 +1155,10 @@ export async function cmdPw(args, repoRoot) {
     console.log(`limits:  ${PW_MAX_TABS_PER_SESSION} tab cap/session; open blocked at ${formatPressure(PW_BLOCK_OPEN_PRESSURE)} memory pressure`)
     console.log(`memory:  ${formatPressure(pressure)} pressure${Number.isFinite(pressure) && pressure >= PW_BLOCK_OPEN_PRESSURE ? ' (new load blocked)' : ''}`)
     console.log(`lock:    ${formatLockStatus(lk)}`)
-    console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
+    // `open === null` means the probe timed out. Saying "down" there would be
+    // asserting a fact nobody established — the reader's next move differs
+    // completely, so the display has to distinguish it.
+    console.log(`browser: ${open === null ? 'UNKNOWN — daemon not answering; try `tlda-dev pw reap`' : open ? 'up' : 'down'} (session "${SESSION}")`)
     if (open) {
       const tabs = listTabs()
       const mine = tabs.find(isMine)
