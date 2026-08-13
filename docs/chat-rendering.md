@@ -1019,6 +1019,75 @@ churn lands directly on the machinery here.
 
 ---
 
+### Most of this machinery is proposed for deletion on an unmerged branch
+
+`rc/anchored-list`, tip `7e600b065` (2026-08-13 00:43, `list-component`), **deletes
+808 lines across the two files this document is mostly about** — including
+`chatViewportAnchor.mjs` entirely, and the implementations of
+`captureViewportAnchor`, `restoreViewportAnchor` and `checkFollowInvariant`, which
+survive there only inside comments. It is not merged and has never been rendered in
+the app.
+
+It exists because Skip asked for it, 2026-08-12 23:42:42 EDT: *"if someone wants to
+develop a fucking RC, based on our sort of simple observation that, like, we can
+sort of, like, measure shit from the bottom and, like, we don't need that much shit
+in the Dom."*
+
+**Neither treat it as the answer nor dismiss it.** The point of recording it here is
+narrower and practical: **before spending a night measuring a function in this
+document, check whether that branch deletes it.**
+
+## Open symptoms Skip has reported
+
+His words, with timestamps, read in order from his thread. **None of these is
+explained by this document**, and the measurements above are not claimed to be any
+of them.
+
+### Occasional jerks with nothing arriving
+
+2026-08-12 23:00:38 EDT: *"a message didn't come in, so, like, I don't really know
+what that jerk was from, but there are just occasional jerks. And it's just like
+it's like visual flicker. It just sucks experientially."*
+
+And at 23:20:31, unprompted and specific: *"when I was experiencing those jerks,
+bro, like, nothing was coming in. No activities. No fucking nothing."*
+
+**That is testimony, and it agrees with the telemetry** — the bursts are input-free
+(9 deferrals against 688) and arrival-free (`scrollHeight` constant, 3
+`rendered rows changed height` records against 688). It does **not** establish that
+the bursts are the jerks. Two candidates are on the table and they have different
+shapes: a **drift** at 0.5–5px per frame (the bursts), and a **jump** of 96px at
+once (the follow repair). His word is "jerk", which fits the second better than the
+first, and nothing decides it.
+
+### Cannot scroll up, and worse than it used to be
+
+2026-08-13 00:47:09 EDT: *"scroll fucking sucks. It's worse than it used to be.
+It's kind of unusable now because it fucking limits what I can actually fucking
+see."*
+
+00:48:01: *"The current implementation of scroll has the fucking problem that
+sometimes I can't fucking scroll up. So one thing you're gonna have to fucking do
+is, like, show me the fucking list you already showed me… because now I can't
+fucking scroll up to it."*
+
+**Nothing in this document accounts for this**, and it is the more costly of the
+two — it changed what he could get out of the app, not just how it felt.
+
+**It is a regression claim**, so per `AGENTS.md` §"Look for what broke it" it is
+chased backwards — `git log -S` on the failing path, and check for a fix on an
+unmerged branch — rather than forwards from current code.
+
+**One candidate, from his own words half an hour earlier and marked as inference.**
+At 00:18:11 EDT he described what may be the same thing in mechanism terms: *"it's
+like doing the thing where it's refusing to fetch history. So the most recent
+message I see from you the oldest message I see from you is this, like, the list
+message."* A chat that will not fetch older history has nothing above to scroll to,
+which would present exactly as not being able to scroll up. That path is
+`startReached` → `requestEarlierChatHistory` (§"What Virtuoso is given"), and it is
+**not** the anchoring machinery this document spends most of its length on.
+**Whether those two reports are the same symptom is not established.**
+
 ## What is not established here
 
 - **The cause of the 2896px burst.** Named as open above, deliberately without a
