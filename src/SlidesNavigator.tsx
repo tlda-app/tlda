@@ -50,7 +50,24 @@ function getDeckSyncShapeId(document: SvgDocument): string | null {
 
 function slideIframe(shapeId: string): HTMLIFrameElement | null {
   if (!shapeId) return null
-  return window.document.querySelector(`[data-shape-id="${shapeId}"] iframe`) as HTMLIFrameElement | null
+  // The main canvas's copy, not a clip panel's. The same page shape can be
+  // rendered again inside a fleet-docview or an annotation viewer — each is its
+  // own viewport over the same store — and then this shape id matches more than
+  // one iframe. `querySelector` would take whichever came first in document
+  // order, and posting a fragment step into a panel's copy fails silently:
+  // `.fleet-hud-wrap iframe` is `pointer-events: none`, but a `contentWindow` is
+  // still perfectly drivable, so the deck the reader is looking at simply does
+  // not advance.
+  //
+  // A clip panel puts `data-viewport-id` on its container (`CanvasClipPanel`),
+  // so the main canvas is the copy with no such ancestor. Returning null when
+  // only a panel's copy exists is the honest answer: the navigator drives the
+  // deck on the canvas, and there isn't one.
+  const candidates = window.document.querySelectorAll<HTMLIFrameElement>(`[data-shape-id="${shapeId}"] iframe`)
+  for (const el of candidates) {
+    if (!el.closest('[data-viewport-id]')) return el
+  }
+  return null
 }
 
 /** Send fragment step message to the slide's iframe */
