@@ -206,6 +206,30 @@ export function dispatchFilterEvents(data) {
 }
 
 /**
+ * A live-tail trim dropped rows this subscription had already paged past.
+ *
+ * The cursor and the buffer are two records of the same thing — where the
+ * oldest row the reader can see is — and only the buffer is authoritative,
+ * because it is what is on screen. Trimming moves the buffer's edge forward in
+ * time and leaves the cursor where paging left it, so the cursor can end up
+ * OLDER than anything still rendered. Paging from it then asks the server for
+ * rows older than the hole the trim just made, and the trimmed rows are never
+ * requested again by anything.
+ *
+ * So the trim rewinds the cursor to its own new edge. `hasMore` goes back to
+ * true because a hole is by definition more to fetch, whether or not the deep
+ * end of history was already reached.
+ */
+export function noteChatBufferTrimmed(correlationKey, oldestRetainedTimestamp) {
+  if (!correlationKey || !oldestRetainedTimestamp) return false
+  const sub = [..._subs.values()].find(entry => entry.correlationKey === correlationKey)
+  if (!sub) return false
+  sub.nextCursor = oldestRetainedTimestamp
+  sub.hasMore = true
+  return true
+}
+
+/**
  * Ask the existing subscription for its next older page.
  *
  * Pagination stays on the subscription wire: same filter, same subId, same

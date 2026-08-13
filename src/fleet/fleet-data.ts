@@ -6,7 +6,7 @@ import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
 import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch, isRenderableInPanel } from './chat-freeze-probe.mjs'
 import { noteClientVerdict } from './filter-equivalence.mjs'
-import { hasChatSubscription } from './chat-subscription.mjs'
+import { hasChatSubscription, noteChatBufferTrimmed } from './chat-subscription.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -232,7 +232,7 @@ export function applyFilterEvents(
       store.upsert(event)
     }
   })
-  if (buffer.pinned) trimEventBuffer(buffer)
+  if (buffer.pinned) trimEventBuffer(buffer, bufferKey)
   return added
 }
 
@@ -318,7 +318,7 @@ function fanoutEventToBuffers(event: FleetEvent): void {
       // types the buffer accepts but chatMessages drops.
       if (_bulkIngestDepth === 0 && isRenderableInPanel(event)) noteBufferMatch(bufferKey)
       buffer.store.upsert(event)
-      if (buffer.pinned) trimEventBuffer(buffer)
+      if (buffer.pinned) trimEventBuffer(buffer, bufferKey)
     } else {
       buffer.store.remove(event.id)
       noteBufferDrop(bufferKey, getLastEventId(), unresolvedParticipantDrop(buffer, event))
@@ -326,15 +326,20 @@ function fanoutEventToBuffers(event: FleetEvent): void {
   }
 }
 
-function trimEventBuffer(buffer: EventBuffer): void {
+function trimEventBuffer(buffer: EventBuffer, bufferKey: string): void {
   const overflow = buffer.store.size - buffer.maxEvents
   if (overflow <= 0) return
-  const oldest = [...buffer.store.all()]
-    .sort(compareFleetEvents)
-    .slice(0, overflow)
+  const ordered = [...buffer.store.all()].sort(compareFleetEvents)
+  const oldest = ordered.slice(0, overflow)
   buffer.store.bulk((store) => {
     for (const event of oldest) store.remove(event.id)
   })
+  // The rows just evicted are older than the subscription's history cursor, so
+  // nothing would ever ask for them again. Move the cursor to the new edge —
+  // see noteChatBufferTrimmed for why the buffer, not the cursor, is the record
+  // of where the reader's scrollback ends.
+  const newOldest = ordered[overflow] as { timestamp?: string } | undefined
+  if (newOldest?.timestamp) noteChatBufferTrimmed(bufferKey, newOldest.timestamp)
 }
 
 export function setFleetEventBufferPinned(bufferKey: string | null | undefined, pinned: boolean): void {
@@ -342,7 +347,7 @@ export function setFleetEventBufferPinned(bufferKey: string | null | undefined, 
   const buffer = eventBuffers.get(bufferKey)
   if (!buffer) return
   buffer.pinned = !!pinned
-  if (buffer.pinned) trimEventBuffer(buffer)
+  if (buffer.pinned) trimEventBuffer(buffer, bufferKey)
 }
 
 export function clearFleetEventBuffer(bufferKey: string | null | undefined): void {
