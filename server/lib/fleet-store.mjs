@@ -5103,8 +5103,15 @@ export class FleetStore {
    * Each disjunct is bounded and limited on its own so SQLite can walk each
    * agent's `(id, timestamp)` index instead of materialising the range.
    */
-  queryChatHistoryBlocks({ blocks, limit = 50, order = 'asc' } = {}) {
-    const usable = (blocks || []).filter(b => Array.isArray(b?.agentIds) && b.agentIds.length);
+  queryChatHistoryBlocks({ blocks, before = null, limit = 50, order = 'asc' } = {}) {
+    // `before` is the CONTINUATION cursor and is not the same thing as a block's
+    // own upper bound: the blocks come from label history and do not move
+    // between reads, so without this a second read re-queries the same ranges
+    // and hands back rows it already returned.
+    const usable = (blocks || [])
+      .filter(b => Array.isArray(b?.agentIds) && b.agentIds.length)
+      .filter(b => !before || !b.from || b.from < before)
+      .map(b => (before && (!b.to || b.to > before) ? { ...b, to: before } : b));
     if (!usable.length) return [];
     const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
     const parts = [];

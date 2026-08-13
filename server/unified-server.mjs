@@ -8109,7 +8109,7 @@ async function handleFleetWsMessage(ws, msg) {
           // still hand a flat set.
           queryPage: ({ before, blocks, agentIds, limit }) =>
             blocks?.length
-              ? fleetStore.queryChatHistoryBlocks({ blocks, limit, order: 'desc' })
+              ? fleetStore.queryChatHistoryBlocks({ blocks, before, limit, order: 'desc' })
               : fleetStore.queryChatHistory({ before, agents: agentIds || [], limit, order: 'desc' }),
         }).then(async page => {
           if (ws.readyState !== 1) return

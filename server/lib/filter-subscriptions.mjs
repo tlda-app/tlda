@@ -62,7 +62,7 @@ function termKey(term) {
  * A block can legitimately come back with no agents: nobody held the filter's
  * labels then. That is exact, not a failure — nothing in that range can match.
  */
-export function membershipBlocks(spans, labels, { before = null, humanId = null } = {}) {
+export function membershipBlocks(spans, labels, { before = null, humanId = null, viewerIsNamed = false } = {}) {
   const labelSet = new Set(labels || [])
   const relevant = (spans || []).filter(span => labelSet.has(span?.label) && span?.fleet_id)
   const points = new Set()
@@ -71,11 +71,17 @@ export function membershipBlocks(spans, labels, { before = null, humanId = null 
     if (span.to_ts && (!before || span.to_ts < before)) points.add(span.to_ts)
   }
   const edges = [before ?? null, ...[...points].sort().reverse()]
-  // A fleet id named directly by the filter, and the viewer's own id, are in
-  // every block: they are not label membership and do not change at a boundary.
+  // A fleet id named directly by the filter belongs to every block: it is not
+  // label membership and does not change at a boundary.
+  //
+  // The VIEWER's id belongs only when the filter actually reaches for it —
+  // `dm:` is scoped by identity, and `me` names the viewer. Adding it
+  // unconditionally widens every block beyond the agents holding the filter's
+  // labels, which is the superset this function exists to avoid: for a
+  // high-volume viewer it fills the page with rows the predicate then rejects.
   const always = new Set()
-  if (humanId) always.add(humanId)
   for (const label of labelSet) if (String(label).startsWith('fleet:')) always.add(label)
+  if (humanId && (viewerIsNamed || labelSet.has('me') || labelSet.has(humanId))) always.add(humanId)
 
   const blocks = []
   for (let i = 0; i < edges.length; i++) {
@@ -394,7 +400,12 @@ export function createFilterSubscriptions({ getAgentsByIds, loadMembershipSpans 
     // endpoints are the label-change events, and so the block boundaries.
     const spans = await loadMembershipSpans(labels, { from: null, to: before })
     temporal.extend(spans, null, before)
-    const blocks = membershipBlocks(spans, labels, { before, humanId })
+    // `dm:` is scoped by the viewer's identity, so its rows involve them even
+    // though no label names them. That is the one case the viewer's own id
+    // belongs in the block's agent list.
+    const viewerIsNamed = (filter || []).some(clause =>
+      Array.isArray(clause) && clause.some(term => Array.isArray(term) && term[0] === 'dm'))
+    const blocks = membershipBlocks(spans, labels, { before, humanId, viewerIsNamed })
 
     const kept = []
     let cursor = before
