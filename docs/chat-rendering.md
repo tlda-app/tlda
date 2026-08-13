@@ -483,6 +483,22 @@ count from the table above.
   and produce none. **An empty result means he has not reloaded the phone. It never
   means the field is missing.**
 
+- **A population statistic can be about nobody.** 105 `follow invariant violated`
+  records were swept and read as evidence about Skip. **79 of them came from one
+  session that was never established as his** — an agent driving Playwright — while
+  his own two sessions in the same query showed the opposite: 23 follow-offs
+  against 3 repairs, and 11 against 1. The aggregate was dominated by the stranger
+  and the disconfirming case was in the result set the whole time. **The scrollbar
+  mechanism it produced was correct about the code and false about the user**, and
+  it cost him a live conversation.
+- **There is a second variety, where no instrument exists at all.**
+  `requestEarlierChatHistory` refuses at three points and logs at none, its one
+  caller discards the return value, and `sendSubscription` records only failures.
+  **"Stopped fetching" and "nothing left to fetch" are indistinguishable from
+  outside** — and that stays true even though every reachable refusal turned out to
+  be sound. A blind instrument returning a clean result is the first variety; this
+  is the absence of one.
+
 The common shape: **an instrument that cannot see the mechanism returns a clean
 result, and a clean result reads as a negative finding.** Before citing any count
 here, ask what it would look like if the thing you are testing for were happening.
@@ -515,6 +531,23 @@ early, in the way that reads as correct. If the numbers do not
 match what you find, read the file at the sha in this header
 (`git show afba9ef66:src/shapes/FleetChatShape.tsx`) and re-pin rather than trust
 them. A line number in a hot file is a fact with a half-life measured in hours.
+
+### Whose session is it
+
+**Read this before treating any measurement here as being about Skip.** On
+2026-08-13 an entire investigation was built on telemetry from **an agent driving
+Playwright**, attributed to him by inference from a shape id. Every measurement in
+it was rigorous and it was about nobody. It ended at scrollbar drags — a control he
+has never used, in a browser that does not show one.
+
+So: **a session id is not a person.** Only `325dc382` and `c3a1abbb` are treated
+here as evidence about Skip, and even that identification rests on panel/device ids
+plus `isTouch`, which is the same inference class. **No test in this document
+separates a human session from a driven one** — see the voice-record attempt under
+§"It reproduces in Skip's session", which fails.
+
+Anything resting on another session is a claim about **the code**, and every such
+sentence below says so in itself rather than in a footnote.
 
 Measurements below are `chat-flick-live`'s, with the query behind each one in
 `scratch/chat-anchor-findings-for-doc-2026-08-13.md`. Skip's session that night:
@@ -705,11 +738,23 @@ cause remains unnamed.
 ### It reproduces in Skip's session
 
 **Measured 2026-08-13 04:16–04:27 UTC**, session `c3a1abbb`, `isTouch: true`,
-panel `shape:fleet-chat-0-skip-efba6f45` — his. **688 `preserved viewport`
+panel `shape:fleet-chat-0-skip-efba6f45`. **688 `preserved viewport`
 corrections in that window, and the scroller does not move across any burst in
 it.** The longest run is **200 consecutive corrections at `scrollTop 15800`**;
 then 88 at `948`, 66 at `1452`, 52 at `868`, 46 at `5258`, 44 at `1236`, 41 at
 `11304`, 35 at `9943`.
+
+**Read the attribution caveat above before treating this as being about Skip.**
+The identification rests on the panel and device ids plus `isTouch` — which is the
+inference class that produced the night's worst error — with the only corroboration
+being that his own chat activity at 04:18:11 UTC falls inside this window.
+
+**And the obvious independent test does not work.** Voice records seemed like a
+human discriminator, since he dictates and an automated session would not.
+Counting them kills it: `c3a1abbb` has **1111**, `325dc382` has **5237**, and
+`1735f88a` — the session excluded as *not established as his* — has **11597**, more
+than either. Whatever the voice namespace records, it does not separate him from a
+driven session, and no test in this document does.
 
 **His tab is dated by the fields, not by a `loadedSha` line.** These records carry
 `scrollTop`/`scrollHeight`/`clientHeight`, which `794e585cc` added, and do **not**
