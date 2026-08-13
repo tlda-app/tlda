@@ -15,8 +15,10 @@ import { annotationSourceAnchorAtCanvasPoint, type AnnotationSourceAnchor } from
 
 const CLUSTER_GAP = 5000 // ms — shapes within this window share an anchor
 
-/** Shape types that should be auto-anchored. Math notes are excluded — they
- *  get anchored at creation time by MathNoteTool. */
+/** Shape types that should be auto-anchored. Math notes are excluded — every
+ *  path that creates one anchors it at creation, through
+ *  `noteSourceAnchorMeta`, so a note's anchor is where it landed rather than
+ *  whichever cluster happened to be open. */
 const ANCHORABLE_TYPES = new Set(['draw', 'highlight', 'arrow', 'geo', 'text', 'line'])
 
 /** System shape ID prefixes to skip (deterministic IDs from overlays). */

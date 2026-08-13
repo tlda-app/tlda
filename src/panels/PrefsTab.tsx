@@ -1,4 +1,6 @@
-import { useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useCallback, useContext, useEffect, useRef, type ReactNode } from 'react'
+import { useEditor } from 'tldraw'
+import { ProjectContext } from '../PanelContext'
 import {
   MAX_RADIO_SUBTITLE_DWELL_SEC,
   MIN_RADIO_SUBTITLE_DWELL_SEC,
@@ -9,6 +11,7 @@ import {
   subscribePref,
 } from '../preferences'
 import { setBackend as setVoiceBackend } from '../voice.mjs'
+import { downloadEmergencyDump } from '../emergencyDump'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
 import {
@@ -23,7 +26,6 @@ import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { agentDisplayLabel } from '../shapes/fleet-utils'
 // @ts-ignore - vanilla JS module
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
-import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import {
   DEFAULT_READABILITY_PROFILE,
   getCurrentReadabilityDeviceId,
@@ -33,23 +35,24 @@ import {
 
 type DeviceRecord = { lastSeen: string }
 
-const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
-const SOURCE_LABELS: Record<(typeof ALL_SOURCES)[number], string> = {
-  ref: 'References',
-  proof: 'Proofs',
-  errors: 'Errors',
-}
-
 const COLOR_OPTIONS = Object.keys(NOTE_COLORS)
 
-type PrefsSectionId = 'account' | 'appearance' | 'voice' | 'radio' | 'input' | 'bots'
+// Sections are named after what a person is trying to change, not after the
+// store the value happens to live in. The per-device `readability-profiles`
+// blob was the old organising principle, which is how snap strength and fleet
+// layout geometry ended up filed under "Readability" — Skip: "that's a fucking
+// awful organization". Its fields are now spread across Appearance, Input and
+// Panels, and the one device picker at the top of the panel scopes all of them.
+type PrefsSectionId = 'account' | 'appearance' | 'reading' | 'input' | 'panels' | 'voice' | 'radio' | 'bots'
 const PREFS_SEARCH_TEXT: Record<PrefsSectionId, string> = {
   account: 'account user identity devices switch device name',
-  appearance: 'appearance theme readability font line height opacity layout chat margin hover region table of contents toc tool output document viewer sources note color ribbon provenance slides',
+  appearance: 'appearance theme colour color scheme dark light system one fog lilac warm power mono blue text font size line height faint opacity chrome content',
+  reading: 'reading document toc hover region table of contents stingy doc viewer ribbon provenance note color voice notes',
+  input: 'input touch target pointer thumb highlighter edge zone response curve editor vim',
+  panels: 'panels fleet layout height rail chat margin aspect snap strength nudge tool output fold bash write markdown diff thread card messages',
   voice: 'voice backend meter submit phrases ignored deepgram idle cutoff preroll endpointing',
   radio: 'radio agent subtitles card dwell',
-  input: 'input highlighter edge zone corner controls voice slider response curve editor vim',
-  bots: 'bots self check countdown model',
+  bots: 'bots self check countdown',
 }
 type VoiceBackendOption = { value: string; label: string; available: boolean }
 type SpeechRecognitionWindow = Window & {
@@ -264,7 +267,6 @@ function CollapsiblePrefsSection({
 function readAll() {
   return {
     openSections: getPref('prefs-open-sections') as PrefsSectionId[],
-    sources: getPref('docview-sources'),
     voiceColor: getPref('voice-note-color'),
     curve: getPref('response-curve'),
     knownDevices: getPref('known-devices'),
@@ -299,26 +301,54 @@ function readAll() {
     semanticOperationPageSize: getPref('semantic-operation-page-size'),
     documentStingyMode: getPref('document-stingy-mode'),
     hlZone: getPref('hl-zone-enabled'),
-    cornerRail: getPref('corner-rail-enabled'),
-    cornerSize: getPref('corner-control-size'),
-    slidesNavigationMode: getPref('slides-navigation-mode'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
     selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
     botSelfCheckEnabled: getPref('bot-self-check-enabled'),
     botSelfCheckCountdown: getPref('bot-self-check-countdown-sec'),
-    botModel: getPref('bot-model'),
     loadError: getPrefsLoadError(),
   }
 }
 
+/**
+ * The emergency exit for content that cannot sync.
+ *
+ * An unsynced edit lives in the tldraw store in memory and nowhere else, so when the
+ * connection is down the only routes out were a screenshot or selecting the text by
+ * hand. Skip spent fifteen minutes doing the second one. This reads the local store
+ * and writes a file — no network in the path, which is the point.
+ *
+ * A plain button with a spoken label, so iPadOS Voice Control can trigger it by name.
+ * Do not turn it into an icon.
+ *
+ * It lives in Settings and it is not a setting. Skip, 2026-08-12 22:46 EDT: "I think
+ * it should be in the settings panel. I know it's, like, not a setting, but it's,
+ * like, it doesn't go where it fucking goes." So it sits below the sections rather
+ * than inside one, and outside the search filter — the moment you need it is the
+ * moment nothing else is working, and a disclosure triangle is one thing too many.
+ */
+function EmergencyDumpButton() {
+  const editor = useEditor()
+  const doc = useContext(ProjectContext)
+  const [saved, setSaved] = useState<string | null>(null)
+
+  const dump = useCallback(() => {
+    const name = downloadEmergencyDump(editor, doc?.projectName || 'document')
+    setSaved(name)
+  }, [editor, doc?.projectName])
+
+  return (
+    <button className="toc-diff-hint" onClick={dump} title="Write every note and the whole canvas to a Markdown file, without the server">
+      <span className="toc-toggle-icon">{'⤓'}</span> {saved ? `Saved ${saved}` : 'Download everything to a file'}
+    </button>
+  )
+}
+
 export function PrefsTab({ query = '' }: { query?: string }) {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const { id: userId } = useFleetIdentity()
   const [prefs, setPrefs] = useState(readAll)
   const agents = useFleetAgents()
   const { backends: voiceBackends, status: voiceBackendsStatus } = useVoiceBackends()
-  const availableModels = useAvailableSpawnModels(userId).aliases
 
   useEffect(() => subscribePref(() => setPrefs(readAll())), [])
 
@@ -351,13 +381,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
     root.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => root.removeEventListener('wheel', onWheel, true)
   }, [])
-
-  const toggleSource = useCallback((src: string) => {
-    const next = prefs.sources.includes(src)
-      ? prefs.sources.filter(s => s !== src)
-      : [...prefs.sources, src]
-    setPref('docview-sources', next)
-  }, [prefs.sources])
 
   const handleVoiceColor = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setPref('voice-note-color', e.target.value)
@@ -408,6 +431,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
   const normalizedQuery = query.trim().toLowerCase()
   const sectionVisible = (id: PrefsSectionId) =>
     !normalizedQuery || PREFS_SEARCH_TEXT[id].includes(normalizedQuery)
+  // The device picker scopes the readability profile, whose fields now live in
+  // three sections. It is a scope selector rather than a setting, so it sits
+  // above the sections — and only when one of the sections it scopes is showing.
+  const perDeviceVisible = sectionVisible('appearance') || sectionVisible('input') || sectionVisible('panels')
 
   const setReadabilityDevice = useCallback((deviceId: string) => {
     setPrefs(prev => ({ ...prev, readabilityDeviceId: deviceId }))
@@ -433,14 +460,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
     setPref('bot-self-check-countdown-sec', { ...(getPref('bot-self-check-countdown-sec') as Record<string, number>), [botId]: seconds })
   }, [])
 
-  const setBotModel = useCallback((botId: string, model: string) => {
-    const current = getPref('bot-model') as Record<string, string>
-    const next = { ...current }
-    if (model) next[botId] = model
-    else delete next[botId]
-    setPref('bot-model', next)
-  }, [])
-
   return (
     <div ref={scrollRef} className="doc-panel-content prefs-tab">
       {prefs.loadError && (
@@ -458,19 +477,8 @@ export function PrefsTab({ query = '' }: { query?: string }) {
         <IdentitySectionBody knownDevices={prefs.knownDevices} deviceNames={prefs.deviceNames} />
       </CollapsiblePrefsSection>}
 
-      {sectionVisible('appearance') && <CollapsiblePrefsSection
-        id="appearance"
-        title="Appearance"
-        summary={`${prefs.deviceNames[prefs.readabilityDeviceId] || (prefs.readabilityDeviceId === currentDeviceId ? 'this device' : prefs.readabilityDeviceId)}: ${activeReadability.fontSize}px / ${Math.round(activeReadability.layoutHeightFrac * 100)}% height`}
-        open={prefs.openSections.includes('appearance')}
-        onToggle={toggleSection}
-      >
-        <PrefSubsection title="Theme">
-          <SchemeToggle />
-          <ThemeFamilyToggle />
-        </PrefSubsection>
-
-        <PrefSubsection title="Readability">
+      {perDeviceVisible && (
+        <PrefSubsection title="Settings for">
           <div className="prefs-segment-row">
             {readabilityDeviceIds.map(deviceId => (
               <button
@@ -483,6 +491,25 @@ export function PrefsTab({ query = '' }: { query?: string }) {
               </button>
             ))}
           </div>
+          <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>
+            Text, touch and panel-layout settings below are stored per device.
+          </div>
+        </PrefSubsection>
+      )}
+
+      {sectionVisible('appearance') && <CollapsiblePrefsSection
+        id="appearance"
+        title="Appearance"
+        summary={`${activeReadability.fontSize}px text`}
+        open={prefs.openSections.includes('appearance')}
+        onToggle={toggleSection}
+      >
+        <PrefSubsection title="Theme">
+          <SchemeToggle />
+          <ThemeFamilyToggle />
+        </PrefSubsection>
+
+        <PrefSubsection title="Text">
           <div className="prefs-num-row">
             <span className="prefs-num-label">Font size</span>
             <input type="number" min={8} max={24} step={1} value={activeReadability.fontSize} onChange={e => setReadability('fontSize', Number(e.target.value))} className="prefs-num" />
@@ -493,24 +520,13 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <input type="number" min={1.15} max={1.8} step={0.05} value={activeReadability.lineHeight} onChange={e => setReadability('lineHeight', Number(e.target.value))} className="prefs-num" />
             <span className="prefs-num-unit">x</span>
           </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Touch target</span>
-            <input type="number" min={24} max={64} step={2} value={activeReadability.touchTarget} onChange={e => setReadability('touchTarget', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">px</span>
-          </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Snap strength</span>
-            <input type="number" min={0} max={4} step={0.5} value={activeReadability.nudgeStrength} onChange={e => setReadability('nudgeStrength', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">em</span>
-          </div>
+        </PrefSubsection>
+
+        <PrefSubsection title="Panel tone">
           <label className="prefs-toggle-row">
             <input type="checkbox" checked={activeReadability.faint} onChange={e => setReadability('faint', e.target.checked)} />
             <span>Faint</span>
           </label>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">ToC hover region</span>
-            <ZoneWidthThumbControl className="prefs-zone-width-slider" />
-          </div>
           <div className="prefs-num-row">
             <span className="prefs-num-label">Chrome opacity</span>
             <input type="number" min={0} max={150} step={5} value={Math.round(activeReadability.chromeOpacity * 100)} onChange={e => setReadability('chromeOpacity', Number(e.target.value) / 100)} className="prefs-num" />
@@ -521,85 +537,28 @@ export function PrefsTab({ query = '' }: { query?: string }) {
             <input type="number" min={0} max={100} step={5} value={Math.round(activeReadability.contentOpacity * 100)} onChange={e => setReadability('contentOpacity', Number(e.target.value) / 100)} className="prefs-num" />
             <span className="prefs-num-unit">%</span>
           </div>
+        </PrefSubsection>
+      </CollapsiblePrefsSection>}
+
+      {sectionVisible('reading') && <CollapsiblePrefsSection
+        id="reading"
+        title="Reading"
+        summary="Document panel, sources, slides"
+        open={prefs.openSections.includes('reading')}
+        onToggle={toggleSection}
+      >
+        <PrefSubsection title="Document panel">
           <div className="prefs-num-row">
-            <span className="prefs-num-label">Layout height</span>
-            <input type="number" min={10} max={100} step={5} value={Math.round(activeReadability.layoutHeightFrac * 100)} onChange={e => setReadability('layoutHeightFrac', Number(e.target.value) / 100)} className="prefs-num" />
-            <span className="prefs-num-unit">% of view</span>
-          </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Rail aspect</span>
-            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.railAspect} onChange={e => setReadability('railAspect', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">w/h</span>
-          </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Chat aspect</span>
-            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.chatAspect} onChange={e => setReadability('chatAspect', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">w/h</span>
-          </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Margin aspect</span>
-            <input type="number" min={0} max={0.4} step={0.01} value={activeReadability.marginAspect} onChange={e => setReadability('marginAspect', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">gap/h</span>
+            <span className="prefs-num-label">ToC hover region</span>
+            <ZoneWidthThumbControl className="prefs-zone-width-slider" />
           </div>
         </PrefSubsection>
 
-        <PrefSubsection title="Full tool output">
-          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-            Collapse long tool output past N lines. Use 0 to show full output.
-          </div>
-          {([
-            ['Bash', 'fold-bash-lines', prefs.foldBash],
-            ['File writes', 'fold-write-lines', prefs.foldWrite],
-            ['Markdown writes', 'fold-md-lines', prefs.foldMd],
-            ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
-            ['Threads', 'fold-thread-lines', prefs.foldThread],
-          ] as const).map(([label, key, val]) => (
-            <div className="prefs-num-row" key={key}>
-              <span className="prefs-num-label">{label}</span>
-              <input type="number" min={0} step={1} value={val} onChange={e => setPref(key, Number(e.target.value))} className="prefs-num" />
-              <span className="prefs-num-unit">{val === 0 ? 'full' : 'lines'}</span>
-            </div>
-          ))}
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Thread/search cards</span>
-            <input type="number" min={5} step={5} value={prefs.semanticOperationPageSize} onChange={e => setPref('semantic-operation-page-size', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">items</span>
-          </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Thread card top</span>
-            <input type="number" min={0} step={1} value={prefs.threadFront} onChange={e => setPref('thread-front-messages', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">messages</span>
-          </div>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Thread card bottom</span>
-            <input type="number" min={0} step={1} value={prefs.threadTail} onChange={e => setPref('thread-tail-messages', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">messages</span>
-          </div>
-        </PrefSubsection>
-
-        <PrefSubsection title="Doc viewer sources">
+        <PrefSubsection title="Doc viewer">
           <label className="prefs-check">
             <input type="checkbox" checked={prefs.documentStingyMode} onChange={e => setPref('document-stingy-mode', e.target.checked)} />
             <span>Stingy mode</span>
           </label>
-          <div className="prefs-source-checks">
-            {ALL_SOURCES.map(src => (
-              <label key={src} className="prefs-check">
-                <input type="checkbox" checked={prefs.sources.includes(src)} onChange={() => toggleSource(src)} />
-                <span>{SOURCE_LABELS[src]}</span>
-              </label>
-            ))}
-          </div>
-        </PrefSubsection>
-
-        <PrefSubsection title="Note color">
-          <div className="prefs-color-row">
-            <span className="prefs-color-label">Voice notes</span>
-            <select value={prefs.voiceColor} onChange={handleVoiceColor} className="prefs-select">
-              {COLOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.voiceColor] }} />
-          </div>
         </PrefSubsection>
 
         <PrefSubsection title="Ribbon provenance">
@@ -611,21 +570,15 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           </select>
         </PrefSubsection>
 
-        <PrefSubsection title="Slide advance">
-          <label className="prefs-row">
-            <span>Mode</span>
-            <select
-              value={prefs.slidesNavigationMode}
-              onChange={e => {
-                const mode = e.target.value === 'orthogonal-fragments' ? 'orthogonal-fragments' : 'inline-fragments'
-                setPref('slides-navigation-mode', mode)
-              }}
-              className="prefs-select"
-            >
-              <option value="inline-fragments">Click through fragments</option>
-              <option value="orthogonal-fragments">Slides left/right, fragments vertical</option>
+
+        <PrefSubsection title="Note color">
+          <div className="prefs-color-row">
+            <span className="prefs-color-label">Voice notes</span>
+            <select value={prefs.voiceColor} onChange={handleVoiceColor} className="prefs-select">
+              {COLOR_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
-          </label>
+            <span className="prefs-color-swatch" style={{ background: NOTE_COLORS[prefs.voiceColor] }} />
+          </div>
         </PrefSubsection>
       </CollapsiblePrefsSection>}
 
@@ -703,7 +656,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
         open={prefs.openSections.includes('radio')}
         onToggle={toggleSection}
       >
-        <PrefSubsection title="Radio">
+        <PrefSubsection title="Subtitles">
           <label className="prefs-check">
             <input type="checkbox" checked={prefs.radioSubtitlesEnabled} onChange={e => setPref('radio-subtitles-enabled', e.target.checked)} />
             <span>Agent subtitles</span>
@@ -728,10 +681,18 @@ export function PrefsTab({ query = '' }: { query?: string }) {
       {sectionVisible('input') && <CollapsiblePrefsSection
         id="input"
         title="Input"
-        summary={`${prefs.hlZone ? 'Edge zone on' : 'Edge zone off'} / ${prefs.cornerRail ? `voice slider ${prefs.cornerSize || 'auto'}` : 'classic'}`}
+        summary={`${activeReadability.touchTarget}px target / ${prefs.hlZone ? 'edge zone on' : 'edge zone off'}`}
         open={prefs.openSections.includes('input')}
         onToggle={toggleSection}
       >
+        <PrefSubsection title="Touch">
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Touch target</span>
+            <input type="number" min={24} max={64} step={2} value={activeReadability.touchTarget} onChange={e => setReadability('touchTarget', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">px</span>
+          </div>
+        </PrefSubsection>
+
         <PrefSubsection title="Highlighter">
           <label className="prefs-check">
             <input type="checkbox" checked={prefs.hlZone} onChange={e => setPref('hl-zone-enabled', e.target.checked)} />
@@ -739,29 +700,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           </label>
         </PrefSubsection>
 
-        <PrefSubsection title="Corner controls">
-          <label className="prefs-check">
-            <input
-              type="checkbox"
-              checked={prefs.cornerRail}
-              onChange={e => setPref('corner-rail-enabled', e.target.checked)}
-            />
-            <span>Voice slider</span>
-          </label>
-          <div className="prefs-num-row">
-            <span className="prefs-num-label">Corner size</span>
-            <input
-              type="number"
-              min={0}
-              max={88}
-              step={4}
-              value={prefs.cornerSize}
-              onChange={e => setPref('corner-control-size', Number(e.target.value))}
-              className="prefs-num"
-            />
-            <span className="prefs-num-unit">{prefs.cornerSize ? 'px' : 'auto'}</span>
-          </div>
-        </PrefSubsection>
 
         <PrefSubsection title="Edge-zone response curve">
           <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
@@ -772,6 +710,85 @@ export function PrefsTab({ query = '' }: { query?: string }) {
 
         <PrefSubsection title="Editor input">
           <VimModeToggle />
+        </PrefSubsection>
+      </CollapsiblePrefsSection>}
+
+      {sectionVisible('panels') && <CollapsiblePrefsSection
+        id="panels"
+        title="Panels"
+        summary={`${Math.round(activeReadability.layoutHeightFrac * 100)}% height`}
+        open={prefs.openSections.includes('panels')}
+        onToggle={toggleSection}
+      >
+        <PrefSubsection title="Layout">
+          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+            Sizes a fleet layout when it is created. Panels already on the canvas keep their size.
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Layout height</span>
+            <input type="number" min={10} max={100} step={5} value={Math.round(activeReadability.layoutHeightFrac * 100)} onChange={e => setReadability('layoutHeightFrac', Number(e.target.value) / 100)} className="prefs-num" />
+            <span className="prefs-num-unit">% of view</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Rail aspect</span>
+            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.railAspect} onChange={e => setReadability('railAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">w/h</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Chat aspect</span>
+            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.chatAspect} onChange={e => setReadability('chatAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">w/h</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Margin aspect</span>
+            <input type="number" min={0} max={0.4} step={0.01} value={activeReadability.marginAspect} onChange={e => setReadability('marginAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">gap/h</span>
+          </div>
+        </PrefSubsection>
+
+        <PrefSubsection title="Snap">
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Snap strength</span>
+            <input type="number" min={0} max={4} step={0.5} value={activeReadability.nudgeStrength} onChange={e => setReadability('nudgeStrength', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">em</span>
+          </div>
+        </PrefSubsection>
+
+        <PrefSubsection title="Full tool output">
+          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+            Collapse long tool output past N lines. Use 0 to show full output.
+          </div>
+          {([
+            ['Bash', 'fold-bash-lines', prefs.foldBash],
+            ['File writes', 'fold-write-lines', prefs.foldWrite],
+            ['Markdown writes', 'fold-md-lines', prefs.foldMd],
+            ['Edit diffs', 'fold-diff-lines', prefs.foldDiff],
+            ['Threads', 'fold-thread-lines', prefs.foldThread],
+          ] as const).map(([label, key, val]) => (
+            <div className="prefs-num-row" key={key}>
+              <span className="prefs-num-label">{label}</span>
+              <input type="number" min={0} step={1} value={val} onChange={e => setPref(key, Number(e.target.value))} className="prefs-num" />
+              <span className="prefs-num-unit">{val === 0 ? 'full' : 'lines'}</span>
+            </div>
+          ))}
+        </PrefSubsection>
+
+        <PrefSubsection title="Thread and search cards">
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Thread/search cards</span>
+            <input type="number" min={5} step={5} value={prefs.semanticOperationPageSize} onChange={e => setPref('semantic-operation-page-size', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">items</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Thread card top</span>
+            <input type="number" min={0} step={1} value={prefs.threadFront} onChange={e => setPref('thread-front-messages', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">messages</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Thread card bottom</span>
+            <input type="number" min={0} step={1} value={prefs.threadTail} onChange={e => setPref('thread-tail-messages', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">messages</span>
+          </div>
         </PrefSubsection>
       </CollapsiblePrefsSection>}
 
@@ -787,7 +804,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
           const botId = bot.id as string
           const enabled = prefs.botSelfCheckEnabled[botId] ?? prefs.selfCheckEnabled
           const countdown = prefs.botSelfCheckCountdown[botId] ?? prefs.selfCheckCountdown
-          const model = availableModels.includes(prefs.botModel[botId]) ? prefs.botModel[botId] : ''
           return (
             <PrefSubsection key={botId} title={agentDisplayLabel(bot, agents)}>
               <label className="prefs-check">
@@ -799,13 +815,6 @@ export function PrefsTab({ query = '' }: { query?: string }) {
                 <input type="number" min={5} max={300} step={5} value={countdown} onChange={e => setBotCountdown(botId, Number(e.target.value))} className="prefs-num" />
                 <span className="prefs-num-unit">sec</span>
               </div>
-              <div className="prefs-num-row">
-                <span className="prefs-num-label">Model</span>
-                <select value={model} onChange={e => setBotModel(botId, e.target.value)} className="prefs-select">
-                  <option value="">Default</option>
-                  {availableModels.map(alias => <option key={alias} value={alias}>{alias}</option>)}
-                </select>
-              </div>
             </PrefSubsection>
           )
         })}
@@ -813,6 +822,10 @@ export function PrefsTab({ query = '' }: { query?: string }) {
       {normalizedQuery && (Object.keys(PREFS_SEARCH_TEXT) as PrefsSectionId[]).every(id => !sectionVisible(id)) && (
         <div className="panel-empty">No settings found</div>
       )}
+
+      <PrefSubsection title="If something is wrong">
+        <EmergencyDumpButton />
+      </PrefSubsection>
     </div>
   )
 }

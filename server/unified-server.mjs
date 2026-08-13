@@ -4324,16 +4324,25 @@ app.use('/docs', (req, res, next) => {
     try {
       const project = await readProject(name)
       if (project) {
-        const { listDocumentColumns, listProjectPartColumns } = await import('./lib/document-columns.mjs')
+        const { listDocumentColumns, listProjectPartColumns, markdownDocumentColumnForOutputFile } = await import('./lib/document-columns.mjs')
         const { renderMarkdownColumnHtml } = await import('./lib/build-markdown.mjs')
         // Markdown-format projects: main file + parts (existing behavior).
         // Any other format: its markdown PARTS still render through this same
         // markdown renderer — the parent project's own format only owns its
         // own main document, not its parts.
+        const srcDir = join(PROJECTS_DIR, name, 'source')
         const columns = project.format === 'markdown'
-          ? await listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
-          : await listProjectPartColumns(name, { srcDir: join(PROJECTS_DIR, name, 'source') })
+          ? await listDocumentColumns(name, { project, srcDir })
+          : await listProjectPartColumns(name, { srcDir })
+        // Falling through to the project source is what keeps a linked document
+        // reachable now that it is no longer one of this document's pages. "Is
+        // this a page of the open document" and "can this project render this
+        // markdown file" are different questions; only the first one is a page
+        // list, and answering both from it is what made linked files chapters.
         const column = columns.find(c => c.file === filePath)
+          || (project.format === 'markdown'
+            ? await markdownDocumentColumnForOutputFile(name, filePath, { srcDir })
+            : null)
         if (column) {
           const source = await fs.promises.readFile(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
           let macros = {}

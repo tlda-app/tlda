@@ -358,11 +358,19 @@ const BRIDGE_SCRIPT = `
       // Strip query params from targetFile (e.g. "file.html?_tldaShape=..." -> "file.html")
       if (targetFile) targetFile = targetFile.split('?')[0] || null;
       var anchor = parts[1] || null;
+      // targetFile is a basename and stays one — every existing consumer matches
+      // on it. targetPath keeps the whole path, which is what you need to OPEN a
+      // document of this project that has no shape on the canvas yet, and
+      // targetTitle is what the link called it.
+      var targetPath = parts[0] || null;
+      var targetTitle = ((a.textContent || '').trim()) || null;
       if (window.parent !== window) {
         window.parent.postMessage({
           type: 'tlda-navigate',
           shapeId: shapeId,
           targetFile: targetFile,
+          targetPath: targetPath,
+          targetTitle: targetTitle,
           anchor: anchor,
         }, '*');
       }

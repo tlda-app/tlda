@@ -860,7 +860,43 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             if (altShape) targetShape = altShape
           }
         }
-        if (!targetShape) return
+        if (!targetShape) {
+          // A document of this project that has no shape on the canvas yet —
+          // which, now that a linked document is not a page of this one, is the
+          // ordinary case for following a link. It is created and placed exactly
+          // the way clicking a Markdown chip in chat creates and places one:
+          // the same call, so it lands away from the reader by the same rule and
+          // shows up in the Project tab by the same meta. Skip, 2026-08-13
+          // 01:57 EDT: "Suppose I had a fucking document with no links
+          // whatsoever. And then I fucking clicked a fucking markdown file in
+          // chat. That would create a document somewhere on the fucking canvas
+          // far away from where I fucking am, and it would go in the fucking
+          // project tab. Why the fuck is this any different?"
+          if (e.data.__tldaOpened) return
+          const targetPath = typeof e.data.targetPath === 'string' ? e.data.targetPath : ''
+          const projectDoc = targetPath.match(/^\/docs\/([^/]+)\/(.+\.html)$/)
+          if (!projectDoc) return
+          const [, encodedProject, encodedFile] = projectDoc
+          const outputFile = decodeURIComponent(encodedFile)
+          const title = (typeof e.data.targetTitle === 'string' && e.data.targetTitle)
+            || outputFile.replace(/\.html$/, '').split('/').pop()
+            || outputFile
+          void import('./FleetPillShape').then(async ({ createTemporaryMarkdownColumn }) => {
+            await createTemporaryMarkdownColumn(
+              editor,
+              editor.getViewportPageBounds().center,
+              title,
+              '',
+              { materializedDoc: decodeURIComponent(encodedProject), materializedFile: outputFile },
+              targetPath,
+            )
+            // Finish the navigation the reader asked for. __tldaOpened means the
+            // document has been created once, so a target still missing on the
+            // second pass stops rather than opening again.
+            window.postMessage({ ...e.data, __tldaOpened: true }, '*')
+          })
+          return
+        }
         recordHtmlNavigationStart(editor)
         const sourceLeftScreen = isTemporaryMarkdownNavigation
           ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x

@@ -149,26 +149,31 @@ export async function remapAnnotations(
         continue
       }
 
-      const deltaX = resolved.canvasX == null ? 0 : resolved.canvasX - oldAnchorX
+      // Y only, for the same reason the solo path above holds x: synctex x
+      // varies between builds (nearby-line fallback, display-math offsets), so
+      // a horizontal delta is measurement noise rather than content that moved.
+      // Applying it walked highlights off the words they were drawn on with
+      // every refresh. Page geometry is fixed within a build target, so there is
+      // no horizontal reflow for the cluster path to follow.
       const deltaY = resolved.canvasY - oldAnchorY
 
-      if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) continue
+      if (Math.abs(deltaY) < 1) continue
 
       for (const shape of shapes) {
         updates.push({
           id: shape.id,
           type: shape.type,
-          x: shape.x + deltaX,
+          x: shape.x,
           y: shape.y + deltaY,
           meta: {
             ...shape.meta,
-            anchorCanvasX: resolved.canvasX ?? oldAnchorX,
+            anchorCanvasX: oldAnchorX,
             anchorCanvasY: resolved.canvasY,
           },
         })
       }
 
-      console.log(`[Anchor] Cluster ${cid}: ${shapes.length} shapes moved by (${deltaX.toFixed(1)}, ${deltaY.toFixed(1)})`)
+      console.log(`[Anchor] Cluster ${cid}: ${shapes.length} shapes moved by (0, ${deltaY.toFixed(1)})`)
     } catch (e) {
       console.warn(`[Anchor] Error resolving cluster anchor:`, e)
     }

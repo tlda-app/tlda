@@ -1,0 +1,1164 @@
+# Chat rendering and the scroll model
+
+Developer documentation. This describes how a fleet chat panel turns events into
+rows, who is allowed to move the scroll position, and when — the machinery in
+`src/shapes/FleetChatShape.tsx`, `chatScrollIntent.mjs`, `chatViewportAnchor.mjs`,
+and `chatVirtuosoIndex.mjs`. It is not user guidance.
+
+It has an [errata section](#errata). The model below is what the system is trying
+to be. The errata is what currently does not match it, and it is part of the
+document rather than an appendix — a description of intent alone is how the next
+person concludes that a defect is a feature.
+
+## The rule everything here serves
+
+Skip's invariant, quoted at the top of `chatViewportAnchor.mjs:4-8`:
+
+> nothing changes on your screen when new messages arrive. That includes when
+> it's static. That includes when you're scrolling. **The feel of scrolling also
+> doesn't change** when new messages arrive. It's just the distance you have to
+> scroll changes.
+
+Two consequences are worth separating, because collapsing them is what deleted a
+guard in `7430200ad` and put a jitter under his finger:
+
+- **Whether** the reader's position is preserved never depends on input. A
+  gesture decides whether the reader is off the tail; it does not authorize
+  message arrival or row measurement to move the visible content.
+- **When** the correction may be written to `scrollTop` does depend on input,
+  because the scroller is not ours while a gesture is in flight. A momentum glide
+  is driven by the compositor, and writing `scrollTop` mid-glide fights it frame
+  by frame instead of holding a position.
+
+---
+
+## Two surfaces share the class name
+
+`.fleet-chat-log` names **two different scrollers** with two different scroll
+implementations:
+
+| surface | element | scroll implementation |
+|---|---|---|
+| a fleet chat panel | Virtuoso's Scroller (`FleetChatShape.tsx:2597`) | everything in this document |
+| the index page's top chat log | `App.tsx:1376` | `attachIndexChatTail` (`index-chat-tail.mjs:15`) |
+
+The index surface has no virtualizer. Its comment says so and says why that
+matters (`index-chat-tail.mjs:37-39`): nothing re-anchors `scrollTop` behind the
+reader's back, so it has no forced-follow mode and no reconciliation seam. It
+shares exactly one thing with the panel — `decideFollowTransition`, the follow/read
+decision.
+
+This matters because a `document.querySelectorAll('.fleet-chat-log')` hits both,
+and `usePanMode.ts:117` does exactly that. See errata.
+
+---
+
+## What a row is
+
+A chat row is **not a React tree**. The pipeline is:
+
+1. `rawItems` (`FleetChatShape.tsx:2873`) — one `{key, html}` per message, where
+   `html` is a pre-rendered string from `src/fleet/chat-render.mjs`.
+2. `allItems` (`:3272`) — `rawItems` plus a queue-divider flag, plus one
+   trailing `__status__` item (`chatVirtuosoIndex.mjs:1`) carrying the thinking
+   indicator and suggestions. The status row is a real measured list item
+   deliberately, "so Virtuoso remains the only scroll authority when
+   status/suggestions change height" (`:2857-2859`).
+3. `Virtuoso` renders each item through `itemContent` (`:6885`) into a
+   `.chat-row-wrap` carrying `data-chat-item-key` — the attribute every anchoring
+   and measurement path in this file keys off.
+4. `ChatMessageRow` (`:2225`) writes the string with `dangerouslySetInnerHTML`.
+5. A `useLayoutEffect` (`:2263`) then **mutates that DOM imperatively** — restores
+   expand state, sets `display`, toggles classes — and **mounts nested React
+   roots** with `createRoot(body)` (`:2319`) into every `.semantic-operation-body`.
+
+So three separate things can change a row's height, and only the first is a
+message arriving:
+
+- **new or changed items** — React re-renders the row from a new `html` string;
+- **the row's own imperative handlers** — expand/collapse writes `style.display`
+  directly (`:5020` onward), with no React render involved;
+- **the nested roots** — `ThreadChatOperationView` (`:1971`) issues an async
+  `searchFleet`, renders `loading...`, and replaces it with a full thread render
+  whenever that resolves (`:2027`). The row grows arbitrarily later, with nothing
+  arriving and no React render of the row itself.
+
+Height sources two and three are invisible to every mechanism described below
+except the `ResizeObserver`. They are the reason that observer exists. A fourth —
+images resolving an intrinsic size the row was measured without — is in
+[the errata](#row-height-changes-after-measurement-and-nothing-in-the-model-owns-it),
+because unlike these three it is not anybody's decision.
+
+---
+
+## Who owns the scroll position
+
+Five claimants. Ranked by who wins when they disagree:
+
+| claimant | writes | when it is allowed to |
+|---|---|---|
+| **the reader** | the browser's own scrolling, plus our wheel handler | always; every other writer defers to a gesture in flight |
+| **the compositor** | momentum glide after a finger lifts | always; nothing may write `scrollTop` during it |
+| **Virtuoso** | `followOutput`, `firstItemIndex`, `initialTopMostItemIndex`, `scrollToIndex` | only while following the tail — `followOutput` returns `false` in reader mode |
+| **our anchoring** | `restoreViewportAnchor` (`:4125`) | only in reader mode, not hard-locked, with an anchor held, and no input in flight |
+| **the follow repair** | `reconcileViewportGeometry`'s tail branch (`:4190`), `goToTail` (`:4408`) | only while following |
+
+The reader and the compositor are the same authority for our purposes: both are
+recognised through `isReaderInputInFlight` (`chatViewportAnchor.mjs:39`), and both
+are absolute. A deferral is not a decline — the anchor is still held and still
+owed a correction, which is why `preserveChatViewportAcrossArrival` returns the
+position unchanged with `deferred: true` rather than a delta of zero
+(`chatViewportAnchor.mjs:68-70`).
+
+---
+
+## What Virtuoso is given, and what each prop answers
+
+`react-virtuoso@4.18.11`. The full prop set at `FleetChatShape.tsx:6857`:
+
+| prop | value | the question it answers |
+|---|---|---|
+| `data` | `allItems` | what rows exist |
+| `computeItemKey` | `item.key` | which DOM row is which item across re-renders |
+| `firstItemIndex` | `virtuosoFirstItemIndex` | where the current first row sits in a **stable logical index space**, so prepending history does not renumber every row |
+| `startReached` | `requestEarlierChatHistory` | when to fetch older history |
+| `initialTopMostItemIndex` | `{index: 'LAST', align: 'end'}` | where the list opens — at the newest message, bottom-aligned |
+| `alignToBottom` | `true` | where a list **shorter than the viewport** sits; per the library's own docs, this is the short-list case only |
+| `followOutput` | `(!scrolledUp \|\| hardLocked) ? 'auto' : false` | whether an appended row scrolls the list down |
+| `atBottomThreshold` | `1` | how close to the bottom counts as at-bottom for `atBottomStateChange` |
+| `atBottomStateChange` | `setAtBottom` | drives the follow/jump button's appearance only — not scroll intent |
+| `components.Scroller` | `ChatLogScroller` | the scroll element itself, so it carries `.fleet-chat-log` and can be captured into `chatLogRef` / `chatLogEl` |
+
+**`followOutput` is the whole of Virtuoso's tail-following.** It is a function
+reading refs, not state, so it sees the current reader mode at the moment a row
+appends rather than a render-stale copy.
+
+**`firstItemIndex` is computed by us**, in `nextChatVirtuosoFirstItemIndex`
+(`chatVirtuosoIndex.mjs:3`): find the first key present in both the previous and
+next key arrays, and shift the index by the difference in its position. A filter
+change resets it to `1_000_000` (`FleetChatShape.tsx:3325-3328`), because a new
+filter is a different list, not a prepend. The comment at `:3318` records what it
+is for: without it, loading the previous subscription page reinterprets the new
+first row as index zero and jumps the viewport to the oldest fetched message.
+
+**What Virtuoso does not do, and is not asked to:** hold the reader's pixel
+position when *already-rendered rows are re-measured while scrolled up*. That is
+the job of our anchoring, below.
+
+---
+
+## What our anchoring is for
+
+One job, stated exactly: **hold the reader's pixel position when already-rendered
+rows are re-measured while the reader is scrolled up.**
+
+It is a capture/restore pair over a single row:
+
+- `captureViewportAnchor` (`:4034`) — find the first row whose bottom is at or
+  below the viewport top, and record `{key, top}` where `top` is its offset from
+  the viewport top. It is a no-op that clears the anchor unless the reader is
+  scrolled up.
+- `restoreViewportAnchor` (`:4075`) — find that same row by key, measure how far
+  it has moved, and add that delta to `scrollTop`.
+
+Three ways it declines, each instrumented because each is a silent failure:
+
+- **the guard says no** — `shouldPreserveChatViewport` (`chatViewportAnchor.mjs:22`)
+  requires scrolled-up, not hard-locked, and an anchor held.
+- **the anchored row left the DOM** (`:4088-4100`) — Virtuoso unmounts rows
+  outside its render window, which is exactly what a re-anchor does, so this is
+  likely precisely when the viewport most needs holding. Nothing corrects the
+  position after this return.
+- **the correction is larger than the scroll range on offer** (`:4107-4117`) —
+  recorded with the `scrollTop`/`scrollHeight`/`clientHeight` triple so it is a
+  measurement rather than an inference.
+
+`captureViewportAnchor` also carries a pure observation: if the anchored row moved
+by more than 1px with no input in flight, it records `anchor drifted with no
+input` (`:4060`). The comment there is blunt about what it is not — it still
+re-baselines, and the re-baselining is the bug.
+
+---
+
+## Every path that writes `scrollTop`
+
+Four inside the component:
+
+| site | writes | guarded by |
+|---|---|---|
+| `restoreViewportAnchor` `:4125` | `+= delta` | `shouldPreserveChatViewport`, plus the input check in each caller |
+| `reconcileViewportGeometry` `:4190` | `= scrollHeight` (tail branch) | `isReaderInputInFlight` at `:4166` |
+| `handleWheelCapture` `:4566` | `+= e.deltaY` | none — this **is** the reader |
+| `goToTail` `:4421` | `scrollToIndex({index:'LAST'})` via Virtuoso | a run token (`goToTailRunRef`) that any reader-mode entry invalidates |
+
+Three outside it, writing the same element through the class name:
+
+| site | writes | marks reader input? |
+|---|---|---|
+| `CanvasClipPanel.tsx:196` | `+= e.deltaY` (wheel reroute in clip panels) | dispatches `fleet-user-scroll` — see errata |
+| `usePanMode.ts:136` | `+= velocity * dt` (edge-zone autoscroll, **every animation frame**) | **no** |
+| `usePanMode.ts:221` | `+= dy * CHAT_SCROLL_SENSITIVITY` (pan-mode drag) | **no** |
+
+**The load-bearing fact about that second table: every guard in this document
+governs writers inside `FleetChatShape`.** The three below it reach the element by
+`document.querySelector`/`querySelectorAll` on the class name, from other
+subsystems, and no guard here can see them — not the reader-mode refs, not
+`geometryReconcileScrollTopRef`, not `selfWriteResizePendingRef`. There is no
+contract on this element's scroll position; there is a CSS class. **Anyone may
+write it, from anywhere, by matching that class.** That is the seam, and it is a
+larger finding than any individual writer on either table.
+
+Checked and excluded: `FleetChatShape.tsx:3665` calls `scrollIntoView` on a line
+inside a chip-hover popover that is appended to `document.body`, so its scrollable
+ancestors do not include the chat log. `fleet/utils.mjs:56,60`
+(`smoothScrollToBottom`, `commitScroll`) write a chat log's `scrollTop` but have
+no callers — see errata.
+
+---
+
+## The re-entrancy map
+
+This is the load-bearing part. **Every `scrollTop` write emits a scroll event, and
+can also emit a resize** — because a scroll renders a different row window, those
+rows measure differently than they were estimated, and the item list changes
+height with the content untouched.
+
+So there are two entrances back into the machinery from our own write, and each
+has its own guard:
+
+```
+  our scrollTop write
+        │
+        ├──► 'scroll' event ──► handle() (:4575)
+        │        guarded by geometryReconcileScrollTopRef (:3980)
+        │        the write records the value it produced; the next scroll event
+        │        within 1px of it sets geometryReconciliation=true, which makes
+        │        decideFollowTransition return 'none' (chatScrollIntent.mjs:55)
+        │
+        └──► item list resize ──► ResizeObserver (:4214)
+                 guarded by selfWriteResizePendingRef (:3988)
+                 the write sets the flag; the next firing clears it and returns
+                 before reconcileViewportGeometry
+```
+
+### Everything a `scrollTop` write wakes
+
+The diagram above shows the two paths that come back to *this component*. A write
+wakes more than that, and the rest is unguarded because it was never anybody's
+concern:
+
+| woken by a write | where | what it does |
+|---|---|---|
+| the panel's scroll handler | `FleetChatShape.tsx:4686` | the follow/read decision and the anchor restore — **the only one this document's guards cover** |
+| the item-list `ResizeObserver` | `:4250` | `reconcileViewportGeometry`, behind the self-write latch |
+| the stranded-row `MutationObserver` | `chat-stranded-row-probe.mjs:202` | record-only. A write renders a different row window, which is `childList` churn on the observed list |
+| Virtuoso's own scroll and resize listeners | inside `react-virtuoso` | its scroll model, `atBottomStateChange`, and `followOutput`'s at-bottom argument |
+| a screenshot-bounds overlay | `useYjsSignals.ts:366` | repositions itself on every chat scroll |
+| the suggestion tip | `FleetChatShape.tsx:1593` | `window` scroll listener **with capture**, so it fires for this element's scroll too, and dismisses the tip |
+| the search shape's caret tracker | `FleetSearchShape.tsx:426` | also `window` + capture; recomputes on any scroll anywhere, including ours |
+
+The last three are the ones worth knowing about, because they do not look like
+subscribers to this element. **Two are `window` listeners registered with capture**,
+which catches scroll events from any descendant even though scroll does not
+bubble — so a chat scroll runs code in an unrelated shape. Neither is a defect on
+its own; both mean a `scrollTop` write here is not a local act.
+
+The two guards are not symmetric and the asymmetry is deliberate:
+
+- `geometryReconcileScrollTopRef` holds a **value** and matches on it (±1px), so a
+  reader scroll that happens to land in the same frame is still read as the
+  reader.
+- `selfWriteResizePendingRef` is a **boolean latch**. It drops one firing
+  unconditionally. Nothing is lost by that: the same write also emits a scroll
+  event, and the scroll handler runs the identical restore behind the identical
+  input guard in the same frame, so what is skipped is a second forced layout over
+  every rendered row, not a correction.
+
+**That latch is precautionary, not measured, and its history says why that
+distinction is worth keeping.** It shipped in `c951b38fa` arguing it interrupted a
+re-measurement loop — our write renders a different row window, the rows measure
+differently, the list changes height, the observer fires. `69e4df695` reverted it
+on the telemetry its own sibling commit shipped: **`scrollHeight` is constant
+within every measured burst**, so the list was not changing height while the
+observer fired dozens of times, and there was no loop to interrupt. `3bc8615fc`
+then restored the guard with the true reason — it saves a forced layout — rather
+than the falsified one. The object this repository keeps paying for is a guard
+that reads as load-bearing while watching a window that never opens; see
+`8543d9048` in the errata.
+
+**The observer's diagnostics run before its guard** (`:4255`), deliberately: a
+suppressed firing is exactly the one worth seeing, and `recordRowResizes` (`:4220`)
+is how the two candidate causes get told apart — a row that changed height, versus
+a list that changed height with every row the same. A row absent from the previous
+snapshot is not reported as a change, because that is virtualization working
+rather than content growing.
+
+**Deferral and flush.** When input is in flight, `reconcileViewportGeometry`
+records `deferredGeometryReconcileRef` and returns (`:4171-4182`). Every window
+that can end a gesture calls `flushDeferredGeometry` (`:4200`): the touch settle
+timer (`:4586`), the wheel settle timer (`:4550`), and pointer release/cancel/blur
+(`:4293-4305`). A deferral with no flush is the failure one over from the one being
+fixed — the reader keeps the position they were left with and the correction never
+arrives.
+
+---
+
+## The reader-mode state machine
+
+**One boolean is the mode.** `userScrolledUpRef` (`:3965`) — following the tail, or
+reading history. Content and layout never change it; only a live input gesture
+does.
+
+The other four refs are not modes. They are **windows during which writes are not
+allowed**, or windows during which a scroll event may be believed:
+
+| ref | line | what it means | what it gates |
+|---|---|---|---|
+| `userScrolledUpRef` | 3965 | reader mode | `followOutput`, whether anchoring runs at all, `checkFollowInvariant` |
+| `hardLockedRef` | 4391 | an explicit forced-follow preference, persisted in `localStorage` | overrides reader mode in `followOutput` and in `shouldPreserveChatViewport` |
+| `touchScrollActiveRef` | 3969 | a finger-driven scroll, **from touchdown through the momentum glide**, until the scroller goes quiet | defers every geometry write |
+| `explicitScrollInputRef` | 3974 | a wheel/trackpad/touch event within the last 250ms | defers geometry writes; also the `userInputActive` term that lets a scroll event change mode |
+| `geometryReconcileScrollTopRef` | 3980 | the `scrollTop` our last write produced | suppresses mode change on the scroll event that write causes |
+| `selfWriteResizePendingRef` | 4003 | our last write has an unconsumed resize | drops one `ResizeObserver` firing |
+
+`touchScrollActiveRef` spanning the glide rather than "a pointer is currently
+down" is the entire point. An iOS glide runs with the finger already lifted, and a
+pointer-held guard recorded **one deferral against 211 corrections** in Skip's
+session (`chatViewportAnchor.mjs:34`).
+
+### Entering and leaving reader mode
+
+Mode changes have exactly three entrances, and all three require a live gesture.
+
+**`decideFollowTransition`** (`chatScrollIntent.mjs:27`) is the general one, run
+from the scroll handler. It changes nothing unless `userInputActive` is true:
+
+- **follow-off** — moved up past `UP_JITTER_EPS` (20px), content height stable
+  within 2px, and the move actually left the bottom (`gap > TRUE_BOTTOM_EPS`). All
+  three bars are measured, not guessed. The comments record the counts: 129 of 155
+  genuine scroll-ups were moves over 20px leaving the bottom, while what dropped
+  the reader off follow was a 5-to-8px drift with content height unchanged; and
+  386 of 1045 recorded follow-offs left the reader at or *past* the bottom, one as
+  far as `gap -187`, which is the browser reconciling an over-scrolled position.
+- **follow-on** — moved down past the same eps to within `FOLLOW_BOTTOM_EPS`
+  (120px, absorbing the ~40px status footer).
+- Suppressed entirely while `hardLocked` or `geometryReconciliation`.
+
+**Per-device shortcuts** exist because per-event deltas from a trackpad or a
+finger arrive below `UP_JITTER_EPS` one at a time, and a live chat's content height
+moves on nearly every frame, so a genuine scroll-up often clears neither bar:
+
+- `handleWheelCapture` (`:4553`) — a wheel event with `deltaY < 0` is reader
+  intent. It scrolls **first**, then calls `enterReaderMode`, because the
+  at-bottom test has to read where the tick landed rather than where it started.
+  Both run in one synchronous block, so Virtuoso cannot interleave.
+- `onTouchMove` (`:4605`) — a finger travelling more than `TOUCH_READER_INTENT_PX`
+  (8px) *down the screen* reveals older content, which is the reader leaving the
+  tail.
+
+**`enterReaderMode`** (`:4493`) holds the one rule both shortcuts share: at the
+true bottom there is nothing above to look at, so no gesture may enter reader mode
+there. Entering anyway strands the reader — resuming needs one scroll event over
+`UP_JITTER_EPS` and there is no room below the bottom to produce one.
+
+**`resumeFollowIfSettledAtBottom`** (`:4519`) is the exit, and it requires the
+*true* bottom (8px), not the near bottom. Each device's settle detector calls it,
+because "input finished" means something different to a wheel (no ticks for 250ms)
+than to a finger (lifted, and the glide stopped).
+
+### The repair
+
+`checkFollowInvariant` (`:4458`) is a 500ms-delayed assertion that a panel which
+believes it is following is actually at the bottom. It re-arms rather than firing
+while a gesture is in flight, because repairing through a gesture throws the reader
+to the tail with a finger still on the glass. On violation it calls `goToTail`,
+which is a rAF loop of up to 12 frames issuing `scrollToIndex(LAST)` until the gap
+is a true bottom on two consecutive frames with a stable height.
+
+### Three definitions of "the bottom"
+
+They are all in play at once and they are not interchangeable:
+
+| constant | value | used for |
+|---|---|---|
+| `TRUE_BOTTOM_EPS` | 8px | may follow resume; may reader mode be entered; is the follow invariant satisfied |
+| `FOLLOW_BOTTOM_EPS` | 120px | did a downward gesture *aim* at the bottom |
+| `atBottomThreshold` | 1px | Virtuoso's `atBottomStateChange`, which drives the button's appearance only |
+
+The 120px one is deliberately loose and the 8px one deliberately tight: a gesture
+aiming at the bottom is recognised early, but follow only resumes once the reader
+is genuinely there (`:4653-4658`).
+
+---
+
+## How this path is instrumented
+
+Every diagnosis of this path is made from `~/.config/tlda/client.log` on the
+`tldraw-sync-skip` Fly box — the `testing` environment, which is what Skip uses.
+It is roughly 9 GB with no read route, so it is read by bounded `tail -c` and
+`grep`, never whole.
+
+**Only `log.metric` reaches it, and the rule is per call function — not per level
+and not per namespace.** `log.metric` calls `enqueue` directly
+(`logger.ts:162`), stamping `level: 'info'` and **bypassing `shouldLog` entirely**;
+its docstring says "ALWAYS captured … (no threshold)". Every other logger goes
+through `shouldLog(ns, level)` against a default threshold of `warn`
+(`logger.ts:31,53`), and since `LEVEL_ORDER` puts `info` at 1 below `warn` at 2,
+**`log.info` does not arrive either.** An `info`-level record in this file is a
+`metric` record, not an `info` one — reading it as evidence that `info` passes the
+gate is a trap, and it has caught someone already.
+
+**Source that rule to `logger.ts:162` and `:53`, never to the comment at `:58`**,
+which says every call is queued regardless of threshold and describes behaviour the
+comment at `:122` says was removed. Two agents got opposite wrong answers out of it
+tonight. Recorded in [Naming errata](naming-errata.md).
+
+Two consequences that decide how records here should be read:
+
+- **A namespace is not uniformly visible.** `chat-scroll` has **4 `log.metric`
+  sites and 3 `log.debug` sites**, so it does carry evidence — but the three
+  invisible ones are exactly the follow/read *decisions* (`:4639`, `:4655`,
+  `:4659`), while the four that arrive are failures and repairs (`:2814`, `:4423`,
+  `:4445`, `:4475`). **The namespace is present in the log and the decisions
+  within it are not.**
+- `onTouchStart` and `onTouchMove` log nothing at all, and scrolling while
+  *already* in reader mode emits no follow transition. So **the absence of input
+  records is not evidence of absence of input** — for the 03:10 burst below, the
+  last transition was nine minutes earlier.
+
+What does reach it, all `ns: "chat-anchor"`:
+
+| record | written at | what it establishes |
+|---|---|---|
+| `preserved viewport across content resize` | `:4128` | a correction ran, with its delta — and since `794e585cc`, the `scrollTop`/`scrollHeight`/`clientHeight` triple |
+| `anchor row gone; viewport left uncorrected` | `:4094` | a correction was owed and impossible |
+| `anchor correction outside scroll range` | `:4108` | the correction exceeded the range on offer |
+| `anchor drifted with no input` | `:4060` | the anchored row moved with nothing driving it |
+| `geometry reconcile deferred; reader input in flight` | `:4172` | a correction was held for a gesture, naming which flag held it |
+| `rendered rows changed height` | `:4237` | which rows changed height, and how many were rendered for the first time |
+| `skipped resize caused by our own scroll write` | `:4268` | the self-write latch consumed a firing |
+
+Plus `ns: "chat-stranded-row"` from `chat-stranded-row-probe.mjs`, which is
+record-only by design.
+
+### How these instruments have misled, with instances
+
+Every wrong answer on this path in 2026-08-12/13 came from an instrument that
+returned cleanly. None came from a missing record. Read this before trusting a
+count from the table above.
+
+- **A counter blind to the mechanism reports silence as evidence.** 221
+  `chat-activity-render` records showed every rise in `rawActivityItems` matched by
+  a rise in `itemCount`, which was read as disproving Skip's account of activity
+  growing inside a card. Those counters see a new *item* joining a group; the
+  mechanism is an item already on screen getting taller. **Neither counter can
+  move when it happens.** His account was right.
+- **A guard's own deferral count cannot tell you the window was empty.**
+  `8543d9048` recorded **one deferral against 211 corrections** (session
+  unverified) and read as working. The window it watched — pointers currently down — does not open during
+  an iOS momentum glide, which is the entire case it existed for.
+- **`log.debug` does not reach this file**, so absence of `chat-scroll` records and
+  absence of touch records mean nothing at all. This is stated above and is worth
+  repeating here: **it has been misread as absence of input at least once.**
+- **One burst is not a population.** The `03:10:54` burst — 58 corrections, `delta`
+  decaying 69 → −2 — carried the night's framing: a velocity curve, a
+  momentum-glide story, the 2896px → 71px ratio. Sweeping all 62 bursts of that
+  session showed it is **1 of 10 converging against 49 diverging**. Every
+  interpretation hung on its decay came from an atypical sample.
+- **And the sweep that caught it got its own framing wrong twice** — reporting "15
+  of 15 diverging" from a classification that folded a sign-crossing burst in, and
+  "does not occur anywhere in his session" from one of his two sessions.
+- **Two agents agreeing is not verification.** Both errors above were endorsed
+  upward before being checked, by someone who then had to withdraw the
+  endorsement. Independent arrival at the same answer is evidence; it is not a
+  measurement, and it does not substitute for re-running the query.
+
+- **A field arrives when a device loads the page, not when the person is
+  working.** `viewportTop`, `rowTop`, `scrollTopBefore` and `requested` shipped in
+  `3bc8615fc` and are present in the served bundle — verified against the file
+  named by `dist/index.html`, `assets/index-BDfnpjpq.js`, rather than against a
+  deploy's exit code. **Both bursty sessions are `isTouch: true` phone sessions.**
+  So those fields appear only when his *phone* next loads the page, which is a
+  different event from him being active — he can work a whole night on a laptop
+  and produce none. **An empty result means he has not reloaded the phone. It never
+  means the field is missing.**
+
+- **A population statistic can be about nobody.** 105 `follow invariant violated`
+  records were swept and read as evidence about Skip. **79 of them came from one
+  session that was never established as his** — an agent driving Playwright — while
+  his own two sessions in the same query showed the opposite: 23 follow-offs
+  against 3 repairs, and 11 against 1. The aggregate was dominated by the stranger
+  and the disconfirming case was in the result set the whole time. **The scrollbar
+  mechanism it produced was correct about the code and false about the user**, and
+  it cost him a live conversation.
+- **There is a second variety, where no instrument exists at all.**
+  `requestEarlierChatHistory` refuses at three points and logs at none, its one
+  caller discards the return value, and `sendSubscription` records only failures.
+  **"Stopped fetching" and "nothing left to fetch" are indistinguishable from
+  outside** — and that stays true even though every reachable refusal turned out to
+  be sound. A blind instrument returning a clean result is the first variety; this
+  is the absence of one.
+
+The common shape: **an instrument that cannot see the mechanism returns a clean
+result, and a clean result reads as a negative finding.** Before citing any count
+here, ask what it would look like if the thing you are testing for were happening.
+
+**And the corollary for causes.** Nothing in this document attributes the
+coordinate-space mechanism to Skip. He described a snapping problem in a different
+subsystem on the same evening, and the resemblance is a coincidence of vocabulary.
+The mechanism was found from his telemetry and stands on 49-of-62 and 14-of-15
+bursts with `scrollTop` and `scrollHeight` frozen; **it does not need a quotation
+and would be weaker with a wrong one attached.** See `AGENTS.md` §"Never tell him
+he blessed something".
+
+---
+
+## Errata
+
+**Checked on 2026-08-13 04:30 UTC against `main` at `afba9ef66`**, which is also `HEAD` of
+the shared checkout and the most recent commit touching any path described here.
+This says nothing about what is deployed: the last recorded observation of Skip's
+own tab, session `c3a1abbb` at 04:27 UTC, is running `794e585cc` or `c951b38fa`
+— dated by which telemetry fields its records carry, since no `loadedSha` line
+survives in the readable window. So he is several commits behind `main` and, in
+particular, is not on `3bc8615fc`.
+
+**Every `file:line` in this document is as of that sha, and this file moved three
+times in the ninety minutes after the document was written.** `c951b38fa` added 31
+lines and removed 2, `69e4df695` reverted exactly that, and `3bc8615fc` added 77
+against 6 — and each time every citation here silently pointed one function too
+early, in the way that reads as correct. If the numbers do not
+match what you find, read the file at the sha in this header
+(`git show afba9ef66:src/shapes/FleetChatShape.tsx`) and re-pin rather than trust
+them. A line number in a hot file is a fact with a half-life measured in hours.
+
+### Whose session is it
+
+**Read this before treating any measurement here as being about Skip.** On
+2026-08-13 an entire investigation was built on telemetry from **an agent driving
+Playwright**, attributed to him by inference from a shape id. Every measurement in
+it was rigorous and it was about nobody. It ended at scrollbar drags — a control he
+has never used, in a browser that does not show one.
+
+So: **a session id is not a person.** Only `325dc382` and `c3a1abbb` are treated
+here as evidence about Skip, and even that identification rests on panel/device ids
+plus `isTouch`, which is the same inference class. **No test in this document
+separates a human session from a driven one** — see the voice-record attempt under
+§"It reproduces in Skip's session", which fails.
+
+Anything resting on another session is a claim about **the code**, and every such
+sentence below says so in itself rather than in a footnote.
+
+Measurements below are `chat-flick-live`'s, with the query behind each one in
+`scratch/chat-anchor-findings-for-doc-2026-08-13.md`. Skip's session that night:
+`325dc382`, iPhone iOS 18.7, viewport 375×762, `isTouch: true`, panel
+`shape:fleet-chat-0-skip-efba6f45`.
+
+### The `ResizeObserver` cannot attribute a resize
+
+The observer at `:4250` watches `[data-testid="virtuoso-item-list"]` — Virtuoso's
+item list, not the scroller and not the panel. **A firing says the rendered list
+changed total height and nothing about which row or why.** That leaves two causes
+that demand opposite responses indistinguishable: a row that grew after it was
+already measured (a content bug upstream of every correction in this document) and
+a row Virtuoso rendered for the first time during a scroll (virtualization
+working).
+
+Until `794e585cc` there was no per-row height record at all, so **every diagnosis
+of this path for a week was inference from a total**, including two of
+`chat-flick-live`'s own. `recordRowResizes` (`:4220`) now supplies the attribution,
+and it is one night old.
+
+### The touch guard has been written four times
+
+One behaviour — do not write `scrollTop` while the reader's own input owns the
+scroller — has been added, deleted, rebuilt wrong, and restored:
+
+| sha | date | author | what it did |
+|---|---|---|---|
+| `d6ca3c8c3` | 08-06 00:10 | restart | added it, with `restoreViewportAnchor` |
+| `7430200ad` | 08-11 20:11 | chat-invariants | **deleted** it, reasoning about message arrival |
+| `8543d9048` | 08-12 14:54 | anchor-drift | rebuilt it keyed on **pointers-down**, which cannot see an iOS glide |
+| `794e585cc` | 08-12 23:11 | chat-flick-live | restored it as `isReaderInputInFlight`, spanning the glide |
+
+`7430200ad` did not delete one term. It deleted three — the touch guard, the
+deferral (`deferredGeometryReconcileRef`), and the settle flush — and **shipped 77
+lines of tests asserting the reduced form**. Two of those tests named an `input`
+of `active-wheel` and `momentum-touch` in the fixture and **never passed it to the
+function**, then asserted the correction was written anyway. So the suite was green
+on the behaviour that put a jitter under Skip's finger.
+
+`8543d9048` is the other instructive one: a correct-looking guard that recorded
+**one deferral against 211 corrections**, because the window it watched was empty
+during exactly the gesture it existed for. **That figure is inherited and its
+session is unverified** — it predates the readable telemetry window, so it is
+evidence about the guard and not about Skip. See §"Whose session is it". Its ref carries the
+same name as the one `7430200ad` deleted, so it reads as the original.
+
+`chatViewportAnchor.mjs:14-20` now carries the distinction all three missed —
+*whether* a viewport is preserved never depends on input, *when* the correction may
+be written does — which is the only reason the fourth attempt is not a fifth.
+
+### The `2896px → 71px` burst is unexplained, and the newest guard does not explain it
+
+Skip's session, `03:10:54.525`–`03:10:58.330`: **58 consecutive
+`preserved viewport across content resize` records, one per animation frame**, all
+carrying the same anchor key `2727754`, so this is one row rather than a walk
+across rows.
+
+The ratio has a precise meaning and is easy to overstate:
+
+- **2896px** is the signed sum of `delta` over the 58 records. `delta` is computed
+  at `:4087` and then written as `el.scrollTop += delta`, so it is scroll
+  displacement *requested and applied*. The absolute sum is 2900, so the writes
+  were essentially all one direction.
+- **71px** is how far the *error* moved: first record `delta=69`, last
+  `delta=-2`.
+- So: **2896px of scroll written for 71px of net progress on the thing the writes
+  exist to correct**, a ratio near 41:1.
+
+**It does not establish where the other 2825px went.** The old record carried only
+`delta`, so it cannot distinguish our write being reverted from our write never
+landing. `794e585cc` adds `scrollTop`/`scrollHeight`/`clientHeight` for exactly
+that reason.
+
+The self-write resize guard was never the cause either, in either direction: when
+the anchor is already in place `restoreViewportAnchor` returns at the 0.5px
+epsilon and writes nothing, so a self-caused resize was never the expensive case.
+
+Three candidate readings, each separated by fields that exist only from
+`794e585cc` onward:
+
+| reading | signature on the new records |
+|---|---|
+| **content growth** | `rendered rows changed height` accompanies the burst, `changedCount ≥ 1`, `firstRenderedCount = 0` — a row already on screen got taller |
+| **loop** | no `rendered rows changed height`; `scrollTop` moves by the delta written; `scrollHeight` changes between consecutive records with nothing arriving |
+| **write never lands** | `scrollTop` flat across consecutive records while `delta` decays; `scrollHeight` static |
+
+**The loop reading is now falsified everywhere it could be measured**, and the
+third row is the one that survived. The subsection below has the measurement:
+`scrollHeight` is constant within every burst, so the list was not changing height
+while the observer fired dozens of times and there was no loop to be in. It also
+always carried a gap — it requires Virtuoso to hand back roughly 49px per frame,
+and its author, who proposed it, never had a mechanism for that.
+
+**And as of 04:16–04:27 UTC this is measured in Skip's session too**, not only in
+agent sessions — his tab reloaded off `9d97454a6` and the fields now exist for him.
+§"It reproduces in Skip's session" has the numbers. All three readings die there on
+the same evidence, so the table above is now a record of what was ruled out rather
+than a live set of candidates.
+
+**What remains open is narrower and better posed than the table.** Not *which of
+these three*, but: the write does not move the scroller, and nobody can yet
+separate *refused* from *landed and written back inside the same frame* — the
+record logs `scrollTop` only after the assignment. `3bc8615fc` adds
+`scrollTopBefore` and `requested` for exactly that, and Skip's tab is not on it
+yet.
+
+Two things about the burst that any explanation has to fit: the motion was
+**monotone at roughly 1.2px per frame for four seconds**, which is neither a
+momentum-glide velocity curve (those rise and decay in well under two seconds) nor
+a discrete append (one step, then nothing). And **whether he was touching at all is
+not established** — see §"How this path is instrumented". On `794e585cc` and later
+it becomes checkable: a hold logs `geometry reconcile deferred; reader input in
+flight`, so a burst that still produces corrections is proven input-free.
+
+### `restoreViewportAnchor` has not been observed to move the scroller
+
+**Measured 2026-08-13 04:05–04:15 UTC on `794e585cc`, in agent sessions**
+(`7a75d31f`, `bdb70dd4`) — **not Skip's**, whose tab was on `9d97454a6` when this
+was written. So this does not close his burst; the three readings above remain open
+*for his session*. What it does is settle two of them everywhere it could be
+measured, and invalidate a premise older than any of them.
+
+> **That scoping limit was correct when written and is now superseded by
+> measurement, not by argument.** His tab reloaded onto newer code at some point
+> before 04:16 UTC and the same finding reproduces in his own session — see
+> §"It reproduces in Skip's session" below. The rest of this subsection stands as
+> written.
+
+**`scrollTop` is invariant within every burst while `delta` varies frame to frame.**
+Per distinct `scrollTop`, the number of consecutive corrections at that exact
+value, the `delta` range across them, and the distance from the bottom:
+
+```
+top=170392  n=88  delta -128..-3   bottomGap=1983
+top=170710  n=59  delta  -67..-2   bottomGap=1665
+top=90824   n=62  delta  -84..-1   bottomGap=426
+top=87306   n=50  delta  -78..-1   bottomGap=2432
+top=89305   n=37  delta  -48..-1   bottomGap=1122
+top=30434   n=35  delta  -32..-6   bottomGap=781
+```
+
+`scrollTop` is read **after** `el.scrollTop += delta`, on the next synchronous
+statement, so nothing can intervene. **88 consecutive corrections asked the
+scroller to move by −128 to −3px and it did not move.**
+
+Three things die here, each on one field:
+
+- **Scroll clamping** — that a trailing row shrinking reduces `scrollHeight` and
+  the browser clamps `scrollTop` silently. **`bottomGap` is 148–4442px in every
+  burst**, never within 24px of the maximum. Nothing was clamped.
+- **The re-measurement loop** — **`scrollHeight` is constant within each burst**
+  (172981 across all 59 at `top=170710`). The list did not change height while
+  the observer fired 59 times, so there was no re-measurement to interrupt. This
+  is why `c951b38fa`'s guard is precautionary rather than measured; its comment
+  now says so.
+- **"`.fleet-chat-log` is not a scroll container"** — a tempting reading of a
+  write that does nothing, and false. **A non-scrollable element returns 0 from
+  `scrollTop` and no-ops on the setter.** These values are in the hundreds of
+  thousands and differ between bursts (170392 → 170710 is 318px of real
+  movement). It is a genuine scroller and always has been.
+
+**What is not resolved: refused versus restored.** The record logs `scrollTop` only
+after the write, so *the assignment was refused* and *the assignment landed and
+something wrote it back inside the same frame* produce an identical record. They
+are different bugs. `scrollTopBefore` and `requested`, added in `3bc8615fc`,
+separate them. **Virtuoso is the candidate for the second** — it owns this
+`Scroller` and has its own scroll and resize listeners on it (see
+§"The re-entrancy map"), and a write-back within the frame would look exactly like
+rejection.
+
+**One fact still wants a cause: `delta` varies while `scrollTop` and `scrollHeight`
+both hold still.** `delta` is measured against `viewportTop` — `el.getBoundingClientRect().top`,
+the panel's position **on screen**, not the content's. A panel moving or resizing
+on the canvas while its content is still would produce a changing `delta`, a
+firing `ResizeObserver`, and an unchanged `scrollHeight` together. `viewportTop`
+and `rowTop` in `3bc8615fc` test that directly. **It is a hypothesis and it does
+not explain the unmoved scroller.**
+
+**Why this entry matters more than a cause would have.** Every fix on this path
+since `d6ca3c8c3` (08-06) has assumed the correction works and argued about *when*
+to apply it — four rewrites of the touch guard, a deferral, a re-entrancy guard.
+**None of them could have mattered if the write never moves the scroller.** Four
+hypotheses died on 2026-08-12/13 — content arrival, pan-mode autoscroll, clamping,
+and the loop — including both that led at different points in the night, and the
+cause remains unnamed.
+
+### It reproduces in Skip's session
+
+**Measured 2026-08-13 04:16–04:27 UTC**, session `c3a1abbb`, `isTouch: true`,
+panel `shape:fleet-chat-0-skip-efba6f45`. **688 `preserved viewport`
+corrections in that window, and the scroller does not move across any burst in
+it.** The longest run is **200 consecutive corrections at `scrollTop 15800`**;
+then 88 at `948`, 66 at `1452`, 52 at `868`, 46 at `5258`, 44 at `1236`, 41 at
+`11304`, 35 at `9943`.
+
+**Read the attribution caveat above before treating this as being about Skip.**
+The identification rests on the panel and device ids plus `isTouch` — which is the
+inference class that produced the night's worst error — with the only corroboration
+being that his own chat activity at 04:18:11 UTC falls inside this window.
+
+**And the obvious independent test does not work.** Voice records seemed like a
+human discriminator, since he dictates and an automated session would not.
+Counting them kills it: `c3a1abbb` has **1111**, `325dc382` has **5237**, and
+`1735f88a` — the session excluded as *not established as his* — has **11597**, more
+than either. Whatever the voice namespace records, it does not separate him from a
+driven session, and no test in this document does.
+
+**His tab is dated by the fields, not by a `loadedSha` line.** These records carry
+`scrollTop`/`scrollHeight`/`clientHeight`, which `794e585cc` added, and do **not**
+carry `scrollTopBefore`/`requested`/`viewportTop`/`rowTop`, which `3bc8615fc`
+added. So he is on `794e585cc` or `c951b38fa` — no longer on `9d97454a6`, and not
+yet on the commit that separates *refused* from *restored within the frame*. That
+question stays open.
+
+Two readings die in his session on the same fields they died on elsewhere. One
+burst, at 04:26:33–36 on anchor `2729529`:
+
+```
+scrollTop   12879  constant across all 12 records
+scrollHeight 14997  constant
+clientHeight   606          → bottomGap 1512px
+delta        -5 -7 -8 -9 -9   -11 -19 -43 -83 -130 -179 -224
+```
+
+- **Clamping** — 1512px from the bottom, and 264px in the 04:16 burst. Nothing was
+  near a boundary.
+- **The re-measurement loop** — `scrollHeight` constant through every burst.
+- **Content growth** — only **3** `rendered rows changed height` records across all
+  688 corrections. It is real (see below) and it is not what drives these.
+- **Input** — only **9** deferrals across 688 corrections, so the bursts are
+  overwhelmingly input-free. This is the check §"How this path is instrumented"
+  said would become possible on `794e585cc` and later, and it has.
+
+**Almost every burst diverges, and each one is a straight line.** Both of his
+sessions, grouped into bursts at a 100ms gap, bursts of 5 or more records,
+classified by whether `|delta|` ends larger or smaller than it started:
+
+| session | build | records | span | rate | bursts | diverging | converging | sign-crossing |
+|---|---|---|---|---|---|---|---|---|
+| `325dc382` | pre-`794e585cc` | 1262 | 48.2 min | 26/min | 62 | **49** | 10 | 3 |
+| `c3a1abbb` | `794e585cc`/`c951b38fa` | 688 | 11.4 min | 60/min | 15 | **14** | 0 | 1 |
+
+And in `c3a1abbb`, where the fields exist to check: `scrollTop` changes in **0 of
+15** bursts, `scrollHeight` in **0 of 15**, and **0 of 15** span more than one
+anchor row. `delta` grows at **0.5–5px per frame** — 18–309px/s, mostly near
+100–150 — and grows **linearly**, R² **0.83–0.99** in 12 of the 13 long enough to
+fit. Worst: 130 records at `scrollTop 15800` taking `delta` from 163 to **401px**.
+
+**Three things follow, and the second corrects the framing this document had.**
+
+- **The linear divergence is the main event, not a new development.** It was
+  already 49 of 62 bursts on the older build. Nothing about `794e585cc` produced
+  it.
+- **The converging shape is real, is his, and belongs in the record.** The
+  `03:10:54` burst the night's analysis was built on came from `325dc382` — same
+  phone, same panel — which has ten of them. It is a genuine minority shape, not an
+  artifact, and it has stopped appearing on the newer build. With 15 bursts on one
+  build that is something to re-check rather than a fix working.
+- **The correction rate roughly doubled**, 26/min to 60/min. Usage differs between
+  the two windows and little should be read into it — but nobody should take
+  "converging bursts vanished" as improvement while the total rate went up.
+
+`325dc382` carries **no `scrollTop` field at all** in any of its 1262 records,
+which independently confirms it predates `794e585cc` — and means the unmoved
+scroller cannot be checked on it.
+
+A mechanism that explains a decaying error does not explain a diverging one, and
+the diverging one is both dominant and the worse of the two: a converging error
+settles and stops being felt, a growing one does not.
+
+**A code fact that fits the signature, stated as a fact and not as the cause.** The
+anchor arithmetic is done entirely in **screen coordinates** — `captureViewportAnchor`
+and `restoreViewportAnchor` both measure with `getBoundingClientRect()`
+(`:4040`, `:4085`, `:4102`) — and the result is written into `scrollTop`, which is
+in the element's own **unscaled layout coordinates**. A chat panel renders inside
+tldraw's `HTMLContainer` (`:6794`), which sits in the camera-transformed
+`.tl-html-layer`, so those two spaces differ by the camera's zoom factor whenever
+it is not 1. **At any zoom, a screen-space delta is not a valid `scrollTop`
+delta**, and while the camera is animating — `zoomToBounds` runs a 300ms animation
+at `:3347` — the same fixed layout distance produces a *changing* screen distance,
+with `scrollTop` and `scrollHeight` untouched. That is the shape of the linear
+bursts on both builds — 49 of 62, then 14 of 15.
+
+**It is a hypothesis about `delta` and it does not explain the unmoved scroller.**
+Under it the write would still move the scroller, by the wrong amount. These stay
+two separate open facts: `delta` may be a phantom, and the write does not land.
+`viewportTop` and `rowTop`, added in `3bc8615fc`, test the first directly — if
+`viewportTop` moves across consecutive records while `scrollTop` and `scrollHeight`
+hold still, the anchor math is reading screen movement as content displacement.
+
+**What this does not establish.** That these bursts are what Skip sees. It
+establishes that the correction is running hundreds of times against a scroller
+that does not move, in his session, on current code — not that this is the cause of
+any symptom he has described.
+
+### Row height changes after measurement, and nothing in the model owns it
+
+The `ResizeObserver` reacts to it. Nothing prevents it. Four sources, all live:
+
+The two renderers themselves are not among them. `chat-render.mjs` and
+`activity-render.mjs` are **pure synchronous string builders** — no timers, no
+promises, no observers, no `<video>`/`<iframe>`/`<details>`, and KaTeX runs as
+`renderToString` at build time (`activity-render.mjs:487,501,509`). So everything
+that changes a row's height after Virtuoso measures it is either the browser
+resolving an intrinsic size it did not have at parse time, or one of the two
+imperative paths in `FleetChatShape.tsx`:
+
+- **Images carry no dimensions.** `chat-render.mjs:162`, `activity-render.mjs:245`
+  and `utils.mjs:368` all emit `<img class="chat-image">` with no `width`/`height`
+  attributes, and the CSS gives `width: 75%` with no `height` and no
+  `aspect-ratio` (`fleet-chat.css:1196`). The row's height is therefore unknown
+  until the image decodes. `utils.mjs:368` additionally sets `loading="lazy"`,
+  which defers the load *inside a virtualizer that has already measured the row*.
+- **Thread cards load asynchronously.** `ThreadChatOperationView` (`:1971`) renders
+  a one-line `loading...`, issues `searchFleet`, and replaces it with a full thread
+  render at `:2027`. Growth from one line to a full thread, with nothing arriving.
+- **Expand/collapse mutates the DOM directly.** `:5020` onward writes
+  `style.display` on `.pretty-more-rows` and `.semantic-operation-body` with no
+  React render, so the height changes between Virtuoso's measurement and its next
+  one.
+- **Nested React roots re-render on their own schedule.** `createRoot(body)` at
+  `:2319` mounts trees Virtuoso has no relationship with.
+- **KaTeX fonts load after the row does — but this mostly does not move it.**
+  `katex/dist/katex.min.css` is imported from `fleet/utils.mjs:2`, ships twenty
+  `@font-face` rules at `font-display: block`, is not preloaded, and declares no
+  `size-adjust` or metric overrides. That is the shape of a font swap that moves
+  layout. **It largely does not, and the reason is worth recording so nobody
+  re-raises it:** KaTeX's vertical layout comes from its own metric tables written
+  as inline `em` styles, not from the loaded font. Rendering
+  `\frac{a}{b} + \sum_{i=1}^n x_i` through `katex.renderToString` gives 15 inline
+  `height:…em` and 2 `vertical-align:…em` declarations and **zero px units**, so a
+  display-math block's height is fixed once its font-size is. What the swap can
+  still change is glyph *widths*, which can rewrap text around inline math — at
+  most a line, and not established here.
+
+This is the gap the document cannot close by describing it: the model says
+Virtuoso measures rows, and in practice a measured row is a mutable DOM subtree
+with two other renderers writing into it.
+
+**And the growth is unbounded — measured in an agent's session, not Skip's.**
+`03:22:23`, session `bdb70dd4`, panel `shape:fleet-chat-1-fleet_9c80d6bc-2e223938`: key
+`activity:db2728214` went **94px → 4676px** with `firstRenderedCount=0` — no new
+row, one existing row fifty-fold taller as output streamed into it. Also
+`activity:db2727948`, 1565 → 1757 → 2004px. Bounding what an activity card can
+become is separate work, rowed by `app-fix-forward`.
+
+**A retraction to carry, because the conclusion it replaced will otherwise
+outlive it.** `chat-flick-live` reported that Skip's account — activity being
+appended into a card — did not check out, from 221 `chat-activity-render` records
+in which every rise in `rawActivityItems` came with a rise in `itemCount`. **Those
+counters were blind to the mechanism by construction:** they see a new activity
+*item* joining a group, and what happens is an item already on screen growing as
+its output streams. Neither counter moves. 221 clean records were silence, read as
+evidence. **His account was right.**
+
+### Virtuoso's model and the DOM can disagree by rows
+
+`chat-stranded-row-probe.mjs` documents a measured failure in Skip's live session
+on 2026-08-12: one panel's item list held **nine DOM children while React owned
+four**. The five extras carried duplicated `data-index` values and 192px of
+height — `padding-top` 118971 plus four owned rows came to 130926 against a box
+measuring 131118. Every row below the strays sits 192px from where the scroller
+believes it is.
+
+The probe is record-only and must stay that way; its own header says sweeping the
+strays would make the height arithmetic come out right while whatever creates them
+kept running. **The commit that strands them is not identified.** Six hypotheses
+died on measurements, listed at `chat-stranded-row-probe.mjs:18-23`.
+
+### Three writers scroll the chat log without the reader-mode machine knowing
+
+`usePanMode.ts:136` (edge-zone autoscroll, once per animation frame) and
+`usePanMode.ts:221` (pan-mode drag) both write `.fleet-chat-log`'s `scrollTop`
+directly. Neither sets `explicitScrollInputRef` or `touchScrollActiveRef` — they
+are in a different module and reach the element through
+`document.querySelectorAll`. The module contains **no logging of any kind**, which
+is why it survived a night of diagnosis on this path unmentioned.
+
+**Mouse only, and the constraint belongs in front of the mechanism.** Pan mode
+activates on auxiliary mouse button 3 or 4 — the Logitech Lift side button the
+file's docstring describes. `setPanMode(true)` has exactly one caller,
+`handleMouseDown` (`:184`), whose first line rejects every other button; the only
+other call is `setPanMode(false)` at `:250`; there are no callers outside the file
+and no touch or pointer handlers in it. iOS Safari synthesizes mouse events from
+touch with `button === 0`. **So neither writer can run on a phone or a tablet, and
+neither is a candidate for anything in Skip's iPhone session.** Both
+`chat-flick-live` and this document spent time treating them as one before checking
+activation; this sentence exists so the next person does not.
+
+For mouse users the entries stand, and the edge-zone loop is the larger of the
+two. `EDGE_ZONE_PX = 40`, `CHAT_MAX_SPEED = 2000` px/s (`usePanMode.ts:31-32`), so
+at 60fps it writes up to **~33px per frame**, and because `dt` is clamped to 0.1s
+rather than skipped (`:108`), a late frame can write up to 200px in one go.
+
+**And it does not need the pointer to move.** The loop runs while `panModeActive`
+and reads `lastPosRef.current`, which is written on activation and on mousemove and
+cleared only when pan mode is toggled off or the effect unmounts (`:250-251`).
+There is no `blur` or `mouseup` exit. So with pan mode on and the cursor parked in
+a panel's top or bottom 40px, this writes `scrollTop` every frame, indefinitely,
+with nothing on the mouse.
+
+`decideFollowTransition` requires `userInputActive` to change mode
+(`chatScrollIntent.mjs:41,53`), and that term is exactly
+`touchScrollActive || explicitScrollInput` (`:4633`). So a pan-mode scroll upward
+through the chat cannot enter reader mode, and the scroll handler falls to
+`checkFollowInvariant('scroll-event')` (`:4683`), which after 500ms finds the
+panel off the bottom while believing it follows, and calls `goToTail`. **Following
+this through the code, pan-mode scrolling up in a followed chat is snapped back to
+the tail half a second later.** The pan-mode *trigger* is derived from the paths
+above and not observed.
+
+**The repair itself is observed, in Skip's session, and it is the only writer
+tonight seen to move his scroller at all.** One record in `c3a1abbb`:
+
+```
+04:22:46.645  follow invariant violated; repairing tail
+panelId shape:fleet-chat-0-skip-efba6f45   reason scroll-event
+top 13146   height 13848   clientHeight 606   gap 96   inputActive false
+```
+
+`checkFollowInvariant` decided he was off the tail while believing it follows, and
+called `goToTail` — **with no input in flight, mid-session, while he was reading**,
+from 96px away. Three things follow, and the first is the sharpest statement of the
+open fact in this document:
+
+- **The scroller can be moved; it is `restoreViewportAnchor` specifically whose
+  writes do not land.** This path reaches it through Virtuoso's `scrollToIndex`
+  rather than by assigning `scrollTop` — Virtuoso moving its own scroller instead
+  of us writing to it.
+- It is **input-free**, so it is in the same class as the bursts: something moving
+  his view with nothing arriving and no gesture.
+- It is a **jump, not a drift**. The bursts are 0.5–5px per frame; this is 96px at
+  once, which is a different shape of disturbance entirely.
+
+**Not claimed:** that this caused anything he reported. It is one record, and at
+`gap: 96` repairing may be correct behaviour. What is established is that a fifth
+writer acts on his scroller input-free, and that no hypothesis in this document
+accounts for its trigger.
+
+`CanvasClipPanel.tsx:196` is the third writer. It is reachable only for a
+`.fleet-chat-log` that is not inside a mounted `FleetChatShape`: that component
+attaches its own wheel handler on `document` with capture and calls
+`stopImmediatePropagation` (`:4558`), and document-level capture precedes the
+panel element's, so the clip panel's chat branch never runs for a live panel. It
+does serve the index page's log, which carries the same class.
+
+### The screenshot overlay binds to the first chat log on the page
+
+`useYjsSignals.ts:363` reaches its scroller with
+`window.document.querySelector('.fleet-chat-log')` — **singular**, so it takes
+whichever chat log appears first in the DOM, not the one whose message the
+screenshot belongs to. With one chat panel open it is correct by accident. With
+two, the overlay tracks the wrong panel's scrolling, and on the index page it can
+bind to the non-virtualized log at `App.tsx:1376` instead of a panel at all.
+
+Same root as the writer entries above: the element is addressed by CSS class from
+another subsystem, with nothing establishing which one was meant.
+
+### `fleet-user-scroll` is dispatched and nothing listens
+
+`CanvasClipPanel.tsx:197` dispatches `new CustomEvent('fleet-user-scroll')` on the
+chat log after scrolling it. That literal appears **once** in the tree. Per
+`AGENTS.md` §"Prove the wire, not the two ends", one occurrence means nobody is
+listening. The signal that a scroll was the user's is announced into nothing.
+
+### A second scroll contract exists with no callers
+
+`fleet/utils.mjs:56,60` export `smoothScrollToBottom` and `commitScroll`, the
+latter documented as "single scroll contract for chat log. Call after any DOM
+mutation," with prepend-height handling. Both have **zero callers** anywhere in
+`src/`. They describe a pre-Virtuoso design and read as authority.
+
+### Thread expand was implemented twice and reverted three times, with empty messages
+
+Within two days:
+
+| sha | date | subject |
+|---|---|---|
+| `657dfa9e5` | 08-11 18:18 | Restore thread message expand affordance |
+| `f877316ae` | 08-11 18:37 | Revert "Restore thread message expand affordance" |
+| `f4242bbf6` / `9398eb420` | 08-11 | Restore thread message more affordance / Revert |
+| `c8c654e73` / `cf0ddd979` | 08-11 | Restore thread message marker folding / Revert |
+| `eaf39674c` / `0610c4d55` | 08-11 | Cap thread bodies only while collapsed / Revert |
+
+Every revert message is the bare `git revert` default — "This reverts commit
+…" — and nothing else. Nineteen minutes separates the first restore from its
+revert. `f8da9eb67` (08-12 23:14) is the first commit in the sequence whose message
+states a mechanism: the fold key was written and read in two different index
+spaces, so a row carrying a second expand button remembered the expansion under
+`:pretty:1` and looked it up under `:pretty:0`.
+
+This is in this document because expand is a **height source** (above), so its
+churn lands directly on the machinery here.
+
+### Smaller mismatches
+
+- Each mounted thread card attaches its own `ResizeObserver` **on the shared
+  scroller** to position its floating collapse button (`:2041-2049`). Every chat
+  panel resize therefore fires one state update per mounted thread card.
+- `handleWheelCapture` (`:4553`) calls `preventDefault` unconditionally for any
+  wheel over the log, with no `scrollHeight > clientHeight` test — the
+  corresponding path in `CanvasClipPanel.tsx:192` has one. A wheel over a chat
+  short enough not to scroll is swallowed rather than passed to the canvas.
+- `nextChatVirtuosoFirstItemIndex` (`chatVirtuosoIndex.mjs:16`) can return a value
+  **larger** than the previous `firstItemIndex` when rows leave the head.
+  `react-virtuoso`'s own documentation describes only decreasing it, for
+  prepending (`dist/index.d.ts:1186-1191`). Whether increasing it is supported is
+  not established here.
+- `9434e5eb9` "Remove corrupt chat virtual index", `ba1ff21f5` "Preserve chat
+  viewport while prepending history" and `c42b2e8f0` "Keep all chat rows while
+  preserving viewport" — the three commits that established the current
+  single-virtualizer arrangement — all have **empty bodies**. `c42b2e8f0` is the
+  one that removed our own message windowing from on top of Virtuoso's; the reason
+  it was there survives nowhere.
+
+---
+
+### Most of this machinery is proposed for deletion on an unmerged branch
+
+`rc/anchored-list`, tip `7e600b065` (2026-08-13 00:43, `list-component`), **deletes
+808 lines across the two files this document is mostly about** — including
+`chatViewportAnchor.mjs` entirely, and the implementations of
+`captureViewportAnchor`, `restoreViewportAnchor` and `checkFollowInvariant`, which
+survive there only inside comments. It is not merged and has never been rendered in
+the app.
+
+It exists because Skip asked for it, 2026-08-12 23:42:42 EDT: *"if someone wants to
+develop a fucking RC, based on our sort of simple observation that, like, we can
+sort of, like, measure shit from the bottom and, like, we don't need that much shit
+in the Dom."*
+
+**Neither treat it as the answer nor dismiss it.** The point of recording it here is
+narrower and practical: **before spending a night measuring a function in this
+document, check whether that branch deletes it.**
+
+## Open symptoms Skip has reported
+
+His words, with timestamps, read in order from his thread. **None of these is
+explained by this document**, and the measurements above are not claimed to be any
+of them.
+
+### Occasional jerks with nothing arriving
+
+2026-08-12 23:00:38 EDT: *"a message didn't come in, so, like, I don't really know
+what that jerk was from, but there are just occasional jerks. And it's just like
+it's like visual flicker. It just sucks experientially."*
+
+And at 23:20:31, unprompted and specific: *"when I was experiencing those jerks,
+bro, like, nothing was coming in. No activities. No fucking nothing."*
+
+**That is testimony, and it agrees with the telemetry** — the bursts are input-free
+(9 deferrals against 688) and arrival-free (`scrollHeight` constant, 3
+`rendered rows changed height` records against 688). It does **not** establish that
+the bursts are the jerks. Two candidates are on the table and they have different
+shapes: a **drift** at 0.5–5px per frame (the bursts), and a **jump** of 96px at
+once (the follow repair). His word is "jerk", which fits the second better than the
+first, and nothing decides it.
+
+### Cannot scroll up, and worse than it used to be
+
+2026-08-13 00:47:09 EDT: *"scroll fucking sucks. It's worse than it used to be.
+It's kind of unusable now because it fucking limits what I can actually fucking
+see."*
+
+00:48:01: *"The current implementation of scroll has the fucking problem that
+sometimes I can't fucking scroll up. So one thing you're gonna have to fucking do
+is, like, show me the fucking list you already showed me… because now I can't
+fucking scroll up to it."*
+
+**Nothing in this document accounts for this**, and it is the more costly of the
+two — it changed what he could get out of the app, not just how it felt.
+
+**It is a regression claim**, so per `AGENTS.md` §"Look for what broke it" it is
+chased backwards — `git log -S` on the failing path, and check for a fix on an
+unmerged branch — rather than forwards from current code.
+
+**One candidate, from his own words half an hour earlier and marked as inference.**
+At 00:18:11 EDT he described what may be the same thing in mechanism terms: *"it's
+like doing the thing where it's refusing to fetch history. So the most recent
+message I see from you the oldest message I see from you is this, like, the list
+message."* A chat that will not fetch older history has nothing above to scroll to,
+which would present exactly as not being able to scroll up. That path is
+`startReached` → `requestEarlierChatHistory` (§"What Virtuoso is given"), and it is
+**not** the anchoring machinery this document spends most of its length on.
+**Whether those two reports are the same symptom is not established.**
+
+## What is not established here
+
+- **The cause of the 2896px burst.** Named as open above, deliberately without a
+  mechanism. The three readings are the live hypotheses and the records that would
+  distinguish them do not exist for his session, because his tab is behind the
+  commit that added the fields.
+- **Whether Skip was touching during that burst**, which decides whether
+  `794e585cc` already covers it. Touch logs nothing, `chat-scroll` is below the
+  `warn` gate, and scrolling while already in reader mode emits no transition — the
+  last one was nine minutes earlier. "No input" is not established.
+- **What moves the row in that burst.** Monotone, ~1.2px per frame, four seconds.
+  `thread-expand-sticks` ruled out thread-card teardown on pacing — event-paced and
+  discrete, against frame-paced and monotone.
+- **What strands DOM rows.** The probe exists because nothing observable after the
+  fact names it.
+- **Whether the KaTeX font swap rewraps text around inline math.** Its effect on
+  *display* math is settled and negative — the boxes are sized in `em` from KaTeX's
+  own tables. Width-driven rewrapping was not tested and would be worth at most a
+  line of height.
+
+The other height sources are established. The renderers were swept for timers,
+promises, observers, media elements and deferred layout and have none.
+- **The pan-mode snap-back**, which is derived from the code paths and not observed
+  in a session.
+- **Whether `alignToBottom` does anything here.** The library documents it as the
+  short-list case, and a chat panel is rarely shorter than its viewport. It has
+  not been measured with the prop removed.

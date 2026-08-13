@@ -10,7 +10,7 @@ import { listDocumentColumns } from './document-columns.mjs'
 import { resolveRemoteProjectEntry } from './overleaf-sync.mjs'
 import { closeProjectStore, initProjectStore } from './project-store.mjs'
 
-test('Markdown projects capture the local transitive closure as separate documents', async t => {
+test('A markdown project document is its main file; the closure is its file scope', async t => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-markdown-project-'))
   const projects = join(root, 'projects')
   const source = join(projects, 'notes', 'source')
@@ -52,13 +52,13 @@ test('Markdown projects capture the local transitive closure as separate documen
     project: { name: 'notes', format: 'markdown', mainFile: 'README.md' },
     srcDir: source,
   })
+  // The closure is the project's asset and file scope. It is NOT this document's
+  // page list: a linked document is another document, and being reachable from
+  // the main file is not how something becomes a page of it. Chapters come from
+  // a declared book format and from nowhere else.
   assert.deepEqual(
     columns.map(({ sourceFile, outputFile }) => ({ sourceFile, outputFile })),
-    [
-      { sourceFile: 'README.md', outputFile: 'index.html' },
-      { sourceFile: 'chapters/appendix.markdown', outputFile: 'chapters/appendix.html' },
-      { sourceFile: 'chapters/one.md', outputFile: 'chapters/one.html' },
-    ],
+    [{ sourceFile: 'README.md', outputFile: 'index.html' }],
   )
 })
 

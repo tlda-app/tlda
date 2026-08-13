@@ -1263,7 +1263,7 @@ function ConversationView({
   }, [scrollToBottom, thread.partnerId])
 
   const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
-    openChatMarkdownColumn({
+    return openChatMarkdownColumn({
       editor,
       sourceShapeId: shapeId,
       title,

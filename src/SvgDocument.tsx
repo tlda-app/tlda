@@ -15,6 +15,7 @@ import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { probe } from './perf-probe'
 import { installLivePerfProbe } from './livePerfProbe'
+import { downloadEmergencyDump } from './emergencyDump'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
 import { TocDropTargetShapeUtil } from './shapes/TocDropTargetShape'
 // noteThreading removed — no tabs
@@ -376,6 +377,30 @@ function VersionStamp({ document }: { document: SvgDocument }) {
 function SlideNavWrapper({ document }: { document: SvgDocument }) {
   const editor = useEditor()
   return <SlidesNavigator editor={editor} document={document} />
+}
+
+/**
+ * The emergency exit on the sync-failure screen.
+ *
+ * Takes the editor directly rather than through `useEditor`, because this renders
+ * outside the tldraw tree. It is only mounted when the editor already mounted — if
+ * sync died before that there is no store and nothing to save.
+ *
+ * It goes above the other two actions and behind a rule, so it is the first thing
+ * reached and nowhere near "Clear broken shapes".
+ */
+function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documentName: string }) {
+  const [saved, setSaved] = useState<string | null>(null)
+  return (
+    <div className="error-rescue">
+      <p className="error-rescue-note">
+        Anything you wrote that never synced is still in this tab. Save it before anything else.
+      </p>
+      <button className="error-rescue-btn" onClick={() => setSaved(downloadEmergencyDump(editor, documentName))}>
+        {saved ? `Saved ${saved}` : 'Download everything to a file'}
+      </button>
+    </div>
+  )
 }
 
 export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera, classroomMarking = false }: SvgDocumentEditorProps) {
@@ -847,6 +872,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     assets: INLINE_ASSETS,
     onCustomMessageReceived: onCustomMessage,
   })
+  // useSync returns a NEW object on every status change, and the live-perf probe is
+  // installed once from onMount — so a closure over `storeWithStatus` freezes at the
+  // mount-time value and the sampler reports "online" forever. Read through a ref
+  // that every render refreshes instead.
+  const syncStatusRef = useRef(storeWithStatus)
+  syncStatusRef.current = storeWithStatus
 
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
@@ -972,10 +1003,63 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   // When the sync store hits an error (e.g. ValidationError from unknown shape types),
   // show an error screen instead of an infinite spinner. Keep this after all hooks
   // in SvgDocumentEditor so a later sync error does not change the hook count.
+  //
+  // The ToC panel's copy of the emergency exit is unreachable from here: DocumentPanel
+  // is a <Tldraw> components override, and this branch returns before <Tldraw> renders.
+  // So the one screen that means sync has failed permanently is the one screen the
+  // hatch was missing from, while the unsynced shapes are still in the store in memory
+  // and "Clear broken shapes" is on offer. Second call site, same function.
   if (storeWithStatus.status === 'error') {
     const err = storeWithStatus.error
     const errMsg = err?.message || String(err) || 'Unknown sync error'
     const isValidation = errMsg.includes('Validation') || errMsg.includes('validation') || errMsg.includes('INVALID_RECORD')
+
+    // A version mismatch is not a broken document, and it must not be offered a
+    // destructive remedy. `TLSyncRoom` closes with CLIENT_TOO_OLD when this tab
+    // predates a shape-schema change, or SERVER_TOO_OLD when the server was
+    // rolled back behind it. In both cases the work is intact on both sides of
+    // the wire and there is nothing to clear — "Clear broken shapes" would
+    // delete this document's shapes to fix a problem that is entirely about
+    // which code is loaded where.
+    //
+    // We deploy several times a night and tabs stay open for days, so this is
+    // the ordinary way a long-lived tab stops syncing rather than a rarity.
+    // See docs/current-main-architecture.md, "A schema change on deploy stops a
+    // long-lived tab forever".
+    //
+    // And the fix is not to reload underneath someone. The tab says what
+    // happened and leaves the timing to the person.
+    const reason = (err as { reason?: string } | undefined)?.reason || ''
+    const staleTab = reason === 'CLIENT_TOO_OLD' || errMsg.includes('CLIENT_TOO_OLD')
+    const staleServer = reason === 'SERVER_TOO_OLD' || errMsg.includes('SERVER_TOO_OLD')
+    if (staleTab || staleServer) {
+      return (
+        <div className="App">
+          <div className="ErrorScreen">
+            <div className="error-icon">⚠</div>
+            <h2 className="error-title">
+              {staleTab ? 'This tab is running older code than the server' : 'The server is running older code than this tab'}
+            </h2>
+            <p className="error-message">
+              Nothing is lost. Your work is on the server and this tab still holds what you were looking at —
+              they have just stopped talking, because a shape changed shape between the two of them.
+            </p>
+            <p className="error-message">
+              {staleTab
+                ? 'Open this document in a new tab whenever it suits you, and it will pick up where this one left off.'
+                : 'This clears itself when the server catches up. Nothing to do.'}
+            </p>
+            {editorRef.current && (
+              <EmergencyDumpRescue editor={editorRef.current} documentName={document.name} />
+            )}
+            <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+              <a className="error-home-link" href="/">← All documents</a>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className="App">
         <div className="ErrorScreen">
@@ -987,6 +1071,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
               Schema validation error — a shape prop type mismatch between client and server.
               Check server logs for the specific field that failed validation.
             </p>
+          )}
+          {editorRef.current && (
+            <EmergencyDumpRescue editor={editorRef.current} documentName={document.name} />
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
             <button
@@ -1115,10 +1202,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
             editor.run(() => editor.setSelectedShapes(visible), { history: 'ignore' })
           })
           installLivePerfProbe(editor, document, roomId, {
-            getSyncStatus: () => ({
-              status: storeWithStatus.status,
-              connectionStatus: 'connectionStatus' in storeWithStatus ? storeWithStatus.connectionStatus : null,
-            }),
+            getSyncStatus: () => {
+              const current = syncStatusRef.current
+              return {
+                status: current.status,
+                connectionStatus: 'connectionStatus' in current ? current.connectionStatus : null,
+              }
+            },
           })
           setEditorMounted(v => v + 1)
           probe.record('startup', 'startup-tldraw-mount', performance.now() - _pageLoadStart, {

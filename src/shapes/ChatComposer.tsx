@@ -15,7 +15,7 @@
 import { stopEventPropagation } from 'tldraw'
 import { useEffect, useRef, useState } from 'react'
 // @ts-ignore — vanilla JS module
-import { setVoiceTarget, clearVoiceTarget, completeMessageSend } from '../voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, completeMessageSend, submitWhenVoiceFinal } from '../voice.mjs'
 import { getPref, subscribePref } from '../preferences'
 import { getComposerDraft, saveComposerDraft, flushComposerDraft, clearComposerDraft } from '../stores/composerDraftStore'
 
@@ -162,6 +162,19 @@ export function ChatComposer({
     return true
   }
   submitCurrentRef.current = submitCurrent
+
+  /** What Enter calls. When voice has a tail on screen that Deepgram has not committed,
+   *  `submitWhenVoiceFinal` takes the send and runs it once the final lands — so the
+   *  message carries the revision instead of the interim, and the revision does not
+   *  arrive afterwards and land in the emptied field ("playing back", Skip 2026-08-12
+   *  20:03:16 EDT). It resolves through `submitCurrentRef` rather than `submitCurrent`
+   *  so a deferred send uses the targets current at send time, not at keypress time.
+   *  Nothing is cleared or disabled while it waits: the field keeps showing his words
+   *  and the transcript path keeps revising them in place. */
+  const submitOnVoiceFinal = () => {
+    if (submitWhenVoiceFinal(() => submitCurrentRef.current())) return
+    submitCurrent()
+  }
   submitAlternateRef.current = (submittedText?: string) => {
     if (!onAlternateSend) return false
     const ta = inputRef.current
@@ -253,12 +266,12 @@ export function ChatComposer({
 
           if (lineText.trim() === '') {
             e.preventDefault()
-            submitCurrent()
+            submitOnVoiceFinal()
           } else if (lineText.endsWith(' ')) {
             return
           } else {
             e.preventDefault()
-            submitCurrent()
+            submitOnVoiceFinal()
           }
         }
       }}

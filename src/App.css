@@ -14,6 +14,10 @@
   --tlda-z-top-control-popover: 11001;
   --tlda-z-modal: 12000;
   --tlda-canvas-background: #fff;
+  /* The field a figure was authored against. Fixed, not themed: a figure's
+     colours — including its black axes — only mean what the author meant if
+     what is behind them is the white page they were drawn on. */
+  --tlda-figure-plate: #ffffff;
   --ui-tone-hidden: 0;
   --ui-tone-dormant: 0.2;
   --ui-tone-rest: 0.55;
@@ -31,6 +35,15 @@ html {
 }
 html[data-theme="light"] {
   --text-bright: #222;
+}
+/* data-theme is written from an effect, so the first paint has none. A stored
+   scheme of 'system' — what anyone who has not chosen gets — resolves through
+   prefers-color-scheme, so CSS can answer it before the effect does. The :not
+   keeps this to that first paint rather than fighting the attribute after. */
+@media (prefers-color-scheme: light) {
+  html:not([data-theme]) {
+    --text-bright: #222;
+  }
 }
 
 /* Pan mode: override cursor to grab when active */
@@ -227,6 +240,46 @@ body.tlda-pan-mode * {
 
 .error-clear-btn:hover {
   background: #dc2626;
+}
+
+/* The emergency exit on the sync-failure screen. The unsynced shapes are still in
+   memory here and this is the only way to get them out, so it comes first, reads as
+   the primary action, and is kept well clear of "Clear broken shapes" — a mistap
+   between the two is the difference between saving the work and destroying it. */
+.error-rescue {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #e2e8f0;
+  width: 100%;
+  max-width: 400px;
+}
+
+.error-rescue-note {
+  font-size: 0.875rem;
+  color: #334155;
+  margin: 0;
+}
+
+/* Specificity note: `.ErrorScreen button` later in this file is (0,1,1) and beats a
+   lone class, so the rescue button is qualified by its wrapper to reach (0,2,0). It
+   must not end up sharing an appearance with the destructive button beside it. */
+.error-rescue .error-rescue-btn {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  background: #16a34a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.error-rescue .error-rescue-btn:hover {
+  background: #15803d;
 }
 
 .PickerScreen {

@@ -614,6 +614,23 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   user-select: none;
 }
 
+/* A chip that has been clicked and is still fetching and materializing its
+   document. Two round-trips pass before anything appears on canvas, and with no
+   mark on the chip that reads as a click that did nothing — which is what
+   produced repeat clicks. Not scoped to .fleet-chat-shape: the same chips are
+   clicked in the inbox, search results and the source editor. */
+.chip-opening {
+  cursor: progress;
+  animation: chip-opening-pulse 1.1s ease-in-out infinite;
+}
+@keyframes chip-opening-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip-opening { animation: none; opacity: 0.55; }
+}
+
 /* Drag handle — thin left strip on activity cards, code block headers, tool lines.
    Same show/hide behavior as .fleet-btn-group: invisible by default, fades in on
    mouse movement + hover. No background — just barely-visible '::' colons on a
@@ -689,7 +706,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-line {
   padding: 2px 8px;
   font-size: var(--fleet-base-font, 11px);
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
   word-break: break-word;
   -webkit-user-select: text !important;
   user-select: text !important;
@@ -1123,7 +1140,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow: auto;
   z-index: 100;
   box-shadow: 0 4px 12px var(--shadow-lg);
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
 }
 .fleet-chat-shape .tool-ref:hover .tool-ref-preview {
   opacity: var(--ui-tone-full);
@@ -1688,7 +1705,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-activity-card.will-fold .activity-signal::after { content: '\25BD'; }
 .fleet-chat-shape .chat-activity-card .activity-detail {
   padding: 2px 8px 4px;
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
 }
 .fleet-chat-shape .chat-activity-card .activity-badge {
   float: right;
@@ -1708,7 +1725,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   color: var(--text, #8888a0);
   opacity: var(--ui-tone-active);
   font-size: var(--fleet-base-font, 11px);
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
   white-space: pre-wrap;
   word-break: break-word;
   padding: 2px 0;
@@ -1992,7 +2009,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   display: grid;
   padding: 3px 8px 7px;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
 }
 .fleet-agents-shape .fleet-agents-row.native-child .fleet-agents-row-detail {
   padding-left: 11px;
@@ -2061,14 +2078,10 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape .fleet-agents-detail-hibernate:hover {
   filter: brightness(1.15);
 }
-/* The row control is a 9px glyph, which is a fine pointer target and far
-   under a thumb. On a phone the hit area grows to the readability profile's
-   touch target while the glyph keeps its weight, so it still matches the
-   row it sits in. */
-body.phone-mode .fleet-agents-shape .fleet-agents-detail-hibernate {
-  min-width: var(--fleet-touch-target, 44px);
-  min-height: var(--fleet-touch-target, 44px);
-}
+/* The row control is a 9px glyph, which is a fine pointer target and far under
+   a thumb. Its hit area grows to the readability profile's touch target on any
+   coarse pointer — see the `any-pointer: coarse` block below, which now owns
+   this rule; the glyph keeps its weight, so it still matches its row. */
 .fleet-agents-shape .fleet-agents-metadata-chip {
   display: inline-flex;
   align-items: center;
@@ -2308,8 +2321,23 @@ body.phone-mode .fleet-agents-col-labels {
    only had a hairline `thin` scrollbar. Scoped to .phone-mode so tablets/desktop
    (which use normal layouts) are untouched. */
 body.phone-mode .fleet-agents-shape .fleet-agents-row-main {
-  height: var(--fleet-touch-target, 44px);
   padding: 0 12px;
+}
+/* The touch target is a readability-profile number stored per device, and it
+   used to be read only inside `body.phone-mode` — so on a tablet, the one place
+   a thumb actually needs it, setting it did nothing. Skip: "it should be a
+   setting, and the settings that we have should actually fucking do something."
+   A touch target belongs to the pointer, not to the phone layout, so the height
+   is keyed on `any-pointer: coarse` and the phone keeps only its own padding. A
+   mouse-driven Mini is untouched and still reads 24px from the base rule. */
+@media (any-pointer: coarse) {
+  .fleet-agents-shape .fleet-agents-row-main {
+    height: var(--fleet-touch-target, 24px);
+  }
+  .fleet-agents-shape .fleet-agents-detail-hibernate {
+    min-width: var(--fleet-touch-target, 24px);
+    min-height: var(--fleet-touch-target, 24px);
+  }
 }
 body.phone-mode .fleet-agents-shape .fleet-agents-col-name {
   width: 104px;
@@ -3147,7 +3175,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text, #a8a8c0);
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
   font-weight: 300;
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
   white-space: pre-wrap;
   word-wrap: break-word;
   box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -3268,7 +3296,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   max-height: 300px;
   overflow-y: auto;
   font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
   color: var(--text, #a8a8c0);
 }
 

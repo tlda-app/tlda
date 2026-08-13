@@ -22,6 +22,7 @@ import { loadServerConfig } from '../shared/config.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
+import { announcePageTop, announcePageBottom } from '../shared/pagination-announce.mjs';
 import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
@@ -1636,12 +1637,12 @@ export function getFleetTools() {
     },
     {
       name: 'thread',
-      description: 'Read a conversation thread. This is the PRIMARY tool for reading what was said — use it whenever you need to understand a conversation, review what an agent did, or read task history. Returns complete formatted messages in chronological order. Do NOT read JSONL files directly — use this instead.',
+      description: 'Read a conversation thread. A thread is between you and one other agent: thread(agent: "skip") returns everything the two of you said to each other, in both directions. That is the usual read and the one to reach for whenever you are going back over what someone told YOU. filter: "from:skip" is a different thing and is rarely what you want — it returns that agent talking to everybody, so most of what comes back was addressed to other agents; agents have read those as their own instructions and acted on them. Use filter only when you deliberately want a set that is not between you and one other party. task_id reads one task\'s history. Returns complete formatted messages in chronological order. This is the PRIMARY tool for reading what was said — do NOT read JSONL files directly, use this instead.',
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'The agent whose conversation with you to read. This is shorthand for filter="me <> <agent>" and returns messages between you and that agent in both directions. Use filter instead when you want that agent\'s conversations with other people or any broader message set. Required unless task_id or filter is given.' },
-          filter: { type: 'string', description: 'Explicit unified message filter for non-dyadic or otherwise custom reads, e.g. "from:tabby", "tabby <> permfix", or "from:(chief | tabby) & type:chat".' },
+          agent: { type: 'string', description: 'The other party — name, friendly name, or fleet: id. Returns the conversation between you and them: everything either of you said to the other, both directions (shorthand for filter="me <> <agent>"). Try this first; it is what you want unless you specifically want someone else\'s wider traffic. Required unless task_id or filter is given.' },
+          filter: { type: 'string', description: 'Explicit unified message filter, for reads that are NOT between you and one other agent. What the shapes mean: "me <> skip" is the conversation between you and Skip, which is what agent: "skip" already gives you; "from:skip" is Skip talking to EVERYONE, most of it to other agents and not to you; "skip <> tabby" is someone else\'s two-party conversation; "from:(chief | tabby) & type:chat" combines terms. If what you want is what someone said to you, use agent instead.' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
           since: { type: 'string', description: 'ISO timestamp or relative shorthand — "30s", "20m", "2h", "1d". Only messages after this time. An unreadable value is an error, not an unbounded read; weeks and months are query-only, so write 7d or 90d here.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or the literal "now" — only messages before this time.' },
@@ -2244,7 +2245,31 @@ export function formatRaisedUnreadText(rows = [], data = null, now = Date.now())
   return lines.join('\n');
 }
 
-export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now(), briefSeen = null }) {
+/**
+ * The inbox's page, announced at both ends.
+ *
+ * The body already said "Page-limited: N/M unread messages shown" at the top and
+ * then stopped there — a warning with no instruction, and the reader who needs it
+ * is at the bottom, having just read the page. The continuation is `drain`
+ * rather than a cursor: paging here is oldest-first and acknowledges as it goes,
+ * so "the next page" for a backlog is the whole backlog written to a file.
+ */
+export function formatInboxText(opts) {
+  const body = formatInboxBody(opts);
+  const counts = opts?.counts || null;
+  if (!counts?.messages_truncated) return body;
+  const shown = (opts?.messages || []).length;
+  const total = Number(counts.messages);
+  const footer = announcePageBottom({
+    shown,
+    total,
+    noun: 'unread message',
+    nextCall: 'inbox({ drain: true }) — reads every page, acknowledging as it goes, and writes the lot to a file.',
+  });
+  return footer ? `${body}\n\n${footer}` : body;
+}
+
+function formatInboxBody({ mode, task, tasks, messages, counts = null, now = Date.now(), briefSeen = null }) {
   const activeTasks = normalizeInboxTasks({ task, tasks });
   const taskBlocks = inboxTaskBlocks(activeTasks, briefSeen);
   const lines = [];
@@ -4328,7 +4353,25 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       header += `\n⚠️ Output truncated (showing ${searchLines.length} of ${formatted.length} results). For full conversation context, use thread(agent) — search returns snippets, not complete conversations.`;
     }
 
-    return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}` }] };
+    // Two different cuts, and they continue differently. The byte budget drops
+    // results already fetched, so the continuation is a narrower query — there is
+    // no cursor to hand back and inventing one would be a call that fails. The
+    // limit is a page and continues by raising it. Both are stated at the bottom,
+    // where a reader who has read the results actually is.
+    const searchFooters = [];
+    if (searchTruncated) {
+      searchFooters.push(
+        `${formatted.length - searchLines.length} more result(s) fetched but not shown — cut by a ${SEARCH_MAX_BYTES / 1000}k output budget, not by the query. ` +
+        `This surface has no cursor: narrow with since:/before:, or read one conversation with thread(agent).`,
+      );
+    } else if (!isBoundedSearch && results.length >= limit) {
+      searchFooters.push(
+        `This is a full page of ${limit}, so there may be more. Next page: search({ query: ${JSON.stringify(args.query || '')}, limit: ${Math.min(limit * 2, 100)} }) — or bound it with since:/before:, which returns the full range.`,
+      );
+    }
+    const searchTail = searchFooters.length ? `\n\n⚠️ ${searchFooters.join('\n')}` : '';
+
+    return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}${searchTail}` }] };
   }
 
   // ---- thread ----
@@ -4340,6 +4383,10 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     let filtered = [];
     let overflow = false;
     let threadUnresolvedNames = [];
+    // Set when the caller asked for a bare `from:X`. That read is one party
+    // talking to the whole fleet, and agents have acted on instructions in it
+    // that were addressed to somebody else — so the result says so.
+    let oneSidedName = null;
 
     let resolvedSince, resolvedUntil;
     try {
@@ -4514,6 +4561,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           if (!filterExpression) {
             return { content: [{ type: 'text', text: `thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
           }
+          // `from:X` means the conversation between you and X. A thread is
+          // between two parties, so a bare one-sided read is not a thread —
+          // it is one agent talking to the whole fleet, and agents have acted
+          // on instructions in it that were addressed to somebody else.
+          // Rewriting is what makes the argument mean what it says; warning
+          // about it left the wrong read one typo away.
+          const bareFrom = /^\s*from:\s*([^\s&|!()]+)\s*$/.exec(filterExpression);
+          if (bareFrom && bareFrom[1] !== 'me') {
+            oneSidedName = bareFrom[1];
+            filterExpression = `me <> ${bareFrom[1]}`;
+          }
           await fetchEventsForFilter(filterExpression);
         }
       } catch (e) {
@@ -4594,9 +4652,13 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (trail.length > 1) provenanceNote = `\n↳ ${trail.join(' → ')} · ${primaryId}`;
     }
 
+    // Continue with the argument the caller actually used. Filter reads used to
+    // be handed `agent: ""` here, which is not a call anyone can make.
     const nextPageArg = args.task_id
       ? `task_id: "${args.task_id}"`
-      : `agent: "${args.agent || ''}"`;
+      : args.agent
+      ? `agent: "${args.agent}"`
+      : `filter: ${JSON.stringify(args.filter || '')}`;
     const untilHint = resolvedUntil ? `, until: "${args.until}"` : '';
 
     let header;
@@ -4606,6 +4668,9 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         `\`thread(${nextPageArg}, since: "${newest}"${untilHint})\``;
     } else {
       header = `${filtered.length} messages${rangeStr}`;
+    }
+    if (oneSidedName) {
+      header += `\n↳ Read as the conversation between you and ${oneSidedName}, both directions — \`from:${oneSidedName}\` alone is ${oneSidedName} talking to the whole fleet, which is almost never what a thread means. To get that wider traffic deliberately, ask for \`from:${oneSidedName} | to:${oneSidedName}\` or another explicit filter.`;
     }
 
     // Fetch shadow commit log if project parameter provided
@@ -4696,9 +4761,17 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // it is finished the warning is far behind it — which is how a 208-message
     // window got summarised from the 107 that fit. The last thing in the buffer
     // is the thing in mind at the moment the decision is made.
+    // Two ways this reply is a page, and both need the footer. `truncatedAt` is
+    // the byte budget cutting inside the page; `overflow` is the page being full
+    // with more range behind it. Only the first was footed, so a full page that
+    // fit its budget announced the continuation at the top and nowhere else —
+    // which is the case this comment's own reasoning argues against.
     const tail = truncatedAt
       ? `\n${SEP}⚠️ END OF PAGE, NOT END OF RANGE — ${filtered.length - lines.length}+ messages after this one are unread.\n` +
         `\`thread(${nextPageArg}, since: "${filtered[lines.length - 1]?.timestamp}"${untilHint})\``
+      : overflow
+      ? `\n${SEP}⚠️ END OF PAGE, NOT END OF RANGE — more messages exist after this one.\n` +
+        `\`thread(${nextPageArg}, since: "${newest}"${untilHint})\``
       : '';
     return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}${tail}` }] };
   }
@@ -4835,7 +4908,27 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
       );
       const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
-      return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
+      // The page, said at the end as well as in the scope hint above. This is the
+      // surface the fleet-table incident came through: 500 rows of 2154 read as
+      // the whole fleet, and "zero dead agents" reported from it.
+      //
+      // The continuation is `limit`, not a cursor. `/api/fleet-table` returns a
+      // `nextCursor` and this tool has no parameter to pass it back — announcing
+      // one would print a call nobody can make. Raising the limit is the
+      // continuation that exists, and it tops out at 500.
+      const rosterShown = Number.isFinite(data.shown) ? data.shown : rows.length;
+      const rosterTotal = Number.isFinite(data.matched) ? data.matched : t.total;
+      const rosterLimit = Number(args.limit) || 50;
+      const rosterFooter = announcePageBottom({
+        shown: rosterShown,
+        total: rosterTotal,
+        noun: 'agent',
+        nextCall: rosterLimit >= 500
+          ? `no larger page exists — limit is capped at 500. ${rosterTotal - rosterShown} row(s) are unreachable through this tool; narrow with a filter.`
+          : `roster({ limit: ${Math.min(rosterTotal, 500)}${args.filter ? `, filter: ${JSON.stringify(args.filter)}` : ''} })`,
+      });
+      const rosterTail = rosterFooter ? `\n\n⚠️ ${rosterFooter}` : '';
+      return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}${rosterTail}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `roster failed before transport ACK: ${e.message}` }], isError: true };
     }

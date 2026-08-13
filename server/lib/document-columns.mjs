@@ -3,7 +3,6 @@ import { join } from 'node:path'
 
 import { readProject, sourceDir as getSourceDir, projectPartsRoot } from './project-store.mjs'
 import { readProjectPartsManifestAsync } from './project-parts-scanner.mjs'
-import { scanMarkdownDependencyClosureAsync } from '../../shared/markdown-deps.mjs'
 
 const DEFAULT_COLUMN_WIDTH = 800
 const DEFAULT_COLUMN_HEIGHT = 1200
@@ -67,15 +66,17 @@ async function listMarkdownDocumentColumns(name, { project, srcDir }) {
     srcDir,
   })
 
-  const closure = await scanMarkdownDependencyClosureAsync(configuredFile, srcDir)
-  for (const sourceFile of closure.markdown) {
-    if (sourceFile === configuredFile) continue
-    await addMarkdownColumn(columns, {
-      sourceFile,
-      outputFile: markdownColumnFileForSource(sourceFile),
-      srcDir,
-    })
-  }
+  // A markdown project's document is its main file. Documents it links to are
+  // other documents — they are not pages of this one, and reachability is not a
+  // way of becoming one. Walking the link closure in here is what turned every
+  // linked file into a chapter: its own canvas page, and its headings merged
+  // into this document's TOC. Skip, 2026-08-13 01:58 EDT, on where chapters can
+  // come from at all: "the only way we have of creating a fucking book is
+  // fucking, like, quarto fucking book like config yaml files. it's a fucking
+  // format... That's the design."
+  //
+  // Rendering a linked document is a separate question from listing this
+  // document's pages, and the docs route answers it from the project source.
 
   for (const column of await listProjectPartColumns(name, { srcDir })) {
     if (columns.some(existing => existing.sourceFile === column.sourceFile)) continue
@@ -124,6 +125,28 @@ function columnPageInfo(column) {
     },
     ...(Object.keys(column.metadata || {}).length ? { metadata: column.metadata } : {}),
   }
+}
+
+/** The column for a markdown file of this project that is not one of this
+ *  document's pages — a document the main file links to. Listing this
+ *  document's pages and rendering another document of the same project are
+ *  different questions, and only the first one is the page list. Returns null
+ *  for anything that does not resolve to a markdown file inside the project's
+ *  source, which is the same containment rule every other source path obeys. */
+export async function markdownDocumentColumnForOutputFile(name, outputFile, { srcDir = getSourceDir(name) } = {}) {
+  const requested = String(outputFile || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!requested.endsWith('.html') || requested.split('/').includes('..')) return null
+  const stem = requested.replace(/\.html$/, '')
+  const columns = []
+  for (const extension of ['.md', '.markdown']) {
+    await addMarkdownColumn(columns, {
+      sourceFile: `${stem}${extension}`,
+      outputFile: requested,
+      srcDir,
+    })
+    if (columns.length > 0) return columns[0]
+  }
+  return null
 }
 
 function titleFromMarkdown(source) {

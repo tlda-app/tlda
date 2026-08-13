@@ -1041,6 +1041,7 @@ function dgStartMsg() {
     idleMs: getPref('voice-idle-cutoff-ms'),
     prerollMs: getPref('voice-preroll-ms'),
     resumeRms: getPref('voice-resume-rms'),
+    carryBackstopMs: getPref('voice-carry-backstop-ms'),
     // Deepgram recognition-window params (applied via the bridge's voiceParams hook).
     endpointing: getPref('voice-endpointing'),
     utterance_end_ms: getPref('voice-utterance-end-ms'),
@@ -2526,6 +2527,73 @@ function releaseSubmittedCarry(reason) {
   _dgCarriedSubmittedText = null
   _dgCarriedSubmittedAt = 0
 }
+// --- Enter waits for the transcript to finalize ---
+//
+// Skip, 2026-08-12 20:03:16 EDT: "I'm fine right, if voice takes a fucking minute. To
+// enter … if I hit enter and then it has to wait … for a fucking voice to, like, finalize
+// or whatever. This, like, playing back shit is fucking annoying."
+//
+// "Playing back" was the previous message's un-finalized tail arriving after the send and
+// becoming the head of the next one. Enter used to submit `ta.value`, which holds `_left`
+// PLUS `_interim` — text Deepgram has not committed. The finalized version then arrived
+// behind it, and the three filters below (_dgIgnoreUntilUtteranceEnd, its submitted-text
+// twin, and _dgCarriedSubmittedText) tried to recognise it by string comparison against
+// what was sent. A final is a REVISION — repunctuated, recapitalized, re-segmented — so
+// it is by construction not that string, the comparison misses, and the words land in the
+// composer he just emptied. Specimen from his own session, 2026-08-12 20:02:18 → 20:02:26:
+// "…that'swhy the fuck is it there? It's not a readability op." then "why the fuck is it
+// there. It's not a readability option. …" — the same run sent twice, 8 seconds apart.
+//
+// So: hold the send until the outstanding utterance finalizes, then send the final. There
+// is no post-send tail to filter because the tail already arrived.
+//
+// TWO THINGS THIS MUST NOT DO, both non-negotiable:
+//
+// 1. IT MUST NEVER SWALLOW A SEND. Voice is his only input path — he has RSI and does not
+//    type — so a pending send that silently never fires is worse than the bug it fixes.
+//    `_pendingVoiceSend.timer` is the universal fail-open: whatever goes wrong upstream
+//    (no final, dead socket, stopped recording, backgrounded tab), it elapses and submits
+//    what he had. Every exit from this state SENDS.
+// 2. IT MUST NOT BLANK THE FIELD. He is fine waiting; he is not fine watching the composer
+//    empty and refill. Nothing here touches the textarea — the ordinary transcript path
+//    keeps painting his text where it already is, the final revises it in place, and the
+//    single clear happens when the send actually goes.
+let _pendingVoiceSend = null
+
+// Whether a dictated tail is on screen that Deepgram has not committed yet. Exactly the
+// condition that makes a send provisional; when it is false the send is already final and
+// waiting would cost him latency for nothing.
+function voiceTailAwaitingFinal() {
+  return _backend === 'deepgram' && _state === 'speech' && !!_interim
+}
+
+function resolvePendingVoiceSend(reason) {
+  const pending = _pendingVoiceSend
+  if (!pending) return
+  _pendingVoiceSend = null
+  clearTimeout(pending.timer)
+  vlog('pending send resolved', { reason, waitedMs: Date.now() - pending.armedAt })
+  pending.submit()
+}
+
+/** Enter's entry point. Returns true when the send has been DEFERRED — the caller must
+ *  not submit and must not clear the field; this owns the submit from here. Returns false
+ *  when there is nothing to wait for and the caller should submit normally. */
+export function submitWhenVoiceFinal(submit) {
+  // A second Enter while one is pending is the same send, not another one. Swallow it —
+  // returning false would submit the provisional text this exists to avoid.
+  if (_pendingVoiceSend) return true
+  if (!voiceTailAwaitingFinal()) return false
+  const waitMs = getPref('voice-finalize-wait-ms')
+  vlog('send pending on final', { interimLen: (_interim || '').length, waitMs })
+  _pendingVoiceSend = {
+    submit,
+    armedAt: Date.now(),
+    timer: setTimeout(() => resolvePendingVoiceSend('backstop elapsed'), waitMs),
+  }
+  return true
+}
+
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
 // Words already committed by the last final that a CONTINUING interim restates.
@@ -3227,8 +3295,15 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
 
     const leftTrimmed = (_left + (_deepgramInterim ? ' ' + postProcessTranscript(_deepgramInterim) : '')).trim()
 
+    // Both branches below retarget or submit, and an Enter already waiting on this final
+    // owns the submit. Standing down for this one cycle lets it complete against the
+    // composer it was armed on; the switch or the send word takes effect on the next
+    // result. Letting either run instead means two submits (the branch, then the pending
+    // backstop) or a submit into a textarea that is no longer the one he pressed Enter in.
+    const deferToPendingSend = !!_pendingVoiceSend
+
     // Voice-switch
-    const switchMatch = leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
+    const switchMatch = deferToPendingSend ? null : leftTrimmed.match(/(right|write|great|left|next|other)\s+chat\s*[.!,]?\s*$/i)
     if (switchMatch) {
       const textareas = [...document.querySelectorAll('.fleet-chat-shape textarea')]
         .filter(ta => ta.offsetHeight > 0)
@@ -3250,11 +3325,16 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
 
     // Voice-send: only final Deepgram results may submit. Interim "send" text
     // is displayed but never fires, so the following final cannot double-send.
-    if (msg.is_final && handleSendMagicWord(leftTrimmed)) return
+    if (msg.is_final && !deferToPendingSend && handleSendMagicWord(leftTrimmed)) return
 
     // Display: committed text + space + interim
     const display = _left + (_interim ? ' ' + _interim : '') + _right
     fillTextarea(display)
+
+    // The wait ends HERE and not a line earlier: `submit` reads the textarea, so the
+    // revision has to be in the field before it runs or the send carries the interim
+    // again and the whole mechanism is decorative.
+    if (msg.is_final) resolvePendingVoiceSend('final')
   } catch (err) {
     console.warn('voice: deepgram message error', err)
   }

@@ -879,11 +879,41 @@ one element; it is two loops disagreeing about where the bottom is, with HUD
 state deciding which one owned his reading position. `8543d9048` defers
 correction while a pointer is held and `85c06a69e` removes the second render.
 
-**Activity cards disappearing. Cause unknown, and two explanations are dead.**
-The 4000-shape figure that was blamed is a tldraw option rather than one of ours
-— it does not appear anywhere under `src/` — and **activity cards are not tldraw
-shapes at all**: they are HTML inside `FleetChatShape`, and no activity type is
-in the panel registry. Existing telemetry counts *mounted DOM cards*, which
+**Activity cards disappearing. Cause unknown, and the explanation attached to it
+belongs to a different symptom.**
+
+**Activity cards are not tldraw shapes**: they are HTML inside `FleetChatShape`,
+and no activity type is in the panel registry. So a shape cap cannot be the
+mechanism, whatever its number — that disposes of the shape-cap explanation on
+its own.
+
+**And the shape cap was never offered for this symptom.** It is Skip's, and he
+raised it about something else. On 2026-08-10 he was trying to drag an agent's
+label on `Bregman`, at 17:15:25 EDT:
+
+> I can't talk to the agents I wanna talk to because the only way to get a
+> fucking label is apparently in chat. Like, search fucking name isn't
+> draggable.
+
+then at 17:15:38 and 17:15:49:
+
+> The issue is actually that I have the maximal number of shapes.
+>
+> What why do I have so many fucking shapes on Bregman?
+
+and at 17:18:53, reading the app's own error: **"And it says four thousand."**
+The figure is his, off the screen, about a **label that would not drag** — an
+agent later carried it across to the vanishing cards, where it never applied.
+
+**The error itself is real but uncaptured.** At 17:18:44 he said *"Okay. I'll
+screenshot the error when I see it"*, and five seconds later *"Not seeing it
+right now."* No screenshot was produced, so the wording is recalled rather than
+recorded. `maxShapesPerPage` does not appear anywhere under `src/`, which means
+the cap is not ours — an error a user sees can come from the vendored editor. So
+**which component emits that message, and whether it still does, is open**, and
+it is a question about the drag path rather than about chat.
+
+For the cards themselves: existing telemetry counts *mounted DOM cards*, which
 Virtuoso may legitimately unmount, so it sits one layer too late to tell a vanish
 from ordinary virtualisation. An instrument was added in `7b0ae6236`. **Nothing
 is established.**

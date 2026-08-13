@@ -82,7 +82,12 @@ const PREROLL_MAX_BYTES = Math.round(16000 * 2 * (PREROLL_MS / 1000)) // 16kHz �
 //
 // If this is still firing on ordinary sends, the mechanism is wrong in a way we have not
 // understood — do not tune this constant a second time.
-const CARRY_BACKSTOP_MS = 800
+//
+// Resolved like its neighbours rather than written as a literal. The value is unchanged;
+// only its source moved. Skip, 2026-08-12 02:47:25 EDT: "There should be zero fucking
+// magic numbers in the fucking code… if we literally absolutely need a fucking time out,
+// it should be fucking daemon configured."
+const CARRY_BACKSTOP_MS = resolveIntOpt('--carry-backstop-ms', 'carryBackstopMs', 800)
 
 // RMS of a linear16 (Int16 LE) PCM buffer. Pure → unit-tested.
 function rmsOfPcm(buf) {
@@ -215,6 +220,7 @@ wss.on('connection', (browserWs) => {
   let idleMs = IDLE_CUTOFF_MS
   let resumeRms = RESUME_RMS_THRESHOLD
   let prerollMaxBytes = PREROLL_MAX_BYTES
+  let carryBackstopMs = CARRY_BACKSTOP_MS
   let clientVoiceParams = {}    // per-connection Deepgram recognition overrides (endpointing, utterance_end_ms)
   let clientKeyterms = []       // agent names from the browser roster, boosted alongside KEYWORDS
   let activeEpoch = null
@@ -353,7 +359,7 @@ wss.on('connection', (browserWs) => {
       // Backstop only. If Deepgram never finalizes, release forward rather than keep
       // holding — and log it, so a recognizer that stops finalizing shows up as data
       // instead of as him noticing words go missing.
-      carryTimer = setTimeout(() => releaseCarriedEpoch('backstop timeout'), CARRY_BACKSTOP_MS)
+      carryTimer = setTimeout(() => releaseCarriedEpoch('backstop timeout'), carryBackstopMs)
     }
     activeEpoch = nextEpoch
     epochTransition = null
@@ -382,6 +388,7 @@ wss.on('connection', (browserWs) => {
     if (Number.isFinite(msg?.idleMs) && msg.idleMs > 0) idleMs = msg.idleMs
     if (Number.isFinite(msg?.resumeRms) && msg.resumeRms >= 0) resumeRms = msg.resumeRms
     if (Number.isFinite(msg?.prerollMs) && msg.prerollMs >= 0) prerollMaxBytes = Math.round(16000 * 2 * (msg.prerollMs / 1000))
+    if (Number.isFinite(msg?.carryBackstopMs) && msg.carryBackstopMs > 0) carryBackstopMs = msg.carryBackstopMs
     if (Number.isFinite(msg?.endpointing) && msg.endpointing >= 0) clientVoiceParams.endpointing = msg.endpointing
     if (Number.isFinite(msg?.utterance_end_ms) && msg.utterance_end_ms >= 0) clientVoiceParams.utterance_end_ms = msg.utterance_end_ms
   }

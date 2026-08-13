@@ -24,7 +24,6 @@ export function normalizeRadioSubtitleDwellSec(value: unknown): number {
 }
 
 const DEFAULTS = {
-  'docview-sources': ['ref'] as string[],
   'voice-note-color': 'yellow' as string,
   'response-curve': DEFAULT_CURVE as CurveHandles,
   'known-devices': {} as Record<string, { lastSeen: string }>,
@@ -54,6 +53,15 @@ const DEFAULTS = {
   // keeps cutting off the tail of a sentence.
   'voice-endpointing': 300 as number,
   'voice-utterance-end-ms': 1000 as number,
+  // Enter waits for the dictated tail to finalize before it sends, so the message
+  // carries Deepgram's revision rather than the provisional interim that was on
+  // screen. These two bound that wait; neither is a pacing knob.
+  // carry-backstop = the bridge's own forward-release of a carried epoch.
+  // finalize-wait = how long Enter holds before sending what he has anyway. It sits
+  // above the bridge's backstop on purpose, so the bridge releases first and this is
+  // a last resort. Enter ALWAYS sends when it elapses — it never swallows a send.
+  'voice-carry-backstop-ms': 800 as number,
+  'voice-finalize-wait-ms': 1500 as number,
   'readability-profiles': DEFAULT_READABILITY_PROFILES as ReadabilityProfiles,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
@@ -91,14 +99,6 @@ const DEFAULTS = {
   // Document panel hover trigger width. This is the same value the old ToC
   // bottom thumb adjusted; default preserves the historical 60px strip.
   'toc-hover-zone-width': 60 as number,
-  // Bottom-right corner rail: one vertical rail with Marking, Voice, and Fleet rows.
-  'corner-rail-enabled': false as boolean,
-  // 0 = automatic per device: current corner button size * 4/3, with the
-  // gap chosen so the 3-button stack preserves the old 4-button envelope.
-  'corner-control-size': 0 as number,
-  // Presentation mode: preserve the existing click-through-fragments behavior
-  // by default; optionally split slide movement and fragment movement.
-  'slides-navigation-mode': 'inline-fragments' as 'inline-fragments' | 'orthogonal-fragments',
   // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.
@@ -111,7 +111,6 @@ const DEFAULTS = {
   'todd-self-check-countdown-sec': 30 as number,
   'bot-self-check-enabled': {} as Record<string, boolean>,
   'bot-self-check-countdown-sec': {} as Record<string, number>,
-  'bot-model': {} as Record<string, string>,
   // Source editor writes are checkpoints, not a stream — see AGENTS.md
   // "Project as world". A write commits when you click out or leave insert
   // mode; this is the third boundary, for when you stop without doing either.

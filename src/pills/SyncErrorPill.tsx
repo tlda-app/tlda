@@ -12,7 +12,42 @@ import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host
 import { writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import './SyncErrorPill.css'
 
-interface SyncError { message?: string; file?: string; kind?: 'source-conflict' | 'sync-error'; owner?: any }
+interface SyncError { message?: string; file?: string; kind?: 'source-conflict' | 'sync-error'; owner?: any; holder?: string | null }
+
+/**
+ * The sentence a person reads when a file is in conflict.
+ *
+ * Skip's rule, and it is the one that decides the wording: "what the options
+ * are should dictate what we describe as the situation." A pill is an
+ * interface, not a status readout — a description a person cannot act on is
+ * just a fact about their day.
+ *
+ * There is exactly one option here. Clicking opens the file in the source
+ * editor with both versions marked up, and the person picks. That is true
+ * whoever holds the other copy — a machine, the live editor, a linked remote
+ * — because resolving it in the paper is what clears it for everybody, and the
+ * owner's own machine takes the resolution afterwards.
+ *
+ * So the headline states the choice and the invitation, and never the cause.
+ * Whose copy it is belongs underneath, where it tells you whether you are
+ * fixing your own or taking someone else's — which changes nothing about what
+ * you do next, and would be noise in the sentence that asks you to do it.
+ *
+ * If we ever offer keep-mine and keep-theirs as buttons, this sentence has to
+ * change: two options that pick between sides need the sides named.
+ */
+function conflictSentence(conflict: { file?: string }): string {
+  return `${conflict.file || 'A file'} has two versions — open it to pick`
+}
+
+/** Whose copy is holding the other version, in the words a person would use. */
+function conflictHolder(conflict: { source?: string; owner?: any }): string | null {
+  if (conflict.source === 'source-room') return 'the live editor is holding the other one'
+  if (conflict.source === 'overleaf') return 'Overleaf is holding the other one'
+  const owner = conflict.owner || {}
+  const machine = owner.participant || owner.machineId || owner.daemonKey
+  return machine && machine !== 'unknown' ? `${machine} is holding the other one` : null
+}
 
 export function SyncErrorPill() {
   const editor = useEditor()
@@ -53,7 +88,8 @@ export function SyncErrorPill() {
           kind: 'source-conflict' as const,
           file: conflict.file,
           owner: conflict.owner,
-          message: `Git conflict: ${conflict.file}`,
+          message: conflictSentence(conflict),
+          holder: conflictHolder(conflict),
         }))
         setProjectErrors(conflictErrors)
       } catch {
@@ -120,6 +156,7 @@ export function SyncErrorPill() {
               onClick={err.kind === 'source-conflict' ? () => openConflictInSourceEditor(err.file) : undefined}
             >
               {String(err?.message ?? err)}
+              {err.holder ? <div className="sync-error-holder">{err.holder}</div> : null}
             </div>
           ))}
           <div className="sync-error-note">

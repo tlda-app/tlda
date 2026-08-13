@@ -39,9 +39,10 @@ function cleanProfile(value: Partial<ReadabilityProfile> | undefined): Readabili
 }
 
 /**
- * Furthest a soft snap may pull a fleet panel, in screen px. The setting is in
- * em so it tracks the device's own text size: 3 CSS px is nothing on a high-DPI
- * tablet, one line of text is the same apparent distance everywhere.
+ * How close a fleet panel must be before a soft snap takes it, in screen px.
+ * Inside this it goes to the line; outside it nothing happens. The setting is
+ * in em so it tracks the device's own text size: 3 CSS px is nothing on a
+ * high-DPI tablet, one line of text is the same apparent distance everywhere.
  */
 export function getFleetNudgeStrengthPx(deviceId?: string): number {
   const p = getReadabilityProfile(deviceId)

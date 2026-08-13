@@ -170,6 +170,57 @@ Custom shape schemas are shared protocol. A shape's client props in
 `src/shapes/` and its server schema in `server/lib/sync-rooms.mjs` must match
 exactly.
 
+### An unsynced edit exists only in memory
+
+The client calls `useSync` (`src/SvgDocument.tsx`) with no `persistenceKey`, and
+there is no IndexedDB and no `localStorage` copy of document content anywhere in
+the client. While sync is down, an edit lives in the tab's heap and nowhere else:
+a refresh loses it, and so does closing the tab.
+
+`EmergencyDumpButton` in the table-of-contents panel is the exit — it reads
+`editor.store` locally and downloads a Markdown file with no network in the path.
+It exists because Skip spent fifteen minutes hand-copying stranded iPad notes on
+2026-08-12, screenshots being the only alternative he could find.
+
+**It is inside the canvas UI, so it is absent from the fatal-error screen**
+(`src/SvgDocument.tsx`, `storeWithStatus.status === 'error'`), which replaces the
+editor entirely while the unsynced shapes are still in the store.
+
+### A schema change on deploy stops a long-lived tab forever
+
+`@tldraw/sync` retries a lost connection indefinitely — 500 ms to 2 s while the tab
+is visible, 1 s to **5 minutes** while it is hidden, reset to the minimum by
+`online`, `visibilitychange`, and `navigator.connection` change.
+
+There is one exception and it is permanent. On a close with code 4099
+(`TLSyncErrorCloseEventCode`), `useSync` sets an error state and calls
+`socket.close()`, disposing the reconnect manager. Nothing retries, ever, short of
+a page reload. `TLSyncRoom` sends that code for `CLIENT_TOO_OLD`, `SERVER_TOO_OLD`,
+and `INVALID_RECORD`, all of which a shape-schema change on deploy can produce.
+
+We deploy several times a night and tabs stay open for days, so this is a standing
+hazard rather than a hypothetical: **changing a custom shape's props is also a
+change that can permanently disconnect every tab already open.**
+
+Two things follow that are easy to get wrong in opposite directions.
+
+**The remedy on offer is destructive and the problem is not.** A stranded tab is
+running older code than the server. Nothing is broken and nothing needs clearing,
+yet the error surface carries a "Clear broken shapes" action. A version mismatch
+is the one case where deleting the user's shapes cannot be the answer, because
+their work is intact on both sides of the wire.
+
+**And the fix is not to reload the tab.** An open tab must never reload under
+someone — see the deploy runbook and the ruling behind it. What a stranded tab can
+honestly do is say what happened, keep the work readable, and leave the timing to
+the person: this tab is running code older than the server, nothing is lost, open
+a new one when it suits you.
+
+The other half is prevention, and it is already in place: a shape's props are
+defined once in `shared/shapes/` and imported by both the client utility and the
+server schema, so the two cannot drift apart by being edited separately. A new
+custom shape that defines its props twice reintroduces this class.
+
 ## Projects, documents, and navigation
 
 A project is the shared world. A document is a place within that project.

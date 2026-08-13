@@ -153,7 +153,7 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   // card. The one control the picture lacked is the floating collapse the view
   // puts in the left gutter.
   if (kind === 'thread') {
-    return `<div class="semantic-operation-body" data-semantic-operation="${json}"></div>`
+    return `<div class="semantic-operation-body" data-semantic-key="${key}" data-semantic-operation="${json}"></div>`
   }
   return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
     <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>
@@ -316,8 +316,8 @@ export function renderThreadRows(msgs, ctx, headerText = '') {
     const hiddenCount = list.length - front - tail
     const hiddenRows = list.slice(front, list.length - tail).map(m => renderThreadMsg(m, ctx)).join('')
     rows = list.slice(0, front).map(m => renderThreadMsg(m, ctx)).join('')
-      + `<div class="pretty-expand-btn">… ${hiddenCount} messages …</div>`
-      + `<div class="pretty-more-rows" style="display:none">${hiddenRows}</div>`
+      + `<div class="pretty-expand-btn" data-fold-id="thread-middle">… ${hiddenCount} messages …</div>`
+      + `<div class="pretty-more-rows" data-fold-id="thread-middle" style="display:none">${hiddenRows}</div>`
       + (tail ? list.slice(-tail).map(m => renderThreadMsg(m, ctx)).join('') : '')
   } else {
     rows = list.map(m => renderThreadMsg(m, ctx)).join('')
