@@ -21,6 +21,7 @@ import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-u
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { getPref, setPref, subscribePref } from '../preferences'
 import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, type TocLevel, type TocEntry } from './helpers'
+import { downloadEmergencyDump } from '../emergencyDump'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const CHILDREN: Record<string, string[]> = {
@@ -295,6 +296,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         <SemanticHighlightToggle />
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
+        <EmergencyDumpButton />
         {/* HideDefsToggle removed */}
       </div>
     )
@@ -322,6 +324,7 @@ export function TocTab({ query = '' }: { query?: string }) {
         <SemanticHighlightToggle />
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
+        <EmergencyDumpButton />
         {/* HideDefsToggle removed */}
       </div>
     )
@@ -468,8 +471,37 @@ export function TocTab({ query = '' }: { query?: string }) {
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
       </div>
+      <EmergencyDumpButton />
       {/* HideDefsToggle removed */}
     </div>
+  )
+}
+
+/**
+ * The emergency exit for content that cannot sync.
+ *
+ * An unsynced edit lives in the tldraw store in memory and nowhere else, so when the
+ * connection is down the only routes out were a screenshot or selecting the text by
+ * hand. Skip spent fifteen minutes doing the second one. This reads the local store
+ * and writes a file — no network in the path, which is the point.
+ *
+ * A plain button with a spoken label, so iPadOS Voice Control can trigger it by name.
+ * Do not turn it into an icon.
+ */
+export function EmergencyDumpButton() {
+  const editor = useEditor()
+  const doc = useContext(ProjectContext)
+  const [saved, setSaved] = useState<string | null>(null)
+
+  const dump = useCallback(() => {
+    const name = downloadEmergencyDump(editor, doc?.projectName || 'document')
+    setSaved(name)
+  }, [editor, doc?.projectName])
+
+  return (
+    <button className="toc-diff-hint" onClick={dump} title="Write every note and the whole canvas to a Markdown file, without the server">
+      <span className="toc-toggle-icon">{'⤓'}</span> {saved ? `Saved ${saved}` : 'Download everything to a file'}
+    </button>
   )
 }
 

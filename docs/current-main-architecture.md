@@ -170,6 +170,38 @@ Custom shape schemas are shared protocol. A shape's client props in
 `src/shapes/` and its server schema in `server/lib/sync-rooms.mjs` must match
 exactly.
 
+### An unsynced edit exists only in memory
+
+The client calls `useSync` (`src/SvgDocument.tsx`) with no `persistenceKey`, and
+there is no IndexedDB and no `localStorage` copy of document content anywhere in
+the client. While sync is down, an edit lives in the tab's heap and nowhere else:
+a refresh loses it, and so does closing the tab.
+
+`EmergencyDumpButton` in the table-of-contents panel is the exit — it reads
+`editor.store` locally and downloads a Markdown file with no network in the path.
+It exists because Skip spent fifteen minutes hand-copying stranded iPad notes on
+2026-08-12, screenshots being the only alternative he could find.
+
+**It is inside the canvas UI, so it is absent from the fatal-error screen**
+(`src/SvgDocument.tsx`, `storeWithStatus.status === 'error'`), which replaces the
+editor entirely while the unsynced shapes are still in the store.
+
+### A schema change on deploy stops a long-lived tab forever
+
+`@tldraw/sync` retries a lost connection indefinitely — 500 ms to 2 s while the tab
+is visible, 1 s to **5 minutes** while it is hidden, reset to the minimum by
+`online`, `visibilitychange`, and `navigator.connection` change.
+
+There is one exception and it is permanent. On a close with code 4099
+(`TLSyncErrorCloseEventCode`), `useSync` sets an error state and calls
+`socket.close()`, disposing the reconnect manager. Nothing retries, ever, short of
+a page reload. `TLSyncRoom` sends that code for `CLIENT_TOO_OLD`, `SERVER_TOO_OLD`,
+and `INVALID_RECORD`, all of which a shape-schema change on deploy can produce.
+
+We deploy several times a night and tabs stay open for days, so this is a standing
+hazard rather than a hypothetical: **changing a custom shape's props is also a
+change that can permanently disconnect every tab already open.**
+
 ## Projects, documents, and navigation
 
 A project is the shared world. A document is a place within that project.

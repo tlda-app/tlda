@@ -846,6 +846,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     assets: INLINE_ASSETS,
     onCustomMessageReceived: onCustomMessage,
   })
+  // useSync returns a NEW object on every status change, and the live-perf probe is
+  // installed once from onMount — so a closure over `storeWithStatus` freezes at the
+  // mount-time value and the sampler reports "online" forever. Read through a ref
+  // that every render refreshes instead.
+  const syncStatusRef = useRef(storeWithStatus)
+  syncStatusRef.current = storeWithStatus
 
   // Override toolbar to replace note with math-note
   const overrides = useMemo(() => ({
@@ -1121,10 +1127,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
             editor.run(() => editor.setSelectedShapes(visible), { history: 'ignore' })
           })
           installLivePerfProbe(editor, document, roomId, {
-            getSyncStatus: () => ({
-              status: storeWithStatus.status,
-              connectionStatus: 'connectionStatus' in storeWithStatus ? storeWithStatus.connectionStatus : null,
-            }),
+            getSyncStatus: () => {
+              const current = syncStatusRef.current
+              return {
+                status: current.status,
+                connectionStatus: 'connectionStatus' in current ? current.connectionStatus : null,
+              }
+            },
           })
           setEditorMounted(v => v + 1)
           probe.record('startup', 'startup-tldraw-mount', performance.now() - _pageLoadStart, {
