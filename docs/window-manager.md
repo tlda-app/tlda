@@ -685,7 +685,10 @@ they are three claims:
   `body.fleet-hud-open` is `!!(expanded && fleetBounds)` (`FleetHUD.tsx:896-901`),
   the render gate returns `null` only when `!viewportId && hudOpen`
   (`useIsInViewport.ts:44-51`), and the canvas copy is hidden only under that body
-  class (`FleetHUD.css:238`). **So with the HUD closed a chat panel renders on the
+  class — `FleetHUD.css`, the `body.fleet-hud-open .tl-canvas .fleet-shape` rule,
+  which is at `:238` on this branch and `:262` on `main` because this branch
+  deleted the 24-line `.tool-passes-through` block above it. **Cite the selector
+  rather than the line for anything this branch moves.** **So with the HUD closed a chat panel renders on the
   canvas, visible, inside `.tl-html-layer` — which carries `scale(z)`**
   (`TldrawViewport.tsx:99-102` in the vendored fork). `getBoundingClientRect` is
   scaled by that transform and `scrollTop` is not.

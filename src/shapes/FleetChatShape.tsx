@@ -4035,6 +4035,10 @@ function FleetChatInner({ shape }: { shape: any }) {
           && Math.abs(top - previous.top) > 1) {
         log.metric('chat-anchor', 'anchor drifted with no input', {
           panelId: String(shape.id),
+          // Which layer drew this panel. Without it the record cannot say whether the
+          // canvas camera scaled the rects it is comparing, and a shape id cannot
+          // answer it — the HUD renders the same store, so both renderings carry one.
+          viewportId: viewportId ?? null,
           anchorKey: key,
           drift: Math.round(top - previous.top),
           scrollTop: Math.round(el.scrollTop),
@@ -4069,6 +4073,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       // has always been recorded; this is the other half of the same story.
       log.metric('chat-anchor', 'anchor row gone; viewport left uncorrected', {
         panelId: String(shape.id),
+        // Which layer drew this panel. Without it the record cannot say whether the
+        // canvas camera scaled the rects it is comparing, and a shape id cannot
+        // answer it — the HUD renders the same store, so both renderings carry one.
+        viewportId: viewportId ?? null,
         anchorKey,
         renderedRows: rows.length,
         top: el.scrollTop,
@@ -4083,6 +4091,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (Math.abs(delta) > available + 0.5) {
       log.metric('chat-anchor', 'anchor correction outside scroll range', {
         panelId: String(shape.id),
+        // Which layer drew this panel. Without it the record cannot say whether the
+        // canvas camera scaled the rects it is comparing, and a shape id cannot
+        // answer it — the HUD renders the same store, so both renderings carry one.
+        viewportId: viewportId ?? null,
         anchorKey,
         delta: Math.round(delta),
         available: Math.round(available),
@@ -4097,6 +4109,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     geometryReconcileScrollTopRef.current = el.scrollTop
     log.metric('chat-anchor', 'preserved viewport across content resize', {
       panelId: String(shape.id),
+      // Which layer drew this panel. Without it the record cannot say whether the
+      // canvas camera scaled the rects it is comparing, and a shape id cannot
+      // answer it — the HUD renders the same store, so both renderings carry one.
+      viewportId: viewportId ?? null,
       anchorKey,
       delta: Math.round(delta),
     })
@@ -4110,6 +4126,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!deferredGeometryReconcileRef.current) {
         log.metric('chat-anchor', 'geometry reconcile deferred; panel pointer active', {
           panelId: String(shape.id),
+          // Which layer drew this panel. Without it the record cannot say whether the
+          // canvas camera scaled the rects it is comparing, and a shape id cannot
+          // answer it — the HUD renders the same store, so both renderings carry one.
+          viewportId: viewportId ?? null,
           pointerCount: panelPointerIdsRef.current.size,
           scrolledUp: userScrolledUpRef.current,
           hardLocked: hardLockedRef.current,
