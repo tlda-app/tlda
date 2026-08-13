@@ -59,11 +59,20 @@ function shouldLog(ns: string, level: Level): boolean {
 // Every log() call (regardless of console threshold) is queued and flushed
 // to ~/.config/tlda/client.log via the server. Batched so a chatty namespace
 // doesn't fire N requests per frame.
-type LogEntry = { ts: string; level: Level; ns: string; msg: string; data?: any; session?: string }
+// `attempts` is local bookkeeping for the retry below and is stripped before the
+// POST, so the wire format is unchanged.
+type LogEntry = { ts: string; level: Level; ns: string; msg: string; data?: any; session?: string; attempts?: number }
 const _queue: LogEntry[] = []
 let _flushTimer: ReturnType<typeof setTimeout> | null = null
 const FLUSH_DELAY_MS = 250
 const MAX_QUEUE = 200
+// A send that fails goes back on the queue instead of being destroyed — see
+// flush(). Bounded on both axes so a permanent outage degrades rather than
+// accumulates: at most MAX_SEND_ATTEMPTS tries per line, and the queue cap
+// still drops oldest-first, so the retried lines are the first to go.
+const MAX_SEND_ATTEMPTS = 5
+const MAX_RETRY_DELAY_MS = 15_000
+let _retryDelayMs = FLUSH_DELAY_MS
 
 // Stable per-tab session id so the log shows which window said what.
 const _session = (() => {
@@ -80,12 +89,46 @@ function logBase(): string {
   return ''
 }
 
+// Drop oldest if the queue grows unbounded (e.g. server unreachable for a long
+// time). This cap is the backpressure and applies to retried lines too.
+function trimQueue() {
+  if (_queue.length > MAX_QUEUE) _queue.splice(0, _queue.length - MAX_QUEUE)
+}
+
+function scheduleFlush(delayMs: number) {
+  if (_flushTimer) return
+  _flushTimer = setTimeout(flush, delayMs)
+}
+
 function enqueue(entry: LogEntry) {
   if (typeof window === 'undefined') return
   _queue.push(entry)
-  // Drop oldest if queue grows unbounded (e.g. server unreachable for a long time)
-  if (_queue.length > MAX_QUEUE) _queue.splice(0, _queue.length - MAX_QUEUE)
-  if (!_flushTimer) _flushTimer = setTimeout(flush, FLUSH_DELAY_MS)
+  trimQueue()
+  scheduleFlush(FLUSH_DELAY_MS)
+}
+
+/** A send that failed. The lines are older than anything enqueued since, so they
+ *  go back on the front; the file is appended in arrival order and each line
+ *  carries its own `ts` (the server writes `ts: e.ts` verbatim), so a re-sent
+ *  batch landing after newer lines is still reconstructable by sorting on it. */
+function requeue(batch: LogEntry[]) {
+  const retryable: LogEntry[] = []
+  for (const entry of batch) {
+    const attempts = (entry.attempts ?? 0) + 1
+    if (attempts < MAX_SEND_ATTEMPTS) retryable.push({ ...entry, attempts })
+  }
+  if (retryable.length) {
+    _queue.unshift(...retryable)
+    trimQueue()
+  }
+  _retryDelayMs = Math.min(_retryDelayMs * 2, MAX_RETRY_DELAY_MS)
+  scheduleFlush(_retryDelayMs)
+}
+
+function post(url: string, body: string, batch: LogEntry[]) {
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+    .then(res => { if (res.ok) _retryDelayMs = FLUSH_DELAY_MS; else requeue(batch) })
+    .catch(() => requeue(batch))
 }
 
 function flush() {
@@ -93,7 +136,7 @@ function flush() {
   if (_queue.length === 0) return
   const batch = _queue.splice(0, _queue.length)
   try {
-    const body = JSON.stringify(batch)
+    const body = JSON.stringify(batch.map(({ attempts: _attempts, ...wire }) => wire))
     // Hosted (GitHub Pages → Fly): the SPA origin has no /api/log, so derive the
     // HTTP base from VITE_SYNC_SERVER and POST there. Cross-origin MUST use fetch
     // (not sendBeacon) so the authToken fetch-patch can inject the Authorization
@@ -103,12 +146,15 @@ function flush() {
     const url = base + '/api/log'
     if (!base && typeof navigator !== 'undefined' && navigator.sendBeacon) {
       const blob = new Blob([body], { type: 'application/json' })
-      const ok = navigator.sendBeacon(url, blob)
-      if (!ok) void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      // sendBeacon only reports whether the send was queued, so a queued beacon
+      // is as far as this path can see. A refused one falls through to fetch,
+      // which can tell us it failed.
+      if (navigator.sendBeacon(url, blob)) { _retryDelayMs = FLUSH_DELAY_MS; return }
+      void post(url, body, batch)
     } else {
-      void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      void post(url, body, batch)
     }
-  } catch { /* never let logging crash the app */ }
+  } catch { requeue(batch) /* never let logging crash the app */ }
 }
 
 if (typeof window !== 'undefined') {
