@@ -12,12 +12,12 @@
 import assert from 'node:assert/strict'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 
-function harness({ sessionId, launchRecipe }) {
+function harness({ sessionId, launchRecipe, joinedAt = null, aliveFrom = false }) {
   const calls = []
-  let alive = false
+  let alive = aliveFrom
   const wake = createDaemonWakeCore({
     store: {
-      resolve: fleetId => ({ mintId: 'mint-1', fleetId, sessionId, launchRecipe, friendlyName: 'half-minted' }),
+      resolve: fleetId => ({ mintId: 'mint-1', fleetId, sessionId, launchRecipe, joinedAt, friendlyName: 'half-minted' }),
       updateProcessState: (mintId, processState) => ({ mintId, fleetId: 'fleet:test', sessionId, processState }),
     },
     processAlive: async () => alive,
@@ -56,10 +56,34 @@ function harness({ sessionId, launchRecipe }) {
 
 // 3. Control — an ordinary resume is unchanged and still carries its session.
 {
-  const { wake, calls } = harness({ sessionId: 'session-1', launchRecipe: { kind: 'codex' } })
+  const { wake, calls } = harness({ sessionId: 'session-1', launchRecipe: { kind: 'codex' }, joinedAt: '2026-08-13T00:00:00Z' })
   const result = await wake({ fleet_id: 'fleet:test' })
   assert.equal(result.resumed, true)
   assert.equal(calls[0].resumeId, 'session-1')
+}
+
+// 4. A live process that never joined. It has no registry row, so it cannot be
+//    addressed by anyone — and this used to return ok:true, alreadyAlive:true.
+//    That was the third surface reporting health over the same absence on
+//    2026-08-13, after the mint and the delegate had both done it.
+{
+  const { wake, calls } = harness({ sessionId: 'session-1', launchRecipe: { kind: 'codex' }, joinedAt: null, aliveFrom: true })
+  await assert.rejects(
+    () => wake({ fleet_id: 'fleet:test' }),
+    /live process that never joined/,
+    'a running process with no registry row is not a woken agent',
+  )
+  assert.equal(calls.length, 0)
+}
+
+// 5. Control for 4 — the same live process, joined. Still the ordinary
+//    already-alive success, so the check keys on the join and not on liveness.
+{
+  const { wake, calls } = harness({ sessionId: 'session-1', launchRecipe: { kind: 'codex' }, joinedAt: '2026-08-13T00:00:00Z', aliveFrom: true })
+  const result = await wake({ fleet_id: 'fleet:test' })
+  assert.equal(result.ok, true)
+  assert.equal(result.alreadyAlive, true)
+  assert.equal(calls.length, 0)
 }
 
 console.log('wake finishes a partial mint: ok')

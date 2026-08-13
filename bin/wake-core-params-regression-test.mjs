@@ -131,6 +131,12 @@ const unreadyNotifyWake = createDaemonWakeCore({
       fleetId: 'fleet:unready',
       sessionId: 'session-unready',
       processState: { tmux_session: 'fleet-unready' },
+      // A live agent whose terminal is not ready, which is what this case is
+      // about. It has joined — a mint with a live process and no joinedAt has no
+      // registry row and is now refused rather than reported already-alive
+      // (wake-core.mjs, and wake-finishes-partial-mint-test case 4). Only the
+      // fixture changed; both assertions below are untouched.
+      joinedAt: '2026-08-12T00:00:00.000Z',
     }),
     updateProcessState: () => assert.fail('already-live notify must not update process state'),
   },

@@ -80,6 +80,35 @@ export function createDaemonWakeCore({
     }
     if (alive) {
       if (!params.takeover_existing) {
+        // `processAlive` answers "is a harness runtime in that tmux session",
+        // which is a question about a process, not about an agent. A mint whose
+        // process is up but which never completed its join has no registry row,
+        // so nobody can address it, delegate to it, or wake it — and this line
+        // used to answer `ok: true, alreadyAlive: true` for exactly that.
+        //
+        // It was the third surface reporting health over one absence in a single
+        // morning: the mint returned success, the delegate returned success, and
+        // then the wake being used as a workaround for both returned success.
+        // The roster alone said the true thing — "a resolvable name with no row
+        // is a missing agent, not a missing name".
+        //
+        // `joinedAt` is a fact rather than a proxy: mint-core sets it only after
+        // bindSeat succeeds and COALESCE keeps it, so a returning agent always
+        // carries it and only a never-joined mint lacks it.
+        //
+        // Relaunching is not the remedy — the process is already up, so the
+        // launcher would refuse it — and wake cannot make a harness log in. All
+        // this can do is stop claiming it worked, which is the whole ask.
+        //
+        // Deliberately only this branch. The takeover paths below replace the
+        // process and resume, so they have somewhere to go; I have no evidence
+        // about a never-joined takeover and am not guessing at one here.
+        if (!facts.joinedAt) {
+          throw new Error(
+            `mint ${facts.mintId} has a live process that never joined: no registry row for ${facts.fleetId || '(no fleet id)'}. `
+            + 'It cannot be addressed until it logs in; wake cannot complete a join.',
+          )
+        }
         const notified = await tell(false)
         return { ok: true, alreadyAlive: true, ...facts, ...(notified?.ok ? { notified: true } : {}) }
       }
