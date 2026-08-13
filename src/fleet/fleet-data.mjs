@@ -16,6 +16,9 @@
 import { convertChatEvent, convertChatEvents } from './convert-chat-event.mjs'
 import { applyFleetEventUpdate } from './event-update.mjs'
 export { convertChatEvent } from './convert-chat-event.mjs'
+// The panel's paging boundary. Read from the buffer at the moment it is
+// needed rather than stored beside it — see the accessor for why.
+export { oldestBufferedEventTimestamp } from './fleet-data.ts'
 import { matchesFleetFilter, resolveFleetFilter } from '../../shared/filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { bumpIdentityEpoch } from './identity-epoch.mjs'

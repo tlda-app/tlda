@@ -35,7 +35,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, completeMessageSend, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording, dumpVoiceTarget } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, oldestBufferedEventTimestamp, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, sendKey, getLastEventId, convertChatEvent } from '../fleet/fleet-data.mjs'
 // Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
 // surviving a remount is informative — the viewport-driven unmount at the bottom
 // of this file tears down every subscription, and a remount whose tail goes
@@ -6870,7 +6870,15 @@ function FleetChatInner({ shape }: { shape: any }) {
             data={allItems}
             firstItemIndex={virtuosoFirstItemIndex}
             startReached={() => {
-              if (chatEventBufferKey) requestEarlierChatHistory(chatEventBufferKey)
+              // The boundary is read from the buffer here, at the moment the
+              // reader reaches the top, rather than remembered by the
+              // subscription — the buffer is the only thing that knows where
+              // this panel's scrollback actually ends.
+              if (!chatEventBufferKey) return
+              requestEarlierChatHistory(
+                chatEventBufferKey,
+                oldestBufferedEventTimestamp(chatEventBufferKey),
+              )
             }}
             style={{ flex: 1, minHeight: 0 }}
             initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}

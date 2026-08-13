@@ -97,10 +97,20 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
   // filterKey is stored because dispatchFilterEvent read sub.filterKey and it
   // was never set — every disagreement record came out with filterKey: null,
   // which is the field you need to know WHICH panel disagreed.
+  // There is no history cursor here. Where the panel's scrollback ends is a
+  // fact about the buffer — the oldest row it is holding — so it is READ from
+  // the buffer at the moment someone scrolls up, not stored alongside it. A
+  // stored copy is a second record of the same fact, and only one of the two
+  // moved when a live-tail trim dropped the oldest rows: the cursor kept
+  // pointing older than anything still on screen, so paging asked for rows
+  // BELOW the hole the trim had just made and nothing ever asked for the hole.
+  //
+  // `hasMore` is not that fact. It says whether the server has anything before
+  // the last boundary we asked about, which the buffer cannot know, and it is
+  // what lets scrolling up dead-end honestly instead of silently.
   _subs.set(subId, {
     filter, window, onEvents, humanId, humanName, correlationKey,
     filterKey: JSON.stringify(filter ?? null),
-    nextCursor: null,
     hasMore: true,
   })
   if (_send) {
@@ -187,12 +197,12 @@ export function dispatchFilterEvents(data) {
     log.metric(NS, 'history query failed for a subscription', { subId: data.subId, error: data.error, filterKey: sub.filterKey })
   }
   const events = Array.isArray(data.events) ? data.events : []
-  // A reconnect or identity refresh replays the newest page. Preserve the
-  // deepest cursor already reached; only an explicitly older page advances it.
-  if (!data.error && (data.requestBefore != null || sub.nextCursor == null)) {
-    sub.nextCursor = data.nextCursor ?? null
-    sub.hasMore = !!data.hasMore
-  }
+  // Only a page we asked for by boundary says anything about what lies below
+  // one. A reconnect or identity refresh replays the NEWEST page, which reaches
+  // the deep end of history only in a conversation short enough to fit in one
+  // page — so letting it answer would report "nothing older" for every busy
+  // chat and dead-end scrolling up on the spot.
+  if (!data.error && data.requestBefore != null) sub.hasMore = !!data.hasMore
   for (const event of events) noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
   sub.onEvents(events, {
     subId: data.subId,
@@ -206,44 +216,30 @@ export function dispatchFilterEvents(data) {
 }
 
 /**
- * A live-tail trim dropped rows this subscription had already paged past.
+ * Ask the existing subscription for the page before `before`.
  *
- * The cursor and the buffer are two records of the same thing — where the
- * oldest row the reader can see is — and only the buffer is authoritative,
- * because it is what is on screen. Trimming moves the buffer's edge forward in
- * time and leaves the cursor where paging left it, so the cursor can end up
- * OLDER than anything still rendered. Paging from it then asks the server for
- * rows older than the hole the trim just made, and the trimmed rows are never
- * requested again by anything.
+ * `before` is the boundary the CALLER derived from what it is holding — the
+ * timestamp of its oldest row. It is a parameter rather than state here because
+ * the buffer is the only thing that knows where the scrollback ends, and it
+ * knows it without being told.
  *
- * So the trim rewinds the cursor to its own new edge. `hasMore` goes back to
- * true because a hole is by definition more to fetch, whether or not the deep
- * end of history was already reached.
- */
-export function noteChatBufferTrimmed(correlationKey, oldestRetainedTimestamp) {
-  if (!correlationKey || !oldestRetainedTimestamp) return false
-  const sub = [..._subs.values()].find(entry => entry.correlationKey === correlationKey)
-  if (!sub) return false
-  sub.nextCursor = oldestRetainedTimestamp
-  sub.hasMore = true
-  return true
-}
-
-/**
- * Ask the existing subscription for its next older page.
+ * The server's `timestamp <` is strict, so a page asked for this way is always
+ * strictly older than everything on screen: it cannot return a row the panel
+ * already holds, and it cannot fail to make progress.
  *
  * Pagination stays on the subscription wire: same filter, same subId, same
  * server predicate, same event intake. There is no direct history query.
  */
-export function requestEarlierChatHistory(correlationKey) {
-  if (!correlationKey || !_send) return false
+export function requestEarlierChatHistory(correlationKey, before) {
+  if (!correlationKey || !_send || !before) return false
   const found = [..._subs.entries()].find(([, sub]) => sub.correlationKey === correlationKey)
   if (!found) return false
   const [subId, sub] = found
-  // Guarded on the cursor alone. A request that is never answered leaves the
-  // cursor where it was, so the next startReached asks for the same page again
-  // and the panel recovers by itself.
-  if (!sub.hasMore || !sub.nextCursor) return false
+  // The one thing the buffer cannot derive: whether the server has anything at
+  // all below the last boundary we asked about. A request that is never answered
+  // leaves this true, so the next startReached asks again and the panel recovers
+  // by itself.
+  if (!sub.hasMore) return false
   // The boolean says the request was ISSUED, which is all its one caller uses it
   // for. Whether it was answered arrives later, on the record above.
   void sendSubscription(
@@ -254,7 +250,7 @@ export function requestEarlierChatHistory(correlationKey) {
       humanId: sub.humanId,
       humanName: sub.humanName,
       window: sub.window,
-      before: sub.nextCursor,
+      before,
     },
     { subId, filterKey: sub.filterKey, site: 'older-history' },
   )

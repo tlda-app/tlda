@@ -6,7 +6,7 @@ import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
 import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch, isRenderableInPanel } from './chat-freeze-probe.mjs'
 import { noteClientVerdict } from './filter-equivalence.mjs'
-import { hasChatSubscription, noteChatBufferTrimmed } from './chat-subscription.mjs'
+import { hasChatSubscription } from './chat-subscription.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -232,7 +232,7 @@ export function applyFilterEvents(
       store.upsert(event)
     }
   })
-  if (buffer.pinned) trimEventBuffer(buffer, bufferKey)
+  if (buffer.pinned) trimEventBuffer(buffer)
   return added
 }
 
@@ -318,7 +318,7 @@ function fanoutEventToBuffers(event: FleetEvent): void {
       // types the buffer accepts but chatMessages drops.
       if (_bulkIngestDepth === 0 && isRenderableInPanel(event)) noteBufferMatch(bufferKey)
       buffer.store.upsert(event)
-      if (buffer.pinned) trimEventBuffer(buffer, bufferKey)
+      if (buffer.pinned) trimEventBuffer(buffer)
     } else {
       buffer.store.remove(event.id)
       noteBufferDrop(bufferKey, getLastEventId(), unresolvedParticipantDrop(buffer, event))
@@ -326,20 +326,15 @@ function fanoutEventToBuffers(event: FleetEvent): void {
   }
 }
 
-function trimEventBuffer(buffer: EventBuffer, bufferKey: string): void {
+function trimEventBuffer(buffer: EventBuffer): void {
   const overflow = buffer.store.size - buffer.maxEvents
   if (overflow <= 0) return
-  const ordered = [...buffer.store.all()].sort(compareFleetEvents)
-  const oldest = ordered.slice(0, overflow)
+  const oldest = [...buffer.store.all()]
+    .sort(compareFleetEvents)
+    .slice(0, overflow)
   buffer.store.bulk((store) => {
     for (const event of oldest) store.remove(event.id)
   })
-  // The rows just evicted are older than the subscription's history cursor, so
-  // nothing would ever ask for them again. Move the cursor to the new edge —
-  // see noteChatBufferTrimmed for why the buffer, not the cursor, is the record
-  // of where the reader's scrollback ends.
-  const newOldest = ordered[overflow] as { timestamp?: string } | undefined
-  if (newOldest?.timestamp) noteChatBufferTrimmed(bufferKey, newOldest.timestamp)
 }
 
 export function setFleetEventBufferPinned(bufferKey: string | null | undefined, pinned: boolean): void {
@@ -347,7 +342,33 @@ export function setFleetEventBufferPinned(bufferKey: string | null | undefined, 
   const buffer = eventBuffers.get(bufferKey)
   if (!buffer) return
   buffer.pinned = !!pinned
-  if (buffer.pinned) trimEventBuffer(buffer, bufferKey)
+  if (buffer.pinned) trimEventBuffer(buffer)
+}
+
+/**
+ * The timestamp of the oldest row this buffer holds — where its scrollback ends.
+ *
+ * This is the paging boundary, and it is READ rather than stored. A live-tail
+ * trim moves it forward in time, and a stored copy did not move with it: the
+ * subscription's cursor kept pointing older than anything still on screen, so
+ * scrolling up asked for rows BELOW the gap the trim had made and nothing ever
+ * asked for the gap.
+ *
+ * Every event the buffer holds counts, not only the ones the panel renders.
+ * Using the oldest RENDERED row would leave the types the panel drops sitting
+ * below the boundary, and a page that returns only those makes no progress —
+ * the boundary would not move and the next request would repeat it.
+ */
+export function oldestBufferedEventTimestamp(bufferKey: string | null | undefined): string | null {
+  if (!bufferKey) return null
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer) return null
+  let oldest: FleetEvent | null = null
+  for (const event of buffer.store.all()) {
+    if (!oldest || compareFleetEvents(event, oldest) < 0) oldest = event
+  }
+  const timestamp = oldest?.timestamp
+  return typeof timestamp === 'string' && timestamp ? timestamp : null
 }
 
 export function clearFleetEventBuffer(bufferKey: string | null | undefined): void {
