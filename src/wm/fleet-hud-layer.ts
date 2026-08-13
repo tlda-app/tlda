@@ -13,7 +13,7 @@ import {
 	type WMCore,
 } from './wm-core.ts'
 import { ensureLayer } from './editor-wm.ts'
-import { crossAxis, type Axis } from '../shapes/document-flow-axis'
+import { crossAxis, type Axis } from '../shapes/document-flow-axis.ts'
 
 export const FLEET_HUD_ROOT_LAYER_ID = 'screen'
 export const FLEET_HUD_MAIN_CAMERA_LAYER_ID = 'main-camera'

@@ -14,7 +14,7 @@ import {
 	ensureFleetHudLayers,
 } from './fleet-hud-layer.ts'
 import { ensureLayer } from './editor-wm.ts'
-import { isMyFleetShape } from '../shapes/fleet-ownership'
+import { isMyFleetShape } from '../shapes/fleet-ownership.ts'
 
 /**
  * tlda's answer to "which layer is this shape in".
