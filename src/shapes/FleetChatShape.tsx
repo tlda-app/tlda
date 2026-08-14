@@ -117,6 +117,8 @@ import {
 import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
 import { FleetSearchResultsView } from './FleetSearchResultsView'
 import './fleet-chat.css'
+import { installPenCorrectionConsumer } from '../tools/PenTool/penCorrectionConsumer'
+import { recognizeShapes } from '../handwritingRecognize'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
@@ -3066,6 +3068,19 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
     return sorted
   }, [events, quietDmTraffic])
+  const chatMessagesRef = useRef(chatMessages)
+  chatMessagesRef.current = chatMessages
+
+  useEffect(() => {
+    if (!chatLogEl) return
+    return installPenCorrectionConsumer({
+      element: chatLogEl,
+      messages: () => chatMessagesRef.current,
+      humanId: () => getHumanId(),
+      send: sendMessage,
+      recognize: inkShapeId => recognizeShapes(editor, [inkShapeId as TLShapeId]),
+    })
+  }, [chatLogEl, editor])
 
   // Unread-per-sender for the rail, read from the rail's own to-me buffer. Same
   // count the browser-wide store used to answer: chat messages addressed to me

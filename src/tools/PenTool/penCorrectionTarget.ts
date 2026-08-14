@@ -1,9 +1,12 @@
+import type { TLShapeId } from 'tldraw'
+
 export const PEN_CORRECTION_EVENT = 'tlda-pen-correction'
 
 export type PenCorrectionTarget = {
   shapeId: string
   messageId: string
   word: string | null
+  inkShapeId?: string
 }
 
 type ResolvedPenCorrectionTarget = { row: HTMLElement; detail: PenCorrectionTarget }
@@ -30,9 +33,10 @@ export function resolvePenCorrectionTarget(x: number, y: number): ResolvedPenCor
   }
 }
 
-export function deliverPenCorrection(x: number, y: number): PenCorrectionTarget | null {
+export function deliverPenCorrection(x: number, y: number, inkShapeId?: string): PenCorrectionTarget | null {
   const target = resolvePenCorrectionTarget(x, y)
   if (!target) return null
+  if (inkShapeId) target.detail.inkShapeId = inkShapeId
   const EventConstructor = target.row.ownerDocument.defaultView?.CustomEvent ?? CustomEvent
   target.row.dispatchEvent(new EventConstructor(PEN_CORRECTION_EVENT, {
     bubbles: true,
@@ -42,12 +46,20 @@ export function deliverPenCorrection(x: number, y: number): PenCorrectionTarget 
 }
 
 export function completePenCorrection(
-  editor: { inputs: { getCurrentScreenPoint(): { x: number; y: number } } },
+  editor: {
+    inputs: { getCurrentScreenPoint(): { x: number; y: number } }
+    getCurrentPageShapeIds?(): ReadonlySet<TLShapeId>
+    getShape?(id: TLShapeId): { type?: string } | undefined
+  },
   completeStroke: () => void,
 ): void {
   const point = editor.inputs.getCurrentScreenPoint()
-  deliverPenCorrection(point.x, point.y)
+  const before = editor.getCurrentPageShapeIds?.() ?? new Set<TLShapeId>()
   completeStroke()
+  const inkShapeId = [...(editor.getCurrentPageShapeIds?.() ?? [])].find(id =>
+    !before.has(id) && editor.getShape?.(id)?.type === 'draw'
+  )
+  deliverPenCorrection(point.x, point.y, inkShapeId)
 }
 
 function wordAtPoint(row: HTMLElement, x: number, y: number): string | null {
