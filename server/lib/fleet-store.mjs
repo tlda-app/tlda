@@ -4955,6 +4955,14 @@ export class FleetStore {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
   }
 
+  pendingEditActivities(project = null) {
+    const rows = this.db.prepare(`SELECT id,type,timestamp,from_id,text,metadata FROM events
+      WHERE type='activity' AND json_extract(metadata,'$.input.edit_operation.operation_id') IS NOT NULL
+        AND json_extract(metadata,'$.input.canonical_source') IS NULL
+        AND (? IS NULL OR json_extract(metadata,'$.project')=?) ORDER BY id`).all(project, project)
+    return rows.map(row => ({ id:row.id, type:row.type, timestamp:row.timestamp, from:row.from_id, text:row.text, metadata:JSON.parse(row.metadata||'{}') }))
+  }
+
   // Overwrite metadata wholesale. NOT updateEventMetadata with a different
   // name: that one merges with json_patch, so a key the caller deliberately
   // dropped would survive, and a null value would delete a key rather than

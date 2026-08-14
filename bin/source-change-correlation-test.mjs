@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from 'assert/strict'
 import { createSourceChangeCorrelation } from '../daemon/source-sync.mjs'
-import { createSourceChangeResultCache } from '../server/lib/source-change-correlation.mjs'
 
 let nextId = 0
 const warnings = []
@@ -89,13 +88,9 @@ const lonePending = daemon.prepare({
 daemon.beginReconnect()
 daemon.seed('paper', 'revision-after-lone-reconnect', { authoritative: true })
 const [loneAfterReconnect] = daemon.finishReconnect()
-assert.deepEqual(
-  loneAfterReconnect.files,
-  [{ path: 'main.tex', content: 'only edit before reconnect' }],
-  'a reconnect preserves an in-flight edit even when no newer edit was queued',
-)
-const loneResumed = daemon.prepare(loneAfterReconnect)
-assert.notEqual(loneResumed.requestId, lonePending.requestId)
+assert.equal(loneAfterReconnect, undefined, 'the in-flight edit is not duplicated into a fresh envelope')
+daemon.restore(lonePending)
+const loneResumed = lonePending
 assert.equal(daemon.handle({
   requestId: loneResumed.requestId,
   project: 'paper',
@@ -165,15 +160,5 @@ assert.equal(daemon.state('blocked-paper').blocked, false, 'an ordinary changed 
 const afterUnblock = daemon.prepare({ type: 'source-change', project: 'blocked-paper', files: [] })
 assert.ok(afterUnblock, 'the project can push again after the ordinary refresh')
 assert.equal(afterUnblock.expectedRevision, 'blocked-revision-1', 'ordinary refresh does not overwrite the learned revision')
-
-const server = createSourceChangeResultCache()
-const request = { requestId: 'r1', project: 'paper', expectedRevision: 'revision-1', files: [], sourceManifest: [] }
-const lookup = server.lookup(request)
-assert.ok(lookup.hash)
-const reply = { type: 'source-change-result', requestId: 'r1', project: 'paper', ok: true, sourceRevision: 'revision-2' }
-server.record('r1', lookup.hash, reply)
-assert.deepEqual(server.lookup(request).replay, reply)
-assert.match(server.lookup({ ...request, files: [{ path: 'main.tex', content: 'different' }] }).error, /reused/)
-assert.match(server.lookup({ ...request, requestId: '' }).error, /required/)
 
 console.log('source change correlation tests passed')

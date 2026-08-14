@@ -5,6 +5,7 @@ import {
   DELIVERY_LATEST_WINS,
   daemonDeliveryPolicy,
 } from './delivery-policy.mjs'
+import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 
 export class DaemonDeliveryRuntime {
   constructor({
@@ -15,6 +16,9 @@ export class DaemonDeliveryRuntime {
     log = null,
     ephemeralQueueLimit = 200,
     activityDeliveryCounters = null,
+    beforeSend = null,
+    ackGate = null,
+    onDeadLetter = null,
   }) {
     this.outbox = outbox
     this.sendDirect = send
@@ -29,6 +33,9 @@ export class DaemonDeliveryRuntime {
     this.droppedCount = 0
     this.droppedWarnAt = 0
     this.activityDeliveryCounters = activityDeliveryCounters
+    this.beforeSend = beforeSend
+    this.ackGate = ackGate
+    this.onDeadLetter = onDeadLetter
   }
 
   send(message) {
@@ -38,7 +45,8 @@ export class DaemonDeliveryRuntime {
       const durableId = message?.type === 'rpc-reply' && message.id
         ? `rpc-reply:${message.id}:${message.request_fingerprint || 'unknown'}`
         : null
-      this.outbox.enqueue(message, durableId ? { id: durableId } : undefined)
+      const explicitId = message?.[DAEMON_OUTBOX_ID_FIELD] || durableId
+      this.outbox.enqueue(message, explicitId ? { id: explicitId } : undefined)
       this.recordActivityDelivery('daemonQueued', message)
       this.scheduleFlush()
       return true
@@ -66,10 +74,12 @@ export class DaemonDeliveryRuntime {
   handleAck(outboxId) {
     if (!outboxId) return
     const row = this.outbox.get(outboxId)
+    if (row?.type === 'source-change' && this.ackGate && !this.ackGate(row.payload)) return false
     this.recordActivityDelivery('daemonAcked', row?.payload || { type: row?.type || 'unknown' })
     this.outbox.ack(outboxId)
     this.inflight.delete(outboxId)
     this.scheduleFlush()
+    return true
   }
 
   handleError(outboxId, error, { permanent = false } = {}) {
@@ -77,6 +87,7 @@ export class DaemonDeliveryRuntime {
     const result = this.outbox.markError(outboxId, error || 'delivery failed', { deadLetterEligible: permanent })
     this.inflight.delete(outboxId)
     if (result?.deadLettered) {
+      this.onDeadLetter?.(this.outbox.get(outboxId)?.payload, outboxId)
       this.log?.warn?.(`daemon durable message dead-lettered after ${result.attempts} attempts: ${result.error}`)
       return
     }
@@ -137,6 +148,7 @@ export class DaemonDeliveryRuntime {
 
   trySend(message) {
     try {
+      this.beforeSend?.(message)
       return this.sendDirect(message) === true
     } catch (e) {
       this.log?.warn?.(`daemon delivery send failed for ${message?.type || 'unknown'}: ${e.message}`)

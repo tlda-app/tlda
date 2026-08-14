@@ -29,6 +29,7 @@
 
 import { normalizePrettyResult } from '../shared/activity-pretty-result.mjs'
 import { extractFunctionsExecCalls, isMcpToolName, mcpEndEvent } from './functions-exec-activity.mjs'
+import { editOperation, textChange } from './edit-operation.mjs'
 
 // Native Codex tool name → Claude vocabulary, so a Codex agent's activity
 // stream reads identically to a Claude agent's (Skip's call, 2026-06-15:
@@ -231,12 +232,16 @@ function applyPatchEvent(patchBody, callId, ts) {
     // unparseable patch — still surface as a single Edit so it's not lost
     return { type: 'assistant', timestamp: ts, blocks: [{ type: 'tool_use', name: 'Edit', input: { _raw: patchBody }, id: callId }] }
   }
-  const blocks = files.map((f, i) => ({
+  const blocks = files.map((f, i) => {
+    const removed = f.diff.split('\n').filter(line => line.startsWith('-') && !line.startsWith('---')).map(line => line.slice(1)).join('\n')
+    const added = f.diff.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n')
+    const operation = editOperation('edit', `${callId || 'patch'}#${i}`, [f.path, f.movedTo], [textChange(f.path, removed, added)])
+    return {
     type: 'tool_use',
     name: 'Edit',
-    input: { file_path: f.path, op: f.op, diff: f.diff, ...(f.movedTo ? { movedTo: f.movedTo } : {}) },
+    input: { file_path: f.path, op: f.op, diff: f.diff, edit_operation: operation, ...(f.movedTo ? { movedTo: f.movedTo } : {}) },
     id: (callId || 'patch') + '#' + i,
-  }))
+  }})
   return { type: 'assistant', timestamp: ts, blocks }
 }
 

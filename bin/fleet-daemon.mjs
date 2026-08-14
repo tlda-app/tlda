@@ -114,6 +114,7 @@ import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
+import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
@@ -215,6 +216,7 @@ const resolveAgentRoute = createAgentRouteResolver({
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
 const LOCAL_RPC_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, ACTIVE_ENV)
 const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR, DAEMON_STATE_SUFFIX)
+const EDIT_OPERATION_STORE_FILE = path.join(CONFIG_DIR, `edit-operations${DAEMON_STATE_SUFFIX}.sqlite`)
 const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, `daemon-dead-letters${DAEMON_STATE_SUFFIX}.jsonl`)
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects')
 
@@ -396,8 +398,25 @@ function bufferActivity(agentId, evts) {
       daemonReceivedAtMs,
     }
     const filePath = stamped?.input?.file_path || stamped?.input?.path
-    const source = filePath ? sourceSync.sourceFileForAbsolutePath(filePath) : null
-    return source ? { ...stamped, project: source.project, sourceFile: source.file } : stamped
+    const agent = agents.find(item => item.id === agentId)
+    const cwd = agent?.cwd || agent?.metadata?.cwd
+    const absolutePath = filePath && (path.isAbsolute(filePath) ? filePath : (cwd ? path.resolve(cwd, filePath) : null))
+    const source = absolutePath ? sourceSync.sourceFileForAbsolutePath(absolutePath) : null
+    const operation = stamped?.input?.edit_operation
+    const files = operation?.files?.map(file => {
+      const absolute = path.isAbsolute(file.path) ? file.path : (cwd ? path.resolve(cwd, file.path) : null)
+      return absolute ? sourceSync.sourceFileForAbsolutePath(absolute)?.file : null
+    }).filter(Boolean)
+    const normalizedOperation = operation && files?.length ? {
+      ...operation, operation_id: `${agentId}:${operation.operation_id}`, files: [...new Set(files)].map(file => ({ path: file })),
+      ...(operation.changes ? { changes: operation.changes.map(change => {
+        const absolute = change.path && (path.isAbsolute(change.path) ? change.path : (cwd ? path.resolve(cwd, change.path) : null))
+        return { ...change, ...(absolute ? { path: sourceSync.sourceFileForAbsolutePath(absolute)?.file || change.path } : {}) }
+      }) } : {}),
+    } : null
+    if (absolutePath && normalizedOperation) jsonlIngestor.recordEdit(agentId, absolutePath, normalizedOperation)
+    const normalized = normalizedOperation ? { ...stamped, input: { ...stamped.input, edit_operation: normalizedOperation } } : stamped
+    return source ? { ...normalized, project: source.project, sourceFile: source.file } : normalized
   })
   // A JSONL line is a per-turn heartbeat. Warm the liveness cache keyed by
   // tmux_session so rpcCheckAlive / wake read "alive" from observed activity,
@@ -442,6 +461,7 @@ function currentJsonlBindingAgents() {
   })
 }
 
+const editOperationStore = new EditOperationStore(EDIT_OPERATION_STORE_FILE)
 jsonlIngestor = createJsonlIngestor({
   configDir: CONFIG_DIR,
   cursorsFile: CURSORS_FILE,
@@ -460,6 +480,7 @@ jsonlIngestor = createJsonlIngestor({
   bufferActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
   activityDeliveryCounters: daemonActivityDeliveryCounters,
+  editOperationStore,
   jsonlTailIdleMs: getJsonlTailIdleMs(),
   recordMintMarker: marker => {
     if (!daemonMintCore) throw new Error('daemon mint core is not initialized')
@@ -495,6 +516,8 @@ const sourceSync = createSourceSync({
   sendMsg,
   isConnected: () => !!_rws?.connected,
   resolveEditor: jsonlIngestor.resolveEditor,
+  editOperationStore,
+  verifyOutbox: id => daemonOutbox?.get(id),
 })
 
 let lastInvalidSourceOwnerSignature = null
@@ -1273,6 +1296,18 @@ const daemonDelivery = new DaemonDeliveryRuntime({
   isReady: () => _serverReady === true,
   log,
   activityDeliveryCounters: daemonActivityDeliveryCounters,
+  beforeSend: message => { if (message?.type === 'source-change') sourceSync.restoreDurableSourceChange(message) },
+  ackGate: payload => {
+    const disposition = editOperationStore.disposition(payload?.__daemon_outbox_id)
+    if (!disposition) return !(payload?.editOperations?.length || payload?.editOperation)
+    if (disposition.kind === 'retry_pending') return disposition.retry_enqueued === 1 && !!daemonOutbox.get(disposition.retry_outbox_id)
+    return disposition.operationIds.every(id => editOperationStore.state(id)?.state !== 'pending')
+  },
+  onDeadLetter: (payload, outboxId) => {
+    if (payload?.type !== 'source-change') return
+    const ids = (payload.editOperations || (payload.editOperation ? [{ operation: payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)
+    editOperationStore.applyDisposition({ outboxId, kind: 'quarantined', operationIds: ids, reason: 'transport-dead-letter' })
+  },
 })
 
 function migrateLegacyDeadLetters() {
@@ -1581,6 +1616,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     sourceSync.beginReconnect()
     applyProjectWorldOwnership('daemon-welcome', { authoritativeRevisions: true })
     sourceSync.finishReconnect()
+    sourceSync.recoverRetries()
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`connected work received: ${projects.length} projects`)
     daemonDelivery.noteReady()
@@ -1706,6 +1742,7 @@ function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   jsonlIngestor.shutdown()
+  editOperationStore.close()
   teardownWatchers({ jsonl: false, reason: 'shutdown' })
   unlinkPidfileIfOwnPid(PID_FILE, process.pid)
   _rws?.close()

@@ -55,8 +55,8 @@ function textOrNull(buf) {
 }
 
 function lineDiffHunks(beforeValue, afterValue) {
-  const beforeText = textOrNull(beforeValue)
-  const afterText = textOrNull(afterValue)
+  const beforeText = beforeValue == null ? '' : textOrNull(beforeValue)
+  const afterText = afterValue == null ? '' : textOrNull(afterValue)
   if (beforeText == null || afterText == null) return []
   const beforeLines = beforeText.split('\n')
   const afterLines = afterText.split('\n')
@@ -90,10 +90,10 @@ function lineDiffHunks(beforeValue, afterValue) {
       continue
     }
     current ||= { old_start: oldLine, new_start: newLine, removed: [], added: [] }
-    if (kind === -1) {
+    if (kind === 1) {
       current.removed.push(line)
       oldLine += 1
-    } else if (kind === 1) {
+    } else if (kind === -1) {
       current.added.push(line)
       newLine += 1
     }
@@ -304,6 +304,53 @@ function appendDirectEvents(name, txn, body = {}) {
   })
 }
 
+function lineHashSet(text) { return new Set(String(text || '').split('\n').filter(line => line.trim()).map(line => createHash('sha256').update(line).digest('hex'))) }
+function operationMatches(operation, file, hunk) {
+  const changes = (operation?.changes || []).filter(change => !change.path || change.path === file.path)
+  if (!changes.some(change => change.removed_line_sha256?.length || change.added_line_sha256?.length)) return true
+  const before = lineHashSet(hunk.before_text), after = lineHashSet(hunk.after_text)
+  return changes.some(change => (change.removed_line_sha256 || []).every(hash => before.has(hash)) && (change.added_line_sha256 || []).every(hash => after.has(hash)))
+}
+
+function appendOperationEvents(name, txn, records) {
+  const remaining = new Map(txn.changed_files.map(file => [file.path, new Set(file.hunks.map((_,i)=>i))]))
+  const groups = new Map()
+  for (const record of records) {
+    const signature = stableJson({ files: record.operation?.files, changes: record.operation?.changes })
+    const group = groups.get(signature) || []; group.push(record); groups.set(signature, group)
+  }
+  const ambiguousIds = new Set(), eventIds = []
+  for (const group of groups.values()) {
+    if (group.length < 2) continue
+    const operation = group[0].operation
+    const paths = new Set((operation.files || []).map(file=>file.path))
+    const changed_files = txn.changed_files.filter(file => paths.has(file.path)).map(file => ({ ...file, hunks: file.hunks.filter(hunk => operationMatches(operation,file,hunk)) })).filter(file=>file.hunks.length)
+    if (!changed_files.length) continue
+    const ids = group.map(record=>record.operation.operation_id).sort()
+    ids.forEach(id=>ambiguousIds.add(id))
+    for (const file of changed_files) for (const hunk of file.hunks) remaining.get(file.path).delete(txn.changed_files.find(x=>x.path===file.path).hunks.indexOf(hunk))
+    const event_id = stableId('edit',{source_transaction_id:txn.record_id,ambiguous_operations:ids})
+    appendEditEvent(name,{...eventBaseForTransaction(txn),event_id,actor_kind:'unknown',actor_id:null,actor_display_name:'Ambiguous',attribution_status:'unknown',attribution_basis:{rule:'daemon-ambiguous-operation-coordinates',source_transaction_id:txn.record_id,candidate_operation_ids:ids},changed_files,manual_residual:false,ambiguous:true})
+    eventIds.push(event_id)
+  }
+  for (const record of records) {
+    const operation=record.operation
+    if (!operation?.operation_id || ambiguousIds.has(operation.operation_id)) continue
+    const paths=new Set((operation.files||[]).map(file=>file.path)), changed_files=[]
+    for (const file of txn.changed_files) {
+      if (!paths.has(file.path)) continue
+      const indices=[...remaining.get(file.path)].filter(i=>operationMatches(operation,file,file.hunks[i]))
+      if (!indices.length) continue
+      changed_files.push({...file,hunks:indices.map(i=>file.hunks[i])}); indices.forEach(i=>remaining.get(file.path).delete(i))
+    }
+    if (!changed_files.length) continue
+    const event_id=stableId('edit',{source_transaction_id:txn.record_id,operation_id:operation.operation_id})
+    appendEditEvent(name,{...eventBaseForTransaction(txn),event_id,actor_kind:'agent',actor_id:record.agentId||null,actor_display_name:record.agentId||null,attribution_status:'derived',attribution_basis:{rule:'daemon-edit-operation',source_transaction_id:txn.record_id,operation_id:operation.operation_id,operation_kind:operation.kind},changed_files,manual_residual:false,ambiguous:false})
+    eventIds.push(event_id)
+  }
+  return { eventIds, ambiguousIds }
+}
+
 function latestEventsById(events) {
   const byId = new Map()
   for (const event of events) byId.set(event.event_id, event)
@@ -378,6 +425,7 @@ export async function recordAcceptedSourceTransaction(name, body = {}, acceptedS
     previous: acceptedSourceMutation.previousRevision || null,
     after: acceptedSourceMutation.sourceRevision,
     changed_files,
+    ...(Array.isArray(body.editOperations) ? { edit_operations: body.editOperations } : {}),
   })
   const txn = {
     record_type: 'source_transaction',
@@ -397,6 +445,12 @@ export async function recordAcceptedSourceTransaction(name, body = {}, acceptedS
   }
   appendJsonl(name, 'source-transactions', txn)
   if (origin === 'daemon') {
+    const records = body.editOperations || (body.editOperation ? [{ agentId: body.editedBy, operation: body.editOperation }] : [])
+    if (records.length) {
+      const emitted = appendOperationEvents(name, txn, records)
+      appendJsonl(name, 'attribution-pending', { record_type:'attribution_pending', record_id:stableId('pending',{source_transaction_id:record_id,operations:records.map(r=>r.operation?.operation_id)}), project:name, source_transaction_id:record_id, daemon_key:body.sourceDaemonKey||null, state:emitted.ambiguousIds.size?'ambiguous':(emitted.eventIds.length===records.length?'finalized':'pending'), pending_reason:emitted.ambiguousIds.size?'ambiguous-edit-operation-coordinates':null, candidate_operation_ids:[...emitted.ambiguousIds] })
+      return txn
+    }
     appendJsonl(name, 'attribution-pending', {
       record_type: 'attribution_pending',
       record_id: stableId('pending', { source_transaction_id: record_id, state: 'pending' }),

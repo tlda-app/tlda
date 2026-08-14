@@ -1175,6 +1175,9 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         deletedFiles: deletedFiles || [],
         sourceManifest: nextManifest || [],
       }
+      if (transactionTest.simulateCrashAfterSourceMutation) {
+        return { status: 597, ok: false, simulatedCrash: true, boundary: 'after-source-mutation' }
+      }
     }
     if (transactionTest.failAt === 'manifest' || transactionTest.failAt === 'clone-restore') {
       throw new Error('Injected failure after manifest persistence')
@@ -1204,6 +1207,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         sourceRevision: acceptedSourceMutation.sourceRevision,
         acceptSeq: authority.acceptSeq,
         disposition: 'accepted',
+        operationIds: (body.editOperations || (body.editOperation ? [{ operation: body.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean),
       }
       lifecycle.finishOperation(name, sourceOperation.requestId, 'accepted', terminalResult, {
         acceptSeq: authority.acceptSeq,
@@ -1213,11 +1217,15 @@ export async function processProjectPushSerialized(name, body, transactionTest =
           type: 'accepted-source-mutation',
           acceptSeq: authority.acceptSeq,
           mutation: acceptedSourceMutation,
+          editOperations: body.editOperations || (body.editOperation ? [{ agentId: body.editedBy || null, operation: body.editOperation }] : []),
         }],
       })
     } else if (acceptedSourceMutation?.sourceRevision) {
       const authority = lifecycle.readAuthority()
       lifecycle.recordAcceptedRevision(name, acceptedSourceMutation.sourceRevision, authority.acceptSeq)
+    }
+    if (transactionTest.simulateCrashAfterTerminalResult) {
+      return { status: 596, ok: false, simulatedCrash: true, boundary: 'after-terminal-result' }
     }
     await transaction.commit()
     if (acceptedSourceMutation) {

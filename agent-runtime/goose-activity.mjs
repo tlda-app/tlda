@@ -17,6 +17,7 @@ import { parseApplyPatchFiles } from './codex-activity.mjs'
 import { normalizePrettyResult, truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import { humanToolName, isPrettyPrintTool, toolBaseName } from '../shared/activity-tool-classification.mjs'
 import { isObservableDaemonProcessBinding } from './daemon-process-binding.mjs'
+import { editOperation, textChange } from './edit-operation.mjs'
 
 const pendingPrettyPrint = new Map()
 
@@ -51,7 +52,10 @@ function gooseApplyPatchEvents(input, blockId, ts) {
       input: { _raw: patch },
     }]
   }
-  return files.map((f, i) => ({
+  return files.map((f, i) => {
+    const removed = f.diff.split('\n').filter(line => line.startsWith('-') && !line.startsWith('---')).map(line => line.slice(1)).join('\n')
+    const added = f.diff.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n')
+    return {
     tool: 'Edit',
     arg: f.path,
     ts,
@@ -60,9 +64,10 @@ function gooseApplyPatchEvents(input, blockId, ts) {
       file_path: f.path,
       op: f.op,
       diff: f.diff,
+      edit_operation: editOperation('edit', `${blockId || 'patch'}#${i}`, [f.path, f.movedTo], [textChange(f.path, removed, added)]),
       ...(f.movedTo ? { movedTo: f.movedTo } : {}),
     },
-  }))
+  }})
 }
 
 // Map one goose message row (content_json = array of blocks) to activity events
@@ -104,7 +109,15 @@ export function gooseMessageEvents(row, isNoise) {
         input.message || input.query || input.description || input.reason ||
         input.doc || input.ref || input.text || ''
       const evt = { tool: humanName, arg: String(arg), ts, id: b.id }
-      if (input && Object.keys(input).length > 0) evt.input = input
+      if (input && Object.keys(input).length > 0) {
+        const lower = String(humanName).toLowerCase()
+        const file = input.file_path || input.path
+        const before = input.old_string ?? input.before ?? ''
+        const after = input.new_string ?? input.after ?? input.content ?? ''
+        evt.input = ['edit','write','multiedit'].includes(lower) && file
+          ? { ...input, edit_operation: editOperation(lower, b.id, [file], [textChange(file, before, after)]) }
+          : input
+      }
       if (isPrettyPrintTool(name) && b.id) {
         if (responsesInRow.has(b.id)) {
           evt.prettyResult = truncatePrettyResult(responsesInRow.get(b.id), name)

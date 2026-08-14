@@ -13,6 +13,7 @@ import {
   recordAcceptedSourceTransaction,
 } from './edit-events.mjs'
 import { __test as sourceEditTest, activeSourceEditors, recordSourceEditActivity, recordSourceEditTurnEnded } from './source-edit-activity.mjs'
+import { editOperation, textChange } from '../../agent-runtime/edit-operation.mjs'
 
 async function withProject(fn) {
   const root = mkdtempSync(join(tmpdir(), 'tlda-edit-events-'))
@@ -282,5 +283,37 @@ test('readEditEvents returns canonical events and actor facets', async () => {
     assert.equal(payload.events.length, 1)
     assert.equal(payload.events[0].event_id.startsWith('edit-'), true)
     assert.equal(payload.actors[0].display_name, 'skip')
+  })
+})
+
+test('stored edit operations distinguish back-to-back edits and preserve ambiguity honestly', async () => {
+  await withProject(async name => {
+    const before = await bootstrap(name, 'alpha\nkeep\nbeta\n')
+    const after = await submit(name, before, 'ALPHA\nkeep\nBETA\n')
+    const first = editOperation('Edit', 'O-first', ['main.tex'], [textChange('main.tex', 'alpha', 'ALPHA')])
+    const second = editOperation('Edit', 'O-second', ['main.tex'], [textChange('main.tex', 'beta', 'BETA')])
+    await recordAcceptedSourceTransaction(name, { requestId: 'distinct', sourceDaemonKey: 'mini:testing', editOperations: [{ agentId: 'a', operation: first }, { agentId: 'b', operation: second }] }, { previousRevision: before, sourceRevision: after, files: [{ path: 'main.tex' }], sourceManifest: ['main.tex'] })
+    let payload = await readEditEvents(name)
+    assert.deepEqual(payload.events.map(event => event.attribution_basis.operation_id).sort(), ['O-first', 'O-second'])
+
+    const afterIdentical = await submit(name, after, 'ALPHA!\nkeep\nBETA\n')
+    const identicalA = editOperation('Edit', 'O-identical-a', ['main.tex'], [textChange('main.tex', 'ALPHA', 'ALPHA!')])
+    const identicalB = editOperation('Edit', 'O-identical-b', ['main.tex'], [textChange('main.tex', 'ALPHA', 'ALPHA!')])
+    await recordAcceptedSourceTransaction(name, { requestId: 'ambiguous', sourceDaemonKey: 'mini:testing', editOperations: [{ agentId: 'a', operation: identicalA }, { agentId: 'b', operation: identicalB }] }, { previousRevision: after, sourceRevision: afterIdentical, files: [{ path: 'main.tex' }], sourceManifest: ['main.tex'] })
+    payload = await readEditEvents(name)
+    const ambiguous = payload.events.find(event => event.attribution_basis.candidate_operation_ids?.includes('O-identical-a'))
+    assert.equal(ambiguous.ambiguous, true)
+    assert.deepEqual(ambiguous.attribution_basis.candidate_operation_ids, ['O-identical-a', 'O-identical-b'])
+  })
+})
+
+test('stored move operation retains both source coordinates', async () => {
+  await withProject(async name => {
+    const before = await bootstrapFiles(name, [{ path: 'old.tex', content: 'moved\n' }])
+    const after = await submitFiles(name, before, [{ path: 'new.tex', content: 'moved\n' }])
+    const move = editOperation('Move', 'O-move', ['old.tex', 'new.tex'])
+    await recordAcceptedSourceTransaction(name, { requestId: 'move', sourceDaemonKey: 'mini:testing', editOperations: [{ agentId: 'a', operation: move }] }, { previousRevision: before, sourceRevision: after, files: [{ path: 'new.tex' }], deletedFiles: ['old.tex'], sourceManifest: ['new.tex'] })
+    const event = (await readEditEvents(name)).events.find(candidate => candidate.attribution_basis.operation_id === 'O-move')
+    assert.deepEqual(event.changed_files.map(file => file.path).sort(), ['new.tex', 'old.tex'])
   })
 })

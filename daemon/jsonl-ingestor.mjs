@@ -371,6 +371,7 @@ export function createJsonlIngestor({
   bufferActivity,
   extractActivityEvents,
   activityDeliveryCounters = null,
+  editOperationStore = null,
   recordMintMarker = null,
   resolveMintFacts = null,
   machineId = null,
@@ -772,14 +773,19 @@ export function createJsonlIngestor({
   function canonPath(p) {
     try { return fs.realpathSync(p) } catch { return p }
   }
-  function recordEdit(agentId, filePath) {
+  function recordEdit(agentId, filePath, operation = null) {
     if (!agentId || !filePath) return
-    _lastEditor.set(canonPath(filePath), { agentId, ts: Date.now() })
+    const agent = getAgents().find(item => item.id === agentId)
+    const absolute = path.isAbsolute(filePath) ? filePath : (agent?.cwd ? path.resolve(agent.cwd, filePath) : null)
+    if (!absolute) return
+    if (editOperationStore && operation?.operation_id) { editOperationStore.record(agentId, canonPath(absolute), operation); return }
+    _lastEditor.set(canonPath(absolute), { agentId, operation, ts: Date.now() })
   }
   // Resolve the most-recent agent who edited one of the given absolute paths
   // within the recency window. Returns null if none match.
   const EDIT_ATTRIBUTION_WINDOW_MS = 10 * 60 * 1000
   function resolveEditor(absPaths) {
+    if (editOperationStore) return editOperationStore.pendingForPaths(absPaths.map(canonPath), { sinceMs: Date.now() - EDIT_ATTRIBUTION_WINDOW_MS })
     let best = null
     const now = Date.now()
     for (const p of absPaths) {
@@ -787,7 +793,7 @@ export function createJsonlIngestor({
       if (!rec || now - rec.ts > EDIT_ATTRIBUTION_WINDOW_MS) continue
       if (!best || rec.ts > best.ts) best = rec
     }
-    return best?.agentId || null
+    return best ? [best] : []
   }
 
   async function syncSessionWatchers(agentList) {
@@ -1602,7 +1608,7 @@ export function createJsonlIngestor({
       const input = block.input || {}
       const filePath = input.file_path || input.path || ''
       if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
-        recordEdit(agentId, filePath)
+        if (!editOperationStore) recordEdit(agentId, filePath, input.edit_operation || null)
       }
     }
   }
@@ -1768,6 +1774,7 @@ export function createJsonlIngestor({
     nativeSubagentRoutes,
     nativeSubagentRouteForToolUse,
     resolveEditor,
+    recordEdit,
     hasWatcherForAgent,
     teardown,
     shutdown,

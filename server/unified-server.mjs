@@ -136,6 +136,7 @@ import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.m
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord, shouldStoreDaemonActivity } from './lib/daemon-activity-ingest.mjs'
 import { appendAgentActionFromActivity } from './lib/edit-events.mjs'
+import { createEditActivityProjector } from './lib/edit-activity-projector.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
@@ -1423,6 +1424,11 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
   listDaemonKeys: () => [...daemonConnections.keys()],
 }))
 
+const editActivityProjector = createEditActivityProjector({
+  fleetStore,
+  onProjected: (id, metadataPatch) => broadcastEvent('event-update', { id, metadata_patch: metadataPatch }),
+})
+void editActivityProjector.project().catch(e => console.error(`[edit-projector] startup failed: ${e.message}`))
 setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
   const roomResult = await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
   if (Array.isArray(roomResult?.conflicted) && roomResult.conflicted.length > 0) {
@@ -1435,6 +1441,7 @@ setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
   if (Array.isArray(roomResult?.applied) && roomResult.applied.length > 0) {
     await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
   }
+  await editActivityProjector.project(message.project)
   const keys = [...daemonConnections.keys()].filter(key => key !== sourceDaemonKey)
   if (keys.length === 0) return
   const settled = await Promise.allSettled(keys.map(key =>
@@ -8582,6 +8589,14 @@ const {
   serverDaemonOutboxInflight,
   fleetStore,
   socketCanAcceptMore,
+  replayProcessedDaemonMessage: async (ws, msg) => {
+    if (msg?.type !== 'source-change') return
+    const deliveryId = daemonOutboxId(msg)
+    if (!msg.project || !deliveryId) throw new Error('processed source-change is missing project or delivery id')
+    const operation = (await sourceLifecycleStore(msg.project)).readOperationByDeliveryId(msg.project, deliveryId)
+    if (!operation?.terminalResult) throw new Error(`processed source-change ${deliveryId} has no terminal source operation`)
+    ws.send(JSON.stringify(operation.terminalResult))
+  },
 })
 
 // Set (or clear, with syncError=null) the mirror/shadow sync-failure state on a
@@ -9202,7 +9217,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-change') {
-    const { project, files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId } = msg
+    const { project, files, deletedFiles, sourceManifest, editedBy, editOperation, editOperations, expectedRevision, requestId } = msg
     const deliveryId = daemonOutboxId(msg)
     if (typeof requestId !== 'string' || !requestId.trim()) {
       ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: 'requestId is required' }))
@@ -9234,6 +9249,8 @@ async function handleDaemonWsMessage(ws, msg) {
         deletedFiles,
         sourceManifest,
         editedBy,
+        editOperation,
+        editOperations,
         expectedRevision,
         requestId,
         deliveryId,

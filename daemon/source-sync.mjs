@@ -1,7 +1,8 @@
 import chokidar from 'chokidar'
 import fs from 'fs'
 import path from 'path'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
+import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, isTextSourcePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
@@ -45,6 +46,10 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
     }
     merged.files = [...files.values()]
     merged.deletedFiles = [...deleted]
+    const operationRecords = payload => payload.editOperations || (payload.editOperation ? [{ agentId: payload.editedBy, operation: payload.editOperation }] : [])
+    const operations = [...operationRecords(previous), ...operationRecords(next)]
+    if (operations.length) merged.editOperations = [...new Map(operations.map(record => [record.operation?.operation_id, record])).values()]
+    delete merged.editOperation
     return merged
   }
 
@@ -61,18 +66,14 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
         return null
       }
       const requestId = makeId()
-      const message = { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null }
+      const message = { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null, [DAEMON_OUTBOX_ID_FIELD]: payload[DAEMON_OUTBOX_ID_FIELD] || randomUUID() }
       pending.set(requestId, { project: payload.project, payload, retried })
       pendingProjects.add(payload.project)
       return message
     },
     beginReconnect() {
-      // The old request's fate is unknowable, and result caches are scoped to
-      // its dead WebSocket. Fold its bytes into the newest queued edit, then
-      // wait for sync() to seed the server's current revision.
-      for (const request of pending.values()) {
-        queued.set(request.project, mergePayloads(request.payload, queued.get(request.project)))
-      }
+      // In-flight requests already live in the durable outbox and replay with
+      // their original identity. Only later, unsent changes remain queued.
       pending.clear()
       pendingProjects.clear()
     },
@@ -111,6 +112,28 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       return true
     },
     takeRetry() { return retries.shift() ?? null },
+    pendingRequest(requestId) { return pending.get(requestId) || null },
+    settleOperations(project, operationIds) {
+      if (!operationIds?.length) return
+      const settled = new Set(operationIds)
+      const filter = payload => {
+        const records = payload.editOperations || (payload.editOperation ? [{ agentId: payload.editedBy, operation: payload.editOperation }] : [])
+        const remaining = records.filter(record => !settled.has(record.operation?.operation_id))
+        const next = { ...payload }
+        delete next.editOperation
+        delete next.editedBy
+        if (remaining.length) next.editOperations = remaining
+        else delete next.editOperations
+        return next
+      }
+      if (queued.has(project)) queued.set(project, filter(queued.get(project)))
+      for (const retry of retries) if (retry.payload?.project === project) retry.payload = filter(retry.payload)
+    },
+    restore(message) {
+      if (!message?.requestId || !message?.project || pending.has(message.requestId)) return
+      pending.set(message.requestId, { project: message.project, payload: message, retried: Boolean(message.retryOf) })
+      pendingProjects.add(message.project)
+    },
     // The person now has conflict markers in their own copy, so the machine
     // stops deciding: drop the automatic retry (it would re-send the pre-merge
     // text and silently clobber the other peer) and do not block either, so the
@@ -133,7 +156,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
   }
 }
 
-export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, reconcileIntervalMs = 1000, watch = chokidar.watch }) {
+export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, editOperationStore = null, verifyOutbox = () => null, retryFault = null, reconcileIntervalMs = 1000, watch = chokidar.watch }) {
   const sourceWatchers = new Map()
   const sourceCorrelation = createSourceChangeCorrelation({ log })
 
@@ -212,10 +235,20 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   }
 
   function handleSourceChangeResult(message) {
+    const request = sourceCorrelation.pendingRequest(message.requestId)
+    if (!request) return false
     const conflicted = message?.status === 'stale-base' ? writeConflictsToWorkingCopy(message) : []
     const handled = sourceCorrelation.handle(message)
     if (!handled) return false
+    const outboxId = message.outbox_id || request.payload?.[DAEMON_OUTBOX_ID_FIELD]
+    const operationIds = (request.payload?.editOperations || (request.payload?.editOperation ? [{ operation: request.payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)
+    if (message.ok) sourceCorrelation.settleOperations(message.project, operationIds)
     if (conflicted.length > 0) sourceCorrelation.holdForHuman(message.project)
+    if (editOperationStore && outboxId && operationIds.length) {
+      if (message.ok) editOperationStore.applyDisposition({ outboxId, kind: 'accepted', operationIds })
+      else if (conflicted.length) editOperationStore.applyDisposition({ outboxId, kind: 'retired', operationIds, reason: 'conflict-human-handoff' })
+      else if (message.status !== 'stale-base' || request.retried) editOperationStore.applyDisposition({ outboxId, kind: 'retired', operationIds, reason: request.retried ? 'retry-exhausted' : 'permanent-source-rejection' })
+    }
     if (!message?.ok && conflicted.length === 0) {
       const detail = message.error || message.status || 'unknown'
       sendMsg({
@@ -229,8 +262,37 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       })
     }
     let retry
-    while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry.payload, retry.retried)
+    while ((retry = sourceCorrelation.takeRetry())) {
+      if (!retry.retried || !editOperationStore || !outboxId) { sendSourceChange(retry.payload, retry.retried); continue }
+      const semanticFingerprint = createHash('sha256').update(JSON.stringify(retry.payload)).digest('hex')
+      const retryRequestId = createHash('sha256').update(`source-retry-request\0${outboxId}\0${message.authority?.currentRevision || ''}\0${semanticFingerprint}`).digest('hex')
+      const retryOutboxId = createHash('sha256').update(`source-retry-envelope\0${outboxId}\0${retryRequestId}`).digest('hex')
+      const payload = { ...retry.payload, requestId: retryRequestId, expectedRevision: message.authority?.currentRevision || null, retryOf: outboxId, [DAEMON_OUTBOX_ID_FIELD]: retryOutboxId }
+      const requestFingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+      retryFault?.('before-disposition')
+      editOperationStore.applyDisposition({ outboxId, kind: 'retry_pending', operationIds, retry: { outboxId: retryOutboxId, requestId: retryRequestId, fingerprint: requestFingerprint, payload } })
+      retryFault?.('after-disposition')
+      sourceCorrelation.restore(payload)
+      sendMsg(payload)
+      retryFault?.('after-outbox-insert')
+      const row = verifyOutbox(retryOutboxId)
+      if (row && createHash('sha256').update(JSON.stringify(row.payload)).digest('hex') === requestFingerprint) {
+        editOperationStore.markRetryEnqueued(outboxId)
+        retryFault?.('after-retry-enqueued')
+      }
+    }
     return true
+  }
+
+  function restoreDurableSourceChange(message) { sourceCorrelation.restore(message) }
+
+  function recoverRetries() {
+    for (const disposition of editOperationStore?.pendingRetries?.() || []) {
+      sourceCorrelation.restore(disposition.retryPayload)
+      sendMsg(disposition.retryPayload)
+      const row = verifyOutbox(disposition.retry_outbox_id)
+      if (row && createHash('sha256').update(JSON.stringify(row.payload)).digest('hex') === disposition.retry_fingerprint) editOperationStore.markRetryEnqueued(disposition.outbox_id)
+    }
   }
 
   function applyAcceptedSourceUpdate(message = {}) {
@@ -1018,7 +1080,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (state.watcherKey !== nextWatcherKey) startSourceWatcher(state, 'dependency rescan')
 
     // Edit attribution: which agent's recent Edit/Write touched a changed file.
-    const editedBy = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel)))
+    const editors = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel))) || []
 
     sendSourceChange({
       type: 'source-change',
@@ -1032,7 +1094,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         files.map(f => f.path),
       ),
       ...(deleted.length > 0 && { deletedFiles: deleted }),
-      ...(editedBy && { editedBy }),
+      ...(editors.length === 1 ? { editedBy: editors[0].agentId, editOperation: editors[0].operation } : {}),
+      ...(editors.length > 1 ? { editOperations: editors.map(editor => ({ agentId: editor.agentId, operation: editor.operation })) } : {}),
     })
   }
 
@@ -1081,5 +1144,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     applyAcceptedSourceUpdate,
     closeAll,
     handleSourceChangeResult,
+    restoreDurableSourceChange,
+    recoverRetries,
   }
 }

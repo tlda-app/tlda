@@ -186,6 +186,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'updateAgentMeta',
   'updateAgentStatus',
   'updateEventMetadata',
+  'pendingEditActivities',
   'updateEventText',
   'updateHeartbeat',
   'upsertAgent',

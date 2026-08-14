@@ -1,6 +1,17 @@
 import fs from 'fs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import { ACTIVITY_NOISE, isPrettyPrintTool } from '../shared/activity-tool-classification.mjs'
+import { editOperation, textChange } from './edit-operation.mjs'
+
+function normalizedToolInput(name, input, id) {
+  const kind = String(name || '').toLowerCase()
+  const file = input?.file_path || input?.path
+  if (!['edit','write','multiedit'].includes(kind) || !file) return input
+  const pairs = kind === 'multiedit'
+    ? (input.edits || []).map(item => [item.old_string || '', item.new_string || ''])
+    : [[input.old_string ?? input.before ?? '', input.new_string ?? input.after ?? input.content ?? '']]
+  return { ...input, edit_operation: editOperation(kind, id, [file], pairs.map(pair => textChange(file, pair[0], pair[1]))) }
+}
 
 export function parseSessionLine(jsonStr) {
   let obj
@@ -17,7 +28,7 @@ export function parseSessionRecord(obj) {
   if (t === 'assistant' && msg.content) {
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }]
     ev.blocks = content.map(c => {
-      if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: c.input, id: c.id }
+      if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: normalizedToolInput(c.name, c.input || {}, c.id), id: c.id }
       if (c.type === 'text') return { type: 'text', text: c.text }
       return { type: c.type }
     })

@@ -565,7 +565,7 @@ export function renderTexLines(content, macros) {
 }
 
 export function renderEditDiff(input, ctx, opts = {}) {
-  if (!input?.old_string || !input?.new_string) return ''
+  if (typeof input?.old_string !== 'string' || typeof input?.new_string !== 'string') return ''
   const { langFromFilePath, highlightSyntax } = ctx
   // propose_edit names its target `file`; the Edit tool uses `file_path`.
   const filePath = input.file_path || input.file || ''
@@ -576,6 +576,10 @@ export function renderEditDiff(input, ctx, opts = {}) {
     if (!isTeX) {
       const escaped = esc(str)
       return `<pre><code>${lang ? highlightSyntax(escaped, lang) : escaped}</code></pre>`
+    }
+    if (input.canonical_source?.scope) {
+      const tex = str.replace(/^\s*\\begin\{[^}]+\}\s*/, '').replace(/\s*\\end\{[^}]+\}\s*$/, '')
+      return `<div class="diff-tex">${katex.renderToString(tex, { displayMode: true, throwOnError: false, macros: ctx.preambleMacros || {} })}</div>`
     }
     return `<div class="diff-tex">${renderTexLines(str, ctx.preambleMacros || {})}</div>`
   }
@@ -602,8 +606,10 @@ export function renderEditDiff(input, ctx, opts = {}) {
   const tentativeBadge = opts.isPropose ? `<span class="edit-diff-badge edit-diff-tentative">tentative</span>` : ''
   const extraBadge = opts.badge ? `<span class="edit-diff-badge">${esc(opts.badge)}</span>` : ''
   const extraLocHtml = opts.extraLocHtml || ''
+  const revisions = input.canonical_source?.before_revision && input.canonical_source?.after_revision
+    ? `<span class="edit-diff-revisions" data-before-revision="${esc(input.canonical_source.before_revision)}" data-after-revision="${esc(input.canonical_source.after_revision)}"></span>` : ''
   const locHeader = (locText || tentativeBadge || extraBadge || extraLocHtml)
-    ? `<div class="edit-diff-loc">${tentativeBadge}${extraBadge}${locText ? `<span class="edit-diff-path">${esc(locText)}</span>` : ''}<span class="edit-diff-stat">+${addCount} −${delCount}</span></div>${extraLocHtml}`
+    ? `<div class="edit-diff-loc">${tentativeBadge}${extraBadge}${locText ? `<span class="edit-diff-path">${esc(locText)}</span>` : ''}<span class="edit-diff-stat">+${addCount} −${delCount}</span></div>${revisions}${extraLocHtml}`
     : ''
   const propIdAttr = opts.proposalId ? ` data-proposal-id="${esc(opts.proposalId)}"` : ''
   const wrapCls = `code-block-wrap code-card edit-diff-wrap${opts.isPropose ? ' edit-diff-propose' : ''}${opts.fromUnified ? ' edit-unified-side-by-side-wrap' : ''}`
@@ -971,7 +977,10 @@ export function renderActivityGroup(group, ctx) {
       // A propose_edit carries the same {old_string,new_string} triple as Edit,
       // so it renders as the same diff card — flagged tentative (not yet applied).
       const isPropose = tnLower.endsWith('propose_edit') && t._toolInput?.old_string && t._toolInput?.new_string
-      const isEdit = (tnLower === 'edit' || isPropose) && t._toolInput?.old_string && t._toolInput?.new_string
+      const canonicalDisplay=t._toolInput?.canonical_source?.scope||t._toolInput?.canonical_source?.display
+      const canonicalEdit=['edit','write','multiedit'].includes(tnLower)&&canonicalDisplay
+      const renderInput=canonicalEdit?{...t._toolInput,file_path:t._toolInput.canonical_source.file,old_string:canonicalDisplay.old_source||'',new_string:canonicalDisplay.new_source||''}:t._toolInput
+      const isEdit = ((tnLower === 'edit' || isPropose) && t._toolInput?.old_string && t._toolInput?.new_string)||canonicalEdit
       const isUnifiedEdit = tnLower === 'edit' && typeof t._toolInput?.diff === 'string' && t._toolInput.diff.trim()
       const hasDiff = (isEdit || isUnifiedEdit) ? ' has-diff' : ''
       // The propose result text ("**Proposal proposal-1** …") carries the id the
@@ -981,7 +990,7 @@ export function renderActivityGroup(group, ctx) {
         ? (String(t._prettyResult || '').match(/proposal-[\w-]+/)?.[0] || '')
         : ''
       const diffHtml = isEdit
-        ? renderEditDiff(t._toolInput, ctx, { isPropose, proposalId })
+        ? renderEditDiff(renderInput, ctx, { isPropose, proposalId, badge:renderInput?.canonical_source?.ambiguous?'ambiguous':'' })
         : (isUnifiedEdit ? renderUnifiedEditDiff(t._toolInput, ctx) : '')
       const codeCardHtml = renderCodeCard(t._toolName, t._toolInput, ctx)
       const cmd = toolToCommand(t._toolName, t._toolInput)

@@ -20,6 +20,7 @@ export function createDaemonWsControlPlane({
   log = console,
   classifyServerDaemonOutboxError = () => 'retry',
   onPermanentServerDaemonOutboxError = null,
+  replayProcessedDaemonMessage = null,
 } = {}) {
   // No store-missing guard on either of these. A null statement used to mean
   // "never processed" and "don't record", which would have replayed every
@@ -181,6 +182,7 @@ export function createDaemonWsControlPlane({
         return { handled: true, kind: 'server-daemon-outbox-error' }
       }
       if (await isProcessedDaemonOutboxMessage(msg)) {
+        await replayProcessedDaemonMessage?.(ws, msg)
         ackDaemonOutboxMessage(ws, msg)
         return { handled: true, kind: 'duplicate-daemon-outbox' }
       }
