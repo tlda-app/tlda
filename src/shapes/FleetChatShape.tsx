@@ -1553,7 +1553,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'thinking' ? 'thinking…'
           : null
         return [
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'baseline', gap: 6 }}>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'baseline', gap: 6 }}>
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
@@ -1569,8 +1569,6 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            {/* center: kept empty to preserve the left/right grid columns. */}
-            <span style={{ justifySelf: 'center', minWidth: 0 }} />
             {/* right: context info */}
             <span style={{ justifySelf: 'end' }}>
               <ContextBadge percent={contextPercent.get(agentId)} />
