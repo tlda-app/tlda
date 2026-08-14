@@ -28,6 +28,9 @@ let projectAttempts = 0
 let reanimateAttempts = 0
 let prefValue = null
 let markedDead = false
+let supervisedServer = null
+let supervisedServerPort = null
+let shuttingDown = false
 const http = createServer((req, res) => {
   if (readFileSync(serverState, 'utf8').trim() === 'down') return req.socket.destroy()
   req.resume()
@@ -36,7 +39,7 @@ const http = createServer((req, res) => {
       res.writeHead(status, { 'content-type': type })
       res.end(type === 'application/json' ? JSON.stringify(body) : body)
     }
-    if (req.url === '/health') return send(200, { pid: 999999 })
+    if (req.url === '/health') return send(200, { pid: supervisedServer.pid })
     if (req.method === 'GET' && req.url === '/') {
       spaAttempts++
       if (spaAttempts === 1) return send(503, 'retry', 'text/plain')
@@ -60,6 +63,22 @@ const http = createServer((req, res) => {
   })
 })
 
+const spawnSupervisedServer = () => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  supervisedServer = child
+  child.once('exit', () => {
+    if (shuttingDown || child !== supervisedServer) return
+    writeFileSync(serverState, 'down')
+    http.close(() => {
+      setTimeout(() => {
+        if (shuttingDown) return
+        spawnSupervisedServer()
+        http.listen(supervisedServerPort, '127.0.0.1', () => writeFileSync(serverState, 'up'))
+      }, 750)
+    })
+  })
+}
+
 const run = (args, extra = {}, timeout = 20_000) => new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [join(repo, 'cli/tlda.mjs'), ...args], {
     cwd: repo,
@@ -78,7 +97,9 @@ let serverUrl
 let createdDist = false
 try {
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve))
-  serverUrl = `http://127.0.0.1:${http.address().port}`
+  supervisedServerPort = http.address().port
+  serverUrl = `http://127.0.0.1:${supervisedServerPort}`
+  spawnSupervisedServer()
   writeFileSync(join(config, 'server.yaml'), '')
   writeFileSync(join(config, 'daemon.yaml'), `machineId: ${hostname().split('.')[0]}\nenvironments:\n  default: stable\n  values:\n    stable:\n      database: ${serverUrl}\n      store: ${serverUrl}\n      licenseKey: ""\nprofiles:\n  proof:\n    allow:\n      - Read\n`)
   writeFileSync(join(launchAgents, 'com.tlda.server.plist'), '<plist/>')
@@ -219,8 +240,10 @@ exit 0
   mkdirSync(join(repo, 'dist'), { recursive: true })
   writeFileSync(join(repo, 'dist', 'index.html'), `<html><body><div id="root"></div>${'x'.repeat(200)}</body></html>`)
   createdDist = true
+  const serverPidBeforeDeploy = supervisedServer.pid
   out = await run(['deploy'], { TLDA_DEV_CLI: '1' }, 30_000)
   assert.equal(out.status, 0, out.stdout + out.stderr)
+  assert.notEqual(supervisedServer.pid, serverPidBeforeDeploy)
   assert.equal(spaAttempts, 2)
   assert.equal(projectAttempts, 2)
   assert.match(out.stderr, /deploy SPA verification attempt 1 did not complete/)
@@ -248,6 +271,8 @@ exit 0
 
   console.log(JSON.stringify({ reanimate: { command: 'tlda agent reanimate proof', attempts: reanimateAttempts, exit: 0 }, setMintMachine: { command: 'tlda agent set-mint-machine fleet:proof mini', readback: prefValue, exit: 0 }, dismiss: { command: 'tlda agent dismiss proof', markedDead, exit: 0 }, permissions: { command: 'tlda agent permissions proof proof --on-wake', induced: 'server row dead', exit: 1 }, move: { command: 'tlda agent move missing stable', induced: 'missing durable ledger identity', exit: 1 }, wake: { command: 'tlda agent wake fleet:proof', visible: 'Wake attempt 1', exit: 0 }, restartMcp: { command: 'tlda-dev restart-mcp proof', attempts: restartAttempts, exit: 0 }, book: { command: 'tlda project book proof-book --members missing', induced: 'missing member', exit: 1 }, scratch: { command: `tlda project scratch ${scratchFile}`, induced: 'create endpoint failure', exit: 1 }, unlink: { command: 'tlda project unlink proof https://example.com/proof.git', induced: 'unlink endpoint failure', exit: 1 }, delete: { command: 'tlda project delete already-absent', induced: '404 readback', exit: 0 }, projectMove: { command: 'tlda project move proof stable --dry-run', induced: 'missing project', exit: 1 }, deploy: { command: 'tlda-dev deploy', induced: 'SPA and projects verification return 503 once', attemptsPerVerification: 2, exit: 0 }, uninstall: { command: 'tlda server uninstall', induced: 'launchctl exit 7', exit: 1 }, doctorFix: { command: 'tlda doctor --fix', induced: 'npm repair exit 9', exit: 1 } }, null, 2))
 } finally {
+  shuttingDown = true
+  if (supervisedServer?.exitCode === null) supervisedServer.kill('SIGKILL')
   await new Promise(resolve => http.close(resolve))
   if (createdDist) rmSync(join(repo, 'dist'), { recursive: true, force: true })
   rmSync(root, { recursive: true, force: true })
