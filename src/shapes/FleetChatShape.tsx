@@ -44,7 +44,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchoredSensorTailTop, anchoredTailTop, isReaderInputInFlight } from './chatViewportAnchor.mjs'
+import { anchoredTailTop, isReaderInputInFlight } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2336,17 +2336,11 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     el.scrollTop = ANCHORED_SENSOR_MID
   }, [])
 
-  const parkSensorAtTail = useCallback((el: HTMLDivElement) => {
-    const sensorTail = anchoredSensorTailTop(el.scrollHeight, el.clientHeight)
-    sensorTopRef.current = sensorTail
-    el.scrollTop = sensorTail
-  }, [])
-
   const scrollToTail = useCallback(() => {
     setModelTop(tailTop(), { forceTail: true })
     const el = scrollerRef.current
-    if (el) parkSensorAtTail(el)
-  }, [parkSensorAtTail, setModelTop, tailTop])
+    if (el) recenterSensor(el)
+  }, [recenterSensor, setModelTop, tailTop])
 
   const isAtTail = useCallback(() => {
     return Math.abs(modelTopRef.current - tailTop()) <= 1
@@ -2371,10 +2365,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       const nextHeight = anchoredViewportHeight(el)
       setViewportHeight(nextHeight)
       const nextTailTop = tailTop(nextHeight)
-      if (tailModeRef.current) {
-        modelTopRef.current = nextTailTop
-        parkSensorAtTail(el)
-      }
+      if (tailModeRef.current) modelTopRef.current = nextTailTop
       else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, nextTailTop))
       setGeometryVersion(version => version + 1)
     }
@@ -2382,7 +2373,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const observer = new ResizeObserver(update)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [parkSensorAtTail, tailTop])
+  }, [tailTop])
 
   useLayoutEffect(() => {
     const wasReset = previousResetKeyRef.current !== resetKey
@@ -2454,25 +2445,16 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     if (Math.abs(delta) > 0.5) {
       const previousTop = modelTopRef.current
       const nextTop = clampTop(previousTop + delta)
-      if (Math.abs(nextTop - previousTop) > 0.5) {
-        setModelTop(nextTop)
-        if (Math.abs(nextTop - tailTop()) <= 1) parkSensorAtTail(el)
-      }
-      else if (Math.abs(previousTop - tailTop()) <= 1) parkSensorAtTail(el)
+      if (Math.abs(nextTop - previousTop) > 0.5) setModelTop(nextTop)
       else if (nextSensorTop !== ANCHORED_SENSOR_MID) recenterSensor(el)
     }
-    if (!tailModeRef.current && (nextSensorTop < ANCHORED_SENSOR_EDGE || nextSensorTop > ANCHORED_SENSOR_HEIGHT - ANCHORED_SENSOR_EDGE)) recenterSensor(el)
-  }, [clampTop, parkSensorAtTail, recenterSensor, setModelTop, tailTop])
+    if (nextSensorTop < ANCHORED_SENSOR_EDGE || nextSensorTop > ANCHORED_SENSOR_HEIGHT - ANCHORED_SENSOR_EDGE) recenterSensor(el)
+  }, [clampTop, recenterSensor, setModelTop])
 
   const visibleStart = Math.max(0, modelTopRef.current - ANCHORED_OVERSCAN_PX)
   const visibleEnd = modelTopRef.current + viewportHeight + ANCHORED_OVERSCAN_PX
-  const tailKey = itemKeys[itemKeys.length - 1]
   const visibleItems = items.filter(item => {
     const key = String(item.key)
-    // tailTop() is the one bottom coordinate. Keep its rendered owner mounted
-    // so scrolling toward the tail never crosses from estimated to rendered
-    // geometry partway through the gesture.
-    if (key === tailKey) return true
     const rowTop = geometry.starts.get(key) ?? 0
     const rowBottom = rowTop + (heightByKeyRef.current.get(key) ?? ANCHORED_ESTIMATED_ROW_HEIGHT)
     return rowBottom >= visibleStart && rowTop <= visibleEnd
