@@ -1707,6 +1707,19 @@ function broadcastEvent(type, data, options = {}) {
     return
   }
   broadcastFleet({ event: type, data })
+  if (type === 'read-receipt' && Array.isArray(data?.event_ids)) {
+    void (async () => {
+      for (const eventId of data.event_ids) {
+        const event = await fleetStore.getEventById?.(Number(eventId))
+        if (!event || !isChatHistoryEventType(event.type)) continue
+        const [resolved] = await fleetStore.resolveChatRows([event], {
+          serverOwnerId: SERVER_OWNER_ID,
+          serverOwnerName: SERVER_OWNER_NAME,
+        })
+        if (resolved) await pushFilteredEvent(resolved, { updateOnly: true })
+      }
+    })().catch(e => console.warn('[fleet] read-receipt projection failed:', e.message))
+  }
 }
 
 serverTimerScheduler = new ServerTimerScheduler({
