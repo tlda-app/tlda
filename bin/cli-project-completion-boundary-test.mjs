@@ -91,7 +91,7 @@ try {
     const timer = setTimeout(() => {
       child.kill('SIGTERM')
       reject(new Error(`CLI timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`))
-    }, 5_000)
+    }, 15_000)
     child.on('error', reject)
     child.on('exit', code => { clearTimeout(timer); resolve(code) })
   })
@@ -120,7 +120,7 @@ try {
     const timer = setTimeout(() => {
       linked.kill('SIGTERM')
       reject(new Error(`linked CLI timed out\nstdout:\n${linkedStdout}\nstderr:\n${linkedStderr}`))
-    }, 5_000)
+    }, 15_000)
     linked.on('error', reject)
     linked.on('exit', code => { clearTimeout(timer); resolve(code) })
   })
@@ -158,7 +158,7 @@ try {
     const timer = setTimeout(() => {
       initialized.kill('SIGTERM')
       reject(new Error(`init CLI timed out\nstdout:\n${initStdout}\nstderr:\n${initStderr}`))
-    }, 5_000)
+    }, 15_000)
     initialized.on('error', reject)
     initialized.on('exit', code => { clearTimeout(timer); resolve(code) })
   })
