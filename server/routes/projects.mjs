@@ -953,7 +953,7 @@ export async function processProjectPush(name, body, transactionTest = {}) {
     const lifecycle = await sourceLifecycleStore(name)
     if (result.ok) result.sourceRevision = lifecycle.readAuthority().currentRevision
     if (typeof body?.requestId === 'string' && body.requestId.trim()) {
-      const operationResult = lifecycle.readOperation(body.requestId)?.terminalResult
+      const operationResult = lifecycle.readOperationByRequestId(name, body.requestId)?.terminalResult
       if (operationResult) Object.defineProperty(result, 'sourceOperationResult', { value: operationResult })
     }
   }
@@ -1205,7 +1205,16 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         acceptSeq: authority.acceptSeq,
         disposition: 'accepted',
       }
-      lifecycle.finishOperation(sourceOperation.requestId, 'accepted', terminalResult, { acceptSeq: authority.acceptSeq })
+      lifecycle.finishOperation(name, sourceOperation.requestId, 'accepted', terminalResult, {
+        acceptSeq: authority.acceptSeq,
+        previousRevision: acceptedSourceMutation.previousRevision,
+        acceptedRevision: acceptedSourceMutation.sourceRevision,
+        orderedEffects: [{
+          type: 'accepted-source-mutation',
+          acceptSeq: authority.acceptSeq,
+          mutation: acceptedSourceMutation,
+        }],
+      })
     }
     await transaction.commit()
     if (acceptedSourceMutation) {
@@ -1248,7 +1257,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         })
         console.error(`[${name}] Source transaction requires recovery: ${compensationError.message}`)
         if (sourceOperation) {
-          lifecycle.finishOperation(sourceOperation.requestId, 'recovery_required', {
+          lifecycle.finishOperation(name, sourceOperation.requestId, 'recovery_required', {
             ok: false,
             httpStatus: 409,
             lifecycleStatus: 'recovery-required',
@@ -1279,7 +1288,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       rollbackFailures.push(`local rollback failed: ${rollbackError.message}`)
     }
     if (sourceOperation && rollbackFailures.length === 0) {
-      lifecycle.finishOperation(sourceOperation.requestId, 'rejected', {
+      lifecycle.finishOperation(name, sourceOperation.requestId, 'rejected', {
         ok: false,
         httpStatus: 409,
         lifecycleStatus: e.lifecycleResult?.status || 'rejected',

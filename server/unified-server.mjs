@@ -101,7 +101,7 @@ import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
-import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
+import { createDaemonWsControlPlane, daemonOutboxId } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
@@ -9202,11 +9202,26 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'source-change') {
     const { project, files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId } = msg
+    const deliveryId = daemonOutboxId(msg)
     if (typeof requestId !== 'string' || !requestId.trim()) {
       ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: 'requestId is required' }))
       return
     }
     if (!project) return
+    if (deliveryId) {
+      const replay = (await sourceLifecycleStore(project)).readOperationByDeliveryId(project, deliveryId)?.terminalResult
+      if (replay) {
+        ws.send(JSON.stringify({
+          type: 'source-change-result',
+          project,
+          ...replay,
+          requestId: replay.requestId || requestId,
+          httpStatus: replay.httpStatus || 200,
+          status: replay.lifecycleStatus || replay.status || (replay.ok ? 'accepted' : 'error'),
+        }))
+        return
+      }
+    }
     if (await readProject(project)) {
       await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
@@ -9220,6 +9235,7 @@ async function handleDaemonWsMessage(ws, msg) {
         editedBy,
         expectedRevision,
         requestId,
+        deliveryId,
         sourceDaemonKey: ws._daemonKey || null,
         sourceMachineId: ws._machineId || null,
         sourceEnvName: ws._envName || null,

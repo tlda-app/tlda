@@ -47,7 +47,7 @@ test('source ingress replays one durable terminal result after reconnect', async
     assert.equal(readSourceFile(name, 'main.tex'), 'Durable\n')
 
     const restartedStore = await sourceLifecycleStore(name)
-    assert.deepEqual(restartedStore.readOperation(request.requestId).terminalResult, firstWireResult)
+    assert.deepEqual(restartedStore.readOperationByRequestId(name, request.requestId).terminalResult, firstWireResult)
 
     const reuse = await processProjectPush(name, {
       ...request,
@@ -55,7 +55,7 @@ test('source ingress replays one durable terminal result after reconnect', async
     })
     assert.equal(reuse.status, 400)
     assert.equal(reuse.lifecycleStatus, 'invalid-request-id-reuse')
-    assert.deepEqual(restartedStore.readOperation(request.requestId).terminalResult, firstWireResult)
+    assert.deepEqual(restartedStore.readOperationByRequestId(name, request.requestId).terminalResult, firstWireResult)
   } finally {
     setAcceptedSourceMutationHandler(null)
     await closeProjectStore()

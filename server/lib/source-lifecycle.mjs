@@ -109,7 +109,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   const revisionsRoot = join(root, 'revisions')
   const evidenceRoot = join(root, 'evidence')
   const blobsRoot = join(root, 'blobs')
-  const operationsRoot = join(root, 'operations')
+  const operationsPath = join(root, 'operations.json')
   const state = () => readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
@@ -175,9 +175,17 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     return `sha256:${hash.digest('hex')}`
   }
 
-  function operationPath(requestId) {
+  function operationKey(requestId) {
     if (typeof requestId !== 'string' || !requestId.trim()) throw new Error('requestId is required')
-    return join(operationsRoot, `${encodeURIComponent(requestId)}.json`)
+    return requestId
+  }
+
+  function operationJournal() {
+    return readJson(operationsPath) || { version: 1, byRequestId: {}, requestIdByDeliveryId: {} }
+  }
+
+  function writeOperationJournal(journal) {
+    atomicJson(operationsPath, journal, fault)
   }
 
   function operationFingerprint({ project, expectedRevision, sourceManifest, files = [], deletedFiles = [], dependencyPins = [], editedBy = null }) {
@@ -338,15 +346,25 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         content: revisionFileContent(revision(authority.currentRevision), path),
       }
     },
-    readOperation(requestId) {
-      return readJson(operationPath(requestId))
+    readOperationByRequestId(project, requestId) {
+      const operation = operationJournal().byRequestId[operationKey(requestId)] || null
+      return operation?.project === project ? operation : null
+    },
+    readOperationByDeliveryId(project, deliveryId) {
+      if (typeof deliveryId !== 'string' || !deliveryId.trim()) throw new Error('deliveryId is required')
+      const journal = operationJournal()
+      const requestId = journal.requestIdByDeliveryId[deliveryId]
+      if (!requestId) return null
+      const operation = journal.byRequestId[requestId] || null
+      return operation?.project === project ? operation : null
     },
     prepareOperation(payload) {
-      const path = operationPath(payload.requestId)
+      const requestId = operationKey(payload.requestId)
       const { payloadFingerprint, descriptor } = operationFingerprint(payload)
-      const existing = readJson(path)
+      const journal = operationJournal()
+      const existing = journal.byRequestId[requestId] || null
       if (existing) {
-        if (existing.payloadFingerprint !== payloadFingerprint) {
+        if (existing.payloadFingerprint !== payloadFingerprint || (payload.deliveryId && existing.deliveryId !== payload.deliveryId)) {
           return {
             replay: true,
             invalidReuse: true,
@@ -361,11 +379,30 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         }
         return { replay: true, invalidReuse: false, operation: existing, result: existing.terminalResult ?? null }
       }
+      const deliveryId = typeof payload.deliveryId === 'string' && payload.deliveryId.trim() ? payload.deliveryId : null
+      if (deliveryId) {
+        const boundRequestId = journal.requestIdByDeliveryId[deliveryId]
+        if (boundRequestId && boundRequestId !== requestId) {
+          return {
+            replay: true,
+            invalidReuse: true,
+            operation: journal.byRequestId[boundRequestId] || null,
+            result: {
+              ok: false,
+              status: 'invalid-delivery-id-reuse',
+              requestId,
+              deliveryId,
+              project: payload.project,
+            },
+          }
+        }
+      }
       const now = new Date().toISOString()
       const operation = {
         version: 1,
         project: payload.project,
-        requestId: payload.requestId,
+        requestId,
+        deliveryId,
         payloadFingerprint,
         descriptor,
         state: 'prepared',
@@ -373,16 +410,25 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         createdAt: now,
         updatedAt: now,
       }
-      atomicJson(path, operation, fault)
+      journal.byRequestId[requestId] = operation
+      if (deliveryId) journal.requestIdByDeliveryId[deliveryId] = requestId
+      writeOperationJournal(journal)
       return { replay: false, invalidReuse: false, operation, result: null }
     },
-    finishOperation(requestId, stateName, terminalResult, { acceptSeq = null, recoveryId = null } = {}) {
+    finishOperation(project, requestId, stateName, terminalResult, {
+      acceptSeq = null,
+      recoveryId = null,
+      previousRevision = null,
+      acceptedRevision = null,
+      orderedEffects = [],
+    } = {}) {
       if (!['accepted', 'rejected', 'recovery_required', 'invalid'].includes(stateName)) {
         throw new Error(`Invalid terminal source operation state: ${stateName}`)
       }
-      const path = operationPath(requestId)
-      const existing = readJson(path)
+      const journal = operationJournal()
+      const existing = journal.byRequestId[operationKey(requestId)] || null
       if (!existing) throw new Error(`Source operation ${requestId} was not prepared`)
+      if (existing.project !== project) throw new Error(`Source operation ${requestId} does not belong to ${project}`)
       if (existing.terminalResult) return existing
       const operation = {
         ...existing,
@@ -390,10 +436,14 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         terminalResult: stableValue(terminalResult),
         ...(acceptSeq == null ? {} : { acceptSeq }),
         ...(recoveryId == null ? {} : { recoveryId }),
+        previousRevision,
+        acceptedRevision,
+        orderedEffects: stableValue(orderedEffects),
         updatedAt: new Date().toISOString(),
       }
-      atomicJson(path, operation, fault)
-      return readJson(path)
+      journal.byRequestId[requestId] = operation
+      writeOperationJournal(journal)
+      return operationJournal().byRequestId[requestId]
     },
     bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
       const before = state()
