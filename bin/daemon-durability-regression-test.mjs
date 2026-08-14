@@ -376,23 +376,23 @@ test('daemon start code has no direct detached fallback or recovery script path'
   assert.doesNotMatch(transitionSource, /startDirectFallback|direct-fallback|fallbackTimeoutMs/)
 })
 
-test('daemon start does not bootstrap or rewrite launchd jobs', () => {
+test('daemon start refuses without launchctl writes', () => {
   const startBlock = cliSource.match(/if \(sub === 'start'\) \{([\s\S]*?)\n  \}\n\n  console\.error/)?.[1] || ''
   assert.ok(startBlock)
   assert.doesNotMatch(startBlock, /writeDaemonPlist\(/)
   assert.doesNotMatch(startBlock, /bootstrapDaemonPlist\(/)
   assert.doesNotMatch(startBlock, /probeDaemonLaunchdStartCapability\(/)
   assert.doesNotMatch(startBlock, /runBoundedDaemonStartTransition\(/)
-  assert.match(startBlock, /runLaunchctl\(\['kickstart', daemonLaunchdTarget\(\)\]\)/)
-  assert.match(startBlock, /will not rewrite plists or run launchctl bootstrap/)
+  assert.doesNotMatch(startBlock, /runLaunchctl\(/)
+  assert.match(startBlock, /printSupervisedJobRefusal/)
 })
 
-test('daemon start stays attached and surfaces recent daemon log until startup is ready', () => {
-  const startBlock = cliSource.match(/if \(sub === 'start'\) \{([\s\S]*?)\n  \}\n\n  console\.error/)?.[1] || ''
-  assert.ok(startBlock)
+test('daemon restart stays attached until startup is ready', () => {
+  const restartBlock = cliSource.match(/if \(sub === 'restart'\) \{([\s\S]*?)\n  \}\n\n  if \(sub === 'status'\)/)?.[1] || ''
+  assert.ok(restartBlock)
   assert.match(cliSource, /function printRecentDaemonLog/)
-  assert.match(startBlock, /waitForTargetFleetDaemonCompletion\(\)/)
-  assert.doesNotMatch(startBlock, /readiness pending/)
+  assert.match(restartBlock, /waitForTargetFleetDaemonCompletion/)
+  assert.doesNotMatch(restartBlock, /readiness pending/)
 })
 
 test('daemon start with an unloaded launchd job fails loud without bootstrap', () => {
@@ -411,8 +411,8 @@ exit 0
     assert.notEqual(result.status, 0)
     assert.doesNotMatch(calls, /bootstrap/)
     assert.doesNotMatch(calls, /kickstart/)
-    assert.match(result.stderr, /Fleet daemon launchd job is not loaded: com\.tlda\.fleet-daemon\.stable/)
-    assert.match(result.stderr, /will not rewrite plists or run launchctl bootstrap/)
+    assert.match(result.stderr, /Refusing tlda daemon start/)
+    assert.match(result.stderr, /launchctl bootstrap/)
   } finally {
     rmSync(fixture.dir, { recursive: true, force: true })
   }

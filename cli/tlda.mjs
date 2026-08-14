@@ -27,15 +27,12 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
-import { assertOwnerCapableLaunchdManager, transitionLaunchdJob } from './lib/config-apply-transition.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import {
   bootstrapLaunchdJob,
-  capcheckPlistContent,
   launchdDomain,
   launchdTarget,
   launchctlCommand,
-  probeLaunchdBootstrapCapability,
 } from './lib/launchd-supervision.mjs'
 import {
   DEFAULT_SUPERVISED_START_TIMEOUT_MS,
@@ -119,8 +116,9 @@ const PROJECT_COMMANDS = [
   ['init-shadow', 'Rebuild a project shadow history repo'],
 ]
 const SERVER_COMMANDS = [
-  ['start', 'Start the server'],
-  ['stop', 'Stop the server'],
+  ['start', 'Refuse to override launchd supervision'],
+  ['restart', 'Restart the loaded server'],
+  ['stop', 'Refuse to unload the supervised server'],
   ['status', 'Check if server is running'],
   ['log', 'Show recent server log'],
   ['install', 'Install launchd service'],
@@ -213,8 +211,8 @@ const COMMAND_HELP = {
   errors:  'tlda project errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
   build:   'tlda build [name]\n\n  Trigger a rebuild without pushing files.\n\n  NOTE: Prefer the watcher pipeline. This command bypasses change\n  detection and should only be used for debugging.',
   delete:  'tlda project delete <name>\n\n  Delete a project and all its data.',
-  server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|status|log] [name]\n\n  Inspect configured fleet bots. One launchd job, the bot manager, keeps every declared bot running; `tlda bot manager` is that job and is started by the owner-run config apply operation rather than by hand.',
+  server:  'tlda server [start|restart|stop|status|log|install|uninstall]\n\n  launchd supervises an installed server. Start and stop refuse rather than overriding that supervision; restart terminates the process and KeepAlive returns it. Config apply reconciles the service declaration.',
+  bot:     'tlda bot [list|start|restart|stop|status|log|uninstall] [name]\n\n  One launchd bot manager keeps every declared bot running. Start and stop refuse; restart terminates the selected bot process and the manager returns it. Config apply reconciles the declaration.',
   env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|restart|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket. Restart operates only on an already-loaded launchd service. Stop refuses because unloading the job from an agent shell strands it; use restart or uninstall.',
@@ -1493,6 +1491,10 @@ async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEM
 }
 
 async function runLaunchctl(args, { ignoreFailure = false } = {}) {
+  const verb = args[0]
+  if (verb === 'bootout' || verb === 'unload' || verb === 'remove') {
+    throw new Error(`Refusing launchctl ${verb}: unloading a managed job can strand it outside the owner login session.`)
+  }
   const { execFileSync } = await import('child_process')
   const invocation = launchctlCommand(args, { uid: process.getuid() })
   try {
@@ -1511,45 +1513,16 @@ function requireLaunchd() {
   }
 }
 
-async function bootstrapDaemonPlist(plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL) {
-  await bootstrapLaunchdJob({
-    plist,
-    label,
-    domain: daemonLaunchdDomain(),
-    runLaunchctl,
-  })
+function printLaunchdLoadInstructions(label, plist, { log = console.error } = {}) {
+  log(dim('  Loading or unloading a launchd job needs the owner login session:'))
+  log(`      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(plist)}`)
+  log(dim(`  Check it with: launchctl print ${daemonLaunchdTarget(label)}`))
 }
 
-async function bootoutDaemonLabel(label = FLEET_DAEMON_LABEL) {
-  try {
-    await runLaunchctl(['bootout', daemonLaunchdTarget(label)])
-  } catch (error) {
-    const detail = error?.message || String(error)
-    if (!/No such process|Could not find service|service not found/i.test(detail)) throw error
-  }
-}
-
-async function probeDaemonLaunchdStartCapability() {
-  const label = `com.tlda.fleet-daemon.capcheck.${process.pid}`
-  const plist = join(CONFIG_DIR, `${label}.plist`)
-  await probeLaunchdBootstrapCapability({
-    label,
-    plist,
-    domain: daemonLaunchdDomain(),
-    runLaunchctl,
-    writeFile: (file, content) => {
-      if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true })
-      writeFileSync(file, content)
-    },
-    unlinkFile: (file) => {
-      try {
-        if (existsSync(file)) unlinkSync(file)
-      } catch (e) {
-        console.warn(yellow(`Could not remove launchd capability probe plist ${file}: ${e.message}`))
-      }
-    },
-    plistContent: capcheckPlistContent({ label }),
-  })
+function printSupervisedJobRefusal(verb, { label, restartCommand }) {
+  console.error(red(`Refusing tlda ${verb}: ${label} is a KeepAlive launchd job.`))
+  console.error(dim('  Change its declaration, then run `tlda config apply`; use restart for routine maintenance.'))
+  console.error(dim(`  Restart: ${restartCommand}`))
 }
 
 function botServiceName(name) {
@@ -1837,18 +1810,20 @@ function isManagedLaunchdLabel(label) {
     label === serverLaunchdLabel()
 }
 
-function existingManagedLaunchdJobs() {
+async function existingManagedLaunchdJobs() {
   const dir = launchAgentsDir()
-  if (!existsSync(dir)) return []
-  return readdirSync(dir)
-    .filter(file => file.endsWith('.plist'))
-    .map(file => {
+  const onDisk = existsSync(dir) ? readdirSync(dir)
+    .filter(file => file.endsWith('.plist')).map(file => {
       const label = file.slice(0, -'.plist'.length)
       if (!isManagedLaunchdLabel(label)) return null
       const plist = join(dir, file)
-      return { label, plist, content: readFileSync(plist, 'utf8'), loaded: isLaunchdJobLoaded(label) }
-    })
-    .filter(Boolean)
+      return { label, plist, content: readFileSync(plist, 'utf8') }
+    }).filter(Boolean) : []
+  const byLabel = new Map(onDisk.map(job => [job.label, job]))
+  for (const desired of desiredLaunchdJobs()) {
+    if (!byLabel.has(desired.label)) byLabel.set(desired.label, { label: desired.label, plist: desired.plist, content: null })
+  }
+  return [...byLabel.values()].map(job => ({ ...job, loaded: isLaunchdJobLoaded(job.label) }))
 }
 
 function isLaunchdJobLoaded(label) {
@@ -1878,40 +1853,40 @@ function writeLaunchdJob(job) {
 }
 
 async function applyLaunchdOperation(job, operation) {
-  const bootoutIfLoaded = async targetJob => {
-    try {
-      await runLaunchctl(['bootout', daemonLaunchdTarget(targetJob.label)])
-    } catch (e) {
-      const text = e?.message || String(e)
-      if (/No such process/i.test(text) || /Could not find service/i.test(text)) return
-      throw e
-    }
-  }
-  const bootstrapAndKickstart = async targetJob => {
-    await bootstrapLaunchdJob({
-      plist: targetJob.plist,
-      label: targetJob.label,
-      domain: daemonLaunchdDomain(),
-      runLaunchctl,
-    })
-  }
+  const target = daemonLaunchdTarget(job.label)
+  const pending = lines => ({ ok: true, pending: lines.join('\n') })
   try {
-    return await transitionLaunchdJob(job, operation, {
-      install: async targetJob => writeLaunchdJob(targetJob),
-      remove: async targetJob => {
-        if (existsSync(targetJob.plist)) unlinkSync(targetJob.plist)
-      },
-      bootout: bootoutIfLoaded,
-      bootstrap: bootstrapAndKickstart,
-    })
+    if (operation === 'add' || operation === 'update') {
+      const loaded = isLaunchdJobLoaded(job.label)
+      writeLaunchdJob(job)
+      if (loaded) return pending([
+        'plist written; the loaded job is still running its previous configuration.',
+        `      launchctl bootout ${target}`,
+        `      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(job.plist)}`,
+      ])
+      try {
+        await bootstrapLaunchdJob({ plist: job.plist, label: job.label, domain: daemonLaunchdDomain(), runLaunchctl })
+        return { ok: true }
+      } catch (error) {
+        return pending([
+          `plist written; loading it needs the owner login session (${error?.message || String(error)}).`,
+          `      launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(job.plist)}`,
+        ])
+      }
+    }
+    if (operation === 'remove') {
+      if (isLaunchdJobLoaded(job.label)) return pending([
+        'plist kept; unloading the loaded job needs the owner login session.',
+        `      launchctl bootout ${target}`,
+        `      rm ${JSON.stringify(job.plist)}`,
+      ])
+      if (existsSync(job.plist)) unlinkSync(job.plist)
+      return { ok: true }
+    }
+    throw new Error(`unknown launchd apply operation: ${operation}`)
   } catch (e) {
     return { ok: false, error: e?.message || String(e) }
   }
-}
-
-async function requireOwnerLaunchdConfigurationContext() {
-  const managerName = await runLaunchctl(['managername'])
-  assertOwnerCapableLaunchdManager(managerName)
 }
 
 function printApplyGroup(title, jobs) {
@@ -1927,7 +1902,7 @@ async function cmdConfigApply() {
   const dryRun = hasFlag('dry-run')
   const only = getFlag('only')
   const desired = desiredLaunchdJobs()
-  const existing = existingManagedLaunchdJobs()
+  const existing = await existingManagedLaunchdJobs()
   const plan = planLaunchdApply({ desiredJobs: desired, existingJobs: existing })
 
   // --only <label-substring> narrows the apply to the jobs whose label matches,
@@ -1961,43 +1936,35 @@ async function cmdConfigApply() {
 
   if (dryRun) return
 
-  const hasChanges = plan.add.length || plan.update.length || plan.remove.length
-  if (!hasChanges) {
+  if (!(plan.add.length || plan.update.length || plan.remove.length)) {
     console.log(green('tlda config apply complete.'))
     return
   }
 
-  try {
-    await requireOwnerLaunchdConfigurationContext()
-    await probeDaemonLaunchdStartCapability()
-  } catch (error) {
-    console.error(red(error?.message || String(error)))
-    process.exit(1)
+  const pending = []
+  const failures = []
+  const runGroup = async (jobs, op, doneVerb) => {
+    for (const job of jobs) {
+      const result = await applyLaunchdOperation(job, op)
+      if (!result.ok) failures.push({ job, op, error: result.error })
+      else if (result.pending) {
+        pending.push({ job, detail: result.pending })
+        console.log(yellow(`Pending ${job.label}`) + dim(` — ${op}`))
+      } else console.log(green(`${doneVerb} ${job.label}`))
+    }
   }
+  await runGroup(plan.add, 'add', 'Added')
+  await runGroup(plan.update, 'update', 'Updated')
+  await runGroup(plan.remove, 'remove', 'Removed')
 
-  const pending = [
-    ...plan.add.map(job => ({ job, op: 'add', done: 'Added' })),
-    ...plan.update.map(job => ({ job, op: 'update', done: 'Updated' })),
-    ...plan.remove.map(job => ({ job, op: 'remove', done: 'Removed' })),
-  ]
-  let attempt = 0
-  while (pending.length) {
-    attempt++
-    for (let i = pending.length - 1; i >= 0; i--) {
-      const item = pending[i]
-      const result = await applyLaunchdOperation(item.job, item.op)
-      if (result.ok) {
-        console.log(green(`${item.done} ${item.job.label}`))
-        pending.splice(i, 1)
-      } else {
-        console.error(red(`${item.op} ${item.job.label} attempt ${attempt} did not complete: ${result.error}`))
-      }
-    }
-    if (pending.length) {
-      const delayMs = Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6)))
-      console.error(yellow(`tlda config apply has ${pending.length} unfinished job(s); retrying in ${Math.ceil(delayMs / 1000)}s`))
-      await new Promise(resolve => setTimeout(resolve, delayMs))
-    }
+  if (pending.length) {
+    console.log(yellow(`${pending.length} job(s) need the owner login session to take effect:`))
+    for (const item of pending) console.log(`  ${item.job.label}: ${item.detail}`)
+    console.log(dim('  Nothing was unloaded; every running job remains running.'))
+  }
+  if (failures.length) {
+    for (const failure of failures) console.error(red(`${failure.op} ${failure.job.label}: ${failure.error}`))
+    process.exit(1)
   }
 
   for (const job of plan.unchanged) {
@@ -2441,22 +2408,6 @@ function currentDaemonCodeSha() {
   }
 }
 
-// Idempotent daemon start — ensure launchd has the singleton job loaded.
-// Used by `tlda server start` to make sure the daemon comes up alongside
-// the server. The daemon dying silently was a recurring source of pain.
-async function ensureFleetDaemonRunning() {
-  if (process.platform !== 'darwin') return
-  if (!existsSync(FLEET_DAEMON_SCRIPT)) return // not installed; silently skip
-  const pid = runningFleetDaemonPid()
-  if (pid) {
-    console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${pid})`))
-    return
-  }
-  await writeDaemonPlist()
-  await bootstrapDaemonPlist()
-  console.log(green('Fleet daemon launchd job started.'))
-}
-
 async function cmdFleetWatch(sub) {
   const daemonScript = FLEET_DAEMON_SCRIPT
 
@@ -2472,16 +2423,17 @@ async function cmdFleetWatch(sub) {
     console.log(`  WorkingDirectory: ${FLEET_DAEMON_MAIN_ROOT}`)
     console.log(`  Log: ${FLEET_DAEMON_LOGFILE}`)
     console.log('\nThe fleet daemon will auto-restart on crash and start on login.')
-    console.log('Run `tlda daemon start` to start now.')
+    printLaunchdLoadInstructions(FLEET_DAEMON_LABEL, FLEET_DAEMON_PLIST, { log: console.log })
     return
   }
 
   if (sub === 'uninstall') {
     requireLaunchd()
-    await bootoutDaemonLabel()
-    if (existsSync(FLEET_DAEMON_PLIST)) unlinkSync(FLEET_DAEMON_PLIST)
-    console.log(green('Uninstalled fleet daemon launchd service.'))
-    return
+    console.error(red(`Refusing to uninstall ${FLEET_DAEMON_LABEL} from this shell.`))
+    console.error(dim('  Uninstall is an explicit owner operation. From the owner login session:'))
+    console.error(`      launchctl bootout ${daemonLaunchdTarget()}`)
+    console.error(`      rm ${JSON.stringify(FLEET_DAEMON_PLIST)}`)
+    process.exit(1)
   }
 
   if (sub === 'write-test-plist') {
@@ -2535,12 +2487,13 @@ async function cmdFleetWatch(sub) {
       const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
       try {
         process.kill(pid, 0)
-        console.log(yellow('Fleet daemon running outside launchd') + dim(` (pid ${pid})`))
-        console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+        console.error(red('UNSUPERVISED: fleet daemon is running outside launchd') + dim(` (pid ${pid})`))
+        console.error(dim(`  Config target: ${getFleetServerUrl()}`))
         const connectedTarget = lastDaemonConnectedTarget()
-        if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
-        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-        return
+        if (connectedTarget) console.error(dim(`  Last WS target: ${connectedTarget}`))
+        console.error(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+        printLaunchdLoadInstructions(FLEET_DAEMON_LABEL, FLEET_DAEMON_PLIST)
+        process.exit(1)
       } catch {}
     }
     console.log(red('Fleet daemon not running.'))
@@ -2575,78 +2528,9 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'start') {
     requireLaunchd()
-
-    if (!existsSync(daemonScript)) {
-      console.error(red(`Daemon script not found: ${daemonScript}`))
-      process.exit(1)
-    }
-
-    const existingPid = runningFleetDaemonPid()
-    if (existingPid) {
-      const connectedTarget = lastDaemonConnectedTarget()
-      const codeSha = currentDaemonCodeSha()
-      const identity = daemonTargetIdentity()
-      const supervisedPid = await launchdDaemonPid()
-      const launchdOwnsExisting = !!(supervisedPid && processTreeOwnsPid(supervisedPid, existingPid))
-      if (launchdOwnsExisting) {
-        console.log(green('Fleet daemon launchd job already running') + dim(` (pid ${existingPid})`))
-        try {
-          await verifyTargetFleetDaemon(existingPid, { supervised: true })
-          console.log(dim(`  Verified target environment readiness for ${identity.machineId}:${identity.envName}.`))
-        } catch (e) {
-          // This operator command surfaces unhealthy supervision on stderr and exits nonzero.
-          console.error(red(`Fleet daemon is supervised but unhealthy: ${e?.message || String(e)}`))
-          process.exit(1)
-        }
-        return
-      }
-      console.log(yellow('Fleet daemon is running outside launchd') + dim(` (pid ${existingPid})`))
-      console.log(dim(`  Config target: ${getFleetServerUrl()}`))
-      if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
-      if (codeSha) console.log(dim(`  Code SHA: ${codeSha}`))
-      console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
-      console.log(dim(`  Target lock: ${identity.lockPath}`))
-      console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-      try {
-        await verifyTargetFleetDaemon(existingPid, { supervised: false })
-        console.log(green('Fleet daemon is already running for the target environment') + dim(` (pid ${existingPid})`))
-        console.log(dim('  It is not currently supervised by launchd; `tlda daemon start` will not rewrite or bootstrap launchd jobs.'))
-      } catch (e) {
-        console.error(red(`Fleet daemon is running but unhealthy: ${e?.message || String(e)}`))
-        printRecentDaemonLog()
-        process.exit(1)
-      }
-      return
-    }
-
-    const identity = daemonTargetIdentity()
-    const loadedPid = await launchdDaemonPid()
-    if (!loadedPid) {
-      try {
-        await runLaunchctl(['print', daemonLaunchdTarget()])
-      } catch (e) {
-        console.error(red(`Fleet daemon launchd job is not loaded: ${FLEET_DAEMON_LABEL}`))
-        console.error(dim(`  launchctl print ${daemonLaunchdTarget()}: ${e?.message || String(e)}`))
-        console.error(dim('  This command will not rewrite plists or run launchctl bootstrap from an agent/background shell.'))
-        console.error(dim('  Use an already-registered job, or run the daemon in the foreground with `tlda daemon run`.'))
-        printRecentDaemonLog()
-        process.exit(1)
-      }
-    }
-    try {
-      await runLaunchctl(['kickstart', daemonLaunchdTarget()])
-    } catch (e) {
-      // Operator command boundary: surface launchctl failure and exit nonzero here.
-      console.error(red(`Fleet daemon launchd kickstart failed: ${e?.message || String(e)}`))
-      printRecentDaemonLog()
-      process.exit(1)
-    }
-    const pid = await waitForTargetFleetDaemonCompletion()
-    console.log(green(`Fleet daemon launchd job started`) + dim(` (pid ${pid})`))
-    console.log(dim(`  Managed by launchd (auto-restarts).`))
-    console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
-    console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-    return
+    printSupervisedJobRefusal('daemon start', { label: FLEET_DAEMON_LABEL, restartCommand: 'tlda daemon restart' })
+    if (!(await launchdDaemonPid())) printLaunchdLoadInstructions(FLEET_DAEMON_LABEL, FLEET_DAEMON_PLIST)
+    process.exit(1)
   }
 
   console.error(`Unknown subcommand: tlda daemon ${sub}`)
@@ -2665,6 +2549,54 @@ async function cmdBot() {
 
   if (sub === 'list') {
     for (const unit of findBotUnits(name)) printBotPlan(unit)
+    return
+  }
+
+  if (sub === 'start' || sub === 'stop') {
+    requireLaunchd()
+    printSupervisedJobRefusal(`bot ${sub}`, { label: BOT_MANAGER_LABEL, restartCommand: `tlda bot restart${name ? ` ${name}` : ''}` })
+    process.exit(1)
+  }
+
+  if (sub === 'uninstall') {
+    requireLaunchd()
+    const paths = botManagerPaths()
+    console.error(red(`Refusing to uninstall ${paths.label} from this shell.`))
+    console.error(dim('  Uninstall is an explicit owner operation. From the owner login session:'))
+    console.error(`      launchctl bootout ${daemonLaunchdTarget(paths.label)}`)
+    console.error(`      rm ${JSON.stringify(paths.plist)}`)
+    process.exit(1)
+  }
+
+  if (sub === 'restart') {
+    requireLaunchd()
+    const manager = botManagerPaths()
+    if (!isLaunchdJobLoaded(manager.label)) {
+      console.error(red(`Bot manager launchd job is not loaded: ${manager.label}`))
+      printLaunchdLoadInstructions(manager.label, manager.plist)
+      process.exit(1)
+    }
+    const units = findBotUnits(name)
+    for (const unit of units) {
+      const previousPid = liveBotPid(unit.paths)
+      if (!previousPid) {
+        console.error(red(`${unit.label}: no supervised bot process is running.`))
+        process.exitCode = 1
+        continue
+      }
+      process.kill(previousPid, 'SIGTERM')
+      let replacement = 0
+      for (let i = 0; i < 120 && (!replacement || replacement === previousPid); i++) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+        replacement = liveBotPid(unit.paths)
+      }
+      if (!replacement || replacement === previousPid) {
+        console.error(red(`${unit.label}: KeepAlive did not produce a replacement within 30s.`))
+        process.exitCode = 1
+      } else {
+        console.log(green(`${unit.label}: restarted`) + dim(` (pid ${previousPid} → ${replacement})`))
+      }
+    }
     return
   }
 
@@ -2707,7 +2639,7 @@ async function cmdBot() {
   }
 
   console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|status|log|manager] [name]')
+  console.error('Usage: tlda bot [list|start|restart|stop|status|log|uninstall|manager] [name]')
   process.exit(1)
 }
 
@@ -2983,7 +2915,7 @@ async function cmdMoveProject() {
   const daemonEnv = { ...process.env, TLDA_ENV: targetConfig }
   delete daemonEnv.TLDA_SERVER
   delete daemonEnv.TLDA_SYNC_SERVER
-  execFileSync(process.execPath, [fileURLToPath(import.meta.url), 'daemon', 'start', '--env', targetConfig], {
+  execFileSync(process.execPath, [fileURLToPath(import.meta.url), 'daemon', 'restart', '--env', targetConfig], {
     cwd: FLEET_DAEMON_MAIN_ROOT,
     stdio: 'inherit',
     env: daemonEnv,
@@ -3355,16 +3287,12 @@ async function cmdDeploy() {
   if (distSize < 100) die(`dist/index.html is suspiciously small (${distSize} bytes)`)
   pass(`${Math.round(distSize / 1024)}KB`)
 
-  // 3. Restart server
-  step('Stopping server')
-  execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'stop'], { stdio: 'inherit' })
-  pass()
-
-  step('Starting server')
+  // 3. Restart without unloading the KeepAlive job.
+  step('Restarting server')
   try {
-    execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'start'], { stdio: 'inherit' })
+    execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'restart'], { stdio: 'inherit' })
   } catch (e) {
-    die('Server failed to start: ' + e.message)
+    die('Server failed to restart: ' + e.message)
   }
   pass()
 
@@ -5385,11 +5313,12 @@ async function cmdDoctor() {
       const PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.tlda.server.plist')
       const hasLaunchd = process.platform === 'darwin' && existsSync(PLIST)
       if (hasLaunchd) {
-        // kickstart WITHOUT -k: starts the job only if it's stopped. Never -k —
-        // a forced restart on a live-but-slow server is what caused the flapping.
-        // launchd (KeepAlive) handles genuine crash-restarts on its own.
-        try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
-        try { execSync('launchctl kickstart gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
+        if (isLaunchdJobLoaded(serverLaunchdLabel())) {
+          fail('Server is not healthy, but its KeepAlive launchd job remains loaded', 'launchd will retry; inspect `tlda server log`')
+        } else {
+          fail('Server launchd job is not loaded', '`tlda config apply`, then follow its owner-login-session load instruction')
+        }
+        issues++
       } else {
         const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
         const serverScript = join(tldaRoot, 'server', 'unified-server.mjs')
@@ -5401,20 +5330,20 @@ async function cmdDoctor() {
           env: { ...process.env, PORT: getPort(), TMUX: undefined, TMUX_PANE: undefined }
         })
         child.unref()
-      }
-      // Wait for it
-      for (let i = 0; i < 12; i++) {
-        await new Promise(r => setTimeout(r, 500))
-        try {
-          const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(1000) })
-          if (res.ok) { serverRunning = true; break }
-        } catch {}
-      }
-      if (serverRunning) {
-        ok(`Server started at ${serverUrl}`)
-      } else {
-        fail('Server failed to start', `Check log: tlda server log`)
-        issues++
+        for (let i = 0; i < 12; i++) {
+          await new Promise(r => setTimeout(r, 500))
+          try {
+            const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(1000) })
+            if (res.ok) { serverRunning = true; break }
+          } catch (error) {
+            if (!['AbortError', 'TimeoutError', 'TypeError'].includes(error?.name)) throw error
+          }
+        }
+        if (serverRunning) ok(`Server started at ${serverUrl}`)
+        else {
+          fail('Server failed to start', `Check log: tlda server log`)
+          issues++
+        }
       }
     } catch (e) {
       fail(`Server failed to start: ${e.message}`, 'tlda server log')
@@ -5484,10 +5413,8 @@ async function cmdDoctor() {
     fixes.push({
       label: 'Restart server',
       fn: () => {
-        console.log(dim('  Stopping server...'))
-        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'stop'], { stdio: 'inherit' })
-        console.log(dim('  Starting server...'))
-        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'start'], { stdio: 'inherit' })
+        console.log(dim('  Restarting server...'))
+        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'restart'], { stdio: 'inherit' })
       }
     })
   }
@@ -5511,22 +5438,17 @@ async function cmdDoctor() {
     const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
     try { process.kill(pid, 0); watchRunning = true } catch {}
   }
-  if (watchRunning) {
-    ok('fleet daemon running')
+  const daemonLoaded = process.platform === 'darwin' && isLaunchdJobLoaded(FLEET_DAEMON_LABEL)
+  if (watchRunning && daemonLoaded) ok('fleet daemon running (supervised by launchd)')
+  else if (watchRunning) {
+    fail(`fleet daemon running UNSUPERVISED — ${FLEET_DAEMON_LABEL} is not loaded`, `tlda config apply; then load it from the owner login session`)
+    issues++
+  } else if (daemonLoaded) {
+    fail('fleet daemon job is loaded but its process is not running', 'launchd KeepAlive will retry; inspect `tlda daemon log`')
+    issues++
   } else {
-    console.log(red('✗') + ' fleet daemon not running — starting it...')
-    try {
-      await cmdFleetWatch('start')
-      if (existsSync(FLEET_DAEMON_PIDFILE)) {
-        ok('fleet daemon started')
-      } else {
-        fail('fleet daemon failed to start', `Check log: tlda daemon log`)
-        issues++
-      }
-    } catch (e) {
-      fail(`fleet daemon failed to start: ${e.message}`, 'tlda daemon log')
-      issues++
-    }
+    fail(`fleet daemon not running and ${FLEET_DAEMON_LABEL} is not loaded`, 'run `tlda config apply` and follow its pending-load instruction')
+    issues++
   }
 
   // 6. MCP servers configured (tlda + fleet)
@@ -5837,27 +5759,24 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     console.log(`  Port: ${port}`)
     console.log(`  Log: ${LOGFILE}`)
     console.log('\nThe server will auto-restart on crash and start on login.')
-    console.log('Run `tlda server start` to start now.')
+    printLaunchdLoadInstructions(serverLaunchdLabel(), PLIST, { log: console.log })
     return
   }
 
   if (sub === 'uninstall') {
     if (hasLaunchd) {
-      try {
-        await runLaunchctl(['bootout', daemonLaunchdTarget('com.tlda.server')])
-      } catch (error) {
-        const detail = error?.message || String(error)
-        if (!/No such process|Could not find service|service not found/i.test(detail)) throw error
-      }
-      unlinkSync(PLIST)
-      console.log('Uninstalled launchd service.')
+      console.error(red(`Refusing to uninstall ${serverLaunchdLabel()} from this shell.`))
+      console.error(dim('  Uninstall is an explicit owner operation. From the owner login session:'))
+      console.error(`      launchctl bootout ${daemonLaunchdTarget(serverLaunchdLabel())}`)
+      console.error(`      rm ${JSON.stringify(PLIST)}`)
+      process.exit(1)
     } else {
       console.log('No launchd service installed.')
     }
     return
   }
 
-  if (sub === 'stop') {
+  if (sub === 'stop' || sub === 'restart') {
     // Diagnostic: record who's stopping the server. The server flaps because
     // something keeps issuing graceful stops; this kill-log names the caller
     // (parent command + argv) so we can trace it instead of guessing.
@@ -5868,8 +5787,14 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       appendFileSync(killLog, JSON.stringify({ t: new Date().toISOString(), pid: process.pid, ppid: process.ppid, parent, argv: process.argv.slice(1) }) + '\n')
     } catch {}
 
-    if (hasLaunchd) {
-      try { execSync('launchctl bootout gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
+    if (hasLaunchd && sub === 'stop') {
+      printSupervisedJobRefusal('server stop', { label: serverLaunchdLabel(), restartCommand: 'tlda server restart' })
+      process.exit(1)
+    }
+    if (hasLaunchd && !isLaunchdJobLoaded(serverLaunchdLabel())) {
+      console.error(red(`Server launchd job is not loaded: ${serverLaunchdLabel()}`))
+      printLaunchdLoadInstructions(serverLaunchdLabel(), PLIST)
+      process.exit(1)
     }
 
     // Get the server's actual PID from /health so we only kill the server,
@@ -5895,17 +5820,63 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     try { execSync(`pkill -f ${JSON.stringify(serverScript)}`, { stdio: 'pipe' }) } catch {}
     // No other fallback — if /health doesn't respond, the server is already dead.
 
-    // Wait for the server to actually stop
+    // Wait for the old process to stop, but do not let deploy/doctor hang if it
+    // ignores SIGTERM or health keeps answering through a stuck shutdown.
+    const stopTimeoutMs = parseInt(process.env.TLDA_SERVER_STOP_TIMEOUT_MS, 10) || DEFAULT_SUPERVISED_START_TIMEOUT_MS
+    const stopDeadline = Date.now() + stopTimeoutMs
     let stopAttempt = 0
-    for (;;) {
+    let lastStopFailure = 'health endpoint still responds'
+    let stopped = false
+    while (Date.now() < stopDeadline) {
       stopAttempt++
       await new Promise(r => setTimeout(r, 250))
       try {
-        await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(1000) })
-      } catch { break } // connection refused = stopped
+        const response = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(1000) })
+        lastStopFailure = `health endpoint returned ${response.status}`
+      } catch (error) {
+        if (error?.cause?.code === 'ECONNREFUSED') {
+          stopped = true
+          break
+        }
+        if (!['AbortError', 'TimeoutError', 'TypeError'].includes(error?.name)) throw error
+        lastStopFailure = error?.message || String(error)
+      }
       if (stopAttempt % 20 === 0) console.error(yellow('Server is still stopping; continuing to wait.'))
     }
+    if (!stopped) {
+      console.error(red(`Server did not stop within ${Math.ceil(stopTimeoutMs / 1000)}s.`))
+      console.error(dim(`  Last shutdown failure: ${lastStopFailure}`))
+      process.exit(1)
+    }
 
+    if (sub === 'restart') {
+      if (!hasLaunchd) {
+        const { spawnDetachedServer } = await import('./lib/server-start.mjs')
+        spawnDetachedServer({ serverScript, port, logFile: LOGFILE, reclaimPort: true, extraCaPath: hasTls ? TLS_CA_PATH : null })
+      }
+      const timeoutMs = parseInt(process.env.TLDA_SERVER_RESTART_TIMEOUT_MS, 10) || DEFAULT_SUPERVISED_START_TIMEOUT_MS
+      const deadline = Date.now() + timeoutMs
+      let lastFailure = 'health endpoint did not become ready'
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 250))
+        try {
+          const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(2000) })
+          if (res.ok) {
+            const data = await res.json()
+            console.log(green(`Server restarted at ${getServer()}`) + dim(` (pid ${data.pid})`))
+            return
+          }
+          lastFailure = `health endpoint returned ${res.status}`
+        } catch (error) {
+          if (!['AbortError', 'TimeoutError', 'TypeError'].includes(error?.name)) throw error
+          lastFailure = error?.message || String(error)
+        }
+      }
+      console.error(red(`Server did not become ready within ${Math.ceil(timeoutMs / 1000)}s.`))
+      console.error(dim(`  Last readiness failure: ${lastFailure}`))
+      console.error(dim(`  The launchd job remains loaded; KeepAlive will keep retrying. Log: ${LOGFILE}`))
+      process.exit(1)
+    }
     console.log(green('Server stopped.'))
     return
   }
@@ -5936,6 +5907,12 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     resolveConfig()
     loadServerConfig()
 
+    if (hasLaunchd) {
+      printSupervisedJobRefusal('server start', { label: serverLaunchdLabel(), restartCommand: 'tlda server restart' })
+      if (!isLaunchdJobLoaded(serverLaunchdLabel())) printLaunchdLoadInstructions(serverLaunchdLabel(), PLIST)
+      process.exit(1)
+    }
+
     // Check if already running
     try {
       const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
@@ -5955,54 +5932,47 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     // Ensure log directory exists
     if (!existsSync(dirname(LOGFILE))) mkdirSync(dirname(LOGFILE), { recursive: true })
 
-    if (hasLaunchd) {
-      // launchd owns the single instance (KeepAlive). NEVER kill the
-      // port-holder — a slow-to-respond server is still alive, and killing it
-      // is exactly what caused the restart-stampede. Just ensure the job is
-      // loaded and running; launchd handles crash-restart. kickstart WITHOUT
-      // -k starts it only if stopped, so concurrent callers can't force
-      // competing restarts.
-      try { execSync('launchctl bootstrap gui/$(id -u) ' + PLIST, { stdio: 'pipe' }) } catch {}
-      try { execSync('launchctl kickstart gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
-    } else {
-      // No supervisor: spawn the server fully detached via the shared helper
-      // (the same daemonization `tlda-dev serve` uses, so there's one robust
-      // path, not a hand-rolled parallel one). reclaimPort: the main server owns
-      // the fixed port, so clear a dead LISTENer before binding.
-      const { spawnDetachedServer } = await import('./lib/server-start.mjs')
-      spawnDetachedServer({
-        serverScript, port, logFile: LOGFILE, reclaimPort: true,
-        extraCaPath: hasTls ? TLS_CA_PATH : null,
-      })
-    }
+    const { spawnDetachedServer } = await import('./lib/server-start.mjs')
+    spawnDetachedServer({
+      serverScript, port, logFile: LOGFILE, reclaimPort: true,
+      extraCaPath: hasTls ? TLS_CA_PATH : null,
+    })
 
     // The command remains attached until /health confirms that startup finished.
     // launchd may restart the process while this loop is running; that is partial
     // progress, not a reason for the caller to receive a false completion.
+    const startTimeoutMs = parseInt(process.env.TLDA_SERVER_START_TIMEOUT_MS, 10) || DEFAULT_SUPERVISED_START_TIMEOUT_MS
+    const startDeadline = Date.now() + startTimeoutMs
     let startAttempt = 0
-    for (;;) {
+    let lastStartFailure = 'health endpoint did not become ready'
+    while (Date.now() < startDeadline) {
       startAttempt++
       await new Promise(r => setTimeout(r, 250))
       try {
-        const res = await fetch(`${getServer()}/health`)
+        const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(2000) })
         if (res.ok) {
           const data = await res.json()
           console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${data.pid})`))
           console.log(dim(`  Log: ${LOGFILE}`))
-          if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-          // Also ensure the fleet daemon is up; the daemon owns configured bots.
-          await ensureFleetDaemonRunning()
           return
         }
-      } catch {}
+        lastStartFailure = `health endpoint returned ${res.status}`
+      } catch (error) {
+        if (!['AbortError', 'TimeoutError', 'TypeError'].includes(error?.name)) throw error
+        lastStartFailure = error?.message || String(error)
+      }
       if (startAttempt % 40 === 0) {
         console.error(yellow(`Server is not healthy yet; continuing to wait. Log: ${LOGFILE}`))
       }
     }
+    console.error(red(`Server did not become ready within ${Math.ceil(startTimeoutMs / 1000)}s.`))
+    console.error(dim(`  Last readiness failure: ${lastStartFailure}`))
+    console.error(dim(`  Log: ${LOGFILE}`))
+    process.exit(1)
   }
 
   console.error(`Unknown subcommand: tlda server ${sub}`)
-  console.error('Usage: tlda server [start|stop|status|log|install|uninstall]')
+  console.error('Usage: tlda server [start|restart|stop|status|log|install|uninstall]')
   process.exit(1)
 }
 
@@ -6143,7 +6113,7 @@ async function cmdFleetDev() {
   } catch {
     // Server may not have this endpoint — manual restart
   }
-  console.log(dim('  If shapes look stale: tlda server stop && tlda server start'))
+  console.log(dim('  If shapes look stale: tlda server restart'))
 
   const server = getServer()
   console.log(`\n  ${server}/?project=fleet-dev\n`)

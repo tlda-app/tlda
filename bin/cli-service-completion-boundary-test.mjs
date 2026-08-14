@@ -13,7 +13,7 @@ const root = join(here, '..')
 const cliSource = readFileSync(join(root, 'cli', 'tlda.mjs'), 'utf8')
 const deploy = cliSource.match(/async function cmdDeploy\(\)[\s\S]*?\n\}\n\n\/\/ ---- setup/)?.[0] || ''
 assert.doesNotMatch(deploy, /server (?:start|stop)'[^\n]*timeout/)
-assert.match(deploy, /execFileSync\(process\.execPath, \[join\(tldaRoot, 'cli', 'tlda\.mjs'\), 'server', 'start'\]/)
+assert.match(deploy, /execFileSync\(process\.execPath, \[join\(tldaRoot, 'cli', 'tlda\.mjs'\), 'server', 'restart'\]/)
 assert.match(deploy, /fetchForDeploy\('deploy SPA verification'/)
 assert.match(deploy, /fetchForDeploy\('deploy projects verification'/)
 assert.doesNotMatch(deploy, /projects API unavailable/)
@@ -101,7 +101,7 @@ exit 0
 let daemonPid = null
 try {
   const startedAt = Date.now()
-  const child = spawn(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'daemon', 'start', '--env', 'stable'], {
+  const child = spawn(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'daemon', 'restart', '--env', 'stable'], {
     cwd: root,
     env: {
       ...process.env,
@@ -134,7 +134,7 @@ try {
   const elapsed = Date.now() - startedAt
   assert.deepEqual(result, { code: 0, signal: null }, stderr)
   assert.ok(elapsed >= 1100, `daemon start returned before ready marker (${elapsed}ms)`)
-  assert.match(stdout, /Fleet daemon launchd job started/)
+  assert.match(stdout, /Fleet daemon restarted through launchd/)
   assert.doesNotMatch(stdout, /readiness pending/)
   daemonPid = Number(readFileSync(join(configDir, 'fleet-daemon.stable.pid'), 'utf8'))
   assert.ok(Number.isFinite(daemonPid) && daemonPid > 0)
@@ -178,6 +178,7 @@ models: {}
 writeFileSync(join(applyConfigDir, 'server.yaml'), '')
 writeFileSync(join(applyBinDir, 'launchctl'), `#!/bin/sh
 if [ "$1" = "managername" ]; then echo Aqua; exit 0; fi
+if [ "$1" = "print" ]; then exit 113; fi
 if [ "$1" = "bootstrap" ]; then
   case "$3" in
     *capcheck*) exit 0 ;;
@@ -212,12 +213,11 @@ try {
   })
   const elapsed = Date.now() - startedAt
   assert.equal(apply.status, 0, apply.stderr)
-  assert.ok(elapsed >= 450, `config apply returned before retry delay (${elapsed}ms)`)
-  assert.match(apply.stderr, /attempt 1 did not complete/)
-  assert.match(apply.stderr, /unfinished job\(s\); retrying/)
-  assert.match(apply.stdout, /Added com\.tlda\.fleet-daemon\.stable/)
+  assert.ok(elapsed < 2000, `config apply should report pending without retrying (${elapsed}ms)`)
+  assert.match(apply.stdout, /Pending com\.tlda\.fleet-daemon\.stable/)
+  assert.match(apply.stdout, /Nothing was unloaded/)
   assert.match(apply.stdout, /tlda config apply complete/)
-  assert.equal(readFileSync(join(applyConfigDir, 'config-apply-attempts'), 'utf8').trim(), '2')
+  assert.equal(readFileSync(join(applyConfigDir, 'config-apply-attempts'), 'utf8').trim(), '1')
   console.log('cli config completion boundary: ok')
 } finally {
   rmSync(applyFixture, { recursive: true, force: true })

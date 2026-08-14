@@ -28,7 +28,7 @@ try {
     writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${command} '$* >> '${calls}'\nif [ '${command}' = launchctl ] && [ "$1" = print ]; then\n  echo 'Could not find service' >&2\n  exit 1\nfi\nexit 0\n`, { mode: 0o755 })
   }
 
-  for (const command of ['install', 'uninstall', 'start', 'restart', 'stop']) {
+  for (const command of ['uninstall', 'start', 'stop']) {
     const result = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'bot', command, 'todd'], {
       cwd: root,
       encoding: 'utf8',
@@ -39,11 +39,20 @@ try {
         PATH: `${fakeBin}:${process.env.PATH || ''}`,
       },
     })
-    assert.notEqual(result.status, 0, `${command} must not remain a bot service-management path`)
-    assert.match(result.stderr, new RegExp(`Unknown subcommand: tlda bot ${command}`))
+    assert.notEqual(result.status, 0, `${command} must refuse without changing supervision`)
+    assert.match(result.stderr, /Refusing/)
   }
 
-  assert.equal(existsSync(calls) ? readFileSync(calls, 'utf8') : '', '', 'removed bot commands must not call launchctl or tmux')
+  const restart = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'bot', 'restart', 'todd'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, HOME: taskHome, TLDA_CONFIG_DIR: configDir, PATH: `${fakeBin}:${process.env.PATH || ''}` },
+  })
+  assert.notEqual(restart.status, 0)
+  assert.match(restart.stderr, /Bot manager launchd job is not loaded/)
+  const launchCalls = existsSync(calls) ? readFileSync(calls, 'utf8') : ''
+  assert.doesNotMatch(launchCalls, /bootout|unload|remove/)
+  assert.doesNotMatch(launchCalls, /tmux/)
   assert.equal(existsSync(join(taskHome, 'Library', 'LaunchAgents', 'com.tlda.bot.todd.plist')), false)
 
   writeFileSync(join(configDir, 'todd.test.pid'), `${process.pid}\n`)
