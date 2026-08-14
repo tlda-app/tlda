@@ -36,6 +36,13 @@ test('source operation fate survives store reconstruction and exact replay', () 
     assert.equal(first.readRevisionLifecycle(payload().project, 'sha256:revision').build.state, 'pending')
     first.recordRevisionPhase(payload().project, 'sha256:revision', 'build', 'built', { artifact: 'output' })
     assert.equal(first.readRevisionLifecycle(payload().project, 'sha256:revision').build.state, 'built')
+    first.recordReplicaTargets(payload().project, 'sha256:revision', [
+      { bindingId: 'binding-b', daemonKey: 'daemon-b' },
+      { bindingId: 'binding-a', daemonKey: 'daemon-a' },
+    ], { project: payload().project, sourceRevision: 'sha256:revision' })
+    assert.equal(first.readRevisionLifecycle(payload().project, 'sha256:revision').replicas['binding-a'].state, 'pending')
+    first.recordReplicaResult(payload().project, 'sha256:revision', 'binding-a', 'materialized', { readback: 'sha256:revision' })
+    assert.equal(first.readRevisionLifecycle(payload().project, 'sha256:revision').replicas['binding-a'].state, 'materialized')
     assert.deepEqual(first.listRevisionLifecycles(payload().project).map(row => row.sourceRevision), ['sha256:revision'])
 
     const restarted = createSourceLifecycleStore({ root, context: { referencedRoots: ['main.tex'] } })

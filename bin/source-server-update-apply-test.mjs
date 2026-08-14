@@ -50,11 +50,12 @@ function materialization(previousContent, nextContent) {
 
 try {
   writeFileSync(main, 'base\n')
-  sourceSync.bindSource('paper', root)
+  const binding = sourceSync.bindSource('paper', root)
   sourceSync.sync([{ name: 'paper', sourceDir: root, mainFile: 'main.tex', format: 'svg', sourceRevision: 'rev-base' }], { authoritativeRevisions: true })
 
   const clean = sourceSync.applyAcceptedSourceUpdate({
     project: 'paper',
+    bindingId: binding.bindingId,
     previousRevision: 'rev-base',
     sourceRevision: 'rev-browser',
     files: [{ path: 'main.tex', content: 'from browser\n' }],
@@ -70,6 +71,7 @@ try {
   activeWatcher.emit('change', main)
   const conflicted = sourceSync.applyAcceptedSourceUpdate({
     project: 'paper',
+    bindingId: binding.bindingId,
     previousRevision: 'rev-browser',
     sourceRevision: 'rev-peer',
     files: [{ path: 'main.tex', content: 'peer edit\n' }],

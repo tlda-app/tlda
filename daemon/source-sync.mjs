@@ -21,7 +21,6 @@ export function resolveWatchedSourceFile(sourceWatchers, filePath) {
 }
 
 export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
-  const revisions = new Map()
   const pending = new Map()
   const pendingProjects = new Set()
   const queued = new Map()
@@ -55,11 +54,6 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
   }
 
   return {
-    seed(project, revision, { authoritative = false } = {}) {
-      const nextRevision = revision ?? null
-      if (nextRevision !== revisions.get(project)) blocked.delete(project)
-      if (!revisions.has(project) || authoritative) revisions.set(project, nextRevision)
-    },
     prepare(payload, retried = false) {
       if (blocked.has(payload.project)) return null
       if (pendingProjects.has(payload.project)) {
@@ -67,7 +61,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
         return null
       }
       const requestId = makeId()
-      const message = { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null, [DAEMON_OUTBOX_ID_FIELD]: payload[DAEMON_OUTBOX_ID_FIELD] || randomUUID() }
+      const message = { ...payload, requestId, expectedRevision: payload.expectedRevision ?? null, [DAEMON_OUTBOX_ID_FIELD]: payload[DAEMON_OUTBOX_ID_FIELD] || randomUUID() }
       pending.set(requestId, { project: payload.project, payload, retried })
       pendingProjects.add(payload.project)
       return message
@@ -89,14 +83,12 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       pending.delete(message.requestId)
       const project = request.project
       pendingProjects.delete(project)
-      if (message.ok && typeof message.sourceRevision === 'string') revisions.set(project, message.sourceRevision)
-      else {
+      if (!message.ok) {
         const currentRevision = message.authority?.currentRevision
         if (message.status === 'stale-base' && typeof currentRevision === 'string') {
-          revisions.set(project, currentRevision)
           if (!request.retried) {
             blocked.delete(project)
-            retries.push({ payload: request.payload, retried: true })
+            retries.push({ payload: { ...request.payload, expectedRevision: currentRevision }, retried: true })
           } else {
             blocked.add(project)
           }
@@ -148,7 +140,6 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
     },
     state(project) {
       return {
-        revision: revisions.get(project) ?? null,
         blocked: blocked.has(project),
         pending: pendingProjects.has(project),
         queued: queued.has(project),
@@ -227,7 +218,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (!handled) return false
     const outboxId = message.outbox_id || request.payload?.[DAEMON_OUTBOX_ID_FIELD]
     const operationIds = (request.payload?.editOperations || (request.payload?.editOperation ? [{ operation: request.payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)
-    if (message.ok) sourceCorrelation.settleOperations(message.project, operationIds)
+    if (message.ok) {
+      sourceCorrelation.settleOperations(message.project, operationIds)
+      const bindingId = request.payload?.sourceBindingId
+      if (bindingId && message.sourceRevision) sourceMaterializer.acceptLocalRevision(bindingId, message.sourceRevision)
+    }
     if (conflicted.length > 0) sourceCorrelation.holdForHuman(message.project)
     if (editOperationStore && outboxId && operationIds.length) {
       if (message.ok) editOperationStore.applyDisposition({ outboxId, kind: 'accepted', operationIds })
@@ -285,13 +280,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (!project) throw new Error('project is required')
     const state = sourceWatchers.get(project)
     if (!state?.sourceDir) return { ok: false, accepted: false, reason: 'project-not-watched' }
-    const local = sourceCorrelation.state(project)
-    if (sourceRevision && local.revision === sourceRevision) return { ok: true, accepted: true, unchanged: true, sourceRevision }
+    if (message.bindingId !== state.bindingId) return { ok: false, accepted: false, reason: 'binding-not-watched', bindingId: state.bindingId }
     if (!sourceRevision || !Array.isArray(baseManifest) || !Array.isArray(targetManifest) || !blobs || typeof blobs !== 'object') {
       throw new Error('Accepted source materialization requires sourceRevision, baseManifest, targetManifest, and blobs')
     }
     const record = sourceMaterializer.plan({
-      bindingId: project,
+      bindingId: state.bindingId,
       sourceRevision,
       previousRevision,
       sourceDir: state.sourceDir,
@@ -302,7 +296,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     })
     let terminal
     try {
-      terminal = sourceMaterializer.apply(project, sourceRevision)
+      terminal = sourceMaterializer.apply(state.bindingId, sourceRevision)
     } catch (error) {
       sendMsg({
         type: 'daemon-warning',
@@ -326,15 +320,21 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       log.warn(`${project}: accepted server source conflicted locally in ${conflicted.join(', ')} — resolve the markers; the next save syncs`)
       return { ok: false, accepted: true, reason: 'conflicted', sourceRevision, applied, conflicted }
     }
-    sourceCorrelation.seed(project, sourceRevision, { authoritative: true })
     if (Array.isArray(sourceManifest)) state.authorityManifest = new Set(sourceManifest)
-    return { ok: true, accepted: true, sourceRevision, materializedRevision: sourceRevision, applied, conflicted }
+    return { ok: true, accepted: true, bindingId: state.bindingId, sourceRevision, materializedRevision: sourceRevision, applied, conflicted }
   }
 
   function loadSourceBindings() {
     try {
       if (!fs.existsSync(sourceBindingsFile)) return {}
-      return JSON.parse(fs.readFileSync(sourceBindingsFile, 'utf8')) || {}
+      const stored = JSON.parse(fs.readFileSync(sourceBindingsFile, 'utf8')) || {}
+      return Object.fromEntries(Object.entries(stored).map(([project, value]) => {
+        const sourceDir = path.resolve(typeof value === 'string' ? value : value.sourceDir)
+        const bindingId = typeof value === 'object' && typeof value.bindingId === 'string'
+          ? value.bindingId
+          : createHash('sha256').update(`source-binding\0${project}\0${sourceDir}`).digest('hex')
+        return [project, { bindingId, project, sourceDir }]
+      }))
     } catch (e) {
       log.warn(`corrupt source-bindings file, ignoring: ${e.message}`)
       return {}
@@ -343,6 +343,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   function boundProjectNames() {
     return Object.keys(loadSourceBindings()).sort()
+  }
+
+  function bindingRecords() {
+    return Object.values(loadSourceBindings()).sort((a, b) => a.bindingId.localeCompare(b.bindingId))
   }
 
   function saveSourceBindings(bindings) {
@@ -358,14 +362,15 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       throw new Error(`Source directory does not exist: ${normalized}`)
     }
     const bindings = loadSourceBindings()
-    const existing = bindings[project] ? path.resolve(bindings[project]) : null
-    if (existing === normalized) return { linked: false, alreadyLinked: true, sourceDir: normalized }
+    const existing = bindings[project] || null
+    if (existing?.sourceDir === normalized) return { linked: false, alreadyLinked: true, bindingId: existing.bindingId, sourceDir: normalized }
     if (existing) {
-      throw new Error(`Project "${project}" is already linked to ${existing}; unlink it first`)
+      throw new Error(`Project "${project}" is already linked to ${existing.sourceDir}; unlink it first`)
     }
-    bindings[project] = normalized
+    bindings[project] = { bindingId: randomUUID(), project, sourceDir: normalized }
     saveSourceBindings(bindings)
-    return { linked: true, alreadyLinked: false, sourceDir: normalized }
+    sourceMaterializer.seedBinding(bindings[project].bindingId, normalized, null)
+    return { linked: true, alreadyLinked: false, bindingId: bindings[project].bindingId, sourceDir: normalized }
   }
 
   /**
@@ -385,23 +390,23 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   function bindingStatus(project, sourceDir) {
     const normalized = path.resolve(sourceDir)
     const existing = loadSourceBindings()[project]
-    const resolved = existing ? path.resolve(existing) : null
+    const resolved = existing?.sourceDir || null
     if (resolved && resolved !== normalized) {
       throw new Error(`Project "${project}" is already linked to ${resolved}; unlink it first`)
     }
-    return { alreadyLinked: resolved === normalized, sourceDir: normalized }
+    return { alreadyLinked: resolved === normalized, bindingId: existing?.bindingId || null, sourceDir: normalized }
   }
 
   function unbindSource(project, expectedSourceDir = null) {
     const bindings = loadSourceBindings()
     if (!bindings[project]) return { unlinked: false, alreadyUnlinked: true }
-    const sourceDir = path.resolve(bindings[project])
+    const { bindingId, sourceDir } = bindings[project]
     if (expectedSourceDir && sourceDir !== path.resolve(expectedSourceDir)) {
       throw new Error(`Project "${project}" is linked to ${sourceDir}, not ${path.resolve(expectedSourceDir)}`)
     }
     delete bindings[project]
     saveSourceBindings(bindings)
-    return { unlinked: true, alreadyUnlinked: false, sourceDir }
+    return { unlinked: true, alreadyUnlinked: false, bindingId, sourceDir }
   }
 
   // ---------- source watching ----------
@@ -711,7 +716,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       const fingerprint = sourcePathFingerprint(filePath)
       const previous = state.pathFingerprints.get(filePath)
       const targetHash = fs.existsSync(filePath) ? createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') : null
-      if (rel && sourceMaterializer.consumeCompletedPath(state.projectName, rel, targetHash) && previous === fingerprint) {
+      if (rel && sourceMaterializer.consumeCompletedPath(state.bindingId, rel, targetHash) && previous === fingerprint) {
         return
       }
       state.pathFingerprints.set(filePath, fingerprint)
@@ -748,12 +753,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     const activeNames = new Set()
     const bindings = loadSourceBindings()
     for (const p of projectList) {
-      sourceCorrelation.seed(p.name, p.sourceRevision, {
-        authoritative: authoritativeRevisions || !sourceWatchers.has(p.name),
-      })
-      const sourceDir = bindings[p.name]
+      const binding = bindings[p.name]
+      const sourceDir = binding?.sourceDir
       if (!sourceDir) continue
       if (!fs.existsSync(sourceDir)) continue
+      const durableBinding = sourceMaterializer.seedBinding(binding.bindingId, sourceDir, p.sourceRevision || null)
       activeNames.add(p.name)
 
       const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
@@ -787,6 +791,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           existing.isMarkdown = isMarkdown
           existing.format = p.format
           existing.authorityManifest = new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : [])
+          existing.bindingId = binding.bindingId
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
           for (const rel of referenced.reached) {
@@ -796,7 +801,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         }
       }
 
-      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, projectWatchSet, chatReferenceRoots: referenced.roots, referencedRoots: referenced.reached, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), reconcileTimer: null, _symlinkWatchers: new Map() }
+      const state = { bindingId: binding.bindingId, sourceDir, debounce: null, pending: new Set(), watchSet, projectWatchSet, chatReferenceRoots: referenced.roots, referencedRoots: referenced.reached, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), reconcileTimer: null, _symlinkWatchers: new Map() }
 
       const onFileChange = (filename) => {
         if (!filename) return
@@ -1022,6 +1027,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     sendSourceChange({
       type: 'source-change',
       project: projectName,
+      sourceBindingId: state.bindingId,
+      expectedRevision: sourceMaterializer.readBinding(state.bindingId)?.serverHeadRevision || null,
       files,
       sourceManifest: collectSourceManifest(
         state.sourceDir,
@@ -1054,8 +1061,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   function getSourceDir(project) {
     const watched = sourceWatchers.get(project)?.sourceDir
     if (watched) return watched
-    const bound = loadSourceBindings()[project]
-    return bound ? path.resolve(bound) : null
+    return loadSourceBindings()[project]?.sourceDir || null
   }
 
   function sourceFileForAbsolutePath(filePath) {
@@ -1070,6 +1076,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   return {
     bindSource,
     bindingStatus,
+    bindingRecords,
     boundProjectNames,
     unbindSource,
     sync,

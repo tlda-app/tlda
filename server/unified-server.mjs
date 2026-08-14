@@ -65,7 +65,7 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler } from './routes/projects.mjs'
+import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -413,6 +413,56 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 // Daemon connections — keyed by machine_id:env_name. Each value is the live WS
 // for that daemon config lane. Used for RPC routing and agent updates.
 const daemonConnections = new Map()         // machine_id:env_name -> ws
+const SOURCE_BINDING_REGISTRY_PATH = process.env.TLDA_SOURCE_BINDING_REGISTRY_PATH
+  || join(CONFIG_DIR, 'server-source-bindings.json')
+
+function readSourceBindingRegistry() {
+  try {
+    return existsSync(SOURCE_BINDING_REGISTRY_PATH)
+      ? JSON.parse(readFileSync(SOURCE_BINDING_REGISTRY_PATH, 'utf8'))
+      : { version: 1, bindings: {} }
+  } catch (error) {
+    console.error(`[source-bindings] registry read failed: ${error.message}`)
+    return { version: 1, bindings: {} }
+  }
+}
+
+function writeSourceBindingRegistry(registry) {
+  mkdirSync(dirname(SOURCE_BINDING_REGISTRY_PATH), { recursive: true })
+  const pending = `${SOURCE_BINDING_REGISTRY_PATH}.pending-${process.pid}-${randomUUID()}`
+  writeFileSync(pending, `${JSON.stringify(registry, null, 2)}\n`)
+  const pendingFd = openSync(pending, 'r')
+  try { fs.fsyncSync(pendingFd) } finally { fs.closeSync(pendingFd) }
+  fs.renameSync(pending, SOURCE_BINDING_REGISTRY_PATH)
+  const registryFd = openSync(SOURCE_BINDING_REGISTRY_PATH, 'r')
+  try { fs.fsyncSync(registryFd) } finally { fs.closeSync(registryFd) }
+  const parentFd = openSync(dirname(SOURCE_BINDING_REGISTRY_PATH), 'r')
+  try { fs.fsyncSync(parentFd) } finally { fs.closeSync(parentFd) }
+}
+
+function recordDaemonSourceBindings(daemonKey, reported) {
+  const registry = readSourceBindingRegistry()
+  for (const [bindingId, row] of Object.entries(registry.bindings || {})) {
+    if (row.daemonKey === daemonKey) delete registry.bindings[bindingId]
+  }
+  const reportedAt = new Date().toISOString()
+  for (const binding of reported || []) {
+    if (!binding?.bindingId || !binding?.project) continue
+    registry.bindings[binding.bindingId] = {
+      bindingId: binding.bindingId,
+      project: binding.project,
+      daemonKey,
+      reportedAt,
+    }
+  }
+  writeSourceBindingRegistry(registry)
+}
+
+function sourceBindingsForProject(project) {
+  return Object.values(readSourceBindingRegistry().bindings || {})
+    .filter(binding => binding.project === project)
+    .sort((a, b) => a.bindingId.localeCompare(b.bindingId))
+}
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
 function daemonTerminalInputAllowed(daemonKey) {
@@ -1424,58 +1474,84 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
   listDaemonKeys: () => [...daemonConnections.keys()],
 }))
 
+setSourceBindingTargetProvider(sourceBindingsForProject)
+
 const editActivityProjector = createEditActivityProjector({
   fleetStore,
   onProjected: (id, metadataPatch) => broadcastEvent('event-update', { id, metadata_patch: metadataPatch }),
 })
 void editActivityProjector.project().catch(e => console.error(`[edit-projector] startup failed: ${e.message}`))
-setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
-  const roomResult = await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
-  if (Array.isArray(roomResult?.conflicted) && roomResult.conflicted.length > 0) {
-    await recordSourceSyncConflicts(message.project, roomResult.conflicted.map(file => ({
-      file,
-      owner: sourceConflictOwner({ daemonKey: `source-room:${message.project}` }),
-      source: 'source-room',
-    })))
+const handleAcceptedSourceMutation = async ({ sourceDaemonKey, ...message }) => {
+  if (!message.resumeOnly) {
+    const roomResult = await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
+    if (Array.isArray(roomResult?.conflicted) && roomResult.conflicted.length > 0) {
+      await recordSourceSyncConflicts(message.project, roomResult.conflicted.map(file => ({
+        file,
+        owner: sourceConflictOwner({ daemonKey: `source-room:${message.project}` }),
+        source: 'source-room',
+      })))
+    }
+    if (Array.isArray(roomResult?.applied) && roomResult.applied.length > 0) {
+      await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
+    }
+    await editActivityProjector.project(message.project)
   }
-  if (Array.isArray(roomResult?.applied) && roomResult.applied.length > 0) {
-    await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
-  }
-  await editActivityProjector.project(message.project)
   const lifecycle = await sourceLifecycleStore(message.project)
-  const targetRevision = lifecycle.readRevision(message.sourceRevision)
-  const baseRevision = message.previousRevision ? lifecycle.readRevision(message.previousRevision) : null
-  if (!targetRevision) throw new Error(`Accepted source revision ${message.sourceRevision} is not readable for ${message.project}`)
-  const blobs = {}
-  for (const file of message.files || []) {
-    const bytes = file.encoding === 'base64'
-      ? Buffer.from(file.content || '', 'base64')
-      : Buffer.from(String(file.content ?? ''))
-    blobs[createHash('sha256').update(bytes).digest('hex')] = bytes.toString('base64')
-  }
-  const materializationMessage = {
-    ...message,
-    baseManifest: baseRevision?.files || [],
-    targetManifest: targetRevision.files || [],
-    blobs,
-  }
-  const keys = [...daemonConnections.keys()].filter(key => key !== sourceDaemonKey)
-  if (keys.length === 0) return
-  const settled = await Promise.allSettled(keys.map(key =>
-    sendDaemonDurable(key, 'apply-source-update', materializationMessage, { totalDeadlineMs: 5000, timeoutMs: 2000 })
-      .then(result => ({ key, result })),
-  ))
+  const revisionLifecycle = lifecycle.readRevisionLifecycle(message.project, message.sourceRevision)
+  const targets = Object.entries(revisionLifecycle?.replicas || {})
+    .filter(([, replica]) => replica.state === 'pending')
+    .filter(([, replica]) => !message.daemonKeyFilter || replica.daemonKey === message.daemonKeyFilter)
+    .map(([bindingId, replica]) => ({
+      bindingId,
+      daemonKey: replica.daemonKey,
+      command: replica.command,
+    }))
+  if (targets.length === 0) return
+  const settled = await Promise.allSettled(targets.map(target => {
+    if (!daemonConnections.has(target.daemonKey)) {
+      return Promise.resolve({ target, offline: true, result: null })
+    }
+    return sendDaemonDurable(target.daemonKey, 'apply-source-update', target.command, {
+      requestId: `materialize:${target.bindingId}:${message.sourceRevision}`,
+      totalDeadlineMs: 5000,
+      timeoutMs: 2000,
+    }).then(result => ({ target, offline: false, result }))
+  }))
   const failed = []
   const cleanByOwner = []
   const conflicts = []
   for (let i = 0; i < settled.length; i++) {
     const outcome = settled[i]
     if (outcome.status === 'rejected') {
-      failed.push(`${keys[i]} (${outcome.reason?.message || outcome.reason})`)
+      lifecycle.recordReplicaResult(message.project, message.sourceRevision, targets[i].bindingId, 'pending', {
+        error: outcome.reason?.message || String(outcome.reason),
+        transport: 'delivery-failed',
+      })
+      failed.push(`${targets[i].bindingId} (${outcome.reason?.message || outcome.reason})`)
       continue
     }
-    const owner = sourceConflictOwner({ daemonKey: outcome.value.key })
+    if (outcome.value.offline) {
+      lifecycle.recordReplicaResult(message.project, message.sourceRevision, outcome.value.target.bindingId, 'pending', {
+        transport: 'offline',
+        daemonKey: outcome.value.target.daemonKey,
+      })
+      continue
+    }
+    const owner = sourceConflictOwner({ daemonKey: outcome.value.target.daemonKey })
     const result = outcome.value.result || {}
+    lifecycle.recordReplicaResult(
+      message.project,
+      message.sourceRevision,
+      outcome.value.target.bindingId,
+      result.ok === true && result.materializedRevision === message.sourceRevision
+        ? 'materialized'
+        : result.reason === 'project-not-watched' || result.reason === 'binding-not-watched'
+          ? 'pending'
+          : Array.isArray(result.conflicted) && result.conflicted.length > 0
+            ? 'conflicted'
+            : 'failed',
+      result,
+    )
     if (Array.isArray(result.conflicted) && result.conflicted.length > 0) {
       conflicts.push(...result.conflicted.map(file => ({
         file,
@@ -1487,7 +1563,7 @@ setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
       cleanByOwner.push({ owner, files: result.applied })
     }
     if (result?.ok === false && result?.reason !== 'project-not-watched') {
-      failed.push(`${keys[i]} (${result?.reason || 'declined'})`)
+      failed.push(`${outcome.value.target.bindingId} (${result?.reason || 'declined'})`)
     }
   }
   for (const clean of cleanByOwner) await clearSourceSyncConflicts(message.project, clean.files, clean.owner)
@@ -1495,7 +1571,9 @@ setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
   if (failed.length > 0) {
     console.error(`[source-sync] accepted source update for ${message.project} did not reach all linked checkouts: ${failed.join(', ')}`)
   }
-})
+}
+setAcceptedSourceMutationHandler(handleAcceptedSourceMutation)
+setPendingSourceReplicaHandler(handleAcceptedSourceMutation)
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
@@ -8669,7 +8747,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'daemon-hello') {
-    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id, capabilities } = msg
+    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id, capabilities, source_bindings } = msg
     if (!machine_id || !env_name) return
     const daemonKey = daemonAddress(machine_id, env_name)
     // §4b backstop: a daemon address is owned by ONE daemon install. If another
@@ -8723,6 +8801,7 @@ async function handleDaemonWsMessage(ws, msg) {
       terminalInputAllowed: capabilities?.terminalInputAllowed === true,
     }
     daemonConnections.set(daemonKey, ws)
+    recordDaemonSourceBindings(daemonKey, source_bindings)
     traceGate1('registry-set', {
       daemon_key: daemonKey,
       boot_id,
@@ -8749,6 +8828,21 @@ async function handleDaemonWsMessage(ws, msg) {
     await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
+    void Promise.all((await listProjects()).map(async projectRow => {
+      const project = projectRow.name
+      const lifecycle = await sourceLifecycleStore(project)
+      for (const revision of lifecycle.listRevisionLifecycles(project)) {
+        const hasPendingTarget = Object.values(revision.replicas || {})
+          .some(replica => replica.state === 'pending' && replica.daemonKey === daemonKey)
+        if (!hasPendingTarget) continue
+        await handleAcceptedSourceMutation({
+          project,
+          sourceRevision: revision.sourceRevision,
+          resumeOnly: true,
+          daemonKeyFilter: daemonKey,
+        })
+      }
+    })).catch(error => console.error(`[source-sync] pending replica resume failed for ${daemonKey}: ${error.message}`))
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
     if (daemonConnections.get(daemonKey) !== ws) {
       console.error(`[fleet-daemon] routability invariant failed after welcome setup: daemon=${daemonKey}`)
@@ -9242,7 +9336,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-change') {
-    const { project, files, deletedFiles, sourceManifest, editedBy, editOperation, editOperations, expectedRevision, requestId } = msg
+    const { project, files, deletedFiles, sourceManifest, editedBy, editOperation, editOperations, expectedRevision, requestId, sourceBindingId } = msg
     const deliveryId = daemonOutboxId(msg)
     if (typeof requestId !== 'string' || !requestId.trim()) {
       ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: 'requestId is required' }))
@@ -9287,6 +9381,7 @@ async function handleDaemonWsMessage(ws, msg) {
         expectedRevision,
         requestId,
         deliveryId,
+        sourceBindingId: sourceBindingId || null,
         sourceDaemonKey: ws._daemonKey || null,
         sourceMachineId: ws._machineId || null,
         sourceEnvName: ws._envName || null,

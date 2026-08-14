@@ -20,7 +20,7 @@ async function unusedPort() {
   return port
 }
 
-async function startServer({ port, projectsDir, fleetDb, crashBoundary = null }) {
+async function startServer({ port, projectsDir, fleetDb, crashBoundary = null, bindingRegistry = null }) {
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
     cwd: join(import.meta.dirname, '..', '..'),
     env: {
@@ -31,6 +31,7 @@ async function startServer({ port, projectsDir, fleetDb, crashBoundary = null })
       TLDA_FLEET_DB: fleetDb,
       TLDA_DEV_SERVER: '1',
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+      ...(bindingRegistry ? { TLDA_SOURCE_BINDING_REGISTRY_PATH: bindingRegistry } : {}),
       ...(crashBoundary ? { TLDA_TEST_SOURCE_CRASH_BOUNDARY: crashBoundary } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -53,8 +54,10 @@ async function stopServer(server) {
   await new Promise(resolve => server.child.once('exit', resolve))
 }
 
-async function openDaemon(port) {
+async function openDaemon(port, { machineId = 'durable-source-wire', sourceBindings = [] } = {}) {
   const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet-daemon`, { rejectUnauthorized: false })
+  ws._testMessages = []
+  ws.on('message', raw => ws._testMessages.push(JSON.parse(String(raw))))
   await new Promise((resolve, reject) => {
     ws.once('open', resolve)
     ws.once('error', reject)
@@ -71,11 +74,27 @@ async function openDaemon(port) {
     ws.on('message', onMessage)
   })
   ws.send(JSON.stringify({
-    type: 'daemon-hello', machine_id: 'durable-source-wire', env_name: 'test',
+    type: 'daemon-hello', machine_id: machineId, env_name: 'test', source_bindings: sourceBindings,
     boot_id: Date.now(), install_path: import.meta.dirname, hostname: 'test', version: 'test',
   }))
   await welcome
   return ws
+}
+
+function nextRpc(ws, operation) {
+  const existing = ws._testMessages.find(message => message.type === 'rpc' && message.op === operation)
+  if (existing) return Promise.resolve(existing)
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`${operation} RPC timed out: ${JSON.stringify(ws._testMessages)}`)), 20_000)
+    const onMessage = raw => {
+      const message = JSON.parse(String(raw))
+      if (message.type !== 'rpc' || message.op !== operation) return
+      clearTimeout(timeout)
+      ws.off('message', onMessage)
+      resolve(message)
+    }
+    ws.on('message', onMessage)
+  })
 }
 
 function deliver(ws, envelope) {
@@ -92,6 +111,82 @@ function deliver(ws, envelope) {
     ws.send(JSON.stringify(envelope))
   })
 }
+
+test('offline binding remains required and completes when its daemon reconnects', { timeout: 180_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-source-offline-wire-'))
+  const projectsDir = join(root, 'projects')
+  const fleetDb = join(root, 'fleet.db')
+  const bindingRegistry = join(root, 'source-bindings.json')
+  const project = 'paper-offline-binding'
+  const port = await unusedPort()
+  let server
+  let sourceWs
+  let targetWs
+  try {
+    await initProjectStore(projectsDir)
+    createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(project, { pages: 1, buildStatus: 'success' })
+    mkdirSync(join(projectsDir, project, 'output'), { recursive: true })
+    writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
+    await closeProjectStore()
+
+    server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+    targetWs = await openDaemon(port, {
+      machineId: 'target-machine',
+      sourceBindings: [{ bindingId: 'target-binding', project }],
+    })
+    targetWs.close()
+    await new Promise(resolve => targetWs.once('close', resolve))
+    targetWs = null
+
+    sourceWs = await openDaemon(port, { machineId: 'source-machine' })
+    const envelope = {
+      type: 'source-change', project, requestId: 'R-offline', expectedRevision: null,
+      sourceBindingId: 'source-binding',
+      files: [{ path: 'main.tex', content: 'offline target content\n' }],
+      deletedFiles: [], sourceManifest: ['main.tex'], editedBy: 'agent',
+      __daemon_outbox_id: 'D-offline',
+    }
+    const acceptedMessages = await deliver(sourceWs, envelope)
+    const accepted = acceptedMessages.find(message => message.type === 'source-change-result')
+    assert.equal(accepted?.ok, true, JSON.stringify(acceptedMessages))
+    const registry = JSON.parse(readFileSync(bindingRegistry, 'utf8'))
+    assert.equal(registry.bindings['target-binding'].daemonKey, 'target-machine:test')
+    const operations = JSON.parse(readFileSync(join(projectsDir, project, '.source-lifecycle', 'operations.json'), 'utf8'))
+    assert.equal(operations.revisionLifecycle[accepted.sourceRevision].replicas['target-binding'].state, 'pending')
+
+    targetWs = await openDaemon(port, {
+      machineId: 'target-machine',
+      sourceBindings: [{ bindingId: 'target-binding', project }],
+    })
+    const rpc = await nextRpc(targetWs, 'apply-source-update').catch(error => {
+      throw new Error(`${error.message}\nserver log:\n${server.output()}`)
+    })
+    assert.equal(rpc.bindingId, 'target-binding')
+    assert.equal(rpc.sourceRevision, accepted.sourceRevision)
+    targetWs.send(JSON.stringify({
+      type: 'rpc-reply',
+      id: rpc.id,
+      result: { ok: true, bindingId: 'target-binding', materializedRevision: rpc.sourceRevision, applied: ['main.tex'] },
+    }))
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    sourceWs.close()
+    targetWs.close()
+    sourceWs = null
+    targetWs = null
+    await stopServer(server)
+    await initProjectStore(projectsDir)
+    const lifecycle = await sourceLifecycleStore(project)
+    assert.equal(lifecycle.readRevisionLifecycle(project, accepted.sourceRevision).replicas['target-binding'].state, 'materialized')
+  } finally {
+    sourceWs?.terminate()
+    targetWs?.terminate()
+    await stopServer(server)
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 for (const boundary of ['after-source-mutation', 'after-terminal-result']) {
   test(`production daemon wire replays exact canonical result after ${boundary} restart`, { timeout: 180_000 }, async () => {

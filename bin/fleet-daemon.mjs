@@ -1478,6 +1478,7 @@ function connect() {
         capabilities: {
           terminalInputAllowed: terminalRpc.capabilities.terminalInputAllowed,
         },
+        source_bindings: sourceSync.bindingRecords(),
         connection_attempt_id: connectionAttemptId,
         // A cold daemon has no roster to apply a delta to, so 0 deliberately
         // requests the exceptional snapshot. Reconnects retain the cursor.

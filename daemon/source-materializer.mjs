@@ -97,6 +97,40 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     return journal().materializations[key(bindingId, sourceRevision)] || null
   }
 
+  function seedBinding(bindingId, sourceDir, serverHeadRevision = null) {
+    if (!bindingId || !sourceDir) throw new Error('bindingId and sourceDir are required')
+    const state = journal()
+    const existing = state.bindings[bindingId]
+    if (existing) return existing
+    state.bindings[bindingId] = {
+      bindingId,
+      sourceDir,
+      serverHeadRevision,
+      materializedRevision: null,
+      activeTargetRevision: null,
+      status: serverHeadRevision ? 'unknown' : 'uninitialized',
+      conflicts: [],
+    }
+    writeJournal(state, 'seed-binding')
+    return journal().bindings[bindingId]
+  }
+
+  function acceptLocalRevision(bindingId, sourceRevision) {
+    const state = journal()
+    const binding = state.bindings[bindingId]
+    if (!binding) throw new Error(`Binding ${bindingId} is not registered`)
+    state.bindings[bindingId] = {
+      ...binding,
+      serverHeadRevision: sourceRevision,
+      materializedRevision: sourceRevision,
+      activeTargetRevision: null,
+      status: 'materialized',
+      conflicts: [],
+    }
+    writeJournal(state, 'accept-local-revision')
+    return journal().bindings[bindingId]
+  }
+
   function plan(command) {
     const { bindingId, sourceRevision, previousRevision, sourceDir } = command
     if (!bindingId || !sourceRevision || !sourceDir) throw new Error('bindingId, sourceRevision, and sourceDir are required')
@@ -291,5 +325,5 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     return false
   }
 
-  return { plan, apply, readBinding, readMaterialization, consumeCompletedPath }
+  return { plan, apply, readBinding, readMaterialization, seedBinding, acceptLocalRevision, consumeCompletedPath }
 }

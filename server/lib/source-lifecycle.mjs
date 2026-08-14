@@ -457,6 +457,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
           build: { state: 'pending', updatedAt: operation.updatedAt },
           version: { state: 'pending', updatedAt: operation.updatedAt },
           mirror: { state: 'pending', updatedAt: operation.updatedAt },
+          replicas: {},
           acceptedAt: operation.updatedAt,
           updatedAt: operation.updatedAt,
         }
@@ -491,6 +492,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         build: { state: 'pending', updatedAt },
         version: { state: 'pending', updatedAt },
         mirror: { state: 'pending', updatedAt },
+        replicas: {},
         acceptedAt: updatedAt,
         updatedAt,
       }
@@ -508,6 +510,48 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         [phase]: { state: stateName, result: stableValue(result), updatedAt },
         updatedAt,
       }
+      writeOperationJournal(journal)
+      return operationJournal().revisionLifecycle[sourceRevision]
+    },
+    recordReplicaTargets(project, sourceRevision, targets, command) {
+      const journal = operationJournal()
+      const lifecycle = journal.revisionLifecycle[sourceRevision]
+      if (!lifecycle || lifecycle.project !== project) throw new Error(`Source revision ${sourceRevision} is not accepted for ${project}`)
+      if (lifecycle.replicaTargetsRecorded) return lifecycle
+      const updatedAt = new Date().toISOString()
+      const replicas = { ...(lifecycle.replicas || {}) }
+      const uniqueTargets = new Map((targets || []).filter(target => target?.bindingId && target?.daemonKey)
+        .map(target => [target.bindingId, target]))
+      for (const target of [...uniqueTargets.values()].sort((a, b) => a.bindingId.localeCompare(b.bindingId))) {
+        replicas[target.bindingId] ||= {
+          state: 'pending',
+          daemonKey: target.daemonKey,
+          operationId: `materialize:${target.bindingId}:${sourceRevision}`,
+          command: stableValue({ ...command, bindingId: target.bindingId }),
+          result: null,
+          updatedAt,
+        }
+      }
+      journal.revisionLifecycle[sourceRevision] = { ...lifecycle, replicas, replicaTargetsRecorded: true, updatedAt }
+      writeOperationJournal(journal)
+      return operationJournal().revisionLifecycle[sourceRevision]
+    },
+    recordReplicaResult(project, sourceRevision, bindingId, stateName, result = null) {
+      const journal = operationJournal()
+      const lifecycle = journal.revisionLifecycle[sourceRevision]
+      if (!lifecycle || lifecycle.project !== project) throw new Error(`Source revision ${sourceRevision} is not accepted for ${project}`)
+      if (!bindingId) throw new Error('bindingId is required')
+      const updatedAt = new Date().toISOString()
+      const replicas = {
+        ...(lifecycle.replicas || {}),
+        [bindingId]: {
+          ...(lifecycle.replicas?.[bindingId] || {}),
+          state: stateName,
+          result: stableValue(result),
+          updatedAt,
+        },
+      }
+      journal.revisionLifecycle[sourceRevision] = { ...lifecycle, replicas, updatedAt }
       writeOperationJournal(journal)
       return operationJournal().revisionLifecycle[sourceRevision]
     },

@@ -18,7 +18,7 @@
 
 import { Router } from 'express'
 import { execFile } from 'child_process'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/promises'
 import { join, dirname, resolve } from 'path'
 import { promisify } from 'util'
@@ -910,9 +910,19 @@ function conflictFilesFromLifecycleResult(result) {
 }
 
 let acceptedSourceMutationHandler = null
+let pendingSourceReplicaHandler = null
+let sourceBindingTargetProvider = null
 
 export function setAcceptedSourceMutationHandler(handler) {
   acceptedSourceMutationHandler = typeof handler === 'function' ? handler : null
+}
+
+export function setPendingSourceReplicaHandler(handler) {
+  pendingSourceReplicaHandler = typeof handler === 'function' ? handler : null
+}
+
+export function setSourceBindingTargetProvider(provider) {
+  sourceBindingTargetProvider = typeof provider === 'function' ? provider : null
 }
 
 export async function runSerializedProjectSourceOperation(name, operation, options = {}) {
@@ -929,23 +939,30 @@ export async function runSerializedProjectSourceOperation(name, operation, optio
     if (sourcePushQueues.get(name) === current) sourcePushQueues.delete(name)
   }
   if (result?.ok && result.acceptedSourceMutation && acceptedSourceMutationHandler) {
-    await acceptedSourceMutationHandler({
+    void Promise.resolve().then(() => acceptedSourceMutationHandler({
       project: name,
       ...result.acceptedSourceMutation,
       sourceRevision: result.sourceRevision || result.acceptedSourceMutation.sourceRevision,
       sourceDaemonKey: options.sourceDaemonKey || null,
+      sourceBindingId: options.sourceBindingId || null,
       requestId: options.requestId || null,
-    })
+    })).catch(error => console.error(`[${name}] accepted source replica dispatch failed: ${error.message}`))
   }
   return result
 }
 
 export async function processProjectPush(name, body, transactionTest = {}) {
+  const bindingTargets = sourceBindingTargetProvider
+    ? await sourceBindingTargetProvider(name)
+    : []
   const result = await runSerializedProjectSourceOperation(
     name,
-    () => processProjectPushSerialized(name, body, transactionTest),
+    () => processProjectPushSerialized(name, body, transactionTest, {
+      bindingTargets: bindingTargets.filter(target => target.bindingId !== body?.sourceBindingId),
+    }),
     {
       sourceDaemonKey: body?.sourceDaemonKey || null,
+      sourceBindingId: body?.sourceBindingId || null,
       requestId: body?.requestId || null,
     },
   )
@@ -955,6 +972,13 @@ export async function processProjectPush(name, body, transactionTest = {}) {
     if (typeof body?.requestId === 'string' && body.requestId.trim()) {
       const operationResult = lifecycle.readOperationByRequestId(name, body.requestId)?.terminalResult
       if (operationResult) Object.defineProperty(result, 'sourceOperationResult', { value: operationResult })
+      if (result.operationReplay && operationResult?.sourceRevision && pendingSourceReplicaHandler) {
+        void Promise.resolve().then(() => pendingSourceReplicaHandler({
+          project: name,
+          sourceRevision: operationResult.sourceRevision,
+          resumeOnly: true,
+        })).catch(error => console.error(`[${name}] pending source replica replay failed: ${error.message}`))
+      }
     }
   }
   if (!result.operationReplay) {
@@ -969,7 +993,7 @@ export async function processProjectPush(name, body, transactionTest = {}) {
   return result
 }
 
-export async function processProjectPushSerialized(name, body, transactionTest = {}) {
+export async function processProjectPushSerialized(name, body, transactionTest = {}, operationOptions = {}) {
   if (transactionTest.afterLock) await transactionTest.afterLock()
   let project = await readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
@@ -1224,6 +1248,28 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     } else if (acceptedSourceMutation?.sourceRevision) {
       const authority = lifecycle.readAuthority()
       lifecycle.recordAcceptedRevision(name, acceptedSourceMutation.sourceRevision, authority.acceptSeq)
+    }
+    if (acceptedSourceMutation?.sourceRevision) {
+      const targetRevision = lifecycle.readRevision(acceptedSourceMutation.sourceRevision)
+      const baseRevision = acceptedSourceMutation.previousRevision
+        ? lifecycle.readRevision(acceptedSourceMutation.previousRevision)
+        : null
+      const blobs = {}
+      for (const file of acceptedSourceMutation.files || []) {
+        const bytes = file.encoding === 'base64'
+          ? Buffer.from(file.content || '', 'base64')
+          : Buffer.from(String(file.content ?? ''))
+        blobs[createHash('sha256').update(bytes).digest('hex')] = bytes.toString('base64')
+      }
+      lifecycle.recordReplicaTargets(name, acceptedSourceMutation.sourceRevision, operationOptions.bindingTargets || [], {
+        project: name,
+        ...acceptedSourceMutation,
+        sourceBindingId: body?.sourceBindingId || null,
+        requestId: body?.requestId || null,
+        baseManifest: baseRevision?.files || [],
+        targetManifest: targetRevision?.files || [],
+        blobs,
+      })
     }
     if (transactionTest.simulateCrashAfterTerminalResult) {
       transactionTest.crash?.('after-terminal-result')
