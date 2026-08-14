@@ -2416,7 +2416,13 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const el = scrollerRef.current
     if (!el) return
     const nextSensorTop = el.scrollTop
-    const delta = sensorTopRef.current - nextSensorTop
+    // scrollTop increases as you move down the list, so nextSensorTop minus the
+    // previous value is positive going down and modelTop must increase with it.
+    // Subtracting the other way detaches the content from the finger — and only
+    // away from the tail, because the tail branch below pins to
+    // geometry.total - viewportHeight and never reads this delta. That is why
+    // it looked correct at the bottom for hours.
+    const delta = nextSensorTop - sensorTopRef.current
     sensorTopRef.current = nextSensorTop
     if (Math.abs(delta) > 0.5) {
       const previousTop = modelTopRef.current
