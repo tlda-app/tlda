@@ -12,6 +12,7 @@ const childId = 'fleet:session-contract-child'
 const childName = 'session-contract-child'
 const parentId = 'fleet:session-contract-parent'
 const seen = []
+let failSpawn = false
 
 const server = http.createServer((req, res) => {
   if (req.url?.startsWith(`/api/fleet/native-subagent-binding/${encodeURIComponent(parentId)}/`)) {
@@ -30,7 +31,7 @@ wss.on('connection', ws => {
   let authenticatedId = null
   ws.on('message', raw => {
     const message = JSON.parse(String(raw))
-    seen.push({ type: message.type, authenticatedId })
+    seen.push({ ...message, authenticatedId })
     const reply = result => ws.send(JSON.stringify({ id: message.id, result }))
     const reject = error => ws.send(JSON.stringify({ id: message.id, error }))
     if (message.type === 'login') {
@@ -43,6 +44,10 @@ wss.on('connection', ws => {
       return
     }
     if (message.type === 'spawn') {
+      if (failSpawn) {
+        reply({ ok: false, reason: 'login-timeout', error: 'spawn failed before the agent joined' })
+        return
+      }
       reply({ ok: true, agent_id: 'fleet:session-contract-minted', mailbox_id: 'mailbox:test' })
       return
     }
@@ -91,8 +96,19 @@ try {
 
   assert.equal(seen[0]?.type, 'login')
   assert.equal(seen.find(entry => entry.type === 'spawn')?.authenticatedId, childId)
+  assert.equal(seen.find(entry => entry.type === 'spawn')?.await_ready, true)
   assert.equal(seen.find(entry => entry.type === 'delegate')?.authenticatedId, childId)
-  console.log('PASS: successful native MCP login authenticates the immediately following mint and delegate calls')
+
+  const delegatesBeforeFailure = seen.filter(entry => entry.type === 'delegate').length
+  failSpawn = true
+  const failed = await handleFleetTool('delegate', {
+    mint: { name: 'session-contract-never-joined' },
+    message: 'This task must not be delegated.',
+  }, context)
+  assert.equal(failed.isError, true)
+  assert.match(failed.content[0].text, /mint failed before delegation: spawn failed before the agent joined/)
+  assert.equal(seen.filter(entry => entry.type === 'delegate').length, delegatesBeforeFailure)
+  console.log('PASS: MCP delegate waits for joined mint outcome and does not delegate after join failure')
 } finally {
   for (const client of wss.clients) client.close()
   await new Promise(resolve => server.close(resolve))

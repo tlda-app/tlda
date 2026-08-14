@@ -2340,7 +2340,7 @@ async function performSpawnRelay(caller, msg) {
     respawn: refresh ? false : resolved.respawn,
     refresh: !!refresh,
   }
-  void (async () => {
+  const spawnOutcome = (async () => {
     try {
       let result
       try {
@@ -2470,6 +2470,20 @@ async function performSpawnRelay(caller, msg) {
       if (settled) deliverSpawnLaunchFailure(settled, { error: e.message || String(e), reason: e.code || 'launch-failed' })
     }
   })()
+  if (msg.await_ready) {
+    await spawnOutcome
+    const settled = mailboxLibrarian.get(mailbox.id)
+    if (settled?.status === 'completed') {
+      return { ok: true, mailbox_id: mailbox.id, ...(settled.result || {}) }
+    }
+    return {
+      ok: false,
+      mailbox_id: mailbox.id,
+      reason: settled?.result?.reason || settled?.status || 'spawn-failed',
+      error: settled?.error || settled?.result?.error || settled?.result?.reason || 'spawn failed before the agent joined',
+    }
+  }
+  void spawnOutcome
   return {
     ok: true,
     async: true,

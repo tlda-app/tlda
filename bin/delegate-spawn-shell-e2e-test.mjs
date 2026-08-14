@@ -7,7 +7,7 @@ import { WebSocket } from 'ws'
 const PORT = Number(process.env.PORT || (5207 + (process.pid % 1000)))
 const DB = `/tmp/delegate-spawn-shell-e2e-${process.pid}.db`
 const CONFIG_DIR = `/tmp/delegate-spawn-shell-e2e-config-${process.pid}`
-const ENV_NAME = 'default'
+const ENV_NAME = 'test'
 const MACHINE_ID = 'delegate-e2e-box'
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
 if (useTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
@@ -65,18 +65,6 @@ async function waitHealth() {
     await sleep(500)
   }
   fail(`server never became healthy${lastError ? `: ${lastError.message}` : ''}\nSERVER LOG:\n${serverLog}`)
-}
-
-async function waitForAgent(agentId, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const stateRes = await fetch(`${proto}://localhost:${PORT}/api/state`)
-    const state = await stateRes.json()
-    const agent = (state.agents || []).find(a => a.id === agentId)
-    if (agent) return agent
-    await sleep(100)
-  }
-  return null
 }
 
 function openFleet() {
@@ -188,6 +176,7 @@ async function run() {
       TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       TLDA_ENV: 'test',
       TLDA_DEV_SERVER: '1',
+      TLDA_SPAWN_LOGIN_DEADLINE_MS: '1500',
       TLDA_SPAWN_MAILBOX_DEADLINE_MS: '3000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -208,31 +197,40 @@ async function run() {
       daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
       metadata: { permissionGrant: 'ops' },
     })
-    await request(requesterWs, 'login', { agent_id: 'fleet:delegate-e2e-requester' })
+    await request(requesterWs, 'login', {
+      agent_id: 'fleet:delegate-e2e-requester',
+      machine_id: MACHINE_ID,
+      env_name: ENV_NAME,
+      daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+    })
 
-    const spawnResult = await request(requesterWs, 'spawn', {
+    const spawnRequest = request(requesterWs, 'spawn', {
       fresh: true,
+      await_ready: true,
       name: 'delegate-e2e-spawned',
       model: 'sol',
       cwd: process.cwd(),
       mailboxTarget: 'fleet:delegate-e2e-requester',
       iLikeToLiveDangerously: true,
-    })
-    assert.equal(spawnResult.ok, true)
-    assert.ok(spawnResult.agent_id, `spawn result missing agent_id: ${JSON.stringify(spawnResult)}`)
+    }, 5000)
     await waitFor(() => captured.length === 1)
     assert.equal(captured.length, 1)
-    assert.equal(captured[0].agent_id, spawnResult.agent_id)
     console.log('PASS: delegate fresh spawn RPC carried a preallocated fleet agent_id')
 
-    const shell = await waitForAgent(spawnResult.agent_id)
-    assert.ok(shell, `reserved shell row did not appear for ${spawnResult.agent_id}; server log:\n${serverLog}`)
-    assert.equal(shell.metadata?.shell, true)
-    const loginResult = await request(spawnedWs, 'login', { agent_id: spawnResult.agent_id, kind: 'codex' })
+    const loginResult = await request(spawnedWs, 'login', {
+      agent_id: captured[0].agent_id,
+      kind: 'codex',
+      machine_id: MACHINE_ID,
+      env_name: ENV_NAME,
+      daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+    })
+    const spawnResult = await spawnRequest
+    assert.equal(spawnResult.ok, true)
+    assert.equal(spawnResult.agent_id, captured[0].agent_id)
     assert.equal(loginResult.ok, true)
     assert.equal(loginResult.agent.id, spawnResult.agent_id)
     assert.notEqual(loginResult.agent.metadata?.shell, true)
-    console.log('PASS: spawned process can login against the reserved shell row')
+    console.log('PASS: awaited spawn reports success only after the agent joins through the fleet socket')
 
     const delegateResult = await request(requesterWs, 'delegate', {
       from: 'fleet:delegate-e2e-requester',
@@ -275,6 +273,18 @@ async function run() {
     assert.ok(agent, `spawned agent missing from state; server log:\n${serverLog}`)
     assert.equal(agent.dead, false)
     console.log('PASS: roster state includes the spawned live shell')
+
+    const neverJoined = await request(requesterWs, 'spawn', {
+      fresh: true,
+      await_ready: true,
+      name: 'delegate-e2e-never-joined',
+      model: 'sol',
+      cwd: process.cwd(),
+      iLikeToLiveDangerously: true,
+    }, 5000)
+    assert.equal(neverJoined.ok, false)
+    assert.equal(neverJoined.reason, 'login-timeout')
+    console.log('PASS: awaited spawn reports login-timeout when the daemon launch never joins')
   } finally {
     requesterWs.close()
     spawnedWs.close()

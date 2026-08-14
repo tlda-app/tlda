@@ -1079,8 +1079,9 @@ async function rpcMint(params = {}) {
   if ((params.failIfNotFresh || params.fail_if_not_fresh) && facts.registrationError) {
     throw new Error(facts.registrationError)
   }
+  const joined = !!facts.joinedAt
   return {
-    ok: true,
+    ok: joined,
     mint_id: facts.mintId,
     fleet_id: facts.fleetId,
     agent_id: facts.fleetId,
@@ -1095,7 +1096,11 @@ async function rpcMint(params = {}) {
     daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
     tmux_session: facts.processState?.tmux_session || null,
     session_id: facts.sessionId,
-    joined: !!facts.joinedAt,
+    joined,
+    ...(!joined ? {
+      reason: facts.registrationError ? 'registration-deferred' : 'join-failed',
+      error: facts.registrationError || `mint ${facts.mintId} launched but never joined the fleet`,
+    } : {}),
     registration_deferred: !!facts.registrationError,
     registration_error: facts.registrationError || null,
     permission_grant: grant.permissionGrant,
