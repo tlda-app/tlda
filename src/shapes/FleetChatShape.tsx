@@ -128,6 +128,12 @@ const ANCHORED_SENSOR_MID = ANCHORED_SENSOR_HEIGHT / 2
 const ANCHORED_SENSOR_EDGE = 1_000_000
 const ANCHORED_ESTIMATED_ROW_HEIGHT = 80
 const ANCHORED_OVERSCAN_PX = 800
+const anchoredViewportHeight = (el: HTMLElement) => {
+  const style = getComputedStyle(el)
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0
+  const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
+  return Math.max(0, el.clientHeight - paddingTop - paddingBottom)
+}
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 type TerminalAgent = {
@@ -2337,7 +2343,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     if (el) {
       sensorTopRef.current = ANCHORED_SENSOR_MID
       el.scrollTop = ANCHORED_SENSOR_MID
-      setViewportHeight(el.clientHeight)
+      setViewportHeight(anchoredViewportHeight(el))
     }
   }, [setScroller])
 
@@ -2345,7 +2351,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const el = scrollerRef.current
     if (!el) return
     const update = () => {
-      const nextHeight = el.clientHeight
+      const nextHeight = anchoredViewportHeight(el)
       setViewportHeight(nextHeight)
       if (tailModeRef.current) modelTopRef.current = Math.max(0, geometry.total - nextHeight)
       else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, Math.max(0, geometry.total - nextHeight)))
