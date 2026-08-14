@@ -3559,6 +3559,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   pointer-events: auto !important;
 }
 
+.fleet-pen-mode,
+.fleet-pen-mode * {
+  pointer-events: none !important;
+}
+
 /* --- ClusterShape --- */
 
 .cluster-shape {

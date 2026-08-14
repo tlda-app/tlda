@@ -387,12 +387,12 @@ test('daemon start does not bootstrap or rewrite launchd jobs', () => {
   assert.match(startBlock, /will not rewrite plists or run launchctl bootstrap/)
 })
 
-test('daemon start surfaces recent daemon log when startup is not ready', () => {
+test('daemon start stays attached and surfaces recent daemon log until startup is ready', () => {
   const startBlock = cliSource.match(/if \(sub === 'start'\) \{([\s\S]*?)\n  \}\n\n  console\.error/)?.[1] || ''
   assert.ok(startBlock)
   assert.match(cliSource, /function printRecentDaemonLog/)
-  assert.match(startBlock, /printRecentDaemonLog\(\)/)
-  assert.match(startBlock, /readiness pending/)
+  assert.match(startBlock, /waitForTargetFleetDaemonCompletion\(\)/)
+  assert.doesNotMatch(startBlock, /readiness pending/)
 })
 
 test('daemon start with an unloaded launchd job fails loud without bootstrap', () => {
@@ -444,28 +444,9 @@ exit 0
   }
 })
 
-test('daemon start pending readiness prints daemon refusal log', () => {
-  const refusal = '2026-07-26T05:00:00.000Z [daemon] fleet-daemon: refusing to start — environment lock for stable held by pid=123\n'
-  const fixture = writeDaemonStartFixture({
-    logText: refusal,
-    launchctlScript: `#!/bin/sh
-echo "$@" >> "$HOME/launchctl.calls"
-if [ "$1" = "print" ]; then echo "state = waiting"; exit 0; fi
-if [ "$1" = "bootstrap" ]; then exit 0; fi
-if [ "$1" = "kickstart" ]; then exit 0; fi
-exit 0
-`,
-  })
-  try {
-    const result = runDaemonStartFixture(fixture)
-    const calls = readFileSync(join(fixture.dir, 'launchctl.calls'), 'utf8')
-    assert.equal(result.status, 0)
-    assert.doesNotMatch(calls, /bootstrap/)
-    assert.match(calls, /kickstart/)
-    assert.match(result.stdout, /Fleet daemon launchd job accepted; readiness pending/)
-    assert.match(result.stderr, /Recent daemon log/)
-    assert.match(result.stderr, /environment lock for stable held by pid=123/)
-  } finally {
-    rmSync(fixture.dir, { recursive: true, force: true })
-  }
+test('daemon readiness completion has no bounded return path', () => {
+  const completion = cliSource.match(/async function waitForTargetFleetDaemonCompletion[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(completion, /for \(;;\)/)
+  assert.match(completion, /continuing to wait/)
+  assert.match(completion, /printRecentDaemonLog\(\)/)
 })

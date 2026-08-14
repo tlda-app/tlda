@@ -90,7 +90,7 @@ export function extractActivityEvents(events) {
         if (block.duration) evt.duration = block.duration
         if (block.correlationId) evt.correlationId = block.correlationId
         if (Object.keys(input).length > 0) evt.input = input
-        if (isPrettyPrintTool(name) && block.id) {
+        if ((isPrettyPrintTool(name) || input._unknownCodexToolKind) && block.id) {
           if (toolResults.has(block.id)) {
             evt.prettyResult = truncatePrettyResult(toolResults.get(block.id), name)
           } else {

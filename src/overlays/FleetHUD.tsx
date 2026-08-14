@@ -13,6 +13,7 @@ import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 import { FleetBasestarGlyph } from '../pills/FleetIconPill'
+import { isPhoneFleetDefaultViewport } from '../pills/fleet-phone-default'
 import {
   dismissFleetGuide,
   FLEET_AGENT_CHAT_DROP_EVENT,
@@ -22,7 +23,11 @@ import {
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes } from '../shapes/fleet-utils'
-import { currentVisibleViewportSize, FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
+import {
+  currentVisibleViewportSize,
+  FLEET_HUD_DEFAULT_TOP_PAD_PX,
+  FLEET_HUD_PHONE_DEFAULT_TOP_PAD_PX,
+} from '../shapes/fleet-layout-sizing'
 import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { documentPageFlowAxis, getDocumentPageBounds } from '../shapes/fleet-layout-context'
@@ -635,6 +640,15 @@ export function FleetHUD({
     const docBounds = getDocumentPageBounds(mainEditor)
     if (!docBounds || !isFinite(docBounds.minLeft) || !isFinite(docBounds.minTop)) return null
     const vp = currentVisibleViewportSize() ?? mainEditor.getViewportScreenBounds()
+    const ownedFleetShapes = mainEditor.getCurrentPageShapes().filter(isMyFleetShape)
+    const isPhoneDefaultLayout = ownedFleetShapes.length === 1 &&
+      String(ownedFleetShapes[0].type) === 'fleet-chat' &&
+      isPhoneFleetDefaultViewport({
+        width: vp.w,
+        height: vp.h,
+        pointerCoarse: window.matchMedia?.('(pointer: coarse)').matches || false,
+        maxTouchPoints: navigator.maxTouchPoints || 0,
+      })
     const flowAxis = documentPageFlowAxis(mainEditor)
     const marginAxis = crossAxis(flowAxis)
     const docNear = marginAxis === 'x' ? docBounds.minLeft : docBounds.minTop
@@ -642,7 +656,9 @@ export function FleetHUD({
       bounds,
       docNearScreen: projectFleetHudDocumentNearEdgeWithWM(hudWm, mainEditor, docNear, marginAxis),
       flowAxis,
-      screenPad: FLEET_HUD_DEFAULT_TOP_PAD_PX,
+      screenPad: isPhoneDefaultLayout
+        ? FLEET_HUD_PHONE_DEFAULT_TOP_PAD_PX
+        : FLEET_HUD_DEFAULT_TOP_PAD_PX,
       marginGap: getLayoutReadabilityTokens(vp).marginGap,
     })
   }, [hudWm, mainEditor])

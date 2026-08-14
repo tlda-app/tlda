@@ -59,18 +59,15 @@ function shouldLog(ns: string, level: Level): boolean {
 // Every log() call (regardless of console threshold) is queued and flushed
 // to ~/.config/tlda/client.log via the server. Batched so a chatty namespace
 // doesn't fire N requests per frame.
-// `attempts` is local bookkeeping for the retry below and is stripped before the
-// POST, so the wire format is unchanged.
-type LogEntry = { ts: string; level: Level; ns: string; msg: string; data?: any; session?: string; attempts?: number }
+type LogEntry = { ts: string; level: Level; ns: string; msg: string; data?: any; session?: string }
+type InFlightBatch = { deliveryId: string; entries: LogEntry[] }
 const _queue: LogEntry[] = []
+let _inFlight: InFlightBatch | null = null
+let _sending = false
+let _batchSequence = 0
 let _flushTimer: ReturnType<typeof setTimeout> | null = null
 const FLUSH_DELAY_MS = 250
 const MAX_QUEUE = 200
-// A send that fails goes back on the queue instead of being destroyed — see
-// flush(). Bounded on both axes so a permanent outage degrades rather than
-// accumulates: at most MAX_SEND_ATTEMPTS tries per line, and the queue cap
-// still drops oldest-first, so the retried lines are the first to go.
-const MAX_SEND_ATTEMPTS = 5
 const MAX_RETRY_DELAY_MS = 15_000
 let _retryDelayMs = FLUSH_DELAY_MS
 
@@ -107,60 +104,49 @@ function enqueue(entry: LogEntry) {
   scheduleFlush(FLUSH_DELAY_MS)
 }
 
-/** A send that failed. The lines are older than anything enqueued since, so they
- *  go back on the front; the file is appended in arrival order and each line
- *  carries its own `ts` (the server writes `ts: e.ts` verbatim), so a re-sent
- *  batch landing after newer lines is still reconstructable by sorting on it. */
-function requeue(batch: LogEntry[]) {
-  const retryable: LogEntry[] = []
-  for (const entry of batch) {
-    const attempts = (entry.attempts ?? 0) + 1
-    if (attempts < MAX_SEND_ATTEMPTS) retryable.push({ ...entry, attempts })
-  }
-  if (retryable.length) {
-    _queue.unshift(...retryable)
-    trimQueue()
-  }
+function retry() {
   _retryDelayMs = Math.min(_retryDelayMs * 2, MAX_RETRY_DELAY_MS)
   scheduleFlush(_retryDelayMs)
 }
 
-function post(url: string, body: string, batch: LogEntry[]) {
-  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
-    .then(res => { if (res.ok) _retryDelayMs = FLUSH_DELAY_MS; else requeue(batch) })
-    .catch(() => requeue(batch))
+async function post(batch: InFlightBatch) {
+  _sending = true
+  try {
+    const response = await fetch(logBase() + '/api/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batch),
+      keepalive: true,
+    })
+    if (!response.ok) return retry()
+    if (_inFlight?.deliveryId === batch.deliveryId) _inFlight = null
+    _retryDelayMs = FLUSH_DELAY_MS
+    if (_queue.length) scheduleFlush(FLUSH_DELAY_MS)
+  } catch {
+    retry()
+  } finally {
+    _sending = false
+  }
 }
 
 function flush() {
   _flushTimer = null
-  if (_queue.length === 0) return
-  const batch = _queue.splice(0, _queue.length)
-  try {
-    const body = JSON.stringify(batch.map(({ attempts: _attempts, ...wire }) => wire))
-    // Hosted (GitHub Pages → Fly): the SPA origin has no /api/log, so derive the
-    // HTTP base from VITE_SYNC_SERVER and POST there. Cross-origin MUST use fetch
-    // (not sendBeacon) so the authToken fetch-patch can inject the Authorization
-    // header — sendBeacon can't set headers. Same-origin (local) keeps sendBeacon
-    // for page-unload survival.
-    const base = logBase()
-    const url = base + '/api/log'
-    if (!base && typeof navigator !== 'undefined' && navigator.sendBeacon) {
-      const blob = new Blob([body], { type: 'application/json' })
-      // sendBeacon only reports whether the send was queued, so a queued beacon
-      // is as far as this path can see. A refused one falls through to fetch,
-      // which can tell us it failed.
-      if (navigator.sendBeacon(url, blob)) { _retryDelayMs = FLUSH_DELAY_MS; return }
-      void post(url, body, batch)
-    } else {
-      void post(url, body, batch)
+  if (_sending) return
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return
+  if (!_inFlight && _queue.length) {
+    _inFlight = {
+      deliveryId: `${_session}:${++_batchSequence}`,
+      entries: _queue.splice(0, _queue.length),
     }
-  } catch { requeue(batch) /* never let logging crash the app */ }
+  }
+  if (_inFlight) void post(_inFlight)
 }
 
 if (typeof window !== 'undefined') {
   // Best-effort flush on tab close so the last events make it to the file.
   window.addEventListener('beforeunload', flush)
   window.addEventListener('pagehide', flush)
+  window.addEventListener('online', () => scheduleFlush(0))
 }
 
 function makeLogger(level: Level, consoleFn: (...args: any[]) => void) {

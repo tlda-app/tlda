@@ -94,6 +94,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
+import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { sourceFilesFromApiResponse } from '../shared/source-manifest.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
 import {
@@ -867,6 +868,11 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   envName: ACTIVE_ENV,
+  processAlive: async facts => {
+    const tmuxSession = facts.processState?.tmux_session
+    if (!tmuxSession) return false
+    return (await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })).runtime
+  },
   launchProcess: async params => {
     const launchStartedAt = new Date().toISOString()
     const processFact = await launchMintProcess({
@@ -994,7 +1000,11 @@ const wakeMint = createDaemonWakeCore({
 })
 
 async function rpcMint(params = {}) {
-  const cwd = params.cwd || process.cwd()
+  const cwd = resolveMintCwd({
+    cwd: params.cwd,
+    project: params.project,
+    getProjectSourceDir: project => sourceSync.getSourceDir(project),
+  })
   const daemonConfig = readDaemonConfigForCwd(cwd)
   const spawnConfig = withDaemonModelAliases(loadDaemonLaunchConfig(), daemonConfig)
   const explicitKind = String(params.kind || '').trim().toLowerCase()

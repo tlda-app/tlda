@@ -54,6 +54,15 @@ const NATIVE_NAME_MAP = {
   view_image: 'Read',
 }
 
+const KNOWN_NATIVE_TOOL_NAMES = new Set([
+  ...Object.keys(NATIVE_NAME_MAP),
+  ...Object.values(NATIVE_NAME_MAP),
+  'exec',
+  'Code',
+  'apply_patch',
+  'tool_search',
+])
+
 const TOOL_OUTPUT_TYPES = new Set([
   'function_call_output',
   'custom_tool_call_output',
@@ -113,14 +122,18 @@ function addGenericArgSummary(input) {
 
 function normalizedToolUseEvent({ name, namespace, input, callId, ts }) {
   const normalizedName = normalizeToolName(name, namespace)
-  const aliased = aliasNativeArgs(name, parseJsonObject(input))
+  const aliased = addGenericArgSummary(aliasNativeArgs(name, parseJsonObject(input)))
+  let normalizedInput = aliased
+  if (!namespace && name && !KNOWN_NATIVE_TOOL_NAMES.has(name)) {
+    normalizedInput = { ...aliased, _unknownCodexToolKind: name }
+  }
   return {
     type: 'assistant',
     timestamp: ts,
     blocks: [{
       type: 'tool_use',
       name: normalizedName || 'codex_tool',
-      input: addGenericArgSummary(aliased),
+      input: normalizedInput,
       id: callId,
     }],
   }

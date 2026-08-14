@@ -11,7 +11,7 @@ import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
@@ -310,6 +310,32 @@ function printPushBuildStatus(result, unchangedMessage = 'No changes detected.')
   }
 }
 
+export function retryableCliOperationError(error) {
+  const status = Number(error?.status || error?.cause?.status || 0)
+  if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) return true
+  return /Server not reachable|Request timed out|local fleet daemon is unavailable|ended without a result|ECONNRESET|EPIPE|socket hang up/i
+    .test(error?.message || String(error))
+}
+
+export async function finishCliOperation(label, operation, {
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  retryDelay = attempt => Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6))),
+  log = console,
+} = {}) {
+  let attempt = 0
+  for (;;) {
+    attempt++
+    try {
+      return await operation()
+    } catch (error) {
+      if (!retryableCliOperationError(error)) throw error
+      const delayMs = retryDelay(attempt)
+      log.error(`${label} attempt ${attempt} did not complete: ${error?.message || String(error)}; retrying in ${Math.ceil(delayMs / 1000)}s`)
+      await sleep(delayMs)
+    }
+  }
+}
+
 // --- HTTP helpers ---
 
 async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
@@ -577,7 +603,8 @@ async function cmdBook() {
   for (const member of members) {
     try {
       await api('GET', `/api/projects/${member}`)
-    } catch {
+    } catch (error) {
+      if (retryableCliOperationError(error)) throw error
       console.error(red(`Member "${member}" not found on server.`))
       process.exit(1)
     }
@@ -668,7 +695,7 @@ async function cmdScratch() {
     await api('PATCH', `/api/projects/${bookName}/members`, { add: name })
     console.log(dim(`  Joined book "${bookName}"`))
   } catch (e) {
-    console.log(dim(`  Book "${bookName}": ${e.message}`))
+    throw new Error(`could not join book "${bookName}": ${e.message}`, { cause: e })
   }
 
   const server = getServer()
@@ -717,7 +744,7 @@ async function cmdCreate() {
 
   // Slides format: push HTML files, no TeX
   if (format === 'slides') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: slides`))
 
@@ -789,7 +816,7 @@ async function cmdCreate() {
 
   // HTML format: push HTML chapters (e.g. from Quarto book render)
   if (format === 'html') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: html`))
 
@@ -848,7 +875,7 @@ async function cmdCreate() {
   // from this machine, the source is what travels — so a bot can rebuild the
   // document without a machine of its own.
   if (format === 'qmd') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     const mainFile = mainArg || readdirSync(dir).find(f => f.toLowerCase().endsWith('.qmd'))
     if (!mainFile) { console.error(`No .qmd file found in ${dir}`); process.exit(1) }
 
@@ -955,7 +982,7 @@ async function cmdCreate() {
 
   // Markdown format: push .md file, server renders to HTML with KaTeX
   if (format === 'markdown') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     const mainFile = mainArg || readdirSync(dir).find(f => f.endsWith('.md'))
     if (!mainFile) { console.error(`No .md file found in ${dir}`); process.exit(1) }
 
@@ -1024,7 +1051,7 @@ async function cmdCreate() {
   const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
-  if (await bindLocalSource()) return
+  await bindLocalSource()
   console.log(dim(`  Source: ${dir}`))
   console.log(dim(`  Main file: ${mainFile}`))
 
@@ -1094,7 +1121,7 @@ async function cmdPush() {
         await api('PATCH', `/api/projects/${group}/members`, { add: name })
         console.log(dim(`  Joined book "${group}"`))
       } catch (e) {
-        console.log(dim(`  Book "${group}": ${e.message}`))
+        throw new Error(`could not join book "${group}": ${e.message}`, { cause: e })
       }
     }
   }
@@ -1192,26 +1219,41 @@ async function cmdInit() {
 
   const title = getFlag('title') || name
 
+  const isMarkdown = format === 'markdown'
+  const isHtml = format === 'html'
+  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
+
   // Determine target directory: --dir overrides, otherwise ./<name> in CWD
   const targetDir = resolve(getFlag('dir') || join(process.cwd(), name))
+  let resumeExistingInit = false
 
   // Guard: refuse to clobber a non-empty directory
   if (existsSync(targetDir)) {
     const entries = readdirSync(targetDir)
     if (entries.length > 0) {
-      console.error(red(`Directory already exists and is not empty: ${targetDir}`))
-      console.error(`  Use \`tlda project link\` to attach an existing project directory.`)
-      process.exit(1)
+      let initialSubject = null
+      try {
+        initialSubject = execFileSync('git', ['-C', targetDir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim()
+      } catch {
+        // A non-git directory cannot be a resumable tlda initialization.
+      }
+      if (existsSync(join(targetDir, mainFile)) && initialSubject === `init: ${name} (${formatLabel})`) {
+        resumeExistingInit = true
+        console.log(dim(`  Resuming tlda project init in ${targetDir}`))
+      } else {
+        console.error(red(`Directory already exists and is not empty: ${targetDir}`))
+        console.error(`  Use \`tlda project link\` to attach an existing project directory.`)
+        process.exit(1)
+      }
     }
   }
 
-  // Create the directory
-  mkdirSync(targetDir, { recursive: true })
-  console.log(dim(`  Creating project in ${targetDir}`))
+  if (!resumeExistingInit) {
+    // Create the directory
+    mkdirSync(targetDir, { recursive: true })
+    console.log(dim(`  Creating project in ${targetDir}`))
 
   // Create only the explicitly requested starter main file; do not add ancillary source.
-  const isMarkdown = format === 'markdown'
-  const isHtml = format === 'html'
   const createdFiles = []
 
   if (isMarkdown) {
@@ -1231,12 +1273,9 @@ async function cmdInit() {
     createdFiles.push(mainFile)
   }
 
-  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
-
   console.log(dim(`  Created ${createdFiles.join(', ')}`))
 
   // Git init + initial commit
-  const { execFileSync } = await import('child_process')
   try {
     execFileSync('git', ['init'], { cwd: targetDir, stdio: 'pipe' })
     if (createdFiles.length) execFileSync('git', ['add', ...createdFiles], { cwd: targetDir, stdio: 'pipe' })
@@ -1247,17 +1286,25 @@ async function cmdInit() {
              GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
     })
     console.log(dim(`  git init + initial commit`))
-  } catch (gitErr) {
-    console.warn(yellow(`  Warning: git init failed — ${gitErr.message.trim()}`))
-    console.warn(yellow(`  Project directory and files were created, but no git repo was initialized.`))
+    } catch (gitErr) {
+      throw new Error(`git initialization is incomplete: ${gitErr.message.trim()}`, { cause: gitErr })
+    }
   }
 
   // Register on the server and push the seeded files
+  const ensureProject = async body => {
+    try {
+      await createProjectApi(body)
+      console.log(green(`Created project "${name}".`))
+    } catch (error) {
+      if (!error.message.includes('already exists')) throw error
+      console.log(dim(`Project "${name}" already exists; resuming registration and push.`))
+    }
+  }
   try {
     await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: targetDir })
     if (isMarkdown) {
-      await createProjectApi({ name, title, mainFile, format: 'markdown' })
-      console.log(green(`Created markdown project "${name}".`))
+      await ensureProject({ name, title, mainFile, format: 'markdown' })
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
         sourceDir: targetDir,
@@ -1274,8 +1321,7 @@ async function cmdInit() {
         expectedRevision: await currentSourceRevision(name),
       })
     } else if (isHtml) {
-      await createProjectApi({ name, title, format: 'html' })
-      console.log(green(`Created HTML project "${name}".`))
+      await ensureProject({ name, title, format: 'html' })
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
         sourceDir: targetDir,
@@ -1292,8 +1338,7 @@ async function cmdInit() {
         expectedRevision: await currentSourceRevision(name),
       })
     } else {
-      await createProjectApi({ name, title, mainFile })
-      console.log(green(`Created project "${name}".`))
+      await ensureProject({ name, title, mainFile })
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
         sourceDir: targetDir,
@@ -1312,15 +1357,7 @@ async function cmdInit() {
       console.log(green('Build triggered.'))
     }
   } catch (e) {
-    if (e.message.includes('already exists')) {
-      console.log(`Project "${name}" already exists on server — use \`tlda project link\` or \`tlda project push\` instead.`)
-    } else {
-      console.warn(yellow(`  Server registration failed: ${e.message}`))
-      console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda project link ${name} ${mainFile}\` when the server is up.`))
-      const server = getServer()
-      console.log(`\nViewer (once registered): ${cyan(`${server}/?project=${name}`)}`)
-      return
-    }
+    throw new Error(`project init is incomplete: ${e.message}`, { cause: e })
   }
 
   const server = getServer()
@@ -1484,7 +1521,12 @@ async function bootstrapDaemonPlist(plist = FLEET_DAEMON_PLIST, label = FLEET_DA
 }
 
 async function bootoutDaemonLabel(label = FLEET_DAEMON_LABEL) {
-  await runLaunchctl(['bootout', daemonLaunchdTarget(label)], { ignoreFailure: true })
+  try {
+    await runLaunchctl(['bootout', daemonLaunchdTarget(label)])
+  } catch (error) {
+    const detail = error?.message || String(error)
+    if (!/No such process|Could not find service|service not found/i.test(detail)) throw error
+  }
 }
 
 async function probeDaemonLaunchdStartCapability() {
@@ -1887,7 +1929,6 @@ async function cmdConfigApply() {
   const desired = desiredLaunchdJobs()
   const existing = existingManagedLaunchdJobs()
   const plan = planLaunchdApply({ desiredJobs: desired, existingJobs: existing })
-  const failures = []
 
   // --only <label-substring> narrows the apply to the jobs whose label matches,
   // so a supervision change can be staged on one job and observed before the
@@ -1934,32 +1975,33 @@ async function cmdConfigApply() {
     process.exit(1)
   }
 
-  for (const job of plan.add) {
-    const result = await applyLaunchdOperation(job, 'add')
-    if (result.ok) console.log(green(`Added ${job.label}`))
-    else failures.push({ job, op: 'add', error: result.error })
-  }
-  for (const job of plan.update) {
-    const result = await applyLaunchdOperation(job, 'update')
-    if (result.ok) console.log(green(`Updated ${job.label}`))
-    else failures.push({ job, op: 'update', error: result.error })
-  }
-  for (const job of plan.remove) {
-    const result = await applyLaunchdOperation(job, 'remove')
-    if (result.ok) console.log(green(`Removed ${job.label}`))
-    else failures.push({ job, op: 'remove', error: result.error })
+  const pending = [
+    ...plan.add.map(job => ({ job, op: 'add', done: 'Added' })),
+    ...plan.update.map(job => ({ job, op: 'update', done: 'Updated' })),
+    ...plan.remove.map(job => ({ job, op: 'remove', done: 'Removed' })),
+  ]
+  let attempt = 0
+  while (pending.length) {
+    attempt++
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const item = pending[i]
+      const result = await applyLaunchdOperation(item.job, item.op)
+      if (result.ok) {
+        console.log(green(`${item.done} ${item.job.label}`))
+        pending.splice(i, 1)
+      } else {
+        console.error(red(`${item.op} ${item.job.label} attempt ${attempt} did not complete: ${result.error}`))
+      }
+    }
+    if (pending.length) {
+      const delayMs = Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6)))
+      console.error(yellow(`tlda config apply has ${pending.length} unfinished job(s); retrying in ${Math.ceil(delayMs / 1000)}s`))
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
   }
 
   for (const job of plan.unchanged) {
     console.log(dim(`Unchanged ${job.label}`))
-  }
-
-  if (failures.length) {
-    console.error(red(`tlda config apply failed for ${failures.length} job(s):`))
-    for (const failure of failures) {
-      console.error(red(`  ${failure.op} ${failure.job.label}: ${failure.error}`))
-    }
-    process.exit(1)
   }
 
   console.log(green('tlda config apply complete.'))
@@ -2348,6 +2390,22 @@ async function waitForSupervisedFleetDaemonReady({ previousPid = null, timeoutMs
   return result.ready ? result.pid : null
 }
 
+async function waitForTargetFleetDaemonCompletion({ previousPid = null } = {}) {
+  let attempt = 0
+  for (;;) {
+    attempt++
+    const result = await pollTargetDaemonReadiness({
+      previousPid,
+      timeoutMs: 5_000,
+      getCandidatePid: () => launchdDaemonPid(),
+      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
+    })
+    if (result.ready) return result.pid
+    console.error(yellow(`Fleet daemon is not ready after attempt ${attempt}: ${result.reason}; continuing to wait.`))
+    printRecentDaemonLog()
+  }
+}
+
 async function verifyTargetFleetDaemon(expectedPid, { supervised = false } = {}) {
   const identity = daemonTargetIdentity()
   const lockInspection = inspectSingletonLock({ lockPath: identity.lockPath })
@@ -2440,6 +2498,7 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'restart') {
     requireLaunchd()
+    const previousPid = await launchdDaemonPid()
     try {
       await runLaunchctl(['print', daemonLaunchdTarget()])
     } catch (e) {
@@ -2448,17 +2507,8 @@ async function cmdFleetWatch(sub) {
       process.exit(1)
     }
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
-    const result = await pollTargetDaemonReadiness({
-      timeoutMs: 5_000,
-      getCandidatePid: () => launchdDaemonPid(),
-      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
-    })
-    if (!result.ready) {
-      console.error(red(`Fleet daemon restart did not become ready: ${result.reason}`))
-      printRecentDaemonLog()
-      process.exit(1)
-    }
-    console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${result.pid})`))
+    const pid = await waitForTargetFleetDaemonCompletion({ previousPid })
+    console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${pid})`))
     return
   }
 
@@ -2591,18 +2641,8 @@ async function cmdFleetWatch(sub) {
       printRecentDaemonLog()
       process.exit(1)
     }
-    const result = await pollTargetDaemonReadiness({
-      timeoutMs: 5_000,
-      getCandidatePid: () => launchdDaemonPid(),
-      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
-    })
-    if (result.ready) {
-      console.log(green(`Fleet daemon launchd job started`) + dim(` (pid ${result.pid})`))
-    } else {
-      console.log(yellow('Fleet daemon launchd job accepted; readiness pending.'))
-      console.log(dim(`  Last readiness check: ${result.reason}`))
-      printRecentDaemonLog()
-    }
+    const pid = await waitForTargetFleetDaemonCompletion()
+    console.log(green(`Fleet daemon launchd job started`) + dim(` (pid ${pid})`))
     console.log(dim(`  Managed by launchd (auto-restarts).`))
     console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
     console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
@@ -2851,8 +2891,13 @@ async function cmdDelete() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda project delete <name>'); process.exit(1) }
 
-  await api('DELETE', `/api/projects/${name}`)
-  console.log(green(`Project "${name}" deleted.`))
+  try {
+    await api('DELETE', `/api/projects/${name}`)
+    console.log(green(`Project "${name}" deleted.`))
+  } catch (error) {
+    if (Number(error?.status) !== 404) throw error
+    console.log(dim(`Project "${name}" is already absent.`))
+  }
 }
 
 async function fetchAgentsByExactCwd(cwd, { apiImpl = api } = {}) {
@@ -3274,6 +3319,22 @@ async function cmdDeploy() {
   const step = (label) => process.stdout.write(dim(`  ${label}... `))
   const pass = (msg) => console.log(green('✓') + (msg ? ' ' + msg : ''))
   const die = (msg) => { console.log(red('✗') + ' ' + msg); process.exit(1) }
+  const fetchForDeploy = (label, url, options = {}) => finishCliOperation(label, async () => {
+    try {
+      const response = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) })
+      if (response.status === 408 || response.status === 409 || response.status === 425 || response.status === 429 || response.status >= 500) {
+        const error = new Error(`${url} returned ${response.status}`)
+        error.status = response.status
+        throw error
+      }
+      return response
+    } catch (error) {
+      if (!error.status && /fetch failed|timed out|ECONNRESET|EPIPE|socket hang up/i.test(error?.message || String(error))) {
+        error.status = 503
+      }
+      throw error
+    }
+  })
 
   console.log(bold('tlda deploy'))
   console.log()
@@ -3281,7 +3342,7 @@ async function cmdDeploy() {
   // 1. Build
   step('Building SPA (npm run build)')
   try {
-    execSync('npm run build', { cwd: tldaRoot, stdio: 'pipe', timeout: 180_000 })
+    execSync('npm run build', { cwd: tldaRoot, stdio: 'pipe' })
   } catch (e) {
     die('Build failed: ' + (e.stderr?.toString().trim().split('\n').pop() || e.message))
   }
@@ -3296,36 +3357,25 @@ async function cmdDeploy() {
 
   // 3. Restart server
   step('Stopping server')
-  try { execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server stop', { stdio: 'pipe', timeout: 10_000 }) } catch {}
+  execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'stop'], { stdio: 'inherit' })
   pass()
 
   step('Starting server')
   try {
-    execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 40_000 })
+    execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'start'], { stdio: 'inherit' })
   } catch (e) {
     die('Server failed to start: ' + e.message)
   }
   pass()
 
-  // 4. Wait for server ready
-  step('Waiting for server')
+  // 4. The attached start command returned only after /health was ready.
   const serverUrl = getServer()
-  let serverReady = false
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 500))
-    try {
-      const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
-      if (res.ok) { serverReady = true; break }
-    } catch {}
-  }
-  if (!serverReady) die(`Server not responding at ${serverUrl}/health after 10s`)
-  pass(serverUrl)
 
   // 5. Verify SPA renders
   step('Verifying SPA serves pages')
   const tokenParam = token ? `?token=${token}` : ''
   try {
-    const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    const res = await fetchForDeploy('deploy SPA verification', `${serverUrl}/${tokenParam}`)
     const body = await res.text()
     if (!res.ok) die(`SPA returned ${res.status}`)
     if (!body.includes('<div id="root">')) die('SPA response missing app root')
@@ -3337,13 +3387,13 @@ async function cmdDeploy() {
   // 6. Verify a doc page loads (find first available project)
   step('Verifying doc page loads')
   try {
-    const projRes = await fetch(`${serverUrl}/api/projects${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    const projRes = await fetchForDeploy('deploy projects verification', `${serverUrl}/api/projects${tokenParam}`)
     if (projRes.ok) {
       const data = await projRes.json()
       const projects = data.projects || data || []
       const first = projects[0]
       if (first?.name) {
-        const docRes = await fetch(`${serverUrl}/?project=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
+        const docRes = await fetchForDeploy('deploy document verification', `${serverUrl}/?project=${first.name}${token ? '&token=' + token : ''}`)
         const docBody = await docRes.text()
         if (docRes.ok && docBody.includes('<div id="root">')) {
           pass(first.name)
@@ -3353,9 +3403,7 @@ async function cmdDeploy() {
       } else {
         pass('(no projects to test)')
       }
-    } else {
-      pass('(projects API unavailable)')
-    }
+    } else die(`Projects API returned ${projRes.status}`)
   } catch (e) {
     die(`Doc page check failed: ${e.message}`)
   }
@@ -3466,7 +3514,7 @@ export async function attachToAgent(name, {
   return { ok: status === 0, status, agent, tmuxSession }
 }
 
-async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = 120000, onEvent = null } = {}) {
+async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = null, onEvent = null } = {}) {
   const { createConnection } = await import('node:net')
   return await new Promise((resolvePromise, reject) => {
     const socket = createConnection(socketPath)
@@ -3478,7 +3526,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       socket.destroy()
       reject(error)
     }
-    const timer = setTimeout(() => {
+    const timer = timeoutMs == null ? null : setTimeout(() => {
       fail(new Error(`local daemon ${op} timed out; use \`tlda doctor yolo\` only for break-glass repair`))
     }, timeoutMs)
     socket.setEncoding('utf8')
@@ -3492,7 +3540,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       }
       if (!payload.ok) throw new Error(payload.error || `local daemon ${op} failed`)
       settled = true
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       resolvePromise(payload.result)
     }
     socket.on('data', chunk => {
@@ -3512,7 +3560,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       }
     })
     socket.on('error', error => {
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       const message = error.code === 'ENOENT' || error.code === 'ECONNREFUSED'
         ? `local fleet daemon is unavailable; start it with \`tlda daemon start\` or use \`tlda doctor yolo\` for break-glass repair`
         : `local fleet daemon ${op} failed: ${error.message}`
@@ -3520,7 +3568,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
     })
     socket.on('close', () => {
       if (settled) return
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       try {
         const line = buffer.trim()
         if (!line) throw new Error(`local daemon ${op} ended without a result`)
@@ -3550,15 +3598,21 @@ function printMintLifecycleEvent(event, data = {}) {
     return
   }
   if (event === 'server-registration-attempt') {
-    console.log(`Server registration started${localId ? ` for ${localId}` : ''}`)
+    console.log(`Server registration attempt ${data.attempt || 1}${localId ? ` for ${localId}` : ''}`)
     return
   }
   if (event === 'server-binding-joined') {
     console.log(`Route published${fleetId ? ` for ${fleetId}` : ''}`)
     return
   }
+  if (event === 'server-binding-deferred') {
+    const retry = data.retry_in_ms ? `; retrying in ${Math.ceil(data.retry_in_ms / 1000)}s` : ''
+    console.log(`Route publication pending${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'binding incomplete'}${retry}`)
+    return
+  }
   if (event === 'server-registration-deferred') {
-    console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}`)
+    const retry = data.retry_in_ms ? `; retrying in ${Math.ceil(data.retry_in_ms / 1000)}s` : ''
+    console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}${retry}`)
     return
   }
   if (event === 'server-reconciliation-deferred') {
@@ -3573,6 +3627,15 @@ function printMintLifecycleEvent(event, data = {}) {
   }
   if (event === 'terminal-local-only') {
     console.log(`Terminal local-only${tmuxSession ? ` in ${tmuxSession}` : ''}: ${data.reason || 'server registration deferred'}`)
+    return
+  }
+  if (event === 'wake-attempt') {
+    console.log(`Wake attempt ${data.attempt || 1}${fleetId ? ` for ${fleetId}` : ''}`)
+    return
+  }
+  if (event === 'wake-deferred') {
+    const retry = data.retry_in_ms ? `; retrying in ${Math.ceil(data.retry_in_ms / 1000)}s` : ''
+    console.log(`Wake deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'runtime not yet live'}${retry}`)
   }
 }
 
@@ -3714,7 +3777,19 @@ export async function runFleetSpawn(spawnArgs, {
   }
   if (spawnMode === 'fresh') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+    const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
+    let mintId = randomUUID()
+    try {
+      const partial = name ? mintStore.resolve(name) : null
+      if (partial && !partial.joinedAt) {
+        mintId = partial.mintId
+        console.log(`Resuming partial mint ${mintId}${partial.processState?.tmux_session ? ` in ${partial.processState.tmux_session}` : ''}`)
+      }
+    } finally {
+      mintStore.close()
+    }
     const result = await lifecycleImpl('mint', {
+      mint_id: mintId,
       name,
       model: flagFromRaw(spawnArgs, 'model') || undefined,
       kind: flagFromRaw(spawnArgs, 'kind') || undefined,
@@ -3766,8 +3841,9 @@ export async function runFleetSpawn(spawnArgs, {
     // it actually launched, so passing it here is what makes the change durable.
     const result = await lifecycleImpl('wake', {
       mint_id: restored.identifier,
+      wait_until_complete: true,
       ...(explicitPermissionArg ? { permissionGrant: explicitPermissionArg } : {}),
-    })
+    }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${name}`)
     printLocalDaemonOutcome(result)
     const identity = result.agent_id || result.fleetId || result.mint_id || restored.identifier
@@ -4006,7 +4082,7 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   cwd,
   name,
   resolveIdentity = null,
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
+  timeoutMs = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS ? Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS) : null,
   intervalMs = 250,
 } = {}) {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
@@ -4037,16 +4113,16 @@ export async function pollLifecycleResumeIdentity(result, {
   cwd,
   name,
   resolveIdentity = null,
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
+  timeoutMs = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS ? Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS) : null,
   intervalMs = 250,
 } = {}) {
   if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
     return { identity: null, diagnostics: { failureStage: 'skipped' } }
   }
   const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`)).resolveLiveSessionIdentity
-  const deadline = Date.now() + timeoutMs
+  const deadline = timeoutMs == null ? null : Date.now() + timeoutMs
   let identity = null
-  while (Date.now() <= deadline) {
+  while (deadline == null || Date.now() <= deadline) {
     identity = await resolver({
       agent: {
         id: result.fleetId,
@@ -4622,7 +4698,7 @@ async function moveLocalAgentAddress(agentId, {
 export async function waitForMovedAgentRuntime(agentId, {
   machineId,
   envName,
-  timeoutMs = 60_000,
+  timeoutMs = null,
   pollMs = 250,
   configDir = CONFIG_DIR,
   openMintStore = () => new MintStore(resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: envName }),
@@ -4630,9 +4706,9 @@ export async function waitForMovedAgentRuntime(agentId, {
   sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms)),
 } = {}) {
   const expectedDaemonKey = `${machineId}:${envName}`
-  const deadline = Date.now() + timeoutMs
+  const deadline = timeoutMs == null ? null : Date.now() + timeoutMs
   let last = null
-  while (Date.now() < deadline) {
+  while (deadline == null || Date.now() < deadline) {
     const mintStore = openMintStore()
     let facts
     try {
@@ -4795,7 +4871,7 @@ export async function moveAgentToEnvironment({
       fleet_id: agent.id,
       ...wakeGrant,
       ...(alreadyOnTarget ? { takeover_existing: true } : {}),
-    }, { socketPath: targetSocket, timeoutMs: 120000 })
+    }, { socketPath: targetSocket })
     if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
     targetRuntime = await readbackImpl(agent.id, {
       machineId: targetMachine,
@@ -4837,7 +4913,6 @@ export async function moveAgentToEnvironment({
           takeover_existing: true,
         }, {
           socketPath: fleetDaemonSocketForConfig(effectiveSourceEnv),
-          timeoutMs: 120000,
         })
         if (!sourceWake?.ok) throw new Error(sourceWake?.error || `source wake failed for ${agent.id}`)
         await readbackImpl(agent.id, {
@@ -5023,13 +5098,13 @@ async function cmdAgent() {
     case 'mint':      await runFleetSpawn(agentMintArgs(process.argv.slice(4))); break
     case 'enlist':    await runFleetSpawn(agentEnlistArgs(process.argv.slice(4))); break
     case 'wake':      await runFleetSpawn(process.argv.slice(4)); break
-    case 'reanimate': await reanimateAgentCommand(getPositional(1)); break
-    case 'move':      await cmdAgentMove(); break
-    case 'set-mint-machine': await cmdAgentSetSpawnMachine(); break
+    case 'reanimate': await finishCliOperation('agent reanimate', () => reanimateAgentCommand(getPositional(1))); break
+    case 'move':      await finishCliOperation('agent move', cmdAgentMove); break
+    case 'set-mint-machine': await finishCliOperation('agent set-mint-machine', cmdAgentSetSpawnMachine); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
-    case 'dismiss':   await dismissAgent(getPositional(1)); break
-    case 'permissions': await cmdAgentPermissions(); break
+    case 'dismiss':   await finishCliOperation('agent dismiss', () => dismissAgent(getPositional(1))); break
+    case 'permissions': await finishCliOperation('agent permissions', cmdAgentPermissions); break
     case 'models': await cmdAgentModels(); break
     default:
       console.error('Usage: tlda agent <list|mint|enlist|wake|reanimate|move|set-mint-machine|attach|hibernate|dismiss|permissions|models> [name]')
@@ -5084,36 +5159,45 @@ async function restartMcpAgents(rest) {
   // your CLI is running in, so the process that would have issued the wake dies
   // first and you never come back. The daemon outlives you and finishes the job.
   const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
-  let ok = 0, fail = 0
+  let ok = 0
+  const pending = [...targets]
+  let attempt = 0
   try {
-    for (const name of targets) {
-      process.stdout.write(`restart-mcp ${name} … `)
-      try {
-        const stored = mintStore.resolve(name)
-        if (!stored) throw new Error(`no local agent found for "${name}"`)
-        const res = await callLocalDaemonLifecycle('restart', {
-          mint_id: stored.mintId,
-          agent_id: stored.fleetId,
-          // So the daemon can check tmux rather than believe kill-session, which
-          // answers ok when it cannot place the agent at all.
-          tmux_session: `fleet-${stored.friendlyName || name}`,
-        })
-        if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
-        console.log('ok')
-        ok++
-      } catch (e) {
-        // Reported, not rethrown, so one bad agent does not abandon the rest of
-        // the batch — the point of taking a list is restarting a list. The
-        // failure is printed per agent and the command exits nonzero below.
-        console.log(`FAILED: ${e?.message || String(e)}`)
-        fail++
+    while (pending.length) {
+      attempt++
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const name = pending[i]
+        process.stdout.write(`restart-mcp ${name} … `)
+        try {
+          const stored = mintStore.resolve(name)
+          if (!stored) throw new Error(`no local agent found for "${name}"`)
+          const res = await callLocalDaemonLifecycle('restart', {
+            mint_id: stored.mintId,
+            agent_id: stored.fleetId,
+            // So the daemon can check tmux rather than believe kill-session, which
+            // answers ok when it cannot place the agent at all.
+            tmux_session: `fleet-${stored.friendlyName || name}`,
+            wait_until_complete: true,
+          }, { onEvent: printMintLifecycleEvent })
+          if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
+          console.log('ok')
+          pending.splice(i, 1)
+          ok++
+        } catch (e) {
+          // This target remains pending and is retried after the other targets run.
+          console.log(`unfinished: ${e?.message || String(e)}`)
+        }
+      }
+      if (pending.length) {
+        const delayMs = Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6)))
+        console.error(`${pending.length} restart-mcp operation(s) remain; retrying in ${Math.ceil(delayMs / 1000)}s`)
+        await new Promise(resolve => setTimeout(resolve, delayMs))
       }
     }
   } finally {
     mintStore.close()
   }
-  console.log(`Done: ${ok} ok${fail ? `, ${fail} failed` : ''}.`)
-  process.exit(fail ? 1 : 0)
+  console.log(`Done: ${ok} ok.`)
 }
 
 // Top-level attach is rejected earlier with a noun-first message; this helper
@@ -5369,17 +5453,16 @@ async function cmdDoctor() {
       label: 'Rebuild SPA bundle',
       fn: () => {
         console.log(dim('  Running npm run build...'))
-        execSync('npm run build', { cwd: tldaRoot, stdio: 'inherit', timeout: 120000 })
+        execSync('npm run build', { cwd: tldaRoot, stdio: 'inherit' })
       }
     })
     fixes.push({
       label: 'Restart server',
       fn: () => {
-        const tldaCmd = JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs'))
         console.log(dim('  Stopping server...'))
-        try { execSync(`node ${tldaCmd} server stop`, { stdio: 'pipe', timeout: 10000 }) } catch {}
+        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'stop'], { stdio: 'inherit' })
         console.log(dim('  Starting server...'))
-        execSync(`node ${tldaCmd} server start`, { stdio: 'pipe', timeout: 15000 })
+        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'start'], { stdio: 'inherit' })
       }
     })
   }
@@ -5548,6 +5631,7 @@ async function cmdDoctor() {
   if (autoFix && fixes.length > 0) {
     console.log()
     console.log(bold(`Fixing ${fixes.length} issue${fixes.length === 1 ? '' : 's'}...`))
+    let fixFailures = 0
     for (const fix of fixes) {
       console.log(cyan(`→ ${fix.label}`))
       try {
@@ -5555,7 +5639,12 @@ async function cmdDoctor() {
         ok(fix.label)
       } catch (e) {
         fail(`${fix.label}: ${e.message}`)
+        fixFailures++
       }
+    }
+    if (fixFailures) {
+      console.log(red(bold(`${fixFailures} fix${fixFailures === 1 ? '' : 'es'} did not complete.`)))
+      process.exit(1)
     }
   }
 
@@ -5729,8 +5818,13 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
 
   if (sub === 'uninstall') {
     if (hasLaunchd) {
-      try { execSync('launchctl bootout gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
-      try { const fs = await import('fs'); fs.unlinkSync(PLIST) } catch {}
+      try {
+        await runLaunchctl(['bootout', daemonLaunchdTarget('com.tlda.server')])
+      } catch (error) {
+        const detail = error?.message || String(error)
+        if (!/No such process|Could not find service|service not found/i.test(detail)) throw error
+      }
+      unlinkSync(PLIST)
       console.log('Uninstalled launchd service.')
     } else {
       console.log('No launchd service installed.')
@@ -5777,11 +5871,14 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
-    for (let i = 0; i < 20; i++) {
+    let stopAttempt = 0
+    for (;;) {
+      stopAttempt++
       await new Promise(r => setTimeout(r, 250))
       try {
         await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(1000) })
       } catch { break } // connection refused = stopped
+      if (stopAttempt % 20 === 0) console.error(yellow('Server is still stopping; continuing to wait.'))
     }
 
     console.log(green('Server stopped.'))
@@ -5854,12 +5951,12 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       })
     }
 
-    // Wait for it to come up. The server can boot slowly (large fleet-DB query
-    // on a big roster — measured ~50s on a ~1500-row agents table), so give it
-    // ~90s before declaring failure. A too-short wait (was 30s) made `tlda deploy`
-    // falsely report "Server failed to start" while the server was still booting,
-    // tempting a panic rollback. (Real cure: speed the boot — see the startup scan.)
-    for (let i = 0; i < 360; i++) {
+    // The command remains attached until /health confirms that startup finished.
+    // launchd may restart the process while this loop is running; that is partial
+    // progress, not a reason for the caller to receive a false completion.
+    let startAttempt = 0
+    for (;;) {
+      startAttempt++
       await new Promise(r => setTimeout(r, 250))
       try {
         const res = await fetch(`${getServer()}/health`)
@@ -5873,24 +5970,10 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           return
         }
       } catch {}
+      if (startAttempt % 40 === 0) {
+        console.error(yellow(`Server is not healthy yet; continuing to wait. Log: ${LOGFILE}`))
+      }
     }
-    // The wait expired without a 200 from /health. Before declaring failure
-    // (and exiting non-zero, which makes callers retry → restart stampede),
-    // check whether the process is actually up but slow: launchd may have
-    // started it and its event loop may just be busy on a big boot query. A
-    // held port means it's alive — report success, don't trigger a retry.
-    let held = ''
-    try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
-    if (held) {
-      console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${held.split('\n')[0]}, slow to respond — still booting)`))
-      console.log(dim(`  Log: ${LOGFILE}`))
-      if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-      await ensureFleetDaemonRunning()
-      return
-    }
-    console.error(red('Server failed to start within 30s'))
-    console.error(dim(`Check log: ${LOGFILE}`))
-    process.exit(1)
   }
 
   console.error(`Unknown subcommand: tlda server ${sub}`)
@@ -6086,12 +6169,12 @@ async function main() {
     switch (command) {
       case 'server': await cmdServer(); break
       case 'system': await cmdSystem(); break
-      case 'scratch': await cmdScratch(); break
-      case 'book':   await cmdBook(); break
-      case 'push':   await cmdPush(); break
-      case 'link':   await cmdLink(); break
-      case 'unlink': await cmdUnlink(); break
-      case 'init':   await cmdInit(); break
+      case 'scratch': await finishCliOperation('project scratch', cmdScratch); break
+      case 'book':   await finishCliOperation('project book', cmdBook); break
+      case 'push':   await finishCliOperation('project push', cmdPush); break
+      case 'link':   await finishCliOperation('project link', cmdLink); break
+      case 'unlink': await finishCliOperation('project unlink', cmdUnlink); break
+      case 'init':   await finishCliOperation('project init', cmdInit); break
       case 'daemon': await cmdDaemon(); break
       case 'bot': await cmdBot(); break
       case 'env': printEnvironments(); break
@@ -6101,9 +6184,9 @@ async function main() {
       case 'ls':     await cmdList(); break
       case 'status': await cmdStatus(); break
       case 'errors': await cmdErrors(); break
-      case 'delete':  await cmdDelete(); break
-      case 'rm':      await cmdDelete(); break
-      case 'move':    await cmdMoveProject(); break
+      case 'delete':  await finishCliOperation('project delete', cmdDelete); break
+      case 'rm':      await finishCliOperation('project delete', cmdDelete); break
+      case 'move':    await finishCliOperation('project move', cmdMoveProject); break
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break

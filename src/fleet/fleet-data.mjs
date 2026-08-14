@@ -605,9 +605,9 @@ export function respawnAgent(id) {
   return browserFleetTransport.durable('spawn', { agent: id, respawn: true })
 }
 
-export function spawnAgent(model, doc, name, options = {}) {
+export function spawnAgent(model, project, name, options = {}) {
   const modelOptions = options && typeof options === 'object' && !Array.isArray(options) ? options : {}
-  return browserFleetTransport.durable('spawn', { fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...modelOptions })
+  return browserFleetTransport.durable('spawn', { fresh: true, model, ...(project ? { project } : {}), ...(name ? { name } : {}), ...modelOptions })
 }
 
 export function renameAgent(id, name) {

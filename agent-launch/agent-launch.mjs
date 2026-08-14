@@ -221,7 +221,7 @@ export function createAgentLauncher({
     model,
     kind,
     cwd,
-    doc,
+    project,
     respawn,
     refresh,
     session,
@@ -252,16 +252,22 @@ export function createAgentLauncher({
       }
     }
     let resolvedCwd = cwd
-    if (!resolvedCwd && doc) {
-      const project = projects.find(p => p.name === doc)
+    if (!resolvedCwd) {
       if (!project) {
-        const known = projects.map(p => p.name).sort().join(', ')
-        return { ok: false, error: `no project '${doc}'${known ? ` — known: ${known}` : ''}` }
+        return { ok: false, error: 'spawn requires cwd or project' }
       }
-      if (project.sourceDir) resolvedCwd = project.sourceDir
+      const projectRecord = projects.find(p => p.name === project)
+      if (!projectRecord) {
+        const known = projects.map(p => p.name).sort().join(', ')
+        return { ok: false, error: `no project '${project}'${known ? ` — known: ${known}` : ''}` }
+      }
+      if (!projectRecord.sourceDir) {
+        return { ok: false, error: `project '${project}' has no working directory on this daemon` }
+      }
+      resolvedCwd = projectRecord.sourceDir
     }
-    const projectForGrant = doc
-      ? projects.find(p => p.name === doc)
+    const projectForGrant = project
+      ? projects.find(p => p.name === project)
       : projects.find(p => {
           if (!resolvedCwd || !p.sourceDir) return false
           const cwdPath = path.resolve(resolvedCwd)
@@ -321,7 +327,7 @@ export function createAgentLauncher({
           kind: sessionId ? kind : launchKind,
           modelCap: launchModelSpec?.cap || null,
           config: grantConfig,
-          doc,
+          project,
           project: projectForGrant,
           cwd: resolvedCwd,
         })
@@ -382,7 +388,7 @@ export function createAgentLauncher({
       permissionGrant: grant.permissionGrant || null,
       hasPermissionSet: !!grant.permissionSet,
       cwd: resolvedCwd || null,
-      doc: doc || null,
+      project: project ?? null,
       requester: requester ? { id: requester.id || null, name: requester.name || null, human: !!requester.human, permissionGrant: requester.permissionGrant || null } : null,
     })
     activeSpawns.set(agentName, Date.now())

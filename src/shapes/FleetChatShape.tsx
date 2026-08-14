@@ -117,6 +117,8 @@ import {
 import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
 import { FleetSearchResultsView } from './FleetSearchResultsView'
 import './fleet-chat.css'
+import { installPenCorrectionConsumer } from '../tools/PenTool/penCorrectionConsumer'
+import { recognizeShapes } from '../handwritingRecognize'
 
 const DEFAULT_W = 400
 const DEFAULT_H = 600
@@ -1553,7 +1555,7 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
           : status === 'thinking' ? 'thinking…'
           : null
         return [
-          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'baseline', gap: 6 }}>
+          <div key={agentId} className="chat-line chat-thinking" style={{ padding: '2px 0', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'baseline', gap: 6 }}>
             {/* left: agent + status */}
             <span style={{ justifySelf: 'start', minWidth: 0 }}>
               <span className="thinking-text">
@@ -1569,8 +1571,6 @@ function ThinkingStatus({ thinkingAgents, compactingAgents, contextPercent, hibe
                 </span>
               )}
             </span>
-            {/* center: kept empty to preserve the left/right grid columns. */}
-            <span style={{ justifySelf: 'center', minWidth: 0 }} />
             {/* right: context info */}
             <span style={{ justifySelf: 'end' }}>
               <ContextBadge percent={contextPercent.get(agentId)} />
@@ -2686,6 +2686,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
   const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  const penActive = useValue('pen-active', () => editor.getCurrentToolId() === 'draw', [editor])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const { startDrag: startUnreadRailDrag } = usePillDrag()
@@ -3067,6 +3068,19 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
     return sorted
   }, [events, quietDmTraffic])
+  const chatMessagesRef = useRef(chatMessages)
+  chatMessagesRef.current = chatMessages
+
+  useEffect(() => {
+    if (!chatLogEl) return
+    return installPenCorrectionConsumer({
+      element: chatLogEl,
+      messages: () => chatMessagesRef.current,
+      humanId: () => getHumanId(),
+      send: sendMessage,
+      recognize: inkShapeId => recognizeShapes(editor, [inkShapeId as TLShapeId]),
+    })
+  }, [chatLogEl, editor])
 
   // Unread-per-sender for the rail, read from the rail's own to-me buffer. Same
   // count the browser-wide store used to answer: chat messages addressed to me
@@ -6126,6 +6140,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             displayName: label, color: '#9370db',
             content: fileContent, sourceAgent: chatLine?.dataset.msgFrom || undefined,
             filePath, fileUrl,
+            markdownChip: /\.(?:md|markdown)(?:$|[?#])/i.test(fileUrl || filePath),
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
@@ -6548,13 +6563,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: penActive ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
       <div
         ref={setShapeContainer}
-        className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}`}
+        className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}${penActive ? ' fleet-pen-mode' : ''}`}
         style={{
           ...fleetStyleVars,
           width: '100%',

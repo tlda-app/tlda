@@ -32,11 +32,18 @@ test('server spawn relay cannot select a daemon session', () => {
   const normalized = normalizeSpawnRelayInput({
     name: 'route-spawn',
     model: 'gpt',
+    project: 'paper',
     cwd: '/tmp/project',
     permissionRequest: { profile: 'test' },
   })
   assert.equal(normalized.name, 'route-spawn')
   assert.equal(normalized.model, 'gpt')
+  assert.equal(normalized.project, 'paper')
+
+  assert.throws(
+    () => normalizeSpawnRelayInput({ name: 'route-spawn', doc: 'paper' }),
+    /rejected legacy "doc"; use project/,
+  )
 
   for (const key of ['session', 'sessionId', 'session_id']) {
     assert.throws(

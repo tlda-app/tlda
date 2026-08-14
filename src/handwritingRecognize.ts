@@ -5,7 +5,7 @@
  * The ink stays as-is — transcription is derived metadata, like the magic highlighter.
  */
 
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape, TLShapeId } from 'tldraw'
 import { b64Vecs } from 'tldraw'
 
 /** Check if selected shapes are all draw shapes (candidates for recognition). */
@@ -40,9 +40,8 @@ function extractStrokes(shape: TLShape): { x: number[]; y: number[] }[] {
   return strokes
 }
 
-/** Recognize selected draw shapes and attach transcription metadata. */
-export async function recognizeSelection(editor: Editor): Promise<string | null> {
-  const ids = editor.getSelectedShapeIds()
+/** Recognize the named draw shapes and attach transcription metadata. */
+export async function recognizeShapes(editor: Editor, ids: readonly TLShapeId[]): Promise<string | null> {
   const shapes = ids
     .map(id => editor.getShape(id))
     .filter((s): s is TLShape => s != null && s.type === 'draw')
@@ -99,4 +98,9 @@ export async function recognizeSelection(editor: Editor): Promise<string | null>
   }
 
   return latex
+}
+
+/** Recognize the currently selected draw shapes. */
+export async function recognizeSelection(editor: Editor): Promise<string | null> {
+  return recognizeShapes(editor, editor.getSelectedShapeIds())
 }

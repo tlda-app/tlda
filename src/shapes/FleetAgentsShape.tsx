@@ -144,7 +144,7 @@ function moveToSpawnSegment(
   defaults: [string, string, string],
 ): string {
   const parsed = parseMintInput(input)
-  const positional = [parsed.doc, parsed.name || '', parsed.model || '']
+  const positional = [parsed.project, parsed.name || '', parsed.model || '']
   for (let i = 0; i < pos - 1 && i < 3; i++) positional[i] ||= defaults[i] || ''
   if (pos <= 3) return positional.slice(0, pos).join(' ')
   const [optionName, optionValue] = Object.entries(parsed.options)[0] || ['effort', '']
@@ -153,8 +153,8 @@ function moveToSpawnSegment(
 
 // The project that will actually be used: the typed first token, or — when
 // the field is empty — the doc currently being viewed.
-function effectiveDoc(input: string, currentDoc: string): string {
-  return parseMintInput(input).doc || currentDoc
+function effectiveProject(input: string, currentProject: string): string {
+  return parseMintInput(input).project || currentProject
 }
 
 // True when a project is named but won't resolve to a known project. Used to
@@ -164,10 +164,10 @@ function effectiveDoc(input: string, currentDoc: string): string {
 // real project (so mid-typing doesn't flash red).
 function projectUnresolvable(input: string, projects: string[], currentDoc: string): boolean {
   if (!projects.length) return false
-  const doc = effectiveDoc(input, currentDoc)
-  if (!doc) return false
-  if (projects.includes(doc)) return false
-  const lower = doc.toLowerCase()
+  const project = effectiveProject(input, currentDoc)
+  if (!project) return false
+  if (projects.includes(project)) return false
+  const lower = project.toLowerCase()
   const hasPrefixMatch = projects.some(p => p.toLowerCase().startsWith(lower))
   return !hasPrefixMatch
 }
@@ -176,8 +176,8 @@ function projectUnresolvable(input: string, projects: string[], currentDoc: stri
 // cwd) or resolves exactly to a known project.
 function canSubmitSpawn(input: string, projects: string[], currentDoc: string): boolean {
   if (!projects.length) return true
-  const doc = effectiveDoc(input, currentDoc)
-  return !doc || projects.includes(doc)
+  const project = effectiveProject(input, currentDoc)
+  return !project || projects.includes(project)
 }
 
 type SortKey = 'active' | 'name' | 'status'
@@ -189,7 +189,7 @@ type SortKey = 'active' | 'name' | 'status'
 interface OptimisticAgent {
   optimisticId: string
   model: string        // alias as sent to spawn (e.g. 'opus48')
-  doc?: string
+  project?: string
   name?: string        // friendly_name the real agent will register with
   effort?: string
   modelOptions?: Record<string, string>
@@ -212,7 +212,7 @@ function matchingAgentForOptimistic(opt: OptimisticAgent, agents: any[]): any | 
   const existingSet = new Set(opt.existingIds)
   return agents.find((agent: any) => {
     if (agent.dead || existingSet.has(agent.id)) return false
-    if (opt.doc && agent.metadata?.project && agent.metadata.project !== opt.doc) return false
+    if (opt.project && agent.metadata?.project && agent.metadata.project !== opt.project) return false
     return formatFleetAgentModel(agent.metadata?.model) === formatFleetAgentModel(opt.model)
   })
 }
@@ -506,16 +506,15 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [sortAsc, setSortAsc] = useState(false)
 
   // Spawn input — always visible, fetches projects for autocomplete.
-  // Starts empty/ghosted; the ghost shows the current doc as the implied
-  // project, so an empty submit spawns into the doc being viewed.
+  // Starts empty/ghosted; the ghost shows the currently viewed project.
   const [spawnDoc, setSpawnDoc] = useState('')
   const { id: userId } = useFleetIdentity()
   // Live project list — re-fetches on the server's `projects-updated` event so a
   // newly-created project shows up here without a manual reload.
   const projectList = useFleetProjects()
   const parsedSpawn = useMemo(() => parseMintInput(spawnDoc), [spawnDoc])
-  const spawnAvailabilityDoc = parsedSpawn.doc || currentDoc
-  const spawnModelInfo = useAvailableSpawnModels(userId, { doc: spawnAvailabilityDoc })
+  const spawnAvailabilityProject = parsedSpawn.project || currentDoc
+  const spawnModelInfo = useAvailableSpawnModels(userId, { project: spawnAvailabilityProject })
   const spawnModels = spawnModelInfo.aliases
   const defaultSpawnModel = spawnModelInfo.defaultAlias
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
@@ -544,7 +543,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // done here — friendly-name uniqueness is a separate concern handled server-side.
   const [spawnError, setSpawnError] = useState('')
   const spawnValidationError = projectInvalid
-    ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'`
+    ? `No project '${effectiveProject(spawnDoc, currentDoc)}'`
     : ''
   const spawnInvalid = projectInvalid || !!spawnError
   const spawnTooltip = spawnError || spawnValidationError || 'Mint agent'
@@ -553,7 +552,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       spawnInputRef.current?.focus()
       return
     }
-    const { doc, name, model, options } = parsedSpawn
+    const { project, name, model, options } = parsedSpawn
     setSpawnError('')
     setSpawnNotice('')
 
@@ -563,7 +562,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     const optimistic: OptimisticAgent = {
       optimisticId,
       model: effectiveModel,
-      doc: doc || currentDoc || undefined,
+      project: project || currentDoc || undefined,
       name: name || undefined,
       effort: options.effort || undefined,
       modelOptions: options,
@@ -575,7 +574,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }
     setOptimisticAgents(prev => [...prev, optimistic])
 
-    spawnAgent(effectiveModel || undefined, doc || currentDoc || undefined, name, options)
+    spawnAgent(effectiveModel || undefined, project || currentDoc || undefined, name, options)
       .catch((e: any) => {
         const message = String(e?.message || e || 'Spawn failed')
         setSpawnError(message)
@@ -813,7 +812,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                     setOptimisticAgents(prev => prev.map(o =>
                       o.optimisticId === item.opt.optimisticId ? { ...o, status: 'spawning' as const, errorMessage: undefined } : o
                     ))
-                    spawnAgent(item.opt.model || undefined, item.opt.doc, item.opt.name, item.opt.modelOptions || (item.opt.effort ? { effort: item.opt.effort } : {}))
+                    spawnAgent(item.opt.model || undefined, item.opt.project, item.opt.name, item.opt.modelOptions || (item.opt.effort ? { effort: item.opt.effort } : {}))
                       .catch((e: any) => {
                         const msg = String(e?.message || e || 'Spawn failed')
                         setOptimisticAgents(prev => prev.map(o =>

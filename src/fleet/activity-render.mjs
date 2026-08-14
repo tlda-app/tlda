@@ -21,6 +21,7 @@ import katex from 'katex'
 import { agentNameHtml } from './chat-render.mjs'
 import { normalizePrettyResult } from '../../shared/activity-pretty-result.mjs'
 import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
+import { log } from '../logger.ts'
 
 // --- Pure helpers (copied from utils.mjs) ---
 
@@ -173,8 +174,37 @@ function renderPrettyResult(toolName, text, ctx, input, ts, arg = '') {
   if (MARKDOWN_PRETTY_TOOLS.has(tool)) {
     return renderMarkdownPrettyResult(toolName, text, ctx)
   }
+  if (input?._unknownCodexToolKind) {
+    recordUnknownCodexToolKind(input._unknownCodexToolKind)
+    return renderMarkdownPrettyResult(toolName, text, ctx)
+  }
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
+}
+
+const UNKNOWN_KIND_TELEMETRY_LIMIT = 32
+const reportedUnknownCodexToolKinds = new Set()
+let reportedUnknownCodexToolOverflow = false
+
+function recordUnknownCodexToolKind(kind) {
+  const name = String(kind || '').trim() || 'unknown'
+  if (reportedUnknownCodexToolKinds.has(name)) return
+  if (reportedUnknownCodexToolKinds.size >= UNKNOWN_KIND_TELEMETRY_LIMIT) {
+    if (!reportedUnknownCodexToolOverflow) {
+      reportedUnknownCodexToolOverflow = true
+      log.metric('activity-render', 'unknown Codex tool kind limit reached', {
+        unknownKindCount: reportedUnknownCodexToolKinds.size,
+        limit: UNKNOWN_KIND_TELEMETRY_LIMIT,
+      })
+    }
+    return
+  }
+  reportedUnknownCodexToolKinds.add(name)
+  log.metric('activity-render', 'unknown Codex tool kind rendered', {
+    kind: name,
+    unknownKindCount: reportedUnknownCodexToolKinds.size,
+    limit: UNKNOWN_KIND_TELEMETRY_LIMIT,
+  })
 }
 
 function renderMarkdownPrettyResult(toolName, text, ctx) {
@@ -361,7 +391,7 @@ export function toolCallArgs(input, fallbackArg = '') {
   // `_semantic*` keys are stamped onto _toolInput by the dedup merge, not by the
   // agent — they were never part of the call.
   const entries = input && typeof input === 'object'
-    ? Object.entries(input).filter(([key]) => !key.startsWith('_semantic'))
+    ? Object.entries(input).filter(([key]) => !key.startsWith('_semantic') && key !== '_unknownCodexToolKind')
     : []
   if (!entries.length) return fallbackArg ? callArgValue(fallbackArg) : ''
   let out = ''
