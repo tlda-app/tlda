@@ -21,8 +21,8 @@ the eight `✓?` rows reach your screen until you refresh. Nothing here says you
 **Every row here was checked against your own messages.** Two turned out not to be yours and are
 gone — the arXiv build, a feature an agent invented, and a row built from an example in the README. **The other 75 are things you asked for.**
 
-Your box runs `a42171f18`, read from `/api/build-info` at 23:14 EDT. `main` is `eca3394af`, **5 commits ahead — four are this file, and the fifth is the
-chat-scroll change you are testing.** **Everything else built tonight has reached you.**
+Your box runs `a42171f18`, read from `/api/build-info` at 23:14 EDT. `main` is `eca3394af`, **5 commits ahead — four are this file, and the fifth is a test
+for the shared-chip defect below.** **Everything built tonight has reached you.**
 **Code means everything that is not `*.md` and not under `docs/`.** Every number is re-derived on
 each write, and the box is re-read at the top of every pass rather than remembered.
 
