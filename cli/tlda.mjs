@@ -310,6 +310,32 @@ function printPushBuildStatus(result, unchangedMessage = 'No changes detected.')
   }
 }
 
+export function retryableCliOperationError(error) {
+  const status = Number(error?.status || error?.cause?.status || 0)
+  if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) return true
+  return /Server not reachable|Request timed out|local fleet daemon is unavailable|ended without a result|ECONNRESET|EPIPE|socket hang up/i
+    .test(error?.message || String(error))
+}
+
+export async function finishCliOperation(label, operation, {
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  retryDelay = attempt => Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6))),
+  log = console,
+} = {}) {
+  let attempt = 0
+  for (;;) {
+    attempt++
+    try {
+      return await operation()
+    } catch (error) {
+      if (!retryableCliOperationError(error)) throw error
+      const delayMs = retryDelay(attempt)
+      log.error(`${label} attempt ${attempt} did not complete: ${error?.message || String(error)}; retrying in ${Math.ceil(delayMs / 1000)}s`)
+      await sleep(delayMs)
+    }
+  }
+}
+
 // --- HTTP helpers ---
 
 async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
@@ -577,7 +603,8 @@ async function cmdBook() {
   for (const member of members) {
     try {
       await api('GET', `/api/projects/${member}`)
-    } catch {
+    } catch (error) {
+      if (retryableCliOperationError(error)) throw error
       console.error(red(`Member "${member}" not found on server.`))
       process.exit(1)
     }
@@ -668,7 +695,7 @@ async function cmdScratch() {
     await api('PATCH', `/api/projects/${bookName}/members`, { add: name })
     console.log(dim(`  Joined book "${bookName}"`))
   } catch (e) {
-    console.log(dim(`  Book "${bookName}": ${e.message}`))
+    throw new Error(`could not join book "${bookName}": ${e.message}`, { cause: e })
   }
 
   const server = getServer()
@@ -717,7 +744,7 @@ async function cmdCreate() {
 
   // Slides format: push HTML files, no TeX
   if (format === 'slides') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: slides`))
 
@@ -789,7 +816,7 @@ async function cmdCreate() {
 
   // HTML format: push HTML chapters (e.g. from Quarto book render)
   if (format === 'html') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     console.log(dim(`  Source: ${dir}`))
     console.log(dim(`  Format: html`))
 
@@ -848,7 +875,7 @@ async function cmdCreate() {
   // from this machine, the source is what travels — so a bot can rebuild the
   // document without a machine of its own.
   if (format === 'qmd') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     const mainFile = mainArg || readdirSync(dir).find(f => f.toLowerCase().endsWith('.qmd'))
     if (!mainFile) { console.error(`No .qmd file found in ${dir}`); process.exit(1) }
 
@@ -955,7 +982,7 @@ async function cmdCreate() {
 
   // Markdown format: push .md file, server renders to HTML with KaTeX
   if (format === 'markdown') {
-    if (await bindLocalSource()) return
+    await bindLocalSource()
     const mainFile = mainArg || readdirSync(dir).find(f => f.endsWith('.md'))
     if (!mainFile) { console.error(`No .md file found in ${dir}`); process.exit(1) }
 
@@ -1024,7 +1051,7 @@ async function cmdCreate() {
   const mainFile = mainArg || findMainTex(dir)
   if (!mainFile) { console.error(`No .tex file with \\documentclass found in ${dir}`); process.exit(1) }
 
-  if (await bindLocalSource()) return
+  await bindLocalSource()
   console.log(dim(`  Source: ${dir}`))
   console.log(dim(`  Main file: ${mainFile}`))
 
@@ -1094,7 +1121,7 @@ async function cmdPush() {
         await api('PATCH', `/api/projects/${group}/members`, { add: name })
         console.log(dim(`  Joined book "${group}"`))
       } catch (e) {
-        console.log(dim(`  Book "${group}": ${e.message}`))
+        throw new Error(`could not join book "${group}": ${e.message}`, { cause: e })
       }
     }
   }
@@ -1192,26 +1219,41 @@ async function cmdInit() {
 
   const title = getFlag('title') || name
 
+  const isMarkdown = format === 'markdown'
+  const isHtml = format === 'html'
+  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
+
   // Determine target directory: --dir overrides, otherwise ./<name> in CWD
   const targetDir = resolve(getFlag('dir') || join(process.cwd(), name))
+  let resumeExistingInit = false
 
   // Guard: refuse to clobber a non-empty directory
   if (existsSync(targetDir)) {
     const entries = readdirSync(targetDir)
     if (entries.length > 0) {
-      console.error(red(`Directory already exists and is not empty: ${targetDir}`))
-      console.error(`  Use \`tlda project link\` to attach an existing project directory.`)
-      process.exit(1)
+      let initialSubject = null
+      try {
+        initialSubject = execFileSync('git', ['-C', targetDir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim()
+      } catch {
+        // A non-git directory cannot be a resumable tlda initialization.
+      }
+      if (existsSync(join(targetDir, mainFile)) && initialSubject === `init: ${name} (${formatLabel})`) {
+        resumeExistingInit = true
+        console.log(dim(`  Resuming tlda project init in ${targetDir}`))
+      } else {
+        console.error(red(`Directory already exists and is not empty: ${targetDir}`))
+        console.error(`  Use \`tlda project link\` to attach an existing project directory.`)
+        process.exit(1)
+      }
     }
   }
 
-  // Create the directory
-  mkdirSync(targetDir, { recursive: true })
-  console.log(dim(`  Creating project in ${targetDir}`))
+  if (!resumeExistingInit) {
+    // Create the directory
+    mkdirSync(targetDir, { recursive: true })
+    console.log(dim(`  Creating project in ${targetDir}`))
 
   // Create only the explicitly requested starter main file; do not add ancillary source.
-  const isMarkdown = format === 'markdown'
-  const isHtml = format === 'html'
   const createdFiles = []
 
   if (isMarkdown) {
@@ -1231,12 +1273,9 @@ async function cmdInit() {
     createdFiles.push(mainFile)
   }
 
-  const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
-
   console.log(dim(`  Created ${createdFiles.join(', ')}`))
 
   // Git init + initial commit
-  const { execFileSync } = await import('child_process')
   try {
     execFileSync('git', ['init'], { cwd: targetDir, stdio: 'pipe' })
     if (createdFiles.length) execFileSync('git', ['add', ...createdFiles], { cwd: targetDir, stdio: 'pipe' })
@@ -1247,17 +1286,25 @@ async function cmdInit() {
              GIT_AUTHOR_EMAIL: 'tlda@localhost', GIT_COMMITTER_EMAIL: 'tlda@localhost' },
     })
     console.log(dim(`  git init + initial commit`))
-  } catch (gitErr) {
-    console.warn(yellow(`  Warning: git init failed — ${gitErr.message.trim()}`))
-    console.warn(yellow(`  Project directory and files were created, but no git repo was initialized.`))
+    } catch (gitErr) {
+      throw new Error(`git initialization is incomplete: ${gitErr.message.trim()}`, { cause: gitErr })
+    }
   }
 
   // Register on the server and push the seeded files
+  const ensureProject = async body => {
+    try {
+      await createProjectApi(body)
+      console.log(green(`Created project "${name}".`))
+    } catch (error) {
+      if (!error.message.includes('already exists')) throw error
+      console.log(dim(`Project "${name}" already exists; resuming registration and push.`))
+    }
+  }
   try {
     await callLocalDaemonLifecycle('project-source-link', { project: name, sourceDir: targetDir })
     if (isMarkdown) {
-      await createProjectApi({ name, title, mainFile, format: 'markdown' })
-      console.log(green(`Created markdown project "${name}".`))
+      await ensureProject({ name, title, mainFile, format: 'markdown' })
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
         sourceDir: targetDir,
@@ -1274,8 +1321,7 @@ async function cmdInit() {
         expectedRevision: await currentSourceRevision(name),
       })
     } else if (isHtml) {
-      await createProjectApi({ name, title, format: 'html' })
-      console.log(green(`Created HTML project "${name}".`))
+      await ensureProject({ name, title, format: 'html' })
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
         sourceDir: targetDir,
@@ -1292,8 +1338,7 @@ async function cmdInit() {
         expectedRevision: await currentSourceRevision(name),
       })
     } else {
-      await createProjectApi({ name, title, mainFile })
-      console.log(green(`Created project "${name}".`))
+      await ensureProject({ name, title, mainFile })
       await callLocalDaemonLifecycle('project-source-link', {
         project: name,
         sourceDir: targetDir,
@@ -1312,15 +1357,7 @@ async function cmdInit() {
       console.log(green('Build triggered.'))
     }
   } catch (e) {
-    if (e.message.includes('already exists')) {
-      console.log(`Project "${name}" already exists on server — use \`tlda project link\` or \`tlda project push\` instead.`)
-    } else {
-      console.warn(yellow(`  Server registration failed: ${e.message}`))
-      console.warn(yellow(`  Project directory and git repo are ready. Run \`tlda project link ${name} ${mainFile}\` when the server is up.`))
-      const server = getServer()
-      console.log(`\nViewer (once registered): ${cyan(`${server}/?project=${name}`)}`)
-      return
-    }
+    throw new Error(`project init is incomplete: ${e.message}`, { cause: e })
   }
 
   const server = getServer()
@@ -2851,8 +2888,13 @@ async function cmdDelete() {
   const name = getPositional(0)
   if (!name) { console.error('Usage: tlda project delete <name>'); process.exit(1) }
 
-  await api('DELETE', `/api/projects/${name}`)
-  console.log(green(`Project "${name}" deleted.`))
+  try {
+    await api('DELETE', `/api/projects/${name}`)
+    console.log(green(`Project "${name}" deleted.`))
+  } catch (error) {
+    if (Number(error?.status) !== 404) throw error
+    console.log(dim(`Project "${name}" is already absent.`))
+  }
 }
 
 async function fetchAgentsByExactCwd(cwd, { apiImpl = api } = {}) {
@@ -6131,12 +6173,12 @@ async function main() {
     switch (command) {
       case 'server': await cmdServer(); break
       case 'system': await cmdSystem(); break
-      case 'scratch': await cmdScratch(); break
-      case 'book':   await cmdBook(); break
-      case 'push':   await cmdPush(); break
-      case 'link':   await cmdLink(); break
-      case 'unlink': await cmdUnlink(); break
-      case 'init':   await cmdInit(); break
+      case 'scratch': await finishCliOperation('project scratch', cmdScratch); break
+      case 'book':   await finishCliOperation('project book', cmdBook); break
+      case 'push':   await finishCliOperation('project push', cmdPush); break
+      case 'link':   await finishCliOperation('project link', cmdLink); break
+      case 'unlink': await finishCliOperation('project unlink', cmdUnlink); break
+      case 'init':   await finishCliOperation('project init', cmdInit); break
       case 'daemon': await cmdDaemon(); break
       case 'bot': await cmdBot(); break
       case 'env': printEnvironments(); break
@@ -6146,9 +6188,9 @@ async function main() {
       case 'ls':     await cmdList(); break
       case 'status': await cmdStatus(); break
       case 'errors': await cmdErrors(); break
-      case 'delete':  await cmdDelete(); break
-      case 'rm':      await cmdDelete(); break
-      case 'move':    await cmdMoveProject(); break
+      case 'delete':  await finishCliOperation('project delete', cmdDelete); break
+      case 'rm':      await finishCliOperation('project delete', cmdDelete); break
+      case 'move':    await finishCliOperation('project move', cmdMoveProject); break
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break
