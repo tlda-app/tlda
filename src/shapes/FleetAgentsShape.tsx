@@ -203,6 +203,20 @@ type AgentListItem =
   | { type: 'optimistic'; opt: OptimisticAgent }
   | { type: 'agent'; agent: any }
 
+function matchingAgentForOptimistic(opt: OptimisticAgent, agents: any[]): any | undefined {
+  const exactNameMatch = opt.name
+    ? agents.find((agent: any) => !agent.dead && agent.friendly_name === opt.name)
+    : undefined
+  if (exactNameMatch) return exactNameMatch
+
+  const existingSet = new Set(opt.existingIds)
+  return agents.find((agent: any) => {
+    if (agent.dead || existingSet.has(agent.id)) return false
+    if (opt.doc && agent.metadata?.project && agent.metadata.project !== opt.doc) return false
+    return formatFleetAgentModel(agent.metadata?.model) === formatFleetAgentModel(opt.model)
+  })
+}
+
 const FleetAgentsScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   function FleetAgentsScroller(props, ref) {
     const className = props.className ? `fleet-agents-body ${props.className}` : 'fleet-agents-body'
@@ -473,18 +487,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     let notice = ''
     let changed = false
     const remaining = optimisticAgents.filter(opt => {
-      const existingSet = new Set(opt.existingIds)
-      const exactNameMatch = !!opt.name && agents.some((a: any) => !a.dead && a.friendly_name === opt.name)
-      if (exactNameMatch) {
-        changed = true
-        return false
-      }
-      const matchingNewAgent = agents.find((a: any) => {
-        if (a.dead) return false
-        if (existingSet.has(a.id)) return false
-        if (opt.doc && a.metadata?.project && a.metadata.project !== opt.doc) return false
-        return formatFleetAgentModel(a.metadata?.model) === formatFleetAgentModel(opt.model)
-      })
+      const matchingNewAgent = matchingAgentForOptimistic(opt, agents)
       if (matchingNewAgent) {
         if (opt.name && matchingNewAgent.friendly_name && matchingNewAgent.friendly_name !== opt.name) {
           notice = `"${opt.name}" was taken; minted "${matchingNewAgent.friendly_name}"`
@@ -709,13 +712,21 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   )
 
   const contextPercent = useFleetContext(null, frameId)
-  const rowItems = useMemo<AgentListItem[]>(
-    () => [
-      ...optimisticAgents.map((opt) => ({ type: 'optimistic' as const, opt })),
-      ...childFolding.visibleAgents.map((agent) => ({ type: 'agent' as const, agent })),
-    ],
-    [optimisticAgents, childFolding.visibleAgents],
-  )
+  const rowItems = useMemo<AgentListItem[]>(() => {
+    const unfoldedAgentIds = new Set<string>()
+    const unfoldingItems = optimisticAgents.map((opt): AgentListItem => {
+      const agent = matchingAgentForOptimistic(opt, agents)
+      if (!agent) return { type: 'optimistic', opt }
+      unfoldedAgentIds.add(agent.id)
+      return { type: 'agent', agent }
+    })
+    return [
+      ...unfoldingItems,
+      ...childFolding.visibleAgents
+        .filter(agent => !unfoldedAgentIds.has(agent.id))
+        .map((agent) => ({ type: 'agent' as const, agent })),
+    ]
+  }, [optimisticAgents, agents, childFolding.visibleAgents])
 
   // Clean up any permanent pill shapes that were children of this panel (legacy)
   const cleanedRef = useRef(false)
