@@ -1,185 +1,149 @@
-# The vendored tldraw editor
+# The forked tldraw editor
 
-`@tldraw/editor` is not installed from npm. `package.json` pins it to a file in
-this repository:
+`@tldraw/editor` comes from the public `tlda-app/tldraw-fork` repository rather
+than npm. `package.json` and `package-lock.json` pin one immutable package-root
+artifact commit over HTTPS:
 
 ```json
-"@tldraw/editor": "file:vendor/tldraw-editor-5.2.0-tlda.10.tgz"
+"@tldraw/editor": "git+https://github.com/tlda-app/tldraw-fork.git#b8ae2f885e3311129e788f67c4bbdacc8f2aef19"
 ```
 
-The wrapper package `tldraw` is the ordinary published `5.2.0`. Only the editor
-is forked, and the fork is based on upstream `5.2.0` — both `package.json` files
-report that version, so `-tlda.10` is our tenth build on top of it rather than a
-different upstream release.
+The wrapper package `tldraw` and the editor's six sibling packages remain the
+ordinary published `5.2.0` packages. Only the editor is forked, from upstream
+`5.2.0`.
 
-Vendored rather than fetched from a release URL because `Dockerfile.live` ships
-a prebuilt `dist/` and installs only server dependencies. The editor is resolved
-on the build machine and never inside the image, so a file in the repository
-needs no external publish and keeps the build reproducible from a checkout.
+## Why the pin names an artifact commit
 
-## What the fork carries
+The editor source lives at `packages/editor` in a Yarn monorepo. npm cannot
+install a package from a subdirectory of a Git repository, so pinning the
+monorepo source commit would install its private root package rather than
+`@tldraw/editor`.
 
-Measured by unpacking `vendor/tldraw-editor-5.2.0-tlda.10.tgz` and diffing its
-`src/` against `npm pack @tldraw/editor@5.2.0`, on 2026-08-12: **13 files,
-+476/-194**, in two features.
-
-**Multiple viewports.** New: `lib/editor/viewports/TLViewport.ts`,
-`lib/components/TldrawViewport.tsx` (337 lines). Changed: `Editor.ts` (+129),
-`notVisibleShapes.ts`, `Shape.tsx`, `CanvasOverlays.tsx`. Adds the exports
-`TldrawViewport`, `DEFAULT_VIEWPORT_ID`, `getViewportPageBounds`, `TLViewport`,
-`TLViewportId`, `TLViewportOptions`.
-
-This is what the fleet HUD is built on — a second camera over the same store.
-Twelve files under `src/` reference these exports, including `src/wm/`, whose
-`tldraw-fork-viewport-adapter.ts` exists to sit on top of them.
-
-**Gesture interpretation.** New: `lib/hooks/gesture/GestureInterpreter.ts` (418
-lines). Changed: `useGestureEvents.ts` (+375/-161), `useCanvasEvents.ts`,
-`InputsManager.ts`, `getPointerInfo.ts`, `event-types.ts`. Adds the exports
-`GestureInterpreter`, `DEFAULT_GESTURE_TUNING`, `TLGestureFrame`,
-`TLGestureKind`, `TLGesturePoint`, `TLGestureTuning`.
-
-Two defects drove it, both recorded in the commits that bumped the pin:
-
-- Three fingers on the canvas zoom-jumped on lift. tldraw opens a pinch the
-  first moment it sees two fingers, and three fingers always pass through two,
-  so a pinch opened underneath our own pan handler and settled on release. The
-  forked interpreter reads the touch stream once and can revise what it decided,
-  so a pinch is never opened on evidence that has not arrived yet
-  (`5fed2cece`, `52014f5b6`).
-- An iPad took the trackpad gesture path. The choice was made on `!tlenv.isIos`
-  and iPadOS Safari reports itself as a Mac, so the touch listeners were never
-  registered and the camera was driven from `GestureEvent.scale` by a handler
-  with no pan-or-zoom decision in it — which is why a two-finger drag zoomed.
-  The fork chooses on whether the input has touch points (`177d8fde6`,
-  `bdfdbc980`).
-
-## The tarball cannot rebuild itself
-
-It ships `src/`, so the fork's source is readable and diffable from a checkout —
-that is how the delta above was produced, and it is enough to answer "what does
-our editor do differently". It is **not** enough to produce a new tarball. The
-package's own build scripts point outside it:
+The source package is not independently installable either. Its six tldraw
+dependencies are declared as `workspace:*`, and its build scripts reach into
+the monorepo:
 
 ```json
 "build": "yarn run -T tsx ../../internal/scripts/build-package.ts",
 "prepack": "yarn run -T tsx ../../internal/scripts/prepack.ts"
 ```
 
-Those paths are the tldraw monorepo the package was packed from, and it is not
-in this repository. Producing `-tlda.11` needs that checkout. **Do not plan work
-that assumes the fork can be rebuilt from `vendor/` alone**, and do not treat
-"fix it upstream and rebuild" as an available cheap move until someone has
-located the fork checkout and confirmed it still builds.
+The `prepack` step builds the editor and rewrites the sibling dependencies to
+concrete `5.2.0` versions. npm runs `prepare`, not `prepack`, for a Git
+dependency, so pointing at the source tree would skip the step that makes the
+package installable.
 
-## On an upgrade, re-check these
+The pinned commit solves both problems. Its repository root is the output of
+packing `packages/editor`: the root `package.json` names `@tldraw/editor`, its
+workspace dependencies are concrete, and `dist-cjs/`, `dist-esm/`, and `src/`
+are already present. npm clones that commit as an ordinary Git dependency and
+has nothing to build inside the fork.
 
-A tldraw bump is not a version bump. It is a re-fork: the two features above
-have to be carried onto the new base, and workarounds written against upstream
-bugs have to be re-tested and deleted if upstream fixed them.
+The artifact commit is a child of the source commit it was built from. For the
+current pin:
 
-**Workarounds to delete if upstream fixes them.** Each is commented at its site
-with the version it was written against.
+- `1d61d011c5a122cdabeb0893fe2f7d0b4f8d735d` is the source commit.
+- `b8ae2f885e3311129e788f67c4bbdacc8f2aef19` is the package-root artifact
+  commit.
+- `artifact/editor-5.2.0-tlda.12` is the public branch that keeps the artifact
+  commit reachable.
 
-- `src/App.css`, `.tlui-layout .tlui-main-toolbar--vertical` — tldraw defines
-  `--tl-sab` as `env(safe-area-inset-bottom)` and then uses it for the *vertical*
-  toolbar's *left* padding. On iPad that inset is ~20px in both orientations, so
-  the toolbar sits a constant distance off the left edge; desktop never shows it
-  because the inset is 0 there. Written against `tldraw 5.2.0`. This is a bug in
-  the published `tldraw` package, not in our fork of the editor, so it can be
-  checked against upstream without the fork checkout.
+That parent relation makes the built package traceable without making the
+monorepo root pretend to be the editor package.
 
-**Fork features to carry forward.** Both are load-bearing, and both fail loudly
-rather than silently if dropped — the exports simply will not resolve.
+## What the fork carries
 
-- The viewport exports, or the fleet HUD has no second camera.
-- The gesture exports, plus the two defects above re-tested on a real iPad,
-  since both were reported from Skip's device and neither is visible on desktop.
+### Multiple viewports
 
-## Where the fork checkout is
+The fork adds `lib/editor/viewports/TLViewport.ts` and
+`lib/components/TldrawViewport.tsx`, changes `Editor.ts`,
+`notVisibleShapes.ts`, `Shape.tsx`, and `CanvasOverlays.tsx`, and exports
+`TldrawViewport`, `DEFAULT_VIEWPORT_ID`, `getViewportPageBounds`, `TLViewport`,
+`TLViewportId`, and `TLViewportOptions`.
 
-`/Users/skip/work/tldraw-fork`, branch `tlda/gesture-transitions`, at
-`249a8acb6` when this was written — clean, with root `node_modules` present and
-`yarn@4.12.0`.
+This is what the fleet HUD is built on: a second camera over the same store.
+The consumers under `src/wm/` depend on these exports and fail loudly if the
+viewport feature disappears.
 
-**It is the one this tarball was packed from, not a lookalike.**
-`packages/editor/src/lib/components/TldrawViewport.tsx` is byte-identical to the
-`src/` shipped in `vendor/tldraw-editor-5.2.0-tlda.10.tgz`. That check is the one
-to repeat, because there are three near-misses beside it on the same machine:
-`tldraw-multicam-fork` and `tldraw-multicam-fork-pushfix` both differ by 48 lines
-in that file, and `tldraw-fork.wrong-20260727093621` says what it is in its name.
-Its top commits are the gesture work described in §"What the fork carries".
+### Gesture interpretation
 
-This section used to say the location was unknown. It was a `find` away —
-`find ~ -name build-package.ts -path '*internal/scripts*'` — and the previous
-text discouraged assuming the fork could be rebuilt, which is not the same as
-discouraging a look.
+The fork adds `lib/hooks/gesture/GestureInterpreter.ts`, changes
+`useGestureEvents.ts`, `useCanvasEvents.ts`, `InputsManager.ts`,
+`getPointerInfo.ts`, and `event-types.ts`, and exports `GestureInterpreter`,
+`DEFAULT_GESTURE_TUNING`, `TLGestureFrame`, `TLGestureKind`, `TLGesturePoint`,
+and `TLGestureTuning`.
 
-**It builds.** `yarn workspace @tldraw/editor run build` exits 0 and produces
-`dist-cjs/` and `dist-esm/`; `yarn pack` runs the `prepack` script and produces a
-tarball in about two minutes. Building leaves the checkout clean — `dist/` is
-ignored. **That was the other half of the open question and it is now answered
-rather than assumed.**
+Two reported defects drove this path:
 
-## A defect in the fork, fixed at the root
+- Three fingers on the canvas zoom-jumped on lift because upstream opened a
+  pinch as soon as the first two fingers arrived. The interpreter reads the
+  touch stream once and can revise its decision as more evidence arrives.
+- iPadOS Safari reported itself as a Mac and took the trackpad gesture path.
+  The fork chooses from whether the input contains touch points instead of the
+  reported operating system.
 
-`TldrawViewport.tsx`'s wheel handler inverts pan relative to the main canvas.
-`normalizeWheel` already returns negated deltas (`{ x: -deltaX, y: -deltaY }`);
-`Editor.ts`'s wheel case **adds** them (`cx + dx * panSpeed / cz`) and the
-viewport handler **subtracts** them (`camera.x - delta.x / camera.z`). Same
-gesture, opposite directions.
+### Viewport wheel and stylus behavior
 
-Skip reported it as *"scrolling on the canvas and scrolling in the thing are
-giving me opposite scroll directions"*. It reaches any `CanvasClipPanel` that
-passes `onCameraChange` without `lockCamera` — five of six consumers — but only
-in a non-`preview` interaction mode, because `handleReadOnlyWheelCapture` takes
-the wheel first in `preview` and routes it through `canvasClipWheelCamera`, which
-has the correct sign. **That is why the wheel is right while hovering and inverts
-the moment you pin.**
+`TldrawViewport.tsx` adds the normalized wheel delta to its camera, matching
+the main editor's sign. The previous subtraction made pinned clip panels pan in
+the opposite direction from the main canvas.
 
-**Fixed in `-tlda.11`**: the handler now adds the normalized delta, the way
-`Editor.ts` does. There is no workaround in `CanvasClipPanel` to unpick — the
-`handleReadOnlyWheelCapture` path was already correct and is unchanged.
+The viewport also treats a primary pen pointer like primary touch input while
+the hand or select tool owns the interaction. That is the stylus behavior first
+shipped through the direct artifact dependency. Drawing tools still receive pen
+input instead of panning the viewport.
 
-**On an upgrade, re-check it.** The bug is in fork-only code
-(`TldrawViewport.tsx` does not exist upstream), so a re-fork carries it forward
-unless someone looks. The comment at the site says why the sign is what it is.
+## Building the source
 
-**One difference remains and is not a bug I fixed:** `Editor.ts` scales its pan
-by `cameraOptions.panSpeed` and the viewport handler does not. They agree while
-`panSpeed` is 1, which is the default. Left alone deliberately — matching the
-sign is the reported defect; adding a speed term is a change to how fast a
-viewport pans, and nobody asked for that.
+The public `tlda-app/tldraw-fork` repository is a Yarn 4 monorepo. Run its
+commands from the repository root.
 
-### Check a rebuild against the tarball it replaces
-
-A rebuild picks up whatever the fork checkout has, not what you changed. If the
-branch has moved since the last pack, the new tarball quietly carries that too —
-and a vendored artifact is the last place anyone looks for an unexplained change.
-
-So diff the two, unpacked, before pinning:
+The editor builds with:
 
 ```sh
-tar xzf vendor/tldraw-editor-5.2.0-tlda.10.tgz -C old   # git show works too
-tar xzf vendor/tldraw-editor-5.2.0-tlda.11.tgz -C new
-diff -rq old/package/src new/package/src
-diff -rq old/package/dist-esm new/package/dist-esm
-diff old/package/package.json new/package/package.json
+yarn workspace @tldraw/editor run build
+yarn workspace @tldraw/editor pack-tarball --out /path/to/editor.tgz
 ```
 
-For `-tlda.11` that was **one file in `src/`** (`TldrawViewport.tsx`), **two in
-each `dist/`** (the module and its sourcemap), and an **identical
-`package.json`** — so the checkout had not drifted and the toolchain produced
-byte-identical output everywhere else. **A clean diff is what makes a vendored
-rebuild trustworthy**; without it "I only changed one line" is a claim about the
-edit, not about the artifact.
+Packing runs the monorepo's `prepack` step. The resulting archive is build
+output used to create the package-root artifact commit; it is not committed to
+tlda.
 
-## What is not established here
+## Publishing a fork change
 
-Whether `-tlda.11` behaves correctly in a browser. The change is one sign,
-derived by reading both wheel paths end to end, and the tarball was verified to
-carry it in `src/`, `dist-esm/` and `dist-cjs/` — but **it has not been
-installed**. The worktree it was built for symlinks `node_modules` to the shared
-checkout, so installing would swap the editor under every other agent working
-there. The pin is bumped and the artifact is committed; the install belongs to
-whoever lands the branch.
+1. Make and test the source change in the fork monorepo.
+2. Commit the source change before building the artifact.
+3. Pack `@tldraw/editor` from that source commit.
+4. Create a package-root artifact commit from the archive contents, with the
+   source commit as its parent.
+5. Put the artifact commit on a public `artifact/editor-...` branch.
+6. Pin the artifact commit's full SHA in both tlda manifests using
+   `git+https://github.com/tlda-app/tldraw-fork.git#<sha>`.
+7. Regenerate `package-lock.json` and check that its `resolved` entry is also
+   `git+https://`, never `git+ssh://` or `git@github.com:`.
+8. In a clean tlda checkout with a fresh npm cache, run `npm ci` with SSH
+   disabled. This crosses the same public network boundary as the clean Fly
+   builder.
+
+The current dependency was verified with a fresh cache and
+`GIT_SSH_COMMAND=/usr/bin/false`; `npm ci` installed the artifact successfully.
+A full clean install also completed tlda's production Vite build, and `tsc -b`
+passed.
+
+## On an upstream upgrade
+
+A tldraw upgrade is a re-fork rather than a version bump. Carry the viewport
+and gesture features onto the new upstream base, then re-test the two gesture
+defects, viewport wheel direction, and stylus panning before publishing a new
+artifact commit.
+
+Also check whether upstream fixed the vertical-toolbar safe-area bug worked
+around in `src/App.css`. Against tldraw `5.2.0`, upstream uses
+`safe-area-inset-bottom` for the vertical toolbar's left padding, which moves
+the toolbar away from the iPad edge. Delete the workaround if upstream has
+fixed the underlying rule.
+
+Before changing tlda's pin, compare the packed artifact with the previous
+artifact. A build includes the entire current fork checkout, so the package
+diff—not the source edit alone—is the record of what the dependency update
+will ship.
