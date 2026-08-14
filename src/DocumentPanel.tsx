@@ -8,7 +8,7 @@ import type { Editor, TLShapeId } from 'tldraw'
 import { ProjectContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
-import { TocTab, ZoneWidthSlider } from './panels/TocTab'
+import { TocTab } from './panels/TocTab'
 import { ProjectTab } from './panels/ProjectTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider } from './CornerButtonSlider'
@@ -193,7 +193,6 @@ export function DocumentPanel() {
         {tab === 'document' && <TocTab query={query} />}
         {tab === 'project' && <ProjectTab query={query} />}
         {tab === 'prefs' && <PrefsTab query={query} />}
-        <ZoneWidthSlider />
       </div>
     </>
   )

@@ -548,7 +548,7 @@ export function PrefsTab({ query = '' }: { query?: string }) {
         onToggle={toggleSection}
       >
         <PrefSubsection title="Document panel">
-          <div className="prefs-num-row">
+          <div className="prefs-zone-width-control">
             <span className="prefs-num-label">ToC hover region</span>
             <ZoneWidthThumbControl className="prefs-zone-width-slider" />
           </div>

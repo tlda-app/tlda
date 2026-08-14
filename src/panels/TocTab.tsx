@@ -807,7 +807,7 @@ export function setZoneWidthPref(next: number) {
   window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))
 }
 
-export function ZoneWidthThumbControl({ className = 'toc-zone-width-slider' }: { className?: string }) {
+export function ZoneWidthThumbControl({ className }: { className: string }) {
   const [width, setWidth] = useState(getZoneWidth)
   const [dragging, setDragging] = useState(false)
   const railRef = useRef<HTMLDivElement>(null)
@@ -876,8 +876,4 @@ export function ZoneWidthThumbControl({ className = 'toc-zone-width-slider' }: {
       />
     </div>
   )
-}
-
-export function ZoneWidthSlider() {
-  return <ZoneWidthThumbControl />
 }
