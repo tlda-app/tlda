@@ -57,24 +57,68 @@ assert.equal(facts.sessionId, 'session:test')
 assert.equal(events.filter(value => value.startsWith('bind:')).length, 1)
 
 const lifecycleEvents = []
+let lifecycleSeatAttempts = 0
 const lifecycleCore = createDaemonMintCore({
   store,
   mintId: () => 'mint:lifecycle',
   launchProcess: async () => ({ session_id: 'session:lifecycle', tmux_session: 'fleet-lifecycle', cwd: '/tmp/lifecycle', harness: 'codex', model: 'gpt-test' }),
-  requestSeat: async () => { throw new Error('server unavailable') },
+  requestSeat: async () => {
+    lifecycleSeatAttempts++
+    if (lifecycleSeatAttempts === 1) throw new Error('server unavailable')
+    return { fleet_id: 'fleet:lifecycle', friendly_name: 'lifecycle' }
+  },
   bindSeat: async () => {},
+  sleep: async () => {},
+  retryDelay: () => 25,
 })
 const lifecycleFacts = await lifecycleCore.mint({
   name: 'lifecycle',
   launch: { cwd: '/tmp/lifecycle', kind: 'codex', model: 'gpt-test' },
   onLifecycleEvent: (event, data) => lifecycleEvents.push([event, data]),
 })
-assert.equal(lifecycleFacts.registrationError, 'server unavailable')
-assert.deepEqual(lifecycleEvents.map(([event]) => event), ['server-registration-attempt', 'local-launch', 'server-registration-deferred'])
+assert.equal(lifecycleFacts.fleetId, 'fleet:lifecycle')
+assert.equal(lifecycleFacts.joinedAt != null, true)
+assert.deepEqual(lifecycleEvents.map(([event]) => event), ['server-registration-attempt', 'server-registration-deferred', 'server-registration-attempt', 'local-launch', 'server-registration-joined', 'server-binding-joined'])
 assert.equal(lifecycleEvents[0][1].local_agent_id, 'mint:lifecycle')
-assert.equal(lifecycleEvents[1][1].tmux_session, 'fleet-lifecycle')
-assert.equal(lifecycleEvents[1][1].local_agent_id, 'mint:lifecycle')
-assert.equal(lifecycleEvents[2][1].reason, 'server unavailable')
+assert.equal(lifecycleEvents[3][1].tmux_session, 'fleet-lifecycle')
+assert.equal(lifecycleEvents[3][1].local_agent_id, 'mint:lifecycle')
+assert.equal(lifecycleEvents[1][1].reason, 'server unavailable')
+assert.equal(lifecycleEvents[1][1].retry_in_ms, 25)
+
+let resumedLaunches = 0
+const resumedCore = createDaemonMintCore({
+  store,
+  processAlive: async () => true,
+  launchProcess: async () => { resumedLaunches++; return { session_id: 'duplicate', tmux_session: 'duplicate' } },
+  requestSeat: async () => ({ fleet_id: 'fleet:resumed', friendly_name: 'resumed' }),
+  bindSeat: async () => {},
+})
+store.ensure('mint:resumed')
+store.setFact('mint:resumed', 'friendly_name', 'resumed')
+store.setFact('mint:resumed', 'process_state', { session_id: 'session:resumed', tmux_session: 'fleet-resumed' })
+store.setFact('mint:resumed', 'session_id', 'session:resumed')
+const resumedFacts = await resumedCore.mint({ mint_id: 'mint:resumed', name: 'resumed' })
+assert.equal(resumedLaunches, 0)
+assert.equal(resumedFacts.fleetId, 'fleet:resumed')
+
+let staleLaunches = 0
+const staleCore = createDaemonMintCore({
+  store,
+  processAlive: async () => false,
+  launchProcess: async () => {
+    staleLaunches++
+    return { session_id: 'session:stale', tmux_session: 'fleet-stale' }
+  },
+  requestSeat: async () => ({ fleet_id: 'fleet:stale', friendly_name: 'stale' }),
+  bindSeat: async () => {},
+})
+store.ensure('mint:stale')
+store.setFact('mint:stale', 'friendly_name', 'stale')
+store.setFact('mint:stale', 'process_state', { session_id: 'session:stale', tmux_session: 'fleet-stale' })
+store.setFact('mint:stale', 'session_id', 'session:stale')
+const staleFacts = await staleCore.mint({ mint_id: 'mint:stale', name: 'stale' })
+assert.equal(staleLaunches, 1)
+assert.equal(staleFacts.fleetId, 'fleet:stale')
 
 store.setFact('mint:test', 'fleet_id', 'fleet:test')
 assert.throws(

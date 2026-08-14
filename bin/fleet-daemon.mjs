@@ -844,6 +844,11 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   envName: ACTIVE_ENV,
+  processAlive: async facts => {
+    const tmuxSession = facts.processState?.tmux_session
+    if (!tmuxSession) return false
+    return (await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })).runtime
+  },
   launchProcess: async params => {
     const launchStartedAt = new Date().toISOString()
     const processFact = await launchMintProcess({

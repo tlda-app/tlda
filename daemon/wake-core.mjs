@@ -64,16 +64,20 @@ export function createDaemonWakeCore({
     }
 
     const retry = retryPolicy?.(facts) || {}
-    const attempts = Math.max(1, Number(retry.attempts) || 1)
-    const delayMs = Math.max(0, Number(retry.delayMs) || 0)
-    const wait = async () => {
+    const attempts = params.wait_until_complete ? Infinity : Math.max(1, Number(retry.attempts) || 1)
+    const confirmAttempts = Math.max(1, Number(retry.confirmAttempts) || Number(retry.attempts) || 1)
+    const delayForAttempt = attempt => params.wait_until_complete
+      ? Math.min(30_000, 500 * (2 ** Math.min(attempt, 6)))
+      : Math.max(0, Number(retry.delayMs) || 0)
+    const wait = async attempt => {
+      const delayMs = delayForAttempt(attempt)
       if (delayMs > 0) await sleep(delayMs)
     }
 
     let alive = await processAlive(facts)
     if (alive && retry.confirmExisting) {
-      for (let attempt = 1; attempt < attempts; attempt += 1) {
-        await wait()
+      for (let attempt = 1; attempt < confirmAttempts; attempt += 1) {
+        await wait(attempt)
         alive = await processAlive(facts)
         if (!alive) break
       }
@@ -134,6 +138,12 @@ export function createDaemonWakeCore({
     let resumeError = null
     let runtimeConfirmed = false
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      params.onLifecycleEvent?.('wake-attempt', {
+        local_agent_id: facts.mintId,
+        fleet_id: facts.fleetId || null,
+        name: facts.friendlyName || null,
+        attempt: attempt + 1,
+      })
       try {
         const attemptResult = await resumeSession(facts, params)
         if (!resumed) resumed = attemptResult
@@ -143,7 +153,17 @@ export function createDaemonWakeCore({
       }
       runtimeConfirmed = await processAlive(facts)
       if (runtimeConfirmed) break
-      if (attempt + 1 < attempts) await wait()
+      if (attempt + 1 < attempts) {
+        params.onLifecycleEvent?.('wake-deferred', {
+          local_agent_id: facts.mintId,
+          fleet_id: facts.fleetId || null,
+          name: facts.friendlyName || null,
+          attempt: attempt + 1,
+          reason: resumeError?.message || 'runtime not yet live',
+          retry_in_ms: delayForAttempt(attempt + 1),
+        })
+        await wait(attempt + 1)
+      }
     }
     if (!runtimeConfirmed) {
       const detail = resumeError?.message ? `: ${resumeError.message}` : ''

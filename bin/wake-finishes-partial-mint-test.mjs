@@ -86,4 +86,39 @@ function harness({ sessionId, launchRecipe, joinedAt = null, aliveFrom = false }
   assert.equal(calls.length, 0)
 }
 
+// 6. The CLI wait is not the daemon's short diagnostic retry budget. It keeps
+//    the same wake alive, reports each attempt, and stops only once the runtime
+//    is actually present.
+{
+  let attempts = 0
+  let alive = false
+  const delays = []
+  const events = []
+  const wake = createDaemonWakeCore({
+    store: {
+      resolve: () => ({ mintId: 'mint-retry', fleetId: 'fleet:retry', sessionId: 'session-retry', launchRecipe: { kind: 'codex' }, joinedAt: 'joined' }),
+      updateProcessState: (mintId, processState) => ({ mintId, fleetId: 'fleet:retry', processState }),
+    },
+    processAlive: async () => alive,
+    resumeSession: async () => {
+      attempts++
+      if (attempts === 4) alive = true
+      else throw new Error('runtime unavailable')
+      return { tmux_session: 'fleet-retry' }
+    },
+    retryPolicy: () => ({ attempts: 2, delayMs: 1 }),
+    sleep: async delay => { delays.push(delay) },
+  })
+  const result = await wake({
+    fleet_id: 'fleet:retry',
+    wait_until_complete: true,
+    onLifecycleEvent: (event, data) => events.push([event, data]),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(attempts, 4)
+  assert.deepEqual(delays, [1000, 2000, 4000])
+  assert.equal(events.filter(([event]) => event === 'wake-attempt').length, 4)
+  assert.equal(events.filter(([event]) => event === 'wake-deferred').length, 3)
+}
+
 console.log('wake finishes a partial mint: ok')

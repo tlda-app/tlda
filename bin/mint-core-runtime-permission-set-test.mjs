@@ -62,6 +62,7 @@ assert.equal(Object.hasOwn(persistedLaunchRecipe, 'permissionSet'), false)
 assert.equal(Object.hasOwn(persistedLaunchRecipe, 'permission_set'), false)
 
 const deferredStoreFacts = new Map()
+let deferredAttempts = 0
 const deferredCore = createDaemonMintCore({
   store: {
     ensure: id => {
@@ -77,8 +78,15 @@ const deferredCore = createDaemonMintCore({
           ? 'processState'
           : fact === 'session_id'
             ? 'sessionId'
+            : fact === 'fleet_id'
+              ? 'fleetId'
             : fact
       deferredStoreFacts.set(id, { ...current, [field]: value })
+      return deferredStoreFacts.get(id)
+    },
+    markJoined: id => {
+      const current = deferredStoreFacts.get(id)
+      deferredStoreFacts.set(id, { ...current, joinedAt: new Date().toISOString() })
       return deferredStoreFacts.get(id)
     },
   },
@@ -86,15 +94,21 @@ const deferredCore = createDaemonMintCore({
     tmux_session: 'not-derived-from-name',
     session_id: 'session-local-only',
   }),
-  requestSeat: async () => { throw new Error('server unavailable') },
+  requestSeat: async () => {
+    deferredAttempts++
+    if (deferredAttempts === 1) throw new Error('server unavailable')
+    return { fleet_id: 'fleet:local-only' }
+  },
   bindSeat: async () => {},
   mintId: () => 'mint-local-only',
+  sleep: async () => {},
 })
 
 const deferred = await deferredCore.mint({ name: 'local-only', launch: { cwd: '/tmp' } })
 assert.equal(deferred.mintId, 'mint-local-only')
 assert.equal(deferred.processState.tmux_session, 'not-derived-from-name')
 assert.equal(deferred.sessionId, 'session-local-only')
-assert.equal(deferred.registrationError, 'server unavailable')
+assert.equal(deferred.fleetId, 'fleet:local-only')
+assert.equal(deferredAttempts, 2)
 
 console.log('mint-core-runtime-permission-set-test: ok')

@@ -11,7 +11,7 @@ import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
@@ -3466,7 +3466,7 @@ export async function attachToAgent(name, {
   return { ok: status === 0, status, agent, tmuxSession }
 }
 
-async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = 120000, onEvent = null } = {}) {
+async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = null, onEvent = null } = {}) {
   const { createConnection } = await import('node:net')
   return await new Promise((resolvePromise, reject) => {
     const socket = createConnection(socketPath)
@@ -3478,7 +3478,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       socket.destroy()
       reject(error)
     }
-    const timer = setTimeout(() => {
+    const timer = timeoutMs == null ? null : setTimeout(() => {
       fail(new Error(`local daemon ${op} timed out; use \`tlda doctor yolo\` only for break-glass repair`))
     }, timeoutMs)
     socket.setEncoding('utf8')
@@ -3492,7 +3492,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       }
       if (!payload.ok) throw new Error(payload.error || `local daemon ${op} failed`)
       settled = true
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       resolvePromise(payload.result)
     }
     socket.on('data', chunk => {
@@ -3512,7 +3512,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
       }
     })
     socket.on('error', error => {
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       const message = error.code === 'ENOENT' || error.code === 'ECONNREFUSED'
         ? `local fleet daemon is unavailable; start it with \`tlda daemon start\` or use \`tlda doctor yolo\` for break-glass repair`
         : `local fleet daemon ${op} failed: ${error.message}`
@@ -3520,7 +3520,7 @@ async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DA
     })
     socket.on('close', () => {
       if (settled) return
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       try {
         const line = buffer.trim()
         if (!line) throw new Error(`local daemon ${op} ended without a result`)
@@ -3550,15 +3550,21 @@ function printMintLifecycleEvent(event, data = {}) {
     return
   }
   if (event === 'server-registration-attempt') {
-    console.log(`Server registration started${localId ? ` for ${localId}` : ''}`)
+    console.log(`Server registration attempt ${data.attempt || 1}${localId ? ` for ${localId}` : ''}`)
     return
   }
   if (event === 'server-binding-joined') {
     console.log(`Route published${fleetId ? ` for ${fleetId}` : ''}`)
     return
   }
+  if (event === 'server-binding-deferred') {
+    const retry = data.retry_in_ms ? `; retrying in ${Math.ceil(data.retry_in_ms / 1000)}s` : ''
+    console.log(`Route publication pending${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'binding incomplete'}${retry}`)
+    return
+  }
   if (event === 'server-registration-deferred') {
-    console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}`)
+    const retry = data.retry_in_ms ? `; retrying in ${Math.ceil(data.retry_in_ms / 1000)}s` : ''
+    console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}${retry}`)
     return
   }
   if (event === 'server-reconciliation-deferred') {
@@ -3573,6 +3579,15 @@ function printMintLifecycleEvent(event, data = {}) {
   }
   if (event === 'terminal-local-only') {
     console.log(`Terminal local-only${tmuxSession ? ` in ${tmuxSession}` : ''}: ${data.reason || 'server registration deferred'}`)
+    return
+  }
+  if (event === 'wake-attempt') {
+    console.log(`Wake attempt ${data.attempt || 1}${fleetId ? ` for ${fleetId}` : ''}`)
+    return
+  }
+  if (event === 'wake-deferred') {
+    const retry = data.retry_in_ms ? `; retrying in ${Math.ceil(data.retry_in_ms / 1000)}s` : ''
+    console.log(`Wake deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'runtime not yet live'}${retry}`)
   }
 }
 
@@ -3714,7 +3729,19 @@ export async function runFleetSpawn(spawnArgs, {
   }
   if (spawnMode === 'fresh') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+    const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
+    let mintId = randomUUID()
+    try {
+      const partial = name ? mintStore.resolve(name) : null
+      if (partial && !partial.joinedAt) {
+        mintId = partial.mintId
+        console.log(`Resuming partial mint ${mintId}${partial.processState?.tmux_session ? ` in ${partial.processState.tmux_session}` : ''}`)
+      }
+    } finally {
+      mintStore.close()
+    }
     const result = await lifecycleImpl('mint', {
+      mint_id: mintId,
       name,
       model: flagFromRaw(spawnArgs, 'model') || undefined,
       kind: flagFromRaw(spawnArgs, 'kind') || undefined,
@@ -3766,8 +3793,9 @@ export async function runFleetSpawn(spawnArgs, {
     // it actually launched, so passing it here is what makes the change durable.
     const result = await lifecycleImpl('wake', {
       mint_id: restored.identifier,
+      wait_until_complete: true,
       ...(explicitPermissionArg ? { permissionGrant: explicitPermissionArg } : {}),
-    })
+    }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${name}`)
     printLocalDaemonOutcome(result)
     const identity = result.agent_id || result.fleetId || result.mint_id || restored.identifier
@@ -5097,7 +5125,8 @@ async function restartMcpAgents(rest) {
           // So the daemon can check tmux rather than believe kill-session, which
           // answers ok when it cannot place the agent at all.
           tmux_session: `fleet-${stored.friendlyName || name}`,
-        })
+          wait_until_complete: true,
+        }, { onEvent: printMintLifecycleEvent })
         if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
         console.log('ok')
         ok++

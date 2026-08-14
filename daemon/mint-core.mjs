@@ -20,10 +20,13 @@ function persistentLaunchRecipe(launch = {}) {
 export function createDaemonMintCore({
   store,
   launchProcess,
+  processAlive = null,
   requestSeat,
   bindSeat,
   mintId = randomUUID,
   envName = null,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  retryDelay = attempt => Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6))),
 }) {
   if (!store || !launchProcess || !bindSeat) throw new Error('mint core dependencies are required')
   const joins = new Map()
@@ -56,7 +59,9 @@ export function createDaemonMintCore({
   }
 
   async function recordProcess(mintIdValue, process) {
-    store.setFact(mintIdValue, 'process_state', process)
+    const current = store.get(mintIdValue)
+    if (current?.processState && store.updateProcessState) store.updateProcessState(mintIdValue, process)
+    else store.setFact(mintIdValue, 'process_state', process)
     return recordSession(mintIdValue, process)
   }
 
@@ -96,8 +101,11 @@ export function createDaemonMintCore({
 
     // CLI mint starts both actions before awaiting either. Server mint supplies
     // fleet_id and therefore uses this same core without starting a second seat request.
-    const processPromise = Promise.resolve()
-      .then(() => launchProcess({
+    const existing = store.get(id)
+    const reuseExistingProcess = !!existing?.processState && (!processAlive || await processAlive(existing))
+    const processPromise = reuseExistingProcess
+      ? Promise.resolve(existing)
+      : Promise.resolve().then(() => launchProcess({
         mint_id: id,
         fleet_id: suppliedFleetId,
         name,
@@ -123,49 +131,71 @@ export function createDaemonMintCore({
         }
         return facts
       })
-    const seatPromise = suppliedFleetId || !request_seat
+    const seatPromise = suppliedFleetId || existing?.fleetId || !request_seat
       ? Promise.resolve(null)
-      : Promise.resolve()
-          .then(() => {
+      : Promise.resolve().then(async () => {
+          let attempt = 0
+          for (;;) {
+            attempt++
             emitLifecycle(lifecycle, 'server-registration-attempt', {
               local_agent_id: id,
               name,
+              attempt,
             })
-            return requestSeat({ mint_id: id, name, metadata, launch, fail_if_not_fresh })
-          })
-          .then(async seat => {
-            const facts = await recordSeat(id, seat)
-            emitLifecycle(lifecycle, 'server-registration-joined', {
-              local_agent_id: id,
-              fleet_id: facts?.fleetId || resultFact(seat, 'fleet_id', 'fleetId') || null,
-              name: facts?.friendlyName || name || null,
-            })
-            if (facts?.joinedAt) {
-              emitLifecycle(lifecycle, 'server-binding-joined', {
+            try {
+              const seat = await requestSeat({ mint_id: id, name, metadata, launch, fail_if_not_fresh })
+              const facts = await recordSeat(id, seat)
+              emitLifecycle(lifecycle, 'server-registration-joined', {
                 local_agent_id: id,
                 fleet_id: facts.fleetId || resultFact(seat, 'fleet_id', 'fleetId') || null,
                 name: facts.friendlyName || name || null,
               })
+              if (facts?.joinedAt) {
+                emitLifecycle(lifecycle, 'server-binding-joined', {
+                  local_agent_id: id,
+                  fleet_id: facts.fleetId || resultFact(seat, 'fleet_id', 'fleetId') || null,
+                  name: facts.friendlyName || name || null,
+                })
+              }
+              return facts
+            } catch (error) {
+              if (fail_if_not_fresh) throw error
+              const delayMs = retryDelay(attempt)
+              emitLifecycle(lifecycle, 'server-registration-deferred', {
+                local_agent_id: id,
+                fleet_id: store.get(id)?.fleetId || null,
+                name: store.get(id)?.friendlyName || name || null,
+                tmux_session: store.get(id)?.processState?.tmux_session || null,
+                reason: error?.message || String(error),
+                attempt,
+                retry_in_ms: delayMs,
+              })
+              await sleep(delayMs)
             }
-            return facts
-          })
-          .catch(error => {
-            const message = error?.message || String(error)
-            return { error: message }
-          })
+          }
+        })
 
-    const [, seat] = await Promise.all([processPromise, seatPromise])
-    const facts = store.get(id)
-    if (seat?.error) {
-      emitLifecycle(lifecycle, 'server-registration-deferred', {
-        local_agent_id: id,
-        fleet_id: facts?.fleetId || suppliedFleetId || null,
-        name: facts?.friendlyName || name || null,
-        tmux_session: facts?.processState?.tmux_session || null,
-        reason: seat.error,
-      })
+    await Promise.all([processPromise, seatPromise])
+    if (request_seat || suppliedFleetId || existing?.fleetId) {
+      let attempt = 0
+      for (;;) {
+        const facts = await join(id)
+        if (facts?.joinedAt) return facts
+        attempt++
+        const delayMs = retryDelay(attempt)
+        emitLifecycle(lifecycle, 'server-binding-deferred', {
+          local_agent_id: id,
+          fleet_id: facts?.fleetId || suppliedFleetId || null,
+          name: facts?.friendlyName || name || null,
+          tmux_session: facts?.processState?.tmux_session || null,
+          reason: !facts?.sessionId ? 'runtime identity pending' : 'route publication pending',
+          attempt,
+          retry_in_ms: delayMs,
+        })
+        await sleep(delayMs)
+      }
     }
-    return seat?.error ? { ...facts, registrationError: seat.error } : facts
+    return store.get(id)
   }
 
   return { mint, recordProcess, recordSession, recordSeat, join }
