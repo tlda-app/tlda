@@ -55,7 +55,7 @@ import { createHash } from 'crypto'
 import { join, basename, dirname } from 'path'
 import { tmpdir, homedir } from 'os'
 import { fileURLToPath } from 'url'
-import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
+import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors, sourceLifecycleStore } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { commitSnapshot, currentVersion, initShadowFromProjectRepo, initShadowFromBundle, listVersions, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
@@ -114,6 +114,10 @@ const _directReporter = {
   emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
   updateProject: (name, patch) => updateProject(name, patch),
   mirrorShadow: (name, hash) => mirrorShadow(name, hash),
+  recordRevisionPhase: async (name, sourceRevision, phase, state, result) => {
+    if (!sourceRevision) return null
+    return (await sourceLifecycleStore(name)).recordRevisionPhase(name, sourceRevision, phase, state, result)
+  },
 }
 let _reporter = _directReporter
 export function setBuildReporter(r) { _reporter = r || _directReporter }
@@ -1623,8 +1627,21 @@ export async function recordBuildVersion({
       _reporter.emitGlobalEvent('version-skipped', { name, reason: result.reason, timestamp: Date.now() })
     }
     const current = await currentVersion(name)
+    if (result.status === 'no-scope') {
+      await _reporter.recordRevisionPhase(name, sourceRevision, 'version', 'version_failed', {
+        shadowVersion: current?.hash || null,
+        disposition: result.status,
+        reason: result.reason || null,
+      })
+    }
     if (current?.hash) {
       await updateDocVersionSentinel(name, current.hash, readyAt, errors, warnings, sourceRevision, acceptSeq)
+      if (result.status !== 'no-scope') {
+        await _reporter.recordRevisionPhase(name, sourceRevision, 'version', 'versioned', {
+          shadowVersion: current.hash,
+          disposition: result.status,
+        })
+      }
     }
     return { hash: current?.hash || null, committed: false }
   }
@@ -1636,6 +1653,7 @@ export async function recordBuildVersion({
     ctx.addLog(`Edit-event finalization failed after version commit: ${e.message}`)
   }
   await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceRevision, acceptSeq)
+  await _reporter.recordRevisionPhase(name, sourceRevision, 'version', 'versioned', { shadowVersion: result.hash })
   _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
   return { hash: result.hash, committed: true, result }
 }
@@ -1663,10 +1681,18 @@ async function finalizeBuildVersion({
     // server snapshot while its owning daemon was disconnected; "unchanged"
     // describes source bytes, not working-copy durability.
     const mirrorResult = await _reporter.mirrorShadow(name, recorded.hash)
+    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirrored', {
+      shadowVersion: recorded.hash,
+      result: mirrorResult,
+    })
     await _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
     await _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
     console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} -> ${mirrorResult?.sourceDir || 'source repo'}`)
   } catch (mirrorErr) {
+    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirror_failed', {
+      shadowVersion: recorded.hash,
+      error: mirrorErr.message,
+    })
     console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
     ctx.addLog(`mirror to working copy failed: ${mirrorErr.message}`)
     await _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: recorded.hash, message: mirrorErr.message } })

@@ -58,7 +58,13 @@ async function recordBuildResult(name, sourceRevision, acceptSeq, state, result 
   return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
 }
 
+async function recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
+  if (!sourceRevision) return null
+  return (await sourceLifecycleStore(name)).recordRevisionPhase(name, sourceRevision, phase, state, result)
+}
+
 SINKS.recordBuildResult = recordBuildResult
+SINKS.recordRevisionPhase = recordRevisionPhase
 
 /**
  * Create a bound dispatcher instance. Transport is injected so the coalescing

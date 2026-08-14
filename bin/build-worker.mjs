@@ -55,6 +55,7 @@ setBuildReporter({
   emitGlobalEvent: (type, payload)         => sendReport('emitGlobalEvent', [type, payload]),
   updateProject:   (name, patch)           => sendReport('updateProject',   [name, patch]),
   mirrorShadow:    (name, hash)            => callParent('mirrorShadow',    [name, hash]),
+  recordRevisionPhase: (name, sourceRevision, phase, state, result) => callParent('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })
 
 process.on('message', async (msg) => {
