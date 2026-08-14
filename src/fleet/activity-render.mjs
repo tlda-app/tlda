@@ -76,6 +76,7 @@ function stableSemanticJson(value) {
 
 function semanticOperationKind(toolName) {
   const tool = normalizedToolName(toolName)
+  if (tool === 'tool_search') return 'tool-search'
   if (tool.includes('thread')) return 'thread'
   if (tool.includes('search')) return 'search'
   return ''
@@ -116,6 +117,9 @@ function semanticOperationDescriptor(toolName, input, arg, ts) {
     filterExpression,
     view,
     inspected,
+    ...(kind === 'tool-search' && Array.isArray(rawInput._semanticResult)
+      ? { result: rawInput._semanticResult }
+      : {}),
     semanticKey: stableSemanticJson(semanticIdentity),
     generatedAt: ts || null,
   }
@@ -130,13 +134,46 @@ function mergeSemanticInspected(host, item) {
   const desc = semanticOperationDescriptor(item._toolName, item._toolInput, item._toolArg, item.timestamp)
   if (desc) pages.push(desc.inspected)
   host._semanticInspectedPages = pages
-  host._toolInput = { ...(host._toolInput || {}), _semanticInspectedPages: pages }
+  host._toolInput = {
+    ...(host._toolInput || {}),
+    _semanticInspectedPages: pages,
+    ...(item._toolInput?._semanticResult ? { _semanticResult: item._toolInput._semanticResult } : {}),
+  }
   host._semanticMergedCount = (host._semanticMergedCount || 1) + 1
 }
 
 function mergePrettyResultOntoHost(host, item) {
   if (!item._prettyResult) return
   if (!host._prettyResult) host._prettyResult = item._prettyResult
+}
+
+function renderCodexToolSearchResult(namespaces) {
+  const renderValue = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const renderFields = (value, omit = new Set()) => Object.entries(value || {})
+    .filter(([key]) => !omit.has(key))
+    .map(([key, fieldValue]) => `<div class="codex-tool-search-field codex-tool-search-field-${esc(key)}">
+      <span class="codex-tool-search-field-name">${esc(key)}</span>
+      ${key === 'parameters'
+        ? `<pre class="codex-tool-search-field-value">${esc(renderValue(fieldValue))}</pre>`
+        : `<span class="codex-tool-search-field-value">${esc(renderValue(fieldValue))}</span>`}
+    </div>`).join('')
+  const sections = (Array.isArray(namespaces) ? namespaces : []).map((namespace, namespaceIndex) => {
+    const tools = (Array.isArray(namespace?.tools) ? namespace.tools : []).map(raw => {
+      if (typeof raw !== 'string') return raw
+      try { return JSON.parse(raw) } catch { return raw }
+    })
+    const toolHtml = tools.map((tool, toolIndex) => `<div class="codex-tool-search-tool" data-tool-index="${toolIndex}">
+      ${tool && typeof tool === 'object'
+        ? renderFields(tool)
+        : `<pre class="codex-tool-search-field-value">${esc(renderValue(tool))}</pre>`}
+    </div>`).join('')
+    return `<section class="codex-tool-search-namespace" data-namespace-index="${namespaceIndex}">
+      <div class="codex-tool-search-namespace-name">${esc(namespace?.name || 'tools')}</div>
+      ${renderFields(namespace, new Set(['name', 'tools']))}
+      ${toolHtml}
+    </section>`
+  }).join('')
+  return `<div class="codex-tool-search-results">${sections || '<div class="semantic-operation-status">no results</div>'}</div>`
 }
 
 function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '') {
@@ -154,6 +191,12 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   // puts in the left gutter.
   if (kind === 'thread') {
     return `<div class="semantic-operation-body" data-semantic-key="${key}" data-semantic-operation="${json}"></div>`
+  }
+  if (kind === 'tool-search') {
+    return `<div class="semantic-chat-operation semantic-tool-search-operation" data-semantic-key="${key}">
+      <div class="semantic-operation-body">${renderCodexToolSearchResult(descriptor.result)}</div>
+      <div class="pretty-expand-btn" data-semantic-collapsed-label="Show all search results">Show all search results</div>
+    </div>`
   }
   return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
     <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>

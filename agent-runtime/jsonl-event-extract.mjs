@@ -72,7 +72,7 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
               text = text ? text + '\n\nimage:' + imgPath : 'image:' + imgPath
             } catch { /* disk write failed — fall back to text-only prettyResult */ }
           }
-          toolResults.set(block.id, text)
+          toolResults.set(block.id, { text, result: block.result })
         }
       }
     }
@@ -102,7 +102,7 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           // Attach result for pretty-printed tools
           if (isPrettyPrintTool(name) && block.id) {
             if (toolResults.has(block.id)) {
-              const raw = toolResults.get(block.id)
+              const raw = toolResults.get(block.id).text
               evt.prettyResult = truncatePrettyResult(raw, name)
             } else {
               // Result not in this batch — stash and wait so the eventual card
@@ -118,7 +118,7 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
       }
       if (ev.usage) result.push({ tool: '_usage', ts: ev.timestamp, usage: ev.usage })
     }
-    for (const [resultId] of toolResults) {
+    for (const [resultId, toolResult] of toolResults) {
       const matchingIds = pendingTools.has(resultId)
         ? [resultId]
         : [...pendingTools.keys()].filter(id => id.startsWith(`${resultId}#`))
@@ -128,7 +128,9 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
         result.push({
           tool: pending.tool,
           arg: pending.arg,
-          input: pending.input,
+          input: toolResult.result == null
+            ? pending.input
+            : { ...pending.input, _semanticResult: toolResult.result },
           ts: events.at(-1)?.timestamp || pending.ts,
           id,
           status: 'completed',
@@ -137,11 +139,11 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
       }
     }
     // Check if any tool_results in this batch match pending pretty-print requests
-    for (const [id, resultText] of toolResults) {
+    for (const [id, toolResult] of toolResults) {
       const pending = pendingPrettyPrint.get(id)
       if (pending) {
         pendingPrettyPrint.delete(id)
-        const capped = truncatePrettyResult(resultText, pending.evt.tool)
+        const capped = truncatePrettyResult(toolResult.text, pending.evt.tool)
         result.push({ ...pending.evt, prettyResult: capped })
       }
     }
