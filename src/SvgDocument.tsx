@@ -57,6 +57,7 @@ import { ToolNameHud } from './overlays/ToolNameHud'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, dismissAllChanges, changedPages } from './stores'
 import { fetchSvgPagesAsync } from './editorSetup'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
+import { PenTool } from './tools/PenTool/PenTool'
 import { SoftAxisHandTool } from './tools/SoftAxisHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { VoiceNoteTool } from './tools/VoiceNoteTool'
@@ -853,7 +854,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = isPhoneViewport()
   const tools = useMemo(() => [
-    BrowseTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, PlaybackTool, TerminalTool, RibbonEraserTool, RibbonHighlightTool,
+    BrowseTool, PenTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, PlaybackTool, TerminalTool, RibbonEraserTool, RibbonHighlightTool,
   ], [])
 
   // --- @tldraw/sync: shape CRDT sync ---

@@ -2684,6 +2684,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
   const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
+  const penActive = useValue('pen-active', () => editor.getCurrentToolId() === 'draw', [editor])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const { startDrag: startUnreadRailDrag } = usePillDrag()
@@ -6547,13 +6548,13 @@ function FleetChatInner({ shape }: { shape: any }) {
       style={{
         width: w,
         height: h,
-        pointerEvents: 'all',
+        pointerEvents: penActive ? 'none' : 'all',
         overflow: 'visible',
       }}
     >
       <div
         ref={setShapeContainer}
-        className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}`}
+        className={`fleet-shape fleet-chat-shape${readabilityProfile.faint ? ' fleet-faint' : ''}${penActive ? ' fleet-pen-mode' : ''}`}
         style={{
           ...fleetStyleVars,
           width: '100%',
