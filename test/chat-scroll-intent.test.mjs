@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { decideFollowTransition, FOLLOW_BOTTOM_EPS } from '../src/shapes/chatScrollIntent.mjs'
+import { anchoredTailTop } from '../src/shapes/chatViewportAnchor.mjs'
 
 // The reader is scrolled up, reading history. `scrolledUp: true` is the only
 // state that consults the resume path at all.
@@ -9,6 +10,24 @@ const READING = { scrolledUp: true, hardLocked: false, geometryReconciliation: f
 const FOLLOWING = { scrolledUp: false, hardLocked: false, geometryReconciliation: false, userInputActive: true }
 
 const CLIENT = 400
+
+test('anchored tail comes from the rendered last row, not stale estimated total', () => {
+  assert.equal(anchoredTailTop({
+    renderedLastRowTop: 900,
+    renderedLastRowHeight: 60,
+    viewportHeight: CLIENT,
+    fallbackTotal: 1300,
+  }), 560)
+})
+
+test('anchored tail falls back to estimated total until the last row is rendered', () => {
+  assert.equal(anchoredTailTop({
+    renderedLastRowTop: Number.NaN,
+    renderedLastRowHeight: Number.NaN,
+    viewportHeight: CLIENT,
+    fallbackTotal: 1300,
+  }), 900)
+})
 
 /** A scroll event: where the viewport landed, and where it was on the previous event. */
 function sample({ top, height, lastTop, lastHeight = height }) {

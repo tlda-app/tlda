@@ -44,7 +44,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { isReaderInputInFlight } from './chatViewportAnchor.mjs'
+import { anchoredTailTop, isReaderInputInFlight } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2296,7 +2296,19 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     return { starts, total }
   }, [geometryVersion, items, itemKeySignature])
 
-  const clampTop = useCallback((top: number) => Math.max(0, Math.min(top, Math.max(0, geometry.total - viewportHeight))), [geometry.total, viewportHeight])
+  const tailTop = useCallback((nextViewportHeight = viewportHeight) => {
+    const lastKey = itemKeys[itemKeys.length - 1]
+    const lastRow = lastKey ? rowElsRef.current.get(lastKey) : null
+    const renderedTop = lastRow?.style.transform.match(/^translateY\((-?[\d.]+)px\)$/)?.[1]
+    return anchoredTailTop({
+      renderedLastRowTop: renderedTop === undefined ? Number.NaN : Number(renderedTop),
+      renderedLastRowHeight: lastRow?.offsetHeight ?? Number.NaN,
+      viewportHeight: nextViewportHeight,
+      fallbackTotal: geometry.total,
+    })
+  }, [geometry.total, itemKeys, viewportHeight])
+
+  const clampTop = useCallback((top: number) => Math.max(0, Math.min(top, tailTop())), [tailTop])
 
   const setTailMode = useCallback((next: boolean) => {
     if (tailModeRef.current === next) return
@@ -2307,7 +2319,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const setModelTop = useCallback((nextTop: number, opts?: { forceTail?: boolean }) => {
     const top = clampTop(nextTop)
     modelTopRef.current = top
-    const atBottom = Math.abs(top - Math.max(0, geometry.total - viewportHeight)) <= 1
+    const atBottom = Math.abs(top - tailTop()) <= 1
     if (opts?.forceTail || atBottom) setTailMode(true)
     else setTailMode(false)
     onAtBottomChange?.(atBottom)
@@ -2317,7 +2329,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       onStartReached?.()
     }
     setGeometryVersion(version => version + 1)
-  }, [clampTop, geometry.total, onAtBottomChange, onStartReached, setTailMode, viewportHeight])
+  }, [clampTop, onAtBottomChange, onStartReached, setTailMode, tailTop])
 
   const recenterSensor = useCallback((el: HTMLDivElement) => {
     sensorTopRef.current = ANCHORED_SENSOR_MID
@@ -2325,15 +2337,14 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   }, [])
 
   const scrollToTail = useCallback(() => {
-    setModelTop(Math.max(0, geometry.total - viewportHeight), { forceTail: true })
+    setModelTop(tailTop(), { forceTail: true })
     const el = scrollerRef.current
     if (el) recenterSensor(el)
-  }, [geometry.total, recenterSensor, setModelTop, viewportHeight])
+  }, [recenterSensor, setModelTop, tailTop])
 
   const isAtTail = useCallback(() => {
-    const tailTop = Math.max(0, geometry.total - viewportHeight)
-    return Math.abs(modelTopRef.current - tailTop) <= 1
-  }, [geometry.total, viewportHeight])
+    return Math.abs(modelTopRef.current - tailTop()) <= 1
+  }, [tailTop])
 
   useImperativeHandle(ref, () => ({ scrollToTail, isAtTail }), [isAtTail, scrollToTail])
 
@@ -2353,15 +2364,16 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const update = () => {
       const nextHeight = anchoredViewportHeight(el)
       setViewportHeight(nextHeight)
-      if (tailModeRef.current) modelTopRef.current = Math.max(0, geometry.total - nextHeight)
-      else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, Math.max(0, geometry.total - nextHeight)))
+      const nextTailTop = tailTop(nextHeight)
+      if (tailModeRef.current) modelTopRef.current = nextTailTop
+      else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, nextTailTop))
       setGeometryVersion(version => version + 1)
     }
     update()
     const observer = new ResizeObserver(update)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [geometry.total])
+  }, [tailTop])
 
   useLayoutEffect(() => {
     const wasReset = previousResetKeyRef.current !== resetKey
@@ -2413,10 +2425,10 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       changed = true
     }
     if (!changed) return
-    if (tailModeRef.current) modelTopRef.current = Math.max(0, geometry.total - viewportHeight)
+    if (tailModeRef.current) modelTopRef.current = tailTop()
     else modelTopRef.current = clampTop(modelTopRef.current + topAdjustment)
     setGeometryVersion(version => version + 1)
-  })
+  }, [clampTop, geometry.starts, tailTop])
 
   const onScroll = useCallback(() => {
     const el = scrollerRef.current

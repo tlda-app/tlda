@@ -23,6 +23,14 @@ export function shouldPreserveChatViewport({ scrolledUp, hardLocked, hasAnchor }
   return scrolledUp === true && hardLocked !== true && hasAnchor === true
 }
 
+export function anchoredTailTop({ renderedLastRowTop, renderedLastRowHeight, viewportHeight, fallbackTotal }) {
+  const hasRenderedTail = Number.isFinite(renderedLastRowTop) && Number.isFinite(renderedLastRowHeight)
+  const contentBottom = hasRenderedTail
+    ? renderedLastRowTop + renderedLastRowHeight
+    : fallbackTotal
+  return Math.max(0, contentBottom - viewportHeight)
+}
+
 /**
  * True while the reader's own input owns the scroller, so a geometry correction
  * must be deferred rather than written.
