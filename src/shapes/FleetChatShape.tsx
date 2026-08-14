@@ -2253,8 +2253,8 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   resetKey: string
   renderItem: (item: T) => React.ReactNode
   onStartReached?: () => void
-  onAtBottomChange?: (atBottom: boolean) => void
   onTailModeChange?: (followingTail: boolean) => void
+  onAtBottomChange?: (atBottom: boolean) => void
   setScroller?: (el: HTMLDivElement | null) => void
 }
 
@@ -2265,8 +2265,8 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   resetKey,
   renderItem,
   onStartReached,
-  onAtBottomChange,
   onTailModeChange,
+  onAtBottomChange,
   setScroller,
 }, ref) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -4215,10 +4215,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const goToTailRunRef = useRef(0)
   const panelPointerIdsRef = useRef<Set<number>>(new Set())
   const deferredGeometryReconcileRef = useRef(false)
-  // Reactive bottom-position state. Drives the unified follow/jump button:
-  // at bottom → follow-mode toggle (horseshoe); off bottom → ⇣ jump-to-bottom.
-  // Position (not scroll-intent) is the right signal here — matches the spec
-  // "at the bottom it toggles the mode; off the bottom it's click-to-go-down."
   const [atBottom, setAtBottom] = useState(true)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
@@ -4340,23 +4336,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
   const collapsedRowsRef = useRef<Set<string>>(new Set())
-  // Hard lock is an explicit preference orthogonal to reader mode.
-  const HARD_LOCKED_KEY = 'fleet-chat-hard-locked'
-  const [hardLocked, setHardLocked] = useState(() => localStorage.getItem(HARD_LOCKED_KEY) === 'true')
-  const hardLockedRef = useRef(hardLocked)
   useEffect(() => {
-    hardLockedRef.current = hardLocked
-    localStorage.setItem(HARD_LOCKED_KEY, String(hardLocked))
-    setFleetEventsLiveTailPinned(shape.id, hardLocked || !userScrolledUpRef.current, chatEventBufferKey)
-    noteFollowTransition(String(shape.id), 'hard-lock', {
-      enabled: hardLocked,
-      scrolledUp: userScrolledUpRef.current,
-      bufferKey: chatEventBufferKey,
-    })
-  }, [hardLocked, shape.id, chatEventBufferKey])
-
-  useEffect(() => {
-    setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || !userScrolledUpRef.current, chatEventBufferKey)
+    setFleetEventsLiveTailPinned(shape.id, !userScrolledUpRef.current, chatEventBufferKey)
     return () => clearFleetEventsLiveTailPinned(shape.id, chatEventBufferKey)
   }, [shape.id, chatEventBufferKey])
 
@@ -5579,16 +5560,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       imageFileInputRef.current?.click()
       return
     }
-    if (action === 'follow') {
-      if (!atBottom) {
-        scrollToBottom()
-        return
-      }
-      setHardLocked(prev => {
-        const next = !prev
-        if (next) goToTail('hard-lock-toggle')
-        return next
-      })
+    if (action === 'bottom') {
+      scrollToBottom()
       return
     }
     if (action.startsWith('terminal-')) {
@@ -6612,23 +6585,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                     oldestBufferedEventTimestamp(chatEventBufferKey),
                   )
                 }}
-                onAtBottomChange={(atBottom) => {
-                  const t0 = probe.isEnabled('chat') ? performance.now() : 0
-                  setAtBottom(atBottom)
-                  if (probe.isEnabled('chat')) {
-                    const dt = performance.now() - t0
-                    if (dt > 1) {
-                      probe.record('chat', 'chat-at-bottom-change', dt, {
-                        atBottom,
-                        itemCount: allItems.length,
-                      })
-                    }
-                  }
-                }}
+                onAtBottomChange={setAtBottom}
                 onTailModeChange={(followingTail) => {
                   userScrolledUpRef.current = !followingTail
                   if (followingTail) viewportAnchorRef.current = null
-                  setFleetEventsLiveTailPinned(shape.id, hardLockedRef.current || followingTail, chatEventBufferKey)
+                  setFleetEventsLiveTailPinned(shape.id, followingTail, chatEventBufferKey)
                   noteFollowTransition(String(shape.id), followingTail ? 'follow-on' : 'follow-off', {
                     reason: 'anchored-list',
                     bufferKey: chatEventBufferKey,
@@ -6773,8 +6734,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             )}
             {/* Highlight underlay — mirrors textarea text, highlights <<ref>> tokens */}
             <InputHighlightUnderlay inputRef={inputRef} />
-            {/* Left gutter control cluster — terminal peek, traffic toggle, and
-                follow/hard-lock ("magnet") button laid out as a tight flex row
+            {/* Left gutter control cluster — terminal peek and traffic toggle
+                laid out as a tight flex row
                 so they sit adjacent regardless of the traffic label's width
                 (no dead gap). Order is set via CSS `order`, not DOM order. */}
             <PersistentCornerButtonSlider
@@ -6810,42 +6771,24 @@ function FleetChatInner({ shape }: { shape: any }) {
                 <path d="M2 12 L6 8 L9 11 L11 9 L14 12" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            {/* Unified follow / jump-to-bottom control. One button, fixed here:
-                  - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
-                    follow mode — you return to the bottom first, then it's a
-                    toggle again),
-                  - at bottom → follow-mode toggle (horseshoe); open = smart-follow,
-                    engaged (field lines) = hard-lock (always pinned).
-                This replaces the separate floating ⇣ arrow. */}
-            <button
-              className={`fleet-hardlock-toggle${!atBottom ? ' jump-mode' : ''}`}
-              data-composer-rail-action="follow"
-              data-composer-rail-label={!atBottom ? 'Bottom' : hardLocked ? 'Lock' : 'Follow'}
-              onPointerDown={stopEventPropagation}
-              onClick={(e) => {
-                stopEventPropagation(e as any)
-                activateComposerRailAction('follow', null)
-              }}
-              title={!atBottom
-                ? 'Scroll to bottom'
-                : hardLocked
-                  ? 'Hard-locked — always pinned to bottom (click to release)'
-                  : 'Smart scroll — click to hard-lock to bottom'}
-            >
-              {!atBottom ? (
+            {!atBottom && (
+              <button
+                className="fleet-go-bottom"
+                data-composer-rail-action="bottom"
+                data-composer-rail-label="Bottom"
+                onPointerDown={stopEventPropagation}
+                onClick={(e) => {
+                  stopEventPropagation(e)
+                  activateComposerRailAction('bottom', null)
+                }}
+                title="Go to bottom"
+                aria-label="Go to bottom"
+              >
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M6 1 L6 10 M2.5 6.5 L6 10 L9.5 6.5"/>
                 </svg>
-              ) : (
-                <svg width="10" height="14" viewBox="0 0 10 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M2 9 L2 4 Q2 1 5 1 Q8 1 8 4 L8 9"/>
-                  {hardLocked && <>
-                    <path d="M1 11 Q2.5 10 5 11 Q7.5 12 9 11" strokeWidth="1"/>
-                    <path d="M2 13 Q3.5 12 5 13 Q6.5 14 8 13" strokeWidth="0.8"/>
-                  </>}
-                </svg>
-              )}
-            </button>
+              </button>
+            )}
             {/* Terminal peek icons — always present for the composer target.
                 Unavailable targets stay visible and explain their route state. */}
             {terminalComposerControls.map((control) => {
@@ -6940,7 +6883,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                 title={canUnclearComposer ? 'Restore cleared text' : 'Clear composer'}
                 aria-label={canUnclearComposer ? 'Restore cleared composer text' : 'Clear composer text'}
               >
-                {canUnclearComposer ? '↺' : '×'}
+                {canUnclearComposer ? '↺' : (
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="4" cy="5" r="2" />
+                    <circle cx="4" cy="11" r="2" />
+                    <path d="M5.8 5.9 L13.5 10.8" />
+                    <path d="M5.8 10.1 L13.5 5.2" />
+                  </svg>
+                )}
               </button>
             )}
             </PersistentCornerButtonSlider>

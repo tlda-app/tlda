@@ -3805,7 +3805,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: #9370db;
 }
 
-/* Composer utility rail: terminal, traffic toggle, follow/jump, and clear stay
+/* Composer utility rail: terminal, traffic toggle, contextual bottom, and clear stay
    normal buttons, while the rail gives phone users a forgiving touch band. */
 .fleet-chat-shape .fleet-composer-gutter {
   position: absolute;
@@ -3935,7 +3935,7 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
     transform: translateX(-50%) translateY(-2px) scale(1);
   }
 }
-.fleet-chat-shape .fleet-hardlock-toggle {
+.fleet-chat-shape .fleet-go-bottom {
   order: 3;
   pointer-events: auto;
   height: 100%;
@@ -3951,14 +3951,9 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   justify-content: center;
   line-height: 1;
 }
-.fleet-chat-shape .fleet-hardlock-toggle:hover {
+.fleet-chat-shape .fleet-go-bottom:hover {
   opacity: var(--ui-tone-active);
 }
-/* Active = hard-locked: keep visible even without hover */
-.fleet-chat-shape .fleet-hardlock-toggle[title*="Hard-locked"] {
-  opacity: 0.55;
-}
-
 .fleet-chat-shape .fleet-composer-image-input {
   display: none;
 }
