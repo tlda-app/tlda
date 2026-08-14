@@ -41,51 +41,6 @@ function renderedActivity(record) {
 }
 
 {
-  const callId = 'call_tool_search'
-  const extractor = createActivityExtractor()
-  const call = parseCodexRecord({
-    timestamp: ts,
-    type: 'response_item',
-    payload: { type: 'tool_search_call', call_id: callId, arguments: { query: 'source edit', limit: 20 } },
-  })
-  const output = parseCodexRecord({
-    timestamp: ts,
-    type: 'response_item',
-    payload: {
-      type: 'tool_search_output',
-      call_id: callId,
-      tools: [{ type: 'namespace', name: 'mcp__tlda', description: 'fleet tools', tools: [
-        { type: 'function', name: 'viewer', description: 'Read the current document viewer.', strict: false, defer_loading: true, parameters: { type: 'object', properties: { project: { type: 'string' } } } },
-        { type: 'function', name: 'search', description: 'Search fleet history.' },
-      ] }],
-    },
-  })
-  const started = extractor.extractActivityEvents([call])
-  const completed = extractor.extractActivityEvents([output])
-  assert.equal(started[0].tool, 'tool_search')
-  assert.equal(JSON.parse(completed[0].input._semanticResult[0].tools[1]).name, 'search')
-  const html = renderActivityGroup([...started, ...completed].map(activity => ({
-    from: 'fleet:codex',
-    timestamp: activity.ts,
-    _toolName: activity.tool,
-    _toolArg: activity.arg,
-    _toolInput: activity.input,
-  })), {
-    agentLabel: () => 'codex',
-    getNickClass: () => '',
-    getAgents: () => [],
-  })
-  assert.match(html, /semantic-tool-search-operation/)
-  assert.match(html, /Show all search results/)
-  assert.match(html, /viewer/)
-  assert.match(html, /Search fleet history\./)
-  assert.match(html, /codex-tool-search-field-parameters/)
-  assert.match(html, /&quot;project&quot;/)
-  assert.match(html, /codex-tool-search-field-defer_loading/)
-  assert.doesNotMatch(html, /semantic-chat-operation-open/)
-}
-
-{
   const event = parseCodexRecord(customExec(`
     const r = await tools.exec_command({cmd:"sed -n '1,220p' SKILL.md",workdir:"/tmp"});
     text(r.output);

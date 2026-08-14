@@ -125,15 +125,6 @@ function normalizedToolUseEvent({ name, namespace, input, callId, ts }) {
   }
 }
 
-function codexToolSearchResultPayload(namespaces) {
-  return namespaces.map(namespace => ({
-    ...namespace,
-    tools: Array.isArray(namespace?.tools)
-      ? namespace.tools.map(tool => JSON.stringify(tool))
-      : [],
-  }))
-}
-
 // Codex native tools name their primary argument differently from Claude's
 // built-ins. Alias them onto the keys extractActivityEvents reads
 // (file_path / path / command / pattern / …) so the activity card shows a
@@ -330,19 +321,7 @@ export function parseCodexRecord(o) {
         : (p.output && typeof p.output.content === 'string' ? p.output.content : '')
       const text = unwrapCodexToolOutput(rawText)
       const is_error = /Process exited with code [1-9]/.test(rawText) || /\berror\b/i.test(text.slice(0, 60))
-      return {
-        type: 'user',
-        timestamp: ts,
-        blocks: [{
-          type: 'tool_result',
-          id: p.call_id,
-          text,
-          is_error,
-          ...(p.type === 'tool_search_output' && Array.isArray(p.tools)
-            ? { result: codexToolSearchResultPayload(p.tools) }
-            : {}),
-        }],
-      }
+      return { type: 'user', timestamp: ts, blocks: [{ type: 'tool_result', id: p.call_id, text, is_error }] }
     }
     if (p.type === 'message') {
       if (p.role === 'assistant') {

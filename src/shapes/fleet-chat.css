@@ -1653,50 +1653,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: var(--ui-tone-active);
 }
 .fleet-chat-shape .semantic-operation-more:hover { opacity: var(--ui-tone-full); }
-.fleet-chat-shape .semantic-tool-search-operation:not(.semantic-operation-expanded) .semantic-operation-body {
-  max-height: 12em;
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
-}
-.fleet-chat-shape .codex-tool-search-results {
-  border-left: 2px solid var(--yellow, #c8b060);
-}
-.fleet-chat-shape .codex-tool-search-namespace-name,
-.fleet-chat-shape .codex-tool-search-field-name {
-  font-family: var(--mono);
-}
-.fleet-chat-shape .codex-tool-search-namespace-name {
-  padding: 5px 6px 2px;
-  color: var(--text-dim);
-}
-.fleet-chat-shape .codex-tool-search-tool {
-  padding: 4px 6px;
-}
-.fleet-chat-shape .codex-tool-search-tool:nth-of-type(odd) {
-  background: rgba(128, 128, 128, 0.07);
-}
-.fleet-chat-shape .codex-tool-search-field {
-  display: grid;
-  grid-template-columns: minmax(54px, auto) minmax(0, 1fr);
-  gap: 6px;
-  padding: 1px 6px;
-  font-size: calc(var(--fleet-base-font, 11px) * 0.909091);
-}
-.fleet-chat-shape .codex-tool-search-tool > .codex-tool-search-field {
-  padding-left: 0;
-  padding-right: 0;
-}
-.fleet-chat-shape .codex-tool-search-field-name {
-  color: var(--text-dim);
-}
-.fleet-chat-shape .codex-tool-search-field-value {
-  min-width: 0;
-}
-.fleet-chat-shape pre.codex-tool-search-field-value {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 /* Schedule / timer cards */
 .fleet-chat-shape .tool-pretty-schedule {
   display: flex;
