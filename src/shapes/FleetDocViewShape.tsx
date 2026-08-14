@@ -706,6 +706,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             viewportId={docviewSurface.viewportId}
             wmSurface={{ wm: docviewSurface.wm, surfaceId: docviewSurface.surfaceId, layerId: docviewSurface.layerId }}
             requestedShapeIds={targetShapeId ? [targetShapeId] : undefined}
+            shapePredicate={targetShapeId ? shape => shape.id === targetShapeId : undefined}
             interactionMode={targetShapeId ? 'pinned' : 'preview'}
             unboundedPanning={!!targetShapeId}
           />
