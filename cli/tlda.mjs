@@ -1924,7 +1924,6 @@ async function cmdConfigApply() {
   const desired = desiredLaunchdJobs()
   const existing = existingManagedLaunchdJobs()
   const plan = planLaunchdApply({ desiredJobs: desired, existingJobs: existing })
-  const failures = []
 
   // --only <label-substring> narrows the apply to the jobs whose label matches,
   // so a supervision change can be staged on one job and observed before the
@@ -1971,32 +1970,33 @@ async function cmdConfigApply() {
     process.exit(1)
   }
 
-  for (const job of plan.add) {
-    const result = await applyLaunchdOperation(job, 'add')
-    if (result.ok) console.log(green(`Added ${job.label}`))
-    else failures.push({ job, op: 'add', error: result.error })
-  }
-  for (const job of plan.update) {
-    const result = await applyLaunchdOperation(job, 'update')
-    if (result.ok) console.log(green(`Updated ${job.label}`))
-    else failures.push({ job, op: 'update', error: result.error })
-  }
-  for (const job of plan.remove) {
-    const result = await applyLaunchdOperation(job, 'remove')
-    if (result.ok) console.log(green(`Removed ${job.label}`))
-    else failures.push({ job, op: 'remove', error: result.error })
+  const pending = [
+    ...plan.add.map(job => ({ job, op: 'add', done: 'Added' })),
+    ...plan.update.map(job => ({ job, op: 'update', done: 'Updated' })),
+    ...plan.remove.map(job => ({ job, op: 'remove', done: 'Removed' })),
+  ]
+  let attempt = 0
+  while (pending.length) {
+    attempt++
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const item = pending[i]
+      const result = await applyLaunchdOperation(item.job, item.op)
+      if (result.ok) {
+        console.log(green(`${item.done} ${item.job.label}`))
+        pending.splice(i, 1)
+      } else {
+        console.error(red(`${item.op} ${item.job.label} attempt ${attempt} did not complete: ${result.error}`))
+      }
+    }
+    if (pending.length) {
+      const delayMs = Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6)))
+      console.error(yellow(`tlda config apply has ${pending.length} unfinished job(s); retrying in ${Math.ceil(delayMs / 1000)}s`))
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
   }
 
   for (const job of plan.unchanged) {
     console.log(dim(`Unchanged ${job.label}`))
-  }
-
-  if (failures.length) {
-    console.error(red(`tlda config apply failed for ${failures.length} job(s):`))
-    for (const failure of failures) {
-      console.error(red(`  ${failure.op} ${failure.job.label}: ${failure.error}`))
-    }
-    process.exit(1)
   }
 
   console.log(green('tlda config apply complete.'))
@@ -2385,6 +2385,22 @@ async function waitForSupervisedFleetDaemonReady({ previousPid = null, timeoutMs
   return result.ready ? result.pid : null
 }
 
+async function waitForTargetFleetDaemonCompletion({ previousPid = null } = {}) {
+  let attempt = 0
+  for (;;) {
+    attempt++
+    const result = await pollTargetDaemonReadiness({
+      previousPid,
+      timeoutMs: 5_000,
+      getCandidatePid: () => launchdDaemonPid(),
+      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
+    })
+    if (result.ready) return result.pid
+    console.error(yellow(`Fleet daemon is not ready after attempt ${attempt}: ${result.reason}; continuing to wait.`))
+    printRecentDaemonLog()
+  }
+}
+
 async function verifyTargetFleetDaemon(expectedPid, { supervised = false } = {}) {
   const identity = daemonTargetIdentity()
   const lockInspection = inspectSingletonLock({ lockPath: identity.lockPath })
@@ -2485,17 +2501,8 @@ async function cmdFleetWatch(sub) {
       process.exit(1)
     }
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
-    const result = await pollTargetDaemonReadiness({
-      timeoutMs: 5_000,
-      getCandidatePid: () => launchdDaemonPid(),
-      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
-    })
-    if (!result.ready) {
-      console.error(red(`Fleet daemon restart did not become ready: ${result.reason}`))
-      printRecentDaemonLog()
-      process.exit(1)
-    }
-    console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${result.pid})`))
+    const pid = await waitForTargetFleetDaemonCompletion()
+    console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${pid})`))
     return
   }
 
@@ -2628,18 +2635,8 @@ async function cmdFleetWatch(sub) {
       printRecentDaemonLog()
       process.exit(1)
     }
-    const result = await pollTargetDaemonReadiness({
-      timeoutMs: 5_000,
-      getCandidatePid: () => launchdDaemonPid(),
-      inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
-    })
-    if (result.ready) {
-      console.log(green(`Fleet daemon launchd job started`) + dim(` (pid ${result.pid})`))
-    } else {
-      console.log(yellow('Fleet daemon launchd job accepted; readiness pending.'))
-      console.log(dim(`  Last readiness check: ${result.reason}`))
-      printRecentDaemonLog()
-    }
+    const pid = await waitForTargetFleetDaemonCompletion()
+    console.log(green(`Fleet daemon launchd job started`) + dim(` (pid ${pid})`))
     console.log(dim(`  Managed by launchd (auto-restarts).`))
     console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
     console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
@@ -5864,11 +5861,14 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
     // No other fallback — if /health doesn't respond, the server is already dead.
 
     // Wait for the server to actually stop
-    for (let i = 0; i < 20; i++) {
+    let stopAttempt = 0
+    for (;;) {
+      stopAttempt++
       await new Promise(r => setTimeout(r, 250))
       try {
         await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(1000) })
       } catch { break } // connection refused = stopped
+      if (stopAttempt % 20 === 0) console.error(yellow('Server is still stopping; continuing to wait.'))
     }
 
     console.log(green('Server stopped.'))
@@ -5941,12 +5941,12 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
       })
     }
 
-    // Wait for it to come up. The server can boot slowly (large fleet-DB query
-    // on a big roster — measured ~50s on a ~1500-row agents table), so give it
-    // ~90s before declaring failure. A too-short wait (was 30s) made `tlda deploy`
-    // falsely report "Server failed to start" while the server was still booting,
-    // tempting a panic rollback. (Real cure: speed the boot — see the startup scan.)
-    for (let i = 0; i < 360; i++) {
+    // The command remains attached until /health confirms that startup finished.
+    // launchd may restart the process while this loop is running; that is partial
+    // progress, not a reason for the caller to receive a false completion.
+    let startAttempt = 0
+    for (;;) {
+      startAttempt++
       await new Promise(r => setTimeout(r, 250))
       try {
         const res = await fetch(`${getServer()}/health`)
@@ -5960,24 +5960,10 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
           return
         }
       } catch {}
+      if (startAttempt % 40 === 0) {
+        console.error(yellow(`Server is not healthy yet; continuing to wait. Log: ${LOGFILE}`))
+      }
     }
-    // The wait expired without a 200 from /health. Before declaring failure
-    // (and exiting non-zero, which makes callers retry → restart stampede),
-    // check whether the process is actually up but slow: launchd may have
-    // started it and its event loop may just be busy on a big boot query. A
-    // held port means it's alive — report success, don't trigger a retry.
-    let held = ''
-    try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
-    if (held) {
-      console.log(green(`Server running at ${getServer()}`) + dim(` (pid ${held.split('\n')[0]}, slow to respond — still booting)`))
-      console.log(dim(`  Log: ${LOGFILE}`))
-      if (hasLaunchd) console.log(dim('  Managed by launchd (auto-restarts)'))
-      await ensureFleetDaemonRunning()
-      return
-    }
-    console.error(red('Server failed to start within 30s'))
-    console.error(dim(`Check log: ${LOGFILE}`))
-    process.exit(1)
   }
 
   console.error(`Unknown subcommand: tlda server ${sub}`)
