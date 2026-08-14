@@ -540,6 +540,7 @@ const _micChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChann
 let _radioSubtitle = null
 let _radioHistory = []
 let _radioExpanded = false
+let _radioReaderExpanded = false
 let _radioCollapseTimer = null
 let _radioReplyHandler = null
 let _radioDraftText = ''
@@ -554,7 +555,8 @@ export function setRadioDraftText(text) {
   const draft = _hud?.querySelector?.('[data-radio-draft="true"]')
   if (draft) {
     draft.textContent = `you: ${_radioDraftText}`
-    draft.scrollTop = draft.scrollHeight
+    const viewport = _radioReaderExpanded ? draft.closest('[data-radio-transcript="true"]') : draft
+    if (viewport) viewport.scrollTop = viewport.scrollHeight
     return
   }
   _radioExpanded = true
@@ -664,6 +666,7 @@ function radioHudPageLayout() {
 
 function collapseRadioSubtitle() {
   _radioExpanded = false
+  _radioReaderExpanded = false
   if (_recording) showRecordingHud()
   else if (_callState) showHud('', '#7ab8a0')
   else hideHud()
@@ -682,6 +685,7 @@ function showRadioSubtitle(event, agents = []) {
   _radioSubtitle = entry
   _radioHistory = [entry, ..._radioHistory].slice(0, RADIO_HUD_HISTORY_LIMIT)
   _radioExpanded = true
+  _radioReaderExpanded = false
   clearTimeout(_radioCollapseTimer)
   showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
   const dwellSec = normalizeRadioSubtitleDwellSec(getPref('radio-subtitle-dwell-sec'))
@@ -1130,8 +1134,18 @@ function showHud(text, stateColor) {
   hud.style.display = 'flex'
   hud.style.alignItems = _radioExpanded && _radioSubtitle ? 'stretch' : 'center'
   hud.style.flexDirection = 'column'
+  const phone = document.body?.classList?.contains('phone-mode')
   const radioLayout = _radioExpanded && _radioSubtitle ? radioHudPageLayout() : null
-  hud.style.width = radioLayout ? `${radioLayout.width}px` : VOICE_HUD_WIDTH
+  const readerNarrow = _radioReaderExpanded && window.innerWidth < 640
+  const readerWidth = _radioReaderExpanded
+    ? Math.min(readerNarrow ? window.innerWidth - 24 : 520, window.innerWidth - 24)
+    : null
+  hud.style.width = readerWidth ? `${readerWidth}px` : radioLayout ? `${radioLayout.width}px` : VOICE_HUD_WIDTH
+  hud.style.maxWidth = _radioReaderExpanded ? 'calc(100vw - 24px)' : 'calc(100vw - 40px)'
+  hud.style.height = _radioReaderExpanded ? (readerNarrow ? 'calc(100vh - 24px)' : 'min(70vh, 640px)') : ''
+  hud.style.maxHeight = _radioReaderExpanded ? 'calc(100vh - 24px)' : ''
+  hud.style.top = readerNarrow || phone ? '12px' : ''
+  hud.style.bottom = readerNarrow ? '12px' : phone ? '' : '20px'
   hud.style.left = '50%'
   hud.style.padding = _radioExpanded && _radioSubtitle ? '7px 12px' : '3px 10px'
   const statusRow = document.createElement('div')
@@ -1181,17 +1195,45 @@ function showHud(text, stateColor) {
     statusRow.appendChild(target)
   }
   appendCallSegment(statusRow)
-  const phone = document.body?.classList?.contains('phone-mode')
   if (_radioExpanded && _radioSubtitle) {
+    const transcript = document.createElement('div')
+    transcript.dataset.radioTranscript = 'true'
+    transcript.setAttribute('role', 'button')
+    transcript.tabIndex = 0
+    transcript.setAttribute('aria-label', _radioReaderExpanded ? 'Collapse radio transcript' : 'Expand radio transcript')
+    transcript.setAttribute('aria-expanded', String(_radioReaderExpanded))
+    Object.assign(transcript.style, {
+      minHeight: '0',
+      overflowY: _radioReaderExpanded ? 'auto' : 'hidden',
+      flex: _radioReaderExpanded ? '1 1 auto' : '0 1 auto',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
+      width: '100%',
+    })
+    const toggleTranscript = () => {
+      _radioReaderExpanded = !_radioReaderExpanded
+      clearTimeout(_radioCollapseTimer)
+      if (!_radioReaderExpanded) {
+        const dwellSec = normalizeRadioSubtitleDwellSec(getPref('radio-subtitle-dwell-sec'))
+        _radioCollapseTimer = setTimeout(collapseRadioSubtitle, dwellSec * 1000)
+      }
+      showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
+    }
+    transcript.addEventListener('click', toggleTranscript)
+    transcript.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      toggleTranscript()
+    })
     const line = document.createElement('div')
     line.textContent = _radioSubtitle.text
     Object.assign(line.style, {
       marginTop: '2px',
       minWidth: '0',
       overflow: 'hidden',
-      display: '-webkit-box',
+      display: _radioReaderExpanded ? 'block' : '-webkit-box',
       WebkitBoxOrient: 'vertical',
-      WebkitLineClamp: '6',
+      WebkitLineClamp: _radioReaderExpanded ? 'unset' : '6',
       whiteSpace: 'normal',
       wordBreak: 'break-word',
       color: 'rgba(255,255,255,0.82)',
@@ -1200,7 +1242,7 @@ function showHud(text, stateColor) {
       textAlign: 'left',
       width: '100%',
     })
-    hud.appendChild(line)
+    transcript.appendChild(line)
     if (_radioDraftText.trim()) {
       const draft = document.createElement('div')
       draft.textContent = `you: ${_radioDraftText}`
@@ -1209,7 +1251,7 @@ function showHud(text, stateColor) {
         marginTop: '4px',
         minWidth: '0',
         overflow: 'hidden',
-        maxHeight: '5.4em',
+        maxHeight: _radioReaderExpanded ? '' : '5.4em',
         whiteSpace: 'normal',
         wordBreak: 'break-word',
         color: 'rgba(255,255,255,0.72)',
@@ -1218,8 +1260,7 @@ function showHud(text, stateColor) {
         textAlign: 'left',
         width: '100%',
       })
-      hud.appendChild(draft)
-      draft.scrollTop = draft.scrollHeight
+      transcript.appendChild(draft)
     }
     const prior = _radioHistory.slice(1)
     if (prior.length) {
@@ -1237,8 +1278,8 @@ function showHud(text, stateColor) {
         Object.assign(row.style, {
           minWidth: '0',
           overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
+          textOverflow: _radioReaderExpanded ? '' : 'ellipsis',
+          whiteSpace: _radioReaderExpanded ? 'normal' : 'nowrap',
           color: 'rgba(255,255,255,0.42)',
           fontSize: '10px',
           lineHeight: '1.2',
@@ -1246,8 +1287,12 @@ function showHud(text, stateColor) {
         })
         trace.appendChild(row)
       }
-      hud.appendChild(trace)
+      transcript.appendChild(trace)
     }
+    hud.appendChild(transcript)
+    const draft = transcript.querySelector('[data-radio-draft="true"]')
+    const viewport = _radioReaderExpanded ? transcript : draft
+    if (viewport) viewport.scrollTop = viewport.scrollHeight
   }
   // The status row is the stable spatial anchor. Desktop plaques grow upward
   // from the bottom, phone plaques downward from the top.
