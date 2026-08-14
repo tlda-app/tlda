@@ -9,8 +9,8 @@ const viewportSource = readFileSync(new URL('../src/shapes/useIsInViewport.ts', 
 test('shared fleet HUD render gate skips only the hidden main-canvas copy', () => {
   assert.match(
     viewportSource,
-    /function useMainCanvasFleetShapeHiddenByHud\(\)[\s\S]*const viewportId = useVisibilityViewportId\(\)[\s\S]*return !viewportId && hudOpen/,
-    'the shared skip must apply to the main canvas only; HUD renders have a viewport id',
+    /function useMainCanvasFleetShapeHiddenByHud\(\)[\s\S]*const viewportId = useVisibilityViewportId\(\)[\s\S]*if \(viewportId\) return viewportId !== FLEET_HUD_VIEWPORT_ID[\s\S]*return hudOpen/,
+    'the shared skip must allow the HUD viewport without treating nested document viewports as the HUD',
   )
 
   assert.match(

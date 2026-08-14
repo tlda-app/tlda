@@ -8,6 +8,7 @@
 import { Fragment, createContext, createElement, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { useEditor, useValue } from 'tldraw'
 import type { Editor, TLShapeId, TLViewportId } from 'tldraw'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
 
 const MARGIN_PX = 400  // screen pixels of hysteresis on each side
 
@@ -44,7 +45,8 @@ export function useMainCanvasFleetShapeHiddenByHud(): boolean {
     isFleetHudOpenBodyState,
     () => false,
   )
-  return !viewportId && hudOpen
+  if (viewportId) return viewportId !== FLEET_HUD_VIEWPORT_ID
+  return hudOpen
 }
 
 export function FleetHudRenderGate({ children }: { children: ReactNode }) {
