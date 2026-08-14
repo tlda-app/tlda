@@ -136,6 +136,38 @@ const anchoredViewportHeight = (el: HTMLElement) => {
 }
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+
+function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
+  const path = mode === 'dm'
+    ? 'M3.5 8 H6 L7 5 L9 11 L10 8 H12.5'
+    : mode === 'agent'
+      ? null
+      : 'M3.5 8 H12.5'
+
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.35"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="2" cy="8" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="8" r="1.2" fill="currentColor" stroke="none" />
+      {path ? <path d={path} /> : (
+        <>
+          <path d="M3.5 8 C5 3.5 7 12.5 8.5 7 C10 2.5 11.2 10.5 12.5 8" />
+          <path d="M3.5 8 C5 11.5 6.5 4 8 9 C9.5 13 11 5 12.5 8" />
+        </>
+      )}
+    </svg>
+  )
+}
+
 type TerminalAgent = {
   id?: string
   dead?: boolean
@@ -6863,13 +6895,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                       : 'Custom filter; tap to switch to DM without tools'}
               aria-label="Cycle chat traffic filter"
             >
-              {composerTrafficMode === 'dm-quiet'
-                ? 'DM'
-                : composerTrafficMode === 'dm'
-                  ? 'DM ⚒'
-                  : composerTrafficMode === 'agent'
-                    ? 'All'
-                    : 'DM'}
+              <ComposerTrafficGlyph mode={composerTrafficMode} />
             </button>
             {(composerHasText || canUnclearComposer) && (
               <button
