@@ -12,6 +12,24 @@ export function isUsableIdentityName(name) {
   return !!clean && clean !== 'none' && clean !== 'null' && clean !== 'undefined'
 }
 
+export function completedLoginIdentity(response) {
+  if (response?.queued) throw new Error('identity login queued without a completed response')
+  const id = typeof response?.id === 'string' ? response.id : ''
+  const rawName = typeof response?.name === 'string' ? response.name : ''
+  const name = sanitizeIdentityName(rawName)
+  if (!/^fleet:\S+$/.test(id) || rawName !== name || !isUsableIdentityName(name)) {
+    throw new Error('identity login returned an invalid response')
+  }
+  return { id, name }
+}
+
+export function completedRegistrationIdentity(response) {
+  if (response?.queued) throw new Error('identity registration queued without a completed response')
+  const id = typeof response?.agent?.id === 'string' ? response.agent.id : ''
+  if (!/^fleet:\S+$/.test(id)) throw new Error('identity registration returned an invalid response')
+  return { id }
+}
+
 export function shouldUseRequestedIdentity({ needsIdentity, id, name }) {
   return !!needsIdentity && !id && !isUsableIdentityName(name)
 }

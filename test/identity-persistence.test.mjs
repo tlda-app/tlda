@@ -1,7 +1,23 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { shouldAutoAssignTemporaryIdentity, shouldUseRequestedIdentity } from '../src/fleet/identity-persistence.mjs'
+import {
+  completedLoginIdentity,
+  completedRegistrationIdentity,
+  shouldAutoAssignTemporaryIdentity,
+  shouldUseRequestedIdentity,
+} from '../src/fleet/identity-persistence.mjs'
+
+test('queued durable placeholders cannot become browser identity', () => {
+  const queued = { ok: true, queued: true, operation_id: 'login-1' }
+  assert.throws(() => completedLoginIdentity(queued), /queued without a completed response/)
+  assert.throws(() => completedRegistrationIdentity(queued), /queued without a completed response/)
+  assert.throws(() => completedLoginIdentity({ ok: true }), /invalid response/)
+  assert.throws(() => completedLoginIdentity({ id: 'fleet:skip', name: 'undefined' }), /invalid response/)
+  assert.throws(() => completedRegistrationIdentity({ ok: true }), /invalid response/)
+  assert.deepEqual(completedLoginIdentity({ id: 'fleet:skip', name: 'skip' }), { id: 'fleet:skip', name: 'skip' })
+  assert.deepEqual(completedRegistrationIdentity({ agent: { id: 'fleet:skip' } }), { id: 'fleet:skip' })
+})
 
 test('requested identity handling waits for a missing current identity', () => {
   assert.equal(shouldUseRequestedIdentity({ needsIdentity: true, id: null, name: null }), true)

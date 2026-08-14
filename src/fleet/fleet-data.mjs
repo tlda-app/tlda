@@ -41,7 +41,7 @@ import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
 import { dispatchFilterEvent, dispatchFilterEvents, setChatSubscriptionTransport, refreshChatSubscriptionIdentity, resubscribeAll } from './chat-subscription.mjs'
 import { probe } from '../perf-probe.ts'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig.ts'
-import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
+import { completedLoginIdentity, completedRegistrationIdentity, isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { resetWsRequestIdleTimers, startWsRequest, WsReconnectBuffer } from '../../shared/fleet-browser-transport.mjs'
 import { createFleetOperationTransport } from '../../shared/fleet-operation-transport.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
@@ -450,14 +450,14 @@ function clearIdentityRetry() {
 export async function login(name) {
   const clean = sanitizeIdentityName(name)
   if (!isUsableIdentityName(clean)) throw new Error('invalid identity name')
-  _humanName = clean
   const res = await browserFleetTransport.durable('login', { name: clean })
-  _humanId = res.id
-  _humanName = res.name
+  const identity = completedLoginIdentity(res)
+  _humanId = identity.id
+  _humanName = identity.name
   _identityResolved = true
   _identifyPending = false
   clearIdentityRetry()
-  writeStoredIdentity(res.name)
+  writeStoredIdentity(identity.name)
   clearTemporaryIdentity()
   notify('identity', { type: 'identity', id: _humanId, name: _humanName, identityResolved: true })
   bumpIdentityEpoch()
@@ -469,10 +469,10 @@ export async function login(name) {
 export async function registerHuman(name, { persist = true } = {}) {
   const sanitized = sanitizeIdentityName(name)
   if (!isUsableIdentityName(sanitized)) throw new Error('invalid identity name')
-  _humanName = sanitized
   const humanId = `fleet:${sanitized}`
   const res = await browserFleetTransport.durable('register', { agent_id: humanId, name: sanitized, human: true })
-  _humanId = res.agent?.id || humanId
+  const identity = completedRegistrationIdentity(res)
+  _humanId = identity.id
   _humanName = sanitized
   _identityResolved = true
   _identifyPending = false
