@@ -53,6 +53,15 @@ test('an established SVG project builds eagerly so accepted edits enter history'
   )
 })
 
+test('unchanged policy ignores legacy buildStatus and uses durable readiness', () => {
+  const project = { format: 'markdown', pages: 1, buildStatus: 'success' }
+  assert.equal(shouldBuildOnPush(project, 'paper', { anyChanged: false, ready: false }).build, true)
+  assert.deepEqual(
+    shouldBuildOnPush({ ...project, buildStatus: 'failed' }, 'paper', { anyChanged: false, ready: true }),
+    { build: false, eager: false, reason: 'unchanged' },
+  )
+})
+
 test('a new SVG project already queued or building does not dispatch or become stale again', () => {
   const { queue, starts } = makeQueue()
   const first = initialSvgDecision(queue)

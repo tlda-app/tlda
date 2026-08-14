@@ -5492,10 +5492,7 @@ async function cmdDoctor() {
     }
   }
 
-  // 7. Project state — build errors, stuck pipelines, dangling mainFile.
-  // Catches the silent failure modes where a project stops being built but
-  // nothing surfaces it: mainFile pointing to a deleted source file,
-  // buildStatus stuck at "failed" for weeks, lastBuild far behind source mtime.
+  // 7. Project state — durable build errors and dangling mainFile.
   if (serverRunning) {
     try {
       const data = await api('GET', '/api/projects', null, { timeoutMs: 5000 })
@@ -5511,19 +5508,6 @@ async function cmdDoctor() {
           if (!existsSync(mainPath)) {
             projectIssues.push({ p, kind: 'main-missing', detail: p.mainFile })
             continue
-          }
-          // Stale: source touched after lastBuild by 7+ days. Cheap heuristic
-          // for "edits aren't being captured."
-          if (p.lastBuild) {
-            try {
-              const lastBuildMs = Date.parse(p.lastBuild)
-              const mainMtime = statSync(mainPath).mtimeMs
-              const stale = mainMtime - lastBuildMs > 7 * 24 * 60 * 60 * 1000
-              if (stale) {
-                const days = Math.round((mainMtime - lastBuildMs) / (24 * 60 * 60 * 1000))
-                projectIssues.push({ p, kind: 'stale', detail: `mainFile edited ${days}d after last build` })
-              }
-            } catch {}
           }
         }
       }

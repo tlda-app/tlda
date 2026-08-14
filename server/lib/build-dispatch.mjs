@@ -55,6 +55,13 @@ export async function recordBuildResult(name, sourceRevision, acceptSeq, state, 
   const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
   if (!current) throw new Error(`Cannot record build result for unknown source revision ${sourceRevision}`)
   if (current.acceptSeq !== acceptSeq) throw new Error(`Build acceptSeq ${acceptSeq} does not match ${current.acceptSeq}`)
+  if (state === 'build_failed' && current.version?.state === 'versioned' && current.mirror?.state === 'mirror_failed') {
+    return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'built', {
+      ok: true,
+      terminalPhase: 'mirror',
+      workerError: result?.error || null,
+    })
+  }
   const terminal = lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
   if (state !== 'built') {
     lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: state })

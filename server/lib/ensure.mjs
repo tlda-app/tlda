@@ -277,10 +277,7 @@ async function buildCurrentDvi(ctx) {
   const { dispatchBuild } = await import('./build-dispatch.mjs')
   const { emitDocArrived } = await import('./build-runner.mjs')
   await dispatchBuild(ctx.name)
-  const updated = await readProject(ctx.name)
-  if (updated?.buildStatus === 'success') {
-    emitDocArrived?.(ctx.name, updated)
-  }
+  await emitDocArrived?.(ctx.name)
 }
 
 /**

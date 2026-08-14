@@ -14,6 +14,7 @@ import {
   updateProject,
   updateClientSourceManifest,
 } from './project-store.mjs'
+import { listProjectsWithLifecycleStatus } from '../routes/projects.mjs'
 
 test('real worker records exact durable build, version, and mirror disposition', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-build-lifecycle-wire-'))
@@ -73,6 +74,68 @@ test('terminal build failure explicitly settles version and mirror', async () =>
     assert.equal(failed.build.state, 'build_failed')
     assert.equal(failed.version.state, 'not_reached')
     assert.equal(failed.mirror.state, 'not_reached')
+  } finally {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('production project listing ignores corrupt legacy build status', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-project-status-projection-'))
+  const name = 'projected-paper'
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    await updateProject(name, { buildStatus: 'success' })
+    const lifecycle = await sourceLifecycleStore(name)
+    lifecycle.recordAcceptedRevision(name, 'projected-revision', 8)
+    lifecycle.recordRevisionPhase(name, 'projected-revision', 'build', 'build_failed', { error: 'real failure' })
+    lifecycle.recordRevisionPhase(name, 'projected-revision', 'version', 'not_reached', null)
+    lifecycle.recordRevisionPhase(name, 'projected-revision', 'mirror', 'not_reached', null)
+
+    const [project] = await listProjectsWithLifecycleStatus()
+    assert.equal(project.buildStatus, 'error')
+    assert.equal(project.buildPhase, 'build')
+    assert.equal(project.sourceRevision, 'projected-revision')
+    assert.equal(project.acceptSeq, 8)
+  } finally {
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('real worker preserves built and versioned when mirror fails', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-build-mirror-failure-wire-'))
+  const name = 'mirror-failure-paper'
+  const sourceRevision = 'sha256:mirror-failure-revision'
+  const acceptSeq = 52
+  try {
+    await initProjectStore(root)
+    createProject({ name, mainFile: 'main.md', format: 'markdown' })
+    writeFileSync(join(root, name, 'source', 'main.md'), '# Mirror failure\n')
+    await updateClientSourceManifest(name, [{ path: 'main.md' }])
+    const lifecycle = await sourceLifecycleStore(name)
+    lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq)
+    const dispatcher = createDispatcherWithOptions(ForkTransport, {
+      maxConcurrency: 1,
+      sinks: {
+        broadcastSignal() {}, putShape() {}, patchShape() {}, writeSentinel() { return { skipped: false } }, emitGlobalEvent() {},
+        updateProject,
+        recordBuildResult,
+        recordRevisionPhase,
+        mirrorShadow: async () => { throw new Error('target daemon offline') },
+      },
+    })
+
+    await assert.rejects(
+      dispatcher.dispatchBuild(name, { sourceRevision, acceptSeq }),
+      /working-copy checkpoint failed/,
+    )
+    const completed = lifecycle.readRevisionLifecycle(name, sourceRevision)
+    assert.equal(completed.build.state, 'built')
+    assert.equal(completed.version.state, 'versioned')
+    assert.equal(completed.mirror.state, 'mirror_failed')
+    assert.match(completed.mirror.result.error, /target daemon offline/)
   } finally {
     await closeProjectStore()
     rmSync(root, { recursive: true, force: true })

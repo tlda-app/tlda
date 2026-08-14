@@ -174,8 +174,21 @@ async function taskDocFleetSource(localFleetStore, { boundedTasksLimit = null } 
 router.use('/:name/history', historyRoutes)
 
 // List all projects
+export async function listProjectsWithLifecycleStatus() {
+  return Promise.all((await listProjects()).map(async project => {
+    const durableStatus = projectRevisionStatus((await sourceLifecycleStore(project.name)).listRevisionLifecycles(project.name))
+    return {
+      ...project,
+      buildStatus: durableStatus.status,
+      buildPhase: durableStatus.phase,
+      sourceRevision: durableStatus.sourceRevision,
+      acceptSeq: durableStatus.acceptSeq,
+    }
+  }))
+}
+
 router.get('/', requireRead, async (req, res) => {
-  res.json({ projects: await listProjects() })
+  res.json({ projects: await listProjectsWithLifecycleStatus() })
 })
 
 router.post('/:name/document-associations', requireRead, async (req, res) => {
@@ -1423,6 +1436,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     changedFiles,
     anyChanged,
     building: isBuildKindPending(name, 'build'),
+    ready: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status === 'success',
   })
 
   if (!decision.build) {

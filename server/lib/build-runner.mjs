@@ -65,6 +65,7 @@ import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 import { finalizeEditEventsForSourceRevision } from './edit-events.mjs'
+import { projectRevisionStatus } from './source-lifecycle.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -1547,7 +1548,8 @@ async function maybeBootstrapShadowFromProjectRepo(name) {
 export async function emitDocArrived(name) {
   try {
     const updated = await readProject(name)
-    if (updated?.buildStatus === 'success') {
+    const durableStatus = projectRevisionStatus((await sourceLifecycleStore(name)).listRevisionLifecycles(name))
+    if (updated && durableStatus.status === 'success') {
       _reporter.emitGlobalEvent('doc-arrived', {
         name, title: updated.title || name,
         format: updated.format, pages: updated.pages || 0,
@@ -1639,7 +1641,7 @@ export async function recordBuildVersion({
 
 export async function finalizeBuildVersion({
   name,
-  ctx,
+  ctx = { addLog: (message) => console.log(`[build:${name}] ${message}`) },
   projDir,
   expectedPages,
   svgsReadyAt,

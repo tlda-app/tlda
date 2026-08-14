@@ -47,19 +47,20 @@ export function missingMainFileMessage(name, declared) {
  * @param {Array}  options.changedFiles  — files that changed (from push)
  * @param {boolean} options.anyChanged   — whether any files actually changed on disk
  * @param {boolean} options.building     — dispatcher-authoritative queued/in-flight state
+ * @param {boolean} options.ready        — durable lifecycle projection is successful
  * @returns {{ build: boolean, eager: boolean, reason: string }}
  *   - build: whether a build should happen
  *   - eager: true = start now
  *   - reason: human-readable explanation
  */
-export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false, building = false } = {}) {
+export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false, building = false, ready = false } = {}) {
   const format = project.format
 
   if (format === 'svg' && Number(project.pages || 0) === 0 && building) {
     return { build: false, eager: false, reason: 'already-building' }
   }
 
-  if (!anyChanged && project.buildStatus === 'success') {
+  if (!anyChanged && ready) {
     return { build: false, eager: false, reason: 'unchanged' }
   }
 
