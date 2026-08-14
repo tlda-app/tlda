@@ -3,7 +3,7 @@ import { flattenAvailableSpawnModels } from '../../shared/spawn-model-options.mj
 export async function resolveFreshSpawnAvailabilityModels({
   userId,
   cwd = null,
-  doc = null,
+  project = null,
   fleetStore,
   daemonConnections,
   sendDaemonEphemeral,
@@ -51,8 +51,8 @@ export async function resolveFreshSpawnAvailabilityModels({
       machine_id: route.machine_id,
       route: route.source || null,
       context: {
-        doc: doc || null,
-        cwd: cwd || null,
+        project: project ?? null,
+        cwd: cwd ?? null,
       },
       capabilities,
       aliases: flattened.aliases,

@@ -2173,7 +2173,7 @@ async function failServerMintShell(agentId, reason) {
 async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
-    name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
+    name, agent, model, project, cwd, respawn, fresh, refresh, effort, mode,
     permissionRequest, enroll, routeAgent,
     iLikeToLiveDangerously, mailboxTarget, modelOptions,
     pretty_name: requestedPrettyName,
@@ -2203,7 +2203,7 @@ async function performSpawnRelay(caller, msg) {
   if (refresh && !refreshTarget) refreshTarget = await fleetStore?.findAgent(spawnName)
   if ((shouldRespawn || refresh) && !routeTarget) routeTarget = await fleetStore?.findAgent(spawnName) || null
   if ((shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
-  const requestedSpec = { model, project: doc }
+  const requestedSpec = { model, project }
   const route = await resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
@@ -2250,12 +2250,12 @@ async function performSpawnRelay(caller, msg) {
       pretty_name: requestedPrettyName ?? null,
       // Project membership is a label and belongs on the initial row, so its
       // label_history span opens at registered_at.
-      labels: withProjectLabel([], doc),
+      labels: withProjectLabel([], project),
       registered_at: now,
       last_seen: now,
       dead: false,
       human: false,
-      // The spawn already knows all three — `doc`, `cwd` and `model` come in on
+      // The spawn already knows all three — `project`, `cwd` and `model` come in on
       // the request and are handed to the daemon — but none of them were written
       // to the row, so the agent directory had nothing to group by. Every living
       // agent read as project-less, and the index's per-project cells could only
@@ -2263,7 +2263,7 @@ async function performSpawnRelay(caller, msg) {
       // why the names in them were old.
       metadata: {
         shell: true,
-        ...(doc ? { project: doc } : {}),
+        ...(project ? { project } : {}),
         ...(cwd ? { cwd } : {}),
         ...(model ? { model } : {}),
       },
@@ -2322,7 +2322,7 @@ async function performSpawnRelay(caller, msg) {
     name: resolved.name || undefined,
     model: model || undefined,
     modelOptions,
-    doc: doc || undefined,
+    project: project || undefined,
     cwd: cwd || undefined,
     enroll: !!enroll || undefined,
     effort: effort || undefined,
@@ -3673,18 +3673,18 @@ function queryString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-async function resolveSpawnModelContext({ doc, cwd } = {}) {
+async function resolveSpawnModelContext({ project, cwd } = {}) {
   const directCwd = queryString(cwd)
-  if (directCwd) return { doc: queryString(doc), cwd: directCwd, error: null }
-  const docName = queryString(doc)
-  if (!docName) return { doc: null, cwd: null, error: null }
-  const project = await readProject(docName)
-  if (!project) return { doc: docName, cwd: null, error: `no project '${docName}'` }
-  return { doc: docName, cwd: project.sourceDir || null, error: null }
+  if (directCwd) return { project: queryString(project), cwd: directCwd, error: null }
+  const projectName = queryString(project)
+  if (!projectName) return { project: null, cwd: null, error: null }
+  const projectRecord = await readProject(projectName)
+  if (!projectRecord) return { project: projectName, cwd: null, error: `no project '${projectName}'` }
+  return { project: projectName, cwd: projectRecord.sourceDir || null, error: null }
 }
 
 app.get('/api/fleet/models', requireRead, async (req, res) => {
-  const context = await resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
+  const context = await resolveSpawnModelContext({ project: req.query.project, cwd: req.query.cwd })
   if (context.error) {
     res.status(404).json({ error: context.error })
     return
@@ -3694,7 +3694,7 @@ app.get('/api/fleet/models', requireRead, async (req, res) => {
 })
 
 app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
-  const context = await resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
+  const context = await resolveSpawnModelContext({ project: req.query.project, cwd: req.query.cwd })
   if (context.error) {
     res.status(404).json({ schema: 1, ok: false, error: context.error, aliases: [], defaultAlias: '' })
     return
@@ -3702,7 +3702,7 @@ app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
   if (req.query.target === 'fresh-spawn-current') {
     const result = await resolveFreshSpawnAvailabilityModels({
       userId: req.query.user,
-      doc: context.doc,
+      project: context.project,
       cwd: context.cwd,
       fleetStore,
       daemonConnections,

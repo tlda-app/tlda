@@ -1,5 +1,5 @@
 export type MintInput = {
-  doc: string
+  project: string
   name: string | undefined
   model: string | undefined
   options: Record<string, string>
@@ -16,11 +16,11 @@ export function parseMintInput(raw: string): MintInput {
       const colon = token.indexOf(':')
       return [token.slice(0, colon), token.slice(colon + 1)]
     }))
-  const doc = positional[0] || ''
+  const project = positional[0] || ''
   const name = positional[1] || undefined
   const model = positional[2] || undefined
   const options = Object.fromEntries(keywords)
-  return { doc, name, model, options, effort: keywords.get('effort') || undefined }
+  return { project, name, model, options, effort: keywords.get('effort') || undefined }
 }
 
 export function activeMintToken(input: string): { pos: number; prefix: string } {

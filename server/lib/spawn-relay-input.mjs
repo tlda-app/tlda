@@ -1,4 +1,7 @@
 export function normalizeSpawnRelayInput(msg = {}) {
+  if (Object.prototype.hasOwnProperty.call(msg, 'doc')) {
+    throw new Error('spawn relay rejected legacy "doc"; use project')
+  }
   if (Object.prototype.hasOwnProperty.call(msg, 'policy')) {
     throw new Error('spawn relay rejected legacy "policy"; use permissionRequest')
   }
@@ -10,12 +13,12 @@ export function normalizeSpawnRelayInput(msg = {}) {
     throw new Error('spawn session selection belongs to the daemon')
   }
   const {
-    name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
+    name, agent, model, project, cwd, respawn, fresh, refresh, effort, mode,
     permissionRequest, enroll, routeAgent,
     iLikeToLiveDangerously, mailboxTarget, pretty_name,
   } = msg || {}
   const spawnReservedKeys = new Set([
-    'type', 'name', 'agent', 'model', 'doc', 'cwd', 'respawn', 'fresh', 'refresh',
+    'type', 'name', 'agent', 'model', 'project', 'cwd', 'respawn', 'fresh', 'refresh',
     'effort', 'mode', 'permissionRequest',
     'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'mailboxTarget',
     'pretty_name',
@@ -35,7 +38,7 @@ export function normalizeSpawnRelayInput(msg = {}) {
     name,
     agent,
     model,
-    doc,
+    project,
     cwd,
     respawn,
     fresh,

@@ -853,13 +853,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/spawn ---
   // Spawn or respawn an agent via the fleet daemon RPC.
-  // Body: { model?, doc?, name?, agent?, respawn? }
-  // doc: project name — daemon resolves to sourceDir for the cwd
+  // Body: { model?, project?, name?, agent?, respawn? }
+  // project: project name — daemon resolves to its local source directory
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, fresh, permissionRequest, mode, effort, iLikeToLiveDangerously } = req.body || {}
+    const { name, model, project, cwd, agent, respawn, fresh, permissionRequest, mode, effort, iLikeToLiveDangerously } = req.body || {}
     const spawnReservedKeys = new Set([
-      'name', 'model', 'doc', 'cwd', 'agent', 'respawn', 'fresh', 'permissionRequest', 'mode', 'effort',
+      'name', 'model', 'project', 'cwd', 'agent', 'respawn', 'fresh', 'permissionRequest', 'mode', 'effort',
       'iLikeToLiveDangerously', 'modelOptions',
     ])
     const modelOptions = {
@@ -920,14 +920,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const resolved = resolveSpawnTarget
         ? await resolveSpawnTarget(spawnName, !!respawn, {
             fresh: !!fresh,
-            requested: { model, project: doc },
+            requested: { model, project },
           })
         : { name: spawnName, respawn: !!respawn }
       const result = await sendDaemonDurable(route.machine_id, 'spawn', {
         name: resolved.name || undefined,
         model: model || undefined,
         modelOptions,
-        doc: doc || undefined,
+        project: project || undefined,
         cwd: cwd || undefined,
         effort: effort || undefined,
         mode: mode || undefined,
@@ -1342,7 +1342,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   router.post('/api/agents/mint', async (req, res) => {
-    const { name, model, doc, cwd, permissionRequest, mode, effort, iLikeToLiveDangerously, modelOptions: bodyModelOptions } = req.body || {}
+    const { name, model, project, cwd, permissionRequest, mode, effort, iLikeToLiveDangerously, modelOptions: bodyModelOptions } = req.body || {}
     if (!name) {
       res.status(400).json({ ok: false, error: 'mint requires name' })
       return
@@ -1379,7 +1379,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         name,
         model: model || undefined,
         modelOptions,
-        doc: doc || undefined,
+        project: project || undefined,
         cwd: cwd || undefined,
         effort: effort || undefined,
         mode: mode || undefined,
