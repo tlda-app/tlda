@@ -146,8 +146,8 @@ function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
 
   return (
     <svg
-      width="11"
-      height="11"
+      width="12"
+      height="12"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -156,13 +156,14 @@ function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <circle cx="2" cy="8" r="1.2" fill="currentColor" stroke="none" />
-      <circle cx="14" cy="8" r="1.2" fill="currentColor" stroke="none" />
+      <ellipse cx="2" cy="8" rx="1.65" ry="1.35" fill="currentColor" stroke="none" />
+      <ellipse cx="14" cy="8" rx="1.65" ry="1.35" fill="currentColor" stroke="none" />
       {path ? <path d={path} /> : (
-        <>
-          <path d="M3.5 8 C5 3.5 7 12.5 8.5 7 C10 2.5 11.2 10.5 12.5 8" />
-          <path d="M3.5 8 C5 11.5 6.5 4 8 9 C9.5 13 11 5 12.5 8" />
-        </>
+        <g strokeWidth="0.65" opacity="0.9">
+          <path d="M3.5 8 C4.4 1.5 6.8 14.5 8.1 5.2 C9 -0.2 10.6 14.2 12.5 8" />
+          <path d="M3.5 8 C4.8 13.5 6.1 1.8 7.5 10.2 C8.8 15 10.7 2.5 12.5 8" />
+          <path d="M3.5 8 C5 4.8 6.2 11.8 8 8 C9.7 4.2 11 11 12.5 8" />
+        </g>
       )}
     </svg>
   )
