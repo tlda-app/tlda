@@ -346,9 +346,8 @@ async function createMarkdownDocviewShapeFromPill(
     ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
   }, url)
   if (!materialized?.shapeId) return true
-  await createFleetShape(editor, 'fleet-docview', pagePoint.x, pagePoint.y, {
-    w: MARKDOWN_DOCVIEW_W,
-    h: MARKDOWN_DOCVIEW_H,
+  const screenPoint = pagePointToClient(editor, pagePoint)
+  await placeFleetShapeAtScreenPoint(editor, 'fleet-docview', screenPoint.x, screenPoint.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H, {
     sources: '[]',
     label: '',
     page: 0,

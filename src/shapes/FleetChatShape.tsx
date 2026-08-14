@@ -6126,6 +6126,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             displayName: label, color: '#9370db',
             content: fileContent, sourceAgent: chatLine?.dataset.msgFrom || undefined,
             filePath, fileUrl,
+            markdownChip: /\.(?:md|markdown)(?:$|[?#])/i.test(fileUrl || filePath),
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }
