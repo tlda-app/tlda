@@ -12,9 +12,16 @@
 //
 // Measured before the fix, on the live server: `referencedSourcePaths` declared
 // `AGENTS.md` and `the-list.md`, and the current revision held neither —
-// `README.md` came back 200 and both of those 404. The last accepted push was
-// 22 minutes old with the-list.md edited since. His edits had stopped reaching
-// the paper entirely, for every push that touched any Markdown file.
+// `README.md` came back 200 and both of those 404. His edits had stopped
+// reaching the paper entirely, for every push that touched any Markdown file.
+//
+// The instrument for "did a push land" is `currentRevision` on
+// `/api/projects/:name/source-authority`, and nothing else. Twice that night I
+// read `lastSourceMachineAt` as the last accepted push and reported it as
+// evidence; `server/unified-server.mjs` writes it on RECEIPT, before
+// `processProjectPush` runs, so it moves just as happily for a push that is
+// about to be refused. A revision that does not move is the only thing that
+// means nobody's work is landing.
 //
 // The cause is two halves of one push disagreeing. A Markdown project's closure
 // is recomputed from the main file, and a chat-referenced root is not reachable
