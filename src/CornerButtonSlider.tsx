@@ -140,15 +140,11 @@ export function PersistentCornerButtonSlider({
   const pickButton = useCallback((clientX: number, clientY: number) => {
     const rail = railRef.current
     if (!rail) return null
-    const buttons = Array.from(rail.querySelectorAll<HTMLButtonElement>('[data-composer-rail-action]:not(:disabled)'))
-    let best: HTMLButtonElement | null = null
-    let bestDistance = Number.POSITIVE_INFINITY
-    for (const button of buttons) {
-      const rect = button.getBoundingClientRect()
-      const distance = Math.hypot(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2))
-      if (distance < bestDistance) { best = button; bestDistance = distance }
+    for (const element of document.elementsFromPoint(clientX, clientY)) {
+      const button = element.closest<HTMLButtonElement>('[data-composer-rail-action]:not(:disabled)')
+      if (button && rail.contains(button)) return button
     }
-    return best
+    return null
   }, [])
 
   const targetForButton = useCallback((button: HTMLButtonElement | null): PersistentRailTarget | null => {
@@ -163,6 +159,12 @@ export function PersistentCornerButtonSlider({
       x: buttonRect.left + buttonRect.width / 2 - railRect.left,
     }
   }, [])
+
+  const targetAt = useCallback((source: PersistentRailValueSource | null, clientX: number, clientY: number) => {
+    const button = pickButton(clientX, clientY)
+    if (button && button !== source?.button) return targetForButton(button)
+    return source ? targetForValueSource(source, clientX) : targetForButton(button)
+  }, [pickButton, targetForButton, targetForValueSource])
 
   const pointAt = useCallback((target: PersistentRailTarget | null) => {
     if (!target) { setActive(null); return }
@@ -186,13 +188,13 @@ export function PersistentCornerButtonSlider({
       const button = pickButton(e.clientX, e.clientY)
       pointerStartRef.current = { clientX: e.clientX, clientY: e.clientY, button }
       valueSourceRef.current = valueSourceForButton(button)
-      pointAt(valueSourceRef.current ? targetForValueSource(valueSourceRef.current, e.clientX) : targetForButton(button))
+      pointAt(targetAt(valueSourceRef.current, e.clientX, e.clientY))
     }}
     onPointerMove={(e) => {
       if (pointerRef.current !== e.pointerId) return
       stopEventPropagation(e)
       const source = valueSourceRef.current
-      pointAt(source ? targetForValueSource(source, e.clientX) : targetForButton(pickButton(e.clientX, e.clientY)))
+      pointAt(targetAt(source, e.clientX, e.clientY))
     }}
     onPointerUp={(e) => {
       if (pointerRef.current !== e.pointerId) return
@@ -202,7 +204,7 @@ export function PersistentCornerButtonSlider({
       const start = pointerStartRef.current
       valueSourceRef.current = null
       pointerStartRef.current = null
-      const target = source ? targetForValueSource(source, e.clientX) : targetForButton(pickButton(e.clientX, e.clientY))
+      const target = targetAt(source, e.clientX, e.clientY)
       pointAt(target)
       if (target) {
         const dx = start ? e.clientX - start.clientX : 0
