@@ -109,6 +109,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   const revisionsRoot = join(root, 'revisions')
   const evidenceRoot = join(root, 'evidence')
   const blobsRoot = join(root, 'blobs')
+  const operationsRoot = join(root, 'operations')
   const state = () => readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
@@ -172,6 +173,33 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     for (const entry of entries) hash.update(entry.path).update('\0').update(entry.sha256).update('\0')
     hash.update(JSON.stringify(dependencyPins)).update('\0')
     return `sha256:${hash.digest('hex')}`
+  }
+
+  function operationPath(requestId) {
+    if (typeof requestId !== 'string' || !requestId.trim()) throw new Error('requestId is required')
+    return join(operationsRoot, `${encodeURIComponent(requestId)}.json`)
+  }
+
+  function operationFingerprint({ project, expectedRevision, sourceManifest, files = [], deletedFiles = [], dependencyPins = [], editedBy = null }) {
+    const pins = canonicalPins(dependencyPins)
+    const entries = files.map(file => {
+      if (!file || typeof file.path !== 'string') throw new Error('Every changed file must have a path')
+      const raw = file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(String(file.content ?? ''))
+      return { path: file.path, sha256: createHash('sha256').update(raw).digest('hex'), size: raw.length }
+    }).sort((a, b) => a.path.localeCompare(b.path))
+    const descriptor = stableValue({
+      project,
+      expectedRevision: expectedRevision ?? null,
+      sourceManifest: [...(sourceManifest || [])],
+      files: entries.map(({ path, sha256, size }) => ({ path, sha256, size })),
+      deletedFiles: [...deletedFiles].sort(),
+      dependencyPins: pins,
+      editedBy: editedBy ?? null,
+    })
+    return {
+      payloadFingerprint: createHash('sha256').update(JSON.stringify(descriptor)).digest('hex'),
+      descriptor,
+    }
   }
 
   /**
@@ -309,6 +337,63 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         sourceRevision: authority.currentRevision,
         content: revisionFileContent(revision(authority.currentRevision), path),
       }
+    },
+    readOperation(requestId) {
+      return readJson(operationPath(requestId))
+    },
+    prepareOperation(payload) {
+      const path = operationPath(payload.requestId)
+      const { payloadFingerprint, descriptor } = operationFingerprint(payload)
+      const existing = readJson(path)
+      if (existing) {
+        if (existing.payloadFingerprint !== payloadFingerprint) {
+          return {
+            replay: true,
+            invalidReuse: true,
+            operation: existing,
+            result: {
+              ok: false,
+              status: 'invalid-request-id-reuse',
+              requestId: payload.requestId,
+              project: existing.project,
+            },
+          }
+        }
+        return { replay: true, invalidReuse: false, operation: existing, result: existing.terminalResult ?? null }
+      }
+      const now = new Date().toISOString()
+      const operation = {
+        version: 1,
+        project: payload.project,
+        requestId: payload.requestId,
+        payloadFingerprint,
+        descriptor,
+        state: 'prepared',
+        terminalResult: null,
+        createdAt: now,
+        updatedAt: now,
+      }
+      atomicJson(path, operation, fault)
+      return { replay: false, invalidReuse: false, operation, result: null }
+    },
+    finishOperation(requestId, stateName, terminalResult, { acceptSeq = null, recoveryId = null } = {}) {
+      if (!['accepted', 'rejected', 'recovery_required', 'invalid'].includes(stateName)) {
+        throw new Error(`Invalid terminal source operation state: ${stateName}`)
+      }
+      const path = operationPath(requestId)
+      const existing = readJson(path)
+      if (!existing) throw new Error(`Source operation ${requestId} was not prepared`)
+      if (existing.terminalResult) return existing
+      const operation = {
+        ...existing,
+        state: stateName,
+        terminalResult: stableValue(terminalResult),
+        ...(acceptSeq == null ? {} : { acceptSeq }),
+        ...(recoveryId == null ? {} : { recoveryId }),
+        updatedAt: new Date().toISOString(),
+      }
+      atomicJson(path, operation, fault)
+      return readJson(path)
     },
     bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
       const before = state()
