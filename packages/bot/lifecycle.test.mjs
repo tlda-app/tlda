@@ -42,7 +42,7 @@ function loginRouteProof(payload) {
   }
 }
 
-async function login(socket, assignedName, id = 'fleet:fixture') {
+async function login(socket, assignedName, id = 'fleet:fixture', expectedFilter = [[['to', id]], [['from', id]]]) {
   await turn()
   const request = socket.sent.find(message => message.type === 'login')
   assert.ok(request)
@@ -54,7 +54,7 @@ async function login(socket, assignedName, id = 'fleet:fixture') {
   const subscription = socket.sent.find(message => message.type === 'subscribe-filter')
   if (assignedName === 'fixture') {
     assert.ok(subscription)
-    assert.deepEqual(subscription.filter, [[['to', id]], [['from', id]]])
+    assert.deepEqual(subscription.filter, expectedFilter)
   }
   if (subscription) socket.reply(subscription, { ok: true })
   await turn()
@@ -137,6 +137,24 @@ test('bot registration does not duplicate its friendly name as an explicit label
   assert.ok(login)
   assert.equal(login.name, 'todd')
   assert.deepEqual(login.labels, ['bot'])
+})
+
+test('bot may subscribe to the global fleet event stream', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'tlda-bot-'))
+  const transport = createTransportFixture()
+  const bot = createBot({
+    name: 'fixture',
+    fleetId: 'fleet:fixture',
+    pidFile: join(directory, 'fixture.pid'),
+    server: 'http://fixture.test',
+    WebSocketClass: transport.WebSocketClass,
+    subscriptionFilter: null,
+  }).start()
+  t.after(() => bot.stop())
+
+  await login(transport.sockets[0], 'fixture', 'fleet:fixture', null)
+  const subscription = transport.sockets[0].sent.find(message => message.type === 'subscribe-filter')
+  assert.equal(subscription.filter, null)
 })
 
 test('bot login sends daemon route proof required by the receive gate', async t => {

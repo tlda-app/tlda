@@ -60,7 +60,7 @@ export function createBot({
   name = 'bot', pretty_name = null, labels = ['bot'], human = false, allow = null, server,
   commands = [], cwd = process.cwd(), metadata = {}, fleetId = null,
   pidFile = null, WebSocketClass = WebSocket, handshakeTimeoutMs = 10_000,
-  reconnectInitialMs = 500, reconnectMaxMs = 5000,
+  reconnectInitialMs = 500, reconnectMaxMs = 5000, subscriptionFilter = undefined,
 } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
@@ -233,7 +233,9 @@ export function createBot({
       await requestRaw({
         type: 'subscribe-filter',
         subId: `bot-chat-${id}`,
-        filter: [[['to', id]], [['from', id]]],
+        filter: subscriptionFilter === undefined
+          ? [[['to', id]], [['from', id]]]
+          : subscriptionFilter,
         window: 0,
       });
     }
