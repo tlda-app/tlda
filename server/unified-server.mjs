@@ -463,6 +463,12 @@ function sourceBindingsForProject(project) {
     .filter(binding => binding.project === project)
     .sort((a, b) => a.bindingId.localeCompare(b.bindingId))
 }
+
+function sourceBindingForDaemon(bindingId, daemonKey) {
+  if (!bindingId || !daemonKey) return null
+  const binding = readSourceBindingRegistry().bindings?.[bindingId] || null
+  return binding?.daemonKey === daemonKey ? binding : null
+}
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
 function daemonTerminalInputAllowed(daemonKey) {
@@ -9356,6 +9362,14 @@ async function handleDaemonWsMessage(ws, msg) {
         }))
         return
       }
+    }
+    const authenticatedBinding = sourceBindingForDaemon(sourceBindingId, ws._daemonKey)
+    if (!authenticatedBinding || authenticatedBinding.project !== project) {
+      ws.send(JSON.stringify({
+        type: 'source-change-result', requestId, project, ok: false, httpStatus: 403,
+        status: 'invalid-source-binding', error: 'sourceBindingId is not registered to this daemon and project',
+      }))
+      return
     }
     if (await readProject(project)) {
       await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })

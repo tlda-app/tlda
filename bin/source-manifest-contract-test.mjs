@@ -271,6 +271,24 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
     assert.equal(sent[0].files[0].content, 'second\n')
     assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'daemon sourceManifest must preserve inherited ownership around the changed byte inventory')
     assert.equal(sent[0].expectedRevision, 'revision-1')
+
+    write(path.join(sourceRoot, 'main.tex'), 'third\n')
+    watchers[0].emit('change', path.join(sourceRoot, 'main.tex'))
+    await new Promise(resolve => setTimeout(resolve, 250))
+    assert.equal(sent.length, 1, 'a later local edit waits behind the accepted source operation')
+    assert.equal(sourceSync.handleSourceChangeResult({
+      type: 'source-change-result', project: 'daemon-source-change', requestId: sent[0].requestId,
+      ok: true, sourceRevision: 'revision-2',
+    }), true)
+    assert.equal(sent.length, 2, 'the queued local edit is emitted after acceptance')
+    assert.equal(sent[1].expectedRevision, 'revision-2', 'queued emission reads the durable post-accept server head')
+    assert.equal(sourceSync.handleSourceChangeResult({
+      type: 'source-change-result', project: 'daemon-source-change', requestId: sent[1].requestId,
+      ok: false, status: 'stale-base', authority: { state: 'current', currentRevision: 'revision-3' },
+    }), true)
+    const sourceChanges = sent.filter(message => message.type === 'source-change')
+    assert.equal(sourceChanges.length, 3, 'stale-base observation emits one retry')
+    assert.equal(sourceChanges[2].expectedRevision, 'revision-3', 'retry emission reads the durable observed server head')
   } finally {
     sourceSync.closeAll()
   }

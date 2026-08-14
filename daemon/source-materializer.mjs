@@ -101,7 +101,14 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     if (!bindingId || !sourceDir) throw new Error('bindingId and sourceDir are required')
     const state = journal()
     const existing = state.bindings[bindingId]
-    if (existing) return existing
+    if (existing) {
+      if (existing.serverHeadRevision == null && serverHeadRevision != null) {
+        state.bindings[bindingId] = { ...existing, sourceDir, serverHeadRevision, status: 'unknown' }
+        writeJournal(state, 'seed-binding-head')
+        return journal().bindings[bindingId]
+      }
+      return existing
+    }
     state.bindings[bindingId] = {
       bindingId,
       sourceDir,
@@ -128,6 +135,15 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
       conflicts: [],
     }
     writeJournal(state, 'accept-local-revision')
+    return journal().bindings[bindingId]
+  }
+
+  function observeServerHead(bindingId, sourceRevision) {
+    const state = journal()
+    const binding = state.bindings[bindingId]
+    if (!binding) throw new Error(`Binding ${bindingId} is not registered`)
+    state.bindings[bindingId] = { ...binding, serverHeadRevision: sourceRevision }
+    writeJournal(state, 'observe-server-head')
     return journal().bindings[bindingId]
   }
 
@@ -325,5 +341,5 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     return false
   }
 
-  return { plan, apply, readBinding, readMaterialization, seedBinding, acceptLocalRevision, consumeCompletedPath }
+  return { plan, apply, readBinding, readMaterialization, seedBinding, acceptLocalRevision, observeServerHead, consumeCompletedPath }
 }

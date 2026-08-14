@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -7,7 +8,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 
-import { closeProjectStore, createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateProject } from './project-store.mjs'
+import { createSourceSync } from '../../daemon/source-sync.mjs'
+import { closeProjectStore, createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, updateProject } from './project-store.mjs'
 
 async function unusedPort() {
   const server = createServer()
@@ -54,10 +56,18 @@ async function stopServer(server) {
   await new Promise(resolve => server.child.once('exit', resolve))
 }
 
-async function openDaemon(port, { machineId = 'durable-source-wire', sourceBindings = [] } = {}) {
+async function openDaemon(port, { machineId = 'durable-source-wire', sourceBindings = [], onRpc = null } = {}) {
   const ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet-daemon`, { rejectUnauthorized: false })
   ws._testMessages = []
   ws.on('message', raw => ws._testMessages.push(JSON.parse(String(raw))))
+  if (onRpc) ws.on('message', raw => {
+    const message = JSON.parse(String(raw))
+    if (message.type !== 'rpc') return
+    void Promise.resolve().then(() => onRpc(message)).then(
+      result => ws.send(JSON.stringify({ type: 'rpc-reply', id: message.id, result })),
+      error => ws.send(JSON.stringify({ type: 'rpc-reply', id: message.id, error: error?.message || String(error) })),
+    )
+  })
   await new Promise((resolve, reject) => {
     ws.once('open', resolve)
     ws.once('error', reject)
@@ -122,54 +132,116 @@ test('offline binding remains required and completes when its daemon reconnects'
   let server
   let sourceWs
   let targetWs
+  let targetSync
   try {
     await initProjectStore(projectsDir)
     createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
     await updateProject(project, { pages: 1, buildStatus: 'success' })
     mkdirSync(join(projectsDir, project, 'output'), { recursive: true })
     writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
+    mkdirSync(join(projectsDir, project, 'source'), { recursive: true })
+    writeFileSync(join(projectsDir, project, 'source', 'main.tex'), 'base main\n')
+    writeFileSync(join(projectsDir, project, 'source', 'delete.tex'), 'delete me\n')
+    await updateClientSourceManifest(project, ['delete.tex', 'main.tex'])
+    const lifecycle = await sourceLifecycleStore(project, { context: { referencedRoots: ['delete.tex', 'main.tex'] } })
+    const base = lifecycle.bootstrap({
+      expectedRevision: null,
+      sourceManifest: ['delete.tex', 'main.tex'],
+      files: [
+        { path: 'delete.tex', content: 'delete me\n' },
+        { path: 'main.tex', content: 'base main\n' },
+      ],
+    })
+    assert.equal(base.ok, true)
     await closeProjectStore()
+
+    const targetDir = join(root, 'target-checkout')
+    mkdirSync(targetDir, { recursive: true })
+    writeFileSync(join(targetDir, 'main.tex'), 'base main\n')
+    writeFileSync(join(targetDir, 'delete.tex'), 'delete me\n')
+    writeFileSync(join(targetDir, 'unmanaged.txt'), 'keep me\n')
+    const watcher = new EventEmitter()
+    watcher.close = () => Promise.resolve()
+    const targetSent = []
+    targetSync = createSourceSync({
+      sourceBindingsFile: join(root, 'target-bindings.json'),
+      log: { info() {}, warn() {}, error() {} },
+      sendMsg(message) { targetSent.push(message); return true },
+      isConnected: () => true,
+      resolveEditor: () => null,
+      reconcileIntervalMs: 60_000,
+      watch() { return watcher },
+    })
+    const targetBinding = targetSync.bindSource(project, targetDir)
+    targetSync.sync([{
+      name: project, sourceDir: targetDir, mainFile: 'main.tex', format: 'svg',
+      sourceRevision: base.authority.currentRevision,
+      sourceManifest: ['delete.tex', 'main.tex'],
+    }], { authoritativeRevisions: true })
 
     server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
     targetWs = await openDaemon(port, {
       machineId: 'target-machine',
-      sourceBindings: [{ bindingId: 'target-binding', project }],
+      sourceBindings: [{ bindingId: targetBinding.bindingId, project }],
     })
     targetWs.close()
     await new Promise(resolve => targetWs.once('close', resolve))
     targetWs = null
 
-    sourceWs = await openDaemon(port, { machineId: 'source-machine' })
+    sourceWs = await openDaemon(port, {
+      machineId: 'source-machine',
+      sourceBindings: [{ bindingId: 'source-binding', project }],
+    })
     const envelope = {
-      type: 'source-change', project, requestId: 'R-offline', expectedRevision: null,
+      type: 'source-change', project, requestId: 'R-offline', expectedRevision: base.authority.currentRevision,
       sourceBindingId: 'source-binding',
-      files: [{ path: 'main.tex', content: 'offline target content\n' }],
-      deletedFiles: [], sourceManifest: ['main.tex'], editedBy: 'agent',
+      files: [
+        { path: 'main.tex', content: 'changed main\n' },
+        { path: 'added.tex', content: 'added file\n' },
+      ],
+      deletedFiles: ['delete.tex'], sourceManifest: ['added.tex', 'main.tex'], editedBy: 'agent',
       __daemon_outbox_id: 'D-offline',
     }
+    const rejectedMessages = await deliver(sourceWs, {
+      ...envelope,
+      requestId: 'R-invalid-origin',
+      sourceBindingId: targetBinding.bindingId,
+      __daemon_outbox_id: 'D-invalid-origin',
+    })
+    const rejected = rejectedMessages.find(message => message.type === 'source-change-result')
+    assert.equal(rejected?.status, 'invalid-source-binding')
+    assert.equal(rejected?.httpStatus, 403)
     const acceptedMessages = await deliver(sourceWs, envelope)
     const accepted = acceptedMessages.find(message => message.type === 'source-change-result')
     assert.equal(accepted?.ok, true, JSON.stringify(acceptedMessages))
     const registry = JSON.parse(readFileSync(bindingRegistry, 'utf8'))
-    assert.equal(registry.bindings['target-binding'].daemonKey, 'target-machine:test')
+    assert.equal(registry.bindings[targetBinding.bindingId].daemonKey, 'target-machine:test')
     const operations = JSON.parse(readFileSync(join(projectsDir, project, '.source-lifecycle', 'operations.json'), 'utf8'))
-    assert.equal(operations.revisionLifecycle[accepted.sourceRevision].replicas['target-binding'].state, 'pending')
+    assert.equal(operations.revisionLifecycle[accepted.sourceRevision].replicas[targetBinding.bindingId].state, 'pending')
 
     targetWs = await openDaemon(port, {
       machineId: 'target-machine',
-      sourceBindings: [{ bindingId: 'target-binding', project }],
+      sourceBindings: [{ bindingId: targetBinding.bindingId, project }],
+      onRpc: async message => {
+        const result = targetSync.applyAcceptedSourceUpdate(message)
+        for (const file of ['main.tex', 'added.tex', 'delete.tex']) {
+          watcher.emit(file === 'delete.tex' ? 'unlink' : 'change', join(targetDir, file))
+        }
+        await new Promise(resolve => setTimeout(resolve, 250))
+        return result
+      },
     })
     const rpc = await nextRpc(targetWs, 'apply-source-update').catch(error => {
       throw new Error(`${error.message}\nserver log:\n${server.output()}`)
     })
-    assert.equal(rpc.bindingId, 'target-binding')
+    assert.equal(rpc.bindingId, targetBinding.bindingId)
     assert.equal(rpc.sourceRevision, accepted.sourceRevision)
-    targetWs.send(JSON.stringify({
-      type: 'rpc-reply',
-      id: rpc.id,
-      result: { ok: true, bindingId: 'target-binding', materializedRevision: rpc.sourceRevision, applied: ['main.tex'] },
-    }))
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 350))
+    assert.equal(readFileSync(join(targetDir, 'main.tex'), 'utf8'), 'changed main\n')
+    assert.equal(readFileSync(join(targetDir, 'added.tex'), 'utf8'), 'added file\n')
+    assert.equal(existsSync(join(targetDir, 'delete.tex')), false)
+    assert.equal(readFileSync(join(targetDir, 'unmanaged.txt'), 'utf8'), 'keep me\n')
+    assert.equal(targetSent.filter(message => message.type === 'source-change').length, 0)
 
     sourceWs.close()
     targetWs.close()
@@ -177,9 +249,10 @@ test('offline binding remains required and completes when its daemon reconnects'
     targetWs = null
     await stopServer(server)
     await initProjectStore(projectsDir)
-    const lifecycle = await sourceLifecycleStore(project)
-    assert.equal(lifecycle.readRevisionLifecycle(project, accepted.sourceRevision).replicas['target-binding'].state, 'materialized')
+    const restartedLifecycle = await sourceLifecycleStore(project)
+    assert.equal(restartedLifecycle.readRevisionLifecycle(project, accepted.sourceRevision).replicas[targetBinding.bindingId].state, 'materialized')
   } finally {
+    await targetSync?.closeAll()
     sourceWs?.terminate()
     targetWs?.terminate()
     await stopServer(server)
@@ -193,11 +266,14 @@ for (const boundary of ['after-source-mutation', 'after-terminal-result']) {
     const root = mkdtempSync(join(tmpdir(), 'tlda-source-wire-'))
     const projectsDir = join(root, 'projects')
     const fleetDb = join(root, 'fleet.db')
+    const bindingRegistry = join(root, 'server-source-bindings.json')
     const project = `paper-${boundary}`
+    const machineId = `durable-source-wire-${boundary}`
     const port = await unusedPort()
     const operation = { operation_id: `O-${boundary}`, kind: 'Edit', files: [{ path: 'main.tex' }] }
     const envelope = {
       type: 'source-change', project, requestId: `R-${boundary}`, expectedRevision: null,
+      sourceBindingId: `binding-${boundary}`,
       files: [{ path: 'main.tex', content: `content-${boundary}\n` }], deletedFiles: [], sourceManifest: ['main.tex'],
       editedBy: 'agent', editOperations: [{ agentId: 'agent', operation }], __daemon_outbox_id: `D-${boundary}`,
     }
@@ -211,8 +287,8 @@ for (const boundary of ['after-source-mutation', 'after-terminal-result']) {
       writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
       await closeProjectStore()
 
-      server = await startServer({ port, projectsDir, fleetDb, crashBoundary: boundary })
-      ws = await openDaemon(port)
+      server = await startServer({ port, projectsDir, fleetDb, bindingRegistry, crashBoundary: boundary })
+      ws = await openDaemon(port, { machineId, sourceBindings: [{ bindingId: `binding-${boundary}`, project }] })
       const beforeCrash = []
       ws.on('message', raw => { beforeCrash.push(JSON.parse(String(raw))) })
       ws.send(JSON.stringify(envelope))
@@ -223,8 +299,8 @@ for (const boundary of ['after-source-mutation', 'after-terminal-result']) {
       ws.terminate()
       ws = null
 
-      server = await startServer({ port, projectsDir, fleetDb })
-      ws = await openDaemon(port)
+      server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+      ws = await openDaemon(port, { machineId, sourceBindings: [{ bindingId: `binding-${boundary}`, project }] })
       const acceptedMessages = await deliver(ws, envelope)
       const acceptedResult = acceptedMessages.find(message => message.type === 'source-change-result')
       assert.ok(acceptedResult)
@@ -246,8 +322,8 @@ for (const boundary of ['after-source-mutation', 'after-terminal-result']) {
       assert.deepEqual(byRequest.terminalResult.operationIds, [operation.operation_id])
       await closeProjectStore()
 
-      server = await startServer({ port, projectsDir, fleetDb })
-      ws = await openDaemon(port)
+      server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+      ws = await openDaemon(port, { machineId, sourceBindings: [{ bindingId: `binding-${boundary}`, project }] })
       const replayMessages = await deliver(ws, envelope)
       assert.deepEqual(replayMessages, [acceptedResult, { type: 'daemon-outbox-ack', outbox_id: envelope.__daemon_outbox_id }])
     } finally {

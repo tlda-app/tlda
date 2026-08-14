@@ -154,7 +154,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   const sourceMaterializer = createSourceMaterializer({ journalPath: `${sourceBindingsFile}.materializations.json` })
 
   function sendSourceChange(payload, retried = false) {
-    const message = sourceCorrelation.prepare(payload, retried)
+    const binding = payload.sourceBindingId ? sourceMaterializer.readBinding(payload.sourceBindingId) : null
+    const message = sourceCorrelation.prepare({
+      ...payload,
+      expectedRevision: binding?.serverHeadRevision ?? payload.expectedRevision ?? null,
+    }, retried)
     if (!message) {
       const state = sourceCorrelation.state(payload.project)
       if (state.queued) log.info(`source change queued behind in-flight request for ${payload.project}`)
@@ -213,6 +217,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   function handleSourceChangeResult(message) {
     const request = sourceCorrelation.pendingRequest(message.requestId)
     if (!request) return false
+    const bindingId = request.payload?.sourceBindingId
+    if (!message.ok && message.status === 'stale-base' && bindingId && message.authority?.currentRevision) {
+      sourceMaterializer.observeServerHead(bindingId, message.authority.currentRevision)
+    }
     const conflicted = message?.status === 'stale-base' ? writeConflictsToWorkingCopy(message) : []
     const handled = sourceCorrelation.handle(message)
     if (!handled) return false
@@ -220,7 +228,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     const operationIds = (request.payload?.editOperations || (request.payload?.editOperation ? [{ operation: request.payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)
     if (message.ok) {
       sourceCorrelation.settleOperations(message.project, operationIds)
-      const bindingId = request.payload?.sourceBindingId
       if (bindingId && message.sourceRevision) sourceMaterializer.acceptLocalRevision(bindingId, message.sourceRevision)
     }
     if (conflicted.length > 0) sourceCorrelation.holdForHuman(message.project)
@@ -351,9 +358,15 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   function saveSourceBindings(bindings) {
     fs.mkdirSync(path.dirname(sourceBindingsFile), { recursive: true })
-    const pending = `${sourceBindingsFile}.pending-${process.pid}`
+    const pending = `${sourceBindingsFile}.pending-${process.pid}-${randomUUID()}`
     fs.writeFileSync(pending, `${JSON.stringify(bindings, null, 2)}\n`)
+    const pendingFd = fs.openSync(pending, 'r')
+    try { fs.fsyncSync(pendingFd) } finally { fs.closeSync(pendingFd) }
     fs.renameSync(pending, sourceBindingsFile)
+    const targetFd = fs.openSync(sourceBindingsFile, 'r')
+    try { fs.fsyncSync(targetFd) } finally { fs.closeSync(targetFd) }
+    const parentFd = fs.openSync(path.dirname(sourceBindingsFile), 'r')
+    try { fs.fsyncSync(parentFd) } finally { fs.closeSync(parentFd) }
   }
 
   function bindSource(project, sourceDir) {
@@ -714,9 +727,9 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       if (state.watcher !== watcher) return
       const rel = sourceRel(state.sourceDir, filePath)
       const fingerprint = sourcePathFingerprint(filePath)
-      const previous = state.pathFingerprints.get(filePath)
       const targetHash = fs.existsSync(filePath) ? createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') : null
-      if (rel && sourceMaterializer.consumeCompletedPath(state.bindingId, rel, targetHash) && previous === fingerprint) {
+      if (rel && sourceMaterializer.consumeCompletedPath(state.bindingId, rel, targetHash)) {
+        state.pathFingerprints.set(filePath, fingerprint)
         return
       }
       state.pathFingerprints.set(filePath, fingerprint)
