@@ -67,7 +67,7 @@ import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetIdentity, u
 import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '../fleet/search-query'
 import { parseMessageFilter } from '../../shared/fleet-labels.mjs'
 // @ts-ignore — vanilla JS module
-import { CANONICAL_REFERENCE_SOURCE, canonicalEventReference, parseCanonicalEventReference, parseCanonicalSearchReference } from '../../shared/canonical-references.mjs'
+import { canonicalEventReference, parseCanonicalEventReference, parseCanonicalSearchReference } from '../../shared/canonical-references.mjs'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -3479,10 +3479,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // doc-link resolution to a single item's HTML. Called by ChatMessageRow only
   // for visible items, so the cost scales with the viewport not the message count.
   const postProcess = useCallback((html: string): string => {
-    html = transformNonCode(html, (text) => text.replace(
-      new RegExp(CANONICAL_REFERENCE_SOURCE, 'g'),
-      (reference) => `<span class="ref-chip" data-canonical-event-ref="${reference}" data-token="${reference}">${reference}</span>`,
-    ))
     // Turn «type:label» reference tokens into chips — only in non-code regions
     // and not when immediately preceded by a quote character (quoted = literal).
     html = transformNonCode(html, (text) => text.replace(/(?<!["'])«(.+?)»/g, (_match, inner) => {
@@ -7699,14 +7695,14 @@ export function FleetChatFilterMode({
   )
 }
 
-/** Underlay div that mirrors textarea content, highlighting <<ref>> tokens */
+/** Underlay div that mirrors textarea content, highlighting explicit «ref» tokens. */
 function InputHighlightUnderlay({ inputRef }: { inputRef: React.RefObject<HTMLInputElement | null> }) {
   const [html, setHtml] = useState('')
 
   useEffect(() => {
     const el = inputRef.current as HTMLTextAreaElement | null
     if (!el) return
-    const referencePatternSource = `«.+?»|${CANONICAL_REFERENCE_SOURCE}`
+    const referencePatternSource = '«.+?»'
     const sync = () => {
       const val = el.value
       if (!val || !new RegExp(referencePatternSource).test(val)) {

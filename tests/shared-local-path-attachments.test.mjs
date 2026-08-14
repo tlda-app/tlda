@@ -50,3 +50,36 @@ test('explicit markdown file links remain attachments even when bare paths are p
   assert.equal(result.inlineAttachments.length, 1)
   assert.equal(result.inlineAttachments[0].path, file)
 })
+
+test('explicit markdown image syntax preserves image presentation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-explicit-image-'))
+  const file = path.join(dir, 'plot.png')
+  fs.writeFileSync(file, 'png')
+
+  const result = detectAttachments(
+    `See ![plot](${file}).`,
+    dir,
+    'https://fleet.example',
+    { preserveBarePath: () => true },
+  )
+
+  assert.equal(result.resolvedMessage, 'See ![plot]({{att:0}}).')
+  assert.equal(result.inlineAttachments.length, 1)
+  assert.equal(result.inlineAttachments[0].path, file)
+})
+
+test('bare local image path remains ordinary text when bare paths are preserved', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-bare-image-'))
+  const file = path.join(dir, 'plot.png')
+  fs.writeFileSync(file, 'png')
+
+  const result = detectAttachments(
+    `See ${file}.`,
+    dir,
+    'https://fleet.example',
+    { preserveBarePath: () => true },
+  )
+
+  assert.equal(result.resolvedMessage, `See ${file}.`)
+  assert.deepEqual(result.inlineAttachments, [])
+})

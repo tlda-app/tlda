@@ -36,14 +36,3 @@ export function parseCanonicalReference(value) {
 }
 
 export const CANONICAL_REFERENCE_SOURCE = String.raw`\b(?:[a-z][a-z0-9_-]*#\d+|search#(?:msg|session):\d+)\b`
-
-// `image#<id>` is a canonical event reference whose id is scoped to the
-// message it appears in — the same index space `{{att:N}}` already uses —
-// not a globally unique event id like `chat#<id>`. Every consumer of a
-// message's inline attachments already knows how to resolve `{{att:N}}`, so
-// normalizing here means no second resolution path to keep in sync.
-const IMAGE_REF_RE = /\bimage#(\d+)\b/g
-
-export function expandImageRefsToAttachmentTokens(text) {
-  return String(text || '').replace(IMAGE_REF_RE, (_, id) => `{{att:${id}}}`)
-}

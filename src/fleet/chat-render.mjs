@@ -23,7 +23,6 @@ import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_n
 import { uniqueLiveAgentForLabel } from './send-target-binding.mjs'
 import { isFullyMarked } from '../../shared/terminal-system-markers.mjs'
 import { terminalGlyphHtml } from './terminal-glyph.mjs'
-import { expandImageRefsToAttachmentTokens } from '../../shared/canonical-references.mjs'
 
 const BIG_CHAT_GAP_SECONDS = 1800
 
@@ -264,7 +263,7 @@ function countdownLabel(ts, now = Date.now()) {
 // whole message. renderMarkdown is the same function passed via ctx to renderChatLine.
 export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown, message = null) {
   // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
-  let processed = expandImageRefsToAttachmentTokens(text)
+  let processed = String(text || '')
   if (inlineAttachments?.length) {
     processed = processed.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
       const att = inlineAttachments[+idx]
@@ -646,7 +645,7 @@ export function renderChatLine(m, ctx) {
   // Pre-process: resolve image attachments in markdown image syntax before renderMarkdown.
   // ![alt]({{att:N}}) → ![alt](URL) so marked renders a real <img src="URL"> that DOMPurify accepts.
   // Without this, DOMPurify strips the invalid {{att:N}} src, leaving a broken image icon.
-  let processedText = expandImageRefsToAttachmentTokens(rawText)
+  let processedText = String(rawText || '')
   if (m._inlineAttachments?.length) {
     processedText = processedText.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
       const att = m._inlineAttachments[+idx]
