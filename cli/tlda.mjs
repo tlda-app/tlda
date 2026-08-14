@@ -2493,6 +2493,7 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'restart') {
     requireLaunchd()
+    const previousPid = await launchdDaemonPid()
     try {
       await runLaunchctl(['print', daemonLaunchdTarget()])
     } catch (e) {
@@ -2501,7 +2502,7 @@ async function cmdFleetWatch(sub) {
       process.exit(1)
     }
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
-    const pid = await waitForTargetFleetDaemonCompletion()
+    const pid = await waitForTargetFleetDaemonCompletion({ previousPid })
     console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${pid})`))
     return
   }
@@ -3320,7 +3321,7 @@ async function cmdDeploy() {
   // 1. Build
   step('Building SPA (npm run build)')
   try {
-    execSync('npm run build', { cwd: tldaRoot, stdio: 'pipe', timeout: 180_000 })
+    execSync('npm run build', { cwd: tldaRoot, stdio: 'pipe' })
   } catch (e) {
     die('Build failed: ' + (e.stderr?.toString().trim().split('\n').pop() || e.message))
   }
@@ -3335,30 +3336,19 @@ async function cmdDeploy() {
 
   // 3. Restart server
   step('Stopping server')
-  try { execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server stop', { stdio: 'pipe', timeout: 10_000 }) } catch {}
+  execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'stop'], { stdio: 'inherit' })
   pass()
 
   step('Starting server')
   try {
-    execSync('node ' + JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs')) + ' server start', { stdio: 'pipe', timeout: 40_000 })
+    execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'start'], { stdio: 'inherit' })
   } catch (e) {
     die('Server failed to start: ' + e.message)
   }
   pass()
 
-  // 4. Wait for server ready
-  step('Waiting for server')
+  // 4. The attached start command returned only after /health was ready.
   const serverUrl = getServer()
-  let serverReady = false
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 500))
-    try {
-      const res = await fetch(`${serverUrl}/health`, { signal: AbortSignal.timeout(2000) })
-      if (res.ok) { serverReady = true; break }
-    } catch {}
-  }
-  if (!serverReady) die(`Server not responding at ${serverUrl}/health after 10s`)
-  pass(serverUrl)
 
   // 5. Verify SPA renders
   step('Verifying SPA serves pages')
@@ -4073,7 +4063,7 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   cwd,
   name,
   resolveIdentity = null,
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
+  timeoutMs = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS ? Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS) : null,
   intervalMs = 250,
 } = {}) {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
@@ -4104,16 +4094,16 @@ export async function pollLifecycleResumeIdentity(result, {
   cwd,
   name,
   resolveIdentity = null,
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
+  timeoutMs = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS ? Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS) : null,
   intervalMs = 250,
 } = {}) {
   if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
     return { identity: null, diagnostics: { failureStage: 'skipped' } }
   }
   const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`)).resolveLiveSessionIdentity
-  const deadline = Date.now() + timeoutMs
+  const deadline = timeoutMs == null ? null : Date.now() + timeoutMs
   let identity = null
-  while (Date.now() <= deadline) {
+  while (deadline == null || Date.now() <= deadline) {
     identity = await resolver({
       agent: {
         id: result.fleetId,
@@ -4689,7 +4679,7 @@ async function moveLocalAgentAddress(agentId, {
 export async function waitForMovedAgentRuntime(agentId, {
   machineId,
   envName,
-  timeoutMs = 60_000,
+  timeoutMs = null,
   pollMs = 250,
   configDir = CONFIG_DIR,
   openMintStore = () => new MintStore(resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: envName }),
@@ -4697,9 +4687,9 @@ export async function waitForMovedAgentRuntime(agentId, {
   sleep = ms => new Promise(resolvePromise => setTimeout(resolvePromise, ms)),
 } = {}) {
   const expectedDaemonKey = `${machineId}:${envName}`
-  const deadline = Date.now() + timeoutMs
+  const deadline = timeoutMs == null ? null : Date.now() + timeoutMs
   let last = null
-  while (Date.now() < deadline) {
+  while (deadline == null || Date.now() < deadline) {
     const mintStore = openMintStore()
     let facts
     try {
@@ -4862,7 +4852,7 @@ export async function moveAgentToEnvironment({
       fleet_id: agent.id,
       ...wakeGrant,
       ...(alreadyOnTarget ? { takeover_existing: true } : {}),
-    }, { socketPath: targetSocket, timeoutMs: 120000 })
+    }, { socketPath: targetSocket })
     if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
     targetRuntime = await readbackImpl(agent.id, {
       machineId: targetMachine,
@@ -4904,7 +4894,6 @@ export async function moveAgentToEnvironment({
           takeover_existing: true,
         }, {
           socketPath: fleetDaemonSocketForConfig(effectiveSourceEnv),
-          timeoutMs: 120000,
         })
         if (!sourceWake?.ok) throw new Error(sourceWake?.error || `source wake failed for ${agent.id}`)
         await readbackImpl(agent.id, {
@@ -5151,37 +5140,45 @@ async function restartMcpAgents(rest) {
   // your CLI is running in, so the process that would have issued the wake dies
   // first and you never come back. The daemon outlives you and finishes the job.
   const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
-  let ok = 0, fail = 0
+  let ok = 0
+  const pending = [...targets]
+  let attempt = 0
   try {
-    for (const name of targets) {
-      process.stdout.write(`restart-mcp ${name} … `)
-      try {
-        const stored = mintStore.resolve(name)
-        if (!stored) throw new Error(`no local agent found for "${name}"`)
-        const res = await callLocalDaemonLifecycle('restart', {
-          mint_id: stored.mintId,
-          agent_id: stored.fleetId,
-          // So the daemon can check tmux rather than believe kill-session, which
-          // answers ok when it cannot place the agent at all.
-          tmux_session: `fleet-${stored.friendlyName || name}`,
-          wait_until_complete: true,
-        }, { onEvent: printMintLifecycleEvent })
-        if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
-        console.log('ok')
-        ok++
-      } catch (e) {
-        // Reported, not rethrown, so one bad agent does not abandon the rest of
-        // the batch — the point of taking a list is restarting a list. The
-        // failure is printed per agent and the command exits nonzero below.
-        console.log(`FAILED: ${e?.message || String(e)}`)
-        fail++
+    while (pending.length) {
+      attempt++
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const name = pending[i]
+        process.stdout.write(`restart-mcp ${name} … `)
+        try {
+          const stored = mintStore.resolve(name)
+          if (!stored) throw new Error(`no local agent found for "${name}"`)
+          const res = await callLocalDaemonLifecycle('restart', {
+            mint_id: stored.mintId,
+            agent_id: stored.fleetId,
+            // So the daemon can check tmux rather than believe kill-session, which
+            // answers ok when it cannot place the agent at all.
+            tmux_session: `fleet-${stored.friendlyName || name}`,
+            wait_until_complete: true,
+          }, { onEvent: printMintLifecycleEvent })
+          if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
+          console.log('ok')
+          pending.splice(i, 1)
+          ok++
+        } catch (e) {
+          // This target remains pending and is retried after the other targets run.
+          console.log(`unfinished: ${e?.message || String(e)}`)
+        }
+      }
+      if (pending.length) {
+        const delayMs = Math.min(30_000, 500 * (2 ** Math.min(attempt - 1, 6)))
+        console.error(`${pending.length} restart-mcp operation(s) remain; retrying in ${Math.ceil(delayMs / 1000)}s`)
+        await new Promise(resolve => setTimeout(resolve, delayMs))
       }
     }
   } finally {
     mintStore.close()
   }
-  console.log(`Done: ${ok} ok${fail ? `, ${fail} failed` : ''}.`)
-  process.exit(fail ? 1 : 0)
+  console.log(`Done: ${ok} ok.`)
 }
 
 // Top-level attach is rejected earlier with a noun-first message; this helper
