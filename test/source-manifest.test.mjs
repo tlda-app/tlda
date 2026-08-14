@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { collectProjectSourceHashes, splitServerSourcePathsByManifest } from '../cli/lib/source-files.mjs'
-import { isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
+import { isManagedSourcePath, isQuartoRenderOutput, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 
 test('named Quarto book output directories are render output', () => {
   assert.equal(isQuartoRenderOutput('_book-ctd/lectures/chapter.html', 'index.qmd'), true)
@@ -28,6 +28,20 @@ test('markdown main file rule does not admit unrelated markdown beside TeX', () 
   assert.equal(isSourceFilePath('paper.md', latex), true)
   assert.equal(isSourceFilePath('notes.md', latex), false)
   assert.equal(isSourceFilePath('notes.md', { ...latex, referencedRoots: ['notes.md'] }), true)
+})
+
+test('declared managed membership is extension-independent while discovery stays conservative', () => {
+  const latex = { format: 'svg', mainFile: 'main.tex' }
+  for (const path of ['data/model.bin', 'figures/input.pdf', 'assets/extensionless']) {
+    assert.equal(isSourceFilePath(path, latex), false)
+    assert.equal(isManagedSourcePath(path, latex), true)
+  }
+  assert.deepEqual(
+    normalizeSourceManifest(['data/model.bin', 'figures/input.pdf', 'assets/extensionless'], latex),
+    ['assets/extensionless', 'data/model.bin', 'figures/input.pdf'],
+  )
+  assert.equal(isManagedSourcePath('.git/config', latex), false)
+  assert.equal(isManagedSourcePath('main.aux', latex), false)
 })
 
 test('qmd batch manifests carry only server paths surviving the final manifest', () => {

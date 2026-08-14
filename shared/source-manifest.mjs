@@ -26,6 +26,8 @@ export const BUILD_JUNK_SUFFIXES = [
   '.nav', '.snm', '.vrb', '.dvi', '.pdf', '.fmt',
 ]
 
+const DECLARED_MANIFEST_JUNK_SUFFIXES = BUILD_JUNK_SUFFIXES.filter(suffix => !['.pdf', '.bbl'].includes(suffix))
+
 function normalizePath(path) {
   return String(path || '').replace(/\\/g, '/').replace(/^\.\/+/, '')
 }
@@ -66,6 +68,7 @@ export function isQuartoRenderOutput(path, mainFile = '') {
   if (dirs.some(d => d === '.quarto' || d === '_freeze' || d === '_site' || d === '_book' || d.startsWith('_book-'))) return true
   if (dirs.some(d => d.endsWith('_files') || d.endsWith('_cache'))) return true
   // The rendered sibling of the main file — `talk.qmd` renders to `talk.html`.
+  if (!/\.qmd$/i.test(normalizePath(mainFile))) return false
   const rendered = normalizePath(mainFile).replace(/\.qmd$/i, '.html')
   return !!rendered && rel === rendered
 }
@@ -152,6 +155,20 @@ export function isSourceFilePath(path, context = {}) {
   return true
 }
 
+// Once a complete manifest declares a path, membership comes from that
+// declaration rather than its extension. Discovery may remain conservative;
+// authority validation only enforces containment and generated/junk exclusions.
+export function isManagedSourcePath(path, context = {}) {
+  const rel = normalizePath(path)
+  if (!rel || rel.startsWith('/') || rel.split('/').some(part => part === '..' || part === '')) return false
+  if (rel.split('/').some(part => IGNORED_SOURCE_DIRS.has(part))) return false
+  const ctx = sourceManifestContext(context)
+  const lower = rel.toLowerCase()
+  if (DECLARED_MANIFEST_JUNK_SUFFIXES.some(suffix => lower.endsWith(suffix) || lower.includes('_fmt.'))) return false
+  if (ctx.format === 'qmd' && isQuartoRenderOutput(rel, ctx.mainFile)) return false
+  return true
+}
+
 export function isTextSourcePath(path) {
   return TEXT_EXTENSIONS.has(extname(path).toLowerCase())
 }
@@ -165,7 +182,7 @@ export function diffSourceHashes(localHashes, serverHashes) {
 }
 
 export function normalizeSourceManifest(paths, context = {}) {
-  return [...new Set((paths || []).filter(p => typeof p === 'string').filter(p => isSourceFilePath(p, context)))].sort()
+  return [...new Set((paths || []).filter(p => typeof p === 'string').map(normalizePath).filter(p => isManagedSourcePath(p, context)))].sort()
 }
 
 export function sourceFilesFromApiResponse(response) {

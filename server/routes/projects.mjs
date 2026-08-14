@@ -49,7 +49,7 @@ import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '..
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
-import { isSourceFilePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
+import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf, recoverProjectSourceTransactions, readOverleafLocalHead, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
@@ -1215,6 +1215,9 @@ export async function processProjectPushSerialized(name, body, transactionTest =
           mutation: acceptedSourceMutation,
         }],
       })
+    } else if (acceptedSourceMutation?.sourceRevision) {
+      const authority = lifecycle.readAuthority()
+      lifecycle.recordAcceptedRevision(name, acceptedSourceMutation.sourceRevision, authority.acceptSeq)
     }
     await transaction.commit()
     if (acceptedSourceMutation) {
@@ -1539,7 +1542,7 @@ async function validateSourcePushRequest(name, project, { files, deletedFiles, s
       return e.message
     }
     const normalized = normalizeSourceManifest([filePath], context)
-    if (normalized.length !== 1 || normalized[0] !== filePath || !isSourceFilePath(filePath, context)) {
+    if (normalized.length !== 1 || normalized[0] !== filePath || !isManagedSourcePath(filePath, context)) {
       return `${label} is not an authored source path: ${filePath}`
     }
     return null

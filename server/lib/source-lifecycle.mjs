@@ -473,6 +473,30 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         .filter(lifecycle => lifecycle?.project === project)
         .sort((a, b) => (a.acceptSeq ?? 0) - (b.acceptSeq ?? 0))
     },
+    recordAcceptedRevision(project, sourceRevision, acceptSeq) {
+      const journal = operationJournal()
+      const existing = journal.revisionLifecycle[sourceRevision]
+      if (existing) {
+        if (existing.project !== project) {
+          throw new Error(`Accepted revision identity mismatch for ${sourceRevision}`)
+        }
+        return existing
+      }
+      const updatedAt = new Date().toISOString()
+      journal.revisionLifecycle[sourceRevision] = {
+        project,
+        sourceRevision,
+        acceptSeq,
+        state: 'accepted',
+        build: { state: 'pending', updatedAt },
+        version: { state: 'pending', updatedAt },
+        mirror: { state: 'pending', updatedAt },
+        acceptedAt: updatedAt,
+        updatedAt,
+      }
+      writeOperationJournal(journal)
+      return operationJournal().revisionLifecycle[sourceRevision]
+    },
     recordRevisionPhase(project, sourceRevision, phase, stateName, result = null) {
       if (!['build', 'version', 'mirror'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
       const journal = operationJournal()

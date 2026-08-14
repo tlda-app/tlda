@@ -1045,7 +1045,7 @@ async function main() {
     })
 
     assert.deepEqual(normalizeSourceManifest(['README.md'], await readProject('markdown-readme')), ['README.md'])
-    assert.deepEqual(normalizeSourceManifest(['README.md'], await readProject('latex-project')), [])
+    assert.deepEqual(normalizeSourceManifest(['README.md'], await readProject('latex-project')), ['README.md'])
 
     console.log('PASS source manifest contract')
   } finally {
