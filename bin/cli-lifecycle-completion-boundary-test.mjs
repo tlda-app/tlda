@@ -2,12 +2,63 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { MintStore } from '../daemon/mint-store.mjs'
 import { daemonLifecycleSocketPath } from '../shared/daemon-socket-path.mjs'
+import {
+  pollLifecycleResumeIdentity,
+  waitForMovedAgentRuntime,
+} from '../cli/tlda.mjs'
+
+let identityAttempts = 0
+const identity = await pollLifecycleResumeIdentity({
+  fleetId: 'fleet:completion-proof',
+  tmuxSession: 'fleet-completion-proof',
+  harness: 'codex',
+}, {
+  cwd: process.cwd(),
+  name: 'completion-proof',
+  intervalMs: 0,
+  resolveIdentity: async () => {
+    identityAttempts++
+    return identityAttempts === 3 ? { sessionId: 'session-proof', model: 'proof-model' } : null
+  },
+})
+assert.equal(identityAttempts, 3)
+assert.equal(identity.identity.sessionId, 'session-proof')
+
+let runtimeAttempts = 0
+const moved = await waitForMovedAgentRuntime('fleet:completion-proof', {
+  machineId: 'proof-machine',
+  envName: 'proof-env',
+  pollMs: 0,
+  openMintStore: () => ({
+    resolve: () => {
+      runtimeAttempts++
+      return {
+        processState: {
+          env_name: 'proof-env',
+          daemon_key: 'proof-machine:proof-env',
+          tmux_session: 'fleet-completion-proof',
+        },
+      }
+    },
+    close() {},
+  }),
+  inspectRuntime: async () => runtimeAttempts === 3 ? {
+    runtime: true,
+    mcp: true,
+    fleetId: 'fleet:completion-proof',
+    envName: 'proof-env',
+    daemonKey: 'proof-machine:proof-env',
+  } : null,
+  sleep: async () => {},
+})
+assert.equal(runtimeAttempts, 3)
+assert.equal(moved.ok, true)
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-cli-lifecycle-completion-'))
 const configDir = join(root, 'config')
@@ -82,6 +133,17 @@ try {
 } finally {
   await new Promise(resolve => daemon.close(resolve))
   rmSync(root, { recursive: true, force: true })
+}
+
+const cliSource = readFileSync(join(process.cwd(), 'cli', 'tlda.mjs'), 'utf8')
+const restart = cliSource.match(/async function restartMcpAgents\(rest\)[\s\S]*?\n\}/)?.[0] || ''
+assert.match(restart, /while \(pending\.length\)/)
+assert.match(restart, /pending\.splice\(i, 1\)/)
+assert.match(restart, /retrying in/)
+
+const agentDispatch = cliSource.match(/async function cmdAgent\(\)[\s\S]*?\n\}/)?.[0] || ''
+for (const operation of ['reanimate', 'move', 'set-mint-machine', 'dismiss', 'permissions']) {
+  assert.match(agentDispatch, new RegExp(`case '${operation}':[\\s\\S]*?finishCliOperation`))
 }
 
 console.log('cli lifecycle completion boundary: ok')

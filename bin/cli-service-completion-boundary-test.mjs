@@ -10,6 +10,19 @@ import { spawn, spawnSync } from 'node:child_process'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
+const cliSource = readFileSync(join(root, 'cli', 'tlda.mjs'), 'utf8')
+const deploy = cliSource.match(/async function cmdDeploy\(\)[\s\S]*?\n\}\n\n\/\/ ---- setup/)?.[0] || ''
+assert.doesNotMatch(deploy, /server (?:start|stop)'[^\n]*timeout/)
+assert.match(deploy, /execFileSync\(process\.execPath, \[join\(tldaRoot, 'cli', 'tlda\.mjs'\), 'server', 'start'\]/)
+assert.match(deploy, /fetchForDeploy\('deploy SPA verification'/)
+assert.match(deploy, /fetchForDeploy\('deploy projects verification'/)
+assert.doesNotMatch(deploy, /projects API unavailable/)
+
+const doctor = cliSource.match(/async function cmdDoctor\(\)[\s\S]*?\n\}\n\nasync function cmdDoctorYolo/)?.[0] || ''
+assert.doesNotMatch(doctor, /server (?:start|stop)[^\n]*timeout/)
+assert.match(doctor, /fixFailures\+\+/)
+assert.match(doctor, /fix(?:es)?[^`]*did not complete/)
+
 const fixture = mkdtempSync(join(tmpdir(), 'tlda-cli-service-completion-'))
 const configDir = join(fixture, '.config', 'tlda')
 const binDir = join(fixture, 'fake-bin')
