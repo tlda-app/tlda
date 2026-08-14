@@ -468,6 +468,11 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       const lifecycle = operationJournal().revisionLifecycle[sourceRevision] || null
       return lifecycle?.project === project ? lifecycle : null
     },
+    listRevisionLifecycles(project) {
+      return Object.values(operationJournal().revisionLifecycle)
+        .filter(lifecycle => lifecycle?.project === project)
+        .sort((a, b) => (a.acceptSeq ?? 0) - (b.acceptSeq ?? 0))
+    },
     recordRevisionPhase(project, sourceRevision, phase, stateName, result = null) {
       if (!['build', 'version', 'mirror'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
       const journal = operationJournal()

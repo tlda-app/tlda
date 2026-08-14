@@ -64,7 +64,7 @@ import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTur
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
-import { killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
+import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
@@ -268,6 +268,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 await initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 await resetStaleBuildStates()
+await resumeDurableBuildIntents()
 
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests

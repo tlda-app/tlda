@@ -4,7 +4,7 @@
 // coalesces/serializes per project so rapid saves collapse to one build.
 
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { updateProject, getProjectsDir, sourceLifecycleStore } from './project-store.mjs'
+import { updateProject, getProjectsDir, listProjects, sourceLifecycleStore } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
 import { ForkTransport } from './build-transport.mjs'
@@ -98,6 +98,15 @@ export function createDispatcherWithOptions(transport, options = {}) {
   }, options)
 
   async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
+    if (sourceRevision) {
+      const lifecycle = await sourceLifecycleStore(name)
+      const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
+      if (!current) throw new Error(`Cannot lease build for unknown source revision ${sourceRevision}`)
+      lifecycle.recordRevisionPhase(name, sourceRevision, 'build', 'leased', {
+        acceptSeq,
+        leasedAt: new Date().toISOString(),
+      })
+    }
     return queue.dispatchBuild(name, { kind, sourceRevision, acceptSeq })
   }
 
@@ -113,3 +122,24 @@ const _default = createDispatcherWithOptions(ForkTransport, {
 })
 
 export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default
+
+export async function resumeDurableBuildIntents() {
+  const resumed = []
+  for (const project of await listProjects()) {
+    const lifecycle = await sourceLifecycleStore(project.name)
+    for (const revision of lifecycle.listRevisionLifecycles(project.name)) {
+      if (!['pending', 'leased'].includes(revision.build?.state)) continue
+      resumed.push({ project: project.name, sourceRevision: revision.sourceRevision, acceptSeq: revision.acceptSeq })
+      void dispatchBuild(project.name, {
+        sourceRevision: revision.sourceRevision,
+        acceptSeq: revision.acceptSeq,
+      }).catch(error => {
+        lifecycle.recordRevisionPhase(project.name, revision.sourceRevision, 'build', 'build_failed', {
+          error: error?.message || String(error),
+          resumed: true,
+        })
+      })
+    }
+  }
+  return resumed
+}
