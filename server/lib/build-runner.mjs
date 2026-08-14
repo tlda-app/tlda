@@ -1593,7 +1593,8 @@ export async function recordBuildVersion({
   svgsReadyAt,
   buildErrSnapshot,
   buildWarnSnapshot,
-  sourceVersion,
+  sourceRevision,
+  acceptSeq,
 } = {}) {
   const project = await readProject(name)
   const pages = expectedPages ?? project?.pages ?? 0
@@ -1623,18 +1624,18 @@ export async function recordBuildVersion({
     }
     const current = await currentVersion(name)
     if (current?.hash) {
-      await updateDocVersionSentinel(name, current.hash, readyAt, errors, warnings, sourceVersion)
+      await updateDocVersionSentinel(name, current.hash, readyAt, errors, warnings, sourceRevision, acceptSeq)
     }
     return { hash: current?.hash || null, committed: false }
   }
 
   try {
-    await finalizeEditEventsForSourceRevision(name, { sourceRevision: sourceVersion, shadowRevision: result.hash })
+    await finalizeEditEventsForSourceRevision(name, { sourceRevision, shadowRevision: result.hash })
   } catch (e) {
     console.error(`[build:${name}] edit-event finalization failed: ${e.message}`)
     ctx.addLog(`Edit-event finalization failed after version commit: ${e.message}`)
   }
-  await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceVersion)
+  await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceRevision, acceptSeq)
   _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
   return { hash: result.hash, committed: true, result }
 }
@@ -1647,11 +1648,12 @@ async function finalizeBuildVersion({
   svgsReadyAt,
   buildErrSnapshot,
   buildWarnSnapshot,
-  sourceVersion,
+  sourceRevision,
+  acceptSeq,
   lastBuildSuccess,
 }) {
   const recorded = await recordBuildVersion({
-    name, ctx, expectedPages, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion,
+    name, ctx, expectedPages, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceRevision, acceptSeq,
   })
   if (!recorded.hash) return recorded
 
@@ -1761,7 +1763,7 @@ async function finalizeBuildVersion({
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
-export async function runBuild(name) {
+export async function runBuild(name, { sourceRevision = null, acceptSeq = null } = {}) {
   // Serialize builds per project: wait for any in-flight build to finish before starting.
   while (_buildLocks.has(name)) {
     // Kill the running build so we don't wait for it to complete naturally.
@@ -1779,7 +1781,7 @@ export async function runBuild(name) {
   const previousActiveBuild = activeBuilds.get(name)
 
   try {
-    return await _runBuildInner(name)
+    return await _runBuildInner(name, { sourceRevision, acceptSeq })
   } catch (e) {
     // _runBuildInner marks the project building before validating its inputs.
     // Its own catch starts later, after the active-build record is created, so
@@ -1800,7 +1802,7 @@ export async function runBuild(name) {
   }
 }
 
-async function _runBuildInner(name) {
+async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } = {}) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
   const myVersion = (buildVersion.get(name) || 0) + 1
@@ -1812,13 +1814,6 @@ async function _runBuildInner(name) {
   const srcDir = sourceDir(name)
   const outDir = outputDir(name)
   const projDir = projectDir(name)
-
-  // Source-version this build is for: the source.stamp mtime captured at start.
-  // The daemon touches source.stamp on every source change, so this is monotonic
-  // per change. It's stamped onto the doc-version sentinel and used to guard the
-  // (non-blocking, racy) sentinel write so an older build can't clobber it.
-  let sourceVersion
-  try { sourceVersion = statSync(join(projDir, 'source.stamp')).mtimeMs } catch { sourceVersion = undefined }
 
   const project = await readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
@@ -2014,7 +2009,7 @@ async function _runBuildInner(name) {
     // the previous role of `output/main.dvi` mtime (which broke once we
     // had multiple per-target DVIs).
     try {
-      writeFileSync(join(outDir, 'build.stamp'), String(sourceVersion ?? 0))
+      writeFileSync(join(outDir, 'build.stamp'), String(acceptSeq ?? 0))
     } catch (e) {
       ctx.addLog(`build.stamp write failed (non-fatal): ${e.message}`)
     }
@@ -2046,7 +2041,8 @@ async function _runBuildInner(name) {
         svgsReadyAt,
         buildErrSnapshot,
         buildWarnSnapshot,
-        sourceVersion,
+        sourceRevision,
+        acceptSeq,
         lastBuildSuccess,
       })
     } catch (e) {
@@ -2085,7 +2081,7 @@ async function _runBuildInner(name) {
     try { await _reporter.updateProject(name, { buildStatus: 'failed' }) } catch (e2) { console.error(`[build] failed to set failed status for ${name}: ${e2.message}`) }
     try { writeFileSync(join(projDir, 'build.log'), log.join('\n')) } catch (e2) { console.error(`[build] failed to write build.log for ${name}: ${e2.message}`) }
 
-    await recordPersistentBuildStatus(name, e.message, sourceVersion)
+    await recordPersistentBuildStatus(name, e.message, sourceRevision, acceptSeq)
     await signalBuildStatus(name, e.message)
     signalBuildProgress(name, 'failed', e.message)
     emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), errors: [e.message] })
@@ -2137,21 +2133,22 @@ async function signalBuildStatus(name, errorMessage, extraWarnings = []) {
   }
 }
 
-async function recordPersistentBuildStatus(name, errorMessage, sourceVersion, extraWarnings = []) {
+async function recordPersistentBuildStatus(name, errorMessage, sourceRevision, acceptSeq, extraWarnings = []) {
   try {
     const { errors, warnings } = await currentBuildStatusPayload(name, errorMessage, extraWarnings)
-    const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
+    const seq = Number.isInteger(acceptSeq) ? acceptSeq : 0
     Promise.resolve(_reporter.writeSentinel(`doc-${name}`, {
       timestamp: Date.now(),
-      sourceVersion: sv,
+      sourceRevision: sourceRevision || null,
+      acceptSeq: seq,
       errorsJson: errors.length ? JSON.stringify(errors) : '',
       warningsJson: warnings.length ? JSON.stringify(warnings) : '',
     })).then(result => {
       if (result?.skipped) {
-        console.log(`[build:${name}] skipped out-of-order persistent build status write: source ${sv} ≤ committed`)
+        console.log(`[build:${name}] skipped out-of-order persistent build status write: acceptSeq ${seq} ≤ committed`)
         return
       }
-      console.log(`[build:${name}] persistent build status updated: src=${sv} (${errors.length} errors, ${warnings.length} warnings)`)
+      console.log(`[build:${name}] persistent build status updated: src=${sourceRevision || 'unknown'} seq=${seq} (${errors.length} errors, ${warnings.length} warnings)`)
     }).catch(e => console.error(`[build:${name}] persistent build status relay failed: ${e.message}`))
   } catch (e) {
     console.error(`[build:${name}] Failed to update persistent build status: ${e.message}`)
@@ -2218,18 +2215,16 @@ function signalReload(name, pages) {
  * source git commit hash. Build finalization awaits this: the sentinel is
  * viewer-visible version state, not a best-effort side effect.
  */
-async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings, sourceVersion) {
+async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings, sourceRevision, acceptSeq) {
   const commitHash = shadowHash || 'unknown'
   const docName = `doc-${name}`
-  const sv = typeof sourceVersion === 'number' ? sourceVersion : 0
+  const seq = Number.isInteger(acceptSeq) ? acceptSeq : 0
   const result = await _reporter.writeSentinel(docName, {
     commitHash,
     timestamp: Date.now(),
     buildReadyAt: buildReadyAt || Date.now(),
-    // sourceVersion = the source.stamp mtime this build was for, monotonic per
-    // source change. The shared sentinel writer drops older build writes so the
-    // version can never jump backward.
-    sourceVersion: sv,
+    sourceRevision: sourceRevision || null,
+    acceptSeq: seq,
     // Build errors/warnings live HERE — convergent Yjs state, not a
     // fire-and-forget signal. A build's error status is a stable property
     // that must survive reconnect/restart, so the viewer reads it straight
@@ -2238,8 +2233,8 @@ async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, 
     errorsJson: errors ? JSON.stringify(errors) : '',
   })
   if (result.skipped) {
-    console.log(`[build:${name}] skipped out-of-order sentinel write: source ${sv} ≤ committed`)
+    console.log(`[build:${name}] skipped out-of-order sentinel write: acceptSeq ${seq} ≤ committed`)
     return
   }
-  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} src=${sv} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
+  console.log(`[build:${name}] doc-version sentinel updated: ${commitHash.slice(0, 7)} src=${sourceRevision || 'unknown'} seq=${seq} (${errors?.length || 0} errors, ${warnings?.length || 0} warnings)`)
 }

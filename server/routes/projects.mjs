@@ -1385,7 +1385,11 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
   if (decision.eager) {
     // Non-SVG formats: kick off build async, return immediately.
-    dispatchBuild(name).then(async () => {
+    const buildAuthority = lifecycle.readAuthority()
+    dispatchBuild(name, {
+      sourceRevision: acceptedSourceMutation?.sourceRevision || buildAuthority.currentRevision || null,
+      acceptSeq: buildAuthority.acceptSeq ?? null,
+    }).then(async () => {
       if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
       const updated = await readProject(name)
       if (updated?.buildStatus === 'success') {

@@ -20,12 +20,14 @@ export function createBuildQueue({
     return [...map.keys()].filter(key => key.startsWith(prefix))
   }
 
-  async function dispatchBuild(name, { kind = 'build' } = {}) {
+  async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
     const key = jobKey(name, kind)
     if (_inFlight.has(key)) {
       return new Promise((resolve, reject) => {
         const pending = _pending.get(key) || { name, kind, waiters: [] }
         pending.kind = kind
+        pending.sourceRevision = sourceRevision
+        pending.acceptSeq = acceptSeq
         pending.waiters.push({ resolve, reject })
         _pending.set(key, pending)
       })
@@ -33,14 +35,16 @@ export function createBuildQueue({
 
     if (_queued.has(key)) {
       return new Promise((resolve, reject) => {
-        const queued = _queued.get(key)
-        queued.kind = kind
+      const queued = _queued.get(key)
+      queued.kind = kind
+      queued.sourceRevision = sourceRevision
+      queued.acceptSeq = acceptSeq
         queued.waiters.push({ resolve, reject })
       })
     }
 
     return new Promise((resolve, reject) => {
-      _enqueue({ name, kind, waiters: [{ resolve, reject }] })
+      _enqueue({ name, kind, sourceRevision, acceptSeq, waiters: [{ resolve, reject }] })
     })
   }
 
@@ -146,7 +150,14 @@ export function createBuildQueue({
 
     _activeCount++
     const handle = transport.start(
-      { name, kind, projectsDir: getProjectsDir(), priority: buildPriority },
+      {
+        name,
+        kind,
+        sourceRevision: job.sourceRevision,
+        acceptSeq: job.acceptSeq,
+        projectsDir: getProjectsDir(),
+        priority: buildPriority,
+      },
       { onMessage: relay, onError, onExit },
     )
     _inFlight.set(key, {

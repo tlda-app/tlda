@@ -102,9 +102,9 @@ process.on('message', async (msg) => {
         // recordBuildVersion through runBuild's finalizer. Versioning used to
         // live inside the LaTeX branch, which is why these formats built for
         // months without ever recording one.
-        await recordBuildVersion({ name: msg.name })
+        await recordBuildVersion({ name: msg.name, sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       } else {
-        await runBuild(msg.name)
+        await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       }
     }
     process.send?.({ t: 'done', ok: true })

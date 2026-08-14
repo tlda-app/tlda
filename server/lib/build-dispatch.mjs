@@ -80,8 +80,8 @@ export function createDispatcherWithOptions(transport, options = {}) {
     },
   }, options)
 
-  async function dispatchBuild(name, { kind = 'build' } = {}) {
-    return queue.dispatchBuild(name, { kind })
+  async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
+    return queue.dispatchBuild(name, { kind, sourceRevision, acceptSeq })
   }
 
   return { ...queue, dispatchBuild }

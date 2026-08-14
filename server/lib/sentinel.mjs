@@ -2,7 +2,7 @@ import { putShape, updateShape } from './sync-rooms.mjs'
 
 export const DOC_VERSION_SENTINEL_ID = 'shape:doc-version--sentinel'
 
-const PRESERVED_PROPS = ['sourceVersion', 'errorsJson', 'warningsJson', 'syncErrorJson']
+const PRESERVED_PROPS = ['sourceRevision', 'acceptSeq', 'errorsJson', 'warningsJson', 'syncErrorJson']
 
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key)
@@ -27,7 +27,8 @@ function defaultSentinelShape(patch) {
       commitHash: patch.commitHash || 'unknown',
       timestamp: patch.timestamp || Date.now(),
       buildReadyAt: patch.buildReadyAt || Date.now(),
-      sourceVersion: typeof patch.sourceVersion === 'number' ? patch.sourceVersion : 0,
+      sourceRevision: typeof patch.sourceRevision === 'string' ? patch.sourceRevision : null,
+      acceptSeq: Number.isInteger(patch.acceptSeq) ? patch.acceptSeq : 0,
       errorsJson: '',
       warningsJson: '',
       syncErrorJson: '',
@@ -62,17 +63,17 @@ function mergeSentinel(cur, patch) {
 function shouldSkipSentinelWrite(cur, patch) {
   if (!cur) return false
   const curProps = cur.props || {}
-  const nextSourceVersion = patch.sourceVersion
-  const curSourceVersion = curProps.sourceVersion
+  const nextAcceptSeq = patch.acceptSeq
+  const curAcceptSeq = curProps.acceptSeq
   const nextReadyAt = patch.buildReadyAt || 0
   const curReadyAt = curProps.buildReadyAt || curProps.timestamp || 0
 
-  if (typeof nextSourceVersion === 'number' && typeof curSourceVersion === 'number') {
-    if (nextSourceVersion < curSourceVersion) return true
-    if (nextSourceVersion === curSourceVersion && nextReadyAt && curReadyAt >= nextReadyAt) return true
+  if (Number.isInteger(nextAcceptSeq) && Number.isInteger(curAcceptSeq)) {
+    if (nextAcceptSeq < curAcceptSeq) return true
+    if (nextAcceptSeq === curAcceptSeq && nextReadyAt && curReadyAt >= nextReadyAt) return true
   }
 
-  if (!hasOwn(patch, 'sourceVersion') && nextReadyAt && curReadyAt > nextReadyAt) {
+  if (!hasOwn(patch, 'acceptSeq') && nextReadyAt && curReadyAt > nextReadyAt) {
     return true
   }
 
