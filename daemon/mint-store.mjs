@@ -136,6 +136,13 @@ export class MintStore {
     return mintRow(row)
   }
 
+  getAllByFriendlyName(name) {
+    return this.db.prepare(`
+      SELECT * FROM daemon_mints WHERE friendly_name = ?
+      ORDER BY created_at DESC
+    `).all(name).map(mintRow)
+  }
+
   resolve(identifier, { envName = this.defaultEnvName } = {}) {
     if (!identifier) return null
     return this.get(identifier)

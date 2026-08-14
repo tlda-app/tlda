@@ -5160,6 +5160,7 @@ async function restartMcpAgents(rest) {
   // first and you never come back. The daemon outlives you and finishes the job.
   const mintStore = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
   let ok = 0
+  let failed = 0
   const pending = [...targets]
   let attempt = 0
   try {
@@ -5169,8 +5170,22 @@ async function restartMcpAgents(rest) {
         const name = pending[i]
         process.stdout.write(`restart-mcp ${name} … `)
         try {
-          const stored = mintStore.resolve(name)
-          if (!stored) throw new Error(`no local agent found for "${name}"`)
+          let stored = mintStore.resolve(name)
+          if (!stored) {
+            const matches = mintStore.getAllByFriendlyName(name)
+            if (matches.length > 1) {
+              const environments = [...new Set(matches.map(match => match.envName || '(unset)'))].sort()
+              const resolutionError = new Error(`multiple local agents named "${name}" exist across environments: ${environments.join(', ')}`)
+              resolutionError.permanent = true
+              throw resolutionError
+            }
+            stored = matches[0] || null
+          }
+          if (!stored) {
+            const resolutionError = new Error(`no local agent found for "${name}"`)
+            resolutionError.permanent = true
+            throw resolutionError
+          }
           const res = await callLocalDaemonLifecycle('restart', {
             mint_id: stored.mintId,
             agent_id: stored.fleetId,
@@ -5178,12 +5193,21 @@ async function restartMcpAgents(rest) {
             // answers ok when it cannot place the agent at all.
             tmux_session: `fleet-${stored.friendlyName || name}`,
             wait_until_complete: true,
-          }, { onEvent: printMintLifecycleEvent })
+          }, {
+            socketPath: fleetDaemonSocketForConfig(stored.envName || localDaemonEnvName()),
+            onEvent: printMintLifecycleEvent,
+          })
           if (res?.ok === false) throw new Error(res?.woke?.error || res?.error || 'the wake did not complete')
           console.log('ok')
           pending.splice(i, 1)
           ok++
         } catch (e) {
+          if (e?.permanent) {
+            console.log(`failed: ${e.message}`)
+            pending.splice(i, 1)
+            failed++
+            continue
+          }
           // This target remains pending and is retried after the other targets run.
           console.log(`unfinished: ${e?.message || String(e)}`)
         }
@@ -5197,7 +5221,8 @@ async function restartMcpAgents(rest) {
   } finally {
     mintStore.close()
   }
-  console.log(`Done: ${ok} ok.`)
+  console.log(`Done: ${ok} ok${failed ? `, ${failed} failed` : ''}.`)
+  if (failed) process.exitCode = 1
 }
 
 // Top-level attach is rejected earlier with a noun-first message; this helper

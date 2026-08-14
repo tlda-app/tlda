@@ -176,6 +176,43 @@ exit 0
   assert.equal(restartAttempts, 2)
   assert.match(out.stdout, /unfinished: restart transient[\s\S]*ok/)
   assert.match(out.stderr, /retrying in/)
+
+  const crossEnvStore = new MintStore(join(config, 'daemon-mints.sqlite'), { defaultEnvName: 'stable' })
+  for (const [mintId, fleetId, friendlyName, envName] of [
+    ['mint:cross-env', 'fleet:cross-env', 'cross-env-only', 'testing'],
+    ['mint:ambiguous-testing', 'fleet:ambiguous-testing', 'ambiguous-cross-env', 'testing'],
+    ['mint:ambiguous-dev', 'fleet:ambiguous-dev', 'ambiguous-cross-env', 'dev'],
+  ]) {
+    crossEnvStore.ensure(mintId)
+    crossEnvStore.setFact(mintId, 'fleet_id', fleetId)
+    crossEnvStore.setFact(mintId, 'friendly_name', friendlyName)
+    crossEnvStore.setFact(mintId, 'env_name', envName)
+    crossEnvStore.setFact(mintId, 'process_state', { tmux_session: `fleet-${friendlyName}` })
+  }
+  crossEnvStore.close()
+
+  const testingSocketPath = daemonLifecycleSocketPath(config, 'testing')
+  let testingRestartAttempts = 0
+  const testingRestartDaemon = createNetServer({ allowHalfOpen: true }, socket => {
+    socket.resume()
+    socket.on('end', () => {
+      testingRestartAttempts++
+      socket.end(`${JSON.stringify({ ok: true, result: { ok: true } })}\n`)
+    })
+  })
+  await new Promise(resolve => testingRestartDaemon.listen(testingSocketPath, resolve))
+  out = await run(['restart-mcp', 'cross-env-only'], { TLDA_DEV_CLI: '1' })
+  assert.equal(out.status, 0, out.stderr)
+  assert.equal(testingRestartAttempts, 1)
+  assert.match(out.stdout, /restart-mcp cross-env-only … ok/)
+
+  const attemptsBeforeAmbiguous = restartAttempts
+  out = await run(['restart-mcp', 'ambiguous-cross-env'], { TLDA_DEV_CLI: '1' })
+  assert.equal(out.status, 1)
+  assert.equal(restartAttempts, attemptsBeforeAmbiguous)
+  assert.match(out.stdout, /failed: multiple local agents named "ambiguous-cross-env" exist across environments: dev, testing/)
+  assert.doesNotMatch(out.stderr, /retrying in/)
+  await new Promise(resolve => testingRestartDaemon.close(resolve))
   await new Promise(resolve => restartDaemon.close(resolve))
 
   spaAttempts = 0; projectAttempts = 0
