@@ -1203,6 +1203,8 @@ function showHud(text, stateColor) {
     transcript.setAttribute('aria-label', _radioReaderExpanded ? 'Collapse radio transcript' : 'Expand radio transcript')
     transcript.setAttribute('aria-expanded', String(_radioReaderExpanded))
     Object.assign(transcript.style, {
+      display: 'flex',
+      flexDirection: phone ? 'column-reverse' : 'column',
       minHeight: '0',
       overflowY: _radioReaderExpanded ? 'auto' : 'hidden',
       flex: _radioReaderExpanded ? '1 1 auto' : '0 1 auto',
@@ -1269,7 +1271,7 @@ function showHud(text, stateColor) {
         marginTop: '3px',
         width: '100%',
         display: 'flex',
-        flexDirection: 'column',
+        flexDirection: phone ? 'column-reverse' : 'column',
         gap: '1px',
       })
       for (const item of prior) {
