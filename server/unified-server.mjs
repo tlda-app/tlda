@@ -58,7 +58,6 @@ import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unifi
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
-import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
@@ -9203,13 +9202,10 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'source-change') {
     const { project, files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId } = msg
-    const resultCache = ws._sourceChangeResultCache ||= createSourceChangeResultCache()
-    const cached = resultCache.lookup(msg)
-    if (cached.error) {
-      ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: cached.error }))
+    if (typeof requestId !== 'string' || !requestId.trim()) {
+      ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: 'requestId is required' }))
       return
     }
-    if (cached.replay) { ws.send(JSON.stringify(cached.replay)); return }
     if (!project) return
     if (await readProject(project)) {
       await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
@@ -9229,8 +9225,8 @@ async function handleDaemonWsMessage(ws, msg) {
         sourceEnvName: ws._envName || null,
       })
       const { status: httpStatus, lifecycleStatus, ...payload } = result
-      const reply = { type: 'source-change-result', requestId, project, ...payload, httpStatus, status: lifecycleStatus || (result.ok ? 'accepted' : 'error') }
-      resultCache.record(requestId, cached.hash, reply)
+      const durablePayload = result.sourceOperationResult || payload
+      const reply = { type: 'source-change-result', requestId, project, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
       ws.send(JSON.stringify(reply))
       replied = true
       if (!result.ok) {
@@ -9240,7 +9236,6 @@ async function handleDaemonWsMessage(ws, msg) {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
       if (!replied) {
         const reply = { type: 'source-change-result', requestId, project, ok: false, httpStatus: 500, status: 'error', error: e.message }
-        resultCache.record(requestId, cached.hash, reply)
         ws.send(JSON.stringify(reply))
       }
     }

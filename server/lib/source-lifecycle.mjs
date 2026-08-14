@@ -110,7 +110,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   const evidenceRoot = join(root, 'evidence')
   const blobsRoot = join(root, 'blobs')
   const operationsRoot = join(root, 'operations')
-  const state = () => readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null }
+  const state = () => readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
   // an entry built from a file on disk stores utf8 in `content` and also does
@@ -411,7 +411,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
           return { ok: false, status: SOURCE_AUTHORITY_RECONCILIATION_REQUIRED, authority }
         }
       }
-      const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id }
+      const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id, acceptSeq: (before.acceptSeq || 0) + 1 }
       atomicJson(statePath, authority, fault)
       return { ok: true, status: 'accepted', authority, revision: next }
     },
@@ -434,13 +434,13 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         const rebasedFiles = cleanRebaseFiles(classifications)
         if (rebasedFiles) {
           const rebased = persistSnapshot(canonicalSnapshot(rebasedFiles, incoming.manifest, context), incoming.dependencyPins)
-          const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id }
+          const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id, acceptSeq: (before.acceptSeq || 0) + 1 }
           atomicJson(statePath, authority, fault)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
         return { ok: false, status: 'stale-base', authority: before, evidence }
       }
-      const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id }
+      const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }
       atomicJson(statePath, authority, fault)
       return { ok: true, status: 'accepted', authority, revision: incoming }
     },

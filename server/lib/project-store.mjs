@@ -153,7 +153,7 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
   const source = sourceDir(name)
   const metadata = join(dir, 'project.json')
   const clone = join(dir, 'overleaf-clone')
-  const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
+  const lifecycleRoot = join(dir, '.source-lifecycle')
   const manifest = await readClientSourceManifest(name)
   if (await pathExists(source)) await cp(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
   await cp(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
@@ -166,7 +166,7 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       await cp(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
     }
   }
-  if (await pathExists(lifecycleAuthority)) await cp(lifecycleAuthority, join(snapshotRoot, 'source-lifecycle-authority.json'), { preserveTimestamps: true })
+  if (await pathExists(lifecycleRoot)) await cp(lifecycleRoot, join(snapshotRoot, 'source-lifecycle'), { recursive: true, preserveTimestamps: true })
   await syncTree(snapshotRoot, durabilityProbe)
   await syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
   await syncPath(dir, durabilityProbe, 'project-directory')
@@ -213,10 +213,9 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       await rename(metadataRestore, metadata)
       await restoreClientSourceManifestSnapshot(name, snapshotRoot)
       await restoreCloneWorktreeAsync(clone, join(snapshotRoot, 'overleaf-worktree'))
-      await rm(lifecycleAuthority, { force: true })
-      if (await pathExists(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
-        await mkdir(dirname(lifecycleAuthority), { recursive: true })
-        await cp(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
+      await rm(lifecycleRoot, { recursive: true, force: true })
+      if (await pathExists(join(snapshotRoot, 'source-lifecycle'))) {
+        await cp(join(snapshotRoot, 'source-lifecycle'), lifecycleRoot, { recursive: true, preserveTimestamps: true })
       }
       finished = true
       await rm(snapshotRoot, { recursive: true })
@@ -265,11 +264,10 @@ export async function rollbackProjectSourceRecovery(name, id) {
   await rename(metadataRestore, metadata)
   await restoreClientSourceManifestSnapshot(name, snapshotRoot)
   await restoreCloneWorktreeAsync(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
-  const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
-  await rm(lifecycleAuthority, { force: true })
-  if (await pathExists(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
-    await mkdir(dirname(lifecycleAuthority), { recursive: true })
-    await cp(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
+  const lifecycleRoot = join(dir, '.source-lifecycle')
+  await rm(lifecycleRoot, { recursive: true, force: true })
+  if (await pathExists(join(snapshotRoot, 'source-lifecycle'))) {
+    await cp(join(snapshotRoot, 'source-lifecycle'), lifecycleRoot, { recursive: true, preserveTimestamps: true })
   }
 }
 

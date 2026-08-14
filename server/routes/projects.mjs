@@ -949,16 +949,23 @@ export async function processProjectPush(name, body, transactionTest = {}) {
       requestId: body?.requestId || null,
     },
   )
-  if (result.ok && (((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
-    result.sourceRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
+  if ((((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
+    const lifecycle = await sourceLifecycleStore(name)
+    if (result.ok) result.sourceRevision = lifecycle.readAuthority().currentRevision
+    if (typeof body?.requestId === 'string' && body.requestId.trim()) {
+      const operationResult = lifecycle.readOperation(body.requestId)?.terminalResult
+      if (operationResult) Object.defineProperty(result, 'sourceOperationResult', { value: operationResult })
+    }
   }
-  emitSourceEditEvent({
-    emit: emitGlobalEvent,
-    result,
-    project: name,
-    editedBy: body?.editedBy,
-    requestId: body?.requestId || randomUUID(),
-  })
+  if (!result.operationReplay) {
+    emitSourceEditEvent({
+      emit: emitGlobalEvent,
+      result,
+      project: name,
+      editedBy: body?.editedBy,
+      requestId: body?.requestId || randomUUID(),
+    })
+  }
   return result
 }
 
@@ -1010,6 +1017,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     return { status: 428, ok: false, error: 'expectedRevision is required for source mutations', authority: authorityBefore }
   }
   let lifecycleCandidate = null
+  let sourceOperation = null
   if (sourceMutation) {
     const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
     // A v2 entry is `{path, sha256, size}` and carries forward as a reference —
@@ -1055,6 +1063,12 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       expectedRevision, sourceManifest: manifest, files: manifest.map(path => candidate.get(path)),
       observedServerFiles: authorityBefore.state === 'uninitialized' && observed.length > 0 ? observed : null,
       observedSourceManifest: observed.map(file => file.path),
+    }
+    if (typeof body?.requestId === 'string' && body.requestId.trim()) {
+      const prepared = lifecycle.prepareOperation({ project: name, ...body })
+      if (prepared.invalidReuse) return { ...prepared.result, status: 400, lifecycleStatus: prepared.result.status }
+      if (prepared.result) return { ...prepared.result, status: prepared.result.httpStatus || 200, operationReplay: true }
+      sourceOperation = prepared.operation
     }
   }
 
@@ -1180,6 +1194,19 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       if (transactionTest.afterRemotePublished) await transactionTest.afterRemotePublished(preparedOverleaf)
       if (transactionTest.failAt === 'after-remote') throw new Error('Injected failure after remote success')
     }
+    if (sourceOperation && acceptedSourceMutation) {
+      const authority = lifecycle.readAuthority()
+      const terminalResult = {
+        ok: true,
+        httpStatus: 200,
+        lifecycleStatus: 'accepted',
+        requestId: sourceOperation.requestId,
+        sourceRevision: acceptedSourceMutation.sourceRevision,
+        acceptSeq: authority.acceptSeq,
+        disposition: 'accepted',
+      }
+      lifecycle.finishOperation(sourceOperation.requestId, 'accepted', terminalResult, { acceptSeq: authority.acceptSeq })
+    }
     await transaction.commit()
     if (acceptedSourceMutation) {
       try {
@@ -1220,6 +1247,16 @@ export async function processProjectPushSerialized(name, body, transactionTest =
           overleafSyncError: recoveryError,
         })
         console.error(`[${name}] Source transaction requires recovery: ${compensationError.message}`)
+        if (sourceOperation) {
+          lifecycle.finishOperation(sourceOperation.requestId, 'recovery_required', {
+            ok: false,
+            httpStatus: 409,
+            lifecycleStatus: 'recovery-required',
+            requestId: sourceOperation.requestId,
+            error: recoveryError,
+            recovery: recoveryJournal || recovery,
+          }, { recoveryId: (recoveryJournal || recovery)?.id || null })
+        }
         return {
           status: 409, ok: false, recoveryRequired: true,
           error: recoveryError,
@@ -1240,6 +1277,16 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       await transaction.rollback()
     } catch (rollbackError) {
       rollbackFailures.push(`local rollback failed: ${rollbackError.message}`)
+    }
+    if (sourceOperation && rollbackFailures.length === 0) {
+      lifecycle.finishOperation(sourceOperation.requestId, 'rejected', {
+        ok: false,
+        httpStatus: 409,
+        lifecycleStatus: e.lifecycleResult?.status || 'rejected',
+        requestId: sourceOperation.requestId,
+        error: `Source transaction failed: ${e.message}`,
+        ...(e.lifecycleResult ? { authority: e.lifecycleResult.authority, evidence: e.lifecycleResult.evidence } : {}),
+      })
     }
     if (Array.isArray(e.overleafConflictFiles) && e.overleafConflictFiles.length > 0) {
       await updateProject(name, {
