@@ -81,6 +81,9 @@
   max-height: 100%;
   overflow: hidden;
   pointer-events: none;
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .fleet-chat-shape .fleet-unread-agent-rail .fleet-agents-col-name {
