@@ -1,5 +1,6 @@
 export const FLEET_CHAT_VIEWPORT_INSET_PX = 8
 export const FLEET_HUD_DEFAULT_TOP_PAD_PX = 80
+export const FLEET_HUD_PHONE_DEFAULT_TOP_PAD_PX = FLEET_HUD_DEFAULT_TOP_PAD_PX - 16
 export const FLEET_HUD_VIEWPORT_FRAME_TOP_PX = 20
 
 export type FleetLayoutViewportSize = { w: number; h: number }
