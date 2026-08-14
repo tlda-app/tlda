@@ -31,6 +31,10 @@ export function anchoredTailTop({ renderedLastRowTop, renderedLastRowHeight, vie
   return Math.max(0, contentBottom - viewportHeight)
 }
 
+export function anchoredSensorTailTop(scrollHeight, clientHeight) {
+  return Math.max(0, scrollHeight - clientHeight)
+}
+
 /**
  * True while the reader's own input owns the scroller, so a geometry correction
  * must be deferred rather than written.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { decideFollowTransition, FOLLOW_BOTTOM_EPS } from '../src/shapes/chatScrollIntent.mjs'
-import { anchoredTailTop } from '../src/shapes/chatViewportAnchor.mjs'
+import { anchoredSensorTailTop, anchoredTailTop } from '../src/shapes/chatViewportAnchor.mjs'
 
 // The reader is scrolled up, reading history. `scrolledUp: true` is the only
 // state that consults the resume path at all.
@@ -27,6 +27,11 @@ test('anchored tail falls back to estimated total until the last row is rendered
     viewportHeight: CLIENT,
     fallbackTotal: 1300,
   }), 900)
+})
+
+test('the native sensor parks at its rigid bottom boundary', () => {
+  assert.equal(anchoredSensorTailTop(20_000_008, 756), 19_999_252)
+  assert.equal(anchoredSensorTailTop(500, 756), 0)
 })
 
 /** A scroll event: where the viewport landed, and where it was on the previous event. */

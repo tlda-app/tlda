@@ -599,6 +599,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 .fleet-chat-log-anchored {
   position: relative;
   overflow-y: auto;
+  overscroll-behavior-y: none;
   /* This padding is slack, and the slack is load-bearing. It counts toward
      scrollHeight and toward none of the at-bottom terms, so it absorbs the
      fractional gap between the summed row heights and the real scroll height.
