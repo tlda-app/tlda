@@ -173,6 +173,64 @@ try {
   assert.equal(secondRoom.ytext.toString(), 'stored\nunsent\n')
   assert.equal(readFileSync(join(projectDir(durable), '.source-room', 'working', 'main.tex'), 'utf8'), 'stored\nunsent\n')
 
+  const retryProject = 'source-room-durable-retry'
+  createProject({ name: retryProject, title: retryProject, mainFile: 'main.tex', format: 'svg' })
+  await updateProject(retryProject, { pages: 1, buildStatus: 'success' })
+  suppressBuilds(retryProject)
+  await acceptedPush(retryProject, {
+    expectedRevision: null,
+    sourceManifest: ['main.tex'],
+    files: [{ path: 'main.tex', content: 'retry base\n' }],
+  })
+  const retryRequests = []
+  const failingRetryDaemon = createSourceRoomDaemon({
+    projectDir,
+    readProject,
+    sourceLifecycleStore,
+    readClientSourceManifest,
+    processProjectPush: async (_project, body) => {
+      retryRequests.push(body)
+      return { status: 503, ok: false, error: 'temporarily unavailable' }
+    },
+    pushDelayMs: 100,
+    log: { error() {} },
+  })
+  roomDaemons.push(failingRetryDaemon)
+  const retryRoom = await failingRetryDaemon.getRoom(retryProject, 'main.tex')
+  retryRoom.ytext.insert(retryRoom.ytext.length, 'survives restart\n')
+  await failingRetryDaemon.flushRoom(retryRoom)
+  assert.equal(retryRequests.length, 1)
+  const firstRetryRequest = retryRequests[0]
+  failingRetryDaemon.closeAll()
+
+  let recoveredRequest = null
+  const recoveredRetryDaemon = createSourceRoomDaemon({
+    projectDir,
+    readProject,
+    sourceLifecycleStore,
+    readClientSourceManifest,
+    processProjectPush: async (project, body) => {
+      recoveredRequest = body
+      return processProjectPush(project, body)
+    },
+    pushDelayMs: 10,
+    log: { error() {} },
+  })
+  roomDaemons.push(recoveredRetryDaemon)
+  await recoveredRetryDaemon.getRoom(retryProject, 'main.tex')
+  await new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000
+    const poll = () => {
+      if (readSourceFile(retryProject, 'main.tex') === 'retry base\nsurvives restart\n') return resolve()
+      if (Date.now() >= deadline) return reject(new Error('durable source-room retry did not recover'))
+      setTimeout(poll, 10)
+    }
+    poll()
+  })
+  assert.equal(recoveredRequest.requestId, firstRetryRequest.requestId)
+  assert.deepEqual(recoveredRequest.files, firstRetryRequest.files)
+  assert.equal(readSourceFile(retryProject, 'main.tex'), 'retry base\nsurvives restart\n')
+
   const corrupt = 'source-room-corrupt-revision'
   createProject({ name: corrupt, title: corrupt, mainFile: 'main.tex', format: 'svg' })
   await updateProject(corrupt, { pages: 1, buildStatus: 'success' })

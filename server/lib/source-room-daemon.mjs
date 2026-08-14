@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
@@ -8,6 +8,7 @@ import * as Y from 'yjs'
 const SERVER_ORIGIN = Symbol('tlda-source-room-server')
 const CLIENT_ORIGIN = Symbol('tlda-source-room-client')
 const SOURCE_ROOM_DAEMON_PREFIX = 'source-room'
+const MAX_RETRY_DELAY_MS = 30_000
 
 function syncFile(path) {
   const fd = openSync(path, 'r')
@@ -130,6 +131,7 @@ export function createSourceRoomDaemon({
     return {
       root,
       state: join(root, 'state', `${encoded}.json`),
+      snapshot: join(root, 'rooms', `${encoded}.json`),
       yjs: join(root, 'yjs', `${encoded}.bin`),
       working: join(root, 'working', filePath),
     }
@@ -137,12 +139,15 @@ export function createSourceRoomDaemon({
 
   async function createRoom(project, filePath) {
     const paths = roomPaths(project, filePath)
-    const state = readJson(paths.state) || {}
+    const snapshot = readJson(paths.snapshot)
+    const state = snapshot || readJson(paths.state) || {}
     const lifecycle = await sourceLifecycleStore(project)
     const authority = lifecycle.readAuthority()
     const ydoc = new Y.Doc()
     const ytext = ydoc.getText('source')
-    if (existsSync(paths.yjs)) {
+    if (typeof snapshot?.yjs === 'string') {
+      Y.applyUpdate(ydoc, new Uint8Array(Buffer.from(snapshot.yjs, 'base64')), SERVER_ORIGIN)
+    } else if (existsSync(paths.yjs)) {
       Y.applyUpdate(ydoc, new Uint8Array(readFileSync(paths.yjs)), SERVER_ORIGIN)
     } else {
       const text = sourceRoomFileText(lifecycle, { filePath })
@@ -159,8 +164,8 @@ export function createSourceRoomDaemon({
       clients: new Set(),
       heldRevision: state.heldRevision || authority.currentRevision || null,
       sourceManifest: Array.isArray(state.sourceManifest) ? state.sourceManifest : null,
-      pending: null,
-      queued: false,
+      submission: state.submission || null,
+      queued: state.submission?.state === 'dirty',
       blocked: Boolean(state.blocked),
       timer: null,
     }
@@ -171,6 +176,7 @@ export function createSourceRoomDaemon({
       noteLocalChange(room)
     })
     persistRoom(room)
+    recoverSubmission(room)
     return room
   }
 
@@ -185,15 +191,24 @@ export function createSourceRoomDaemon({
   }
 
   function persistRoom(room) {
-    atomicWrite(room.paths.yjs, Buffer.from(Y.encodeStateAsUpdate(room.ydoc)))
-    atomicWrite(room.paths.working, room.ytext.toString())
-    atomicJson(room.paths.state, {
-      version: 1,
+    const yjs = Buffer.from(Y.encodeStateAsUpdate(room.ydoc))
+    const working = room.ytext.toString()
+    const state = {
+      version: 2,
       heldRevision: room.heldRevision,
       sourceManifest: room.sourceManifest,
       blocked: room.blocked,
+      submission: room.submission,
+      yjs: yjs.toString('base64'),
+      working,
       updatedAt: new Date().toISOString(),
-    })
+    }
+    // This snapshot is the canonical room record. The yjs/working/state files
+    // remain readable projections for existing tools and older room records.
+    atomicJson(room.paths.snapshot, state)
+    atomicWrite(room.paths.yjs, yjs)
+    atomicWrite(room.paths.working, working)
+    atomicJson(room.paths.state, state)
   }
 
   function broadcast(room, message, except = null) {
@@ -210,7 +225,13 @@ export function createSourceRoomDaemon({
       return
     }
     room.queued = true
-    if (room.pending) return
+    if (!room.submission) room.submission = newSubmission(room)
+    if (room.submission.state === 'submitting' || room.submission.state === 'retry_wait') {
+      persistRoom(room)
+      return
+    }
+    room.submission = newSubmission(room)
+    persistRoom(room)
     if (room.timer) clearTimeout(room.timer)
     room.timer = setTimeout(() => {
       room.timer = null
@@ -224,18 +245,47 @@ export function createSourceRoomDaemon({
     return [...new Set([...current, room.filePath])].sort()
   }
 
-  /**
-   * The room is holding an edit that did not reach the paper.
-   *
-   * A non-conflict push failure sets `queued` and schedules nothing: the flush
-   * timer is only armed by a new local edit, so the text sits in the room until
-   * somebody types another character. The people with the file open see an
-   * error status; nobody else learns anything, and by Skip's criterion this is
-   * the losable kind — it never reached the floor.
-   *
-   * Recorded rather than retried. This domain is detection, not prevention:
-   * the ask is to find out from the app instead of from a missing paragraph.
-   */
+  function contentHash(content) {
+    return createHash('sha256').update(content).digest('hex')
+  }
+
+  function newSubmission(room) {
+    const content = room.ytext.toString()
+    return {
+      requestId: randomUUID(),
+      expectedRevision: room.heldRevision,
+      contentHash: contentHash(content),
+      content,
+      sourceManifest: room.sourceManifest,
+      state: 'dirty',
+      attempts: 0,
+      nextAttemptAt: null,
+      lastError: null,
+    }
+  }
+
+  function retryDelayMs(attempts) {
+    return Math.min(MAX_RETRY_DELAY_MS, pushDelayMs * (2 ** Math.max(0, attempts - 1)))
+  }
+
+  function armSubmission(room, delayMs) {
+    if (room.timer) clearTimeout(room.timer)
+    room.timer = setTimeout(() => {
+      room.timer = null
+      void flushRoom(room)
+    }, Math.max(0, delayMs))
+  }
+
+  function recoverSubmission(room) {
+    const submission = room.submission
+    if (!submission || submission.state === 'blocked') return
+    if (submission.state === 'submitting') submission.state = 'retry_wait'
+    const due = submission.nextAttemptAt ? Date.parse(submission.nextAttemptAt) : Date.now()
+    persistRoom(room)
+    armSubmission(room, Math.max(0, due - Date.now()))
+  }
+
+  /** Record that the room is holding an edit which has not reached authority. */
   async function noteRoomIsHolding(room, reason) {
     if (!recordHeldEdit) return
     try {
@@ -262,46 +312,59 @@ export function createSourceRoomDaemon({
   }
 
   async function flushRoom(room) {
-    if (room.pending || room.blocked) return
+    if (room.blocked || room.submission?.state === 'submitting') return
     room.queued = false
-    const content = room.ytext.toString()
-    const requestId = randomUUID()
-    room.pending = { requestId, content, expectedRevision: room.heldRevision }
+    if (!room.submission) room.submission = newSubmission(room)
+    const submission = room.submission
+    if (submission.state === 'retry_wait' && submission.nextAttemptAt && Date.parse(submission.nextAttemptAt) > Date.now()) {
+      armSubmission(room, Date.parse(submission.nextAttemptAt) - Date.now())
+      return
+    }
+    submission.state = 'submitting'
+    submission.attempts += 1
+    submission.nextAttemptAt = null
+    persistRoom(room)
     try {
-      const sourceManifest = await sourceManifestFor(room)
+      const sourceManifest = Array.isArray(submission.sourceManifest)
+        ? submission.sourceManifest
+        : await sourceManifestFor(room)
+      submission.sourceManifest = sourceManifest
       room.sourceManifest = sourceManifest
+      persistRoom(room)
       const result = await processProjectPush(room.project, {
-        files: [{ path: room.filePath, content }],
+        files: [{ path: room.filePath, content: submission.content }],
         sourceManifest,
         editedBy: sourceRoomDaemonKey(room.project),
         sourceDaemonKey: sourceRoomDaemonKey(room.project),
-        requestId,
-        expectedRevision: room.heldRevision,
+        requestId: submission.requestId,
+        expectedRevision: submission.expectedRevision,
       })
       if (result.ok) {
         if (typeof result.sourceRevision === 'string') room.heldRevision = result.sourceRevision
-        room.pending = null
+        room.submission = null
         room.blocked = hasConflictMarkers(room.ytext.toString())
         persistRoom(room)
         await noteRoomIsClear(room)
         broadcast(room, { type: 'status', status: 'synced', sourceRevision: room.heldRevision, building: Boolean(result.building) })
-        if (room.queued || room.ytext.toString() !== content) await flushRoom(room)
+        if (room.queued || room.ytext.toString() !== submission.content) {
+          room.submission = newSubmission(room)
+          persistRoom(room)
+          await flushRoom(room)
+        }
         return
       }
       const merged = conflictTextFor(result, room.filePath)
       if (result.lifecycleStatus === 'stale-base' || merged) {
         if (typeof result.authority?.currentRevision === 'string') room.heldRevision = result.authority.currentRevision
-        room.pending = null
+        submission.state = 'blocked'
+        submission.lastError = result.error || 'source conflict'
         room.blocked = true
         if (merged) replaceYText(room.ytext, merged)
         persistRoom(room)
         broadcast(room, { type: 'status', status: 'conflict', sourceRevision: room.heldRevision })
         return
       }
-      room.pending = null
-      room.queued = true
-      persistRoom(room)
-      await noteRoomIsHolding(room, result.error || `source room push failed with ${result.status}`)
+      await scheduleRetry(room, result.error || `source room push failed with ${result.status}`)
       broadcast(room, {
         type: 'status',
         status: 'error',
@@ -309,10 +372,7 @@ export function createSourceRoomDaemon({
         error: result.error || `source room push failed with ${result.status}`,
       })
     } catch (error) {
-      room.pending = null
-      room.queued = true
-      persistRoom(room)
-      await noteRoomIsHolding(room, error?.message || String(error))
+      await scheduleRetry(room, error?.message || String(error))
       broadcast(room, {
         type: 'status',
         status: 'error',
@@ -321,6 +381,19 @@ export function createSourceRoomDaemon({
       })
       log.error?.(`[source-room] ${room.project}:${room.filePath} push failed: ${error?.message || error}`)
     }
+  }
+
+  async function scheduleRetry(room, error) {
+    const submission = room.submission
+    if (!submission) return
+    const delay = retryDelayMs(submission.attempts)
+    submission.state = 'retry_wait'
+    submission.lastError = error
+    submission.nextAttemptAt = new Date(Date.now() + delay).toISOString()
+    room.queued = true
+    persistRoom(room)
+    armSubmission(room, delay)
+    await noteRoomIsHolding(room, error)
   }
 
   function conflictTextFor(result, filePath) {
