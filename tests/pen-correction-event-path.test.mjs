@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom'
 import { completePenCorrection, PEN_CORRECTION_EVENT } from '../src/tools/PenTool/penCorrectionTarget.ts'
 import { installPenCorrectionConsumer } from '../src/tools/PenTool/penCorrectionConsumer.ts'
 
-test('pen correction crosses from stroke completion through the row consumer', async () => {
+test('pen correction crosses a word, ends outside it, and reaches the row consumer', async () => {
   const dom = new JSDOM(`<!doctype html><body>
     <div data-shape-id="shape:document"><div id="document"></div></div>
     <div data-shape-id="shape:chat"><div class="fleet-chat-shape">
@@ -62,9 +62,11 @@ test('pen correction crosses from stroke completion through the row consumer', a
     })
     completePenCorrection(
       {
-        inputs: { getCurrentScreenPoint: () => ({ x: 90, y: 65 }) },
+        inputs: { getCurrentScreenPoint: () => ({ x: 250, y: 65 }) },
         getCurrentPageShapeIds: () => shapes,
         getShape: id => id === 'shape:ink' ? { type: 'draw' } : undefined,
+        getShapePageBounds: () => ({ minX: 80, minY: 55, maxX: 250, maxY: 70 }),
+        pageToScreen: point => point,
       },
       () => { strokeCompleted = true; shapes = new Set(['shape:ink']) },
     )
