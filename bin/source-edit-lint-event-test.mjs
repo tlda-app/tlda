@@ -11,6 +11,10 @@ const files = [{
   path: 'main.tex',
   regions: [{ startLine: 3, content: 'We have $x=5, y=6$.' }],
 }]
+const markdownFile = {
+  path: 'notes.md',
+  regions: [{ startLine: 5, content: 'We have $a=1, b=2$.' }],
+}
 const input = {
   project: 'lint-probe',
   editedBy: 'fleet:author',
@@ -26,7 +30,8 @@ assert.deepEqual(createSourceEditEvent({ ...input, result: {
   ok: true,
   acceptedChangedFiles: [
     files[0],
-    { path: 'notes.md', regions: [{ startLine: 1, content: 'ignored' }] },
+    markdownFile,
+    { path: 'notes.txt', regions: [{ startLine: 1, content: 'ignored' }] },
     { path: 'unchanged.tex', regions: [] },
   ],
 } }), {
@@ -36,7 +41,7 @@ assert.deepEqual(createSourceEditEvent({ ...input, result: {
   text: 'Source edit — lint-probe',
   metadata: {
     project: 'lint-probe',
-    files,
+    files: [files[0], markdownFile],
     requestId: 'request-1',
   },
 })
@@ -71,7 +76,8 @@ assert.deepEqual(changedTextRegions('same', 'same'), [])
 const projectsSource = readFileSync(new URL('../server/routes/projects.mjs', import.meta.url), 'utf8')
 const unifiedSource = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
 assert.match(projectsSource, /export async function processProjectPush[\s\S]*emitSourceEditEvent\(/)
-assert.match(unifiedSource, /processProjectPush\(project, \{ files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId \}\)/)
+assert.match(unifiedSource, /processProjectPush\(project, \{[\s\S]*files,[\s\S]*editedBy,[\s\S]*requestId,[\s\S]*sourceDaemonKey:/)
+assert.match(unifiedSource, /event\?\.type === 'source-edit'[\s\S]*pushFilteredEvent\(event\)/)
 assert.doesNotMatch(unifiedSource, /createSourceEditEvent/)
 
 console.log('source-edit lint event tests passed')

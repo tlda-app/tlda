@@ -2745,6 +2745,9 @@ async function reportDaemonEventFailure(msg, operation, error) {
 
 // Tell browsers to refresh their project list when project state changes.
 onGlobalEvent(async (event) => {
+  if (event?.type === 'source-edit') {
+    await pushFilteredEvent(event)
+  }
   if (event?.type === 'project-changed') {
     broadcastEvent('projects-updated', { name: event.name })
     const payload = JSON.stringify({ type: 'project-metadata-changed', project: event.name })
