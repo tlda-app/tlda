@@ -3,11 +3,30 @@ import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import { extractFunctionsExecCalls } from '../agent-runtime/functions-exec-activity.mjs'
 import { createActivityExtractor } from '../agent-runtime/jsonl-event-extract.mjs'
 import { normalizeDaemonActivityEvent, shouldStoreDaemonActivity } from '../server/lib/daemon-activity-ingest.mjs'
+import { renderActivityGroup } from '../src/fleet/activity-render.mjs'
 
 const ts = '2026-07-22T08:54:27.932Z'
 
 function customExec(input, callId = 'call_outer') {
   return { timestamp: ts, type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', input, call_id: callId } }
+}
+
+function renderedActivity(record) {
+  const parsed = parseCodexRecord(record)
+  const activity = createActivityExtractor().extractActivityEvents([parsed])[0]
+  return renderActivityGroup([{
+    from: 'fleet:codex',
+    timestamp: activity.ts,
+    _toolName: activity.tool,
+    _toolArg: activity.arg,
+    _toolInput: activity.input,
+  }], {
+    agentLabel: () => 'codex',
+    getNickClass: () => '',
+    getAgents: () => [],
+    highlightSyntax: value => value,
+    langFromFilePath: () => '',
+  })
 }
 
 {
@@ -29,7 +48,54 @@ function customExec(input, callId = 'call_outer') {
   assert.equal(event.blocks.length, 1)
   assert.equal(event.blocks[0].name, 'Bash')
   assert.equal(event.blocks[0].input.command, "sed -n '1,220p' SKILL.md")
+  assert.deepEqual(event.blocks[0].input, { command: "sed -n '1,220p' SKILL.md", workdir: '/tmp' })
   assert.doesNotMatch(event.blocks[0].input.command, /const r|tools\./)
+  const html = renderedActivity(customExec(`
+    const r = await tools.exec_command({cmd:"sed -n '1,220p' SKILL.md",workdir:"/tmp",yield_time_ms:10000,max_output_tokens:12000});
+    text(r.output);
+  `))
+  assert.match(html, /Bash/)
+  assert.match(html, /command: sed -n/)
+  assert.match(html, /workdir: \/tmp/)
+  assert.doesNotMatch(html, /yield_time_ms|max_output_tokens|tools\.exec_command/)
+}
+
+{
+  const waiting = parseCodexRecord(customExec(`
+    const r = await tools.write_stdin({session_id:23502,chars:"",yield_time_ms:30000,max_output_tokens:30000});
+    text(r.output);
+  `))
+  assert.equal(waiting.blocks[0].name, 'BashOutput')
+  assert.deepEqual(waiting.blocks[0].input, { session: 23502, action: 'wait for output' })
+  const waitingHtml = renderedActivity(customExec(`
+    const r = await tools.write_stdin({session_id:23502,chars:"",yield_time_ms:30000,max_output_tokens:30000});
+    text(r.output);
+  `))
+  assert.match(waitingHtml, /BashOutput/)
+  assert.match(waitingHtml, /session: 23502, action: wait for output/)
+  assert.doesNotMatch(waitingHtml, /yield_time_ms|max_output_tokens|tools\.write_stdin/)
+
+  const interrupting = parseCodexRecord(customExec(`
+    const r = await tools.write_stdin({session_id:23502,chars:"\\u0003",yield_time_ms:1000});
+    text(r.output);
+  `))
+  assert.deepEqual(interrupting.blocks[0].input, { session: 23502, action: 'send Ctrl-C' })
+}
+
+{
+  const waiting = parseCodexRecord(customExec(`
+    const r = await tools.wait({cell_id:"46",yield_time_ms:30000,max_tokens:20000});
+    text(r.output);
+  `))
+  assert.equal(waiting.blocks[0].name, 'CodeOutput')
+  assert.deepEqual(waiting.blocks[0].input, { cell: '46', action: 'wait for output' })
+  const html = renderedActivity(customExec(`
+    const r = await tools.wait({cell_id:"46",yield_time_ms:30000,max_tokens:20000});
+    text(r.output);
+  `))
+  assert.match(html, /CodeOutput/)
+  assert.match(html, /cell: 46, action: wait for output/)
+  assert.doesNotMatch(html, /yield_time_ms|max_tokens|tools\.wait/)
 }
 
 {
@@ -129,8 +195,15 @@ function customExec(input, callId = 'call_outer') {
 
 {
   const unknown = parseCodexRecord(customExec('const x = calculateSomethingMeaningful(); text(x);'))
-  assert.equal(unknown.blocks[0].name, 'orchestration')
-  assert.equal(unknown.blocks[0].input.description, 'Custom orchestration')
+  assert.equal(unknown.blocks[0].name, 'Code')
+  assert.deepEqual(unknown.blocks[0].input, {
+    description: 'run JavaScript',
+    code: 'const x = calculateSomethingMeaningful(); text(x);',
+  })
+  const html = renderedActivity(customExec('const x = calculateSomethingMeaningful(); text(x);'))
+  assert.match(html, /<span class="tool-name">Code<\/span>/)
+  assert.match(html, /code-block-lang">javascript/)
+  assert.match(html, /calculateSomethingMeaningful/)
 }
 
 console.log('codex-functions-exec-activity-test: ok')

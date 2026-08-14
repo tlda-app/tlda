@@ -41,6 +41,8 @@ const NATIVE_NAME_MAP = {
   // verified (observed in rollouts):
   exec: 'Bash',
   exec_command: 'Bash',        // Codex's shell — also how it edits files (cat/sed), so Bash covers edits too
+  write_stdin: 'BashOutput',   // follow-up input/polling for a still-running shell command
+  wait: 'CodeOutput',          // follow-up wait/stop for a yielded functions.exec cell
   update_plan: 'TodoWrite',    // Codex's step-plan tool ≈ Claude's todo/plan tool
   // documented Codex native tools (map when first observed to confirm exact name):
   shell: 'Bash',
@@ -94,7 +96,7 @@ function addGenericArgSummary(input) {
   if (
     input._raw || input.file_path || input.path || input.command || input.pattern ||
     input.message || input.query || input.description || input.reason ||
-    input.agent || input.doc || input.ref || input.text
+    input.agent || input.doc || input.ref || input.text || input.action || input.session
   ) return input
 
   const parts = []
@@ -137,23 +139,41 @@ export function aliasNativeArgs(name, input) {
     case 'local_shell':
       // Codex shell: { cmd, workdir, ... } → Claude-style `command`
       if (input.cmd != null && input.command == null) {
-        return { ...input, command: Array.isArray(input.cmd) ? input.cmd.join(' ') : input.cmd }
+        return {
+          command: Array.isArray(input.cmd) ? input.cmd.join(' ') : input.cmd,
+          ...(input.workdir ? { workdir: input.workdir } : {}),
+        }
       }
-      if (input._raw != null && input.command == null) return { ...input, command: input._raw }
+      if (input._raw != null && input.command == null) return { command: input._raw }
       if (input.command == null) {
         const keys = Object.keys(input).filter(k => k !== 'internal_chat_message_metadata_passthrough')
         if (keys.length === 1 && input[keys[0]] === false) return { ...input, command: keys[0] }
       }
       return input
     case 'write_stdin':
-      if (input.chars != null && input.text == null) return { ...input, text: input.chars }
-      return input
+      return {
+        session: input.session_id ?? input.sessionId ?? 'unknown',
+        action: shellFollowupAction(input.chars),
+      }
+    case 'wait':
+      return {
+        cell: input.cell_id ?? input.cellId ?? 'unknown',
+        action: input.terminate ? 'stop' : 'wait for output',
+      }
     case 'tool_search':
       if (input.query != null) return input
       return input
     default:
       return input
   }
+}
+
+function shellFollowupAction(chars) {
+  if (chars == null || chars === '') return 'wait for output'
+  if (chars === '\u0003') return 'send Ctrl-C'
+  if (chars === '\u0004') return 'send Ctrl-D'
+  const oneLine = String(chars).replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+  return `send ${JSON.stringify(oneLine)}`
 }
 
 // Codex sometimes stores tool output as a transcript wrapper instead of the
@@ -280,8 +300,8 @@ export function parseCodexRecord(o) {
         // An exec cell with no recognizable tools is still real activity. Keep
         // it honest without presenting the transport envelope as Bash.
         return normalizedToolUseEvent({
-          name: 'orchestration',
-          input: { description: 'Custom orchestration', _raw: typeof p.input === 'string' ? p.input : '' },
+          name: 'Code',
+          input: { description: 'run JavaScript', code: typeof p.input === 'string' ? p.input : '' },
           callId: p.call_id,
           ts,
         })

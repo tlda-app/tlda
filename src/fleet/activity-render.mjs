@@ -710,6 +710,15 @@ export function renderCodeCard(toolName, input, ctx) {
   const { langFromFilePath, highlightSyntax } = ctx
   const n = (toolName || '').toLowerCase()
 
+  if (n === 'code' && input.code) {
+    const code = String(input.code).trim()
+    const highlighted = highlightSyntax(esc(code), 'javascript')
+    return `<div class="code-block-wrap code-card">
+      <div class="code-block-header"><span class="code-block-lang">javascript</span><span class="code-block-copy" title="Copy">⎘</span></div>
+      ${copySourceTemplate(code)}<pre><code data-lang="javascript" data-highlighted="1">${highlighted}</code></pre>
+    </div>`
+  }
+
   if (n === 'bash' && input.command) {
     const cmd = input.command
     const lines = cmd.split('\n')
