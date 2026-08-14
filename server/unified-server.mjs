@@ -8595,7 +8595,15 @@ const {
     if (!msg.project || !deliveryId) throw new Error('processed source-change is missing project or delivery id')
     const operation = (await sourceLifecycleStore(msg.project)).readOperationByDeliveryId(msg.project, deliveryId)
     if (!operation?.terminalResult) throw new Error(`processed source-change ${deliveryId} has no terminal source operation`)
-    ws.send(JSON.stringify(operation.terminalResult))
+    const result = operation.terminalResult
+    ws.send(JSON.stringify({
+      type: 'source-change-result',
+      requestId: result.requestId || msg.requestId,
+      project: msg.project,
+      ...result,
+      httpStatus: result.httpStatus || 200,
+      status: result.lifecycleStatus || result.status || (result.ok ? 'accepted' : 'error'),
+    }))
   },
 })
 
@@ -9244,6 +9252,12 @@ async function handleDaemonWsMessage(ws, msg) {
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     let replied = false
     try {
+      const crashBoundary = process.env.TLDA_TEST_SOURCE_CRASH_BOUNDARY
+      const transactionTest = crashBoundary === 'after-source-mutation'
+        ? { simulateCrashAfterSourceMutation: true, crash: () => process.kill(process.pid, 'SIGKILL') }
+        : crashBoundary === 'after-terminal-result'
+          ? { simulateCrashAfterTerminalResult: true, crash: () => process.kill(process.pid, 'SIGKILL') }
+          : undefined
       const result = await processProjectPush(project, {
         files,
         deletedFiles,
@@ -9257,7 +9271,7 @@ async function handleDaemonWsMessage(ws, msg) {
         sourceDaemonKey: ws._daemonKey || null,
         sourceMachineId: ws._machineId || null,
         sourceEnvName: ws._envName || null,
-      })
+      }, transactionTest)
       const { status: httpStatus, lifecycleStatus, ...payload } = result
       const durablePayload = result.sourceOperationResult || payload
       const reply = { type: 'source-change-result', requestId, project, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
@@ -9464,6 +9478,13 @@ process.on('unhandledRejection', (err) => {
   console.log(`[config] active="${cfg.name}" database=${cfg.database.http} store=${cfg.store.http} license=${cfg.licenseKey ? 'set' : 'none'}`)
 }
 
+// Finish journal recovery before accepting a daemon redelivery. Starting the
+// listener first lets the startup recovery and the source-change handler race
+// over the same snapshot directory after a process crash.
+await resumeOverleafPollers(listProjects).catch(error => {
+  console.error(`[overleaf] source transaction recovery failed: ${error.message}`)
+})
+
 server.listen(PORT, HOST, () => {
   const proto = useTls ? 'https' : 'http'
   console.log(`Unified server running on ${proto}://${HOST}:${PORT}`)
@@ -9474,9 +9495,4 @@ server.listen(PORT, HOST, () => {
   } else {
     console.log(`  Viewer SPA: not built (run: npm run build)`)
   }
-
-  // Resume Overleaf git-sync pollers for any project linked to a remote.
-  resumeOverleafPollers(listProjects).catch(error => {
-    console.error(`[overleaf] source transaction recovery failed: ${error.message}`)
-  })
 })

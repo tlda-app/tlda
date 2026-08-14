@@ -1176,6 +1176,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         sourceManifest: nextManifest || [],
       }
       if (transactionTest.simulateCrashAfterSourceMutation) {
+        transactionTest.crash?.('after-source-mutation')
         return { status: 597, ok: false, simulatedCrash: true, boundary: 'after-source-mutation' }
       }
     }
@@ -1225,6 +1226,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       lifecycle.recordAcceptedRevision(name, acceptedSourceMutation.sourceRevision, authority.acceptSeq)
     }
     if (transactionTest.simulateCrashAfterTerminalResult) {
+      transactionTest.crash?.('after-terminal-result')
       return { status: 596, ok: false, simulatedCrash: true, boundary: 'after-terminal-result' }
     }
     await transaction.commit()
