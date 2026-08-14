@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -33,6 +34,20 @@ const main = join(root, 'main.tex')
 const sent = []
 const sourceSync = makeSourceSync(root, sent)
 
+function entry(path, content) {
+  const bytes = Buffer.from(content)
+  return { path, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length }
+}
+
+function materialization(previousContent, nextContent) {
+  const target = entry('main.tex', nextContent)
+  return {
+    baseManifest: [entry('main.tex', previousContent)],
+    targetManifest: [target],
+    blobs: { [target.sha256]: Buffer.from(nextContent).toString('base64') },
+  }
+}
+
 try {
   writeFileSync(main, 'base\n')
   sourceSync.bindSource('paper', root)
@@ -44,6 +59,7 @@ try {
     sourceRevision: 'rev-browser',
     files: [{ path: 'main.tex', content: 'from browser\n' }],
     sourceManifest: ['main.tex'],
+    ...materialization('base\n', 'from browser\n'),
   })
   assert.equal(clean.ok, true)
   assert.deepEqual(clean.applied, ['main.tex'])
@@ -58,15 +74,16 @@ try {
     sourceRevision: 'rev-peer',
     files: [{ path: 'main.tex', content: 'peer edit\n' }],
     sourceManifest: ['main.tex'],
+    ...materialization('from browser\n', 'peer edit\n'),
   })
-  assert.equal(conflicted.ok, true)
+  assert.equal(conflicted.ok, false)
   assert.deepEqual(conflicted.applied, [])
   assert.deepEqual(conflicted.conflicted, ['main.tex'])
   const text = readFileSync(main, 'utf8')
   assert.match(text, /^<<<<<<< local checkout/)
   assert.match(text, /local concurrent edit/)
   assert.match(text, /peer edit/)
-  assert.match(text, />>>>>>> accepted server source for paper:main\.tex/)
+  assert.match(text, />>>>>>> accepted source/)
   assert.equal(sent.filter(message => message.type === 'daemon-warning').length, 0)
 
   console.log('source server update apply: ok')

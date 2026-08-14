@@ -41,7 +41,7 @@ import fs from 'fs'
 const { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSync, statSync } = fs
 import os from 'os'
 const { homedir, hostname } = os
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
@@ -1442,10 +1442,27 @@ setAcceptedSourceMutationHandler(async ({ sourceDaemonKey, ...message }) => {
     await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
   }
   await editActivityProjector.project(message.project)
+  const lifecycle = await sourceLifecycleStore(message.project)
+  const targetRevision = lifecycle.readRevision(message.sourceRevision)
+  const baseRevision = message.previousRevision ? lifecycle.readRevision(message.previousRevision) : null
+  if (!targetRevision) throw new Error(`Accepted source revision ${message.sourceRevision} is not readable for ${message.project}`)
+  const blobs = {}
+  for (const file of message.files || []) {
+    const bytes = file.encoding === 'base64'
+      ? Buffer.from(file.content || '', 'base64')
+      : Buffer.from(String(file.content ?? ''))
+    blobs[createHash('sha256').update(bytes).digest('hex')] = bytes.toString('base64')
+  }
+  const materializationMessage = {
+    ...message,
+    baseManifest: baseRevision?.files || [],
+    targetManifest: targetRevision.files || [],
+    blobs,
+  }
   const keys = [...daemonConnections.keys()].filter(key => key !== sourceDaemonKey)
   if (keys.length === 0) return
   const settled = await Promise.allSettled(keys.map(key =>
-    sendDaemonDurable(key, 'apply-source-update', message, { totalDeadlineMs: 5000, timeoutMs: 2000 })
+    sendDaemonDurable(key, 'apply-source-update', materializationMessage, { totalDeadlineMs: 5000, timeoutMs: 2000 })
       .then(result => ({ key, result })),
   ))
   const failed = []
