@@ -2271,8 +2271,6 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const sensorTopRef = useRef(ANCHORED_SENSOR_MID)
   const tailModeRef = useRef(true)
   const didStartReachRef = useRef(false)
-  const tailRepairFrameRef = useRef<number | null>(null)
-  const tailRepairTimersRef = useRef<number[]>([])
   const previousResetKeyRef = useRef(resetKey)
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
@@ -2294,47 +2292,6 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
 
   const clampTop = useCallback((top: number) => Math.max(0, Math.min(top, Math.max(0, geometry.total - viewportHeight))), [geometry.total, viewportHeight])
 
-  const computeMeasuredTotal = useCallback(() => {
-    let total = 0
-    for (const item of items) {
-      total += heightByKeyRef.current.get(String(item.key)) ?? ANCHORED_ESTIMATED_ROW_HEIGHT
-    }
-    return total
-  }, [items, itemKeySignature])
-
-  const recenterSensor = useCallback((el: HTMLDivElement) => {
-    sensorTopRef.current = ANCHORED_SENSOR_MID
-    el.scrollTop = ANCHORED_SENSOR_MID
-  }, [])
-
-  const scheduleTailRepair = useCallback(() => {
-    if (tailRepairFrameRef.current != null) cancelAnimationFrame(tailRepairFrameRef.current)
-    for (const timer of tailRepairTimersRef.current) window.clearTimeout(timer)
-    tailRepairTimersRef.current = []
-    const repair = () => {
-      tailRepairFrameRef.current = null
-      if (!tailModeRef.current) return
-      const el = scrollerRef.current
-      const nextViewportHeight = el?.clientHeight ?? viewportHeight
-      const tailTop = Math.max(0, computeMeasuredTotal() - nextViewportHeight)
-      if (Math.abs(modelTopRef.current - tailTop) > 0.5) {
-        modelTopRef.current = tailTop
-        if (el) recenterSensor(el)
-        setGeometryVersion(version => version + 1)
-      }
-    }
-    tailRepairFrameRef.current = requestAnimationFrame(repair)
-    for (const delay of [100, 300, 700, 1200, 1600]) {
-      tailRepairTimersRef.current.push(window.setTimeout(repair, delay))
-    }
-  }, [computeMeasuredTotal, recenterSensor, viewportHeight])
-
-  useEffect(() => () => {
-    if (tailRepairFrameRef.current != null) cancelAnimationFrame(tailRepairFrameRef.current)
-    for (const timer of tailRepairTimersRef.current) window.clearTimeout(timer)
-    tailRepairTimersRef.current = []
-  }, [])
-
   const setTailMode = useCallback((next: boolean) => {
     if (tailModeRef.current === next) return
     tailModeRef.current = next
@@ -2345,12 +2302,8 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const top = clampTop(nextTop)
     modelTopRef.current = top
     const atBottom = Math.abs(top - Math.max(0, geometry.total - viewportHeight)) <= 1
-    if (opts?.forceTail || atBottom) {
-      setTailMode(true)
-      scheduleTailRepair()
-    } else {
-      setTailMode(false)
-    }
+    if (opts?.forceTail || atBottom) setTailMode(true)
+    else setTailMode(false)
     onAtBottomChange?.(atBottom)
     if (top > ANCHORED_ESTIMATED_ROW_HEIGHT * 2) didStartReachRef.current = false
     if (top <= ANCHORED_ESTIMATED_ROW_HEIGHT && !didStartReachRef.current) {
@@ -2358,7 +2311,12 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       onStartReached?.()
     }
     setGeometryVersion(version => version + 1)
-  }, [clampTop, geometry.total, onAtBottomChange, onStartReached, scheduleTailRepair, setTailMode, viewportHeight])
+  }, [clampTop, geometry.total, onAtBottomChange, onStartReached, setTailMode, viewportHeight])
+
+  const recenterSensor = useCallback((el: HTMLDivElement) => {
+    sensorTopRef.current = ANCHORED_SENSOR_MID
+    el.scrollTop = ANCHORED_SENSOR_MID
+  }, [])
 
   const scrollToTail = useCallback(() => {
     setModelTop(Math.max(0, geometry.total - viewportHeight), { forceTail: true })
