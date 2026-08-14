@@ -252,13 +252,19 @@ export function createAgentLauncher({
       }
     }
     let resolvedCwd = cwd
-    if (!resolvedCwd && project) {
+    if (!resolvedCwd) {
+      if (!project) {
+        return { ok: false, error: 'spawn requires cwd or project' }
+      }
       const projectRecord = projects.find(p => p.name === project)
       if (!projectRecord) {
         const known = projects.map(p => p.name).sort().join(', ')
         return { ok: false, error: `no project '${project}'${known ? ` — known: ${known}` : ''}` }
       }
-      if (projectRecord.sourceDir) resolvedCwd = projectRecord.sourceDir
+      if (!projectRecord.sourceDir) {
+        return { ok: false, error: `project '${project}' has no working directory on this daemon` }
+      }
+      resolvedCwd = projectRecord.sourceDir
     }
     const projectForGrant = project
       ? projects.find(p => p.name === project)
