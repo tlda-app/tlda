@@ -107,9 +107,15 @@ process.on('message', async (msg) => {
         await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       }
     }
+    await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'built', { ok: true }])
     process.send?.({ t: 'done', ok: true })
     process.exit(0)
   } catch (e) {
+    try {
+      await callParent('recordBuildResult', [msg.name, msg.sourceRevision, msg.acceptSeq, 'build_failed', { ok: false, error: e?.message || String(e) }])
+    } catch (recordError) {
+      e.message = `${e?.message || String(e)}; build disposition persistence failed: ${recordError?.message || recordError}`
+    }
     process.send?.({ t: 'done', ok: false, error: e?.message || String(e) })
     process.exit(1)
   }

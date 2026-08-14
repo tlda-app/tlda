@@ -4,7 +4,7 @@
 // coalesces/serializes per project so rapid saves collapse to one build.
 
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
-import { updateProject, getProjectsDir } from './project-store.mjs'
+import { updateProject, getProjectsDir, sourceLifecycleStore } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadServerConfig } from '../../shared/config.mjs'
 import { ForkTransport } from './build-transport.mjs'
@@ -48,6 +48,17 @@ async function patchShape(docName, shapeId, propsPatch) {
 }
 
 const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, mirrorShadow }
+
+async function recordBuildResult(name, sourceRevision, acceptSeq, state, result = null) {
+  if (!sourceRevision) return null
+  const lifecycle = await sourceLifecycleStore(name)
+  const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
+  if (!current) throw new Error(`Cannot record build result for unknown source revision ${sourceRevision}`)
+  if (current.acceptSeq !== acceptSeq) throw new Error(`Build acceptSeq ${acceptSeq} does not match ${current.acceptSeq}`)
+  return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+}
+
+SINKS.recordBuildResult = recordBuildResult
 
 /**
  * Create a bound dispatcher instance. Transport is injected so the coalescing

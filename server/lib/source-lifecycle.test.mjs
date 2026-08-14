@@ -31,8 +31,11 @@ test('source operation fate survives store reconstruction and exact replay', () 
       sourceRevision: 'sha256:revision',
       acceptSeq: 1,
       disposition: 'accepted',
-    }, { acceptSeq: 1 })
+    }, { acceptSeq: 1, previousRevision: null, acceptedRevision: 'sha256:revision' })
     assert.equal(terminal.state, 'accepted')
+    assert.equal(first.readRevisionLifecycle(payload().project, 'sha256:revision').build.state, 'pending')
+    first.recordRevisionPhase(payload().project, 'sha256:revision', 'build', 'built', { artifact: 'output' })
+    assert.equal(first.readRevisionLifecycle(payload().project, 'sha256:revision').build.state, 'built')
 
     const restarted = createSourceLifecycleStore({ root, context: { referencedRoots: ['main.tex'] } })
     const replay = restarted.prepareOperation(payload())

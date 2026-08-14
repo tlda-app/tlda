@@ -1364,6 +1364,15 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   })
 
   if (!decision.build) {
+    if (acceptedSourceMutation?.sourceRevision) {
+      lifecycle.recordRevisionPhase(
+        name,
+        acceptedSourceMutation.sourceRevision,
+        'build',
+        decision.reason === 'already-building' ? 'superseded' : 'not_required',
+        { reason: decision.reason },
+      )
+    }
     if (projectPartsChanged) {
       await rebuildProjectPartsView(name, project)
       broadcastProjectPartsChanged(name, changedPartFiles)

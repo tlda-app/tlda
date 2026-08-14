@@ -181,7 +181,13 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   }
 
   function operationJournal() {
-    return readJson(operationsPath) || { version: 1, byRequestId: {}, requestIdByDeliveryId: {} }
+    const journal = readJson(operationsPath) || {}
+    return {
+      version: 1,
+      byRequestId: journal.byRequestId || {},
+      requestIdByDeliveryId: journal.requestIdByDeliveryId || {},
+      revisionLifecycle: journal.revisionLifecycle || {},
+    }
   }
 
   function writeOperationJournal(journal) {
@@ -442,8 +448,39 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         updatedAt: new Date().toISOString(),
       }
       journal.byRequestId[requestId] = operation
+      if (stateName === 'accepted' && acceptedRevision) {
+        journal.revisionLifecycle[acceptedRevision] ||= {
+          project,
+          sourceRevision: acceptedRevision,
+          acceptSeq,
+          state: 'accepted',
+          build: { state: 'pending', updatedAt: operation.updatedAt },
+          version: { state: 'pending', updatedAt: operation.updatedAt },
+          mirror: { state: 'pending', updatedAt: operation.updatedAt },
+          acceptedAt: operation.updatedAt,
+          updatedAt: operation.updatedAt,
+        }
+      }
       writeOperationJournal(journal)
       return operationJournal().byRequestId[requestId]
+    },
+    readRevisionLifecycle(project, sourceRevision) {
+      const lifecycle = operationJournal().revisionLifecycle[sourceRevision] || null
+      return lifecycle?.project === project ? lifecycle : null
+    },
+    recordRevisionPhase(project, sourceRevision, phase, stateName, result = null) {
+      if (!['build', 'version', 'mirror'].includes(phase)) throw new Error(`Invalid source revision phase: ${phase}`)
+      const journal = operationJournal()
+      const lifecycle = journal.revisionLifecycle[sourceRevision]
+      if (!lifecycle || lifecycle.project !== project) throw new Error(`Source revision ${sourceRevision} is not accepted for ${project}`)
+      const updatedAt = new Date().toISOString()
+      journal.revisionLifecycle[sourceRevision] = {
+        ...lifecycle,
+        [phase]: { state: stateName, result: stableValue(result), updatedAt },
+        updatedAt,
+      }
+      writeOperationJournal(journal)
+      return operationJournal().revisionLifecycle[sourceRevision]
     },
     bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
       const before = state()
