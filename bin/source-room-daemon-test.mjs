@@ -231,6 +231,50 @@ try {
   assert.deepEqual(recoveredRequest.files, firstRetryRequest.files)
   assert.equal(readSourceFile(retryProject, 'main.tex'), 'retry base\nsurvives restart\n')
 
+  for (const lifecycleStatus of ['recovery-required', 'invalid-request-id-reuse']) {
+    const blockedProject = `source-room-blocked-${lifecycleStatus}`
+    createProject({ name: blockedProject, title: blockedProject, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(blockedProject, { pages: 1, buildStatus: 'success' })
+    suppressBuilds(blockedProject)
+    const blockedBase = await acceptedPush(blockedProject, {
+      expectedRevision: null,
+      sourceManifest: ['main.tex'],
+      files: [{ path: 'main.tex', content: 'blocked base\n' }],
+    })
+    const blockedRequests = []
+    const heldEdits = []
+    const blockedDaemon = createSourceRoomDaemon({
+      projectDir,
+      readProject,
+      sourceLifecycleStore,
+      readClientSourceManifest,
+      processProjectPush: async (_project, body) => {
+        blockedRequests.push(body)
+        return {
+          status: 409,
+          ok: false,
+          lifecycleStatus,
+          error: `terminal ${lifecycleStatus}`,
+          authority: { currentRevision: blockedBase.sourceRevision },
+        }
+      },
+      recordHeldEdit: async (project, entry) => heldEdits.push({ project, entry }),
+      pushDelayMs: 10,
+      log: { error() {} },
+    })
+    roomDaemons.push(blockedDaemon)
+    const blockedRoom = await blockedDaemon.getRoom(blockedProject, 'main.tex')
+    blockedRoom.ytext.insert(blockedRoom.ytext.length, 'held edit\n')
+    await blockedDaemon.flushRoom(blockedRoom)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(blockedRequests.length, 1, `${lifecycleStatus} must not retry`)
+    assert.equal(blockedRoom.blocked, true)
+    assert.equal(blockedRoom.submission.state, 'blocked')
+    assert.equal(heldEdits.length, 1)
+    assert.equal(heldEdits[0].project, blockedProject)
+    assert.equal(heldEdits[0].entry.reason, `terminal ${lifecycleStatus}`)
+  }
+
   const corrupt = 'source-room-corrupt-revision'
   createProject({ name: corrupt, title: corrupt, mainFile: 'main.tex', format: 'svg' })
   await updateProject(corrupt, { pages: 1, buildStatus: 'success' })

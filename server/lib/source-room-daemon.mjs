@@ -354,14 +354,20 @@ export function createSourceRoomDaemon({
         return
       }
       const merged = conflictTextFor(result, room.filePath)
-      if (result.lifecycleStatus === 'stale-base' || merged) {
+      if (isTerminalBlockedResult(result) || merged) {
         if (typeof result.authority?.currentRevision === 'string') room.heldRevision = result.authority.currentRevision
         submission.state = 'blocked'
         submission.lastError = result.error || 'source conflict'
         room.blocked = true
         if (merged) replaceYText(room.ytext, merged)
         persistRoom(room)
-        broadcast(room, { type: 'status', status: 'conflict', sourceRevision: room.heldRevision })
+        await noteRoomIsHolding(room, submission.lastError)
+        broadcast(room, {
+          type: 'status',
+          status: merged || result.lifecycleStatus === 'stale-base' ? 'conflict' : 'blocked',
+          sourceRevision: room.heldRevision,
+          error: submission.lastError,
+        })
         return
       }
       await scheduleRetry(room, result.error || `source room push failed with ${result.status}`)
@@ -401,6 +407,15 @@ export function createSourceRoomDaemon({
     if (!Array.isArray(classifications)) return null
     const match = classifications.find(item => item?.path === filePath && item?.status === 'conflict' && item?.merged)
     return match ? bufferFromBase64(match.merged).toString('utf8') : null
+  }
+
+  function isTerminalBlockedResult(result) {
+    return [
+      'stale-base',
+      'recovery-required',
+      'invalid-request-id-reuse',
+      'overleaf-conflict',
+    ].includes(result?.lifecycleStatus)
   }
 
   async function applyAcceptedSourceMutation(message) {
