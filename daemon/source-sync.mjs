@@ -926,10 +926,27 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       const alreadyPushed = new Set(filePaths)
       const deps = scanMarkdownInputs(state.sourceDir, state.mainFile)
       for (const rel of state.watchSet) {
+        // A chat-referenced document is not reachable from the main file and is
+        // not supposed to be. It got here because somebody clicked its chip, and
+        // it is a second root of the project rather than a leaf of this closure.
+        //
+        // Deleting it here is what wedged `tlda`: the same push then declares it,
+        // because collectSourceManifest takes `watchSet` and the chat-reference
+        // rescan below puts it straight back. One path in `deletedFiles` and in
+        // `sourceManifest` is refused whole by the server, so every push carrying
+        // any Markdown file failed and his edits stopped reaching the paper.
+        //
+        // The rescan below owns these paths and deletes them on the right
+        // condition — no longer reached from the reference roots.
+        if (state.referencedRoots.has(rel)) continue
         if (!deps.has(rel) && state.authorityManifest.has(rel) && !deleted.includes(rel)) deleted.push(rel)
       }
       state.watchSet = deps
-      state.authorityManifest = new Set(deps)
+      // Authority is what the server holds, and the server holds the closure plus
+      // the referenced roots — collectSourceManifest declares both. Dropping the
+      // roots here would leave the rescan below unable to delete one that really
+      // did stop being referenced, since it guards on this set.
+      state.authorityManifest = new Set([...deps, ...state.referencedRoots])
       for (const rel of deps) {
         if (alreadyPushed.has(rel)) continue
         const full = path.join(state.sourceDir, rel)
