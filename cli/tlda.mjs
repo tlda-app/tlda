@@ -1521,7 +1521,12 @@ async function bootstrapDaemonPlist(plist = FLEET_DAEMON_PLIST, label = FLEET_DA
 }
 
 async function bootoutDaemonLabel(label = FLEET_DAEMON_LABEL) {
-  await runLaunchctl(['bootout', daemonLaunchdTarget(label)], { ignoreFailure: true })
+  try {
+    await runLaunchctl(['bootout', daemonLaunchdTarget(label)])
+  } catch (error) {
+    const detail = error?.message || String(error)
+    if (!/No such process|Could not find service|service not found/i.test(detail)) throw error
+  }
 }
 
 async function probeDaemonLaunchdStartCapability() {
@@ -3314,6 +3319,22 @@ async function cmdDeploy() {
   const step = (label) => process.stdout.write(dim(`  ${label}... `))
   const pass = (msg) => console.log(green('✓') + (msg ? ' ' + msg : ''))
   const die = (msg) => { console.log(red('✗') + ' ' + msg); process.exit(1) }
+  const fetchForDeploy = (label, url, options = {}) => finishCliOperation(label, async () => {
+    try {
+      const response = await fetch(url, { ...options, signal: AbortSignal.timeout(5000) })
+      if (response.status === 408 || response.status === 409 || response.status === 425 || response.status === 429 || response.status >= 500) {
+        const error = new Error(`${url} returned ${response.status}`)
+        error.status = response.status
+        throw error
+      }
+      return response
+    } catch (error) {
+      if (!error.status && /fetch failed|timed out|ECONNRESET|EPIPE|socket hang up/i.test(error?.message || String(error))) {
+        error.status = 503
+      }
+      throw error
+    }
+  })
 
   console.log(bold('tlda deploy'))
   console.log()
@@ -3354,7 +3375,7 @@ async function cmdDeploy() {
   step('Verifying SPA serves pages')
   const tokenParam = token ? `?token=${token}` : ''
   try {
-    const res = await fetch(`${serverUrl}/${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    const res = await fetchForDeploy('deploy SPA verification', `${serverUrl}/${tokenParam}`)
     const body = await res.text()
     if (!res.ok) die(`SPA returned ${res.status}`)
     if (!body.includes('<div id="root">')) die('SPA response missing app root')
@@ -3366,13 +3387,13 @@ async function cmdDeploy() {
   // 6. Verify a doc page loads (find first available project)
   step('Verifying doc page loads')
   try {
-    const projRes = await fetch(`${serverUrl}/api/projects${tokenParam}`, { signal: AbortSignal.timeout(5000) })
+    const projRes = await fetchForDeploy('deploy projects verification', `${serverUrl}/api/projects${tokenParam}`)
     if (projRes.ok) {
       const data = await projRes.json()
       const projects = data.projects || data || []
       const first = projects[0]
       if (first?.name) {
-        const docRes = await fetch(`${serverUrl}/?project=${first.name}${token ? '&token=' + token : ''}`, { signal: AbortSignal.timeout(5000) })
+        const docRes = await fetchForDeploy('deploy document verification', `${serverUrl}/?project=${first.name}${token ? '&token=' + token : ''}`)
         const docBody = await docRes.text()
         if (docRes.ok && docBody.includes('<div id="root">')) {
           pass(first.name)
@@ -3382,9 +3403,7 @@ async function cmdDeploy() {
       } else {
         pass('(no projects to test)')
       }
-    } else {
-      pass('(projects API unavailable)')
-    }
+    } else die(`Projects API returned ${projRes.status}`)
   } catch (e) {
     die(`Doc page check failed: ${e.message}`)
   }
@@ -5079,13 +5098,13 @@ async function cmdAgent() {
     case 'mint':      await runFleetSpawn(agentMintArgs(process.argv.slice(4))); break
     case 'enlist':    await runFleetSpawn(agentEnlistArgs(process.argv.slice(4))); break
     case 'wake':      await runFleetSpawn(process.argv.slice(4)); break
-    case 'reanimate': await reanimateAgentCommand(getPositional(1)); break
-    case 'move':      await cmdAgentMove(); break
-    case 'set-mint-machine': await cmdAgentSetSpawnMachine(); break
+    case 'reanimate': await finishCliOperation('agent reanimate', () => reanimateAgentCommand(getPositional(1))); break
+    case 'move':      await finishCliOperation('agent move', cmdAgentMove); break
+    case 'set-mint-machine': await finishCliOperation('agent set-mint-machine', cmdAgentSetSpawnMachine); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
-    case 'dismiss':   await dismissAgent(getPositional(1)); break
-    case 'permissions': await cmdAgentPermissions(); break
+    case 'dismiss':   await finishCliOperation('agent dismiss', () => dismissAgent(getPositional(1))); break
+    case 'permissions': await finishCliOperation('agent permissions', cmdAgentPermissions); break
     case 'models': await cmdAgentModels(); break
     default:
       console.error('Usage: tlda agent <list|mint|enlist|wake|reanimate|move|set-mint-machine|attach|hibernate|dismiss|permissions|models> [name]')
@@ -5434,17 +5453,16 @@ async function cmdDoctor() {
       label: 'Rebuild SPA bundle',
       fn: () => {
         console.log(dim('  Running npm run build...'))
-        execSync('npm run build', { cwd: tldaRoot, stdio: 'inherit', timeout: 120000 })
+        execSync('npm run build', { cwd: tldaRoot, stdio: 'inherit' })
       }
     })
     fixes.push({
       label: 'Restart server',
       fn: () => {
-        const tldaCmd = JSON.stringify(join(tldaRoot, 'cli', 'tlda.mjs'))
         console.log(dim('  Stopping server...'))
-        try { execSync(`node ${tldaCmd} server stop`, { stdio: 'pipe', timeout: 10000 }) } catch {}
+        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'stop'], { stdio: 'inherit' })
         console.log(dim('  Starting server...'))
-        execSync(`node ${tldaCmd} server start`, { stdio: 'pipe', timeout: 15000 })
+        execFileSync(process.execPath, [join(tldaRoot, 'cli', 'tlda.mjs'), 'server', 'start'], { stdio: 'inherit' })
       }
     })
   }
@@ -5629,6 +5647,7 @@ async function cmdDoctor() {
   if (autoFix && fixes.length > 0) {
     console.log()
     console.log(bold(`Fixing ${fixes.length} issue${fixes.length === 1 ? '' : 's'}...`))
+    let fixFailures = 0
     for (const fix of fixes) {
       console.log(cyan(`→ ${fix.label}`))
       try {
@@ -5636,7 +5655,12 @@ async function cmdDoctor() {
         ok(fix.label)
       } catch (e) {
         fail(`${fix.label}: ${e.message}`)
+        fixFailures++
       }
+    }
+    if (fixFailures) {
+      console.log(red(bold(`${fixFailures} fix${fixFailures === 1 ? '' : 'es'} did not complete.`)))
+      process.exit(1)
     }
   }
 
@@ -5810,8 +5834,13 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
 
   if (sub === 'uninstall') {
     if (hasLaunchd) {
-      try { execSync('launchctl bootout gui/$(id -u)/com.tlda.server', { stdio: 'pipe' }) } catch {}
-      try { const fs = await import('fs'); fs.unlinkSync(PLIST) } catch {}
+      try {
+        await runLaunchctl(['bootout', daemonLaunchdTarget('com.tlda.server')])
+      } catch (error) {
+        const detail = error?.message || String(error)
+        if (!/No such process|Could not find service|service not found/i.test(detail)) throw error
+      }
+      unlinkSync(PLIST)
       console.log('Uninstalled launchd service.')
     } else {
       console.log('No launchd service installed.')

@@ -63,10 +63,23 @@ assert.equal(moved.ok, true)
 const deploy = cliSource.match(/async function cmdDeploy\(\)[\s\S]*?\n\}\n\n\/\/ ---- setup/)?.[0] || ''
 assert.doesNotMatch(deploy, /server (?:start|stop)'[^\n]*timeout/)
 assert.match(deploy, /execFileSync\(process\.execPath, \[join\(tldaRoot, 'cli', 'tlda\.mjs'\), 'server', 'start'\]/)
+assert.match(deploy, /fetchForDeploy\('deploy SPA verification'/)
+assert.match(deploy, /fetchForDeploy\('deploy projects verification'/)
+assert.doesNotMatch(deploy, /projects API unavailable/)
 
 const restart = cliSource.match(/async function restartMcpAgents\(rest\)[\s\S]*?\n\}/)?.[0] || ''
 assert.match(restart, /while \(pending\.length\)/)
 assert.match(restart, /pending\.splice\(i, 1\)/)
 assert.match(restart, /retrying in/)
+
+const agentDispatch = cliSource.match(/async function cmdAgent\(\)[\s\S]*?\n\}/)?.[0] || ''
+for (const operation of ['reanimate', 'move', 'set-mint-machine', 'dismiss', 'permissions']) {
+  assert.match(agentDispatch, new RegExp(`case '${operation}':[\\s\\S]*?finishCliOperation`))
+}
+
+const doctor = cliSource.match(/async function cmdDoctor\(\)[\s\S]*?\n\}\n\nasync function cmdDoctorYolo/)?.[0] || ''
+assert.doesNotMatch(doctor, /server (?:start|stop)[^\n]*timeout/)
+assert.match(doctor, /fixFailures\+\+/)
+assert.match(doctor, /fix(?:es)?[^`]*did not complete/)
 
 console.log('cli remaining completion boundary: ok')
