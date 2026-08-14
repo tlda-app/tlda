@@ -99,8 +99,10 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           if (block.id && evt.status !== 'completed' && evt.status !== 'error') {
             pendingTools.set(block.id, { tool: humanName, arg, input, ts: ev.timestamp })
           }
-          // Attach result for pretty-printed tools
-          if (isPrettyPrintTool(name) && block.id) {
+          // Unknown Codex-native tools use the same result-bearing fallback as
+          // established pretty-print cards. The marker is internal adapter
+          // metadata; the call's own arguments remain unchanged in the UI.
+          if ((isPrettyPrintTool(name) || input._unknownCodexToolKind) && block.id) {
             if (toolResults.has(block.id)) {
               const raw = toolResults.get(block.id)
               evt.prettyResult = truncatePrettyResult(raw, name)

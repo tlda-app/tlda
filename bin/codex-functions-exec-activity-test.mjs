@@ -4,11 +4,70 @@ import { extractFunctionsExecCalls } from '../agent-runtime/functions-exec-activ
 import { createActivityExtractor } from '../agent-runtime/jsonl-event-extract.mjs'
 import { normalizeDaemonActivityEvent, shouldStoreDaemonActivity } from '../server/lib/daemon-activity-ingest.mjs'
 import { renderActivityGroup } from '../src/fleet/activity-render.mjs'
+import { convertChatEvent } from '../src/fleet/convert-chat-event.mjs'
+import { JSDOM } from 'jsdom'
 
 const ts = '2026-07-22T08:54:27.932Z'
 
 function customExec(input, callId = 'call_outer') {
   return { timestamp: ts, type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', input, call_id: callId } }
+}
+
+{
+  const call = {
+    timestamp: ts,
+    type: 'response_item',
+    payload: {
+      type: 'function_call',
+      name: 'future_native_tool',
+      arguments: JSON.stringify({ target: 'paper.tex', mode: 'inspect' }),
+      call_id: 'call_unknown',
+    },
+  }
+  const output = {
+    timestamp: ts,
+    type: 'response_item',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'call_unknown',
+      output: 'first line\nsecond line\nthird line\nfourth line',
+    },
+  }
+  const extractor = createActivityExtractor()
+  const activity = extractor.extractActivityEvents([parseCodexRecord(call), parseCodexRecord(output)])[0]
+  assert.equal(activity.tool, 'future_native_tool')
+  assert.equal(activity.input._unknownCodexToolKind, 'future_native_tool')
+  assert.equal(activity.prettyResult, 'first line\nsecond line\nthird line\nfourth line')
+
+  const stored = normalizeDaemonActivityEvent(activity)
+  const item = convertChatEvent({
+    id: 17,
+    type: 'activity',
+    from: 'fleet:codex',
+    text: stored.text,
+    timestamp: stored.timestamp,
+    metadata: stored.metadata,
+  })
+  const html = renderActivityGroup([item], {
+    agentLabel: () => 'codex',
+    getNickClass: () => '',
+    getAgents: () => [],
+    renderMarkdown: value => value,
+    highlightSyntax: value => value,
+    langFromFilePath: () => '',
+    foldHeights: { toolMarkdown: 2 },
+  })
+  const document = new JSDOM(html).window.document
+  const line = document.querySelector('.tool-line[data-tool-name="future_native_tool"]')
+  const result = document.querySelector('.tool-pretty-result.tool-pretty-markdown')
+  assert.ok(line)
+  assert.match(line.textContent, /target: paper\.tex, mode: inspect/)
+  assert.doesNotMatch(line.textContent, /_unknownCodexToolKind/)
+  assert.ok(result)
+  assert.match(result.querySelector('.code-block-lang').textContent, /future_native_tool/)
+  assert.equal(result.querySelector('.fold-body').textContent, activity.prettyResult)
+  assert.equal(result.querySelector('.fold-body').classList.contains('code-collapsed'), true)
+  assert.match(result.querySelector('.code-block-toggle').textContent, /4 lines — show all/)
 }
 
 function renderedActivity(record) {
