@@ -21,6 +21,7 @@ import { ensure, historicalCtx } from '../lib/ensure.mjs'
 import { announcePageJson } from '../../shared/pagination-announce.mjs'
 import { broadcastSignal, putShape } from '../lib/sync-rooms.mjs'
 import { loadProofInfo, dryRunInvalidation } from '../lib/invalidation-graph.mjs'
+import { loadSynctex, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 
 async function pathExists(path) {
   try {
@@ -138,7 +139,7 @@ export async function runLatexdiffFiles(oldPath, newPath, opts = {}) {
 
 /**
  * Search excerptLines for a changed text span. Returns the first matching line's
- * { lineNum, colStart, colEnd, lineLen }, or null if not found.
+ * { lineNum, colStart, colEnd }, or null if not found.
  */
 function _findInExcerpt(excerptLines, firstLineNum, searchText) {
   // Normalize whitespace for matching
@@ -148,7 +149,7 @@ function _findInExcerpt(excerptLines, firstLineNum, searchText) {
     const hay = excerptLines[k].replace(/\s+/g, ' ')
     const idx = hay.indexOf(needle)
     if (idx >= 0) {
-      return { lineNum: firstLineNum + k, colStart: idx, colEnd: idx + needle.length, lineLen: excerptLines[k].length }
+      return { lineNum: firstLineNum + k, colStart: idx, colEnd: idx + needle.length }
     }
   }
   // Fallback: try first significant word of the needle (handles multi-line or split content)
@@ -157,7 +158,7 @@ function _findInExcerpt(excerptLines, firstLineNum, searchText) {
     for (let k = 0; k < excerptLines.length; k++) {
       const idx = excerptLines[k].indexOf(firstWord)
       if (idx >= 0) {
-        return { lineNum: firstLineNum + k, colStart: idx, colEnd: idx + firstWord.length, lineLen: excerptLines[k].length }
+        return { lineNum: firstLineNum + k, colStart: idx, colEnd: idx + firstWord.length }
       }
     }
   }
@@ -165,19 +166,16 @@ function _findInExcerpt(excerptLines, firstLineNum, searchText) {
 }
 
 /** Create a single horizontal highlight shape and write it to the Yjs room. */
-async function _createHighlightShape(docName, entry, colStart, colEnd, lineLen, color, xColumnOffset, yColumnOffset, triggerId) {
-  const canvas = _pdfToCanvas(entry.page, entry.x, entry.y)
-  const fullLeft = canvas.x
-  const fullWidth = _TARGET_WIDTH * 0.9 - fullLeft
-  if (fullWidth <= 0) return null
-  const norm = Math.max(lineLen, 1)
-  const xs = fullLeft + xColumnOffset + (colStart / norm) * fullWidth
-  const xe = fullLeft + xColumnOffset + (colEnd   / norm) * fullWidth
+async function _createHighlightShape(docName, span, color, xColumnOffset, yColumnOffset, triggerId) {
+  const start = _pdfToCanvas(span.page, span.xStart, span.y)
+  const end = _pdfToCanvas(span.page, span.xEnd, span.y)
+  const xs = start.x + xColumnOffset
+  const xe = end.x + xColumnOffset
   const w  = Math.max(xe - xs, 4)
   const shapeId = `shape:diff-${Date.now()}-${Math.random().toString(36).slice(2,8)}`
   await putShape(`doc-${docName}`, {
     id: shapeId, type: 'highlight', typeName: 'shape',
-    x: xs, y: canvas.y + yColumnOffset - 3,
+    x: xs, y: start.y + yColumnOffset - 3,
     rotation: 0, isLocked: false, opacity: 0.5,
     parentId: 'page:page', index: 'a1',
     props: {
@@ -488,7 +486,6 @@ router.post('/diff-region', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   // 1. Reverse synctex: find source line range covering this y-region
-  const { loadSynctex } = await import('../lib/synctex-query.mjs')
   const synctex = await loadSynctex(name)
   if (!synctex) return res.status(404).json({ error: 'No synctex data for current version' })
 
@@ -563,13 +560,8 @@ router.post('/diff-region', requireRead, async (req, res) => {
     await rm(tmpNew, { force: true })
   }
 
-  // 5. Load lookup tables (source line → PDF position) for the primary target.
+  // 5. Resolve exact source spans through the shared current/historical SyncTeX algorithm.
   const primaryTexBase = (project?.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
-
-  const currentLookup = (await readJsonOr(join(outputDir(name), `${primaryTexBase}-lookup.json`), {})).lines ?? {}
-
-  const shadowLookupPath = join(projectDir(name), 'history', `shadow-${hash7}`, `${primaryTexBase}-lookup.json`)
-  const shadowLookup = (await readJsonOr(shadowLookupPath, {})).lines ?? {}
 
   // 6. Create highlight shapes for changes in the highlighted Y-region
   // Filter: only include changes whose PDF position falls in the requested page/Y range
@@ -581,26 +573,38 @@ router.post('/diff-region', requireRead, async (req, res) => {
     const info = _findInExcerpt(currentLines, 1, text)
     if (!info) continue
     if (seenNewLines.has(info.lineNum)) continue
-    const entry = currentLookup[info.lineNum]
-    if (!entry) continue
-    // Filter to highlighted region
-    if (entry.page !== page || entry.y < pdfYMin - yMargin || entry.y > pdfYMax + yMargin) continue
+    const geometry = await sourceTextSpanToPdfSpans(name, relHitFile, currentLines, {
+      startLine: info.lineNum, startCol: info.colStart,
+      endLine: info.lineNum, endCol: info.colEnd,
+    }, { texBase: primaryTexBase })
+    if (!geometry) continue
+    const spans = geometry.pdfSpans.filter(span =>
+      span.page === page && span.y >= pdfYMin - yMargin && span.y <= pdfYMax + yMargin)
+    if (spans.length === 0) continue
     seenNewLines.add(info.lineNum)
-    const id = await _createHighlightShape(name, entry, info.colStart, info.colEnd, info.lineLen, 'light-green', 0, 0, triggerId)
-    if (id) shapeIds.push(id)
+    for (const span of spans) {
+      const id = await _createHighlightShape(name, span, 'light-green', 0, 0, triggerId)
+      if (id) shapeIds.push(id)
+    }
   }
 
   for (const text of delTexts) {
     const info = _findInExcerpt(historicalLines, 1, text)
     if (!info) continue
     if (seenOldLines.has(info.lineNum)) continue
-    const entry = shadowLookup[info.lineNum]
-    if (!entry) continue
-    // Filter to highlighted region (shadow column page number matches)
-    if (entry.page !== page || entry.y < pdfYMin - yMargin || entry.y > pdfYMax + yMargin) continue
+    const geometry = await sourceTextSpanToPdfSpans(name, relHitFile, historicalLines, {
+      startLine: info.lineNum, startCol: info.colStart,
+      endLine: info.lineNum, endCol: info.colEnd,
+    }, { texBase: primaryTexBase, version: hash7 })
+    if (!geometry) continue
+    const spans = geometry.pdfSpans.filter(span =>
+      span.page === page && span.y >= pdfYMin - yMargin && span.y <= pdfYMax + yMargin)
+    if (spans.length === 0) continue
     seenOldLines.add(info.lineNum)
-    const id = await _createHighlightShape(name, entry, info.colStart, info.colEnd, info.lineLen, 'light-red', columnX, shadowYOffset, triggerId)
-    if (id) shapeIds.push(id)
+    for (const span of spans) {
+      const id = await _createHighlightShape(name, span, 'light-red', columnX, shadowYOffset, triggerId)
+      if (id) shapeIds.push(id)
+    }
   }
 
   res.json({ shapeIds })

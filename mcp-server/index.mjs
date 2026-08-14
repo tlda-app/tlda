@@ -2977,228 +2977,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       // --- Text-based highlighting: find exact text position and narrow the highlight ---
       if (text) {
-        // Read source file from the server
-        const sourceFile = file || null;
-        const sourceFileName = sourceFile ? path.basename(sourceFile) : null;
-        let sourceContent;
-        try {
-          const srcUrl = sourceFileName
-            ? `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(sourceFileName)}`
-            : `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/main`;
-          const srcRes = await fetch(srcUrl, { headers: TLDA_AUTH_HEADERS });
-          if (!srcRes.ok) {
-            // If 'main' didn't work, try getting project info for the actual main file name
-            if (!sourceFileName) {
-              const projRes = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}`, { headers: TLDA_AUTH_HEADERS });
-              if (projRes.ok) {
-                const projData = await projRes.json();
-                const mainFile = projData.mainFile || projData.main;
-                if (mainFile) {
-                  const srcRes2 = await fetch(`${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(mainFile)}`, { headers: TLDA_AUTH_HEADERS });
-                  if (srcRes2.ok) sourceContent = await srcRes2.text();
-                }
-              }
-            }
-            if (!sourceContent) {
-              return { content: [{ type: 'text', text: `Could not read source file for ${doc}` }], isError: true };
-            }
-          } else {
-            sourceContent = await srcRes.text();
-          }
-        } catch (e) {
-          return { content: [{ type: 'text', text: `Error reading source: ${e.message}` }], isError: true };
-        }
-
-        const sourceLines = sourceContent.split('\n');
-        // Search for text near startLine (±10 lines)
-        const searchStart = Math.max(0, startLine - 11); // 0-indexed
-        const searchEnd = Math.min(sourceLines.length, startLine + 10);
-        const searchRegion = sourceLines.slice(searchStart, searchEnd).join('\n');
-
-        const matchIdx = searchRegion.indexOf(text);
-        if (matchIdx === -1) {
-          return { content: [{ type: 'text', text: `Text "${text.slice(0, 50)}..." not found near line ${startLine}` }], isError: true };
-        }
-
-        // Convert matchIdx back to line number and column
-        const beforeMatch = searchRegion.slice(0, matchIdx);
-        const matchStartLine = searchStart + beforeMatch.split('\n').length; // 1-indexed
-        const matchStartCol = beforeMatch.split('\n').pop().length; // 0-indexed column in that line
-
-        const matchEndOffset = matchIdx + text.length;
-        const beforeEnd = searchRegion.slice(0, matchEndOffset);
-        const matchEndLine = searchStart + beforeEnd.split('\n').length; // 1-indexed
-        const matchEndCol = beforeEnd.split('\n').pop().length; // 0-indexed column past end
-
-        const pageW = getPageWidth(doc);
-        const segments = [];
-        let hlLeft = Infinity, hlRight = -Infinity;
-        let hlTop = Infinity, hlBottom = -Infinity;
-
-        // Use synctex x-records for precise positioning
-        let synctexData = null;
-        try {
-          // Load synctex data from disk — parse the .synctex.gz directly
-          const { createReadStream, readdirSync } = await import('fs');
-          const { createGunzip } = await import('zlib');
-          const { createInterface } = await import('readline');
-          const srcDir = localProjectDir(doc)?.replace(/\/output$/, '/source') || '';
-          const synctexFiles = srcDir ? readdirSync(srcDir).filter(f => f.endsWith('.synctex.gz')) : [];
-          if (synctexFiles.length > 0) {
-            const synctexPath = path.join(srcDir, synctexFiles[0]);
-            const inputMap = new Map();
-            let sUnit = 1, sMag = 1000, curPage = 0;
-            const records = [];
-            const rl = createInterface({ input: createReadStream(synctexPath).pipe(createGunzip()), crlfDelay: Infinity });
-            for await (const line of rl) {
-              if (line.startsWith('Input:')) { const m = line.match(/^Input:(\d+):(.+)$/); if (m) inputMap.set(parseInt(m[1]), m[2]); continue; }
-              if (line.startsWith('Unit:')) { sUnit = parseInt(line.slice(5)) || 1; continue; }
-              if (line.startsWith('Magnification:')) { sMag = parseInt(line.slice(14)) || 1000; continue; }
-              if (line.startsWith('{')) { curPage = parseInt(line.slice(1)) || 0; continue; }
-              if (line[0] !== 'x' || curPage === 0) continue;
-              const ci = line.indexOf(':'), cm = line.indexOf(',');
-              if (ci === -1 || cm === -1 || cm > ci) continue;
-              const iid = parseInt(line.slice(1, cm)), ln2 = parseInt(line.slice(cm + 1, ci));
-              if (isNaN(iid) || isNaN(ln2) || ln2 <= 0) continue;
-              const fp = inputMap.get(iid);
-              if (!fp || !fp.endsWith('.tex')) continue;
-              const coords = line.slice(ci + 1).split(',');
-              const scale = sUnit * sMag / 1000 / 65536;
-              records.push({ line: ln2, page: curPage, x: parseInt(coords[0]) * scale, y: parseInt(coords[1]) * scale });
-            }
-            synctexData = { records };
-          }
-        } catch (e) {
-          console.error('[draw_highlight] synctex load failed:', e.message);
-        }
-
-        for (let ln = matchStartLine; ln <= matchEndLine; ln++) {
-          const pos = await lookupLineAsync(doc, ln, file);
-          if (!pos) continue;
-          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
-          const lineText = sourceLines[ln - 1] || '';
-          const lineLen = lineText.length || 1;
-
-          // Determine column range for this line within the match
-          let colStart = 0;
-          let colEnd = lineLen;
-          if (ln === matchStartLine) colStart = matchStartCol;
-          if (ln === matchEndLine) colEnd = matchEndCol;
-
-          let xStart, xEnd;
-
-          if (synctexData) {
-            // Use synctex x-records: find all records for this line on this page,
-            // sort by x, map column fraction to actual PDF x-positions
-            const lineRecs = synctexData.records.filter(r => r.line === ln && r.page === pos.page);
-            if (lineRecs.length >= 2) {
-              const sorted = [...lineRecs].sort((a, b) => a.x - b.x);
-              const lineXMin = sorted[0].x;
-              const lineXMax = sorted[sorted.length - 1].x;
-              const lineXRange = lineXMax - lineXMin;
-              if (lineXRange > 0) {
-                const pdfXStart = lineXMin + (colStart / lineLen) * lineXRange;
-                const pdfXEnd = lineXMin + (colEnd / lineLen) * lineXRange;
-                const csStart = pdfToCanvas(pos.page, pdfXStart, pos.y);
-                const csEnd = pdfToCanvas(pos.page, pdfXEnd, pos.y);
-                xStart = csStart.x;
-                xEnd = csEnd.x;
-              }
-            }
-          }
-
-          if (xStart === undefined) {
-            // Fallback: proportional mapping
-            const fullLeft = canvas.x;
-            const fullRight = pageW * 0.9;
-            const fullWidth = fullRight - fullLeft;
-            xStart = fullLeft + (colStart / lineLen) * fullWidth;
-            xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
-          }
-
-          hlLeft = Math.min(hlLeft, xStart);
-          hlRight = Math.max(hlRight, xEnd);
-          hlTop = Math.min(hlTop, canvas.y - 3);
-          hlBottom = Math.max(hlBottom, canvas.y + 3);
-        }
-
-        if (hlLeft === Infinity) {
-          return { content: [{ type: 'text', text: `No lookup entries found for matched lines ${matchStartLine}–${matchEndLine}` }], isError: true };
-        }
-
-        const width = hlRight - hlLeft;
-        const height = hlBottom - hlTop;
-        const numLines = matchEndLine - matchStartLine + 1;
-        const lineH = numLines > 1 ? height / numLines : 0;
-
-        for (let i = 0; i < numLines; i++) {
-          const ln = matchStartLine + i;
-          const pos = await lookupLineAsync(doc, ln, file);
-          if (!pos) continue;
-          const canvas = pdfToCanvas(pos.page, pos.x, pos.y);
-          const lineText = sourceLines[ln - 1] || '';
-          const lineLen = lineText.length || 1;
-
-          const fullLeft = canvas.x;
-          const fullRight = pageW * 0.9;
-          const fullWidth = fullRight - fullLeft;
-
-          let colStart = 0;
-          let colEnd = lineLen;
-          if (ln === matchStartLine) colStart = matchStartCol;
-          if (ln === matchEndLine) colEnd = matchEndCol;
-
-          const xStart = fullLeft + (colStart / lineLen) * fullWidth;
-          const xEnd = fullLeft + (colEnd / lineLen) * fullWidth;
-
-          // Segment coordinates are relative to the shape's (hlLeft, hlTop)
-          const segLeft = xStart - hlLeft;
-          const segRight = xEnd - hlLeft;
-          const y = (canvas.y - 3) - hlTop + (numLines <= 1 ? 0 : 0);
-          segments.push({ type: 'free', path: encodeB64Path([
-            { x: segLeft, y, z: 0.5 },
-            { x: segRight, y, z: 0.5 },
-          ])});
-        }
-
-        const shapeId = generateShapeId();
-        const shapeIndex = await getNextShapeIndex(doc);
-        const firstPos = await lookupLineAsync(doc, matchStartLine, file);
-        const shape = {
-          id: shapeId,
-          type: 'highlight',
-          x: hlLeft,
-          y: hlTop,
-          index: shapeIndex,
-          rotation: 0,
-          isLocked: false,
-          opacity: 0.7,
-          props: {
-            segments,
-            color,
-            size: 's',
-            isComplete: true,
-            isPen: false,
-            scale: 1,
-            scaleX: 1,
-            scaleY: 1,
+        const response = await fetch(
+          `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/highlight`,
+          {
+            method: 'POST',
+            headers: { ...TLDA_AUTH_HEADERS, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text, startLine, color, file,
+              createdBy: 'claude',
+              fleet_id: process.env.FLEET_ID || undefined,
+              friendly_name: process.env.FLEET_NAME || undefined,
+            }),
           },
-          meta: {
-            createdAt: Date.now(),
-            createdBy: 'claude',
-            sourceAnchor: { file: file || './' + (firstPos?.texFile || 'main.tex'), line: matchStartLine },
-            highlightedText: text,
-            ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-            ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-          },
-          parentId: 'page:page',
-          typeName: 'shape',
-        };
-
-        await createShapeRest(doc, shape);
-        return { content: [{ type: 'text', text: `Highlight drawn: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}" at lines ${matchStartLine}–${matchEndLine}, page ${firstPos?.page}, ${color} (${shapeId})` }] };
+        );
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          return { content: [{ type: 'text', text: result.error || `Highlight failed: HTTP ${response.status}` }], isError: true };
+        }
+        return { content: [{ type: 'text', text: `Highlight drawn: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}" at lines ${result.startLine}–${result.endLine}, page ${result.page}, ${color} (${result.shapeId})` }] };
       }
-
       // --- Full-line highlighting (original behavior) ---
       // Staging now lives in the shared lib (mcp-server/lib/annotate.mjs) so the
       // drill teacher stages line-range highlights through the same code path.

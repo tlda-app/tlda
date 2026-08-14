@@ -12,6 +12,7 @@ import { createGunzip } from 'zlib'
 import { createInterface } from 'readline'
 import { dirname, basename, join, resolve } from 'path'
 import { sourceDir, outputDir, getProjectsDir, readProject, readSourceFileAsync } from './project-store.mjs'
+import { ensure, historicalCtx } from './ensure.mjs'
 
 async function realResolve(...args) {
   const p = resolve(...args)
@@ -47,7 +48,8 @@ const cache = new Map()
  */
 export async function loadSynctex(projectName, texBase, opts = {}) {
   const variant = opts.variant || ''
-  const key = `${projectName}:${texBase || ''}:${variant}`
+  const version = opts.version || ''
+  const key = `${projectName}:${texBase || ''}:${variant}:${version}`
   if (cache.has(key)) return cache.get(key)
 
   const srcDir = sourceDir(projectName)
@@ -57,7 +59,11 @@ export async function loadSynctex(projectName, texBase, opts = {}) {
 
   let synctexFile
   let synctexPath
-  if (variant === 'word') {
+  if (version) {
+    if (variant) return null
+    if (!texBase) return null
+    synctexPath = await ensure(historicalCtx(projectName, version, texBase), `${texBase}.synctex.gz`)
+  } else if (variant === 'word') {
     if (!texBase) return null
     synctexPath = join(outputDir(projectName), `${texBase}-word.synctex.gz`)
   } else if (texBase) {
@@ -381,8 +387,10 @@ function targetFileIdForSynctex(data, file) {
  * Shared rendered-span resolver used by text highlights and source-cursor laser
  * placement. It maps source columns through the same Synctex record ordering.
  */
-export async function sourceTextSpanToPdfSpans(projectName, file, sourceLines, span) {
-  const data = await loadSynctex(projectName)
+export async function sourceTextSpanToPdfSpans(projectName, file, sourceLines, span, opts = {}) {
+  const project = await readProject(projectName)
+  const texBase = opts.texBase || (project?.mainFile || 'main.tex').replace(/\.tex$/i, '').split('/').pop()
+  const data = await loadSynctex(projectName, texBase, { version: opts.version })
   if (!data) return null
 
   const sourceFileIds = sourceFileIdsForSynctex(data)

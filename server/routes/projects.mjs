@@ -2178,7 +2178,7 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
   const project = await readProject(name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
-  const { text, startLine, color = 'orange', file } = req.body
+  const { text, startLine, color = 'orange', file, createdBy, fleet_id, friendly_name } = req.body
   if (!text || startLine == null) {
     return res.status(400).json({ error: 'Missing required parameters: text, startLine' })
   }
@@ -2271,6 +2271,9 @@ router.post('/:name/highlight', requireRead, async (req, res) => {
       },
       meta: {
         createdAt: Date.now(),
+        ...(createdBy ? { createdBy } : {}),
+        ...(fleet_id ? { fleet_id } : {}),
+        ...(friendly_name ? { friendly_name } : {}),
         highlightedText: text,
         highlightText: (() => {
           // Build context + ⟦highlight⟧ markers from the matched source
