@@ -6557,7 +6557,10 @@ async function handleFleetWsMessage(ws, msg) {
           default: return false
         }
       }
-      const rowFrom = (row) => row.from || row.agentId
+      // `from:` and `<>` are message-direction operators. A session/task row's
+      // agentId names its owner, not its sender; treating that owner as `from`
+      // makes another agent's report look like a message authored by the owner.
+      const rowFrom = (row) => row.from || null
       // The recipient side is a SET, not a field: group send made one event carry
       // many recipients, so a `to:` leaf matches when ANY recipient satisfies it.
       // This read used to be `row.to`, a column group send deleted — which made
