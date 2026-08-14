@@ -22,7 +22,6 @@ import { loadServerConfig } from '../shared/config.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
-import { expandImageRefsToAttachmentTokens } from '../shared/canonical-references.mjs';
 import { announcePageTop, announcePageBottom } from '../shared/pagination-announce.mjs';
 import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
@@ -2046,11 +2045,7 @@ export async function resolveInboxMessage(message, resolvers) {
   // materialized files and somebody else's delivery decision.
   const readerId = activeAgentId();
   let renderedPendingPlaceholder = false;
-  // `image#<id>` is the compact form of a same-machine bare-path attachment
-  // (never uploaded, so it never enters the materialization/recipient_refs
-  // system below) — normalize to the internal {{att:N}} token so it resolves
-  // through the one attachment path this function already knows.
-  const attachmentResolvedText = expandImageRefsToAttachmentTokens(chipResolvedText).replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
+  const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
     const att = message.metadata?.inline_attachments?.[+idx];
     if (att?.local && att.path) return att.path;
     const ref = recipientAttachmentRef(message.metadata, readerId, idx);
