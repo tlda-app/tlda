@@ -554,6 +554,7 @@ export function setRadioDraftText(text) {
   const draft = _hud?.querySelector?.('[data-radio-draft="true"]')
   if (draft) {
     draft.textContent = `you: ${_radioDraftText}`
+    draft.scrollTop = draft.scrollHeight
     return
   }
   _radioExpanded = true
@@ -1208,9 +1209,7 @@ function showHud(text, stateColor) {
         marginTop: '4px',
         minWidth: '0',
         overflow: 'hidden',
-        display: '-webkit-box',
-        WebkitBoxOrient: 'vertical',
-        WebkitLineClamp: '4',
+        maxHeight: '5.4em',
         whiteSpace: 'normal',
         wordBreak: 'break-word',
         color: 'rgba(255,255,255,0.72)',
@@ -1220,6 +1219,7 @@ function showHud(text, stateColor) {
         width: '100%',
       })
       hud.appendChild(draft)
+      draft.scrollTop = draft.scrollHeight
     }
     const prior = _radioHistory.slice(1)
     if (prior.length) {
