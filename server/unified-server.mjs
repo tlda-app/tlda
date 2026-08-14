@@ -9252,7 +9252,9 @@ async function handleDaemonWsMessage(ws, msg) {
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     let replied = false
     try {
-      const crashBoundary = process.env.TLDA_TEST_SOURCE_CRASH_BOUNDARY
+      const crashBoundary = process.env.TLDA_DEV_SERVER === '1'
+        ? process.env.TLDA_TEST_SOURCE_CRASH_BOUNDARY
+        : null
       const transactionTest = crashBoundary === 'after-source-mutation'
         ? { simulateCrashAfterSourceMutation: true, crash: () => process.kill(process.pid, 'SIGKILL') }
         : crashBoundary === 'after-terminal-result'
