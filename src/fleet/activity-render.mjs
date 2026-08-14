@@ -155,9 +155,9 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   if (kind === 'thread') {
     return `<div class="semantic-operation-body" data-semantic-key="${key}" data-semantic-operation="${json}"></div>`
   }
-  return `<div class="semantic-chat-operation semantic-chat-operation-open" data-semantic-key="${key}">
-    <div class="pretty-expand-btn" data-semantic-collapsed-label="Open search results">collapse</div>
+  return `<div class="semantic-chat-operation semantic-search-operation" data-semantic-key="${key}">
     <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
+    <div class="pretty-expand-btn" data-semantic-collapsed-label="Show all search results">Show all search results</div>
   </div>`
 }
 

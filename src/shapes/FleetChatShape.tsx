@@ -4762,11 +4762,14 @@ function FleetChatInner({ shape }: { shape: any }) {
         const semanticOp = ownRows ? null : expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
         const semanticBody = semanticOp?.querySelector('.semantic-operation-body') as HTMLElement | null
         if (semanticOp && semanticBody) {
-          const wasExpanded = semanticBody.style.display !== 'none'
+          const isSearchOperation = semanticOp.classList.contains('semantic-search-operation')
+          const wasExpanded = isSearchOperation
+            ? semanticOp.classList.contains('semantic-operation-expanded')
+            : semanticBody.style.display !== 'none'
           if (!expandBtn.dataset.semanticCollapsedLabel) {
             expandBtn.dataset.semanticCollapsedLabel = expandBtn.textContent || 'Expand'
           }
-          semanticBody.style.display = wasExpanded ? 'none' : ''
+          if (!isSearchOperation) semanticBody.style.display = wasExpanded ? 'none' : ''
           semanticOp.classList.toggle('semantic-operation-expanded', !wasExpanded)
           if (!wasExpanded) semanticBody.dispatchEvent(new Event('semantic-operation-expand'))
           expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : 'collapse'

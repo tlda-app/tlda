@@ -1575,6 +1575,11 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .semantic-operation-body {
   margin-top: 4px;
 }
+.fleet-chat-shape .semantic-search-operation:not(.semantic-operation-expanded) .semantic-operation-body {
+  max-height: 12em;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+}
 /* A real gutter column for the collapse control. It used to escape the card with
    `margin-left: -58px`, but the chat log is a scroller -- outside the content
    box is clipped, so the control was invisible and unhittable. Skip: "it needs

@@ -120,6 +120,26 @@ test('a thread card carries no semantic-operation shell', () => {
   assert.match(html, /semantic-operation-body/)
 })
 
+test('a search card clips the shared search view instead of replacing it', () => {
+  const html = renderActivityGroup([{
+    from: 'fleet:codex',
+    timestamp: '2026-08-14T07:05:12.055Z',
+    _toolName: 'tool_search',
+    _toolArg: 'source edit',
+    _toolInput: { query: 'source edit', limit: 20 },
+  }], ctx)
+  const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../src/shapes/fleet-chat.css', import.meta.url), 'utf8')
+
+  assert.match(html, /semantic-search-operation/)
+  assert.match(html, /class="semantic-operation-body" data-semantic-operation=/)
+  assert.match(html, /Show all search results/)
+  assert.doesNotMatch(html, /semantic-chat-operation-open/)
+  assert.match(source, /<FleetSearchResultsView/)
+  assert.match(source, /if \(!isSearchOperation\) semanticBody\.style\.display/)
+  assert.match(css, /\.semantic-search-operation:not\(\.semantic-operation-expanded\) \.semantic-operation-body\s*\{[^}]*max-height:[^}]*overflow:\s*hidden/s)
+})
+
 test('a long bash tool call labels the card once', () => {
   const html = renderActivityGroup([
     {
