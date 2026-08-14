@@ -46,6 +46,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getFleetServerUrl, hasTls, loadServerConfig, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
+import { createClientLogHandler } from './lib/client-log-sink.mjs'
 import { BARE_METADATA, resolveAssetAsync } from '../shared/doc-assets.mjs'
 import { viewFormat } from '../shared/document-formats.mjs'
 import { formatDisplayTimestamp } from '../shared/display-time.mjs'
@@ -3487,30 +3488,10 @@ function appendClientLogEntry(entry) {
   })
 }
 
-app.post('/api/log', async (req, res) => {
-  const body = req.body
-  const entries = Array.isArray(body) ? body : [body]
-  const lines = []
-  for (const e of entries) {
-    if (!e || typeof e !== 'object') continue
-    const obj = {
-      ts: e.ts || new Date().toISOString(),
-      level: e.level || 'info',
-      ns: e.ns || 'unknown',
-      msg: e.msg ?? '',
-      ...(e.data !== undefined ? { data: e.data } : {}),
-      ...(e.session ? { session: e.session } : {}),
-    }
-    if (obj.ns === 'live-perf') recordLivePerfEntry(obj)
-    lines.push(JSON.stringify(obj))
-  }
-  if (lines.length) {
-    fs.appendFile(CLIENT_LOG_FILE, lines.join('\n') + '\n', (err) => {
-      if (err) console.log(`[client-log] append failed: ${err.message}`)
-    })
-  }
-  res.json({ ok: true, n: lines.length })
-})
+app.post('/api/log', createClientLogHandler({
+  clientLogFile: CLIENT_LOG_FILE,
+  recordLivePerfEntry,
+}))
 
 // Is the filter path running at all? Answers the question a silent comparator
 // cannot: subscriptions 0 means no client is asking; eventsSeen 0 means no
