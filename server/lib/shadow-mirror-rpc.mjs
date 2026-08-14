@@ -18,7 +18,7 @@ export function createShadowMirrorRpcHandler({
   listDaemonKeys,
   daemonAddressFor = daemonAddress,
 }) {
-  return async function mirrorShadowViaDaemon({ name, hash, bundleBase64, sourceScope }) {
+  return async function mirrorShadowViaDaemon({ name, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq }) {
     const project = await readProject(name)
     const lastKey = project?.lastSourceMachineId && project?.lastSourceEnvName
       ? daemonAddressFor(project.lastSourceMachineId, project.lastSourceEnvName)
@@ -40,6 +40,8 @@ export function createShadowMirrorRpcHandler({
         hash,
         bundleBase64,
         sourceScope,
+        sourceRevision,
+        acceptSeq,
       })
       return { key, result }
     }))

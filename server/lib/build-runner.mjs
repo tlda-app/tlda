@@ -113,7 +113,7 @@ const _directReporter = {
   },
   emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
   updateProject: (name, patch) => updateProject(name, patch),
-  mirrorShadow: (name, hash) => mirrorShadow(name, hash),
+  mirrorShadow: (name, hash, sourceRevision, acceptSeq) => mirrorShadow(name, hash, sourceRevision, acceptSeq),
   recordRevisionPhase: async (name, sourceRevision, phase, state, result) => {
     if (!sourceRevision) return null
     return (await sourceLifecycleStore(name)).recordRevisionPhase(name, sourceRevision, phase, state, result)
@@ -177,14 +177,14 @@ export async function adoptShadowHistory({ name, bundleBase64, head }) {
   }
 }
 
-export async function mirrorShadow(name, hash) {
+export async function mirrorShadow(name, hash, sourceRevision, acceptSeq) {
   if (!mirrorShadowSnapshot) {
     throw new Error('no daemon mirror handler registered')
   }
   const bundleBase64 = await createShadowBundleBase64(name, hash)
   const sourceScope = await readShadowSourceScope(name)
   if (!sourceScope) throw new Error(`no shadow source scope available for ${name}`)
-  return mirrorShadowSnapshot({ name, hash, bundleBase64, sourceScope })
+  return mirrorShadowSnapshot({ name, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq })
 }
 
 function convertScratchMarkdown(srcDir, addLog) {
@@ -300,27 +300,6 @@ const activeBuilds = new Map()
 // When a build is running and a new one is requested, the new one waits for
 // the current one to finish (after killing it), ensuring no orphaned processes.
 const _buildLocks = new Map()  // name → Promise
-
-// Monotonic version counter per doc. Incremented when a build starts.
-// The mirror callback captures its version and skips if superseded.
-const buildVersion = new Map()
-
-export function getBuildStatus(name) {
-  return activeBuilds.get(name) || null
-}
-
-/**
- * Reset any projects stuck in "building" state (e.g. after server restart mid-build).
- * Call once at startup.
- */
-export async function resetStaleBuildStates() {
-  for (const project of await listProjects()) {
-    if (project.buildStatus === 'building') {
-      console.log(`[build] Resetting stale "building" state for ${project.name}`)
-      await _reporter.updateProject(project.name, { buildStatus: 'stale' })
-    }
-  }
-}
 
 // Track active child processes per build instance.
 // Keyed by unique build ID (not project name) to avoid race conditions
@@ -1658,7 +1637,7 @@ export async function recordBuildVersion({
   return { hash: result.hash, committed: true, result }
 }
 
-async function finalizeBuildVersion({
+export async function finalizeBuildVersion({
   name,
   ctx,
   projDir,
@@ -1673,14 +1652,17 @@ async function finalizeBuildVersion({
   const recorded = await recordBuildVersion({
     name, ctx, expectedPages, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceRevision, acceptSeq,
   })
-  if (!recorded.hash) return recorded
+  if (!recorded.hash) {
+    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'not_reached', { versionState: 'version_failed' })
+    return recorded
+  }
 
   const hash7 = recorded.hash.slice(0, 7)
   try {
     // Re-mirror unchanged builds too. A prior build may have committed the
     // server snapshot while its owning daemon was disconnected; "unchanged"
     // describes source bytes, not working-copy durability.
-    const mirrorResult = await _reporter.mirrorShadow(name, recorded.hash)
+    const mirrorResult = await _reporter.mirrorShadow(name, recorded.hash, sourceRevision, acceptSeq)
     await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirrored', {
       shadowVersion: recorded.hash,
       result: mirrorResult,
@@ -1831,8 +1813,6 @@ export async function runBuild(name, { sourceRevision = null, acceptSeq = null }
 async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } = {}) {
   // Increment version so any in-flight mirror callbacks from previous builds
   // can detect they've been superseded and skip.
-  const myVersion = (buildVersion.get(name) || 0) + 1
-  buildVersion.set(name, myVersion)
 
   // Set buildStatus early — before any validation that might throw.
   try { await _reporter.updateProject(name, { buildStatus: 'building', lastBuild: new Date().toISOString() }) } catch (e) { console.error(`[build] failed to set building status for ${name}: ${e.message}`) }

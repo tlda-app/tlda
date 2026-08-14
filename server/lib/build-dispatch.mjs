@@ -49,16 +49,28 @@ async function patchShape(docName, shapeId, propsPatch) {
 
 const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, mirrorShadow }
 
-async function recordBuildResult(name, sourceRevision, acceptSeq, state, result = null) {
+export async function recordBuildResult(name, sourceRevision, acceptSeq, state, result = null) {
   if (!sourceRevision) return null
   const lifecycle = await sourceLifecycleStore(name)
   const current = lifecycle.readRevisionLifecycle(name, sourceRevision)
   if (!current) throw new Error(`Cannot record build result for unknown source revision ${sourceRevision}`)
   if (current.acceptSeq !== acceptSeq) throw new Error(`Build acceptSeq ${acceptSeq} does not match ${current.acceptSeq}`)
-  return lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+  const terminal = lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+  if (state !== 'built') {
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: state })
+    return lifecycle.recordRevisionPhase(name, sourceRevision, 'mirror', 'not_reached', { buildState: state })
+  }
+  const completed = lifecycle.readRevisionLifecycle(name, sourceRevision)
+  if (completed.version?.state === 'pending') {
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'version_failed', { error: 'build completed without version disposition' })
+  }
+  if (completed.mirror?.state === 'pending') {
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirror_failed', { error: 'build completed without mirror disposition' })
+  }
+  return terminal
 }
 
-async function recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
+export async function recordRevisionPhase(name, sourceRevision, phase, state, result = null) {
   if (!sourceRevision) return null
   return (await sourceLifecycleStore(name)).recordRevisionPhase(name, sourceRevision, phase, state, result)
 }
@@ -95,6 +107,9 @@ export function createDispatcherWithOptions(transport, options = {}) {
         return Promise.resolve().then(() => sink(...(msg.a || [])))
       }
     },
+    recordDisposition(job, state, result) {
+      return sinks.recordBuildResult(job.name, job.sourceRevision, job.acceptSeq, state, result)
+    },
   }, options)
 
   async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
@@ -123,20 +138,22 @@ const _default = createDispatcherWithOptions(ForkTransport, {
 
 export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default
 
-export async function resumeDurableBuildIntents() {
+export async function resumeDurableBuildIntents({ dispatch = dispatchBuild } = {}) {
   const resumed = []
   for (const project of await listProjects()) {
     const lifecycle = await sourceLifecycleStore(project.name)
     for (const revision of lifecycle.listRevisionLifecycles(project.name)) {
       if (!['pending', 'leased'].includes(revision.build?.state)) continue
       resumed.push({ project: project.name, sourceRevision: revision.sourceRevision, acceptSeq: revision.acceptSeq })
-      void dispatchBuild(project.name, {
+      void dispatch(project.name, {
         sourceRevision: revision.sourceRevision,
         acceptSeq: revision.acceptSeq,
       }).catch(error => {
-        lifecycle.recordRevisionPhase(project.name, revision.sourceRevision, 'build', 'build_failed', {
+        recordBuildResult(project.name, revision.sourceRevision, revision.acceptSeq, 'build_failed', {
           error: error?.message || String(error),
           resumed: true,
+        }).catch(recordError => {
+          console.error(`[build-dispatch] resumed build disposition failed for ${project.name}: ${recordError.message}`)
         })
       })
     }

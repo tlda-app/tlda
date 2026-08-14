@@ -4,7 +4,8 @@ import { extractToken, validateToken } from '../lib/auth.mjs'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
-import { createProject, readProject, sourceDir, updateProject, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { createProject, readProject, sourceDir, sourceLifecycleStore, updateProject, writeSourceFileAsync } from '../lib/project-store.mjs'
+import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { checkoutSource, currentVersion } from '../lib/shadow-repo.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { inspectSubmissionArchive } from '../lib/classroom-submission.mjs'
@@ -63,7 +64,8 @@ function forStudent(assignment, principal, store) {
 export async function classroomTemplateVersion(templateDocKey) {
   const project = await readProject(templateDocKey)
   if (!project) throw new Error('template document not found')
-  if (project.buildStatus !== 'success') throw new Error('template document build is not ready')
+  const status = projectRevisionStatus((await sourceLifecycleStore(templateDocKey)).listRevisionLifecycles(templateDocKey))
+  if (status.status !== 'success') throw new Error('template document build is not ready')
   const version = await currentVersion(templateDocKey)
   if (!version?.hash) throw new Error('template document has no source history to freeze against')
   return version.hash

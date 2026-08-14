@@ -58,11 +58,12 @@ import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unifi
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, projectDir as getProjectDir, readProjectPartsManifest, readClientSourceManifest, searchProjectContent, sourceLifecycleStore } from './lib/project-store.mjs'
+import { projectRevisionStatus } from './lib/source-lifecycle.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
 import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
-import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
+import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
@@ -268,7 +269,6 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 // Initialize stores
 await initProjectStore(PROJECTS_DIR)
 initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
-await resetStaleBuildStates()
 await resumeDurableBuildIntents()
 
 // Fleet store (SQLite-backed agent registry + chat).
@@ -4355,7 +4355,7 @@ async function docPathExists(path) {
 }
 
 app.get('/docs/manifest.json', requireRead, async (req, res) => {
-  const manifest = generateManifest()
+  const manifest = await generateManifest()
   res.json(manifest)
 })
 
@@ -9514,7 +9514,7 @@ async function handleDaemonWsMessage(ws, msg) {
 
 // ---------- Manifest generation ----------
 
-function generateManifest() {
+async function generateManifest() {
   const documents = {}
 
   // Read from project.json files in server/projects/
@@ -9525,13 +9525,14 @@ function generateManifest() {
         try {
           const project = JSON.parse(readFileSync(projectJsonPath, 'utf8'))
           if (project.archived) continue
+          const durableStatus = projectRevisionStatus((await sourceLifecycleStore(name)).listRevisionLifecycles(name))
           documents[name] = {
             name: project.title || project.name || name,
             pages: project.pages || 0,
             format: project.format || 'svg',
             ...(project.sourceDoc && { sourceDoc: project.sourceDoc }),
             ...(project.members && { members: project.members }),
-            ...(project.buildStatus && project.buildStatus !== 'success' && { buildStatus: project.buildStatus }),
+            ...(durableStatus.status !== 'success' && { buildStatus: durableStatus.status }),
             ...(project.session && { session: project.session, sessionAt: project.sessionAt }),
             ...(project.createdAt && { createdAt: project.createdAt }),
             ...(project.lastBuild && { lastBuild: project.lastBuild }),

@@ -9,6 +9,30 @@ export const SOURCE_AUTHORITY_UNINITIALIZED = 'uninitialized'
 export const SOURCE_AUTHORITY_CURRENT = 'current'
 export const SOURCE_AUTHORITY_RECONCILIATION_REQUIRED = 'reconciliation-required'
 
+export function projectRevisionStatus(lifecycles) {
+  const revision = [...(lifecycles || [])].sort((a, b) => (b.acceptSeq ?? 0) - (a.acceptSeq ?? 0))[0] || null
+  if (!revision) return { status: 'unknown', phase: null, sourceRevision: null, acceptSeq: null }
+  const phases = ['build', 'version', 'mirror']
+  const failed = phases.find(phase => ['build_failed', 'version_failed', 'mirror_failed'].includes(revision[phase]?.state))
+  const pending = phases.find(phase => ['pending', 'leased'].includes(revision[phase]?.state))
+  const terminal = revision.build?.state
+  const status = failed ? 'error'
+    : pending ? 'building'
+      : terminal === 'cancelled' ? 'cancelled'
+        : terminal === 'superseded' ? 'superseded'
+          : terminal === 'not_required' ? 'not_required'
+          : 'success'
+  return {
+    status,
+    phase: failed || pending || null,
+    sourceRevision: revision.sourceRevision,
+    acceptSeq: revision.acceptSeq,
+    build: revision.build,
+    version: revision.version,
+    mirror: revision.mirror,
+  }
+}
+
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue)
   if (value && typeof value === 'object') {

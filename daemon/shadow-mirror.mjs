@@ -25,7 +25,7 @@ async function gitRetryOnLock(fn, retries = 3, delayMs = 500) {
 }
 
 export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef = null }) {
-  async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope }) {
+  async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq }) {
     if (!project) throw new Error('missing project')
     if (!/^[0-9a-f]{40}$/i.test(String(hash || ''))) throw new Error(`invalid shadow hash: ${hash}`)
     if (!bundleBase64) throw new Error('missing shadow bundle')
@@ -49,7 +49,7 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       const preservation = await preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef: beforePreserveUpdateRef })
       await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/shadow/HEAD', hash], { cwd: sourceDir, timeout: 5000 }))
       log.info(`mirrored ${project}@${hash7} into ${sourceDir}`)
-      return { ok: true, project, hash, sourceDir, tag: `shadow/${hash7}`, preservation }
+      return { ok: true, project, hash, sourceRevision, acceptSeq, sourceDir, tag: `shadow/${hash7}`, preservation }
     } finally {
       try {
         fs.rmSync(bundlePath, { force: true })

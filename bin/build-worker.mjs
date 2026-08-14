@@ -7,7 +7,7 @@
 // writes) are shipped back to the parent over IPC, which performs them in the
 // server process where the live rooms actually are. See setBuildReporter.
 
-import { runBuild, recordBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
+import { runBuild, finalizeBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject, projectDir } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides, buildQmd } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
@@ -54,7 +54,7 @@ setBuildReporter({
   writeSentinel:   (docName, propsPatch)   => callParent('writeSentinel',   [docName, propsPatch]),
   emitGlobalEvent: (type, payload)         => sendReport('emitGlobalEvent', [type, payload]),
   updateProject:   (name, patch)           => sendReport('updateProject',   [name, patch]),
-  mirrorShadow:    (name, hash)            => callParent('mirrorShadow',    [name, hash]),
+  mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => callParent('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
   recordRevisionPhase: (name, sourceRevision, phase, state, result) => callParent('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })
 
@@ -103,7 +103,7 @@ process.on('message', async (msg) => {
         // recordBuildVersion through runBuild's finalizer. Versioning used to
         // live inside the LaTeX branch, which is why these formats built for
         // months without ever recording one.
-        await recordBuildVersion({ name: msg.name, sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
+        await finalizeBuildVersion({ name: msg.name, sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       } else {
         await runBuild(msg.name, { sourceRevision: msg.sourceRevision, acceptSeq: msg.acceptSeq })
       }

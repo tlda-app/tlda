@@ -2,6 +2,7 @@ export function createBuildQueue({
   transport,
   getProjectsDir,
   relayMessage,
+  recordDisposition = async () => {},
   logError = (name, e) => console.error(`[build-dispatch] worker error for ${name}: ${e.message}`),
 }, options = {}) {
   const maxConcurrency = Math.max(1, Number(options.maxConcurrency || 1) || 1)
@@ -23,6 +24,10 @@ export function createBuildQueue({
   async function dispatchBuild(name, { kind = 'build', sourceRevision = null, acceptSeq = null } = {}) {
     const key = jobKey(name, kind)
     if (_inFlight.has(key)) {
+      const displaced = _pending.get(key)
+      if (displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
+        await recordDisposition(displaced, 'superseded', { bySourceRevision: sourceRevision, byAcceptSeq: acceptSeq })
+      }
       return new Promise((resolve, reject) => {
         const pending = _pending.get(key) || { name, kind, waiters: [] }
         pending.kind = kind
@@ -34,6 +39,10 @@ export function createBuildQueue({
     }
 
     if (_queued.has(key)) {
+      const displaced = _queued.get(key)
+      if (displaced?.sourceRevision && displaced.sourceRevision !== sourceRevision) {
+        await recordDisposition(displaced, 'superseded', { bySourceRevision: sourceRevision, byAcceptSeq: acceptSeq })
+      }
       return new Promise((resolve, reject) => {
       const queued = _queued.get(key)
       queued.kind = kind
@@ -131,6 +140,19 @@ export function createBuildQueue({
         workerFailure = new Error(`build worker for ${name} exited with code ${code}`)
       }
 
+      if (job.sourceRevision) {
+        try {
+          await recordDisposition(
+            job,
+            cancelled ? 'cancelled' : (workerFailure ? 'build_failed' : 'built'),
+            workerFailure ? { error: workerFailure.message, exitCode: code } : { exitCode: code },
+          )
+        } catch (error) {
+          workerFailure ||= new Error(`build disposition persistence failed: ${error?.message || error}`)
+          logError(name, workerFailure)
+        }
+      }
+
       if (_pending.has(key)) {
         // A rebuild is already queued behind this one, so these waiters are
         // waiting on that build's outcome now, not this one's. Carry them
@@ -170,14 +192,16 @@ export function createBuildQueue({
     })
   }
 
-  function killBuild(name) {
+  async function killBuild(name) {
     for (const key of matchingKeys(_queued, name)) {
       const queued = _queued.get(key)
       _queued.delete(key)
+      if (queued?.sourceRevision) await recordDisposition(queued, 'cancelled', { queued: true })
       _resolveWaiters(queued.waiters)
     }
     for (const key of matchingKeys(_pending, name)) {
       const pending = _pending.get(key)
+      if (pending?.sourceRevision) await recordDisposition(pending, 'cancelled', { pending: true })
       if (pending) _resolveWaiters(pending.waiters)
       _pending.delete(key)
     }
@@ -186,9 +210,15 @@ export function createBuildQueue({
     }
   }
 
-  function killAllDispatchedBuilds() {
-    for (const queued of _queued.values()) _resolveWaiters(queued.waiters)
-    for (const pending of _pending.values()) _resolveWaiters(pending.waiters)
+  async function killAllDispatchedBuilds() {
+    for (const queued of _queued.values()) {
+      if (queued.sourceRevision) await recordDisposition(queued, 'cancelled', { queued: true })
+      _resolveWaiters(queued.waiters)
+    }
+    for (const pending of _pending.values()) {
+      if (pending.sourceRevision) await recordDisposition(pending, 'cancelled', { pending: true })
+      _resolveWaiters(pending.waiters)
+    }
     for (const running of _inFlight.values()) running.cancel()
     _inFlight.clear()
     _queued.clear()

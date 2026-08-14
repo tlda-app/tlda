@@ -37,9 +37,9 @@ import {
   checkpointProjectPartWritebackOffloop,
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
+import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { readEditEvents, recordAcceptedSourceTransaction } from '../lib/edit-events.mjs'
-import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
@@ -333,14 +333,17 @@ router.get('/:name', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const activeBuild = getBuildStatus(req.params.name)
+  const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
   // The chat-reference seed of project membership. This is the payload the
   // watcher already reads its source context from, so the roots arrive by the
   // channel that already carries mainFile rather than a second call.
   res.json({
     ...project,
+    buildStatus: durableStatus.status,
+    buildPhase: durableStatus.phase,
+    sourceRevision: durableStatus.sourceRevision,
+    acceptSeq: durableStatus.acceptSeq,
     referencedSourcePaths: await referencedSourcePaths(req.params.name).catch(() => []),
-    ...(activeBuild?.building && { activeBuild }),
   })
 })
 
@@ -1424,13 +1427,16 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
   if (!decision.build) {
     if (acceptedSourceMutation?.sourceRevision) {
+      const terminalState = decision.reason === 'already-building' ? 'superseded' : 'not_required'
       lifecycle.recordRevisionPhase(
         name,
         acceptedSourceMutation.sourceRevision,
         'build',
-        decision.reason === 'already-building' ? 'superseded' : 'not_required',
+        terminalState,
         { reason: decision.reason },
       )
+      lifecycle.recordRevisionPhase(name, acceptedSourceMutation.sourceRevision, 'version', 'not_reached', { buildState: terminalState })
+      lifecycle.recordRevisionPhase(name, acceptedSourceMutation.sourceRevision, 'mirror', 'not_reached', { buildState: terminalState })
     }
     if (projectPartsChanged) {
       await rebuildProjectPartsView(name, project)
@@ -1460,7 +1466,8 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     }).then(async () => {
       if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
       const updated = await readProject(name)
-      if (updated?.buildStatus === 'success') {
+      const completedStatus = projectRevisionStatus(lifecycle.listRevisionLifecycles(name))
+      if (completedStatus.status === 'success') {
         emitGlobalEvent('doc-arrived', {
           name, title: updated.title || name,
           format: updated.format, pages: updated.pages || 0,
@@ -1776,14 +1783,16 @@ router.get('/:name/build/status', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const activeBuild = getBuildStatus(req.params.name)
+  const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
   const buildLog = await readBuildLogAsync(req.params.name)
   const { errors, warnings } = await extractBuildErrors(req.params.name)
   const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
   res.json({
-    status: activeBuild?.building ? 'building' : project.buildStatus,
-    phase: activeBuild?.phase || null,
+    status: durableStatus.status,
+    phase: durableStatus.phase,
+    sourceRevision: durableStatus.sourceRevision,
+    acceptSeq: durableStatus.acceptSeq,
     lastBuild: project.lastBuild,
     log: buildLog,
     errors,
@@ -1797,16 +1806,17 @@ router.get('/:name/build/errors', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
-  const activeBuild = getBuildStatus(req.params.name)
-  const building = activeBuild?.building || false
+  const durableStatus = projectRevisionStatus((await sourceLifecycleStore(req.params.name)).listRevisionLifecycles(req.params.name))
 
   const { errors, warnings } = await extractBuildErrors(req.params.name)
   const pipelineWarnings = await extractPipelineWarningsAsync(req.params.name)
 
   res.json({
-    building,
-    phase: activeBuild?.phase || null,
-    status: project.buildStatus,
+    building: durableStatus.status === 'building',
+    phase: durableStatus.phase,
+    status: durableStatus.status,
+    sourceRevision: durableStatus.sourceRevision,
+    acceptSeq: durableStatus.acceptSeq,
     lastBuild: project.lastBuild,
     errors: errors.map(e => e.message), // API returns flat strings for CLI compat
     warnings,
