@@ -427,6 +427,14 @@ export function AnnotationViewer({
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
   const shouldLetCanvasOwnEvent = (event: { target: EventTarget | null }) =>
     annotationViewerCanvasOwnsEvent(data.managedHitPolicy, event.target)
+  const shouldLetPreviewCanvasPan = (event: React.PointerEvent<HTMLDivElement>) =>
+    state === 'hovering' &&
+    (event.pointerType === 'touch' || event.pointerType === 'pen') &&
+    event.target instanceof Element &&
+    !!event.target.closest('.annotation-viewer-canvas')
+  const shouldLetResizeHandleOwnEvent = (event: React.PointerEvent<HTMLDivElement>) =>
+    event.target instanceof Element &&
+    !!event.target.closest('.annotation-viewer-resize')
   const backArrowPath = (
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
       strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
@@ -523,6 +531,11 @@ export function AnnotationViewer({
       }}
       onPointerDownCapture={(e) => {
         if (shouldLetCanvasOwnEvent(e)) return
+        if (shouldLetResizeHandleOwnEvent(e)) return
+        if (shouldLetPreviewCanvasPan(e)) {
+          clickStartRef.current = { x: e.clientX, y: e.clientY }
+          return
+        }
         if (state === 'hovering' && e.target instanceof Element && e.target.closest('.annotation-viewer-canvas')) {
           clickStartRef.current = { x: e.clientX, y: e.clientY }
         }
@@ -530,21 +543,27 @@ export function AnnotationViewer({
       }}
       onPointerMoveCapture={(e) => {
         if (shouldLetCanvasOwnEvent(e)) return
+        if (shouldLetResizeHandleOwnEvent(e)) return
+        if (shouldLetPreviewCanvasPan(e)) return
         stopEventPropagation(e)
       }}
       onPointerUpCapture={(e) => {
         if (shouldLetCanvasOwnEvent(e)) return
+        if (shouldLetResizeHandleOwnEvent(e)) return
         if (state === 'hovering' && clickStartRef.current) {
           const dx = e.clientX - clickStartRef.current.x
           const dy = e.clientY - clickStartRef.current.y
           clickStartRef.current = null
           if (Math.sqrt(dx * dx + dy * dy) < 5) pinPreview()
         }
+        if (shouldLetPreviewCanvasPan(e)) return
         stopEventPropagation(e)
       }}
       onPointerCancelCapture={(e) => {
         if (shouldLetCanvasOwnEvent(e)) return
+        if (shouldLetResizeHandleOwnEvent(e)) return
         clickStartRef.current = null
+        if (shouldLetPreviewCanvasPan(e)) return
         stopEventPropagation(e)
       }}
       onWheel={(e) => {

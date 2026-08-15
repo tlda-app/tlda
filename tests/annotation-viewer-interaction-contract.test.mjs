@@ -32,11 +32,21 @@ test('viewer capture handlers pin previews and yield pinned canvases', () => {
   assert.match(source, /state === 'hovering'.*clickStartRef\.current = \{ x: e\.clientX, y: e\.clientY \}/s)
   assert.match(source, /Math\.sqrt\(dx \* dx \+ dy \* dy\) < 5\) pinPreview\(\)/)
   assert.match(source, /hitPolicy: 'chrome-catches-content-pans'/)
+  assert.match(source, /const shouldLetPreviewCanvasPan = \(event: React\.PointerEvent<HTMLDivElement>\) =>/)
+  assert.match(source, /event\.pointerType === 'touch' \|\| event\.pointerType === 'pen'/)
+  assert.match(source, /const shouldLetResizeHandleOwnEvent = \(event: React\.PointerEvent<HTMLDivElement>\) =>/)
+  assert.ok(source.includes("closest('.annotation-viewer-resize')"))
   for (const handler of ['onPointerDownCapture', 'onPointerMoveCapture', 'onPointerUpCapture', 'onPointerCancelCapture']) {
     const start = source.indexOf(`${handler}={(e) => {`)
     assert.notEqual(start, -1)
     const body = source.slice(start, source.indexOf('}}', start))
     assert.ok(body.indexOf('if (shouldLetCanvasOwnEvent(e)) return') < body.indexOf('stopEventPropagation(e)'))
+  }
+  for (const handler of ['onPointerDownCapture', 'onPointerMoveCapture', 'onPointerUpCapture', 'onPointerCancelCapture']) {
+    const start = source.indexOf(`${handler}={(e) => {`)
+    const body = source.slice(start, source.indexOf('}}', start))
+    assert.ok(body.includes('if (shouldLetPreviewCanvasPan(e))'))
+    assert.ok(body.includes('if (shouldLetResizeHandleOwnEvent(e)) return'))
   }
   assert.match(source, /readOnly=\{state === 'hovering'\}/)
 })

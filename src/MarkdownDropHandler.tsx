@@ -1,11 +1,15 @@
 /**
  * MarkdownDropHandler — handles dropping .md/.markdown files onto the canvas.
  *
- * Creates a tlda project from the file content and places an inline-doc shape
- * on the canvas at the drop position.
+ * Materializes the file into the current project and opens it in a fleet
+ * doc-view at the drop position.
  */
 import { useEffect } from 'react'
+import type { TLViewportId } from 'tldraw'
 import { useEditor } from 'tldraw'
+import { createMarkdownDocviewFromContent } from './shapes/FleetPillShape'
+import { materializeMarkdownChip } from './shapes/markdown-chip-materialize'
+import { clientPointToPage } from './wm/viewport-coordinates'
 
 function isMarkdownFile(file: File): boolean {
   return file.name.endsWith('.md') || file.name.endsWith('.markdown')
@@ -21,6 +25,12 @@ function fileNameToProjectName(filename: string): string {
     name = 'scratch-' + name
   }
   return name
+}
+
+function dropViewportId(target: EventTarget | null): TLViewportId | undefined {
+  const el = target instanceof HTMLElement ? target : null
+  const viewportHost = el?.closest('[data-viewport-id]') as HTMLElement | null
+  return viewportHost?.dataset.viewportId as TLViewportId | undefined
 }
 
 export function MarkdownDropHandler() {
@@ -62,11 +72,26 @@ export function MarkdownDropHandler() {
 
       for (const file of mdFiles) {
         const name = fileNameToProjectName(file.name)
+        const title = file.name.replace(/\.(md|markdown)$/i, '') || name
+        const screenPoint = { x: e.clientX, y: e.clientY }
+        const pagePoint = clientPointToPage(editor, screenPoint, dropViewportId(e.target))
 
         const reader = new FileReader()
         reader.onload = async () => {
-          // inline-doc iframes are disabled — just log
-          console.log('[MarkdownDropHandler] Markdown drop ignored (inline-doc disabled):', name)
+          const markdown = typeof reader.result === 'string' ? reader.result : ''
+          const projectName = new URLSearchParams(window.location.search).get('project')
+          const materialized = await materializeMarkdownChip({ markdown, title, sourcePath: file.name })
+          if (!materialized.ok || !materialized.outputFile || !projectName) {
+            console.warn('[MarkdownDropHandler] markdown materialize failed:', materialized.error || 'no open project')
+            return
+          }
+          const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
+          await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
+            materializedDoc: projectName,
+            materializedFile: materialized.outputFile,
+            sourceFileName: file.name,
+            sourceProjectName: name,
+          }, url, screenPoint)
         }
         reader.readAsText(file)
       }

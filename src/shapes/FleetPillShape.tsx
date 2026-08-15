@@ -341,14 +341,27 @@ async function createMarkdownDocviewShapeFromPill(
     return true
   }
   const url = `/docs/${projectName}/${materializedPart.outputFile}?t=${Date.now()}`
-  const materialized = await createTemporaryMarkdownColumn(editor, pagePoint, title, markdown, {
+  await createMarkdownDocviewFromContent(editor, pagePoint, title, markdown, {
     materializedDoc: projectName,
     materializedFile: materializedPart.outputFile,
     ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
   }, url)
+  return true
+}
+
+export async function createMarkdownDocviewFromContent(
+  editor: Editor,
+  pagePoint: { x: number; y: number },
+  title: string,
+  markdown: string,
+  meta: Record<string, unknown> = {},
+  overrideUrl?: string,
+  screenPoint?: { x: number; y: number },
+) {
+  const materialized = await createTemporaryMarkdownColumn(editor, pagePoint, title, markdown, meta, overrideUrl)
   if (!materialized?.shapeId) return true
-  const screenPoint = pagePointToClient(editor, pagePoint)
-  await placeFleetShapeAtScreenPoint(editor, 'fleet-docview', screenPoint.x, screenPoint.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H, {
+  const docviewScreenPoint = screenPoint || pagePointToClient(editor, pagePoint)
+  await placeFleetShapeAtScreenPoint(editor, 'fleet-docview', docviewScreenPoint.x, docviewScreenPoint.y, MARKDOWN_DOCVIEW_W, MARKDOWN_DOCVIEW_H, {
     sources: '[]',
     label: '',
     page: 0,
