@@ -8707,7 +8707,11 @@ const {
     const deliveryId = daemonOutboxId(msg)
     if (!msg.project || !deliveryId) throw new Error('processed source-change is missing project or delivery id')
     const operation = (await sourceLifecycleStore(msg.project)).readOperationByDeliveryId(msg.project, deliveryId)
-    if (!operation?.terminalResult) throw new Error(`processed source-change ${deliveryId} has no terminal source operation`)
+    if (!operation?.terminalResult) {
+      const error = new Error(`processed source-change ${deliveryId} has no terminal source operation`)
+      error.permanent = true
+      throw error
+    }
     const result = operation.terminalResult
     ws.send(JSON.stringify({
       type: 'source-change-result',

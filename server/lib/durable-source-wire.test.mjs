@@ -8,6 +8,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import WebSocket from 'ws'
 
+import { DaemonDeliveryRuntime } from '../../daemon/delivery-runtime.mjs'
+import { DaemonOutbox } from '../../daemon/outbox.mjs'
 import { createSourceSync } from '../../daemon/source-sync.mjs'
 import { closeProjectStore, createProject, initProjectStore, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, updateProject } from './project-store.mjs'
 
@@ -140,6 +142,22 @@ function deliver(ws, envelope) {
   })
 }
 
+function waitForMessage(ws, predicate, label) {
+  const existing = ws._testMessages.find(predicate)
+  if (existing) return Promise.resolve(existing)
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`${label} timed out: ${JSON.stringify(ws._testMessages)}`)), 20_000)
+    const onMessage = raw => {
+      const message = JSON.parse(String(raw))
+      if (!predicate(message)) return
+      clearTimeout(timeout)
+      ws.off('message', onMessage)
+      resolve(message)
+    }
+    ws.on('message', onMessage)
+  })
+}
+
 test('daemon hello registers its binding before the next durable source frame', { timeout: 180_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-source-hello-order-'))
   const projectsDir = join(root, 'projects')
@@ -235,6 +253,114 @@ test('new source binding is accepted on the existing daemon connection', { timeo
     const registry = JSON.parse(readFileSync(bindingRegistry, 'utf8'))
     assert.equal(registry.bindings[bindingId].daemonKey, 'live-binding-machine:test')
   } finally {
+    ws?.terminate()
+    await stopServer(server)
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('processed source change without terminal operation is permanently retired across restart', { timeout: 180_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-source-terminal-rejection-'))
+  const projectsDir = join(root, 'projects')
+  const fleetDb = join(root, 'fleet.db')
+  const bindingRegistry = join(root, 'source-bindings.json')
+  const outboxPath = join(root, 'daemon-outbox.sqlite')
+  const project = 'permanently-rejected-source-project'
+  const bindingId = 'registered-source-binding'
+  const outboxId = 'D-deleted-source'
+  const port = await unusedPort()
+  const envelope = {
+    type: 'source-change', project, requestId: 'R-deleted-source', expectedRevision: null,
+    sourceBindingId: 'invalid-source-binding',
+    files: [{ path: 'main.tex', content: 'never accepted\n' }],
+    deletedFiles: [], sourceManifest: ['main.tex'], __daemon_outbox_id: outboxId,
+  }
+  let server
+  let ws
+  let outbox
+  let delivery
+  try {
+    await initProjectStore(projectsDir)
+    createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(project, { pages: 1, buildStatus: 'success' })
+    await closeProjectStore()
+    server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+    ws = await openDaemon(port, {
+      machineId: 'terminal-rejection-machine',
+      sourceBindings: [{ bindingId, project }],
+    })
+    outbox = new DaemonOutbox(outboxPath)
+    delivery = new DaemonDeliveryRuntime({
+      outbox,
+      send(message) { ws.send(JSON.stringify(message)); return true },
+      isConnected: () => true,
+      isReady: () => true,
+    })
+    delivery.send(envelope)
+    await waitForMessage(ws, message => message.type === 'daemon-outbox-ack' && message.outbox_id === outboxId, 'initial processed ACK')
+    assert.equal(outbox.get(outboxId).attempts, 1)
+
+    delivery.dispose()
+    delivery = null
+    ws.terminate()
+    ws = null
+    outbox.close()
+    outbox = null
+    await stopServer(server)
+    server = null
+
+    server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+    ws = await openDaemon(port, {
+      machineId: 'terminal-rejection-machine',
+      sourceBindings: [{ bindingId, project }],
+    })
+    outbox = new DaemonOutbox(outboxPath)
+    let deadLetters = 0
+    delivery = new DaemonDeliveryRuntime({
+      outbox,
+      send(message) { ws.send(JSON.stringify(message)); return true },
+      isConnected: () => true,
+      isReady: () => true,
+      onDeadLetter() { deadLetters++ },
+    })
+    ws.on('message', raw => {
+      const message = JSON.parse(String(raw))
+      if (message.type === 'daemon-outbox-error') {
+        delivery.handleError(message.outbox_id, message.error, { permanent: message.permanent === true })
+      }
+    })
+    delivery.noteReady()
+    await waitForMessage(ws, message => message.type === 'daemon-outbox-error' && message.outbox_id === outboxId, 'permanent replay rejection')
+    const deadline = Date.now() + 5000
+    while (!outbox.get(outboxId)?.deadLetteredAt && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    const terminal = outbox.get(outboxId)
+    assert.ok(terminal.deadLetteredAt)
+    assert.match(terminal.deadLetterReason, /has no terminal source operation/)
+    assert.equal(terminal.attempts, 2)
+    assert.equal(deadLetters, 1)
+    assert.equal(outbox.pendingCount(), 0)
+
+    delivery.dispose()
+    delivery = null
+    outbox.close()
+    outbox = new DaemonOutbox(outboxPath)
+    let repeatedSends = 0
+    delivery = new DaemonDeliveryRuntime({
+      outbox,
+      send() { repeatedSends++; return true },
+      isConnected: () => true,
+      isReady: () => true,
+    })
+    delivery.noteReady()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.equal(repeatedSends, 0)
+    assert.equal(outbox.pendingCount(), 0)
+  } finally {
+    delivery?.dispose()
+    outbox?.close()
     ws?.terminate()
     await stopServer(server)
     await closeProjectStore()

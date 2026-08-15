@@ -84,13 +84,15 @@ export class DaemonDeliveryRuntime {
 
   handleError(outboxId, error, { permanent = false } = {}) {
     if (!outboxId) return
-    const result = this.outbox.markError(outboxId, error || 'delivery failed', { deadLetterEligible: permanent })
-    this.inflight.delete(outboxId)
-    if (result?.deadLettered) {
+    if (permanent) {
+      this.outbox.deadLetter(outboxId, error || 'delivery failed')
+      this.inflight.delete(outboxId)
       this.onDeadLetter?.(this.outbox.get(outboxId)?.payload, outboxId)
-      this.log?.warn?.(`daemon durable message dead-lettered after ${result.attempts} attempts: ${result.error}`)
+      this.log?.warn?.(`daemon durable message permanently rejected: ${String(error || 'delivery failed')}`)
       return
     }
+    this.outbox.markError(outboxId, error || 'delivery failed', { deadLetterEligible: false })
+    this.inflight.delete(outboxId)
     this.scheduleFlush()
   }
 
