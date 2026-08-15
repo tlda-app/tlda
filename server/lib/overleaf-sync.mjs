@@ -111,6 +111,13 @@ export function missingRemoteSourcePaths(previousManifest, remoteManifest) {
   return previousManifest.filter(path => !remote.has(path))
 }
 
+export function completeRemoteDeletedPaths(deletedPaths, previousManifest, remoteManifest) {
+  return [...new Set([
+    ...deletedPaths,
+    ...missingRemoteSourcePaths(previousManifest, remoteManifest),
+  ])]
+}
+
 export function resolveRemoteProjectEntry({ project, requestedMain, tracked, cloneRoot }) {
   let mainFile = requestedMain || project.mainFile
   let format = project.format
@@ -452,7 +459,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   let changedPaths, deletedPaths, head, commits = []
   if (initial) {
     changedPaths = (await trackedFiles(dir)).filter(isAuthoredSource)
-    deletedPaths = missingRemoteSourcePaths(await readClientSourceManifest(name), changedPaths)
+    deletedPaths = []
     head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
     commits = await gitCommitRecords(dir, shellQuote(head))
   } else {
@@ -491,6 +498,11 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     ])]
   } else {
     sourceManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
+    deletedPaths = completeRemoteDeletedPaths(
+      deletedPaths,
+      await readClientSourceManifest(name),
+      sourceManifest,
+    )
   }
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
