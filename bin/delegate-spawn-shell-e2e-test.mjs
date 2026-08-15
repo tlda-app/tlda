@@ -119,13 +119,15 @@ async function reserveShell(agentId, name) {
 async function startMockDaemon() {
   const daemon = new WebSocket(`${wsProto}://localhost:${PORT}/ws/fleet-daemon`, wsOpts)
   const captured = []
+  const bootId = Date.now()
+  let reportSeq = 0
   await new Promise((resolve, reject) => {
     daemon.on('open', () => {
       daemon.send(JSON.stringify({
         type: 'daemon-hello',
         machine_id: MACHINE_ID,
         env_name: ENV_NAME,
-        boot_id: Date.now(),
+        boot_id: bootId,
         user: 'test',
         hostname: MACHINE_ID,
         version: 'test',
@@ -137,10 +139,10 @@ async function startMockDaemon() {
   daemon.on('message', async raw => {
     const msg = JSON.parse(raw.toString())
     if (msg.type !== 'rpc' || !['spawn', 'mint'].includes(msg.op)) return
-    captured.push(msg)
     try {
       assert.ok(msg.agent_id, `spawn RPC missing agent_id: ${JSON.stringify(msg)}`)
       await reserveShell(msg.agent_id, msg.friendly_name || msg.name || 'delegate-e2e-spawned')
+      captured.push(msg)
       daemon.send(JSON.stringify({
         type: 'rpc-reply',
         id: msg.id,
@@ -158,7 +160,24 @@ async function startMockDaemon() {
       daemon.send(JSON.stringify({ type: 'rpc-reply', id: msg.id, result: { ok: false, error: e.message, reason: 'test-failed' } }))
     }
   })
-  return { daemon, captured }
+  return {
+    daemon,
+    captured,
+    reportAbsent(agentId) {
+      reportSeq += 1
+      daemon.send(JSON.stringify({
+        type: 'agent-liveness-snapshot',
+        running_agent_ids: [],
+        absent_agent_ids: [agentId],
+        snapshot_complete: true,
+        daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+        daemon_boot_id: bootId,
+        report_seq: reportSeq,
+        report_reason: 'test-authoritative-absence',
+        ts: new Date().toISOString(),
+      }))
+    },
+  }
 }
 
 async function run() {
@@ -185,7 +204,7 @@ async function run() {
   srv.stderr.on('data', d => { serverLog += d })
 
   await waitHealth()
-  const { daemon, captured } = await startMockDaemon()
+  const { daemon, captured, reportAbsent } = await startMockDaemon()
   const requesterWs = await openFleet()
   const spawnedWs = await openFleet()
   try {
@@ -267,11 +286,11 @@ async function run() {
     assert.ok((events.results || []).some(e => e.from === spawnResult.agent_id && e.text === 'E2E direct response from spawned shell.'))
     console.log('PASS: spawned shell direct chat response is stored under its fleet id')
 
-    const stateRes = await fetch(`${proto}://localhost:${PORT}/api/state`)
+    const stateRes = await fetch(`${proto}://localhost:${PORT}/api/fleet-table?filter=${encodeURIComponent('delegate-e2e-spawned')}`)
     const state = await stateRes.json()
     const agent = (state.agents || []).find(a => a.id === spawnResult.agent_id)
     assert.ok(agent, `spawned agent missing from state; server log:\n${serverLog}`)
-    assert.equal(agent.dead, false)
+    assert.notEqual(agent.dead, true)
     console.log('PASS: roster state includes the spawned live shell')
 
     const neverJoined = await request(requesterWs, 'spawn', {
@@ -285,6 +304,83 @@ async function run() {
     assert.equal(neverJoined.ok, false)
     assert.equal(neverJoined.reason, 'login-timeout')
     console.log('PASS: awaited spawn reports login-timeout when the daemon launch never joins')
+
+    const lateAgentId = captured[1].agent_id
+    const lateWs = await openFleet()
+    try {
+      const lateLogin = await request(lateWs, 'login', {
+        agent_id: lateAgentId,
+        kind: 'claude',
+        machine_id: MACHINE_ID,
+        env_name: ENV_NAME,
+        daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+      })
+      assert.equal(lateLogin.agent.id, lateAgentId)
+      reportAbsent(lateAgentId)
+      await sleep(100)
+      const retainedRes = await fetch(`${proto}://localhost:${PORT}/api/fleet-table?filter=${encodeURIComponent('delegate-e2e-never-joined')}`)
+      const retained = await retainedRes.json()
+      assert.ok((retained.agents || []).some(agent => agent.id === lateAgentId))
+      console.log('PASS: claim before authoritative absence preserves the claimed agent')
+    } finally {
+      lateWs.close()
+    }
+
+    const absentName = 'delegate-e2e-absence-first'
+    const absentSpawn = await request(requesterWs, 'spawn', {
+      fresh: true, await_ready: true, name: absentName, model: 'sol', cwd: process.cwd(), iLikeToLiveDangerously: true,
+    }, 5000)
+    assert.equal(absentSpawn.reason, 'login-timeout')
+    const absentAgentId = captured[2].agent_id
+    reportAbsent(absentAgentId)
+    await sleep(100)
+    const absentWs = await openFleet()
+    try {
+      await assert.rejects(request(absentWs, 'login', {
+        agent_id: absentAgentId,
+        kind: 'claude',
+        machine_id: MACHINE_ID,
+        env_name: ENV_NAME,
+        daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+      }), /No live shell/)
+    } finally {
+      absentWs.close()
+    }
+    const replacement = await reserveShell('fleet:delegate-e2e-absence-replacement', absentName)
+    assert.equal(replacement.assigned_name, absentName)
+    console.log('PASS: authoritative absence before claim retires the shell and releases its name')
+
+    const raceName = 'delegate-e2e-claim-absence-race'
+    const raceSpawn = await request(requesterWs, 'spawn', {
+      fresh: true, await_ready: true, name: raceName, model: 'sol', cwd: process.cwd(), iLikeToLiveDangerously: true,
+    }, 5000)
+    assert.equal(raceSpawn.reason, 'login-timeout')
+    const raceAgentId = captured[3].agent_id
+    const raceWs = await openFleet()
+    try {
+      const loginPromise = request(raceWs, 'login', {
+        agent_id: raceAgentId,
+        kind: 'claude',
+        machine_id: MACHINE_ID,
+        env_name: ENV_NAME,
+        daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
+      })
+      reportAbsent(raceAgentId)
+      const [loginOutcome] = await Promise.allSettled([loginPromise, sleep(100)])
+      if (loginOutcome.status === 'fulfilled') {
+        assert.equal(loginOutcome.value.agent.id, raceAgentId)
+        const raceRosterRes = await fetch(`${proto}://localhost:${PORT}/api/fleet-table?filter=${encodeURIComponent(raceName)}`)
+        const raceRoster = await raceRosterRes.json()
+        assert.ok((raceRoster.agents || []).some(agent => agent.id === raceAgentId))
+      } else {
+        assert.match(loginOutcome.reason.message, /No live shell/)
+        const raceReplacement = await reserveShell('fleet:delegate-e2e-race-replacement', raceName)
+        assert.equal(raceReplacement.assigned_name, raceName)
+      }
+      console.log('PASS: concurrent claim and authoritative absence leave one consistent winner')
+    } finally {
+      raceWs.close()
+    }
   } finally {
     requesterWs.close()
     spawnedWs.close()

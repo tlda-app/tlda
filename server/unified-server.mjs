@@ -2553,7 +2553,6 @@ async function performSpawnRelay(caller, msg) {
       if (readiness) {
         ready = await readiness
         if (!ready.ok) {
-          if (pendingAgentId) await failServerMintShell(pendingAgentId, ready.reason)
           const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
           if (settled) {
             deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
@@ -9013,6 +9012,7 @@ async function handleDaemonWsMessage(ws, msg) {
         daemon_boot_id: msg.daemon_boot_id,
         report_seq: msg.report_seq,
       })
+      await fleetStore.retirePendingShell?.(id)
     }
     broadcastState()
     return

@@ -1665,6 +1665,13 @@ export class FleetStore {
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
+    this._retirePendingShell = this.db.prepare(`
+      UPDATE agents
+      SET dead = 1
+      WHERE id = ?
+        AND dead = 0
+        AND COALESCE(json_extract(metadata, '$.shell'), 0) = 1
+    `);
     this._markAgentAlive = this.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?');
 
     // Task queries
@@ -3740,6 +3747,15 @@ export class FleetStore {
     this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
+  }
+
+  retirePendingShell(id) {
+    const changed = this.db.transaction(() => this._retirePendingShell.run(id).changes === 1)();
+    if (!changed) return false;
+    this.retireTasksForGoneAgent(id, 'pending shell terminally absent');
+    this._bustAgentsCache();
+    this._syncAgentRegistry(id);
+    return true;
   }
 
   markAlive(id) {
