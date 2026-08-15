@@ -13,7 +13,7 @@ function rig({ alive, notifyDelayMs = 400, notifyReadyTimeoutMs = 90000 }) {
   let running = alive
   const wake = createDaemonWakeCore({
     store: {
-      resolve: () => ({ mintId: 'mint-1', sessionId: 'session-1', fleetId: 'fleet:test' }),
+      resolve: () => ({ mintId: 'mint-1', sessionId: 'session-1', fleetId: 'fleet:test', joinedAt: '2026-08-11T12:00:00.000Z' }),
       updateProcessState: () => ({}),
     },
     processAlive: async () => running,
@@ -131,6 +131,38 @@ test('notification failure fact is sent to the daemon wake payload', async () =>
   await runWakeRouteLifecycle(args)
 
   assert.deepEqual(wakeParams[0].notification_failure, {
+    channel: 'mcp',
+    reason: 'mcp-ack-timeout',
+    deadline_ms: 2000,
+  })
+})
+
+test('daemon wake core reads notification failure facts', async () => {
+  const observed = []
+  const wake = createDaemonWakeCore({
+    store: {
+      resolve: () => ({ mintId: 'mint-1', sessionId: 'session-1', fleetId: 'fleet:test', joinedAt: '2026-08-11T12:00:00.000Z' }),
+      updateProcessState: () => ({}),
+    },
+    processAlive: async () => true,
+    resumeSession: async () => ({ pid: 4242 }),
+    notifyAgent: async () => ({ ok: true }),
+    observeNotificationFailure: async event => observed.push(event),
+  })
+
+  await wake({
+    fleet_id: 'fleet:test',
+    notify_text: 'wake',
+    notification_failure: {
+      channel: 'mcp',
+      reason: 'mcp-ack-timeout',
+      deadline_ms: 2000,
+    },
+  })
+
+  assert.equal(observed.length, 1)
+  assert.equal(observed[0].agentId, 'fleet:test')
+  assert.deepEqual(observed[0].failure, {
     channel: 'mcp',
     reason: 'mcp-ack-timeout',
     deadline_ms: 2000,

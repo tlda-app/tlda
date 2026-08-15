@@ -1769,6 +1769,7 @@ export class FleetStore {
         NULL AS types,
         s.created_at
       FROM subscriptions s
+      JOIN agents a ON a.id = s.owner AND a.dead = 0
     `);
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');

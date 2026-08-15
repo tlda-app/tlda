@@ -1729,6 +1729,13 @@ function broadcastEvent(type, data, options = {}) {
 serverTimerScheduler = new ServerTimerScheduler({
   store: fleetStore,
   broadcast: broadcastEvent,
+  notify: ({ to, event, message }) => requestWake(
+    to,
+    `${NOTIFICATION_MARKER} Check your inbox(). You have a timer: ${taskWakePreview(message || event?.metadata?.message || event?.text || 'Timer fired')}`,
+    event?.from || null,
+    event?.metadata?.trace_id || null,
+    { sourceEventId: event?.id || null, sourceTaskId: event?.metadata?.task_id || null, priority: 'urgent' },
+  ),
 })
 // Not awaited: this is module top level, where there is no async context to
 // await into. A failing first refresh is reported rather than becoming an
@@ -5603,7 +5610,9 @@ async function attemptMcpWakeNotification(agent, nudgeText, traceId, source = {}
 }
 async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
   const agent = await fleetStore.getAgent(agentId)
-  if (!agent || agent.dead || agent.human) return
+  if (!agent) return { ok: false, delivered: false, skipped: true, reason: 'missing-agent' }
+  if (agent.dead) return { ok: false, delivered: false, skipped: true, reason: 'dead-agent' }
+  if (agent.human) return { ok: false, delivered: false, skipped: true, reason: 'human-agent' }
   if (isReservedShellAgent(agent)) {
     spawnLibrarian.observeLiveness({
       type: 'agent-liveness',
@@ -5621,7 +5630,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
         detail: { agent: agentId },
       })
     }
-    return
+    return { ok: true, delivered: false, status: 'pending-shell', reason: 'reserved-shell' }
   }
   const mcpDelivery = await attemptMcpWakeNotification(agent, nudgeText, traceId, source)
   if (mcpDelivery.ok) {
@@ -5634,7 +5643,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
         detail: { agent: agentId },
       })
     }
-    return
+    return { ok: true, delivered: true, status: 'agent-channel-acked', channel: 'mcp' }
   }
   const notificationFailure = {
     channel: 'mcp',
@@ -5682,7 +5691,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
         console.warn(`[respawn] could not surface suppressed wake for ${agentId}: ${notifyErr.message}`)
       }
     }
-    return
+    return { ok: true, delivered: false, status: 'breaker-open', suppressed: true, reason: 'breaker-open', notificationFailure }
   }
   const prev = _wakeQueue.get(agentId)
   // Who is waiting, not just the first of them. A second message arriving
@@ -5707,6 +5716,7 @@ async function requestWake(agentId, nudgeText = null, asker = null, traceId = nu
     })
   }
   if (!_wakeDraining) drainWakeQueue()
+  return { ok: true, delivered: false, status: 'queued', queued: true, notificationFailure }
 }
 
 async function drainWakeQueue() {
@@ -6046,7 +6056,7 @@ async function handleFleetWsMessage(ws, msg) {
   // format, so bots speak the same language as real agents. timer-set stores +
   // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
   if (type === 'timer-set') {
-    const { agent, message, fire_at, to: toAgent, repeat_seconds, expires_at, task_id } = msg
+    const { agent, message, fire_at, to: toAgent, repeat_seconds, expires_at, task_id, trace_id } = msg
     // Address the countdown to the conversation it belongs to (e.g. the agent
     // being handed off). A chat panel only renders events whose from/to matches
     // its target agent, so a countdown hardcoded to the server owner never
@@ -6064,6 +6074,7 @@ async function handleFleetWsMessage(ws, msg) {
       ...(repeat_seconds ? { repeat_seconds: Number(repeat_seconds) } : {}),
       ...(expires_at ? { expires_at } : {}),
       ...(task_id ? { task_id } : {}),
+      ...(trace_id ? { trace_id } : {}),
     }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
     await serverTimerScheduler?.refresh()

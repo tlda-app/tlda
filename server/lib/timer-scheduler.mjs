@@ -33,6 +33,10 @@ export function timerFireBroadcast({ event, to, metadataPatch, message }) {
   }
 }
 
+function timerTarget(event) {
+  return event?.to || event?.recipients?.[0] || event?.from || null
+}
+
 export class ServerTimerScheduler {
   constructor({
     store,
@@ -96,7 +100,7 @@ export class ServerTimerScheduler {
   async fire(eventId, { message } = {}) {
     const event = await this.store.getEventById(Number(eventId))
     if (!event) return { ok: false, error: `timer fired event ${eventId} not found` }
-    const to = event.to || event.from
+    const to = timerTarget(event)
     if (!to) return { ok: false, error: `timer fired event ${eventId} has no target` }
     const nowMs = this.now()
     const taskId = event.metadata?.task_id
@@ -118,7 +122,12 @@ export class ServerTimerScheduler {
     })
     if (!claimed) return { ok: true, to, notified: false, duplicate: true }
     this.broadcast?.('event-update', timerFireBroadcast({ event, to, metadataPatch, message }))
-    const notified = false
+    const wakeResult = await this.notify?.({
+      to,
+      event: { ...event, metadata: { ...(event.metadata || {}), ...metadataPatch } },
+      message,
+    })
+    const notified = wakeResult?.delivered === true
     const repeatSeconds = Number(event.metadata?.repeat_seconds)
     if (Number.isFinite(repeatSeconds) && repeatSeconds > 0) {
       const nextFireAt = new Date(nowMs + repeatSeconds * 1000).toISOString()
@@ -174,7 +183,7 @@ export class ServerTimerScheduler {
   async cancel(eventId) {
     const event = await this.store.getEventById(Number(eventId))
     if (!event) return { ok: false, error: `timer cancelled event ${eventId} not found` }
-    const to = event.to || event.from
+    const to = timerTarget(event)
     const metadataPatch = timerCancelPatch({ now: new Date(this.now()).toISOString() })
     const claimed = await this.store.claimTimerTerminal(Number(eventId), {
       to,

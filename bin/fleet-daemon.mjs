@@ -934,6 +934,9 @@ const wakeMint = createDaemonWakeCore({
   // server following up on an answer it got back. A terminal that cannot take
   // the text must not fail the wake: the agent is up either way, and the caller
   // sees `notified` absent.
+  observeNotificationFailure: async ({ agentId, failure }) => {
+    log.warn(`wake fallback for ${agentId || 'unknown-agent'} after notification failure: channel=${failure?.channel || 'unknown'} reason=${failure?.reason || 'unknown'} deadline_ms=${failure?.deadline_ms ?? 'none'}`)
+  },
   notifyAgent: async ({ agentId, text, enterDelayMs, readyTimeoutMs, clearBeforeText }) => {
     if (!agentId) return null
     try {

@@ -10,6 +10,7 @@ export function createDaemonWakeCore({
   targetDaemonKey = null,
   resumeSession,
   notifyAgent = null,
+  observeNotificationFailure = null,
   retryPolicy = null,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
@@ -19,6 +20,13 @@ export function createDaemonWakeCore({
     if (!identifier) throw new Error('wake requires a local mint, fleet, or friendly-name identifier')
     const facts = store.resolve(identifier)
     if (!facts) throw new Error(`no daemon mint facts for ${identifier}`)
+    if (params.notification_failure) {
+      await observeNotificationFailure?.({
+        facts,
+        agentId: facts.fleetId || params.fleet_id || params.fleetId || null,
+        failure: params.notification_failure,
+      })
+    }
     // A mint with facts but no session is not unresumable — it is the partially
     // minted agent: the daemon prepared it, the launch recipe is on disk, and no
     // harness ever logged in to produce a session id. Finishing that is what the

@@ -134,6 +134,17 @@ test('subscribing twice does not accumulate rows', async () => {
   })
 })
 
+test('a dead subscription owner is not a resolvable delivery target', async () => {
+  await withFleet(async store => {
+    const now = new Date().toISOString()
+    await store.upsertAgent({ id: 'fleet:alice', friendly_name: 'alice', labels: ['reviewers'], registered_at: now, last_seen: now, dead: true })
+
+    const notified = notifiedFor(store, 'fleet:sender', 'fleet:alice')
+
+    assert.ok(!notified.has('fleet:alice'))
+  })
+})
+
 test('the one-time migration does not resurrect a deleted subscription', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tlda-subscription-migration-'))
   try {

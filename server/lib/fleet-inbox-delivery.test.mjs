@@ -280,6 +280,65 @@ test('my-task delivers unread messages and ack-inbox clears only returned ids', 
   }
 })
 
+test('timer fire crosses the server wake wire', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-timer-wake-wire-'))
+  const dbPath = join(dir, 'fleet.db')
+  const store = new FleetStore(dbPath, { taskDoc: false })
+  const now = new Date().toISOString()
+  await store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', labels: [], registered_at: now, last_seen: now })
+  await store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', labels: [], registered_at: now, last_seen: now })
+  store.close()
+
+  const port = await unusedPort()
+  const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
+    cwd: join(import.meta.dirname, '..', '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      PROJECTS_DIR: join(dir, 'projects'),
+      TLDA_FLEET_DB: dbPath,
+      TLDA_DEV_SERVER: '1',
+      TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
+      TLDA_WAKE_MCP_ACK_DEADLINE_MS: '50',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    await waitForServer(child)
+    const ws = await openFleetWs(port)
+    const timer = await request(ws, 1, 'timer-set', {
+      agent: 'fleet:sender',
+      to: 'recipient',
+      message: 'wire proof timer',
+      fire_at: new Date(Date.now() + 60_000).toISOString(),
+      trace_id: 'timer-wake-wire-proof',
+    })
+    assert.equal(timer.ok, true)
+
+    const fired = await request(ws, 2, 'timer-fire', {
+      event_id: timer.id,
+      message: 'wire proof timer',
+    })
+    assert.equal(fired.ok, true)
+    assert.equal(fired.to, 'fleet:recipient')
+    assert.equal(fired.notified, false)
+
+    const wakeStatuses = await waitForWakeStatuses(port, 'timer-wake-wire-proof', ['wake.request', 'wake.defer'], 2)
+    assert.deepEqual(wakeStatuses, [
+      'wake.request:queued',
+      'wake.defer:no-daemon',
+    ])
+    const inbox = await request(ws, 3, 'my-task', { agent: 'fleet:recipient', peek: true })
+    assert.deepEqual(inbox.messages.map(message => message.id), [Number(timer.id)])
+    ws.close()
+  } finally {
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('codex recipients use the MCP ACK path before daemon fallback', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-tmux-delivery-open-channel-'))
   const dbPath = join(dir, 'fleet.db')
