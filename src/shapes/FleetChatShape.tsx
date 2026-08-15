@@ -155,8 +155,8 @@ type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 // Every line in the mark is one weight, the svg's, matching the edges rather
 // than sitting heavier than them. The nodes are circles, and they are the only
 // weight in an otherwise elongated drawing.
-const COMPOSER_TRAFFIC_WIRE = 'M3.4 8 H7.25 L7.69 6.4 L8.32 9.6 L8.75 8 H12.6'
-const COMPOSER_TRAFFIC_WIRE_IN_GRAPH = 'M3.4 8 H7.35 L7.73 6.8 L8.27 9.2 L8.65 8 H12.6'
+const COMPOSER_TRAFFIC_WIRE = 'M3.4 8 H7.25 L7.69 5.4 L8.32 10.6 L8.75 8 H12.6'
+const COMPOSER_TRAFFIC_WIRE_IN_GRAPH = 'M3.4 8 H7.35 L7.73 5.4 L8.27 10.6 L8.65 8 H12.6'
 
 function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
   const path = mode === 'dm'
