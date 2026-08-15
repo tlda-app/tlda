@@ -6,7 +6,7 @@ import test from 'node:test'
 
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
 import { renderMarkdownColumnHtml } from './build-markdown.mjs'
-import { listDocumentColumns } from './document-columns.mjs'
+import { listDocumentColumns, listMarkdownProjectDocuments } from './document-columns.mjs'
 import { closeProjectStore, initProjectStore } from './project-store.mjs'
 
 test('A markdown project document is its main file; the closure is its file scope', async t => {
@@ -58,6 +58,19 @@ test('A markdown project document is its main file; the closure is its file scop
   assert.deepEqual(
     columns.map(({ sourceFile, outputFile }) => ({ sourceFile, outputFile })),
     [{ sourceFile: 'README.md', outputFile: 'index.html' }],
+  )
+
+  const documents = await listMarkdownProjectDocuments('notes', {
+    project: { name: 'notes', format: 'markdown', mainFile: 'README.md' },
+    srcDir: source,
+  })
+  assert.deepEqual(
+    documents.map(({ sourceFile, outputFile }) => ({ sourceFile, outputFile })),
+    [
+      { sourceFile: 'README.md', outputFile: 'index.html' },
+      { sourceFile: 'chapters/appendix.markdown', outputFile: 'chapters/appendix.html' },
+      { sourceFile: 'chapters/one.md', outputFile: 'chapters/one.html' },
+    ],
   )
 })
 

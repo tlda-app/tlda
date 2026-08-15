@@ -2,6 +2,8 @@ import { createShapeId, type Editor, type TLCamera, type TLShape, type TLShapeId
 import { wrapFleetLayoutAroundDocument } from './shapes/fleet-layout-wrap'
 import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
 import { arrivalReadingOffset, cameraYForReadingOffset, readingOffsetOf } from './readingPosition'
+// @ts-ignore — vanilla JS module
+import { horizontalSpatialDocumentPoint } from './spatial-document-layout.mjs'
 
 export const SPATIAL_MAP_ZOOM = 0.28
 /** Distance between neighbouring documents. One screen at reading zoom is about
@@ -323,6 +325,7 @@ export function placeSpatialDocument(
         w: size.w,
         h: size.h,
       }
+  if (source) return horizontalSpatialDocumentPoint(source.bounds, occupied, size, WORLD_GAP)
   const originCenter = { x: origin.x + origin.w / 2, y: origin.y + origin.h / 2 }
   const startAngle = stableHash(identity) / 0xffffffff * Math.PI * 2
   // Clearance is measured from the origin's centre, so it has to clear the
