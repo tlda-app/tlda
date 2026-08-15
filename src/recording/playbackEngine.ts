@@ -16,7 +16,6 @@
  * sync layer to guard against and nothing to pollute.
  */
 
-import { loadSnapshot } from 'tldraw'
 import type { Editor, TLRecord, TLShapeId } from 'tldraw'
 import type { RecordingEvent, StrokeEvent, CameraEvent, BaseEvent } from './recorder'
 
@@ -146,7 +145,7 @@ export class PlaybackEngine {
     const segmentEvents = segment.events
     if (base && base !== this.loadedBase) {
       this.lives = lifetimesOf(segmentEvents)
-      loadSnapshot(this.editor.store, base.snapshot)
+      this.editor.loadSnapshot(base.snapshot)
       const replayedIds = new Set(this.lives.keys())
       const remove: TLShapeId[] = []
       for (const record of this.editor.store.allRecords()) {
