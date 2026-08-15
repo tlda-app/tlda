@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 
-import { gitCommitRecords } from './overleaf-sync.mjs'
+import { gitCommitRecords, missingRemoteSourcePaths } from './overleaf-sync.mjs'
 
 const execFile = promisify(execFileCallback)
 const gitEnv = { ...process.env }
@@ -45,4 +45,14 @@ test('git commit records keep record boundaries across multiple authors', async 
   assert.deepEqual(records.map(record => record.author.name), ['first author', 'chieffff'])
   assert.deepEqual(records[0].changed_paths, ['main.tex'])
   assert.deepEqual(records[1].changed_paths.sort(), ['main.tex', 'refs.bib'])
+})
+
+test('initial remote snapshot explicitly deletes prior source absent upstream', () => {
+  assert.deepEqual(
+    missingRemoteSourcePaths(
+      ['.bak-before-deletion.tex', 'main.tex', 'refs.bib'],
+      ['main.tex', 'refs.bib'],
+    ),
+    ['.bak-before-deletion.tex'],
+  )
 })

@@ -106,6 +106,11 @@ function shouldSkip(relPath) {
   return SKIP_PATHS.some(re => re.test(relPath))
 }
 
+export function missingRemoteSourcePaths(previousManifest, remoteManifest) {
+  const remote = new Set(remoteManifest)
+  return previousManifest.filter(path => !remote.has(path))
+}
+
 export function resolveRemoteProjectEntry({ project, requestedMain, tracked, cloneRoot }) {
   let mainFile = requestedMain || project.mainFile
   let format = project.format
@@ -447,7 +452,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   let changedPaths, deletedPaths, head, commits = []
   if (initial) {
     changedPaths = (await trackedFiles(dir)).filter(isAuthoredSource)
-    deletedPaths = []
+    deletedPaths = missingRemoteSourcePaths(await readClientSourceManifest(name), changedPaths)
     head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
     commits = await gitCommitRecords(dir, shellQuote(head))
   } else {
