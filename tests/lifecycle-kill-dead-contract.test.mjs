@@ -27,6 +27,13 @@ test('reanimate restores dead after wake failure even when owner route remains',
   const routeWait = source.indexOf('const nextSeat = await waitForAgentDaemonRoute(before.id)', wakeStart)
   assert.notEqual(routeWait, -1, 'reanimate should wait for the revived route after wake')
 
+  const authorityBlock = source.slice(reanimateStart, wakeStart)
+  assert.match(authorityBlock, /const ownerRoute = await fleetStore\.getAgentDaemonRoute\?\.\(before\.id\)/)
+  assert.match(authorityBlock, /const daemonKey = ownerRoute\?\.daemon_key \|\| null/)
+  assert.doesNotMatch(authorityBlock, /before\.daemon_key/)
+  assert.doesNotMatch(authorityBlock, /before\.machine_id/)
+  assert.doesNotMatch(authorityBlock, /before\.env_name/)
+
   const wakeFailureBlock = source.slice(wakeStart, routeWait)
   const catchStart = wakeFailureBlock.indexOf('} catch (e) {')
   assert.notEqual(catchStart, -1, 'wake failure should be handled before waiting for the route')
