@@ -20,6 +20,9 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     commitHash: T.string,
     timestamp: T.number,
     buildReadyAt: T.optional(T.number),
+    // Accepted while rooms created before sourceRevision still carry it.
+    // Current code neither writes nor reads this retired field.
+    sourceVersion: T.optional(T.number),
     sourceRevision: T.optional(T.string),
     acceptSeq: T.optional(T.number),
     // Build errors/warnings for the current build (JSON arrays). Persistent,

@@ -37,4 +37,8 @@ test('client and sync-room schemas apply the same doc-version migration', () => 
     assert.match(source, /stripRetiredDocVersionProps/)
   }
   assert.match(server, /record\.type === 'doc-version'/)
+  for (const source of [client, server]) {
+    assert.match(source, /sourceVersion: T\.optional\(T\.number\)/)
+    assert.match(source, /sourceRevision: T\.optional\(T\.string\)/)
+  }
 })

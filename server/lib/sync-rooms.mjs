@@ -312,6 +312,7 @@ const customShapeSchemas = {
       commitHash: T.string,
       timestamp: T.number,
       buildReadyAt: T.optional(T.number),
+      sourceVersion: T.optional(T.number),
       sourceRevision: T.optional(T.string),
       acceptSeq: T.optional(T.number),
       warningsJson: T.optional(T.string),
