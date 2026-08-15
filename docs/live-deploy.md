@@ -36,6 +36,9 @@ fly status -c fly.live.toml
 `/api/build-info` must report the pushed `gitSha`; `/api/health` must return
 `ok` with `store: up`; Fly must show the machine as `started`.
 
+The frozen release-candidate interval is defined in
+[Frozen release candidate](release-candidate.md).
+
 ## A daemon/server change has no atomic landing
 
 A deploy ships the server. It does not ship the daemons that talk to it.
