@@ -1086,6 +1086,7 @@ async function rpcMint(params = {}) {
       metadata: params.metadata || null,
       request_seat: !(params.fleet_id || params.agent_id),
       fail_if_not_fresh: failIfNotFresh,
+      replace_launch_recipe: !!(params.repairExistingBot || params.repair_existing_bot),
       onLifecycleEvent: params.onLifecycleEvent,
       launch: {
         name: params.friendly_name || params.name || null,
