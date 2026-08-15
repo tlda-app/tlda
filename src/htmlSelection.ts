@@ -1,5 +1,6 @@
 import { createShapeId } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
+import { htmlIframeElements } from './htmlIframeRegistry'
 import { anchoredSourceLocation, normalizeSourceFile, unanchoredSourceLocation } from './sourceLocation'
 
 type HtmlSelectionRect = {
@@ -18,6 +19,7 @@ type HtmlTextSelection = {
   shapeId: string
   text: string
   line?: number
+  sourceLines?: Array<{ line: number; text: string }>
   rect?: HtmlSelectionRect
   docSize?: HtmlSelectionDocSize
   createdAt: number
@@ -45,7 +47,7 @@ type HtmlPageShapeLike = {
   parentId?: string
   x: number
   y: number
-  props: { w: number; source?: string }
+  props: { w: number; h?: number; source?: string }
 }
 
 const RECENT_SELECTION_MS = 2 * 60 * 1000
@@ -113,6 +115,123 @@ function estimateShareCardHeight(text: string) {
   return Math.min(SHARE_CARD_MAX_H, Math.max(SHARE_CARD_MIN_H, (lineCount + wrappedLines) * 18 + 36))
 }
 
+function htmlDocumentSize(doc: Document) {
+  const body = doc.body
+  const root = doc.documentElement
+  return {
+    width: Math.max(body?.scrollWidth || 0, body?.offsetWidth || 0, root?.scrollWidth || 0, root?.offsetWidth || 0, 800),
+    height: Math.max(body?.scrollHeight || 0, body?.offsetHeight || 0, root?.scrollHeight || 0, root?.offsetHeight || 0, 1),
+  }
+}
+
+function lineFromElement(el: Element): number | undefined {
+  const raw = el.getAttribute('data-source-line') || el.getAttribute('data-line') || el.id.match(/^line-(\d+)$/)?.[1]
+  const line = raw == null ? NaN : Number(raw)
+  return Number.isFinite(line) && line > 0 ? Math.floor(line) : undefined
+}
+
+function sourceLineElement(el: Element): Element | null {
+  return el.closest('[data-source-line], [data-line], [id^="line-"]')
+}
+
+function textFromElement(el: Element) {
+  return (el.textContent || '').replace(/\s+/g, ' ').trim()
+}
+
+function renderedTextLineElements(doc: Document): Element[] {
+  const anchored = [...doc.querySelectorAll('[data-source-line], [data-line], [id^="line-"]')]
+    .filter(el => textFromElement(el))
+  if (anchored.length > 0) return anchored
+  return [...doc.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th')]
+    .filter(el => textFromElement(el))
+}
+
+function htmlPageFallbackSelection(
+  editor: Editor,
+  highlightBounds: { minX: number; minY: number; maxX: number; maxY: number },
+  highlightParentId?: string,
+): { selection: HtmlTextSelection; htmlShape: HtmlPageShapeLike; distance: number } | null {
+  let best: { selection: HtmlTextSelection; htmlShape: HtmlPageShapeLike; distance: number } | null = null
+
+  for (const shape of editor.getCurrentPageShapes()) {
+    if (!isHtmlPageShapeLike(shape)) continue
+    if (shape.parentId && highlightParentId && shape.parentId !== highlightParentId) continue
+
+    const pageBounds = editor.getShapePageBounds(shape.id)
+    if (!pageBounds || !expandedIntersects(highlightBounds, pageBounds, 16)) continue
+
+    const iframe = htmlIframeElements.get(shape.id)
+    const doc = iframe?.contentDocument
+    if (!doc) continue
+
+    const docSize = htmlDocumentSize(doc)
+    const scale = shape.props.w / docSize.width
+    const scrollX = doc.defaultView?.scrollX || 0
+    const scrollY = doc.defaultView?.scrollY || 0
+    const hits: Array<{ line?: number; text: string; rect: HtmlSelectionRect; distance: number }> = []
+
+    for (const el of renderedTextLineElements(doc)) {
+      const lineEl = sourceLineElement(el) || el
+      const line = lineFromElement(lineEl)
+      const text = textFromElement(el)
+      if (!text) continue
+
+      for (const rect of [...el.getClientRects()]) {
+        if (rect.width <= 0 || rect.height <= 0) continue
+        const candidate = {
+          minX: shape.x + (rect.left + scrollX) * scale,
+          minY: shape.y + (rect.top + scrollY) * scale,
+          maxX: shape.x + (rect.right + scrollX) * scale,
+          maxY: shape.y + (rect.bottom + scrollY) * scale,
+        }
+        if (!expandedIntersects(highlightBounds, candidate, 8)) continue
+        const hy = (highlightBounds.minY + highlightBounds.maxY) / 2
+        const cy = (candidate.minY + candidate.maxY) / 2
+        hits.push({
+          line,
+          text,
+          rect: {
+            offsetLeft: rect.left + scrollX,
+            offsetTop: rect.top + scrollY,
+            width: rect.width,
+            height: rect.height,
+          },
+          distance: Math.abs(hy - cy),
+        })
+      }
+    }
+
+    if (hits.length === 0) continue
+    hits.sort((a, b) => a.rect.offsetTop - b.rect.offsetTop || a.distance - b.distance)
+    const top = Math.min(...hits.map(hit => hit.rect.offsetTop))
+    const left = Math.min(...hits.map(hit => hit.rect.offsetLeft))
+    const right = Math.max(...hits.map(hit => hit.rect.offsetLeft + hit.rect.width))
+    const bottom = Math.max(...hits.map(hit => hit.rect.offsetTop + hit.rect.height))
+    const sourceLines = hits
+      .filter((hit): hit is typeof hit & { line: number } => hit.line != null)
+      .filter((hit, index, arr) => arr.findIndex(other => other.line === hit.line) === index)
+      .map(hit => ({ line: hit.line, text: hit.text }))
+    const selection: HtmlTextSelection = {
+      shapeId: shape.id,
+      text: hits.map(hit => hit.text).filter((text, index, arr) => arr.indexOf(text) === index).join('\n'),
+      line: sourceLines[0]?.line,
+      sourceLines,
+      rect: {
+        offsetLeft: left,
+        offsetTop: top,
+        width: right - left,
+        height: bottom - top,
+      },
+      docSize,
+      createdAt: Date.now(),
+    }
+    const distance = Math.min(...hits.map(hit => hit.distance))
+    if (!best || distance < best.distance) best = { selection, htmlShape: shape, distance }
+  }
+
+  return best
+}
+
 export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLShapeId): boolean {
   const highlight = editor.getShape(highlightId)
   if (!highlight || (highlight.type as string) !== 'highlight') return false
@@ -150,14 +269,25 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
     if (!best || distance < best.distance) best = { selection, htmlShape, distance }
   }
 
+  best ??= htmlPageFallbackSelection(editor, highlightBounds, highlight.parentId)
   if (!best) return false
 
   const { selection, htmlShape } = best
   const sourceFile = normalizeSourceFile(htmlShape.props.source || '')
+  const anchoredSelectionLines = selection.sourceLines && sourceFile
+    ? selection.sourceLines
+      .map(line => {
+        const location = anchoredSourceLocation(sourceFile, line.line)
+        return location ? { ...location, content: line.text, highlighted: true } : null
+      })
+      .filter((line): line is NonNullable<typeof line> => line != null)
+    : []
   const sourceAnchor = selection.line && sourceFile
     ? anchoredSourceLocation(sourceFile, selection.line) || unanchoredSourceLocation('unresolved')
     : unanchoredSourceLocation(selection.line ? 'unresolved' : 'missing-line-anchor')
-  const sourceLines = sourceAnchor.anchored
+  const sourceLines = anchoredSelectionLines.length > 0
+    ? anchoredSelectionLines
+    : sourceAnchor.anchored
     ? [{ ...sourceAnchor, content: selection.text, highlighted: true }]
     : [sourceAnchor]
   const lines = selection.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
