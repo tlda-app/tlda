@@ -87,7 +87,6 @@ export function createDaemonMintCore({
     launch = {},
     request_seat = true,
     fail_if_not_fresh = false,
-    replace_launch_recipe = false,
     onLifecycleEvent = null,
     on_lifecycle_event = null,
   } = {}) {
@@ -97,19 +96,13 @@ export function createDaemonMintCore({
     if (envName) store.setFact(id, 'env_name', envName)
     if (name) store.setFact(id, 'friendly_name', name)
     if (metadata) store.setFact(id, 'metadata', metadata)
-    const launchRecipe = persistentLaunchRecipe(launch)
-    if (replace_launch_recipe) store.updateLaunchRecipe(id, launchRecipe)
-    else store.setFact(id, 'launch_recipe', launchRecipe)
+    store.setFact(id, 'launch_recipe', persistentLaunchRecipe(launch))
     if (suppliedFleetId) store.setFact(id, 'fleet_id', suppliedFleetId)
 
     // CLI mint starts both actions before awaiting either. Server mint supplies
     // fleet_id and therefore uses this same core without starting a second seat request.
     const existing = store.get(id)
-    const existingProcessAlive = !!existing?.processState && (!processAlive || await processAlive(existing))
-    if (replace_launch_recipe && existingProcessAlive) {
-      throw new Error(`mint ${id} bot recipe repair refused: existing harness process is still live`)
-    }
-    const reuseExistingProcess = !replace_launch_recipe && existingProcessAlive
+    const reuseExistingProcess = !!existing?.processState && (!processAlive || await processAlive(existing))
     const processPromise = reuseExistingProcess
       ? Promise.resolve(existing)
       : Promise.resolve().then(() => launchProcess({

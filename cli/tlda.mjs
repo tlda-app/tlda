@@ -240,7 +240,6 @@ const SPAWN_NON_MODEL_OPTION_FLAGS = new Set([
   'kind', 'list-models', 'machine', 'mode', 'model', 'name', 'permissions',
   'policy', 'refresh', 'server', 'session', 'bot-script', 'bot-name',
   'bot-pid-file', 'bot-heartbeat-file', 'bot-wait-channel', 'fail-if-not-fresh',
-  'repair-existing-bot',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -2050,21 +2049,10 @@ async function startBot(unit) {
     '--fail-if-not-fresh',
   ], unit)
   if (minted === 0) return
-  // A pre-manager bot can own the canonical fleet name while its durable daemon
-  // recipe still names the old generic harness. Re-mint that exact local/fleet
-  // binding with the declared bot recipe; waking the legacy recipe cannot create
-  // the pidfile this manager uses as its liveness fact.
-  await runBotCliCommand([
-    'agent', 'mint', unit.bot.name,
-    '--model', 'bot',
-    '--kind', 'bot',
-    '--cwd', FLEET_DAEMON_MAIN_ROOT,
-    '--bot-script', resolveBotScriptForCli(unit.bot.script),
-    '--bot-name', unit.bot.name,
-    '--bot-pid-file', unit.paths.pidFile,
-    '--bot-heartbeat-file', unit.paths.heartbeatFile,
-    '--repair-existing-bot',
-  ], unit)
+  // The name already belongs to a living fleet agent, which is the ordinary case
+  // for a bot whose process died: wake restarts that identity instead of minting a
+  // second one beside it.
+  await runBotCliCommand(['agent', 'wake', unit.bot.name], unit)
 }
 
 async function runBotManager() {
@@ -3719,20 +3707,8 @@ export async function runFleetSpawn(spawnArgs, {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
     const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
     let mintId = randomUUID()
-    let existingBotFleetId = null
     try {
-      const repairExistingBot = hasRawFlag(spawnArgs, 'repair-existing-bot')
-      const partial = name
-        ? (repairExistingBot
-            ? await resolveExistingBotMint(name, { mintStore, apiImpl })
-            : mintStore.resolve(name))
-        : null
-      if (repairExistingBot) {
-        if (flagFromRaw(spawnArgs, 'kind') !== 'bot') throw new Error('--repair-existing-bot requires --kind bot')
-        if (!partial?.mintId || !partial?.fleetId) throw new Error(`cannot repair bot ${name}: exact local fleet binding is missing`)
-        mintId = partial.mintId
-        existingBotFleetId = partial.fleetId
-      }
+      const partial = name ? mintStore.resolve(name) : null
       if (partial && !partial.joinedAt) {
         mintId = partial.mintId
         console.log(`Resuming partial mint ${mintId}${partial.processState?.tmux_session ? ` in ${partial.processState.tmux_session}` : ''}`)
@@ -3742,8 +3718,6 @@ export async function runFleetSpawn(spawnArgs, {
     }
     const result = await lifecycleImpl('mint', {
       mint_id: mintId,
-      ...(existingBotFleetId ? { fleet_id: existingBotFleetId } : {}),
-      ...(existingBotFleetId ? { repair_existing_bot: true } : {}),
       name,
       model: flagFromRaw(spawnArgs, 'model') || undefined,
       kind: flagFromRaw(spawnArgs, 'kind') || undefined,
@@ -3955,16 +3929,6 @@ export async function runFleetSpawn(spawnArgs, {
   } finally {
     if (ledger) await ledger.close()
   }
-}
-
-export async function resolveExistingBotMint(name, { mintStore, apiImpl = api } = {}) {
-  const state = await apiImpl('GET', '/api/state')
-  const exact = (Array.isArray(state?.agents) ? state.agents : [])
-    .filter(agent => !agent?.dead && agent?.friendly_name === name)
-  if (exact.length !== 1) {
-    throw new Error(`cannot repair bot ${name}: expected one exact living fleet identity, found ${exact.length}`)
-  }
-  return mintStore.getByFleetId(exact[0].id) || null
 }
 
 export async function bindSpawnRuntimeIfNeeded({ spawnMode, result, bindLifecycleImpl = bindLifecycleCodexResumeIdentity, options } = {}) {
