@@ -26,7 +26,7 @@ import {
   useValue,
 } from 'tldraw'
 import { fleetDocviewProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import type { Editor, TLShapeId } from 'tldraw'
+import type { Editor } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
@@ -42,6 +42,7 @@ import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { optionalJson } from '../optionalJson'
 import { FleetHudRenderGate } from './useIsInViewport'
+import { resolveDocViewTargetShapeId } from './docViewTarget'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -149,7 +150,12 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
     targetShapeId: targetShapeIdRaw,
     useFullBounds: useFullBoundsRaw,
   } = shape.props
-  const targetShapeId = (typeof targetShapeIdRaw === 'string' ? targetShapeIdRaw : '') as TLShapeId | ''
+  const targetShapeId = resolveDocViewTargetShapeId({
+    format: doc?.format,
+    pages: doc?.pages || [],
+    page,
+    explicitTargetShapeId: typeof targetShapeIdRaw === 'string' ? targetShapeIdRaw : '',
+  })
   const useFullBounds = useFullBoundsRaw === true
   const normalizedProps = { ...shape.props, targetShapeId, useFullBounds }
   const sources = parseSources(sourcesRaw)
