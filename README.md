@@ -515,8 +515,9 @@ tlda project link my-paper /path/to/paper/paper.tex
 The linked working copy submits source changes to the server, and tlda rebuilds
 the paper. A browser edit advances the server revision; the local checkout sees
 that revision when it next submits and receives a merge conflict when the two
-copies changed concurrently. To host a paper from Overleaf or another Git remote
-instead, link the remote.
+copies changed concurrently.
+
+If you use Overleaf, link its Git URL with your Overleaf Git token instead.
 
 ```bash
 tlda project link my-paper https://git.overleaf.com/your-project-id \
@@ -525,8 +526,9 @@ tlda project link my-paper https://git.overleaf.com/your-project-id \
   --poll 60
 ```
 
-The server clones the remote, builds it, polls for changes, and pushes source
-edits made through tlda. The details are in
+The server brings in the repository's history, builds it, polls for changes, and
+pushes source edits made through tlda. The details, including moving an existing
+tlda project without losing its version history, are in
 [Using tlda](docs/using-tlda.md#project-source-linking-and-history).
 
 ### Put it behind an authentication boundary

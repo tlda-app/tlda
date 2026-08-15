@@ -1,9 +1,9 @@
 # Using tlda
 
-This is the user reference after the first successful project open. It covers
-identity, supported document formats, search, agents, and a full-strength local
-setup. Exact command and tool arguments remain authoritative in `tlda --help`
-and the running MCP schemas.
+This is the user reference for starting a project and working in it. It covers
+project linking and history, identity, supported document formats, search,
+agents, and a full-strength local setup. Exact command and tool arguments remain
+authoritative in `tlda --help` and the running MCP schemas.
 
 - [Identity, settings, editor, and voice](#identity-and-settings)
 - [Project source, linking, and history](#project-source-linking-and-history)
@@ -79,7 +79,8 @@ extension and includes the local Markdown files and assets it links to:
 tlda project link proof-notes /path/to/notes/README.md
 ```
 
-For Overleaf or another Git remote, pass its URL:
+If your paper is on Overleaf, copy its Git URL and link it directly with your
+Overleaf Git token:
 
 ```sh
 tlda project link eiv-paper https://git.overleaf.com/project-id \
@@ -88,8 +89,11 @@ tlda project link eiv-paper https://git.overleaf.com/project-id \
   --poll 60
 ```
 
-The server owns the remote clone and polling. You may omit `--main` when the
-project already has an entry file or the clone contains exactly one entry file.
+The server clones the repository with its Git history, imports that history into
+the tlda project, builds the paper, and polls for later changes. Source edits
+made through tlda are committed and pushed back to the remote. You may omit
+`--main` when the project already has an entry file or the clone contains
+exactly one entry file. The same command works with another Git remote.
 
 Linking the same project to the same source is an idempotent no-op. Linking it
 to a different local path on one machine or a different Git URL fails without
@@ -100,17 +104,12 @@ tlda project unlink eiv-paper /path/to/eiv-paper/least-squares.tex
 tlda project unlink eiv-paper https://git.overleaf.com/project-id
 ```
 
-**Linking carries the project's version history to the new server, and waits for
-it.** The daemon sends the history and blocks the link until the destination
-reports back how many versions it has on disk. **A link that cannot deliver the
-history fails, loudly, and leaves no binding behind** — so a failed link is a
-link you can simply run again, not a half-attached project to clean up.
-
-This is why `tlda project link` can take a moment on a project with a long
-history, and why it is the point at which a move between environments either
-works or tells you it did not. Between 2026-08-10 and 2026-08-12 it silently did
-not: the history was sent and no server received it, so a moved project arrived
-with one version. Fixed in `9983c2cd8`.
+When you move an existing local tlda project to a new server, linking carries
+the project's tlda version history with it and waits for the destination to
+store it before creating the new binding. A link that cannot deliver the
+history fails and leaves no binding behind, so you can fix the reported problem
+and run the same command again. A project with a long history may take a moment
+to link.
 
 Local and browser edits submit through a revision-checked source transaction
 boundary. The server polls and pushes a linked Git remote through its own clone,
