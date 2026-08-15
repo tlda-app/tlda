@@ -9,7 +9,9 @@
 import { BaseBoxShapeUtil, T, type TLPropsMigrations } from 'tldraw'
 import {
   DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+  DOC_VERSION_SOURCE_VERSION_MIGRATION_ID,
   stripRetiredDocVersionProps,
+  stripRetiredDocVersionSourceVersion,
 } from '../../shared/shapes/doc-version-migrations.mjs'
 
 export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
@@ -29,11 +31,18 @@ export class DocVersionShapeUtil extends BaseBoxShapeUtil<any> {
     syncErrorJson: T.optional(T.string),
   }
   static override migrations: TLPropsMigrations = {
-    sequence: [{
-      id: DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
-      up: stripRetiredDocVersionProps,
-      down: 'none' as const,
-    }],
+    sequence: [
+      {
+        id: DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+        up: stripRetiredDocVersionProps,
+        down: 'none' as const,
+      },
+      {
+        id: DOC_VERSION_SOURCE_VERSION_MIGRATION_ID,
+        up: stripRetiredDocVersionSourceVersion,
+        down: 'none' as const,
+      },
+    ],
   }
 
   getDefaultProps() {

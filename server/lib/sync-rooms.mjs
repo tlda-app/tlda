@@ -19,7 +19,9 @@ import { outlineProps } from '../../shared/shapes/outline-schema.mjs'
 import { graphNodeProps, graphExplainProps } from '../../shared/shapes/graph-node-schema.mjs'
 import {
   DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+  DOC_VERSION_SOURCE_VERSION_MIGRATION_ID,
   stripRetiredDocVersionProps,
+  stripRetiredDocVersionSourceVersion,
 } from '../../shared/shapes/doc-version-migrations.mjs'
 import {
   fleetAgentsProps,
@@ -320,14 +322,24 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.doc-version',
-      sequence: [{
-        id: DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
-        scope: 'record',
-        filter: (record) => record.typeName === 'shape' && record.type === 'doc-version',
-        up: (record) => {
-          record.props = stripRetiredDocVersionProps(record.props)
+      sequence: [
+        {
+          id: DOC_VERSION_RETIRED_PROP_MIGRATION_ID,
+          scope: 'record',
+          filter: (record) => record.typeName === 'shape' && record.type === 'doc-version',
+          up: (record) => {
+            record.props = stripRetiredDocVersionProps(record.props)
+          },
         },
-      }],
+        {
+          id: DOC_VERSION_SOURCE_VERSION_MIGRATION_ID,
+          scope: 'record',
+          filter: (record) => record.typeName === 'shape' && record.type === 'doc-version',
+          up: (record) => {
+            record.props = stripRetiredDocVersionSourceVersion(record.props)
+          },
+        },
+      ],
     }),
   },
   'doc-viewer-state': {
