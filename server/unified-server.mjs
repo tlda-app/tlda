@@ -1133,12 +1133,9 @@ async function reanimateAgent(agentQuery) {
       throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
     }
   } catch (e) {
-    const currentRoute = await fleetStore.getAgentDaemonRoute?.(before.id)
-    if (!currentRoute) {
-      await fleetStore.markDead(before.id)
-      markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake failed: ${e.message}` })
-      broadcastState(before.id)
-    }
+    await fleetStore.markDead(before.id)
+    markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake failed: ${e.message}` })
+    broadcastState(before.id)
     throw e
   }
   const nextSeat = await waitForAgentDaemonRoute(before.id)
