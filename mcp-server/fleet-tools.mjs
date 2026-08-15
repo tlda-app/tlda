@@ -5535,7 +5535,7 @@ async function handleChannelMessage(msg) {
   const fromId = data.from || data.from_id || '';
   if (!shouldDeliverChannelTurn({ eventType, data, fromId, isDirectTarget })) return;
   if (fromId === agentId) return;
-  if (data.metadata?.source === 'terminal') return;
+  if (data.metadata?.via === 'terminal') return;
 
   const eventId = channelEventId(msg, data);
   const wakeAckId = data.metadata?.wake_ack_id || null;

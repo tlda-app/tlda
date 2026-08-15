@@ -103,3 +103,21 @@ test('message to the panel default target omits the recipient arrow', () => {
   assert.doesNotMatch(html, /chat-arrow/)
   assert.doesNotMatch(html, /fleet:app-recovery<\/span>:/)
 })
+
+test('chat transport mark and file provenance render from separate metadata fields', () => {
+  const html = renderChatLine({
+    from: 'fleet:writer',
+    recipients: ['fleet:skip'],
+    text: 'from a file through a terminal',
+    timestamp: '2026-08-14T02:31:46.688Z',
+    metadata: {
+      via: 'terminal',
+      source: { file: '/tmp/report.md', section: 'Result', url: '/uploads/report.md' },
+    },
+  }, ctx)
+
+  assert.match(html, /terminal-source-mark/)
+  assert.match(html, /data-path="\/tmp\/report\.md"/)
+  assert.match(html, /data-url="\/uploads\/report\.md"/)
+  assert.match(html, /src-chip-section">§Result/)
+})

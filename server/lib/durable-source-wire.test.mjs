@@ -242,6 +242,79 @@ test('new source binding is accepted on the existing daemon connection', { timeo
   }
 })
 
+test('two independent daemon writers interleave against one accepted source revision', { timeout: 180_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-source-two-writer-wire-'))
+  const projectsDir = join(root, 'projects')
+  const fleetDb = join(root, 'fleet.db')
+  const bindingRegistry = join(root, 'source-bindings.json')
+  const project = 'paper-two-writer-wire'
+  const port = await unusedPort()
+  let server
+  let firstWs
+  let secondWs
+  try {
+    await initProjectStore(projectsDir)
+    createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(project, { pages: 1, buildStatus: 'success' })
+    mkdirSync(join(projectsDir, project, 'output'), { recursive: true })
+    writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
+    const lifecycle = await sourceLifecycleStore(project, { context: { referencedRoots: ['main.tex'] } })
+    const base = lifecycle.bootstrap({
+      expectedRevision: null,
+      files: [{ path: 'main.tex', content: 'base\n' }],
+      sourceManifest: ['main.tex'],
+    })
+    assert.equal(base.ok, true)
+    await closeProjectStore()
+
+    server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+    firstWs = await openDaemon(port, {
+      machineId: 'writer-one-machine',
+      sourceBindings: [{ bindingId: 'writer-one-binding', project }],
+    })
+    secondWs = await openDaemon(port, {
+      machineId: 'writer-two-machine',
+      sourceBindings: [{ bindingId: 'writer-two-binding', project }],
+    })
+
+    const changes = [
+      {
+        type: 'source-change', project, requestId: 'R-writer-one',
+        expectedRevision: base.authority.currentRevision, sourceBindingId: 'writer-one-binding',
+        files: [{ path: 'main.tex', content: 'writer one\n' }], deletedFiles: [], sourceManifest: ['main.tex'],
+        editedBy: 'fleet:writer-one', __daemon_outbox_id: 'D-writer-one',
+      },
+      {
+        type: 'source-change', project, requestId: 'R-writer-two',
+        expectedRevision: base.authority.currentRevision, sourceBindingId: 'writer-two-binding',
+        files: [{ path: 'main.tex', content: 'writer two\n' }], deletedFiles: [], sourceManifest: ['main.tex'],
+        editedBy: 'fleet:writer-two', __daemon_outbox_id: 'D-writer-two',
+      },
+    ]
+    const deliveries = await Promise.all([
+      deliver(firstWs, changes[0]),
+      deliver(secondWs, changes[1]),
+    ])
+    const results = deliveries.map(messages => messages.find(message => message.type === 'source-change-result'))
+    const acceptedIndex = results.findIndex(result => result?.ok === true)
+    const rejectedIndex = results.findIndex(result => result?.status === 'stale-base')
+    assert.notEqual(acceptedIndex, -1, JSON.stringify(deliveries))
+    assert.notEqual(rejectedIndex, -1, JSON.stringify(deliveries))
+    assert.notEqual(acceptedIndex, rejectedIndex)
+    assert.equal(results[rejectedIndex].httpStatus, 409)
+    assert.equal(
+      readFileSync(join(projectsDir, project, 'source', 'main.tex'), 'utf8'),
+      changes[acceptedIndex].files[0].content,
+    )
+  } finally {
+    firstWs?.terminate()
+    secondWs?.terminate()
+    await stopServer(server)
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('offline binding remains required and completes when its daemon reconnects', { timeout: 180_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-source-offline-wire-'))
   const projectsDir = join(root, 'projects')
