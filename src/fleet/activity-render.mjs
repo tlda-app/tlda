@@ -758,7 +758,6 @@ export function renderCodeCard(toolName, input, ctx) {
   if (n === 'bash' && input.command) {
     const cmd = input.command
     const lines = cmd.split('\n')
-    if (lines.length < 3 && cmd.length < 120) return ''
     const escaped = esc(cmd)
     const highlighted = highlightSyntax(escaped, 'bash')
     const h = ctx?.foldHeights?.bash ?? 10
@@ -769,7 +768,7 @@ export function renderCodeCard(toolName, input, ctx) {
       ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('pre');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
       : ''
     return `<div class="code-block-wrap code-card">
-      <div class="code-block-header">${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
+      <div class="code-block-header"><span class="code-block-lang">bash</span>${toggleHtml}<span class="code-block-copy" title="Copy">⎘</span></div>
       ${copySourceTemplate(cmd)}<pre class="${foldClass}"${foldStyle}><code data-lang="bash" data-highlighted="1">${highlighted}</code></pre>
     </div>`
   }

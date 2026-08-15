@@ -66,6 +66,13 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
   // tool calls.
   const pendingPrettyPrint = new Map()
   const pendingTools = new Map()
+  const pendingOutputParents = new Map()
+
+  function pendingOperationLabel(pending) {
+    const input = pending?.input || {}
+    const subject = input.command || input.code || input.description || pending?.arg || ''
+    return subject ? `${pending.tool}: ${subject}` : (pending?.tool || '')
+  }
 
   function extractActivityEvents(events) {
     const result = []
@@ -97,7 +104,18 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           const name = block.name || ''
           if (ACTIVITY_NOISE.has(name)) continue
           const humanName = name.replace(/^mcp__/, '').replace(/__/g, '/')
-          const input = block.input || {}
+          let input = block.input || {}
+          const outputHandle = input.cell != null ? `cell:${input.cell}` : ''
+          if (outputHandle && input.action === 'wait for output') {
+            const waitingOn = pendingOutputParents.get(outputHandle)
+            if (waitingOn) {
+              input = {
+                waitingOn,
+                action: input.action,
+                _semanticOutputHandle: outputHandle,
+              }
+            }
+          }
           const arg = input.file_path || input.path ||
             input.command || input.cat || input.pattern || input.message ||
             input.query || input.description || input.reason ||
@@ -138,6 +156,16 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
       for (const id of matchingIds) {
         const pending = pendingTools.get(id)
         pendingTools.delete(id)
+        const resultText = toolResults.get(resultId) || ''
+        const yieldedCell = resultText.match(/Script running with cell ID\s+([^\s]+)/)?.[1]
+        if (yieldedCell) {
+          const label = pendingOperationLabel(pending)
+          if (label) pendingOutputParents.set(`cell:${yieldedCell}`, label)
+        } else if (pending.input?._semanticOutputHandle) {
+          pendingOutputParents.delete(pending.input._semanticOutputHandle)
+        } else if (pending.input?.cell != null) {
+          pendingOutputParents.delete(`cell:${pending.input.cell}`)
+        }
         result.push({
           tool: pending.tool,
           arg: pending.arg,

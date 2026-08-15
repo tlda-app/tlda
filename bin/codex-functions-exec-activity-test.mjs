@@ -114,9 +114,25 @@ function renderedActivity(record) {
     text(r.output);
   `))
   assert.match(html, /Bash/)
-  assert.match(html, /command: sed -n/)
-  assert.match(html, /workdir: \/tmp/)
+  assert.match(html, /code-block-lang">bash/)
+  assert.match(html, /<pre[^>]*><code[^>]*>sed -n/)
+  assert.match(html, /code-block-copy-source">sed -n/)
   assert.doesNotMatch(html, /yield_time_ms|max_output_tokens|tools\.exec_command/)
+
+  const parsed = parseCodexRecord(customExec(`
+    const r = await tools.exec_command({cmd:"git status --short",workdir:"/tmp"});
+    text(r.output);
+  `))
+  const activity = createActivityExtractor().extractActivityEvents([parsed])[0]
+  const groupedHtml = renderActivityGroup([activity, activity].map(event => ({
+    from: 'fleet:codex', timestamp: event.ts, _toolName: event.tool,
+    _toolArg: event.arg, _toolInput: event.input,
+  })), {
+    agentLabel: () => 'codex', getNickClass: () => '', getAgents: () => [],
+    highlightSyntax: value => value, langFromFilePath: () => '',
+  })
+  assert.match(groupedHtml, /tool-count">×2/)
+  assert.match(groupedHtml, /code-block-copy-source">git status --short/)
 }
 
 {
@@ -155,6 +171,43 @@ function renderedActivity(record) {
   assert.match(html, /CodeOutput/)
   assert.match(html, /cell: 46, action: wait for output/)
   assert.doesNotMatch(html, /yield_time_ms|max_tokens|tools\.wait/)
+}
+
+{
+  const extractor = createActivityExtractor()
+  const parentCall = parseCodexRecord(customExec(`
+    const r = await tools.exec_command({cmd:"tlda deploy testing --sha abc123",workdir:"/tmp",yield_time_ms:10000});
+    text(r.output);
+  `, 'call_parent'))
+  extractor.extractActivityEvents([parentCall])
+  extractor.extractActivityEvents([parseCodexRecord({
+    timestamp: ts,
+    type: 'response_item',
+    payload: {
+      type: 'custom_tool_call_output',
+      call_id: 'call_parent',
+      output: 'Script running with cell ID 41\nWall time 11.0 seconds\nOutput:\n',
+    },
+  })])
+  const waiting = parseCodexRecord(customExec(`
+    const r = await tools.wait({cell_id:"41",yield_time_ms:30000,max_tokens:10000});
+    text(r.output);
+  `, 'call_wait'))
+  const activity = extractor.extractActivityEvents([waiting])[0]
+  assert.deepEqual(activity.input, {
+    waitingOn: 'Bash: tlda deploy testing --sha abc123',
+    action: 'wait for output',
+    _semanticOutputHandle: 'cell:41',
+  })
+  const html = renderActivityGroup([{
+    from: 'fleet:codex', timestamp: activity.ts, _toolName: activity.tool,
+    _toolArg: activity.arg, _toolInput: activity.input,
+  }], {
+    agentLabel: () => 'codex', getNickClass: () => '', getAgents: () => [],
+    highlightSyntax: value => value, langFromFilePath: () => '',
+  })
+  assert.match(html, /waitingOn: Bash: tlda deploy testing --sha abc123, action: wait for output/)
+  assert.doesNotMatch(html, /cell: 41|semanticOutputHandle/)
 }
 
 {
