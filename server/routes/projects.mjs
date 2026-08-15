@@ -45,7 +45,7 @@ import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex
 import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '../lib/highlight-feedback.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
-import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
+import { markdownColumnFileForSource, listMarkdownProjectDocuments, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { clipRecordingData, readRecordingPublication, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
 import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
@@ -659,7 +659,15 @@ router.patch('/:name/members', requireRw, async (req, res) => {
 router.get('/:name/files', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
-  res.json({ files: await listSourceFiles(req.params.name) })
+  const files = await listSourceFiles(req.params.name)
+  const documents = project.format === 'markdown'
+    ? (await listMarkdownProjectDocuments(req.params.name, { project })).map(document => ({
+        sourceFile: document.sourceFile,
+        outputFile: document.outputFile,
+        title: document.title,
+      }))
+    : []
+  res.json({ files, documents })
 })
 
 router.post('/:name/source-room/files', requireRw, async (req, res) => {

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import { readProject, sourceDir as getSourceDir, projectPartsRoot } from './project-store.mjs'
 import { readProjectPartsManifestAsync } from './project-parts-scanner.mjs'
+import { scanMarkdownDependencyClosureAsync } from '../../shared/markdown-deps.mjs'
 
 const DEFAULT_COLUMN_WIDTH = 800
 const DEFAULT_COLUMN_HEIGHT = 1200
@@ -26,6 +27,28 @@ export async function listDocumentColumns(name, { project = null, srcDir = getSo
   if (!project) return []
   if (project.format === 'markdown') return listMarkdownDocumentColumns(name, { project, srcDir })
   return []
+}
+
+// Documents available to select from Projects. This is deliberately separate
+// from listMarkdownDocumentColumns: reachability makes a file selectable as a
+// document, never a page or chapter of the document that links to it.
+export async function listMarkdownProjectDocuments(name, { project = null, srcDir = getSourceDir(name) } = {}) {
+  project ||= await readProject(name)
+  if (!project || project.format !== 'markdown') return []
+  const configuredFile = String(project.mainFile || 'index.md').replace(/\\/g, '/').replace(/^\.?\//, '')
+  const closure = await scanMarkdownDependencyClosureAsync(configuredFile, srcDir)
+  const documents = []
+  for (const sourceFile of closure.markdown) {
+    await addMarkdownColumn(documents, {
+      sourceFile,
+      outputFile: markdownColumnFileForSource(sourceFile, { defaultColumn: sourceFile === configuredFile }),
+      srcDir,
+    })
+  }
+  for (const part of await listProjectPartColumns(name, { srcDir })) {
+    if (!documents.some(existing => existing.sourceFile === part.sourceFile)) documents.push(part)
+  }
+  return documents
 }
 
 // Markdown-part columns for a project whose own main document is NOT

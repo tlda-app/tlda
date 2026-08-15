@@ -25,6 +25,7 @@ import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { readingPositionStore } from '../readingPositionStore'
 import { isProjectMapShape } from './project-map-shape-predicate'
 
+type ProjectDocument = { sourceFile: string; outputFile: string; title: string }
 export function ProjectTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
   const project = useContext(ProjectContext)
@@ -35,9 +36,30 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   )
   const zoom = useValue('project-tab-zoom', () => editor.getZoomLevel(), [editor])
   const ui = useSyncExternalStore(subscribeSpatialWorldUi, getSpatialWorldUi)
+  const [projectDocuments, setProjectDocuments] = useState<ProjectDocument[]>([])
+  useEffect(() => {
+    if (!project?.projectName) return
+    let active = true
+    fetch(`/api/projects/${encodeURIComponent(project.projectName)}/files`)
+      .then(response => response.ok ? response.json() : null)
+      .then(payload => {
+        if (active) setProjectDocuments(Array.isArray(payload?.documents) ? payload.documents : [])
+      })
+      .catch(() => { if (active) setProjectDocuments([]) })
+    return () => { active = false }
+  }, [project?.projectName])
+  const placedOutputFiles = new Set(nodes.map(node => node.documentRef.path).filter(Boolean))
+  // The main document is represented by the primary spatial node; it has no
+  // materializedFile meta, so exclude its canonical output explicitly.
+  const unplacedDocuments = projectDocuments.filter(document =>
+    document.outputFile !== 'index.html' && !placedOutputFiles.has(document.outputFile)
+  )
   const normalizedQuery = query.trim().toLowerCase()
   const visibleNodes = nodes.filter(node =>
     !normalizedQuery || node.title.toLowerCase().includes(normalizedQuery)
+  )
+  const visibleUnplacedDocuments = unplacedDocuments.filter(document =>
+    !normalizedQuery || document.title.toLowerCase().includes(normalizedQuery)
   )
 
   const toggleMap = useCallback(() => {
@@ -75,6 +97,30 @@ export function ProjectTab({ query = '' }: { query?: string }) {
     )
   }, [editor, nodes, project?.projectName])
 
+  const activateUnplaced = useCallback(async (document: ProjectDocument) => {
+    if (!project?.projectName) return
+    const source = currentSpatialDocument(editor, nodes)
+    if (!source) return
+    const response = await fetch(`/api/projects/${encodeURIComponent(project.projectName)}/source/${encodeURIComponent(document.sourceFile)}`)
+    if (!response.ok) return
+    const markdown = await response.text()
+    const { createTemporaryMarkdownColumn } = await import('../shapes/FleetPillShape')
+    const result = await createTemporaryMarkdownColumn(
+      editor,
+      editor.getViewportPageBounds().center,
+      document.title,
+      markdown,
+      { materializedDoc: project.projectName, materializedFile: document.outputFile },
+      `/docs/${encodeURIComponent(project.projectName)}/${document.outputFile}`,
+    )
+    const target = spatialWorldDocuments(editor, project.projectName, project.title)
+      .find(node => node.id === result.shapeId)
+    if (!target) return
+    recordPlaceDeparture(editor)
+    suppressFleetHudCameraTracking()
+    activateSpatialDocument(editor, source, target, editor.getCamera())
+  }, [editor, nodes, project?.projectName, project?.title])
+
   return (
     <div className="doc-panel-content project-tab">
       <ProjectMapViewport
@@ -83,7 +129,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
         returning={zoom <= SPATIAL_MAP_ZOOM && !!getSavedSpatialMapView(editor)}
         onNavigate={toggleMap}
       />
-      {visibleNodes.length === 0 && <div className="panel-empty">No documents found</div>}
+      {visibleNodes.length === 0 && visibleUnplacedDocuments.length === 0 && <div className="panel-empty">No documents found</div>}
       {visibleNodes.map(node => {
         const active = ui.hoveredNodeId === node.id || ui.selectedNodeId === node.id
         return (
@@ -101,6 +147,16 @@ export function ProjectTab({ query = '' }: { query?: string }) {
           </button>
         )
       })}
+      {visibleUnplacedDocuments.map(document => (
+        <button
+          type="button"
+          key={document.outputFile}
+          className="project-document-row"
+          onClick={() => void activateUnplaced(document)}
+        >
+          {document.title}
+        </button>
+      ))}
     </div>
   )
 }
