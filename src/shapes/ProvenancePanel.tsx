@@ -1,9 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useEditor, useValue, type TLShapeId } from 'tldraw'
-import { fetchProofInfo } from '../docInfoCache'
-import { invalidationFromRanges } from '../invalidationGraph'
 import { useProvenanceMode } from '../useProvenanceMode'
-import { CascadeGraph, type CascadeGraphNode } from './CascadeGraph'
 import {
   ProvenanceDetail,
   STATUS_COLORS,
@@ -37,22 +34,6 @@ function segmentHasProvenance(seg: RibbonSegment): boolean {
   return !!(seg.checkedByName || seg.checkedAt || seg.method || seg.reason || seg.taskId)
 }
 
-function cascadeNodes(proofInfo: any, seg: RibbonSegment): CascadeGraphNode[] {
-  const lo = Math.min(seg.startLine, seg.endLine)
-  const hi = Math.max(seg.startLine, seg.endLine)
-  const { directlyStale, cascadeStale } = invalidationFromRanges(proofInfo, [{ lo, hi }])
-  const direct: CascadeGraphNode[] = directlyStale
-    .map((n) => ({ id: n.id, title: n.title || n.id, stale: 'direct' }))
-  const cascade: CascadeGraphNode[] = cascadeStale.map((n) => ({
-    id: n.id,
-    title: n.title || n.id,
-    stale: 'cascade',
-    depth: n.depth,
-    via: n.via,
-  }))
-  return direct.concat(cascade)
-}
-
 function StatusBadge({ status }: { status: RibbonSegment['status'] }) {
   return (
     <span className="provenance-status-badge" style={{ background: STATUS_COLORS[status] }}>
@@ -61,30 +42,9 @@ function StatusBadge({ status }: { status: RibbonSegment['status'] }) {
   )
 }
 
-function ProvenanceCardBody({ projectName, active, graphWidth }: {
-  projectName: string
+function ProvenanceCardBody({ active }: {
   active: ActiveSpan
-  graphWidth: number
 }) {
-  const [proofInfo, setProofInfo] = useState<any>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    if (!active.seg.stale) {
-      setProofInfo(null)
-      return
-    }
-    fetchProofInfo(projectName).then((info) => {
-      if (!cancelled) setProofInfo(info)
-    })
-    return () => { cancelled = true }
-  }, [projectName, active.index, active.seg.stale])
-
-  const nodes = useMemo(
-    () => active.seg.stale && proofInfo ? cascadeNodes(proofInfo, active.seg) : [],
-    [active.seg, proofInfo],
-  )
-
   return (
     <>
       <div className="provenance-card-header">
@@ -97,19 +57,11 @@ function ProvenanceCardBody({ projectName, active, graphWidth }: {
       ) : (
         <div className="provenance-muted">no provenance recorded</div>
       )}
-      <div className="provenance-cascade">
-        <div className="provenance-cascade-title">Cascade</div>
-        {active.seg.stale && nodes.length > 0 ? (
-          <CascadeGraph nodes={nodes} width={graphWidth} onApprove={() => {}} />
-        ) : (
-          <div className="provenance-muted">fresh — no cascade</div>
-        )}
-      </div>
     </>
   )
 }
 
-export function ProvenancePanel({ projectName }: { projectName: string }) {
+export function ProvenancePanel() {
   const mode = useProvenanceMode()
   const editor = useEditor()
   const [lastActive, setLastActive] = useState<ActiveSpan | null>(null)
@@ -144,7 +96,7 @@ export function ProvenancePanel({ projectName }: { projectName: string }) {
       }}
     >
       {lastActive ? (
-        <ProvenanceCardBody projectName={projectName} active={lastActive} graphWidth={280} />
+        <ProvenanceCardBody active={lastActive} />
       ) : (
         <div className="provenance-muted">hover a ribbon span</div>
       )}

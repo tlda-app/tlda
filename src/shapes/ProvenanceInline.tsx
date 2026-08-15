@@ -1,9 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { stopEventPropagation, useEditor, useValue, type TLShapeId } from 'tldraw'
-import { fetchProofInfo } from '../docInfoCache'
-import { invalidationFromRanges } from '../invalidationGraph'
 import { useProvenanceMode } from '../useProvenanceMode'
-import { CascadeGraph, type CascadeGraphNode } from './CascadeGraph'
 import {
   ProvenanceDetail,
   STATUS_COLORS,
@@ -41,22 +38,6 @@ function segmentHasProvenance(seg: RibbonSegment): boolean {
   return !!(seg.checkedByName || seg.checkedAt || seg.method || seg.reason || seg.taskId)
 }
 
-function cascadeNodes(proofInfo: any, seg: RibbonSegment): CascadeGraphNode[] {
-  const lo = Math.min(seg.startLine, seg.endLine)
-  const hi = Math.max(seg.startLine, seg.endLine)
-  const { directlyStale, cascadeStale } = invalidationFromRanges(proofInfo, [{ lo, hi }])
-  const direct: CascadeGraphNode[] = directlyStale
-    .map((n) => ({ id: n.id, title: n.title || n.id, stale: 'direct' }))
-  const cascade: CascadeGraphNode[] = cascadeStale.map((n) => ({
-    id: n.id,
-    title: n.title || n.id,
-    stale: 'cascade',
-    depth: n.depth,
-    via: n.via,
-  }))
-  return direct.concat(cascade)
-}
-
 function StatusBadge({ status }: { status: RibbonSegment['status'] }) {
   return (
     <span className="provenance-status-badge" style={{ background: STATUS_COLORS[status] }}>
@@ -65,26 +46,7 @@ function StatusBadge({ status }: { status: RibbonSegment['status'] }) {
   )
 }
 
-function InlineBody({ projectName, pinned }: { projectName: string; pinned: PinnedSpan }) {
-  const [proofInfo, setProofInfo] = useState<any>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    if (!pinned.seg.stale) {
-      setProofInfo(null)
-      return
-    }
-    fetchProofInfo(projectName).then((info) => {
-      if (!cancelled) setProofInfo(info)
-    })
-    return () => { cancelled = true }
-  }, [projectName, pinned.index, pinned.seg.stale])
-
-  const nodes = useMemo(
-    () => pinned.seg.stale && proofInfo ? cascadeNodes(proofInfo, pinned.seg) : [],
-    [pinned.seg, proofInfo],
-  )
-
+function InlineBody({ pinned }: { pinned: PinnedSpan }) {
   return (
     <>
       <div className="provenance-card-header">
@@ -97,19 +59,11 @@ function InlineBody({ projectName, pinned }: { projectName: string; pinned: Pinn
       ) : (
         <div className="provenance-muted">no provenance recorded</div>
       )}
-      <div className="provenance-cascade">
-        <div className="provenance-cascade-title">Cascade</div>
-        {pinned.seg.stale && nodes.length > 0 ? (
-          <CascadeGraph nodes={nodes} width={240} onApprove={() => {}} />
-        ) : (
-          <div className="provenance-muted">fresh — no cascade</div>
-        )}
-      </div>
     </>
   )
 }
 
-export function ProvenanceInline({ projectName }: { projectName: string }) {
+export function ProvenanceInline() {
   const mode = useProvenanceMode()
   const editor = useEditor()
   const [pinned, setPinned] = useState<PinnedSpan | null>(null)
@@ -189,7 +143,7 @@ export function ProvenanceInline({ projectName }: { projectName: string }) {
         >
           <div style={{ display: 'flex', alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <InlineBody projectName={projectName} pinned={pinned} />
+              <InlineBody pinned={pinned} />
             </div>
             <button
               type="button"

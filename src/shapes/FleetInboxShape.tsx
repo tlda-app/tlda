@@ -37,7 +37,6 @@ import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
 import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
-import { CascadeGraph } from './CascadeGraph'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -217,7 +216,7 @@ type DetailItem =
 
 type PaperDetailItem = Exclude<DetailItem, { kind: 'fleet-task' }>
 
-type SortMode = 'time' | 'type' | 'graph'
+type SortMode = 'time' | 'type'
 
 interface Thread {
   partnerId: string
@@ -428,7 +427,10 @@ function FleetInboxInner({ shape }: { shape: any }) {
   // Sort mode — time (one interleaved stream, newest first) or type (grouped
   // sections). Persisted so it sticks across reloads. Default: time.
   const [sortMode, setSortMode] = useState<SortMode>(() => {
-    try { return (localStorage.getItem('fleet-inbox-sort') as SortMode) || 'time' } catch { return 'time' }
+    try {
+      const stored = localStorage.getItem('fleet-inbox-sort')
+      return stored === 'type' ? 'type' : 'time'
+    } catch { return 'time' }
   })
   const setSort = useCallback((m: SortMode) => {
     setSortMode(m)
@@ -802,11 +804,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
                   className={`fleet-inbox-sort-btn${sortMode === 'type' ? ' active' : ''}`}
                   onPointerUp={(e) => { stopEventPropagation(e); setSort('type') }}
                 >type</button>
-                <button
-                  className={`fleet-inbox-sort-btn${sortMode === 'graph' ? ' active' : ''}`}
-                  title="Cascade graph — the invalidated proof nodes and their dependency edges"
-                  onPointerUp={(e) => { stopEventPropagation(e); setSort('graph') }}
-                >graph</button>
               </span>
               {taskCount > 0 && (
                 <span className="fleet-inbox-task-total" title="Revalidation tasks">{taskCount}</span>
@@ -1063,20 +1060,9 @@ function InboxList(props: InboxListProps) {
 
   return (
     <div ref={listRef} className="fleet-inbox-list">
-      {empty && sortMode !== 'graph' && <div className="fleet-inbox-empty">no messages yet</div>}
+      {empty && <div className="fleet-inbox-empty">no messages yet</div>}
 
-      {sortMode === 'graph' ? (
-        // The cascade rendered as an actual dependency graph — directly-stale
-        // roots up top, the nodes that rest on them below, edges following the
-        // cascade. Approve a root to re-vet it and clear everything beneath it.
-        <div className="fleet-inbox-graph-wrap">
-          <CascadeGraph
-            nodes={[...directNodes, ...cascadeNodes]}
-            width={336}
-            onApprove={(id) => { const t = directNodes.find((d) => d.id === id); if (t) onApprove(t) }}
-          />
-        </div>
-      ) : sortMode === 'time' ? (
+      {sortMode === 'time' ? (
         // Interleaved stream — every kind, newest first.
         timeItems.map(renderItem)
       ) : (

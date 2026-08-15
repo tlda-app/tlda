@@ -757,7 +757,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     () => {
       const chrome = isPresentation
         ? <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
-        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel projectName={projectName} /><ProvenanceInline projectName={projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
+        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
       return {
         PageMenu: null,
         SharePanel: null,

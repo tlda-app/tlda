@@ -44,15 +44,13 @@
 
 .provenance-card-lines,
 .provenance-card-stale,
-.provenance-muted,
-.provenance-cascade-title {
+.provenance-muted {
   color: rgba(75, 85, 99, 0.78);
 }
 
 .tl-theme__dark .provenance-card-lines,
 .tl-theme__dark .provenance-card-stale,
-.tl-theme__dark .provenance-muted,
-.tl-theme__dark .provenance-cascade-title {
+.tl-theme__dark .provenance-muted {
   color: rgba(255, 255, 255, 0.56);
 }
 
@@ -72,23 +70,6 @@
   line-height: 14px;
 }
 
-.provenance-cascade {
-  margin-top: 8px;
-  padding-top: 7px;
-  border-top: 1px solid rgba(90, 96, 110, 0.18);
-}
-
-.tl-theme__dark .provenance-cascade {
-  border-top-color: rgba(255, 255, 255, 0.12);
-}
-
-.provenance-cascade-title {
-  font-size: 10px;
-  font-weight: 600;
-  margin-bottom: 5px;
-  text-transform: uppercase;
-}
-
 .provenance-close {
   appearance: none;
   border: 0;
@@ -104,11 +85,6 @@
 
 .provenance-close:hover {
   opacity: 0.9;
-}
-
-.provenance-panel .cascade-graph-node-approve,
-.provenance-inline-card .cascade-graph-node-approve {
-  display: none !important;
 }
 
 .provenance-status-badge {
