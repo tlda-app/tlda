@@ -10,6 +10,16 @@ export function finiteMessageMs(value) {
   return Number.isFinite(n) ? n : null
 }
 
+export function configuredAgentPreambleRef(agent) {
+  const configured = agent?.metadata?.chatPreamble
+  const doc = typeof configured?.doc === 'string' ? configured.doc.trim() : ''
+  if (!doc) return null
+  const version = typeof configured.version === 'string' && configured.version.trim()
+    ? configured.version.trim()
+    : null
+  return { doc, version }
+}
+
 export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.now(), serverBroadcastQueuedAtMs = Date.now() } = {}) {
   const {
     tool,
@@ -24,6 +34,7 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
     correlationId,
     project,
     sourceFile,
+    preambleRef,
     daemon_received_at,
     daemon_received_at_ms,
     daemon_sent_at,
@@ -56,6 +67,7 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
       correlationId,
       project,
       sourceFile,
+      preambleRef,
       activityLatency,
     }),
     timestamp: ts || new Date().toISOString(),

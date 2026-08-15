@@ -28,6 +28,8 @@ import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRender
 // @ts-ignore — vanilla JS module
 import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
 // @ts-ignore — vanilla JS module
+import { activityPreambleDoc } from '../fleet/activity-preamble.mjs'
+// @ts-ignore — vanilla JS module
 import { renderActivityGroup, renderThreadRows, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
@@ -3206,7 +3208,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const needed = new Set<string>()
     chatMessages.forEach((m: any) => {
-      const d = m?.metadata?.preambleRef?.doc
+      const d = m._activity ? activityPreambleDoc(m) : m?.metadata?.preambleRef?.doc
       if (d && !(d in macrosByDoc)) needed.add(d)
     })
     if (needed.size === 0) return
@@ -3281,11 +3283,24 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
       const t0 = probe.isEnabled('chat') ? performance.now() : 0
       const a0: any = activityGroup[0]
+      const activityPreamble = activityPreambleDoc(a0)
+      const activityMacros = activityPreamble && activityPreamble in macrosByDoc
+        ? macrosByDoc[activityPreamble]
+        : preambleMacros
+      const activityCtx = activityMacros === preambleMacros
+        ? renderCtx
+        : {
+            ...renderCtx,
+            preambleMacros: activityMacros,
+            renderMarkdown: (input: string) => tldaRenderMarkdown(input, activityMacros),
+          }
       const aid = a0._dbId != null ? `db${a0._dbId}` : a0._tempId ? `tmp${a0._tempId}` : `${a0.from}:${a0.timestamp}`
       const key = `activity:${aid}`
       const groupSize = activityGroup.length
       const cacheKey = [
         contentRenderKey,
+        activityPreamble || '',
+        Object.entries(activityMacros).sort(),
         activityGroup.map((a: any) => a._dbId ?? a._tempId ?? `${a.from}:${a.timestamp}:${a.text || ''}`).join(','),
       ].join('::')
       let html = activityGroupCache.current.get(cacheKey)
@@ -3300,7 +3315,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             browserRenderQueuedAtMs,
           }
         }
-        html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`
+        html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, activityCtx)}</div>`
         activityGroupCache.current.set(cacheKey, html)
         capRenderCache(activityGroupCache.current, activityGroupCacheLimit)
       } else {
@@ -3339,7 +3354,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     for (let i = 0; i < chatMessages.length; i++) {
       const m = chatMessages[i]
       if (m._activity) {
-        if (activityGroup.length > 0 && activityGroup[0].from !== m.from) flushActivity()
+        if (activityGroup.length > 0 && (
+          activityGroup[0].from !== m.from ||
+          activityPreambleDoc(activityGroup[0]) !== activityPreambleDoc(m)
+        )) flushActivity()
         activityGroup.push(m)
         activityGroupHasVisible = true
       } else if (m.metadata?.type === 'build_result') {

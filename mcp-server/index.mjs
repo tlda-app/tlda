@@ -3629,8 +3629,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       process.stderr.write(`[mcp] set_preamble macro count fetch failed for ${doc}: ${e.message}\n`);
     }
     // Point this agent's preamble at the document. From now on this agent's chat
-    // math is linted with `doc`'s macros, and every message it sends carries
-    // preambleRef:{doc,version} so readers render it with `doc`'s preamble.
+    // math is linted with `doc`'s macros, and its messages and source-edit
+    // activities carry preambleRef:{doc,version} so readers render them with
+    // `doc`'s preamble.
     try {
       await setAgentPreambleDoc(doc, version, { persist: true });
     } catch (e) {
@@ -3638,7 +3639,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     const count = Object.keys(macros).length;
     const vnote = version ? ` (version "${version}" stored but not yet used for resolution)` : '';
-    return { content: [{ type: 'text', text: `Preamble set to document "${doc}"${vnote} — ${count} macro(s) available. Your chat math now renders and lints with ${doc}'s preamble; physics-package commands are always available too.` }] };
+    return { content: [{ type: 'text', text: `Preamble set to document "${doc}"${vnote} — ${count} macro(s) available. Your chat math and source-edit activity now render with ${doc}'s preamble; outgoing chat math is also linted with it. Physics-package commands are always available too.` }] };
   }
 
   // Dispatch to fleet tools

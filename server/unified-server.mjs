@@ -137,7 +137,7 @@ import {
 } from './lib/observability/telemetry-status.mjs'
 import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
-import { buildDaemonActivityRecord, shouldStoreDaemonActivity } from './lib/daemon-activity-ingest.mjs'
+import { buildDaemonActivityRecord, configuredAgentPreambleRef, shouldStoreDaemonActivity } from './lib/daemon-activity-ingest.mjs'
 import { appendAgentActionFromActivity } from './lib/edit-events.mjs'
 import { createEditActivityProjector } from './lib/edit-activity-projector.mjs'
 import {
@@ -9104,7 +9104,14 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!shouldStoreDaemonActivity(msg)) return
     try {
       const serverBroadcastQueuedAtMs = Date.now()
-      const activity = buildDaemonActivityRecord(msg, { serverReceivedAtMs, serverBroadcastQueuedAtMs })
+      let preambleRef = null
+      if (['Edit', 'Write', 'MultiEdit'].includes(tool)) {
+        preambleRef = configuredAgentPreambleRef(await fleetStore.getAgent(agent_id))
+      }
+      const activity = buildDaemonActivityRecord(
+        preambleRef ? { ...msg, preambleRef } : msg,
+        { serverReceivedAtMs, serverBroadcastQueuedAtMs },
+      )
       const storedActivity = await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
       if (['Edit', 'Write', 'MultiEdit'].includes(tool)) {
         appendAgentActionFromActivity({ ...activity, id: storedActivity?.id }, {

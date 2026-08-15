@@ -1594,7 +1594,7 @@ export function getFleetTools() {
           status: { type: 'string', enum: INBOX_STATUSES, description: 'Visible notification status.' },
           tag: { type: 'string', description: 'Optional short notification-status context.' },
           channel: { type: 'string', enum: DELIVERY_CHANNELS, description: 'Notification channel used by the MCP/harness layer; this is not proof a message was delivered.' },
-          project: { type: 'string', description: 'Document project whose macros should become this agent\'s chat preamble.' },
+          project: { type: 'string', description: 'Document project whose macros should render this agent\'s chat and source-edit activity.' },
           version: { type: 'string', description: 'Optional document shadow version.' },
         },
       },
