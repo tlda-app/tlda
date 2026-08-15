@@ -31,7 +31,7 @@ import {
   viewportFrameLayerId,
 } from './wm/editor-wm'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
-import { canvasClipWheelCamera, isCanvasClipWheelMessage } from './canvas-clip-wheel'
+import { canvasClipPanCamera, canvasClipWheelCamera, isCanvasClipWheelMessage } from './canvas-clip-wheel'
 import { createCanvasClipShapePredicate } from './canvas-clip-shape-predicate'
 import './CanvasClipPanel.css'
 
@@ -70,27 +70,6 @@ function dispatchMainCanvasWheel(mainEditor: Editor, e: WheelEvent) {
     metaKey: e.metaKey,
     accelKey: e.metaKey || e.ctrlKey,
   })
-}
-
-function clampClipCameraToBounds(
-  camera: { x: number; y: number; z: number },
-  bounds: ClipBounds | null,
-  panelWidth: number,
-  canvasHeight: number,
-) {
-  if (!bounds) return camera
-  const z = camera.z || 1
-  const visibleW = panelWidth / z
-  const visibleH = canvasHeight / z
-  const maxX = -bounds.x
-  const minX = -(bounds.x + Math.max(0, bounds.w - visibleW))
-  const maxY = -bounds.y
-  const minY = -(bounds.y + Math.max(0, bounds.h - visibleH))
-  return {
-    ...camera,
-    x: Math.min(maxX, Math.max(minX, camera.x)),
-    y: Math.min(maxY, Math.max(minY, camera.y)),
-  }
 }
 
 export function syncCanvasClipPanelViewportCamera(
@@ -162,6 +141,8 @@ export function CanvasClipPanel({
   const generatedViewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
   const viewportId = externalViewportId ?? generatedViewportId
   const readOnlyInteraction = readOnly && interactionMode === 'preview'
+  const readOnlyCameraInteraction = readOnly && (interactionMode === 'preview' || interactionMode === 'pinned')
+  const cameraOptions = mainEditor.getCameraOptions()
 
   useEffect(() => {
     const shouldRouteWheel = (fullViewport && lockCamera) || readOnlyInteraction
@@ -204,12 +185,11 @@ export function CanvasClipPanel({
         e.preventDefault()
         e.stopPropagation()
         e.stopImmediatePropagation()
-        const z = registered.camera.z || 1
-        const nextCamera = {
-          ...registered.camera,
-          x: registered.camera.x - e.deltaX / z,
-          y: registered.camera.y - e.deltaY / z,
-        }
+        const nextCamera = canvasClipWheelCamera(registered.camera, e.deltaX, e.deltaY, null, docview.clientWidth || 1, docview.clientHeight || 1, {
+          zoom: e.ctrlKey || e.metaKey,
+          unboundedPan: true,
+          cameraOptions,
+        })
         const nestedSurface = wmSurfaceRegistry.get(nestedViewportId)
         if (nestedSurface) nestedSurface.setCamera(nextCamera)
       }
@@ -217,7 +197,7 @@ export function CanvasClipPanel({
 
     panel.addEventListener('wheel', onWheelCapture, { capture: true, passive: false })
     return () => panel.removeEventListener('wheel', onWheelCapture, { capture: true })
-  }, [fullViewport, lockCamera, mainEditor, readOnlyInteraction])
+  }, [cameraOptions, fullViewport, lockCamera, mainEditor, readOnlyInteraction])
 
   useEffect(() => {
     if (!wmSurface) return
@@ -345,7 +325,7 @@ export function CanvasClipPanel({
   }, [bounds, panelWidth, maxHeightFraction])
 
   useEffect(() => {
-    if (!readOnlyInteraction || !bounds) return
+    if (!readOnlyCameraInteraction || !bounds) return
     const panel = panelRef.current
     if (!panel) return
     const active = new Map<number, { x: number; y: number }>()
@@ -359,10 +339,11 @@ export function CanvasClipPanel({
         y: points.reduce((sum, p) => sum + p.y, 0) / points.length,
       }
     }
-    const shouldHandle = (e: PointerEvent) =>
-      (e.pointerType === 'touch' || e.pointerType === 'pen') &&
-      e.target instanceof Element &&
-      !isEditableWheelTarget(e.target)
+    const shouldHandle = (e: PointerEvent) => {
+      if (!(e.target instanceof Element) || isEditableWheelTarget(e.target)) return false
+      if (e.pointerType === 'mouse') return e.button === 0
+      return e.pointerType === 'touch' || e.pointerType === 'pen'
+    }
 
     const onPointerDown = (e: PointerEvent) => {
       if (!shouldHandle(e)) return
@@ -388,12 +369,10 @@ export function CanvasClipPanel({
       lastCenter = nextCenter
       setInteractiveCamera(prev => {
         const base = prev ?? plannedCamera
-        const z = base.z || 1
-        return clampClipCameraToBounds({
-          ...base,
-          x: base.x + dx / z,
-          y: base.y + dy / z,
-        }, bounds, panelWidth, canvasHeight)
+        return canvasClipPanCamera(base, -dx, -dy, bounds, panelWidth, canvasHeight, {
+          unboundedPan: unboundedPanning,
+          cameraOptions,
+        })
       })
       e.preventDefault()
       e.stopPropagation()
@@ -420,10 +399,10 @@ export function CanvasClipPanel({
       panel.removeEventListener('pointerup', onPointerUp, { capture: true })
       panel.removeEventListener('pointercancel', onPointerUp, { capture: true })
     }
-  }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnlyInteraction])
+  }, [bounds, cameraOptions, canvasHeight, panelWidth, plannedCamera, readOnlyCameraInteraction, unboundedPanning])
 
   const handleReadOnlyWheelCapture = useCallback((e: WheelEvent) => {
-    if (!readOnlyInteraction || !bounds) return
+    if (!readOnlyCameraInteraction || !bounds) return
     e.preventDefault()
     e.stopPropagation()
     setInteractiveCamera(prev => {
@@ -431,16 +410,21 @@ export function CanvasClipPanel({
       return canvasClipWheelCamera(base, e.deltaX, e.deltaY, bounds, panelWidth, canvasHeight, {
         zoom: e.ctrlKey || e.metaKey,
         unboundedPan: unboundedPanning,
+        cameraOptions,
+        screenPoint: {
+          x: e.clientX - (panelRef.current?.getBoundingClientRect().left ?? 0),
+          y: e.clientY - (panelRef.current?.getBoundingClientRect().top ?? 0),
+        },
       })
     })
-  }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnlyInteraction, unboundedPanning])
+  }, [bounds, cameraOptions, canvasHeight, panelWidth, plannedCamera, readOnlyCameraInteraction, unboundedPanning])
 
   useEffect(() => {
     const panel = panelRef.current
-    if (!panel || !readOnlyInteraction || !bounds) return
+    if (!panel || !readOnlyCameraInteraction || !bounds) return
     panel.addEventListener('wheel', handleReadOnlyWheelCapture, { capture: true, passive: false })
     return () => panel.removeEventListener('wheel', handleReadOnlyWheelCapture, { capture: true })
-  }, [bounds, handleReadOnlyWheelCapture, readOnlyInteraction])
+  }, [bounds, handleReadOnlyWheelCapture, readOnlyCameraInteraction])
 
   const requestedShapeIdsKey = useMemo(
     () => (requestedShapeIds || []).join('\0'),
@@ -460,12 +444,13 @@ export function CanvasClipPanel({
         return canvasClipWheelCamera(base, deltaX, deltaY, bounds, panelWidth, canvasHeight, {
           zoom: !!e.data.ctrlKey || !!e.data.metaKey,
           unboundedPan: unboundedPanning,
+          cameraOptions,
         })
       })
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnly, requestedShapeIdsKey, unboundedPanning, viewportId])
+  }, [bounds, cameraOptions, canvasHeight, panelWidth, plannedCamera, readOnly, requestedShapeIdsKey, unboundedPanning, viewportId])
 
   useEffect(() => {
     if (!readOnly) return

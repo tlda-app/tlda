@@ -1,5 +1,13 @@
 import type { ClipBounds } from './CanvasClipPanel'
 
+export type CanvasClipCamera = { x: number; y: number; z: number }
+
+type CanvasClipCameraOptions = {
+  panSpeed?: number
+  zoomSpeed?: number
+  zoomSteps?: number[]
+}
+
 export function isCanvasClipWheelMessage(
   data: unknown,
   viewportId: string,
@@ -14,41 +22,65 @@ export function isCanvasClipWheelMessage(
 }
 
 export function canvasClipWheelCamera(
-  camera: { x: number; y: number; z: number },
+  camera: CanvasClipCamera,
   deltaX: number,
   deltaY: number,
   bounds: ClipBounds | null,
   panelWidth: number,
   canvasHeight: number,
-  options: { zoom?: boolean; unboundedPan?: boolean } = {},
+  options: {
+    zoom?: boolean
+    unboundedPan?: boolean
+    cameraOptions?: CanvasClipCameraOptions
+    screenPoint?: { x: number; y: number }
+  } = {},
 ) {
   const z = camera.z || 1
+  const panSpeed = options.cameraOptions?.panSpeed ?? 1
+  const zoomSpeed = options.cameraOptions?.zoomSpeed ?? 1
   if (options.zoom) {
-    const nextZ = Math.max(0.05, Math.min(8, z * Math.exp(-deltaY * 0.002)))
-    const visibleW = panelWidth / z
-    const visibleH = canvasHeight / z
-    const centerX = -camera.x + visibleW / 2
-    const centerY = -camera.y + visibleH / 2
-    const nextVisibleW = panelWidth / nextZ
-    const nextVisibleH = canvasHeight / nextZ
+    const zoomSteps = options.cameraOptions?.zoomSteps
+    const minZoom = zoomSteps?.[0] ?? 0.05
+    const maxZoom = zoomSteps?.[zoomSteps.length - 1] ?? 8
+    const cappedDelta = Math.abs(deltaY) > 10 ? 10 * Math.sign(deltaY) : deltaY
+    const nextZ = Math.max(minZoom, Math.min(maxZoom, z - (cappedDelta / 100) * zoomSpeed * z))
+    const screenPoint = options.screenPoint ?? { x: panelWidth / 2, y: canvasHeight / 2 }
+    const pagePoint = {
+      x: screenPoint.x / z - camera.x,
+      y: screenPoint.y / z - camera.y,
+    }
     const next = {
       ...camera,
       z: nextZ,
-      x: -(centerX - nextVisibleW / 2) - deltaX / nextZ,
-      y: -(centerY - nextVisibleH / 2),
+      x: screenPoint.x / nextZ - pagePoint.x - (deltaX * panSpeed) / nextZ,
+      y: screenPoint.y / nextZ - pagePoint.y,
     }
     return clampClipCamera(next, bounds, panelWidth, canvasHeight)
   }
+  return canvasClipPanCamera(camera, deltaX, deltaY, bounds, panelWidth, canvasHeight, options)
+}
+
+export function canvasClipPanCamera(
+  camera: CanvasClipCamera,
+  deltaX: number,
+  deltaY: number,
+  bounds: ClipBounds | null,
+  panelWidth: number,
+  canvasHeight: number,
+  options: { unboundedPan?: boolean; cameraOptions?: CanvasClipCameraOptions } = {},
+) {
+  const z = camera.z || 1
+  const panSpeed = options.cameraOptions?.panSpeed ?? 1
   const next = {
     ...camera,
-    x: camera.x - deltaX / z,
-    y: camera.y - deltaY / z,
+    x: camera.x - (deltaX * panSpeed) / z,
+    y: camera.y - (deltaY * panSpeed) / z,
   }
   return options.unboundedPan ? next : clampClipCamera(next, bounds, panelWidth, canvasHeight)
 }
 
 function clampClipCamera(
-  camera: { x: number; y: number; z: number },
+  camera: CanvasClipCamera,
   bounds: ClipBounds | null,
   panelWidth: number,
   canvasHeight: number,
