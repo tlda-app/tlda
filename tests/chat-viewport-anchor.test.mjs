@@ -3,9 +3,23 @@ import test from 'node:test'
 
 import {
   isReaderInputInFlight,
+  nextEarlierChatHistoryWindow,
   preserveChatViewportAcrossArrival,
+  shouldPrefetchEarlierChatHistory,
   shouldPreserveChatViewport,
 } from '../src/shapes/chatViewportAnchor.mjs'
+
+test('earlier history prefetch starts one rendered viewport before the top', () => {
+  assert.equal(shouldPrefetchEarlierChatHistory({ top: 601, viewportHeight: 600 }), false)
+  assert.equal(shouldPrefetchEarlierChatHistory({ top: 600, viewportHeight: 600 }), true)
+  assert.equal(shouldPrefetchEarlierChatHistory({ top: 0, viewportHeight: 600 }), true)
+})
+
+test('earlier history page guesses double up to the server paging limit', () => {
+  assert.equal(nextEarlierChatHistoryWindow(100, 100), 200)
+  assert.equal(nextEarlierChatHistoryWindow(200, 100), 400)
+  assert.equal(nextEarlierChatHistoryWindow(400, 100), 500)
+})
 
 function arrivalCase({ currentAnchorTop, scrollVelocity = 0, input, inFlight = {} }) {
   const before = {

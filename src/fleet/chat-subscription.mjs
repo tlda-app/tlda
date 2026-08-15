@@ -216,7 +216,9 @@ export function dispatchFilterEvents(data) {
 }
 
 /**
- * Ask the existing subscription for the page before `before`.
+ * Ask the existing subscription for the page before `before`. `window` may
+ * enlarge the existing subscription page for height-driven prefetch; the
+ * filter, boundary, subId and event intake remain the same paging contract.
  *
  * `before` is the boundary the CALLER derived from what it is holding — the
  * timestamp of its oldest row. It is a parameter rather than state here because
@@ -229,8 +231,11 @@ export function dispatchFilterEvents(data) {
  *
  * Pagination stays on the subscription wire: same filter, same subId, same
  * server predicate, same event intake. There is no direct history query.
+ * @param {string} correlationKey
+ * @param {string|null|undefined} before
+ * @param {number|null} [window]
  */
-export function requestEarlierChatHistory(correlationKey, before) {
+export function requestEarlierChatHistory(correlationKey, before, window = null) {
   if (!correlationKey || !_send || !before) return false
   const found = [..._subs.entries()].find(([, sub]) => sub.correlationKey === correlationKey)
   if (!found) return false
@@ -249,7 +254,7 @@ export function requestEarlierChatHistory(correlationKey, before) {
       filter: sub.filter,
       humanId: sub.humanId,
       humanName: sub.humanName,
-      window: sub.window,
+      window: Math.max(1, Number(window) || sub.window),
       before,
     },
     { subId, filterKey: sub.filterKey, site: 'older-history' },

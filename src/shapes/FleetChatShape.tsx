@@ -44,7 +44,7 @@ import { requestEarlierChatHistory, subscribeChat } from '../fleet/chat-subscrip
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
-import { anchoredTailTop, isReaderInputInFlight } from './chatViewportAnchor.mjs'
+import { anchoredTailTop, isReaderInputInFlight, nextEarlierChatHistoryWindow, shouldPrefetchEarlierChatHistory } from './chatViewportAnchor.mjs'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 // @ts-ignore — vanilla JS module
 import {
@@ -2303,7 +2303,8 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   style?: React.CSSProperties
   resetKey: string
   renderItem: (item: T) => React.ReactNode
-  onStartReached?: () => void
+  onStartReached?: (window: number) => boolean
+  initialHistoryWindow?: number
   onTailModeChange?: (followingTail: boolean, detail: Record<string, unknown>) => void
   onAtBottomChange?: (atBottom: boolean) => void
   setScroller?: (el: HTMLDivElement | null) => void
@@ -2316,6 +2317,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   resetKey,
   renderItem,
   onStartReached,
+  initialHistoryWindow = CHAT_FIRST_PAGE,
   onTailModeChange,
   onAtBottomChange,
   setScroller,
@@ -2329,6 +2331,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const tailModeRef = useRef(true)
   const lastWheelRef = useRef<{ at: number, deltaY: number, deltaMode: number } | null>(null)
   const didStartReachRef = useRef(false)
+  const earlierHistoryWindowRef = useRef(initialHistoryWindow)
   const previousResetKeyRef = useRef(resetKey)
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
@@ -2409,13 +2412,26 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     if (opts?.forceTail || atBottom) setTailMode(true, getDetail)
     else setTailMode(false, getDetail)
     onAtBottomChange?.(atBottom)
-    if (top > ANCHORED_ESTIMATED_ROW_HEIGHT * 2) didStartReachRef.current = false
-    if (top <= ANCHORED_ESTIMATED_ROW_HEIGHT && !didStartReachRef.current) {
+    // Keep one rendered viewport ahead of the reader. Event count cannot tell
+    // us how much scroll distance a page bought, so each prepended page is
+    // measured here; a short page triggers another request with a doubled
+    // window, while clearing the floor resets the next guess to the normal page.
+    const prefetching = shouldPrefetchEarlierChatHistory({ top, viewportHeight })
+    if (!prefetching) {
+      didStartReachRef.current = false
+      earlierHistoryWindowRef.current = initialHistoryWindow
+    }
+    if (prefetching && !didStartReachRef.current) {
       didStartReachRef.current = true
-      onStartReached?.()
+      if (onStartReached?.(earlierHistoryWindowRef.current)) {
+        earlierHistoryWindowRef.current = nextEarlierChatHistoryWindow(
+          earlierHistoryWindowRef.current,
+          initialHistoryWindow,
+        )
+      }
     }
     setGeometryVersion(version => version + 1)
-  }, [clampTop, onAtBottomChange, onStartReached, scrollSnapshot, setTailMode, tailTop])
+  }, [clampTop, initialHistoryWindow, onAtBottomChange, onStartReached, scrollSnapshot, setTailMode, tailTop, viewportHeight])
 
   const recenterSensor = useCallback((el: HTMLDivElement) => {
     sensorTopRef.current = ANCHORED_SENSOR_MID
@@ -2466,6 +2482,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const previousKeys = previousKeysRef.current
     previousResetKeyRef.current = resetKey
     previousKeysRef.current = itemKeys
+    if (previousKeys.length && itemKeys[0] !== previousKeys[0]) didStartReachRef.current = false
     if (wasReset || previousKeys.length === 0 || tailModeRef.current) {
       scrollToTail()
       return
@@ -6679,11 +6696,13 @@ function FleetChatInner({ shape }: { shape: any }) {
                 resetKey={filterKey}
                 style={{ flex: 1, minHeight: 0 }}
                 setScroller={setAnchoredChatScroller}
-                onStartReached={() => {
-                  if (!chatEventBufferKey) return
-                  requestEarlierChatHistory(
+                initialHistoryWindow={CHAT_FIRST_PAGE}
+                onStartReached={(window) => {
+                  if (!chatEventBufferKey) return false
+                  return requestEarlierChatHistory(
                     chatEventBufferKey,
                     oldestBufferedEventTimestamp(chatEventBufferKey),
+                    window,
                   )
                 }}
                 onAtBottomChange={setAtBottom}

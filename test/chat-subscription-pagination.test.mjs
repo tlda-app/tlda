@@ -29,7 +29,8 @@ test('older chat history uses the existing filter subscription and advances its 
     nextCursor: '2026-07-29T10:00:00.000Z',
   })
 
-  assert.equal(requestEarlierChatHistory('chat:shape:test'), true)
+  assert.equal(requestEarlierChatHistory('chat:shape:test'), false, 'needs the buffer-derived boundary')
+  assert.equal(requestEarlierChatHistory('chat:shape:test', '2026-07-29T10:00:00.000Z', 200), true)
   assert.deepEqual(sent[1], {
     type: 'subscribe-filter',
     payload: {
@@ -37,12 +38,10 @@ test('older chat history uses the existing filter subscription and advances its 
       filter: [[['dm', 'chief13']]],
       humanId: 'fleet:skip',
       humanName: 'skip',
-      window: 100,
+      window: 200,
       before: '2026-07-29T10:00:00.000Z',
     },
   })
-  assert.equal(requestEarlierChatHistory('chat:shape:test'), false, 'one older page at a time')
-
   dispatchFilterEvents({
     subId: first.subId,
     events: [{ id: 1 }],

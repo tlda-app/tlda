@@ -31,6 +31,19 @@ export function anchoredTailTop({ renderedLastRowTop, renderedLastRowHeight, vie
   return Math.max(0, contentBottom - viewportHeight)
 }
 
+export function shouldPrefetchEarlierChatHistory({ top, viewportHeight }) {
+  return Number.isFinite(top)
+    && Number.isFinite(viewportHeight)
+    && viewportHeight > 0
+    && top <= viewportHeight
+}
+
+export function nextEarlierChatHistoryWindow(current, initial, maximum = 500) {
+  const floor = Math.max(1, Number(initial) || 1)
+  const size = Math.max(floor, Number(current) || floor)
+  return Math.min(maximum, size * 2)
+}
+
 /**
  * True while the reader's own input owns the scroller, so a geometry correction
  * must be deferred rather than written.
