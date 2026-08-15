@@ -19,7 +19,6 @@ import {
   probeLiveSessionConfig,
 } from '../livekit/liveSession'
 import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-utils'
-import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { getPref, setPref, subscribePref } from '../preferences'
 import { navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, type TocLevel, type TocEntry } from './helpers'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
@@ -54,6 +53,7 @@ export function TocTab({ query = '' }: { query?: string }) {
   const [slideTitles, setSlideTitles] = useState<string[] | null>(null)
   const [collapsed, setCollapsed] = useState<Set<number> | null>(null)
   const [reloadCount, setReloadCount] = useState(0)
+  const [tocLoaded, setTocLoaded] = useState(false)
 
   // Hot session: most recently pushed book member (must be before any early returns)
   const book = useBook()
@@ -78,69 +78,71 @@ export function TocTab({ query = '' }: { query?: string }) {
 
   useEffect(() => {
     if (!doc) return
-    // Slides format: load TOC from page-info.json
-    if (doc?.format === 'slides') {
-      fetch(`/docs/${doc.projectName}/page-info.json`)
-        .then(r => r.ok ? r.json() : null)
-        .then((entries: Array<{ title?: string }> | null) => {
-          if (entries) setSlideTitles(entries.map(e => e.title || ''))
-        })
-        .catch(e => console.warn('[toc] slide titles fetch failed:', e.message))
-      return
-    }
-    const targets = doc.targets
-    if (targets && targets.length > 1) {
-      // Multi-target: load each target's lookup, merge with dividers
-      let pageOffset = 0
-      Promise.all(targets.map(async (t) => {
-        const resp = await fetch(`/docs/${doc.projectName}/${t.name}-lookup.json`).catch(() => null)
-        if (!resp?.ok) return { target: t, headings: [] as TocEntry[], pageOffset }
-        const data = await resp.json()
-        const h = parseHeadings(data.lines, data.meta, { skipAppendixDivider: true })
-        // Offset page numbers by pages from previous targets
-        for (const entry of h) {
-          entry.entry = { ...entry.entry, page: entry.entry.page + pageOffset }
+    let cancelled = false
+    setTocLoaded(false)
+    setHeadings([])
+    setHtmlToc(null)
+    setSlideTitles(null)
+    setCollapsed(null)
+    void (async () => {
+      try {
+        // Slides format: load TOC from page-info.json
+        if (doc.format === 'slides') {
+          const response = await fetch(`/docs/${doc.projectName}/page-info.json`)
+          const entries = response.ok ? await response.json() as Array<{ title?: string }> : null
+          if (!cancelled && entries) setSlideTitles(entries.map(entry => entry.title || ''))
+          return
         }
-        const result = { target: t, headings: h, pageOffset }
-        pageOffset += t.pages
-        return result
-      })).then(results => {
-        const merged: TocEntry[] = []
-        for (const r of results) {
-          if (r.headings.length > 0 || results.indexOf(r) > 0) {
-            // Add target divider (skip for first target if it has no special label)
-            const isFirst = results.indexOf(r) === 0
-            if (!isFirst) {
-              const firstEntry = r.headings[0]?.entry || { page: r.pageOffset + 1, x: 0, y: 0, content: '' }
-              merged.push({
-                level: 'divider',
-                title: r.target.title || r.target.name,
-                line: -1,
-                entry: firstEntry,
-              })
+
+        const targets = doc.targets
+        if (targets && targets.length > 1) {
+          let pageOffset = 0
+          const results = await Promise.all(targets.map(async (target) => {
+            const resp = await fetch(`/docs/${doc.projectName}/${target.name}-lookup.json`).catch(() => null)
+            if (!resp?.ok) return { target, headings: [] as TocEntry[], pageOffset }
+            const data = await resp.json()
+            const targetHeadings = parseHeadings(data.lines, data.meta, { skipAppendixDivider: true })
+            for (const entry of targetHeadings) {
+              entry.entry = { ...entry.entry, page: entry.entry.page + pageOffset }
             }
+            const result = { target, headings: targetHeadings, pageOffset }
+            pageOffset += target.pages
+            return result
+          }))
+          if (cancelled) return
+          const merged: TocEntry[] = []
+          for (const result of results) {
+            if (results.indexOf(result) > 0) {
+              const firstEntry = result.headings[0]?.entry || { page: result.pageOffset + 1, x: 0, y: 0, content: '' }
+              merged.push({ level: 'divider', title: result.target.title || result.target.name, line: -1, entry: firstEntry })
+            }
+            merged.push(...result.headings)
           }
-          merged.push(...r.headings)
+          setHeadings(merged)
+          setCollapsed(computeDefaultFolded(merged))
+          return
         }
-        setHeadings(merged)
-        setCollapsed(computeDefaultFolded(merged))
-      })
-    } else {
-      loadLookup(doc.projectName).then(data => {
+
+        const data = await loadLookup(doc.projectName)
+        if (cancelled) return
         if (data) {
-          const h = parseHeadings(data.lines, data.meta)
-          setHeadings(h)
-          setCollapsed(computeDefaultFolded(h))
-        } else {
-          loadHtmlToc(doc!.projectName).then(toc => {
-            if (toc) {
-              setHtmlToc(toc)
-              setCollapsed(computeDefaultFolded(toc))
-            }
-          })
+          const parsed = parseHeadings(data.lines, data.meta)
+          setHeadings(parsed)
+          setCollapsed(computeDefaultFolded(parsed))
+          return
         }
-      })
-    }
+        const toc = await loadHtmlToc(doc.projectName)
+        if (!cancelled && toc) {
+          setHtmlToc(toc)
+          setCollapsed(computeDefaultFolded(toc))
+        }
+      } catch (error) {
+        console.warn('[toc] load failed:', error instanceof Error ? error.message : String(error))
+      } finally {
+        if (!cancelled) setTocLoaded(true)
+      }
+    })()
+    return () => { cancelled = true }
   }, [doc?.projectName, doc?.format, doc?.targets, reloadCount])
 
   const handleNav = useCallback((entry: LookupEntry) => {
@@ -293,7 +295,6 @@ export function TocTab({ query = '' }: { query?: string }) {
             {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
           </div>
         )}
-        <SemanticHighlightToggle />
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
         {/* HideDefsToggle removed */}
@@ -304,29 +305,6 @@ export function TocTab({ query = '' }: { query?: string }) {
   // Use HTML TOC if no TeX headings
   const tocItems = htmlToc || null
   const useHtml = headings.length === 0 && tocItems !== null
-
-  if (headings.length === 0 && !useHtml) {
-    return (
-      <div className="doc-panel-content" {...tocDropProps}>
-        <div className="panel-empty">No headings found</div>
-        {tocDragOver && book && (
-          <div className="toc-item toc-drop-hint">+ Add chapter</div>
-        )}
-        {tocAdding && (
-          <div className="toc-item toc-adding">Adding {tocAdding}...</div>
-        )}
-        {ctx?.onToggleRole && hasPresenterPrivilege && doc?.format === 'slides' && (
-          <div className="toc-diff-hint" onClick={() => ctx.onToggleRole?.()}>
-            {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
-          </div>
-        )}
-        <SemanticHighlightToggle />
-        <CameraLinkToggle />
-        <JoinVoiceVideoToggle />
-        {/* HideDefsToggle removed */}
-      </div>
-    )
-  }
 
   // Unified render for both TeX and HTML TOC entries
   let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }> = useHtml
@@ -407,6 +385,9 @@ export function TocTab({ query = '' }: { query?: string }) {
     <div className="doc-panel-content" {...tocDropProps}>
       {normalizedQuery && items.length === 0 && (
         <div className="panel-empty">No results</div>
+      )}
+      {tocLoaded && !normalizedQuery && items.length === 0 && (
+        <div className="panel-empty">No headings found</div>
       )}
       {/* TOC */}
       {items.map((h, i) => {
@@ -695,15 +676,6 @@ export function VimModeToggle() {
   return (
     <div className="toc-diff-hint" onClick={toggleVimMode}>
       <span className="toc-toggle-icon">{'\u276F'}</span> {enabled ? 'Vim' : 'Vim off'}
-    </div>
-  )
-}
-
-export function SemanticHighlightToggle() {
-  const enabled = useSyncExternalStore(subscribeSemanticHighlight, getSemanticHighlight)
-  return (
-    <div className="toc-diff-hint" onClick={toggleSemanticHighlight}>
-      <span className="toc-toggle-icon">{'\u2B22'}</span> {enabled ? 'Semantic HL' : 'Semantic HL off'}
     </div>
   )
 }
