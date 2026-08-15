@@ -622,6 +622,16 @@ async function rpcLinkProjectSource({ project, sourceDir, projectMetadata = null
   if (!status.alreadyLinked) await offerShadowHistory({ project, sourceDir })
 
   const result = sourceSync.bindSource(project, sourceDir)
+  try {
+    const registration = await sendMsgWithReply({
+      type: 'source-bindings-set',
+      source_bindings: sourceSync.bindingRecords(),
+    })
+    if (!registration?.ok) throw new Error('server did not confirm source binding registration')
+  } catch (error) {
+    if (result.linked) sourceSync.unbindSource(project, sourceDir)
+    throw new Error(`${project} was not linked: its source binding could not be registered (${error.message})`)
+  }
   serverProjects = [...serverProjects.filter(item => item.name !== project), projectMetadata]
   applyProjectWorldOwnership('local-source-link')
   return result

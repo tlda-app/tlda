@@ -108,6 +108,23 @@ function nextRpc(ws, operation) {
   })
 }
 
+function requestReply(ws, message) {
+  return new Promise((resolve, reject) => {
+    const id = message.id || `request-${Date.now()}-${Math.random()}`
+    const timeout = setTimeout(() => reject(new Error(`request timed out: ${id}`)), 20_000)
+    const onMessage = raw => {
+      const reply = JSON.parse(String(raw))
+      if (reply.id !== id) return
+      clearTimeout(timeout)
+      ws.off('message', onMessage)
+      if (reply.error) reject(new Error(reply.error))
+      else resolve(reply.result)
+    }
+    ws.on('message', onMessage)
+    ws.send(JSON.stringify({ ...message, id }))
+  })
+}
+
 function deliver(ws, envelope) {
   return new Promise((resolve, reject) => {
     const received = []
@@ -173,6 +190,50 @@ test('daemon hello registers its binding before the next durable source frame', 
     const result = messages.find(message => message.type === 'source-change-result')
     assert.equal(result?.ok, true, `${JSON.stringify(messages)}\n${server.output()}`)
     assert.equal(readFileSync(join(projectsDir, project, 'source', 'main.tex'), 'utf8'), 'ordered\n')
+  } finally {
+    ws?.terminate()
+    await stopServer(server)
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('new source binding is accepted on the existing daemon connection', { timeout: 180_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-source-live-binding-'))
+  const projectsDir = join(root, 'projects')
+  const fleetDb = join(root, 'fleet.db')
+  const bindingRegistry = join(root, 'source-bindings.json')
+  const project = 'paper-live-binding'
+  const bindingId = 'binding-added-after-hello'
+  const port = await unusedPort()
+  let server
+  let ws
+  try {
+    await initProjectStore(projectsDir)
+    createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(project, { pages: 1, buildStatus: 'success' })
+    mkdirSync(join(projectsDir, project, 'output'), { recursive: true })
+    writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
+    await closeProjectStore()
+
+    server = await startServer({ port, projectsDir, fleetDb, bindingRegistry })
+    ws = await openDaemon(port, { machineId: 'live-binding-machine', sourceBindings: [] })
+    assert.deepEqual(await requestReply(ws, {
+      type: 'source-bindings-set',
+      source_bindings: [{ bindingId, project }],
+    }), { ok: true })
+
+    const messages = await deliver(ws, {
+      type: 'source-change', project, requestId: 'R-live-binding', expectedRevision: null,
+      sourceBindingId: bindingId,
+      files: [{ path: 'main.tex', content: 'linked without reconnect\n' }],
+      deletedFiles: [], sourceManifest: ['main.tex'], __daemon_outbox_id: 'D-live-binding',
+    })
+    const accepted = messages.find(message => message.type === 'source-change-result')
+    assert.equal(accepted?.ok, true, JSON.stringify(messages))
+    assert.equal(readFileSync(join(projectsDir, project, 'source', 'main.tex'), 'utf8'), 'linked without reconnect\n')
+    const registry = JSON.parse(readFileSync(bindingRegistry, 'utf8'))
+    assert.equal(registry.bindings[bindingId].daemonKey, 'live-binding-machine:test')
   } finally {
     ws?.terminate()
     await stopServer(server)

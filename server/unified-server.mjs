@@ -8907,6 +8907,12 @@ async function handleDaemonWsMessage(ws, msg) {
   // From here on, the daemon must be identified.
   if (!ws._machineId) return
 
+  if (type === 'source-bindings-set') {
+    recordDaemonSourceBindings(ws._daemonKey, msg.source_bindings)
+    if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true } }))
+    return
+  }
+
   if (type === 'subagent-observed' || type === 'native-subagent-notification-ack') {
     await handleFleetWsMessage(ws, msg)
     return
