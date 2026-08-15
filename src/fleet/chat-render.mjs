@@ -261,11 +261,11 @@ function countdownLabel(ts, now = Date.now()) {
 // inlineAttachments) into HTML without the full chat-line wrapper — the immediate
 // local feedback before the authoritative event-update broadcast re-renders the
 // whole message. renderMarkdown is the same function passed via ctx to renderChatLine.
-export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown, message = null) {
-  // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
+function resolveMarkdownImages(text, inlineAttachments) {
   let processed = String(text || '')
   if (inlineAttachments?.length) {
-    processed = processed.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
+    processed = processed.replace(/!\[([^\]]*)\]\((?:image#(\d+)|\{\{att:(\d+)\}\})\)/g, (match, alt, imageIdx, legacyIdx) => {
+      const idx = imageIdx ?? legacyIdx
       const att = inlineAttachments[+idx]
       if (att?.url && /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')) {
         return `![${alt}](${att.url})`
@@ -273,6 +273,11 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
       return match
     })
   }
+  return processed
+}
+
+export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown, message = null) {
+  const processed = resolveMarkdownImages(text, inlineAttachments)
   let html = chipifyMarkdownApiFileLinks(renderMarkdown(esc(processed)))
   let renderedPendingPlaceholder = false
   // Replace remaining {{att:N}} markers
@@ -642,19 +647,9 @@ export function renderChatLine(m, ctx) {
     }
     rawText = rawText.replace(/<task-notification[^>]*>[\s\S]*?<\/task-notification>/g, '').trim()
   }
-  // Pre-process: resolve image attachments in markdown image syntax before renderMarkdown.
-  // ![alt]({{att:N}}) → ![alt](URL) so marked renders a real <img src="URL"> that DOMPurify accepts.
-  // Without this, DOMPurify strips the invalid {{att:N}} src, leaving a broken image icon.
-  let processedText = String(rawText || '')
-  if (m._inlineAttachments?.length) {
-    processedText = processedText.replace(/!\[([^\]]*)\]\(\{\{att:(\d+)\}\}\)/g, (match, alt, idx) => {
-      const att = m._inlineAttachments[+idx]
-      if (att?.url && /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')) {
-        return `![${alt}](${att.url})`
-      }
-      return match
-    })
-  }
+  // Resolve short message-local image refs, and legacy attachment tokens, before
+  // renderMarkdown sees them. The stored message never needs the absolute URL.
+  const processedText = resolveMarkdownImages(rawText, m._inlineAttachments)
   let text = m._raw ? esc(processedText) : linkifyCodeUrls(chipifyMarkdownApiFileLinks(renderMarkdown(esc(processedText))))
   // Replace «bullet:ID» tokens with card HTML using metadata
   if (m._bullets?.length) {

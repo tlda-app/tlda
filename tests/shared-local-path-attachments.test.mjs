@@ -63,7 +63,7 @@ test('explicit markdown image syntax preserves image presentation', () => {
     { preserveBarePath: () => true },
   )
 
-  assert.equal(result.resolvedMessage, 'See ![plot]({{att:0}}).')
+  assert.equal(result.resolvedMessage, 'See ![plot](image#0).')
   assert.equal(result.inlineAttachments.length, 1)
   assert.equal(result.inlineAttachments[0].path, file)
 })

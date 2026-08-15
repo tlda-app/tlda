@@ -101,11 +101,11 @@ export function detectAttachments(message, agentCwd, serverBaseUrl = null, optio
     if (fs.existsSync(filePath)) {
       const id = attIdx++
       inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath) })
-      return `![${alt}]({{att:${id}}})`
+      return `![${alt}](image#${id})`
     }
     const id = attIdx++
     inlineAttachments.push({ type: 'file', id, path: filePath, name: path.basename(filePath), broken: true })
-    return `![${alt}]({{att:${id}}})`
+    return `![${alt}](image#${id})`
   })
   // 3a-bis. Plain local file API URLs are attachment requests too. This catches
   // pasted `/api/file?path=/tmp/...` links before the general URL mask below.
