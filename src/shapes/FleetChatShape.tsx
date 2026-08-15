@@ -2286,7 +2286,7 @@ type AnchoredChatListProps<T extends AnchoredChatItem> = {
   resetKey: string
   renderItem: (item: T) => React.ReactNode
   onStartReached?: () => void
-  onTailModeChange?: (followingTail: boolean) => void
+  onTailModeChange?: (followingTail: boolean, detail: Record<string, unknown>) => void
   onAtBottomChange?: (atBottom: boolean) => void
   setScroller?: (el: HTMLDivElement | null) => void
 }
@@ -2309,6 +2309,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const modelTopRef = useRef(0)
   const sensorTopRef = useRef(ANCHORED_SENSOR_MID)
   const tailModeRef = useRef(true)
+  const lastWheelRef = useRef<{ at: number, deltaY: number, deltaMode: number } | null>(null)
   const didStartReachRef = useRef(false)
   const previousResetKeyRef = useRef(resetKey)
   const previousKeysRef = useRef<string[]>([])
@@ -2343,18 +2344,52 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
 
   const clampTop = useCallback((top: number) => Math.max(0, Math.min(top, tailTop())), [tailTop])
 
-  const setTailMode = useCallback((next: boolean) => {
+  const scrollSnapshot = useCallback((requestedTop: number, nextTop: number) => {
+    const el = scrollerRef.current
+    const style = el ? getComputedStyle(el) : null
+    const lastKey = itemKeys[itemKeys.length - 1]
+    const lastRow = lastKey ? rowElsRef.current.get(lastKey) : null
+    const slice = sliceRef.current
+    const wheel = lastWheelRef.current
+    const now = Date.now()
+    return {
+      requestedTop,
+      modelTop: nextTop,
+      tailTop: tailTop(),
+      bottomDistance: tailTop() - nextTop,
+      clamped: Math.abs(requestedTop - nextTop) > 0.5,
+      sensorTop: el?.scrollTop ?? null,
+      sensorReferenceTop: sensorTopRef.current,
+      clientHeight: el?.clientHeight ?? null,
+      scrollHeight: el?.scrollHeight ?? null,
+      viewportHeight,
+      paddingTop: style?.paddingTop ?? null,
+      paddingBottom: style?.paddingBottom ?? null,
+      borderTopWidth: style?.borderTopWidth ?? null,
+      borderBottomWidth: style?.borderBottomWidth ?? null,
+      overflowAnchor: style?.overflowAnchor ?? null,
+      sliceTransform: slice ? getComputedStyle(slice).transform : null,
+      lastRowTop: lastRow?.style.transform || null,
+      lastRowHeight: lastRow?.offsetHeight ?? null,
+      wheelDeltaY: wheel?.deltaY ?? null,
+      wheelDeltaMode: wheel?.deltaMode ?? null,
+      wheelAgeMs: wheel ? now - wheel.at : null,
+    }
+  }, [itemKeys, tailTop, viewportHeight])
+
+  const setTailMode = useCallback((next: boolean, getDetail: () => Record<string, unknown>) => {
     if (tailModeRef.current === next) return
     tailModeRef.current = next
-    onTailModeChange?.(next)
+    onTailModeChange?.(next, getDetail())
   }, [onTailModeChange])
 
   const setModelTop = useCallback((nextTop: number, opts?: { forceTail?: boolean }) => {
     const top = clampTop(nextTop)
     modelTopRef.current = top
     const atBottom = Math.abs(top - tailTop()) <= 1
-    if (opts?.forceTail || atBottom) setTailMode(true)
-    else setTailMode(false)
+    const getDetail = () => scrollSnapshot(nextTop, top)
+    if (opts?.forceTail || atBottom) setTailMode(true, getDetail)
+    else setTailMode(false, getDetail)
     onAtBottomChange?.(atBottom)
     if (top > ANCHORED_ESTIMATED_ROW_HEIGHT * 2) didStartReachRef.current = false
     if (top <= ANCHORED_ESTIMATED_ROW_HEIGHT && !didStartReachRef.current) {
@@ -2362,7 +2397,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       onStartReached?.()
     }
     setGeometryVersion(version => version + 1)
-  }, [clampTop, onAtBottomChange, onStartReached, setTailMode, tailTop])
+  }, [clampTop, onAtBottomChange, onStartReached, scrollSnapshot, setTailMode, tailTop])
 
   const recenterSensor = useCallback((el: HTMLDivElement) => {
     sensorTopRef.current = ANCHORED_SENSOR_MID
@@ -2498,6 +2533,9 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       ref={setScrollerRef}
       className={['fleet-chat-log', 'fleet-chat-log-anchored', className].filter(Boolean).join(' ')}
       style={style}
+      onWheel={(event) => {
+        lastWheelRef.current = { at: Date.now(), deltaY: event.deltaY, deltaMode: event.deltaMode }
+      }}
       onScroll={onScroll}
     >
       <div className="fleet-chat-scroll-sensor" style={{ height: ANCHORED_SENSOR_HEIGHT }}>
@@ -6630,13 +6668,14 @@ function FleetChatInner({ shape }: { shape: any }) {
                   )
                 }}
                 onAtBottomChange={setAtBottom}
-                onTailModeChange={(followingTail) => {
+                onTailModeChange={(followingTail, detail) => {
                   userScrolledUpRef.current = !followingTail
                   if (followingTail) viewportAnchorRef.current = null
                   setFleetEventsLiveTailPinned(shape.id, followingTail, chatEventBufferKey)
                   noteFollowTransition(String(shape.id), followingTail ? 'follow-on' : 'follow-off', {
                     reason: 'anchored-list',
                     bufferKey: chatEventBufferKey,
+                    ...detail,
                   })
                 }}
                 renderItem={(item) => item?._status ? (
