@@ -139,45 +139,52 @@ const anchoredViewportHeight = (el: HTMLElement) => {
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
+// Two nodes and a wire between them. The wire is flat and *carries* a spike
+// where there is activity — Skip: "a wire that is flat and carries one spike /
+// not IS a spike", and "it's meant to be a subtle detail there", so the spike is
+// small and smaller again once the graph is drawn around it. `agent` adds the
+// edges running off both nodes: the graph, for traffic from other sources.
+//
+// Every line in the mark is one weight, the svg's, matching the edges rather
+// than sitting heavier than them. The nodes are circles, and they are the only
+// weight in an otherwise elongated drawing.
+const COMPOSER_TRAFFIC_WIRE = 'M3.4 8 H7.25 L7.69 6.4 L8.32 9.6 L8.75 8 H12.6'
+const COMPOSER_TRAFFIC_WIRE_IN_GRAPH = 'M3.4 8 H7.35 L7.73 6.8 L8.27 9.2 L8.65 8 H12.6'
+
 function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
   const path = mode === 'dm'
-    ? 'M4.6 8 H5.6 L6.8 4.6 L8.8 11.4 L10.2 8 H11.4'
+    ? COMPOSER_TRAFFIC_WIRE
     : mode === 'agent'
-      ? null
-      : 'M4.6 8 H11.4'
+      ? COMPOSER_TRAFFIC_WIRE_IN_GRAPH
+      : 'M3.4 8 H12.6'
 
   return (
     <svg
-      width="12"
-      height="12"
+      width="16"
+      height="16"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.2"
+      strokeWidth="0.55"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <circle cx="4.6" cy="8" r="1.7" fill="currentColor" stroke="none" />
-      <circle cx="11.4" cy="8" r="1.7" fill="currentColor" stroke="none" />
-      {path ? <path d={path} /> : (
-        // "All" is a graph — Skip: "there are two nodes and there are a variety
-        // of lines coming off of them. That's spaghetti and the spaghetti is
-        // fucking thin because it has to fucking read as, like, secondary." So
-        // every edge starts at a node, the far ends wander off in different
-        // directions, and the weight stays well under the nodes'.
-        <g strokeWidth="0.6">
-          <path d="M4.6 8 C6.6 6.6 9.4 9.4 11.4 8" />
-          <path d="M4.6 8 C3 6.4 2.2 5.4 1 4.4" />
-          <path d="M4.6 8 C3.4 9.6 2.6 11 2.2 12.4" />
-          <path d="M4.6 8 C4.6 6 5.2 4.4 5.8 3" />
-          <path d="M4.6 8 C5.6 9.8 6 11.2 6.2 12.6" />
-          <path d="M11.4 8 C13 6.8 14 6 15.2 5.4" />
-          <path d="M11.4 8 C12.6 9.4 13.4 10.6 14.4 11.6" />
-          <path d="M11.4 8 C11 6.2 10.8 4.8 10.4 3.4" />
-          <path d="M11.4 8 C11.8 9.8 12 11.4 11.6 13.2" />
+      <circle cx="3.4" cy="8" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="12.6" cy="8" r="1.4" fill="currentColor" stroke="none" />
+      {mode === 'agent' && (
+        <g>
+          <path d="M3.4 8 C2.9 6.83 2.7 6.18 2.4 5.4" />
+          <path d="M3.4 8 C2.9 9.17 2.7 9.82 2.4 10.6" />
+          <path d="M3.4 8 C4 6.83 4.4 6.05 5 5.4" />
+          <path d="M3.4 8 C4 9.17 4.4 9.95 5 10.6" />
+          <path d="M12.6 8 C13.1 6.83 13.3 6.18 13.6 5.4" />
+          <path d="M12.6 8 C13.1 9.17 13.3 9.82 13.6 10.6" />
+          <path d="M12.6 8 C12 6.83 11.6 6.05 11 5.4" />
+          <path d="M12.6 8 C12 9.17 11.6 9.95 11 10.6" />
         </g>
       )}
+      <path d={path} />
     </svg>
   )
 }
