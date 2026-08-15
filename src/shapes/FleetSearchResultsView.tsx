@@ -90,6 +90,7 @@ export function FleetSearchResultsView({
   ctx,
   agents,
   onOpenChatForResult,
+  onStartAgentDrag,
   onStartDrag,
 }: {
   results: any[]
@@ -101,6 +102,7 @@ export function FleetSearchResultsView({
   ctx: any
   agents: any[]
   onOpenChatForResult: (result: any) => void
+  onStartAgentDrag?: (e: React.PointerEvent, value: string, displayName: string, color: string) => void
   onStartDrag?: (e: React.PointerEvent, type: 'agent' | 'msg', value: string, displayName: string, color: string, content?: string) => void
 }) {
   const resultGroups = groupFleetSearchResults(results)
@@ -125,17 +127,19 @@ export function FleetSearchResultsView({
         title={r.type === 'document_content' ? 'Open document' : undefined}
         onPointerDown={(e) => {
           stopEventPropagation(e)
-          if (openDocument || !onStartDrag) return
+          if (openDocument) return
           const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
-          if (nick) {
+          if (nick && (onStartAgentDrag || onStartDrag)) {
             const agentId = nick.dataset.agentId || ''
             const historicalName = fleetSearchResultParticipantLabel(r, agentId, { agents })
             const value = historicalName || ctx.agentFullName?.(agentId) || agentId.replace('fleet:', '')
             const name = historicalName || ctx.agentLabel(agentId)
             const color = ctx.getAgentColor(agentId)
-            onStartDrag(e, 'agent', value, name, color)
+            if (onStartAgentDrag) onStartAgentDrag(e, value, name, color)
+            else onStartDrag?.(e, 'agent', value, name, color)
             return
           }
+          if (!onStartDrag) return
           const tsEl = (e.target as HTMLElement).closest('.chat-ts, .pretty-search-ts, .pretty-ts') as HTMLElement | null
           if (tsEl) {
             const drag = searchResultMessageDrag(r, text, ctx, agents)

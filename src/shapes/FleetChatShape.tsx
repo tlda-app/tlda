@@ -2185,6 +2185,7 @@ function SemanticChatOperationView({
   pageSize: number
 }) {
   const editor = useEditor()
+  const { startDrag: startCanonicalPillDrag } = usePillDrag()
   const [results, setResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -2288,6 +2289,7 @@ function SemanticChatOperationView({
           ctx={renderCtx}
           agents={renderCtx.getAgents?.() || []}
           onOpenChatForResult={openChatForResult}
+          onStartAgentDrag={(e, value, displayName, color) => startCanonicalPillDrag(e, 'agent', value, displayName, color)}
         />
         {!loading && !error && hasMore ? (
           <button type="button" className="semantic-operation-more" onPointerUp={(e) => { stopEventPropagation(e); void loadSearch(false) }}>More</button>

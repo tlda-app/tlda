@@ -46,6 +46,7 @@ import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } f
 import { dragCoordinator } from './dragCoordinator'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { FleetSearchResultsView, visibleFleetSearchResultCount } from './FleetSearchResultsView'
+import { usePillDrag as useCanonicalPillDrag } from './FleetAgentsShape'
 import { ProjectContext } from '../PanelContext'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 import './fleet-chat.css'
@@ -358,6 +359,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const preambleMacros = useProjectPreambleMacros(docCtx?.projectName)
   const ctx = useMemo(() => makeChatCtx(agents, tasks, preambleMacros), [agents, tasks, preambleMacros])
   const { startDrag } = usePillDrag()
+  const { startDrag: startCanonicalPillDrag } = useCanonicalPillDrag()
   const [query, setQuery] = useState('')
   const [autocomplete, setAutocomplete] = useState(SEARCH_AUTOCOMPLETE_INITIAL_VIEW_STATE)
   const [autocompleteAnchor, setAutocompleteAnchor] = useState<SearchAutocompleteAnchor | null>(null)
@@ -918,6 +920,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
             ctx={ctx}
             agents={agents}
             onOpenChatForResult={openChatForResult}
+            onStartAgentDrag={(e, value, displayName, color) => startCanonicalPillDrag(e, 'agent', value, displayName, color)}
             onStartDrag={startDrag}
           />
         </div>
