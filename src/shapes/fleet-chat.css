@@ -77,6 +77,7 @@
   z-index: 12;
   display: flex;
   flex-direction: column;
+  width: max-content;
   gap: 0;
   max-height: 100%;
   overflow: hidden;
@@ -2262,6 +2263,12 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: grab;
+}
+
+.fleet-chat-shape .fleet-unread-agent-rail .fleet-agents-col-name {
+  width: max-content;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .fleet-agents-shape .fleet-agents-col-task {
