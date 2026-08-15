@@ -3919,7 +3919,6 @@ body.phone-mode .fleet-chat-shape .fleet-composer-gutter svg {
   }
 }
 body.phone-mode .fleet-chat-shape .fleet-composer-traffic-toggle { font-size: calc(var(--fleet-base-font, 11px) * 0.981818); }
-body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc(var(--fleet-base-font, 11px) * 1.418182); }
 .fleet-chat-shape .corner-button-slider-preview {
   position: absolute;
   top: -20px;
@@ -4076,8 +4075,6 @@ body.phone-mode .fleet-chat-shape .fleet-composer-clear-toggle { font-size: calc
   align-items: center;
   justify-content: center;
   line-height: 1;
-  font: inherit;
-  font-size: calc(var(--fleet-base-font, 11px) * 1.181818);
 }
 .fleet-chat-shape .fleet-composer-clear-toggle:hover,
 .fleet-chat-shape .fleet-composer-clear-toggle:focus-visible,

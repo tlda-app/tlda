@@ -141,30 +141,38 @@ type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
 function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
   const path = mode === 'dm'
-    ? 'M3.5 8 H6 L7 5 L9 11 L10 8 H12.5'
+    ? 'M4.2 8 H5.4 L6.8 3.6 L8.9 12.4 L10.4 8 H11.8'
     : mode === 'agent'
       ? null
-      : 'M3.5 8 H12.5'
+      : 'M4.2 8 H11.8'
 
   return (
     <svg
-      width="12"
-      height="12"
+      width="14"
+      height="14"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.35"
+      strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <ellipse cx="2" cy="8" rx="1.65" ry="1.35" fill="currentColor" stroke="none" />
-      <ellipse cx="14" cy="8" rx="1.65" ry="1.35" fill="currentColor" stroke="none" />
+      <circle cx="2.2" cy="8" r="2" fill="currentColor" stroke="none" />
+      <circle cx="13.8" cy="8" r="2" fill="currentColor" stroke="none" />
       {path ? <path d={path} /> : (
-        <g strokeWidth="0.65" opacity="0.9">
-          <path d="M3.5 8 C4.4 1.5 6.8 14.5 8.1 5.2 C9 -0.2 10.6 14.2 12.5 8" />
-          <path d="M3.5 8 C4.8 13.5 6.1 1.8 7.5 10.2 C8.8 15 10.7 2.5 12.5 8" />
-          <path d="M3.5 8 C5 4.8 6.2 11.8 8 8 C9.7 4.2 11 11 12.5 8" />
+        // "All" is not one strand between the two endpoints — Skip: "the
+        // spaghetti is supposed to just be going all over the place to indicate,
+        // like, also traffic from other sources", strands "that don't
+        // necessarily even terminate at one of the points". So three of the four
+        // run off the edges of the box and only one joins the dots. Drawn at
+        // full weight and full box height: the old 0.65-stroke tangle inside the
+        // endpoints was a 2px-tall smudge at this size and did not read.
+        <g strokeWidth="1.15">
+          <path d="M4.2 8 C5.6 5.8 6.8 10.6 8.2 8.4 C9.4 6.4 10.6 9.8 11.8 8" />
+          <path d="M0 3 C2.6 1.5 4 4.6 6.4 4.4 C9 4.2 10.4 1.3 13 2 C14.4 2.4 15.2 3.3 16 4.8" />
+          <path d="M0 13.4 C2 14.7 3.6 12 5.8 12.2 C8.4 12.4 9.4 15.1 12 14.6 C13.8 14.2 14.8 13 16 11.8" />
+          <path d="M9.6 16 C10.8 13 9.2 11 10.8 8.4 C12.1 6.2 12.4 3 11.6 0" />
         </g>
       )}
     </svg>
@@ -6960,7 +6968,16 @@ function FleetChatInner({ shape }: { shape: any }) {
                 title={canUnclearComposer ? 'Restore cleared text' : 'Clear composer'}
                 aria-label={canUnclearComposer ? 'Restore cleared composer text' : 'Clear composer text'}
               >
-                {canUnclearComposer ? '↺' : (
+                {canUnclearComposer ? (
+                  // Drawn rather than the ↺ character: a text glyph sits on its
+                  // baseline, so centering the line box left the mark visibly
+                  // below every other icon on the rail. An svg centers on its
+                  // own box like its neighbours do.
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M4.1 6.2 A5 5 0 1 1 3.6 10.2" />
+                    <path d="M1.5 3.1 L4.1 6.5 L7.6 5.1" />
+                  </svg>
+                ) : (
                   <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <circle cx="4" cy="5" r="2" />
                     <circle cx="4" cy="11" r="2" />
