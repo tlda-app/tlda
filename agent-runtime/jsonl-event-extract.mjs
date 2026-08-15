@@ -68,10 +68,20 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
   const pendingTools = new Map()
   const pendingOutputParents = new Map()
 
-  function pendingOperationLabel(pending) {
-    const input = pending?.input || {}
-    const subject = input.command || input.code || input.description || pending?.arg || ''
-    return subject ? `${pending.tool}: ${subject}` : (pending?.tool || '')
+  function pendingOperationLabel(pendings) {
+    const operations = pendings.filter(Boolean)
+    if (operations.length > 1) {
+      const tools = [...new Set(operations.map(p => p.tool).filter(Boolean))]
+      return `Code: ${operations.length} operations${tools.length ? ` (${tools.join(', ')})` : ''}`
+    }
+    const pending = operations[0]
+    if (!pending) return ''
+    if (pending.tool === 'Code') return 'Code'
+    const input = pending.input || {}
+    const subject = input.command || input.description || pending.arg || ''
+    const oneLine = String(subject).replace(/\s+/g, ' ').trim()
+    const bounded = oneLine.length > 120 ? `${oneLine.slice(0, 119)}…` : oneLine
+    return bounded ? `${pending.tool}: ${bounded}` : (pending.tool || '')
   }
 
   function extractActivityEvents(events) {
@@ -153,14 +163,17 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
       const matchingIds = pendingTools.has(resultId)
         ? [resultId]
         : [...pendingTools.keys()].filter(id => id.startsWith(`${resultId}#`))
+      const matchingPendings = matchingIds.map(id => pendingTools.get(id)).filter(Boolean)
+      const resultText = toolResults.get(resultId) || ''
+      const yieldedCell = resultText.match(/Script running with cell ID\s+([^\s]+)/)?.[1]
+      const yieldedLabel = pendingOperationLabel(matchingPendings)
       for (const id of matchingIds) {
         const pending = pendingTools.get(id)
         pendingTools.delete(id)
-        const resultText = toolResults.get(resultId) || ''
-        const yieldedCell = resultText.match(/Script running with cell ID\s+([^\s]+)/)?.[1]
         if (yieldedCell) {
-          const label = pendingOperationLabel(pending)
-          if (label) pendingOutputParents.set(`cell:${yieldedCell}`, label)
+          if (!pending.input?._semanticOutputHandle && yieldedLabel) {
+            pendingOutputParents.set(`cell:${yieldedCell}`, yieldedLabel)
+          }
         } else if (pending.input?._semanticOutputHandle) {
           pendingOutputParents.delete(pending.input._semanticOutputHandle)
         } else if (pending.input?.cell != null) {

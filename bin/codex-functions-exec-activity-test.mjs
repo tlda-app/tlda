@@ -208,6 +208,64 @@ function renderedActivity(record) {
   })
   assert.match(html, /waitingOn: Bash: tlda deploy testing --sha abc123, action: wait for output/)
   assert.doesNotMatch(html, /cell: 41|semanticOutputHandle/)
+
+  extractor.extractActivityEvents([parseCodexRecord({
+    timestamp: ts,
+    type: 'response_item',
+    payload: {
+      type: 'custom_tool_call_output',
+      call_id: 'call_wait',
+      output: 'Script running with cell ID 41\nWall time 30.0 seconds\nOutput:\n',
+    },
+  })])
+  const repeatedWait = parseCodexRecord(customExec(`
+    const r = await tools.wait({cell_id:"41",yield_time_ms:30000,max_tokens:10000});
+    text(r.output);
+  `, 'call_wait_2'))
+  const repeatedActivity = extractor.extractActivityEvents([repeatedWait])[0]
+  assert.equal(repeatedActivity.input.waitingOn, 'Bash: tlda deploy testing --sha abc123')
+  assert.doesNotMatch(repeatedActivity.input.waitingOn, /CodeOutput|cell:41/)
+}
+
+{
+  const extractor = createActivityExtractor()
+  extractor.extractActivityEvents([parseCodexRecord(customExec(`
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    text("finished");
+  `, 'call_code'))])
+  extractor.extractActivityEvents([parseCodexRecord({
+    timestamp: ts,
+    type: 'response_item',
+    payload: { type: 'custom_tool_call_output', call_id: 'call_code', output: 'Script running with cell ID 51\n' },
+  })])
+  const activity = extractor.extractActivityEvents([parseCodexRecord(customExec(`
+    const r = await tools.wait({cell_id:"51",yield_time_ms:30000,max_tokens:10000});
+    text(r.output);
+  `, 'call_code_wait'))])[0]
+  assert.equal(activity.input.waitingOn, 'Code')
+  assert.doesNotMatch(activity.input.waitingOn, /new Promise|setTimeout|text/)
+}
+
+{
+  const extractor = createActivityExtractor()
+  extractor.extractActivityEvents([parseCodexRecord(customExec(`
+    const [a, b] = await Promise.all([
+      tools.exec_command({cmd:"git status --short",workdir:"/tmp"}),
+      tools.view_image({path:"/tmp/proof.png"}),
+    ]);
+    text(a.output); image(b.image_url);
+  `, 'call_multi'))])
+  extractor.extractActivityEvents([parseCodexRecord({
+    timestamp: ts,
+    type: 'response_item',
+    payload: { type: 'custom_tool_call_output', call_id: 'call_multi', output: 'Script running with cell ID 61\n' },
+  })])
+  const activity = extractor.extractActivityEvents([parseCodexRecord(customExec(`
+    const r = await tools.wait({cell_id:"61",yield_time_ms:30000,max_tokens:10000});
+    text(r.output);
+  `, 'call_multi_wait'))])[0]
+  assert.equal(activity.input.waitingOn, 'Code: 2 operations (Bash, Read)')
+  assert.doesNotMatch(activity.input.waitingOn, /git status|proof\.png/)
 }
 
 {
