@@ -1,4 +1,4 @@
-import { createShapeId, type Editor, type TLShape, type TLShapeId } from 'tldraw'
+import { createShapeId, type Editor, type TLCamera, type TLShape, type TLShapeId } from 'tldraw'
 import { wrapFleetLayoutAroundDocument } from './shapes/fleet-layout-wrap'
 import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
 
@@ -19,6 +19,9 @@ export const SPATIAL_MAP_ZOOM_STEPS = [0.001, 0.002, 0.005, 0.01, 0.025]
 export const SPATIAL_MAP_MIN_ZOOM = SPATIAL_MAP_ZOOM_STEPS[0]
 const DOCUMENT_W = 800
 const DOCUMENT_H = 1200
+
+type SavedSpatialMapView = { camera: TLCamera; sourceNodeId: string | null }
+const savedSpatialMapViews = new WeakMap<Editor, SavedSpatialMapView>()
 
 type SpatialDocumentShape = TLShape & {
   x: number
@@ -85,6 +88,27 @@ export function zoomToSpatialWorld(
     y: 48 / z - anchor.y,
     z,
   }, { animation: { duration: 300 } })
+}
+
+export function saveSpatialMapView(editor: Editor, view: SavedSpatialMapView) {
+  savedSpatialMapViews.set(editor, view)
+}
+
+export function getSavedSpatialMapView(editor: Editor): SavedSpatialMapView | undefined {
+  return savedSpatialMapViews.get(editor)
+}
+
+export function clearSavedSpatialMapView(editor: Editor) {
+  savedSpatialMapViews.delete(editor)
+}
+
+export function spatialMapActivationSource(
+  editor: Editor,
+  nodes: SpatialDocumentNode[],
+): SpatialDocumentNode | null {
+  const saved = getSavedSpatialMapView(editor)
+  return (saved?.sourceNodeId && nodes.find(node => node.id === saved.sourceNodeId))
+    || currentSpatialDocument(editor, nodes)
 }
 
 function overlapArea(

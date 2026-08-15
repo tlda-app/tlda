@@ -1,14 +1,9 @@
 /* Theme tokens live above the overlay so a theme can replace them. */
 :root {
-  --fleet-nudge-guide-color: #2f80ed;
-  --fleet-nudge-guide-tone: var(--ui-tone-dormant);
-  --fleet-nudge-guide-snap-target-color: #2f80ed;
-  --fleet-nudge-guide-snap-target-tone: var(--ui-tone-rest);
-}
-
-html[data-theme="dark"] {
-  --fleet-nudge-guide-color: #7aa9f7;
-  --fleet-nudge-guide-snap-target-color: #7aa9f7;
+  --fleet-nudge-guide-color: color-mix(in srgb, var(--color-text-1, #1f2937) 45%, transparent);
+  --fleet-nudge-guide-tone: var(--ui-tone-dormant, 0.28);
+  --fleet-nudge-guide-capture-color: color-mix(in srgb, var(--color-primary, #2563eb) 72%, var(--color-text-1, #1f2937));
+  --fleet-nudge-guide-capture-tone: var(--ui-tone-rest, 0.62);
 }
 
 /* Fixed, so pageToScreen coordinates land directly — the guides can come from
@@ -31,7 +26,7 @@ html[data-theme="dark"] {
   height: 1px;
 }
 
-.fleet-nudge-guide--snap-target {
-  color: var(--fleet-nudge-guide-snap-target-color);
-  opacity: var(--fleet-nudge-guide-snap-target-tone);
+.fleet-nudge-guide--capture {
+  color: var(--fleet-nudge-guide-capture-color);
+  opacity: var(--fleet-nudge-guide-capture-tone);
 }

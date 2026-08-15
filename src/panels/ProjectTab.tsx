@@ -1,14 +1,18 @@
 import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { useEditor, useValue, type Editor, type TLCamera } from 'tldraw'
+import { useEditor, useValue, type Editor } from 'tldraw'
 import { CanvasClipPanel } from '../CanvasClipPanel'
 import { ProjectContext } from '../PanelContext'
 import { recordPlaceDeparture } from '../placeStack'
 import {
   SPATIAL_MAP_ZOOM,
   activateSpatialDocument,
+  clearSavedSpatialMapView,
   currentSpatialDocument,
+  getSavedSpatialMapView,
+  saveSpatialMapView,
   spatialWorldBounds,
   spatialWorldDocuments,
+  spatialMapActivationSource,
   zoomToSpatialWorld,
 } from '../spatialDocumentWorld'
 import {
@@ -19,12 +23,6 @@ import {
 } from '../spatialDocumentWorldUi'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { isProjectMapShape } from './project-map-shape-predicate'
-
-/** Where you were when you zoomed out to the map: the camera to come back to,
- *  and the document your layout is currently wrapped around. Activating from
- *  the map wraps that layout around the document you pick, so the source is the
- *  document you left, not whatever the world-view camera happens to sit over. */
-const savedMapCameras = new WeakMap<Editor, { camera: TLCamera; sourceNodeId: string | null }>()
 
 export function ProjectTab({ query = '' }: { query?: string }) {
   const editor = useEditor()
@@ -42,15 +40,15 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   )
 
   const toggleMap = useCallback(() => {
-    const saved = savedMapCameras.get(editor)
+    const saved = getSavedSpatialMapView(editor)
     if (zoom <= SPATIAL_MAP_ZOOM && saved) {
       editor.setCamera(saved.camera, { animation: { duration: 300 } })
-      savedMapCameras.delete(editor)
+      clearSavedSpatialMapView(editor)
       return
     }
     const bounds = spatialWorldBounds(nodes)
     if (!bounds) return
-    savedMapCameras.set(editor, {
+    saveSpatialMapView(editor, {
       camera: editor.getCamera(),
       sourceNodeId: currentSpatialDocument(editor, nodes)?.id ?? null,
     })
@@ -60,13 +58,12 @@ export function ProjectTab({ query = '' }: { query?: string }) {
   const activate = useCallback((nodeId: string) => {
     const node = nodes.find(candidate => candidate.id === nodeId)
     if (!node) return
-    const saved = savedMapCameras.get(editor)
-    const source = (saved?.sourceNodeId && nodes.find(candidate => candidate.id === saved.sourceNodeId))
-      || currentSpatialDocument(editor, nodes)
+    const saved = getSavedSpatialMapView(editor)
+    const source = spatialMapActivationSource(editor, nodes)
     if (!source) return
     recordPlaceDeparture(editor)
     selectSpatialWorldNode(node.id)
-    savedMapCameras.delete(editor)
+    clearSavedSpatialMapView(editor)
     suppressFleetHudCameraTracking()
     activateSpatialDocument(editor, source, node, saved?.camera ?? editor.getCamera())
   }, [editor, nodes])
@@ -76,7 +73,7 @@ export function ProjectTab({ query = '' }: { query?: string }) {
       <ProjectMapViewport
         editor={editor}
         bounds={spatialWorldBounds(nodes)}
-        returning={zoom <= SPATIAL_MAP_ZOOM && savedMapCameras.has(editor)}
+        returning={zoom <= SPATIAL_MAP_ZOOM && !!getSavedSpatialMapView(editor)}
         onNavigate={toggleMap}
       />
       {visibleNodes.length === 0 && <div className="panel-empty">No documents found</div>}

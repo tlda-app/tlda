@@ -3,6 +3,10 @@ import { useEditor, useValue } from 'tldraw'
 import { recordPlaceDeparture } from '../placeStack'
 import {
   focusSpatialDocument,
+  activateSpatialDocument,
+  clearSavedSpatialMapView,
+  getSavedSpatialMapView,
+  spatialMapActivationSource,
   SPATIAL_MAP_ZOOM,
   spatialWorldDocuments,
   type SpatialWorldRoad,
@@ -13,6 +17,7 @@ import {
   selectSpatialWorldNode,
   subscribeSpatialWorldUi,
 } from '../spatialDocumentWorldUi'
+import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import './SpatialWorldMap.css'
 
 export function SpatialWorldMap({ projectName, projectTitle }: { projectName: string; projectTitle?: string }) {
@@ -176,7 +181,15 @@ export function SpatialWorldMap({ projectName, projectTitle }: { projectName: st
               onClick={() => {
                 recordPlaceDeparture(editor)
                 selectSpatialWorldNode(label.id)
-                focusSpatialDocument(editor, label.node)
+                const source = spatialMapActivationSource(editor, nodes)
+                if (!source) {
+                  focusSpatialDocument(editor, label.node)
+                  return
+                }
+                const saved = getSavedSpatialMapView(editor)
+                clearSavedSpatialMapView(editor)
+                suppressFleetHudCameraTracking()
+                activateSpatialDocument(editor, source, label.node, saved?.camera ?? editor.getCamera())
               }}
             >
               {label.title}
