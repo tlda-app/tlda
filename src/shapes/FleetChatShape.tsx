@@ -141,38 +141,41 @@ type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
 
 function ComposerTrafficGlyph({ mode }: { mode: ComposerTrafficFilterMode }) {
   const path = mode === 'dm'
-    ? 'M4.2 8 H5.4 L6.8 3.6 L8.9 12.4 L10.4 8 H11.8'
+    ? 'M4.6 8 H5.6 L6.8 4.6 L8.8 11.4 L10.2 8 H11.4'
     : mode === 'agent'
       ? null
-      : 'M4.2 8 H11.8'
+      : 'M4.6 8 H11.4'
 
   return (
     <svg
-      width="14"
-      height="14"
+      width="12"
+      height="12"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.5"
+      strokeWidth="1.2"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <circle cx="2.2" cy="8" r="2" fill="currentColor" stroke="none" />
-      <circle cx="13.8" cy="8" r="2" fill="currentColor" stroke="none" />
+      <circle cx="4.6" cy="8" r="1.7" fill="currentColor" stroke="none" />
+      <circle cx="11.4" cy="8" r="1.7" fill="currentColor" stroke="none" />
       {path ? <path d={path} /> : (
-        // "All" is not one strand between the two endpoints — Skip: "the
-        // spaghetti is supposed to just be going all over the place to indicate,
-        // like, also traffic from other sources", strands "that don't
-        // necessarily even terminate at one of the points". So three of the four
-        // run off the edges of the box and only one joins the dots. Drawn at
-        // full weight and full box height: the old 0.65-stroke tangle inside the
-        // endpoints was a 2px-tall smudge at this size and did not read.
-        <g strokeWidth="1.15">
-          <path d="M4.2 8 C5.6 5.8 6.8 10.6 8.2 8.4 C9.4 6.4 10.6 9.8 11.8 8" />
-          <path d="M0 3 C2.6 1.5 4 4.6 6.4 4.4 C9 4.2 10.4 1.3 13 2 C14.4 2.4 15.2 3.3 16 4.8" />
-          <path d="M0 13.4 C2 14.7 3.6 12 5.8 12.2 C8.4 12.4 9.4 15.1 12 14.6 C13.8 14.2 14.8 13 16 11.8" />
-          <path d="M9.6 16 C10.8 13 9.2 11 10.8 8.4 C12.1 6.2 12.4 3 11.6 0" />
+        // "All" is a graph — Skip: "there are two nodes and there are a variety
+        // of lines coming off of them. That's spaghetti and the spaghetti is
+        // fucking thin because it has to fucking read as, like, secondary." So
+        // every edge starts at a node, the far ends wander off in different
+        // directions, and the weight stays well under the nodes'.
+        <g strokeWidth="0.6">
+          <path d="M4.6 8 C6.6 6.6 9.4 9.4 11.4 8" />
+          <path d="M4.6 8 C3 6.4 2.2 5.4 1 4.4" />
+          <path d="M4.6 8 C3.4 9.6 2.6 11 2.2 12.4" />
+          <path d="M4.6 8 C4.6 6 5.2 4.4 5.8 3" />
+          <path d="M4.6 8 C5.6 9.8 6 11.2 6.2 12.6" />
+          <path d="M11.4 8 C13 6.8 14 6 15.2 5.4" />
+          <path d="M11.4 8 C12.6 9.4 13.4 10.6 14.4 11.6" />
+          <path d="M11.4 8 C11 6.2 10.8 4.8 10.4 3.4" />
+          <path d="M11.4 8 C11.8 9.8 12 11.4 11.6 13.2" />
         </g>
       )}
     </svg>
