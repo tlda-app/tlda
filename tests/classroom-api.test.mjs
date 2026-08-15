@@ -100,3 +100,26 @@ test('only instructor can freeze the generated handout reference', async () => {
     assert.equal(missing.status, 404)
   } finally { f.close() }
 })
+
+test('instructor creates a common-layer student through the ordinary student API', async () => {
+  const f = await serverFixture()
+  try {
+    let response = await f.request('/courses/qtm285/students', 'instructor', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'demo', displayName: 'Demo Student', enrollmentToken: 'demo-secret', layerScope: 'common' }),
+    })
+    assert.equal(response.status, 201)
+    assert.equal((await response.json()).layerScope, 'common')
+
+    response = await f.request('/courses/qtm285/status', 'instructor')
+    const demo = (await response.json()).rows.find(row => row.id === 'demo')
+    assert.equal(demo.layerScope, 'common')
+    assert.equal(demo.assignments[0].state, 'not-submitted')
+
+    response = await f.request('/courses/qtm285/students', 'instructor', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'bad', displayName: 'Bad Scope', enrollmentToken: 'bad-secret', layerScope: 'public-demo' }),
+    })
+    assert.equal(response.status, 400)
+  } finally { f.close() }
+})

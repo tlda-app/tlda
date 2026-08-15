@@ -4,19 +4,20 @@ import express from 'express'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { zipSync } from 'fflate'
+import { strFromU8, unzipSync, zipSync } from 'fflate'
 import { ClassroomStore } from '../server/lib/classroom-store.mjs'
 import { closeProjectStore, initProjectStore, readProject, sourceDir } from '../server/lib/project-store.mjs'
 import { createClassroomRouter } from '../server/routes/classroom.mjs'
 
-test('archive hand-in reaches gradebook, return, and student retrieval', async () => {
+test('a common-layer student uses the real hand-in, gradebook, marking, return, and export wire', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-classroom-handin-return-'))
   const store = new ClassroomStore(path.join(dir, 'classroom.db'))
   const projects = path.join(dir, 'projects')
   await initProjectStore(projects)
 
   store.upsertCourse({ id: 'qtm285', title: 'QTM 285' })
-  store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret' })
+  store.upsertStudent({ id: 'ada', courseId: 'qtm285', displayName: 'Ada', enrollmentToken: 'ada-secret', layerScope: 'common' })
+  store.upsertStudent({ id: 'grace', courseId: 'qtm285', displayName: 'Grace', enrollmentToken: 'grace-secret' })
   store.upsertAssignment({ id: 'hw1', courseId: 'qtm285', title: 'Homework 1', dueAt: '2026-09-01T20:00:00Z' })
 
   const builds = []
@@ -29,7 +30,9 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
       return req.headers['x-test-role'] === 'instructor'
         ? { role: 'instructor' }
         : req.headers['x-test-role'] === 'ada'
-          ? { role: 'student', studentId: 'ada', courseId: 'qtm285' }
+          ? { role: 'student', studentId: 'ada', courseId: 'qtm285', layerScope: 'common' }
+          : req.headers['x-test-role'] === 'grace'
+            ? { role: 'student', studentId: 'grace', courseId: 'qtm285', layerScope: 'student' }
           : null
     },
     dispatchSubmissionBuild: async contentRef => {
@@ -76,7 +79,13 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
 
     const gradebook = await request('/courses/qtm285/status', 'instructor')
     assert.equal(gradebook.status, 200)
-    assert.equal((await gradebook.json()).rows[0].assignments[0].state, 'ungraded')
+    const gradebookBody = await gradebook.json()
+    assert.equal(gradebookBody.rows[0].layerScope, 'common')
+    assert.equal(gradebookBody.rows[0].assignments[0].state, 'ungraded')
+
+    const problems = await request('/assignments/hw1/problems', 'instructor')
+    assert.equal(problems.status, 200)
+    assert.equal((await problems.json()).problems[0].answers[0].layerScope, 'common')
 
     const feedback = await request('/assignments/hw1/submissions/ada/feedback', 'instructor', {
       method: 'POST',
@@ -96,6 +105,16 @@ test('archive hand-in reaches gradebook, return, and student retrieval', async (
     assert.equal(visible.feedback.length, 1)
     assert.equal(visible.feedback[0].text, 'Show the last step.')
     assert.equal(visible.feedback[0].visibility, 'returned')
+
+    const publicView = await request('/assignments/hw1/submissions/ada', 'grace')
+    assert.equal(publicView.status, 200)
+    assert.equal((await publicView.json()).contentRef, 'submission-hw1-ada')
+
+    const exported = await request('/courses/qtm285/export', 'instructor')
+    assert.equal(exported.status, 200)
+    const files = unzipSync(new Uint8Array(await exported.arrayBuffer()))
+    assert.match(strFromU8(files['README.md']), /Ada \(ada\) — returned/)
+    assert.equal(strFromU8(files['hw1/ada/homework.qmd']), qmd)
 
     store.upsertAssignment({ id: 'hw2', courseId: 'qtm285', title: 'Homework 2', dueAt: '2026-09-08T20:00:00Z' })
     buildError = new Error('R package missing')

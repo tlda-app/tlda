@@ -26,6 +26,25 @@ test('gradebook derives missing and ungraded states from roster and submissions'
   } finally { f.close() }
 })
 
+test('a common-layer student is an ordinary roster member through missing, submission, and marking', () => {
+  const f = fixture()
+  try {
+    const demo = f.store.upsertStudent({
+      id: 'demo', courseId: 'qtm285', displayName: 'Demo Student', enrollmentToken: 'demo-secret', layerScope: 'common',
+    })
+    assert.equal(demo.layerScope, 'common')
+    assert.equal(f.store.studentForToken('demo-secret').layerScope, 'common')
+    assert.equal(f.store.status('qtm285').rows.find(row => row.id === 'demo').assignments[0].state, 'not-submitted')
+
+    f.store.submit({ assignmentId: 'hw1', studentId: 'demo', contentRef: 'hw1-demo', answerIds: ['ans-p1'] })
+    assert.equal(f.store.status('qtm285').rows.find(row => row.id === 'demo').assignments[0].state, 'ungraded')
+    const answer = f.store.problems('hw1').problems[0].answers.find(row => row.studentId === 'demo')
+    assert.equal(answer.layerScope, 'common')
+    f.store.setStatus('hw1', 'demo', 'graded')
+    assert.equal(f.store.getSubmission('hw1', 'demo').gradingStatus, 'graded')
+  } finally { f.close() }
+})
+
 test('generated handout reference freezes once per assignment', () => {
   const f = fixture()
   try {

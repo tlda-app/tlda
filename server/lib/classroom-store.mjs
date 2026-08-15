@@ -8,6 +8,7 @@ const DEFAULT_DB = process.env.TLDA_CLASSROOM_DB
   || (process.env.TLDA_FLEET_DB ? path.join(path.dirname(process.env.TLDA_FLEET_DB), 'classroom.db') : null)
   || path.join(os.homedir(), '.config', 'tlda', 'classroom.db')
 const STATUSES = new Set(['ungraded', 'graded', 'returned'])
+const STUDENT_LAYER_SCOPES = new Set(['student', 'common'])
 
 export function hashEnrollmentToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex')
@@ -61,6 +62,7 @@ export class ClassroomStore {
     if (!submissionColumns.has('answer_ids')) this.db.exec('ALTER TABLE submissions ADD COLUMN answer_ids TEXT')
     const studentColumns = new Set(this.db.pragma('table_info(students)').map(column => column.name))
     if (!studentColumns.has('university_login')) this.db.exec('ALTER TABLE students ADD COLUMN university_login TEXT')
+    if (!studentColumns.has('layer_scope')) this.db.exec("ALTER TABLE students ADD COLUMN layer_scope TEXT NOT NULL DEFAULT 'student' CHECK (layer_scope IN ('student','common'))")
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_students_course_login ON students(course_id, university_login) WHERE university_login IS NOT NULL')
   }
 
@@ -73,12 +75,13 @@ export class ClassroomStore {
 
   getCourse(id) { return this.db.prepare('SELECT * FROM courses WHERE id=?').get(id) || null }
 
-  upsertStudent({ id, courseId, displayName, enrollmentToken, active = true }) {
+  upsertStudent({ id, courseId, displayName, enrollmentToken, active = true, layerScope = 'student' }) {
+    if (!STUDENT_LAYER_SCOPES.has(layerScope)) throw new Error(`invalid student layer scope: ${layerScope}`)
     const tokenHash = hashEnrollmentToken(enrollmentToken)
-    this.db.prepare(`INSERT INTO students(id,course_id,display_name,enrollment_token_hash,active) VALUES (?,?,?,?,?)
+    this.db.prepare(`INSERT INTO students(id,course_id,display_name,enrollment_token_hash,active,layer_scope) VALUES (?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET course_id=excluded.course_id, display_name=excluded.display_name,
-      enrollment_token_hash=excluded.enrollment_token_hash, active=excluded.active`)
-      .run(id, courseId, displayName, tokenHash, active ? 1 : 0)
+      enrollment_token_hash=excluded.enrollment_token_hash, active=excluded.active, layer_scope=excluded.layer_scope`)
+      .run(id, courseId, displayName, tokenHash, active ? 1 : 0, layerScope)
     return this.getStudent(id)
   }
 
@@ -90,13 +93,13 @@ export class ClassroomStore {
     return this.getStudent(id)
   }
 
-  getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, active FROM students WHERE id=?').get(id) || null }
+  getStudent(id) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, active, layer_scope AS layerScope FROM students WHERE id=?').get(id) || null }
   studentForToken(token) {
     if (!token) return null
-    return this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName FROM students
+    return this.db.prepare(`SELECT id, course_id AS courseId, display_name AS displayName, layer_scope AS layerScope FROM students
       WHERE enrollment_token_hash=? AND active=1`).get(hashEnrollmentToken(token)) || null
   }
-  listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
+  listStudents(courseId) { return this.db.prepare('SELECT id, course_id AS courseId, display_name AS displayName, university_login AS universityLogin, layer_scope AS layerScope FROM students WHERE course_id=? AND active=1 ORDER BY display_name').all(courseId) }
 
   upsertAssignment({ id, courseId, title, dueAt, solutionsDocKey = null, solutionsVersion = null, templateDocKey = null, templateVersion = null }) {
     this.db.prepare(`INSERT INTO assignments(id,course_id,title,due_at,solutions_doc_key,solutions_version,template_doc_key,template_version)
@@ -158,7 +161,7 @@ export class ClassroomStore {
     // submissions drops anyone who handed in nothing, so the class silently
     // shrinks: the flick-through reads "1 of 1" while the roster holds two, and
     // the student who submitted nothing is the one most worth arriving at.
-    const rows = this.db.prepare(`SELECT st.id AS studentId, st.display_name AS displayName,
+    const rows = this.db.prepare(`SELECT st.id AS studentId, st.display_name AS displayName, st.layer_scope AS layerScope,
       s.content_ref AS contentRef, s.grading_status AS gradingStatus, s.answer_ids AS answerIds
       FROM students st LEFT JOIN submissions s
         ON s.student_id = st.id AND s.assignment_id = ?
@@ -178,6 +181,7 @@ export class ClassroomStore {
         answers: parsed.map(row => ({
           studentId: row.studentId,
           displayName: row.displayName,
+          layerScope: row.layerScope,
           contentRef: row.contentRef,
           // Same word the gradebook uses, so the two surfaces do not describe
           // the same student differently.

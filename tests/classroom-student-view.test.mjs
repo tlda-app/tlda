@@ -25,9 +25,11 @@ function seeded(store) {
   store.upsertCourse({ id: 'c', title: 'C' })
   store.upsertStudent({ id: 'ada', courseId: 'c', displayName: 'Ada', enrollmentToken: 'a' })
   store.upsertStudent({ id: 'bo', courseId: 'c', displayName: 'Bo', enrollmentToken: 'b' })
+  store.upsertStudent({ id: 'demo', courseId: 'c', displayName: 'Demo', enrollmentToken: 'd', layerScope: 'common' })
   store.upsertAssignment({ id: 'hw', courseId: 'c', title: 'HW', dueAt: '2026-09-12', solutionsDocKey: 'hw-solutions' })
   store.submit({ assignmentId: 'hw', studentId: 'ada', contentRef: 'sub-ada' })
   store.submit({ assignmentId: 'hw', studentId: 'bo', contentRef: 'sub-bo' })
+  store.submit({ assignmentId: 'hw', studentId: 'demo', contentRef: 'sub-demo' })
 }
 
 test('a student gets their own work without naming themselves', async t => {
@@ -50,6 +52,18 @@ test('the route cannot be aimed at another student', async t => {
   // And the id-bearing route still refuses.
   const theirs = await get('/assignments/hw/submissions/bo')
   assert.equal(theirs.status, 403)
+})
+
+test('a common-layer student submission is readable by the class while an ordinary student remains private', async t => {
+  const { store, server, get } = await serve(); t.after(() => server.close())
+  seeded(store)
+  principal = { role: 'student', studentId: 'ada', courseId: 'c' }
+
+  const publicWork = await get('/assignments/hw/submissions/demo')
+  assert.equal(publicWork.status, 200)
+  assert.equal(publicWork.body.contentRef, 'sub-demo')
+  assert.deepEqual(publicWork.body.feedback, [])
+  assert.equal((await get('/assignments/hw/submissions/bo')).status, 403)
 })
 
 test('an unreturned draft never reaches the student', async t => {

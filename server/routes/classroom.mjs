@@ -39,11 +39,22 @@ export function classroomPrincipal(req, store) {
   if (level === 'rw') return { role: 'instructor' }
   if (level !== 'read') return null
   const student = store.studentForToken(studentToken(req))
-  return student ? { role: 'student', studentId: student.id, courseId: student.courseId } : null
+  return student ? { role: 'student', studentId: student.id, courseId: student.courseId, layerScope: student.layerScope } : null
 }
 
-function allowedStudent(principal, studentId) {
+function ownsStudent(principal, studentId) {
   return principal?.role === 'instructor' || (principal?.role === 'student' && principal.studentId === studentId)
+}
+
+function canReadStudent(principal, assignmentId, studentId, store) {
+  if (ownsStudent(principal, studentId)) return true
+  if (principal?.role !== 'student') return false
+  const student = store.getStudent(studentId)
+  const assignment = store.getAssignment(assignmentId)
+  return student?.active === 1
+    && student.courseId === principal.courseId
+    && assignment?.courseId === principal.courseId
+    && student.layerScope === 'common'
 }
 
 // Submitting is what unlocks the solution. Skip, 26 June: "once you've submitted
@@ -155,9 +166,14 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   })
 
   router.post('/courses/:courseId/students', instructor, (req, res) => {
-    const { id, displayName, enrollmentToken, active } = req.body || {}
+    const { id, displayName, enrollmentToken, active, layerScope } = req.body || {}
     if (!id || !displayName || !enrollmentToken) return res.status(400).json({ error: 'id, displayName, and enrollmentToken are required' })
-    res.status(201).json(store.upsertStudent({ id, courseId: req.params.courseId, displayName, enrollmentToken, active }))
+    try {
+      res.status(201).json(store.upsertStudent({ id, courseId: req.params.courseId, displayName, enrollmentToken, active, layerScope }))
+    } catch (error) {
+      if (error.message.startsWith('invalid student layer scope:')) return res.status(400).json({ error: error.message })
+      throw error
+    }
   })
 
   router.post('/courses/:courseId/assignments', instructor, (req, res) => {
@@ -275,7 +291,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
 
   router.get('/assignments/:assignmentId/submissions/:studentId', (req, res) => {
     const { assignmentId, studentId } = req.params
-    if (!allowedStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })
+    if (!canReadStudent(req.classroomPrincipal, assignmentId, studentId, store)) return res.status(403).json({ error: 'Forbidden' })
     const row = store.getSubmission(assignmentId, studentId, { includeDrafts: req.classroomPrincipal.role === 'instructor' })
     if (!row) return res.status(404).json({ error: 'Submission not found' })
     res.json(row)
@@ -290,7 +306,7 @@ export function createClassroomRouter({ store = new ClassroomStore(), resolvePri
   // already reads. So `contentRef` stays a document key and nothing downstream
   // has to learn a new shape.
   const receiveSubmissionArchive = (req, res, assignmentId, studentId) => {
-    if (!allowedStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })
+    if (!ownsStudent(req.classroomPrincipal, studentId)) return res.status(403).json({ error: 'Forbidden' })
     if (!store.getAssignment(assignmentId)) return res.status(404).json({ error: 'Assignment not found' })
 
     const chunks = []

@@ -29,6 +29,7 @@ async function firstPage(docKey: string) {
 export function StudentWork() {
   const params = new URLSearchParams(window.location.search)
   const assignmentId = params.get('assignment') || ''
+  const publicStudentId = params.get('student') || ''
   const [assignment, setAssignment] = useState<Assignment & { solutionsLocked?: boolean } | null>(null)
   const [submission, setSubmission] = useState<Submission | null>(null)
   const [document, setDocument] = useState<SvgDocument | null>(null)
@@ -62,16 +63,21 @@ export function StudentWork() {
         if (cancelled) return
         setAssignment(next)
         try {
-          setSubmission(await classroomApi.mySubmission(assignmentId))
-        } catch {
+          setSubmission(publicStudentId
+            ? await classroomApi.submission(assignmentId, publicStudentId)
+            : await classroomApi.mySubmission(assignmentId))
+        } catch (nextError) {
           // Not submitted yet is an ordinary state, not a failure.
-          if (!cancelled) setSubmission(null)
+          if (!cancelled) {
+            setSubmission(null)
+            if (publicStudentId && (nextError as Error).message !== 'Submission not found') setError((nextError as Error).message)
+          }
         }
       })
       .catch(e => { if (!cancelled) setError(e.message) })
       .finally(() => { if (!cancelled) setLoaded(true) })
     return () => { cancelled = true }
-  }, [assignmentId])
+  }, [assignmentId, publicStudentId])
 
   useEffect(() => {
     if (!submission?.contentRef) { setDocument(null); return }
@@ -93,6 +99,11 @@ export function StudentWork() {
   if (!loaded) return <main className="classroomWorkspace">Loading…</main>
 
   if (!submission) {
+    if (publicStudentId && error) return <main className="classroomWorkspace"><p className="classroomError">{error}</p></main>
+    if (publicStudentId) return <main className="classroomWorkspace">
+      <header><div><h1>{assignment?.title ?? assignmentId}</h1><div>{publicStudentId} has not submitted yet</div></div></header>
+      {error && <p className="classroomError">{error}</p>}
+    </main>
     return <main className="classroomWorkspace">
       <header><div><h1>{assignment?.title ?? assignmentId}</h1><div>Not submitted yet</div></div></header>
       <button
@@ -127,7 +138,8 @@ export function StudentWork() {
 
   return <>
     {document && <SvgDocumentEditor key={submission.contentRef} document={document} roomId={`doc-${submission.contentRef}`} />}
-    <aside className="markingLifecycle" aria-label="Your submission">
+    <aside className="markingLifecycle" aria-label={publicStudentId ? 'Public student submission' : 'Your submission'}>
+      {publicStudentId && <span>Public submission: {publicStudentId}</span>}
       <span>Submitted {new Date(submission.submittedAt).toLocaleString()}</span>
       <span className="statusChip">{submission.gradingStatus}</span>
       {assignment?.solutionsLocked && <span>solutions unlock when you submit</span>}
