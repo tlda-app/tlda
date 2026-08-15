@@ -77,7 +77,6 @@
   z-index: 12;
   display: flex;
   flex-direction: column;
-  width: max-content;
   gap: 0;
   max-height: 100%;
   overflow: hidden;
@@ -88,9 +87,6 @@
 }
 
 .fleet-chat-shape .fleet-unread-agent-rail .fleet-agents-col-name {
-  width: max-content;
-  overflow: visible;
-  text-overflow: clip;
   pointer-events: all;
 }
 
