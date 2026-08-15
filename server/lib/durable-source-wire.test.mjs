@@ -22,7 +22,7 @@ async function unusedPort() {
   return port
 }
 
-async function startServer({ port, projectsDir, fleetDb, crashBoundary = null, bindingRegistry = null }) {
+async function startServer({ port, projectsDir, fleetDb, crashBoundary = null, bindingRegistry = null, helloDelayMs = null }) {
   const child = spawn(process.execPath, ['server/unified-server.mjs', '--i-am-tlda-cli'], {
     cwd: join(import.meta.dirname, '..', '..'),
     env: {
@@ -35,6 +35,7 @@ async function startServer({ port, projectsDir, fleetDb, crashBoundary = null, b
       TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS: '-1',
       ...(bindingRegistry ? { TLDA_SOURCE_BINDING_REGISTRY_PATH: bindingRegistry } : {}),
       ...(crashBoundary ? { TLDA_TEST_SOURCE_CRASH_BOUNDARY: crashBoundary } : {}),
+      ...(helloDelayMs != null ? { TLDA_TEST_DAEMON_HELLO_DELAY_MS: String(helloDelayMs) } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -121,6 +122,64 @@ function deliver(ws, envelope) {
     ws.send(JSON.stringify(envelope))
   })
 }
+
+test('daemon hello registers its binding before the next durable source frame', { timeout: 180_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-source-hello-order-'))
+  const projectsDir = join(root, 'projects')
+  const fleetDb = join(root, 'fleet.db')
+  const bindingRegistry = join(root, 'source-bindings.json')
+  const project = 'paper-hello-order'
+  const port = await unusedPort()
+  const envelope = {
+    type: 'source-change', project, requestId: 'R-hello-order', expectedRevision: null,
+    sourceBindingId: 'binding-hello-order',
+    files: [{ path: 'main.tex', content: 'ordered\n' }], deletedFiles: [], sourceManifest: ['main.tex'],
+    __daemon_outbox_id: 'D-hello-order',
+  }
+  let server
+  let ws
+  try {
+    await initProjectStore(projectsDir)
+    createProject({ name: project, mainFile: 'main.tex', format: 'svg' })
+    await updateProject(project, { pages: 1, buildStatus: 'success' })
+    mkdirSync(join(projectsDir, project, 'output'), { recursive: true })
+    writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
+    await closeProjectStore()
+
+    server = await startServer({ port, projectsDir, fleetDb, bindingRegistry, helloDelayMs: 100 })
+    ws = new WebSocket(`wss://127.0.0.1:${port}/ws/fleet-daemon`, { rejectUnauthorized: false })
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', reject)
+    })
+    const delivered = new Promise((resolve, reject) => {
+      const received = []
+      const timeout = setTimeout(() => reject(new Error(`delivery timed out: ${JSON.stringify(received)}`)), 20_000)
+      ws.on('message', raw => {
+        const message = JSON.parse(String(raw))
+        received.push(message)
+        if (message.type !== 'daemon-outbox-ack' || message.outbox_id !== envelope.__daemon_outbox_id) return
+        clearTimeout(timeout)
+        resolve(received)
+      })
+    })
+    ws.send(JSON.stringify({
+      type: 'daemon-hello', machine_id: 'hello-order-machine', env_name: 'test',
+      source_bindings: [{ bindingId: envelope.sourceBindingId, project }],
+      boot_id: Date.now(), install_path: import.meta.dirname, hostname: 'test', version: 'test',
+    }))
+    ws.send(JSON.stringify(envelope))
+    const messages = await delivered
+    const result = messages.find(message => message.type === 'source-change-result')
+    assert.equal(result?.ok, true, `${JSON.stringify(messages)}\n${server.output()}`)
+    assert.equal(readFileSync(join(projectsDir, project, 'source', 'main.tex'), 'utf8'), 'ordered\n')
+  } finally {
+    ws?.terminate()
+    await stopServer(server)
+    await closeProjectStore()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('offline binding remains required and completes when its daemon reconnects', { timeout: 180_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'tlda-source-offline-wire-'))

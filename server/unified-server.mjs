@@ -5240,12 +5240,15 @@ server.on('upgrade', async (req, socket, head) => {
         remoteAddr,
         remotePort,
       })
-      ws.on('message', async (raw) => {
-        let msg
-        try { msg = JSON.parse(raw.toString()) } catch { return }
-        await handleDaemonOutboxEnvelope(ws, msg, handleDaemonWsMessage, {
-          onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
-        })
+      let daemonMessageChain = Promise.resolve()
+      ws.on('message', (raw) => {
+        daemonMessageChain = daemonMessageChain.then(async () => {
+          let msg
+          try { msg = JSON.parse(raw.toString()) } catch { return }
+          await handleDaemonOutboxEnvelope(ws, msg, handleDaemonWsMessage, {
+            onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
+          })
+        }).catch(e => console.error('[daemon-ws] dispatch error:', e?.message || e))
       })
       ws.on('close', async (code, reason) => {
         logWsClose('daemon', ws, code, reason?.toString?.() || '')
@@ -8750,6 +8753,10 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'daemon-hello') {
+    const helloDelayMs = process.env.TLDA_DEV_SERVER === '1'
+      ? Number(process.env.TLDA_TEST_DAEMON_HELLO_DELAY_MS || 0)
+      : 0
+    if (helloDelayMs > 0) await new Promise(resolve => setTimeout(resolve, helloDelayMs))
     const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id, capabilities, source_bindings } = msg
     if (!machine_id || !env_name) return
     const daemonKey = daemonAddress(machine_id, env_name)
