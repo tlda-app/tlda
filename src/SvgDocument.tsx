@@ -41,6 +41,7 @@ import { FleetSourceEditorShapeUtil } from './shapes/FleetSourceEditorShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { dispatchFleetHudReset } from './wm/editor-host-bridge'
 import { installTldaShapeLayers } from './wm/tlda-shape-layers'
+import { installProjectLayerModel } from './wm/project-layer-model'
 import { log } from './logger'
 import { dispatchShapeRenderError } from './shape-error-surface'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
@@ -87,6 +88,9 @@ import { FleetToolGhost } from './overlays/FleetToolGhost'
 import { FleetNudgeGuides } from './overlays/FleetNudgeGuides'
 import { ChromeConditions } from './chrome/ChromeConditions'
 import { RecognizeButton } from './overlays/RecognizeButton'
+import { RecordingsButton } from './overlays/RecordingsButton'
+import { RecordingViewer } from './overlays/RecordingViewer'
+import { useBook } from './BookContext'
 import { PenHelperButtons, DarkModeSync } from './toolbar/ToolbarComponents'
 import { FormatToolbar } from './toolbar/FormatToolbar'
 import { ProjectContext, PanelContext, BottomPanelsContext, AgentPillContext } from './PanelContext'
@@ -136,6 +140,7 @@ import { isPhoneViewport } from './phoneViewport'
 import { useMarkedExerciseHtmlAlignment } from './classroom/useMarkedExerciseHtmlAlignment'
 import { installFramePairBridge, installReturnMarksBridge } from './classroom/marking'
 import { ClassroomConnectorOverlay } from './classroom/ClassroomConnectorOverlay'
+import { ClassroomGradingSurface, type ClassroomGradingSurfaceProps } from './classroom/ClassroomGradingSurface'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -276,6 +281,8 @@ interface SvgDocumentEditorProps {
   diffConfig?: { basePath: string }
   initialCamera?: { x: number; y: number; z: number; page?: string }
   classroomMarking?: boolean
+  classroomGrading?: Omit<ClassroomGradingSurfaceProps, 'editor' | 'submissionShapeId' | 'solutionShapeId'>
+  onEditorMount?: (editor: Editor | null) => void
 }
 
 
@@ -404,7 +411,7 @@ function EmergencyDumpRescue({ editor, documentName }: { editor: Editor; documen
   )
 }
 
-export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera, classroomMarking = false }: SvgDocumentEditorProps) {
+export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera, classroomMarking = false, classroomGrading, onEditorMount }: SvgDocumentEditorProps) {
   // Initialize signal connection (signals via HTTP POST + @tldraw/sync custom messages)
   useSignalInit(document.name)
 
@@ -431,13 +438,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
 
   // --- Hooks ---
   const projectName = document.name
+  const book = useBook()
+  const recordingProjectName = book?.bookName ?? projectName
 
   const isPresentation = document.format === 'slides'
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
   // Role only meaningful in presentation (slides) format
   useMemo(() => {
-    if (isPresentation) { initRole(projectName); setDraftMode(getRole() === 'viewer') }
+    initRole(projectName)
+    if (isPresentation) setDraftMode(getRole() === 'viewer')
   }, [projectName, isPresentation])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
@@ -756,8 +766,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
   const components = useMemo<TLComponents>(
     () => {
       const chrome = isPresentation
-        ? <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
-        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
+        ? <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><RecordingsButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
+        : <><SpatialWorldMap projectName={projectName} projectTitle={document.title || projectName} /><RibbonLane /><ProvenancePanel /><ProvenanceInline /><DocumentPanel /><PhoneOverlay /><HighlighterButton /><VoiceNoteButton /><MicToggleButton /><VoiceTargetFollower /><SemanticHighlightPill /><AgentAttentionCanvas /><RecognizeButton /><RecordingsButton /><BottomPanelsSlot /><AgentPillSlot /><HighlighterSlider /><ToolNameHud /><VersionStampSlot /><FleetToolGhost /><FleetNudgeGuides /><ChromeConditions /></>
       return {
         PageMenu: null,
         SharePanel: null,
@@ -1100,10 +1110,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
 
   // Bottom panels content — passed via context into InFrontOfTheCanvas
   const bottomPanelsContent = (
-    <div className="bottom-panels">
-      {classroomMarking && editorRef.current && document.pages[0]?.shapeId && document.pages[1]?.shapeId && (
+    <>
+      <div className="bottom-panels">
+        {classroomMarking && editorRef.current && document.pages[0]?.shapeId && document.pages[1]?.shapeId && (
         <ClassroomConnectorOverlay
           editor={editorRef.current}
+          submissionShapeId={document.pages[0].shapeId}
+          solutionShapeId={document.pages[1].shapeId}
+        />
+      )}
+      {classroomGrading && editorRef.current && document.pages[0]?.shapeId && document.pages[1]?.shapeId && (
+        <ClassroomGradingSurface
+          editor={editorRef.current}
+          {...classroomGrading}
           submissionShapeId={document.pages[0].shapeId}
           solutionShapeId={document.pages[1].shapeId}
         />
@@ -1117,9 +1136,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
         <ScrollyOverlay mainEditor={editorRef.current} />
-      )}
-      {editorRef.current && (
-        <AnnotationViewer mainEditor={editorRef.current} />
       )}
       {shadowVisible && shadowTimeBounds && (
         <ShadowHistoryOverlay
@@ -1156,7 +1172,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
       {editorRef.current && (
         <FleetHUD mainEditor={editorRef.current} />
       )}
-    </div>
+      </div>
+      {editorRef.current && (
+        <div className="managed-surface-overlay-owner">
+          <AnnotationViewer mainEditor={editorRef.current} />
+        </div>
+      )}
+    </>
   )
 
   // AgentPill replaced by FleetIconPill in build-pills-row
@@ -1172,6 +1194,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     <AgentPillContext.Provider value={agentPillContent}>
     <VersionStampContext.Provider value={versionStampContent}>
     <Tldraw
+        className={classroomGrading ? 'classroom-grading-editor' : undefined}
         store={storeWithStatus}
         licenseKey={LICENSE_KEY}
         shapeUtils={shapeUtils}
@@ -1180,6 +1203,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
         getShapeVisibility={getShapeVisibility}
         onMount={(editor) => {
           const cleanupFleetPillReclaimer = installFleetPillReclaimer(editor)
+          const cleanupProjectLayerModel = installProjectLayerModel(editor)
           // Give the window manager its layers and the resolver that says which
           // one a shape is in, before anything asks. Every other WM consumer
           // reaches this core through getEditorWMCore, so installing at mount is
@@ -1189,6 +1213,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
           // Expose editor for debugging/puppeteer access
           ;(window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
+          onEditorMount?.(editor)
           // A hidden shape must not stay selected. TLDraw refuses to SELECT a
           // hidden shape (hit-testing checks isShapeHidden) but never DESELECTS
           // one that becomes hidden later, and the selection foreground draws
@@ -1576,7 +1601,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
               if (changedPages.size > 0) dismissAllChanges()
             })
           }
-          return cleanupFleetPillReclaimer
+          return () => {
+            onEditorMount?.(null)
+            cleanupProjectLayerModel()
+            cleanupFleetPillReclaimer()
+          }
         }}
         components={components}
         forceMobile
@@ -1591,6 +1620,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera,
     </BottomPanelsContext.Provider>
     </PanelContext.Provider>
     </ProjectContext.Provider>
+    <RecordingViewer projectName={recordingProjectName} shapeUtils={shapeUtils} tools={tools} licenseKey={LICENSE_KEY} />
     </>
   )
 }

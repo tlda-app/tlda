@@ -53,6 +53,7 @@ export function getToken(): string | null {
 
 let _canPresent: boolean | null = null  // null = not yet fetched
 let _isDev: boolean = false
+let _canPublish = false
 const presentListeners = new Set<() => void>()
 
 /** Fetch auth level from server. Call after initToken(). */
@@ -63,13 +64,16 @@ export async function fetchAuthLevel(): Promise<void> {
       const data = await res.json()
       _canPresent = data.presenter ?? true
       _isDev = data.dev ?? false
+      _canPublish = data.publisher ?? data.dev ?? false
     } else {
       _canPresent = false  // unauthorized = no presenter
       _isDev = false
+      _canPublish = false
     }
   } catch {
     _canPresent = true  // fetch failed (no server / local dev) = unlocked
     _isDev = false
+    _canPublish = false
   }
   presentListeners.forEach(fn => fn())
 }
@@ -79,8 +83,12 @@ export function canPresent(): boolean {
   return _canPresent ?? true  // default true until fetched (local dev)
 }
 
+/** Whether the server has answered which token class this app carries. */
+export function isPresentPermissionKnown(): boolean { return _canPresent !== null }
+
 /** Whether the server is running in dev mode (auth disabled). */
 export function isDevMode(): boolean { return _isDev }
+export function canPublishRecording(): boolean { return _canPublish }
 
 export function subscribeCanPresent(fn: () => void): () => void {
   presentListeners.add(fn)

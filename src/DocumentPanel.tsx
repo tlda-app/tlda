@@ -13,6 +13,7 @@ import { ProjectTab } from './panels/ProjectTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider } from './CornerButtonSlider'
 import { isPhoneViewport } from './phoneViewport'
+import { log } from './logger'
 
 import './DocumentPanel.css'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
@@ -320,6 +321,16 @@ function PhoneHighlighterButton() {
   const lastTapRef = useRef(0)
   const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const suppressClickRef = useRef(false)
+  const tapTraceRef = useRef<{
+    pointerDownAt?: number
+    pointerDownMono?: number
+    pointerUpAt?: number
+    pointerUpMono?: number
+    pointerId?: number
+    pointerType?: string
+    clientX?: number
+    clientY?: number
+  }>({})
   colorIdxRef.current = colorIdx // keep ref current on every render — used in handlePointerMove
 
   const activateSlot = useCallback((idx: number) => activateHlSlot(editor, idx), [editor])
@@ -356,11 +367,27 @@ function PhoneHighlighterButton() {
     }
 
     if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current)
+    const scheduledAt = Date.now()
+    const scheduledMono = performance.now()
+    const pointer = { ...tapTraceRef.current }
     singleTapTimerRef.current = setTimeout(() => {
       singleTapTimerRef.current = null
+      const executedAt = Date.now()
+      const executedMono = performance.now()
+      const fromTool = editor.getCurrentToolId()
       performSingleTap()
+      log.metric('phone-highlighter-telemetry', 'delayed single-tap toggle executed', {
+        ...pointer,
+        scheduledAt,
+        scheduledMono,
+        delayMs: executedMono - scheduledMono,
+        executedAt,
+        executedMono,
+        fromTool,
+        toTool: editor.getCurrentToolId(),
+      })
     }, 260)
-  }, [performSingleTap, undoLastAction])
+  }, [editor, performSingleTap, undoLastAction])
 
   // Drag handling — horizontal L/R for colors. Tap (no drag) toggles the tool.
   const dragStartX = useRef(0)
@@ -370,6 +397,14 @@ function PhoneHighlighterButton() {
     e.preventDefault()
     dragStartX.current = e.clientX
     dragStartY.current = e.clientY
+    tapTraceRef.current = {
+      pointerDownAt: Date.now(),
+      pointerDownMono: performance.now(),
+      pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    }
     const btnRect = btnRef.current?.getBoundingClientRect() ?? null
     dragBtnRectRef.current = btnRect
     setDragBtnRect(btnRect)
@@ -415,6 +450,15 @@ function PhoneHighlighterButton() {
   }, [])
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    tapTraceRef.current = {
+      ...tapTraceRef.current,
+      pointerUpAt: Date.now(),
+      pointerUpMono: performance.now(),
+      pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    }
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
     // Read refs — always current even if state update hasn't committed yet
     const currentMode = dragModeRef.current

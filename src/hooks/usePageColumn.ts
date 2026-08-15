@@ -18,6 +18,7 @@ import {
   pageColumnHandleShapeMeta,
   pageColumnShapeMeta,
 } from '../wm/page-column-surface'
+import { requestManagedSurface } from '../wm/managed-surfaces'
 import type { ManagedSurfaceOwner } from '../wm/managed-surfaces'
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -151,22 +152,26 @@ class PageColumn {
   }
 
   private pageMeta(pageNum: number, bounds: { x: number; y: number; w: number; h: number }) {
-    return pageColumnShapeMeta(createPageColumnSurfaceRequest({
+    const request = createPageColumnSurfaceRequest({
       columnKey: this.columnId,
       pageNum,
       bounds,
       owner: this.options.owner,
       source: sourceKey(this.options.source),
-    }))
+    })
+    const activeRequest = requestManagedSurface(window, request)
+    return pageColumnShapeMeta(activeRequest)
   }
 
   private handleMeta(bounds: { x: number; y: number; w: number; h: number }) {
-    return pageColumnHandleShapeMeta(createPageColumnHandleSurfaceRequest({
+    const request = createPageColumnHandleSurfaceRequest({
       columnKey: this.columnId,
       bounds,
       owner: this.options.owner,
       source: sourceKey(this.options.source),
-    }))
+    })
+    const activeRequest = requestManagedSurface(window, request)
+    return pageColumnHandleShapeMeta(activeRequest)
   }
 
   private updatePageMeta(pageNum: number, shape: any, patch: { x?: number; y?: number } = {}) {

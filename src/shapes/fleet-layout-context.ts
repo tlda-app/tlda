@@ -6,6 +6,7 @@ import { crossAxis, documentFlowAxis, type Axis } from './document-flow-axis'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
 import { defaultFleetLayoutChatFilters } from './fleet-layout-seeding'
 import { currentVisibleViewportSize, singleChatViewportPanelSize } from './fleet-layout-sizing'
+import { fleetLayoutDx } from './fleet-layout-offset-policy'
 
 export type DocumentPageBounds = {
   pageShapes: any[]
@@ -147,7 +148,11 @@ export function buildFleetLayoutPlanInput({
   // HUD view is unaffected — its camera follows my own shapes' bounds — so this
   // only separates the underlying canvas shapes, which is what keeps a foreign
   // layout from overlapping mine.
-  const { dx } = layoutOffset(myId, myDevice)
+  const { dx: ownerDx } = layoutOffset(myId, myDevice)
+  // A two-margin layout is positioned relative to both document edges, so its
+  // page-space X coordinates must stay in the document's coordinate frame.
+  // Other owners are already kept disjoint by laneDy on Y.
+  const dx = fleetLayoutDx(variant, ownerDx)
   const dy = laneDy(editor, myId, myDevice)
   anchorX += dx
   anchorY += dy

@@ -15,6 +15,7 @@ import {
 } from './fleet-hud-layer.ts'
 import { ensureLayer } from './editor-wm.ts'
 import { isMyFleetShape } from '../shapes/fleet-ownership.ts'
+import { registerManagedSurfaceCore } from './managed-surfaces.ts'
 
 /**
  * tlda's answer to "which layer is this shape in".
@@ -78,6 +79,7 @@ export function installTldaShapeLayers(editor: Editor): WMCore {
 		},
 	})
 	ensureFleetHudLayers(wm)
+	if (typeof window !== 'undefined') registerManagedSurfaceCore(window, wm)
 
 	wm.setShapeLayerResolver((shape) => tldaShapeLayerId(editor, shape))
 	setShapeLayerReport(editor, () => shapeLayerReport(editor))

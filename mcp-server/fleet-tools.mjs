@@ -467,6 +467,7 @@ const ENV_SCOPED_TOOL_NAMES = new Set([
   'search', 'thread', 'interrupt', 'roster', 'viewer',
   'timer', 'subscription',
   'report',
+  'propose_lecture_interval',
 ]);
 
 function normalizeEnvArg(args = {}) {
@@ -1452,6 +1453,21 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'propose_lecture_interval',
+      description: 'Propose the class interval for a private lecture recording. The server records the authenticated fleet agent as proposer; this tool cannot publish.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string', description: 'Classroom project name.' },
+          recording_id: { type: 'string', description: 'Private recording ID.' },
+          start_ms: { type: 'number', description: 'Proposed inclusive start in milliseconds.' },
+          end_ms: { type: 'number', description: 'Proposed exclusive end in milliseconds.' },
+        },
+        required: ['project', 'recording_id', 'start_ms', 'end_ms'],
         additionalProperties: false,
       },
     },
@@ -4937,6 +4953,21 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   }
 
   // ==== Utilities ====
+
+  if (name === 'propose_lecture_interval') {
+    if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    try {
+      const result = await mcpFleetTransport.durable('lecture-recording-proposal', {
+        project: args.project,
+        recording_id: args.recording_id,
+        start_ms: args.start_ms,
+        end_ms: args.end_ms,
+      }, { authenticateAgentId: activeAgentId() });
+      return { content: [{ type: 'text', text: `Proposed ${result.startMs}–${result.endMs} ms for ${args.project}/${args.recording_id} as ${result.proposedBy}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Lecture interval proposal failed: ${e.message}` }], isError: true };
+    }
+  }
 
   if (name === 'subscription') {
     if (!activeAgentId()) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };

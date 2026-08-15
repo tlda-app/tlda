@@ -3,10 +3,14 @@
   "version": "0.1.0",
   "description": "TLDraw window manager core and TLDraw adapter boundary.",
   "type": "module",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
   "exports": {
-    ".": "./src/index.ts",
-    "./core": "./src/core.ts",
-    "./tldraw-adapter": "./src/tldraw-adapter.ts"
+    ".": "./dist/index.js",
+    "./core": "./dist/core.js",
+    "./tldraw-adapter": "./dist/tldraw-adapter.js"
   },
   "license": "MIT",
   "peerDependencies": {

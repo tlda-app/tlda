@@ -7,9 +7,8 @@ import type { LineStatus } from './shapes/UnderstandingLineShape'
 import type { SvgPage } from './loaders/types'
 import { checkRibbonStale } from './historyStore'
 import { overlapsRibbonX } from './ribbonZone'
+import { RIBBON_LANE_WIDTH, RIBBON_LANE_X } from './shapes/ribbon-geometry'
 
-const MARGIN_X = 0
-const BAR_WIDTH = 6
 const RIBBON_SHAPE_ID = 'shape:understanding-ribbon' as TLShapeId
 const DOC_VERSION_SENTINEL_ID = 'shape:doc-version--sentinel' as TLShapeId
 
@@ -276,28 +275,29 @@ export async function initRibbon(
   const existing = getRibbonShape(editor)
   if (existing) {
     const props = existing.props as any
+    const xOk = Math.abs(existing.x - RIBBON_LANE_X) <= 0.5
     const yOk = Math.abs(existing.y - docTop) <= 0.5
     const hOk = Math.abs(props.h - docHeight) <= 0.5
-    if (!yOk || !hOk) {
+    if (!xOk || !yOk || !hOk) {
       editor.store.update(RIBBON_SHAPE_ID, (s: any) => ({
         ...s,
-        x: MARGIN_X,
+        x: RIBBON_LANE_X,
         y: docTop,
         isLocked: true,
-        props: { ...s.props, w: BAR_WIDTH, h: docHeight },
+        props: { ...s.props, w: RIBBON_LANE_WIDTH, h: docHeight },
       }))
     }
   } else {
     editor.createShape({
       id: RIBBON_SHAPE_ID,
       type: 'understanding-line' as any,
-      x: MARGIN_X,
+      x: RIBBON_LANE_X,
       y: docTop,
       rotation: 0,
       isLocked: true,
       opacity: 1,
       props: {
-        w: BAR_WIDTH,
+        w: RIBBON_LANE_WIDTH,
         h: docHeight,
         segments: '[]',
       },
@@ -542,7 +542,7 @@ export function setupRibbonEraser(
 
     if (event.name === 'pointer_down' && event.type === 'pointer') {
       const pagePoint = editor.inputs.currentPagePoint
-      if (pagePoint.x < MARGIN_X + BAR_WIDTH + 20) {
+      if (pagePoint.x < RIBBON_LANE_X + RIBBON_LANE_WIDTH + 20) {
         eraserActive = true
         void getLineYIndex(projectName, pages).then(idx => { index = idx })
         eraseBandAt(pagePoint.y)

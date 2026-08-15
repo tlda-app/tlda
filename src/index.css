@@ -32,6 +32,13 @@ body {
   pointer-events: none;
 }
 
+.managed-surface-overlay-owner {
+  position: fixed;
+  inset: 0;
+  z-index: var(--tlda-z-top-control-popover);
+  pointer-events: none;
+}
+
 .build-pills-row {
   display: flex;
   flex-direction: column;

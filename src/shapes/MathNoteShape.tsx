@@ -56,8 +56,7 @@ import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
-import { pagePointToClient } from '../wm/viewport-coordinates'
-import { cancelWMDrop, finishWMDrop, updateWMDrop } from '../wm/drop-targets'
+import { cancelWMDrop, currentWMDropPointer, finishWMDrop, updateWMDrop } from '../wm/drop-targets'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -201,15 +200,6 @@ export function setReplyContext(text: string | null) { pendingReplyContext = tex
 const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
 const noKeyboardOnTouch = _isTouchDevice ? [EditorView.contentAttributes.of({ inputmode: 'none' })] : []
 
-function mathNoteCenterClientPoint(editor: any, shape: any) {
-  const bounds = editor.getShapePageBounds(shape.id)
-  if (!bounds) return null
-  return pagePointToClient(editor, {
-    x: bounds.x + bounds.w / 2,
-    y: bounds.y + bounds.h / 2,
-  })
-}
-
 function annotationDropToken(shape: any) {
   const text = (shape.props.text as string) || ''
   const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
@@ -323,7 +313,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
   override onTranslate = (_initial: any, current: any) => {
     if (current.props.docView) return
-    const clientPoint = mathNoteCenterClientPoint(this.editor, current)
+    const clientPoint = currentWMDropPointer()
     if (!clientPoint) {
       cancelWMDrop()
       return
@@ -339,7 +329,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   override onTranslateEnd = (initial: any, current: any) => {
-    const clientPoint = mathNoteCenterClientPoint(this.editor, current)
+    const clientPoint = currentWMDropPointer()
     if (!clientPoint) {
       cancelWMDrop()
       return

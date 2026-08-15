@@ -9,14 +9,14 @@ import type { FleetNudgeGuide } from './fleet-utils'
  * The editor travels with them: a fleet panel can be dragged on the HUD layer,
  * which has its own editor, and only that editor can project its own pages.
  */
-export type FleetNudgeGuideState = { editor: Editor; guides: FleetNudgeGuide[] } | null
+export type FleetNudgeGuideState = { editor: Editor; guides: FleetNudgeGuide[]; isActive?: () => boolean } | null
 
 let current: FleetNudgeGuideState = null
 const listeners = new Set<(state: FleetNudgeGuideState) => void>()
 
-export function setFleetNudgeGuides(editor: Editor, guides: FleetNudgeGuide[]) {
+export function setFleetNudgeGuides(editor: Editor, guides: FleetNudgeGuide[], isActive?: () => boolean) {
   if (guides.length === 0 && current === null) return
-  current = guides.length === 0 ? null : { editor, guides }
+  current = guides.length === 0 ? null : { editor, guides, isActive }
   for (const listener of listeners) listener(current)
 }
 

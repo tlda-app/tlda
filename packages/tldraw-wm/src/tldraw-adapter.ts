@@ -1,1 +1,5 @@
-export * from '../../../src/wm/tldraw-adapter.ts'
+export * from './editor-wm.ts'
+export * from './viewport-coordinates.ts'
+export * from './canvas-clip-panel.ts'
+export * from './gesture-frame.ts'
+export * from './tldraw-fork-viewport-adapter.ts'

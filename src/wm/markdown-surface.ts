@@ -41,7 +41,7 @@ export function createTemporaryMarkdownSurfaceRequest({
 	sourceChatShapeId,
 	sharedDocPath,
 	authorId,
-}: TemporaryMarkdownSurfaceInput): ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload, TemporaryMarkdownSurfaceKind> {
+}: TemporaryMarkdownSurfaceInput): ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload, TemporaryMarkdownSurfaceKind, ManagedSurfaceOwner, 'session'> {
 	const slug = surfaceSlug(shapeId)
 	return {
 		kind: 'temporary-markdown',

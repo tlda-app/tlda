@@ -24,6 +24,7 @@ import {
   createTemporaryMarkdownSurfaceRequest,
   temporaryMarkdownShapeMeta,
 } from '../wm/markdown-surface'
+import { requestManagedSurface } from '../wm/managed-surfaces'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 // @ts-ignore — vanilla JS module
 import { parseCanonicalReference } from '../../shared/canonical-references.mjs'
@@ -448,6 +449,7 @@ export async function createTemporaryMarkdownColumn(
     sharedDocPath: typeof meta.sharedDocPath === 'string' ? meta.sharedDocPath : undefined,
     authorId: typeof meta.authorId === 'string' ? meta.authorId : undefined,
   })
+  const activeSurface = requestManagedSurface(window, surface)
   const surfaceShape = editor.getShape(shapeId)
   if (surfaceShape) {
     if (surfaceShape.isLocked) editor.updateShape({ id: shapeId, type: surfaceShape.type, isLocked: false })
@@ -456,7 +458,7 @@ export async function createTemporaryMarkdownColumn(
       type: surfaceShape.type,
       meta: {
         ...surfaceShape.meta,
-        ...temporaryMarkdownShapeMeta(surface),
+        ...temporaryMarkdownShapeMeta(activeSurface),
       },
     } as unknown as Parameters<Editor['updateShape']>[0])
     editor.updateShape({ id: shapeId, type: surfaceShape.type, isLocked: true })
@@ -465,7 +467,7 @@ export async function createTemporaryMarkdownColumn(
     shapeId,
     bounds,
     url,
-    surface,
+    surface: activeSurface,
   }
 }
 

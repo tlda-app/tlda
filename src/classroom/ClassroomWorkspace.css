@@ -14,6 +14,10 @@
 .markingLifecycle:hover, .markingLifecycle:focus-within { opacity: 1; }
 .markingLifecycle a { color: inherit; }
 .markingLifecycle button { min-height: 32px; border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 6px; background: transparent; color: inherit; padding: 4px 9px; }
+.classroomGradingPanes { position: fixed; z-index: 450; inset: 52px 16px 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; pointer-events: none; }
+.classroomGradingPane { min-width: 0; pointer-events: auto; }
+.classroomGradingPane .clip-panel { max-width: 100%; background: Canvas; }
+.tl-container.classroom-grading-editor > span > .tl-canvas { visibility: hidden; pointer-events: none; }
 .classroomError { color: #9a3c32; }
 .classroomDropTarget { width: min(680px, 100%); min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 2px dashed #aaa59a; border-radius: 10px; background: white; color: inherit; font: inherit; }
 .classroomDropTarget:not(:disabled) { cursor: pointer; }

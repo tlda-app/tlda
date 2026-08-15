@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo, useRef, Component, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, useSyncExternalStore, Component, type ReactNode } from 'react'
 import { SvgDocumentEditor } from './SvgDocument'
 import { createSvgDocumentLayout, loadSvgDocument, loadImageDocument, loadHtmlDocument, loadDiffDocument, loadSlidesDocument } from './svgDocumentLoader'
 import { clearDocumentStores } from './stores'
-import { initToken, fetchAuthLevel } from './authToken'
+import { initToken, fetchAuthLevel, canPublishRecording, isPresentPermissionKnown, subscribeCanPresent } from './authToken'
+import { attachAppRecordingEditor, openAppRecordingSession } from './recording/recorder'
+import { createAppRecordingOwner } from './recording/appRecordingOwner'
 import { log } from './logger'
 import { SHAPE_RENDER_ERROR_EVENT, errorFromShapeRenderEvent } from './shape-error-surface'
 import { BookViewer } from './BookViewer'
@@ -235,6 +237,22 @@ function DocumentApp() {
   const [state, setState] = useState<State | null>(null)
   const [initialCamera] = useState(parseInitialCamera)
   const isDark = useFleetTheme()
+  const recordingPermission = useSyncExternalStore(subscribeCanPresent, canPublishRecording)
+  const presenterPermissionKnown = useSyncExternalStore(subscribeCanPresent, isPresentPermissionKnown)
+  const recordingOwner = useRef(createAppRecordingOwner(openAppRecordingSession))
+  const captureDoc = state?.phase === 'book'
+    ? state.bookName
+    : state?.phase === 'svg'
+      ? state.document.name
+      : new URLSearchParams(window.location.search).get('project')
+
+  useEffect(() => {
+    recordingOwner.current.observe(captureDoc, presenterPermissionKnown && recordingPermission)
+  }, [captureDoc, recordingPermission, presenterPermissionKnown])
+
+  useEffect(() => () => {
+    recordingOwner.current.exit()
+  }, [])
 
   // The browser's back button does not drive this app — see AGENTS.md
   // "Project as world". It used to reload the whole viewer on popstate, which
@@ -531,7 +549,7 @@ function DocumentApp() {
       return (
         <div className="App">
           <ErrorBoundary>
-            <BookViewer bookName={state.bookName} members={state.members} />
+            <BookViewer bookName={state.bookName} members={state.members} onEditorMount={attachAppRecordingEditor} />
           </ErrorBoundary>
           <MarkingLifecycle />
         </div>
@@ -542,7 +560,7 @@ function DocumentApp() {
           <IdentityPicker />
           <DocumentRadio />
           <ErrorBoundary>
-            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} />
+            <SvgDocumentEditor document={state.document} roomId={state.roomId} diffConfig={state.diffConfig} initialCamera={initialCamera} onEditorMount={attachAppRecordingEditor} />
           </ErrorBoundary>
           <MarkingLifecycle />
         </div>

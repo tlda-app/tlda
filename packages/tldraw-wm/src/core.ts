@@ -1,1 +1,5 @@
-export * from '../../../src/wm/package-core.ts'
+export * from './wm-core.ts'
+export * from './hosted-panel-registry.ts'
+export * from './managed-surfaces.ts'
+export * from './gesture-policy.ts'
+export * from './layer-model.ts'

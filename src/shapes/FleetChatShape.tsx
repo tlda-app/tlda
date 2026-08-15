@@ -98,6 +98,11 @@ import {
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
 import { createLightboxSurfaceRequest } from '../wm/lightbox-surface'
+import {
+  dismissManagedSurface,
+  managedSurfaceEventOwner,
+  requestManagedSurface,
+} from '../wm/managed-surfaces'
 import { clientPointToPage } from '../wm/viewport-coordinates'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { cancelWMDrop, finishWMDrop, registerWMDropTarget, updateWMDrop, type WMDropPayload } from '../wm/drop-targets'
@@ -4924,17 +4929,36 @@ function FleetChatInner({ shape }: { shape: any }) {
 	        anchor: { left: imgRect.left, top: imgRect.top, right: imgRect.right, bottom: imgRect.bottom, width: imgRect.width, height: imgRect.height },
 	        viewport: managedViewportSize(),
 	      })
+	      const activeRequest = requestManagedSurface(window, request)
 	      const overlay = document.createElement('div')
 	      overlay.className = 'chat-lightbox'
-	      overlay.dataset.managedSurfaceId = request.surfaceId
-	      overlay.dataset.managedLayerId = request.layerId
-	      overlay.dataset.managedKind = request.kind
-	      overlay.dataset.managedHitPolicy = request.hitPolicy
-	      overlay.dataset.managedOwnerUserId = request.owner.userId
-	      overlay.dataset.managedOwnerDeviceId = request.owner.deviceId
-	      overlay.dataset.managedSource = request.source || ''
+	      overlay.dataset.managedSurfaceId = activeRequest.surfaceId
+	      overlay.dataset.managedLayerId = activeRequest.layerId
+	      overlay.dataset.managedKind = activeRequest.kind
+	      overlay.dataset.managedHitPolicy = activeRequest.hitPolicy
+	      overlay.dataset.managedOwnerUserId = activeRequest.owner.userId
+	      overlay.dataset.managedOwnerDeviceId = activeRequest.owner.deviceId
+	      overlay.dataset.managedSource = activeRequest.source || ''
+	      Object.assign(overlay.style, {
+	        left: `${activeRequest.extent.x}px`,
+	        top: `${activeRequest.extent.y}px`,
+	        width: `${activeRequest.extent.w}px`,
+	        height: `${activeRequest.extent.h}px`,
+	      })
 	      overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`
-	      addTap(overlay, () => overlay.remove())
+	      const catchModalEvent = (event: Event) => {
+	        if (managedSurfaceEventOwner(activeRequest.hitPolicy, 'content') === 'surface') {
+	          event.stopPropagation()
+	        }
+	      }
+	      overlay.addEventListener('pointerdown', catchModalEvent)
+	      overlay.addEventListener('pointermove', catchModalEvent)
+	      overlay.addEventListener('pointerup', catchModalEvent)
+	      overlay.addEventListener('wheel', catchModalEvent)
+	      addTap(overlay, () => {
+	        dismissManagedSurface(window, activeRequest.kind)
+	        overlay.remove()
+	      })
 	      document.body.appendChild(overlay)
     }
     // Touch/stylus: the toggles handled above are text <div>/<span> elements

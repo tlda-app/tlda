@@ -21,20 +21,21 @@ A layer is a coordinate system with a declared relationship to its parent, and
 the window manager is the thing that holds those relationships and converts
 points between them.
 
-The core is deliberately small. `src/wm/wm-core.ts` (476 lines) knows about
+The core is deliberately small. `packages/tldraw-wm/src/wm-core.ts` knows about
 layers, cameras, transforms, and one conversion primitive. It knows nothing
 about tldraw, fleet identity, or what a panel contains. Around it:
 
 | module | what it owns |
 |---|---|
-| `wm/wm-core.ts` | the layer graph, track policy, `translate` |
-| `wm/editor-wm.ts` | one `WMCore` per tldraw editor; named-viewport registration |
-| `wm/viewport-coordinates.ts` | point conversion through a registered viewport |
-| `wm/canvas-clip-panel.ts` | the clip-panel plan and its camera |
-| `wm/tldraw-fork-viewport-adapter.ts` | a layer backed by a real fork viewport |
-| `wm/managed-surfaces.ts` | the request vocabulary a surface is asked for with |
-| `wm/hosted-panel-registry.ts` | panel app definitions and default sizes |
-| `wm/gesture-policy.ts` | pure gesture thresholds and axis-lock arithmetic |
+| `packages/tldraw-wm/src/layer-model.ts` | the project-owned serializable semantic layer graph |
+| `packages/tldraw-wm/src/wm-core.ts` | one editor view's transforms, cameras, and `translate` |
+| `packages/tldraw-wm/src/editor-wm.ts` | editor-local view binding and named-viewport registration |
+| `packages/tldraw-wm/src/viewport-coordinates.ts` | point conversion through a registered viewport |
+| `packages/tldraw-wm/src/canvas-clip-panel.ts` | the clip-panel plan and its camera |
+| `packages/tldraw-wm/src/tldraw-fork-viewport-adapter.ts` | a layer backed by a real fork viewport |
+| `packages/tldraw-wm/src/managed-surfaces.ts` | surface vocabulary and enforced lifecycle |
+| `packages/tldraw-wm/src/hosted-panel-registry.ts` | panel app definitions and default sizes |
+| `packages/tldraw-wm/src/gesture-policy.ts` | pure gesture thresholds and resistance arithmetic |
 | `wm/fleet-hud-layer.ts` | the HUD's own layers and the flow-axis rule |
 
 `src/wm/tldraw-wm-extraction-boundary.ts` classifies each module as package
@@ -121,13 +122,23 @@ functions are on `window.__tlda_wm_coordinates__` (`viewport-coordinates.ts:94`)
 A misplaced panel whose trace says `fallback` is a missing registration, not bad
 arithmetic.
 
-### One core per editor
+### One project model, one view per editor
 
-`getEditorWMCore(editor)` returns the editor's `WMCore`, held in a `WeakMap`
-keyed by the editor and created on first use (`editor-wm.ts:78-95`). Viewport
-registrations live in that state *and* in a module-global map, so a lookup still
-resolves if it arrives against a different editor object
-(`editor-wm.ts:116-136`).
+`LayerModel` holds the project semantics: ids, parentage, track policy, layout,
+and camera units. `installProjectLayerModel` hydrates it from the hidden
+`shape:wm-project-layer-model` document record and writes every semantic change
+back to that record. The ordinary tldraw store/Yjs/load-save path therefore
+carries the model between clients. Concurrent equal-revision changes converge
+by writer identity. An accepted remote state is not echoed; a client that owns
+the deterministic winner republishes it once when the transport temporarily
+delivers the losing snapshot. `bindEditorLayerModel` attaches the hydrated
+model before an editor view is created. Editors over one local store share the
+same model by default.
+
+`getEditorWMView(editor)` returns that editor's binding: the shared model plus
+one local `WMCore`. Cameras, viewport registrations, DOM frames, and tldraw
+backings live only in that view. A lookup against a different editor does not
+resolve the viewport, even when both editors use the same viewport id.
 
 Each registered viewport gets two layers (`CanvasClipPanel.tsx:304-340`):
 
@@ -461,10 +472,17 @@ owner, an extent, and four policies:
 | `cleanup` | on close: `remove-surface`/`hide-surface`/`preserve-shape`; on replace; on owner change |
 | `persistence` | `pinned`, scope `session`/`room` |
 
-The request is serialised onto the shape's `meta` by `managedSurfaceShapeMeta`
-(`managed-surfaces.ts:151`), so a surface's policy travels with the shape rather
-than living in the component that made it. Owner is required and throws if
-missing (`:75`).
+The request is serialised onto the shape's `meta` by `managedSurfaceShapeMeta`,
+so a surface's policy travels with the shape rather than living in the component
+that made it. `ManagedSurfaceLifecycle` enforces explicit replacement groups,
+owner change, close action, and required host callbacks for placement, camera,
+hit, and persistence policy. Annotation viewers, lightboxes, temporary
+Markdown, page-column surfaces, and grading panes all enter through that
+lifecycle and consume its returned activation. The tlda host keeps the applied
+policy registry and session persistence directly; it does not publish
+unconsumed policy events. The package treats
+owner and persistence scope as opaque host data; tlda's adapter supplies its
+`userId`/`deviceId` and `session`/`room` meanings.
 
 The kinds are enumerated in `wm/tlda-managed-surface-kinds.ts`:
 `temporary-markdown`, `annotation-viewer`, `page-column`, `page-column-handle`,
@@ -758,7 +776,7 @@ they are three claims:
   distinguishes panel from index log, never canvas from HUD.** That inference was
   made and retracted on 2026-08-13; do not make it again.
 
-**One conversion is open and it is a product question, not a coordinate one.**
+**One conversion was open and it was a product question, not a coordinate one.**
 `MathNoteShape.tsx:207` builds a drop probe from a note's page centre through the
 main camera — `pagePointToClient(this.editor, …)`, no viewport — and hands it to
 `updateWMDrop`/`finishWMDrop`, which resolve by `elementsFromPoint` and therefore
@@ -772,13 +790,21 @@ Both halves have to be settled together:
   `clientX`/`clientY`, as every other drop site does, would aim the drop at the
   pointer rather than at the note's centre. Those differ.
 
-**Reachable-looking, not reproduced.** `AnnotationViewer.tsx:569` is
+**The pre-fix status was reachable-looking, not reproduced.** `AnnotationViewer.tsx:569` is
 `readOnly={state === 'hovering'}` and renders math notes (`:174`), so pinned it
 is interactive and a note can be dragged inside a panel with its own camera.
 Whether a drag actually initiates there has not been confirmed. The predicted
 symptom is not a crash but a silence: `wm-drop-resolve` with
 `kind: "chat-composer-item"`, `resolved: false`, `registeredHitCount: 0`, and a
 drop into a chat composer that never happens.
+
+**Resolved on `rc/wm-finish`** (`c3997c193`). Skip's ruling was that the drag
+follows the pointer. The WM drop path now records the browser pointer's client
+coordinates before any editor or viewport converts them, and MathNote uses that
+point instead of projecting the note centre through the main camera. On the
+served `balancing-act` paper, a note rendered inside a pinned Annotation Viewer
+was dragged into a moving chat composer: the composer received its annotation
+token and the note returned to its original document coordinates.
 
 **Two mechanisms answer "which layer" and they are not the same object.**
 `useVisibilityViewportId()` is React context; `wm/tlda-shape-layers.ts` resolves

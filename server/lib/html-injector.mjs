@@ -196,9 +196,6 @@ const BRIDGE_SCRIPT = `
         shapeId: shapeId,
         viewportId: tldaWheelViewportId,
         points: pts,
-        // Frame CSS pixels. The parent converts; it is the only side that can
-        // see both coordinate systems.
-        t: e.timeStamp,
       }, '*');
     }
     document.addEventListener('touchmove', function(e) {
@@ -1108,7 +1105,6 @@ const SLIDES_BRIDGE_SCRIPT = `
         shapeId: shapeId,
         viewportId: tldaWheelViewportId,
         points: pts,
-        t: e.timeStamp,
       }, '*');
     }
     document.addEventListener('touchstart', function(e) {

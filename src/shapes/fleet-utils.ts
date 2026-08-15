@@ -272,10 +272,15 @@ function closestFleetPanelNudge(
 }
 
 /** The guide is the taken match and nothing else, on both paths. */
-function drawFleetNudgeGuides(editor: Editor, taken: (FleetNudgeMatch | null)[]) {
-  setFleetNudgeGuides(editor, taken
+function drawFleetNudgeGuides(
+  editor: Editor,
+  taken: (FleetNudgeMatch | null)[],
+  additional: FleetNudgeGuide[] = [],
+  isActive?: () => boolean,
+) {
+  setFleetNudgeGuides(editor, [...taken
     .filter((match): match is FleetNudgeMatch => match !== null)
-    .map(match => ({ axis: match.axis, line: match.line, spanFrom: match.spanFrom, spanTo: match.spanTo })))
+    .map(match => ({ axis: match.axis, line: match.line, spanFrom: match.spanFrom, spanTo: match.spanTo })), ...additional], isActive)
 }
 
 /**
@@ -289,7 +294,12 @@ function fleetNudgeThreshold(editor: Editor): number | null {
   return strength / (editor.getZoomLevel() || 1)
 }
 
-export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, current: TLShape): TLShapePartial | void {
+export function nudgeFleetPanelTranslate(
+  editor: Editor,
+  _initial: TLShape,
+  current: TLShape,
+  options: { isActive?: () => boolean } = {},
+): TLShapePartial | void {
   // Every exit clears. A guide left standing outlives the drag that drew it and
   // then points at nothing.
   if (current.parentId !== editor.getCurrentPageId()) return clearFleetNudgeGuides()
@@ -311,7 +321,7 @@ export function nudgeFleetPanelTranslate(editor: Editor, _initial: TLShape, curr
   const takenX = takenMatch(dx, threshold)
   const takenY = takenMatch(dy, threshold)
 
-  drawFleetNudgeGuides(editor, [takenX, takenY])
+  drawFleetNudgeGuides(editor, [takenX, takenY], [], options.isActive)
 
   if (!takenX && !takenY) return
 
@@ -378,12 +388,21 @@ function pullResizedAxis(
  * Returns the ordinary `resizeBox` result whenever nothing is pulling, so this
  * is a drop-in for the `BaseBoxShapeUtil.onResize` it replaces.
  */
-export function nudgeFleetPanelResize<T extends TLBaseBoxShape>(editor: Editor, shape: T, info: TLResizeInfo<T>): T {
+export function nudgeFleetPanelResize<T extends TLBaseBoxShape>(
+  editor: Editor,
+  shape: T,
+  info: TLResizeInfo<T>,
+  options: { additionalGuides?: FleetNudgeGuide[]; isActive?: () => boolean } = {},
+): T {
   // `resizeBox` builds a fresh record with fresh props every call, so the pull
   // is written onto it rather than spread into another copy.
   const box = resizeBox(shape, info)
   const resized = () => {
-    clearFleetNudgeGuides()
+    if (options.additionalGuides?.length) {
+      setFleetNudgeGuides(editor, options.additionalGuides, options.isActive)
+    } else {
+      clearFleetNudgeGuides()
+    }
     return box
   }
 
@@ -411,7 +430,12 @@ export function nudgeFleetPanelResize<T extends TLBaseBoxShape>(editor: Editor, 
   const pullY = pullResizedAxis(takenY, dragged.top, box.props.h, info.handle.includes('top'))
 
   // Drawn only where the pull survived, so a refused pull leaves no line behind.
-  drawFleetNudgeGuides(editor, [pullX ? takenX : null, pullY ? takenY : null])
+  drawFleetNudgeGuides(
+    editor,
+    [pullX ? takenX : null, pullY ? takenY : null],
+    options.additionalGuides,
+    options.isActive,
+  )
 
   if (pullX) {
     box.x = pullX.start

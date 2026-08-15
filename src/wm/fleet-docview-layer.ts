@@ -6,7 +6,7 @@ import {
 	type LayerOwner,
 	type WMCore,
 } from './wm-core.ts'
-import { ensureLayer } from './editor-wm.ts'
+import { ensureViewLayer } from './editor-wm.ts'
 
 export const FLEET_DOCVIEW_ROOT_LAYER_ID = 'screen'
 export const FLEET_DOCVIEW_LAYER_ID = 'fleet-docview'
@@ -70,7 +70,7 @@ export function createFleetDocviewSurface({
 	}
 	const surfaceId = `${FLEET_DOCVIEW_LAYER_ID}:${slug(shapeId)}`
 	const viewportId = `${FLEET_DOCVIEW_VIEWPORT_PREFIX}:${slug(shapeId)}`
-	ensureLayer(wm, surfaceId, {
+	ensureViewLayer(wm, surfaceId, {
 		parent: FLEET_DOCVIEW_ROOT_LAYER_ID,
 		policy: { x: 'pin', y: 'pin', zoom: 'lock' },
 		transform: { x: camera.x, y: camera.y, scale: camera.z },

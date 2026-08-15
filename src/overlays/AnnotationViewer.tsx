@@ -17,9 +17,12 @@ import type {
   AnnotationViewerSurfacePayload,
 } from '../wm/annotation-viewer-surface'
 import type {
+  ManagedSurfaceHitPolicy,
+  ManagedSurfaceOwner,
   ManagedSurfacePlacement,
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
+import { requestManagedSurface } from '../wm/managed-surfaces'
 import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import { suppressFleetHudCameraTracking } from '../wm/fleet-hud-state'
 import { recordPlaceDeparture } from '../placeStack'
@@ -45,6 +48,7 @@ interface AnnotationViewerProps {
 }
 
 interface ViewerData {
+  managedRequest: ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind, ManagedSurfaceOwner, 'session'>
   bounds: ClipBounds
   shapeIds?: string[]
   label?: string
@@ -53,30 +57,11 @@ interface ViewerData {
   managedSurfaceId?: string
   managedLayerId?: string
   managedPlacement?: ManagedSurfacePlacement
-  managedHitPolicy?: string
+  managedHitPolicy: ManagedSurfaceHitPolicy
   managedCleanup?: unknown
   useFullBounds?: boolean
   pinned?: boolean
   bulletIdx?: number
-}
-
-function isPhoneViewportSurface(): boolean {
-  if (typeof window === 'undefined') return false
-  if (document.body.classList.contains('phone-mode')) return true
-  const vv = window.visualViewport
-  const w = Number(vv?.width || window.innerWidth || 0)
-  const h = Number(vv?.height || window.innerHeight || 0)
-  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
-}
-
-function phoneViewerSize() {
-  const vv = typeof window !== 'undefined' ? window.visualViewport : null
-  const w = Number(vv?.width || window.innerWidth || 375)
-  const h = Number(vv?.height || window.innerHeight || 664)
-  return {
-    w: Math.max(300, Math.round(w - 16)),
-    h: Math.max(260, Math.round(h - 24)),
-  }
 }
 
 export function AnnotationViewer({
@@ -111,11 +96,11 @@ export function AnnotationViewer({
   // Listen for show/hide events from FleetChatShape
   useEffect(() => {
     function onManagedSurface(e: Event) {
-      const request = (e as CustomEvent).detail?.request as ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind> | undefined
+      const request = (e as CustomEvent).detail?.request as ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind, ManagedSurfaceOwner, 'session'> | undefined
       if (!request || request.kind !== 'annotation-viewer') return
       const payload = request.payload
-      const nextSize = isPhoneViewportSurface() ? phoneViewerSize() : { w: request.extent.w, h: request.extent.h }
       setData({
+        managedRequest: request,
         bounds: payload.bounds,
         shapeIds: payload.shapeIds,
         label: payload.label,
@@ -130,7 +115,7 @@ export function AnnotationViewer({
         pinned: payload.pinned,
         bulletIdx: payload.bulletIdx,
       })
-      setSize(nextSize)
+      setSize({ w: request.extent.w, h: request.extent.h })
       setState(request.persistence.pinned ? 'pinned' : 'hovering')
       prevViewStackRef.current = []
       forwardViewStackRef.current = []
@@ -214,6 +199,15 @@ export function AnnotationViewer({
       window.removeEventListener('annotation-viewer-navigation-start', onNavigationStart)
     }
   }, [data, mainEditor, syncNavDepth])
+  const pinPreview = useCallback(() => {
+    if (!data || data.managedHitPolicy !== 'preview-readonly') return
+    requestManagedSurface(window, {
+      ...data.managedRequest,
+      hitPolicy: 'chrome-catches-content-pans',
+      persistence: { ...data.managedRequest.persistence, pinned: true },
+      payload: { ...data.managedRequest.payload, pinned: true },
+    })
+  }, [data])
   useEffect(() => {
     const el = canvasWrapRef.current
     if (!el || !data) return
@@ -226,7 +220,7 @@ export function AnnotationViewer({
       const dy = e.clientY - clickStartRef.current.y
       clickStartRef.current = null
       if (Math.sqrt(dx * dx + dy * dy) < 5) {
-        setState(cur => cur === 'hovering' ? 'pinned' : cur)
+        pinPreview()
       }
     }
     el.addEventListener('pointerdown', onDown, { capture: true })
@@ -235,7 +229,7 @@ export function AnnotationViewer({
       el.removeEventListener('pointerdown', onDown, { capture: true })
       el.removeEventListener('pointerup', onUp, { capture: true })
     }
-  }, [data])
+  }, [data, pinPreview])
 
   const shapeIdsKey = useMemo(() => (data?.shapeIds || []).join('\0'), [data?.shapeIds])
   const liveHtmlPageBounds = useValue('annotation-viewer-live-html-page-bounds', () => {
@@ -251,11 +245,6 @@ export function AnnotationViewer({
   const handleGo = useCallback((e: React.MouseEvent) => {
     stopEventPropagation(e)
     if (!data || !targetBounds) return
-    if (isPhoneViewportSurface()) {
-      setSize(phoneViewerSize())
-      setState('pinned')
-      return
-    }
     const cam = mainEditor.getCamera()
     const targetShapeId = data.shapeIds?.[0] as TLShapeId | undefined
     if (targetShapeId) recordSpatialTraversalToShape(mainEditor, targetShapeId)
@@ -429,7 +418,7 @@ export function AnnotationViewer({
   function returnHudTop() {
     const fallbackTop = 66
     if (typeof window === 'undefined') return fallbackTop
-    const chrome = window.document.querySelector('.phone-toc-modal, .doc-panel-open, .doc-panel, .phone-toc-btn')
+    const chrome = window.document.querySelector('.doc-panel-open, .doc-panel')
     const bottom = chrome?.getBoundingClientRect().bottom ?? Number.NaN
     const top = Number.isFinite(bottom) ? bottom + RETURN_HUD_MARGIN : fallbackTop
     return Math.max(8, Math.min(top, window.innerHeight - RETURN_HUD_SIZE - 8))
@@ -437,7 +426,7 @@ export function AnnotationViewer({
 
   const isPinnedOrNav = state === 'pinned' || state === 'navigated'
   const shouldLetCanvasOwnEvent = (event: { target: EventTarget | null }) =>
-    annotationViewerCanvasOwnsEvent(state, event.target)
+    annotationViewerCanvasOwnsEvent(data.managedHitPolicy, event.target)
   const backArrowPath = (
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
       strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
@@ -455,13 +444,8 @@ export function AnnotationViewer({
   let left: number
   let top: number
   if (data.managedPlacement?.left != null && data.managedPlacement?.top != null) {
-    if (isPhoneViewportSurface()) {
-      left = 8
-      top = 8
-    } else {
-      left = data.managedPlacement.left
-      top = data.managedPlacement.top
-    }
+    left = data.managedPlacement.left
+    top = data.managedPlacement.top
   } else if (chip) {
     // Horizontal: center the viewer in the viewport; vertical still follows the chip.
     left = (vw - size.w) / 2
@@ -554,7 +538,7 @@ export function AnnotationViewer({
           const dx = e.clientX - clickStartRef.current.x
           const dy = e.clientY - clickStartRef.current.y
           clickStartRef.current = null
-          if (Math.sqrt(dx * dx + dy * dy) < 5) setState('pinned')
+          if (Math.sqrt(dx * dx + dy * dy) < 5) pinPreview()
         }
         stopEventPropagation(e)
       }}
@@ -574,7 +558,7 @@ export function AnnotationViewer({
           mainEditor={mainEditor}
           bounds={clipBounds}
           panelWidth={size.w}
-          maxHeightFraction={isPhoneViewportSurface() ? 1 : 0.5}
+          maxHeightFraction={0.5}
           emphasizeShapeIds={data.shapeIds}
           readOnly={state === 'hovering'}
           className="annotation-viewer-clip"

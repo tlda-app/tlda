@@ -1,0 +1,132 @@
+/* The replay is a derived picture-in-picture of the current book/slides. */
+.recording-viewer {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: min(460px, calc(100vw - 32px));
+  height: min(320px, calc(100vh - 32px));
+  z-index: 1200;
+  pointer-events: all;
+  background: var(--color-background, #fff);
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* Body row: canvas on the left, optional transcript panel on the right. */
+.recording-viewer__body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.recording-viewer__canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Live caption overlay, centered along the bottom of the canvas. */
+.recording-viewer__subtitle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  padding: 0 24px;
+}
+
+/* Scrollable transcript side panel. */
+.recording-viewer__transcript {
+  flex: 0 0 320px;
+  min-height: 0;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.78);
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.recording-viewer__btn.is-active {
+  background: rgba(78, 161, 255, 0.3);
+}
+
+/* Minimized: a small corner window (PiP). The rest of the screen — the live doc —
+   stays interactive because only this window captures pointer events. */
+/* The player is a passive view — don't let its tldraw chrome invite editing. */
+.recording-viewer__canvas .tlui-toolbar,
+.recording-viewer__canvas .tlui-menu-zone {
+  display: none;
+}
+
+.recording-viewer__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: rgba(0, 0, 0, 0.82);
+  color: #fff;
+}
+
+.recording-viewer__btn,
+.recording-viewer__mini,
+.recording-viewer__close {
+  border: none;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.recording-viewer__btn:hover,
+.recording-viewer__mini:hover,
+.recording-viewer__close:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.recording-viewer__time {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  opacity: 0.8;
+  flex: 0 0 auto;
+}
+
+.recording-viewer__slider {
+  flex: 1 1 auto;
+  accent-color: #4ea1ff;
+}
+
+.recording-viewer__title {
+  font-size: 12px;
+  opacity: 0.6;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
+}
+
+.recording-viewer__close {
+  font-size: 14px;
+}
+
+.recording-viewer__review {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  font-size: 11px;
+}
+
+.recording-viewer__review input { width: 72px; }
+.recording-viewer__review span { grid-column: 1 / -1; opacity: 0.75; }

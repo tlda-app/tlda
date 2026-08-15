@@ -16,13 +16,14 @@
  *   GET    /:name/build/status  Build status + log
  */
 
-import { Router } from 'express'
+import express, { Router } from 'express'
 import { execFile } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/promises'
-import { join, dirname, resolve } from 'path'
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
+import { join, basename, dirname, resolve } from 'path'
 import { promisify } from 'util'
-import { requireRead, requireRw } from '../lib/auth.mjs'
+import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   readProjectMeta,
@@ -48,6 +49,8 @@ import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '..
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
+import { clipRecordingData, readRecordingPublication, writeOwnerInterval, writePublishedRecording } from '../lib/recording-publication.mjs'
+import { materializeRecordingAudioClip } from '../lib/recording-audio-clip.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import { isManagedSourcePath, normalizeSourceManifest, referencedRootsFromPaths, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
@@ -1881,6 +1884,150 @@ router.post('/:name/shapes', requireRw, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+// --- Lecture recordings (voice-classroom M1) ---
+// Stored under server/projects/{name}/recordings/:
+//   {id}.json   — metadata + timestamped stroke/camera events
+//   {id}.audio  — raw audio blob (webm/opus or mp4)
+
+function recordingsDir(name) {
+  return join(getProjectDir(name), 'recordings')
+}
+
+// POST /:name/recording — store metadata + events JSON (audio uploaded separately)
+router.post('/:name/recording', requireRw, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const meta = req.body
+  if (!meta?.id || !Array.isArray(meta.events)) {
+    return res.status(400).json({ error: 'Recording needs id and events[]' })
+  }
+  const dir = recordingsDir(req.params.name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${meta.id}.json`), JSON.stringify(meta))
+  res.json({ ok: true, id: meta.id })
+})
+
+// POST /:name/recording/:id/audio — store the raw audio blob (binary body)
+router.post('/:name/recording/:id/audio', requireRw, express.raw({ type: () => true, limit: '500mb' }), (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Not found' })
+  const dir = recordingsDir(req.params.name)
+  const metaPath = join(dir, `${req.params.id}.json`)
+  if (!existsSync(metaPath)) return res.status(404).json({ error: 'Record metadata first' })
+  if (!req.body || !req.body.length) return res.status(400).json({ error: 'Empty audio body' })
+  writeFileSync(join(dir, `${req.params.id}.audio`), req.body)
+  res.json({ ok: true, id: req.params.id, bytes: req.body.length, state: 'private-draft' })
+})
+
+// Raw captures and their review state are private to the teaching token.
+router.get('/:name/recording-drafts', requireRecordingPrivateRead, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  if (!existsSync(dir)) return res.json({ recordings: [] })
+  const recordings = readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => {
+      try {
+        const m = JSON.parse(readFileSync(join(dir, f), 'utf8'))
+        if (!existsSync(join(dir, `${m.id}.audio`))) return null
+        const publication = readRecordingPublication(dir, m.id)
+        if (publication?.state === 'published') return null
+        return { id: m.id, title: m.title, created: m.created, duration_ms: m.duration_ms, publication }
+      } catch { return null }
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(b.created).localeCompare(String(a.created)))
+  res.json({ recordings })
+})
+
+router.get('/:name/recording-draft/:id', requireRecordingPrivateRead, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  const metaPath = join(dir, `${req.params.id}.json`)
+  if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
+  const recording = JSON.parse(readFileSync(metaPath, 'utf8'))
+  res.json({ ...recording, publication: readRecordingPublication(dir, recording.id), privateDraft: true })
+})
+
+router.get('/:name/recording-draft/:id/audio', requireRecordingPrivateRead, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  const audioPath = join(dir, `${req.params.id}.audio`)
+  const metaPath = join(dir, `${req.params.id}.json`)
+  if (!existsSync(audioPath) || !existsSync(metaPath)) return res.status(404).json({ error: 'Audio not found' })
+  const mime = (JSON.parse(readFileSync(metaPath, 'utf8')).audioMime || 'audio/webm').split(';')[0]
+  res.type(mime).set('Accept-Ranges', 'none').send(readFileSync(audioPath))
+})
+
+router.put('/:name/recording/:id/owner-interval', requireRw, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  const metaPath = join(dir, `${req.params.id}.json`)
+  if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
+  try {
+    res.json(writeOwnerInterval(dir, JSON.parse(readFileSync(metaPath, 'utf8')), req.body, 'classroom:rw'))
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof RangeError) return res.status(400).json({ error: error.message })
+    return res.status(409).json({ error: error.message })
+  }
+})
+
+router.post('/:name/recording/:id/publish', requireRw, async (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  const metaPath = join(dir, `${req.params.id}.json`)
+  if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
+  const recording = JSON.parse(readFileSync(metaPath, 'utf8'))
+  const candidate = readRecordingPublication(dir, recording.id)
+  if (candidate?.state !== 'candidate-clip') return res.status(409).json({ error: 'Review and save the class interval before publication' })
+  try {
+    await materializeRecordingAudioClip(dir, recording.id, candidate)
+    res.json(writePublishedRecording(dir, recording, 'classroom:rw'))
+  } catch (error) {
+    return res.status(500).json({ error: `Recording publication failed: ${error.message}` })
+  }
+})
+
+// GET /:name/recordings — list recordings (newest first)
+router.get('/:name/recordings', requireRead, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  if (!existsSync(dir)) return res.json({ recordings: [] })
+  const recordings = readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => {
+      try {
+        const m = JSON.parse(readFileSync(join(dir, f), 'utf8'))
+        if (readRecordingPublication(dir, m.id)?.state !== 'published') return null
+        return { id: m.id, title: m.title, created: m.created, duration_ms: m.duration_ms }
+      } catch { return null }
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(b.created).localeCompare(String(a.created)))
+  res.json({ recordings })
+})
+
+// GET /:name/recording/:id — full metadata + events
+router.get('/:name/recording/:id', requireRead, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  const metaPath = join(recordingsDir(req.params.name), `${req.params.id}.json`)
+  if (!existsSync(metaPath)) return res.status(404).json({ error: 'Recording not found' })
+  const publication = readRecordingPublication(dir, req.params.id)
+  if (publication?.state !== 'published') return res.status(404).json({ error: 'Recording not found' })
+  const recording = JSON.parse(readFileSync(metaPath, 'utf8'))
+  res.json(clipRecordingData(recording, publication))
+})
+
+// GET /:name/recording/:id/audio — stream the audio blob
+router.get('/:name/recording/:id/audio', requireRead, (req, res) => {
+  const dir = recordingsDir(req.params.name)
+  const publication = readRecordingPublication(dir, req.params.id)
+  if (publication?.state !== 'published') return res.status(404).json({ error: 'Audio not found' })
+  const audioPath = join(dir, 'publication', `${req.params.id}.audio`)
+  const metaPath = join(dir, `${req.params.id}.json`)
+  if (!existsSync(audioPath)) return res.status(404).json({ error: 'Audio not found' })
+  let mime = 'audio/webm'
+  if (existsSync(metaPath)) {
+    mime = (JSON.parse(readFileSync(metaPath, 'utf8')).audioMime || mime).split(';')[0]
+  }
+  const buf = readFileSync(audioPath)
+  res.type(mime).set('Accept-Ranges', 'none').send(buf)
 })
 
 // PUT /:name/shapes/:id — atomic update (send partial props to merge)

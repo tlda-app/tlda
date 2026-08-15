@@ -43,6 +43,7 @@ import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
 import { optionalJson } from '../optionalJson'
 import { FleetHudRenderGate } from './useIsInViewport'
 import { resolveDocViewTargetShapeId } from './docViewTarget'
+import { isFleetDocviewContentShape } from './fleet-docview-shape-predicate'
 
 const DEFAULT_W = 300
 const DEFAULT_H = 250
@@ -712,7 +713,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
             viewportId={docviewSurface.viewportId}
             wmSurface={{ wm: docviewSurface.wm, surfaceId: docviewSurface.surfaceId, layerId: docviewSurface.layerId }}
             requestedShapeIds={targetShapeId ? [targetShapeId] : undefined}
-            shapePredicate={targetShapeId ? shape => shape.id === targetShapeId : undefined}
+            shapePredicate={targetShapeId ? shape => shape.id === targetShapeId : isFleetDocviewContentShape}
             interactionMode={targetShapeId ? 'pinned' : 'preview'}
             unboundedPanning={!!targetShapeId}
           />

@@ -2,10 +2,11 @@ import { useEditor, useValue } from 'tldraw'
 import { useState, useCallback } from 'react'
 import { STATUS_COLORS, HIGHLIGHT_TO_STATUS } from './UnderstandingLineShape'
 import type { LineStatus } from './UnderstandingLineShape'
-
-const LANE_X = 0
-const LANE_WIDTH = 3
-const HIT_WIDTH = 14
+import {
+  RIBBON_LANE_WIDTH,
+  RIBBON_LANE_X,
+  ribbonHitWidthScreen,
+} from './ribbon-geometry'
 
 export function RibbonLane() {
   const editor = useEditor()
@@ -24,8 +25,8 @@ export function RibbonLane() {
     }
     if (minY === Infinity) return null
 
-    const topLeft = editor.pageToScreen({ x: LANE_X, y: minY })
-    const bottomRight = editor.pageToScreen({ x: LANE_X + LANE_WIDTH, y: maxY })
+    const topLeft = editor.pageToScreen({ x: RIBBON_LANE_X, y: minY })
+    const bottomRight = editor.pageToScreen({ x: RIBBON_LANE_X + RIBBON_LANE_WIDTH, y: maxY })
 
     const width = bottomRight.x - topLeft.x
     const height = bottomRight.y - topLeft.y
@@ -77,6 +78,7 @@ export function RibbonLane() {
   if (!style) return null
 
   const showTooltip = tooltipY !== null && targetStatus && targetStatus !== 'unchecked'
+  const hitWidth = ribbonHitWidthScreen(style.width)
 
   return (
     <>
@@ -98,9 +100,9 @@ export function RibbonLane() {
         <div
           style={{
             position: 'fixed',
-            left: style.left,
+            left: style.left + style.width - hitWidth,
             top: style.top,
-            width: HIT_WIDTH,
+            width: hitWidth,
             height: style.height,
             pointerEvents: 'auto',
             zIndex: 0,

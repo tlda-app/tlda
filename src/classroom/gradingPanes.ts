@@ -1,7 +1,9 @@
 import type { WMCore } from '../wm/wm-core.ts'
 import type { ManagedSurfaceOwner, ManagedSurfaceRect } from '../wm/managed-surfaces.ts'
+import { requestManagedSurface } from '../wm/managed-surfaces.ts'
 import { createHomeworkGradingSurfaceRequest } from '../wm/homework-grading-surface.ts'
 import { tldrawForkViewportAdapter } from '../wm/tldraw-fork-viewport-adapter.ts'
+import { ensureViewLayer } from '../wm/editor-wm.ts'
 
 // The two panes of the marking surface, as window-manager layers.
 //
@@ -71,11 +73,13 @@ export function mountGradingPanes(
   const adapter = tldrawForkViewportAdapter(editor)
   const panes = (Object.keys(layout) as GradingPane[]).map(pane => {
     const bounds = layout[pane]
-    const request = gradingPaneRequest(pane, bounds, input)
+    const declaredRequest = gradingPaneRequest(pane, bounds, input)
+    const request = typeof window !== 'undefined' ? requestManagedSurface(window, declaredRequest) : declaredRequest
     const viewportId = gradingViewportId(pane, input.assignmentId, input.studentId)
     const layerId = gradingLayerId(pane, input.assignmentId, input.studentId)
-    wm.defineOrUpdateLayer(layerId, {
+    ensureViewLayer(wm, layerId, {
       parent: wm.rootLayerId,
+      policy: request.cameraPolicy,
       backing: { kind: 'viewport', viewportId, editor: adapter },
     })
     return {

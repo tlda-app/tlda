@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createCanvasClipShapePredicate } from '../src/canvas-clip-shape-predicate.ts'
 import { isProjectMapShape } from '../src/panels/project-map-shape-predicate.ts'
+import { isFleetDocviewContentShape } from '../src/shapes/fleet-docview-shape-predicate.ts'
 
 const shape = (type) => ({ id: `shape:${type}`, type })
 
@@ -31,4 +32,12 @@ test('Project tab map clips render document page shapes only', () => {
   assert.equal(isProjectMapShape(shape('html-page')), true)
   assert.equal(isProjectMapShape(shape('fleet-docview')), false)
   assert.equal(isProjectMapShape(shape('fleet-chat')), false)
+})
+
+test('fleet document views exclude fleet panels from their nested viewport', () => {
+  assert.equal(isFleetDocviewContentShape(shape('svg-page')), true)
+  assert.equal(isFleetDocviewContentShape(shape('html-page')), true)
+  assert.equal(isFleetDocviewContentShape(shape('math-note')), true)
+  assert.equal(isFleetDocviewContentShape(shape('fleet-docview')), false)
+  assert.equal(isFleetDocviewContentShape(shape('fleet-chat')), false)
 })

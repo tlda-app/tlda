@@ -732,7 +732,11 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         }))
 
         const interpreter = (touchInterpreterRef.current ||= new GestureInterpreter())
-        const frame = interpreter.update(pts, Number(e.data.t) || performance.now())
+        // The interpreter lives in this window, so its clock must too. An iframe's
+        // performance timeline restarts when that frame reloads; feeding that
+        // timestamp into the surviving parent interpreter can move time backwards
+        // and turn a pending deflation into an enormous scale step.
+        const frame = interpreter.update(pts, performance.now())
         const { zoomSpeed } = editor.getCameraOptions()
 
         if (frame.count < 2) {

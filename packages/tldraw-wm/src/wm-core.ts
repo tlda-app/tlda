@@ -1,0 +1,592 @@
+export type LayerId = string
+
+export interface Point {
+	x: number
+	y: number
+	z?: number
+}
+
+export interface Bounds {
+	x: number
+	y: number
+	w: number
+	h: number
+}
+
+export interface Camera {
+	x: number
+	y: number
+	z: number
+}
+
+export interface LayerTransform {
+	x: number
+	y: number
+	scale: number
+}
+
+export type AxisTrackPolicy = 'pan' | 'pin' | { track: number }
+export type ZoomTrackPolicy = 'inherit' | 'lock' | 'own'
+
+export interface TrackPolicy {
+	x: AxisTrackPolicy
+	y: AxisTrackPolicy
+	zoom: ZoomTrackPolicy
+}
+
+export interface LayerLayout {
+	axis: 'vertical' | 'horizontal'
+	spacing: number
+}
+
+export interface ForkViewportAdapter {
+	screenToPage(point: Point, opts: { viewportId: string }): Point
+	pageToScreen(point: Point, opts: { viewportId: string }): Point
+	getCamera?(viewportId: string): Camera
+	setCamera?(viewportId: string, camera: Camera): void
+}
+
+export interface PageCoordinateAdapter {
+	screenToPage(point: Point): Point
+	pageToScreen(point: Point): Point
+}
+
+export type LayerBacking =
+	| { kind: 'frame' }
+	| { kind: 'screen' }
+	| { kind: 'page'; editor: PageCoordinateAdapter }
+	| { kind: 'viewport'; viewportId: string; editor: ForkViewportAdapter }
+
+export interface LayerDefinition {
+	parent?: LayerId
+	policy?: Partial<TrackPolicy>
+	transform?: Partial<LayerTransform>
+	camera?: Partial<Camera>
+	cameraPanUnit?: 'layer' | 'screen'
+	backing?: LayerBacking
+	layout?: LayerLayout
+}
+
+export interface Layer {
+	id: LayerId
+	parent?: LayerId
+	policy: TrackPolicy
+	transform: LayerTransform
+	camera: Camera
+	cameraPanUnit: 'layer' | 'screen'
+	backing: LayerBacking
+	layout?: LayerLayout
+}
+
+export interface LayeredShape {
+	id: string
+	x: number
+	y: number
+	layerId?: LayerId
+}
+
+/**
+ * Answers "which layer is this shape in" for one core.
+ *
+ * Membership is a property of the shape record, not a table the WM keeps
+ * alongside it. A table would have to be maintained against every create,
+ * delete, and prop change in the store, and the moment it disagreed with the
+ * record the WM would be authoritative about something it had got wrong. Asking
+ * the record cannot drift.
+ *
+ * The core cannot read a host's records — `wm-core.ts` is package core and knows
+ * nothing about tldraw, fleet identity, or surface metadata — so the host
+ * supplies the one function. Returning `null` means "this shape is not in any
+ * layer I place", and the caller gets the root.
+ */
+export type ShapeLayerResolver = (shape: unknown) => LayerId | null | undefined
+
+/** A shape that carries its own layer says so, and that is the whole default. */
+export function defaultShapeLayerResolver(shape: unknown): LayerId | null {
+	const layerId = (shape as { layerId?: unknown } | null | undefined)?.layerId
+	return typeof layerId === 'string' ? layerId : null
+}
+
+/** What a shape occupies, in the layer it is in. `w`/`h` are optional so a
+ *  caller with only an origin does not have to invent an extent. */
+export interface ShapeExtent {
+	x: number
+	y: number
+	w?: number
+	h?: number
+}
+
+export interface LayerHit<T> {
+	shape: T
+	layerId: LayerId
+	/** The probe point expressed in that shape's own layer. */
+	point: Point
+}
+
+export interface WMCoreOptions {
+	rootLayerId?: LayerId
+}
+
+export interface LayerEffectiveTransform {
+	local: LayerTransform
+	effective: LayerTransform
+	parent: LayerTransform | null
+	parentChain: LayerId[]
+}
+
+const DEFAULT_POLICY: TrackPolicy = {
+	x: 'pan',
+	y: 'pan',
+	zoom: 'inherit',
+}
+
+const DEFAULT_TRANSFORM: LayerTransform = {
+	x: 0,
+	y: 0,
+	scale: 1,
+}
+
+const DEFAULT_CAMERA: Camera = {
+	x: 0,
+	y: 0,
+	z: 1,
+}
+
+function normalizePolicy(policy?: Partial<TrackPolicy>): TrackPolicy {
+	return {
+		x: policy?.x ?? DEFAULT_POLICY.x,
+		y: policy?.y ?? DEFAULT_POLICY.y,
+		zoom: policy?.zoom ?? DEFAULT_POLICY.zoom,
+	}
+}
+
+function normalizeTransform(transform?: Partial<LayerTransform>): LayerTransform {
+	return {
+		x: transform?.x ?? DEFAULT_TRANSFORM.x,
+		y: transform?.y ?? DEFAULT_TRANSFORM.y,
+		scale: transform?.scale ?? DEFAULT_TRANSFORM.scale,
+	}
+}
+
+function normalizeCamera(camera?: Partial<Camera>): Camera {
+	return {
+		x: camera?.x ?? DEFAULT_CAMERA.x,
+		y: camera?.y ?? DEFAULT_CAMERA.y,
+		z: camera?.z ?? DEFAULT_CAMERA.z,
+	}
+}
+
+function axisTrackFactor(policy: AxisTrackPolicy) {
+	if (policy === 'pan') return 1
+	if (policy === 'pin') return 0
+	return policy.track
+}
+
+function zoomFactor(policy: ZoomTrackPolicy, camera: Camera) {
+	if (policy === 'lock') return 1
+	return camera.z
+}
+
+function parentZoomFactor(policy: ZoomTrackPolicy) {
+	if (policy === 'inherit') return 1
+	return 0
+}
+
+function clonePoint(point: Point): Point {
+	return { x: point.x, y: point.y, ...(point.z === undefined ? {} : { z: point.z }) }
+}
+
+function cloneCamera(camera: Camera): Camera {
+	return { x: camera.x, y: camera.y, z: camera.z }
+}
+
+function cloneLayer(layer: Layer): Layer {
+	return {
+		id: layer.id,
+		parent: layer.parent,
+		policy: { ...layer.policy },
+		transform: { ...layer.transform },
+		camera: { ...layer.camera },
+		cameraPanUnit: layer.cameraPanUnit,
+		backing: layer.backing,
+		layout: layer.layout ? { ...layer.layout } : undefined,
+	}
+}
+
+export class WMCore {
+	readonly rootLayerId: LayerId
+	private readonly layers = new Map<LayerId, Layer>()
+	private resolveShapeLayer: ShapeLayerResolver = defaultShapeLayerResolver
+
+	constructor(options: WMCoreOptions = {}) {
+		this.rootLayerId = options.rootLayerId ?? 'root'
+		this.layers.set(this.rootLayerId, {
+			id: this.rootLayerId,
+			policy: normalizePolicy({ x: 'pin', y: 'pin', zoom: 'lock' }),
+			transform: normalizeTransform(),
+			camera: normalizeCamera(),
+			cameraPanUnit: 'layer',
+			backing: { kind: 'screen' },
+		})
+	}
+
+	defineLayer(id: LayerId, definition: LayerDefinition = {}): Layer {
+		if (this.layers.has(id)) throw new Error(`Layer "${id}" already exists.`)
+
+		const parent = definition.parent ?? this.rootLayerId
+		if (!this.layers.has(parent)) throw new Error(`Parent layer "${parent}" is not defined.`)
+		if (parent === id) throw new Error('A layer cannot be its own parent.')
+
+		const layer: Layer = {
+			id,
+			parent,
+			policy: normalizePolicy(definition.policy),
+			transform: normalizeTransform(definition.transform),
+			camera: normalizeCamera(definition.camera),
+			cameraPanUnit: definition.cameraPanUnit ?? 'layer',
+			backing: definition.backing ?? { kind: 'frame' },
+			layout: definition.layout ? { ...definition.layout } : undefined,
+		}
+
+		this.layers.set(id, layer)
+		this.assertAcyclic(id)
+		return cloneLayer(layer)
+	}
+
+	defineOrUpdateLayer(id: LayerId, definition: LayerDefinition = {}): Layer {
+		if (!this.layers.has(id)) return this.defineLayer(id, definition)
+		return this.updateLayer(id, definition)
+	}
+
+	hasLayer(id: LayerId): boolean {
+		return this.layers.has(id)
+	}
+
+	layerCount(): number {
+		return this.layers.size
+	}
+
+	layerIds(): LayerId[] {
+		return [...this.layers.keys()]
+	}
+
+	updateLayer(id: LayerId, definition: LayerDefinition = {}): Layer {
+		const layer = this.requireLayer(id)
+		if (id === this.rootLayerId) throw new Error('Cannot update the root layer.')
+
+		if (definition.parent !== undefined) {
+			if (!this.layers.has(definition.parent)) throw new Error(`Parent layer "${definition.parent}" is not defined.`)
+			if (definition.parent === id) throw new Error('A layer cannot be its own parent.')
+			// Check before assigning. Assigning first leaves the rejected parent
+			// written when assertAcyclic throws, so a caller that catches the error
+			// carries on against a layer graph the throw claimed to have refused.
+			const previousParent = layer.parent
+			layer.parent = definition.parent
+			try {
+				this.assertAcyclic(id)
+			} catch (error) {
+				layer.parent = previousParent
+				throw error
+			}
+		}
+		if (definition.policy !== undefined) {
+			layer.policy = normalizePolicy({ ...layer.policy, ...definition.policy })
+		}
+		if (definition.transform !== undefined) {
+			layer.transform = normalizeTransform({ ...layer.transform, ...definition.transform })
+		}
+		if (definition.camera !== undefined) {
+			layer.camera = normalizeCamera({ ...layer.camera, ...definition.camera })
+		}
+		if (definition.cameraPanUnit !== undefined) {
+			layer.cameraPanUnit = definition.cameraPanUnit
+		}
+		if (definition.backing !== undefined) {
+			layer.backing = definition.backing
+		}
+		if (definition.layout !== undefined) {
+			layer.layout = { ...definition.layout }
+		}
+
+		this.assertAcyclic(id)
+		return cloneLayer(layer)
+	}
+
+	getLayer(id: LayerId): Layer {
+		return cloneLayer(this.requireLayer(id))
+	}
+
+	removeLayer(id: LayerId): void {
+		if (id === this.rootLayerId) throw new Error('Cannot remove the root layer.')
+		this.requireLayer(id)
+		for (const layer of this.layers.values()) {
+			if (layer.parent === id) throw new Error(`Cannot remove layer "${id}" while it has children.`)
+		}
+		this.layers.delete(id)
+	}
+
+	translate(point: Point, fromLayer: LayerId, toLayer: LayerId): Point {
+		this.requireLayer(fromLayer)
+		this.requireLayer(toLayer)
+		if (fromLayer === toLayer) return clonePoint(point)
+		const rootPoint = this.layerToRoot(point, fromLayer)
+		return this.rootToLayer(rootPoint, toLayer)
+	}
+
+	translateBounds(bounds: Bounds, fromLayer: LayerId, toLayer: LayerId): Bounds {
+		const corners = [
+			{ x: bounds.x, y: bounds.y },
+			{ x: bounds.x + bounds.w, y: bounds.y },
+			{ x: bounds.x, y: bounds.y + bounds.h },
+			{ x: bounds.x + bounds.w, y: bounds.y + bounds.h },
+		].map((point) => this.translate(point, fromLayer, toLayer))
+
+		const xs = corners.map((point) => point.x)
+		const ys = corners.map((point) => point.y)
+		const minX = Math.min(...xs)
+		const maxX = Math.max(...xs)
+		const minY = Math.min(...ys)
+		const maxY = Math.max(...ys)
+
+		return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+	}
+
+	camera(layerId: LayerId): Camera {
+		const layer = this.requireLayer(layerId)
+		if (layer.backing.kind === 'viewport') {
+			return layer.backing.editor.getCamera?.(layer.backing.viewportId) ?? cloneCamera(layer.camera)
+		}
+		return cloneCamera(layer.camera)
+	}
+
+	setCamera(layerId: LayerId, camera: Camera): void {
+		const layer = this.requireLayer(layerId)
+		layer.camera = cloneCamera(camera)
+		if (layer.backing.kind === 'viewport') {
+			layer.backing.editor.setCamera?.(layer.backing.viewportId, cloneCamera(camera))
+		}
+	}
+
+	transform(layerId: LayerId): LayerTransform {
+		return { ...this.effectiveTransform(this.requireLayer(layerId)) }
+	}
+
+	transformInfo(layerId: LayerId): LayerEffectiveTransform {
+		const layer = this.requireLayer(layerId)
+		const parent = layer.parent ? this.effectiveTransform(this.requireLayer(layer.parent)) : null
+		return {
+			local: this.localTransform(layer),
+			effective: this.effectiveTransform(layer),
+			parent: parent ? { ...parent } : null,
+			parentChain: this.parentChain(layerId),
+		}
+	}
+
+	setTransform(layerId: LayerId, transform: Partial<LayerTransform>): void {
+		const layer = this.requireLayer(layerId)
+		layer.transform = normalizeTransform({ ...layer.transform, ...transform })
+	}
+
+	configureLayout(layerId: LayerId, layout: LayerLayout): void {
+		const layer = this.requireLayer(layerId)
+		layer.layout = { ...layout }
+	}
+
+	/** Install the host's answer to "which layer is this shape in". Passing
+	 *  `null` restores the default, which reads `shape.layerId`. */
+	setShapeLayerResolver(resolver: ShapeLayerResolver | null): void {
+		this.resolveShapeLayer = resolver ?? defaultShapeLayerResolver
+	}
+
+	/**
+	 * The layer a shape is in. A shape the resolver does not place, or places in
+	 * a layer this core has never defined, is in the root — the WM says where it
+	 * can and does not pretend to a membership it cannot back with a transform.
+	 */
+	layerIdOfShape(shape: unknown): LayerId {
+		const resolved = this.resolveShapeLayer(shape)
+		if (typeof resolved === 'string' && this.layers.has(resolved)) return resolved
+		return this.rootLayerId
+	}
+
+	layerOfShape(shape: unknown): Layer {
+		return this.getLayer(this.layerIdOfShape(shape))
+	}
+
+	/** True when both shapes are in the same layer. The question an operation
+	 *  asks before it lets two shapes affect each other. */
+	sameLayer(a: unknown, b: unknown): boolean {
+		return this.layerIdOfShape(a) === this.layerIdOfShape(b)
+	}
+
+	/** A shape's extent, read in its own layer and expressed in another. This is
+	 *  the conversion every consumer needs and the reason membership exists:
+	 *  the caller names the layer it wants to work in and stops choosing an
+	 *  editor for itself. */
+	shapeExtentIn(shape: unknown, extent: ShapeExtent, toLayer: LayerId): Bounds {
+		const fromLayer = this.layerIdOfShape(shape)
+		return this.translateBounds(
+			{ x: extent.x, y: extent.y, w: extent.w ?? 0, h: extent.h ?? 0 },
+			fromLayer,
+			toLayer,
+		)
+	}
+
+	/**
+	 * The shapes under a point, nearest-declared first, each with the point
+	 * expressed in its own layer.
+	 *
+	 * The core does not hold the store, so candidates are passed in; what it
+	 * supplies is the part no caller can do for itself — converting one probe
+	 * point into however many different layers the candidates turn out to be in,
+	 * so a hit is decided in the frame the shape actually lives in.
+	 */
+	hitTest<T>(
+		point: Point,
+		pointLayerId: LayerId,
+		candidates: readonly T[],
+		extentOf: (shape: T) => ShapeExtent | null | undefined,
+	): LayerHit<T>[] {
+		this.requireLayer(pointLayerId)
+		const hits: LayerHit<T>[] = []
+		const byLayer = new Map<LayerId, Point>()
+
+		for (const shape of candidates) {
+			const extent = extentOf(shape)
+			if (!extent) continue
+			const layerId = this.layerIdOfShape(shape)
+			let local = byLayer.get(layerId)
+			if (!local) {
+				local = this.translate(point, pointLayerId, layerId)
+				byLayer.set(layerId, local)
+			}
+			const w = extent.w ?? 0
+			const h = extent.h ?? 0
+			if (local.x < extent.x || local.x > extent.x + w) continue
+			if (local.y < extent.y || local.y > extent.y + h) continue
+			hits.push({ shape, layerId, point: clonePoint(local) })
+		}
+
+		return hits
+	}
+
+	/**
+	 * Re-express a shape's origin in another layer. §2.4 of the design, and the
+	 * same operation a window manager performs when it reparents a window: the
+	 * shape does not move on screen, its coordinates are restated against a
+	 * different frame.
+	 */
+	moveToLayer<T extends LayeredShape>(shape: T, targetLayerId: LayerId): T {
+		const fromLayer = this.layerIdOfShape(shape)
+		this.requireLayer(targetLayerId)
+		const point = this.translate({ x: shape.x, y: shape.y }, fromLayer, targetLayerId)
+		return { ...shape, x: point.x, y: point.y, layerId: targetLayerId }
+	}
+
+	pinToViewport<T extends LayeredShape>(shape: T, viewportLayerId: LayerId): T {
+		return this.moveToLayer(shape, viewportLayerId)
+	}
+
+	unpin<T extends LayeredShape>(shape: T, targetLayerId = this.rootLayerId): T {
+		return this.moveToLayer(shape, targetLayerId)
+	}
+
+	private requireLayer(id: LayerId): Layer {
+		const layer = this.layers.get(id)
+		if (!layer) throw new Error(`Layer "${id}" is not defined.`)
+		return layer
+	}
+
+	private assertAcyclic(id: LayerId): void {
+		const seen = new Set<LayerId>()
+		let current: Layer | undefined = this.requireLayer(id)
+		while (current?.parent) {
+			if (seen.has(current.id)) throw new Error(`Layer "${id}" creates a cycle.`)
+			seen.add(current.id)
+			current = this.layers.get(current.parent)
+		}
+	}
+
+	private layerToRoot(point: Point, layerId: LayerId): Point {
+		const layer = this.requireLayer(layerId)
+		const parentPoint = this.layerToParent(point, layer)
+		if (!layer.parent) return parentPoint
+		return this.layerToRoot(parentPoint, layer.parent)
+	}
+
+	private rootToLayer(point: Point, layerId: LayerId): Point {
+		const layer = this.requireLayer(layerId)
+		if (!layer.parent) return clonePoint(point)
+		const parentPoint = this.rootToLayer(point, layer.parent)
+		return this.parentToLayer(parentPoint, layer)
+	}
+
+	private layerToParent(point: Point, layer: Layer): Point {
+		if (layer.backing.kind === 'page') {
+			return layer.backing.editor.pageToScreen(point)
+		}
+		if (layer.backing.kind === 'viewport') {
+			return layer.backing.editor.pageToScreen(point, { viewportId: layer.backing.viewportId })
+		}
+
+		const transform = this.localTransform(layer)
+		return {
+			x: point.x * transform.scale + transform.x,
+			y: point.y * transform.scale + transform.y,
+			...(point.z === undefined ? {} : { z: point.z }),
+		}
+	}
+
+	private parentToLayer(point: Point, layer: Layer): Point {
+		if (layer.backing.kind === 'page') {
+			return layer.backing.editor.screenToPage(point)
+		}
+		if (layer.backing.kind === 'viewport') {
+			return layer.backing.editor.screenToPage(point, { viewportId: layer.backing.viewportId })
+		}
+
+		const transform = this.localTransform(layer)
+		return {
+			x: (point.x - transform.x) / transform.scale,
+			y: (point.y - transform.y) / transform.scale,
+			...(point.z === undefined ? {} : { z: point.z }),
+		}
+	}
+
+	private effectiveTransform(layer: Layer): LayerTransform {
+		const local = this.localTransform(layer)
+		if (layer.backing.kind === 'page' || layer.backing.kind === 'viewport' || !layer.parent) {
+			return local
+		}
+		const parent = this.effectiveTransform(this.requireLayer(layer.parent))
+		return {
+			x: local.x + parent.x * axisTrackFactor(layer.policy.x),
+			y: local.y + parent.y * axisTrackFactor(layer.policy.y),
+			scale: local.scale * (1 + (parent.scale - 1) * parentZoomFactor(layer.policy.zoom)),
+		}
+	}
+
+	private localTransform(layer: Layer): LayerTransform {
+		const camera = this.camera(layer.id)
+		const panUnit = layer.cameraPanUnit === 'screen' ? camera.z : 1
+		return {
+			x: layer.transform.x + camera.x * panUnit * axisTrackFactor(layer.policy.x),
+			y: layer.transform.y + camera.y * panUnit * axisTrackFactor(layer.policy.y),
+			scale: layer.transform.scale * zoomFactor(layer.policy.zoom, camera),
+		}
+	}
+
+	private parentChain(layerId: LayerId): LayerId[] {
+		const chain: LayerId[] = []
+		let layer = this.requireLayer(layerId)
+		while (layer.parent) {
+			chain.unshift(layer.parent)
+			layer = this.requireLayer(layer.parent)
+		}
+		return chain
+	}
+}
+
+export function createWMCore(options?: WMCoreOptions): WMCore {
+	return new WMCore(options)
+}

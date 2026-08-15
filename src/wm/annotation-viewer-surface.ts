@@ -1,6 +1,8 @@
 import {
 	clampChipAnchoredPlacement,
+	dismissManagedSurface,
 	requireManagedSurfaceOwner,
+	requestManagedSurface,
 	surfaceSlug,
 	type ManagedSurfaceClientRect,
 	type ManagedSurfaceOwner,
@@ -56,34 +58,40 @@ export function createAnnotationViewerSurfaceRequest({
 	viewport = { w: 1200, h: 800 },
 	size = { w: 650, h: 450 },
 	centerOnAnchor = false,
-}: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind> {
+}: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind, ManagedSurfaceOwner, 'session'> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed annotation viewer surface')
+	const margin = 8
+	const resolvedSize = {
+		w: Math.min(size.w, Math.max(1, viewport.w - margin * 2)),
+		h: Math.min(size.h, Math.max(1, viewport.h - margin * 2)),
+	}
 	const placement = clampChipAnchoredPlacement({
 		chipRect,
-		surfaceWidth: size.w,
-		surfaceHeight: size.h,
+		surfaceWidth: resolvedSize.w,
+		surfaceHeight: resolvedSize.h,
 		viewportWidth: viewport.w,
 		viewportHeight: viewport.h,
+		margin,
 	})
 	const centeredLeft = Math.max(placement.margin, Math.min(
 		Math.round(centerOnAnchor
-			? (viewport.w - size.w) / 2
+			? (viewport.w - resolvedSize.w) / 2
 			: placement.left),
-		viewport.w - size.w - placement.margin,
+		viewport.w - resolvedSize.w - placement.margin,
 	))
 	const centeredTop = Math.max(placement.margin, Math.min(
 		Math.round(centerOnAnchor
-			? (viewport.h - size.h) / 2
+			? (viewport.h - resolvedSize.h) / 2
 			: placement.top),
-		viewport.h - size.h - placement.margin,
+		viewport.h - resolvedSize.h - placement.margin,
 	))
 	return {
 		kind: 'annotation-viewer',
 		surfaceId: `${ANNOTATION_VIEWER_SURFACE_PREFIX}:${slug}`,
 		layerId: `${ANNOTATION_VIEWER_LAYER_PREFIX}:${slug}`,
 		owner: resolvedOwner,
-		extent: { x: centeredLeft, y: centeredTop, w: size.w, h: size.h },
+		extent: { x: centeredLeft, y: centeredTop, w: resolvedSize.w, h: resolvedSize.h },
 		placement: {
 			mode: centerOnAnchor ? 'viewport-centered' : 'chip-anchored',
 			anchor: chipRect,
@@ -92,11 +100,12 @@ export function createAnnotationViewerSurfaceRequest({
 			margin: placement.margin,
 		},
 		cameraPolicy: { x: 'pin', y: 'pin', zoom: 'lock' },
-		hitPolicy: 'chrome-catches-content-pans',
+		hitPolicy: pinned ? 'chrome-catches-content-pans' : 'preview-readonly',
 		cleanup: {
 			onClose: 'hide-surface',
 			onOwnerChange: 'remove-surface',
 		},
+		replacementGroup: ANNOTATION_VIEWER_SURFACE_PREFIX,
 		persistence: { pinned, scope: 'session' },
 		source,
 		payload: {
@@ -121,16 +130,11 @@ export function dispatchAnnotationViewerSurfaceRequest(input: AnnotationViewerSu
 				: { w: 1200, h: 800 }
 		),
 	})
-	window.dispatchEvent(new CustomEvent('wm-managed-surface-request', {
-		detail: { request },
-	}))
-	return request
+	return requestManagedSurface(window, request)
 }
 
 export function dispatchAnnotationViewerDismiss() {
-	window.dispatchEvent(new CustomEvent('wm-managed-surface-dismiss', {
-		detail: { kind: 'annotation-viewer' },
-	}))
+	dismissManagedSurface(window, 'annotation-viewer')
 }
 
 export function dispatchManagedAnnotationViewerRequest(
@@ -138,14 +142,9 @@ export function dispatchManagedAnnotationViewerRequest(
 	target: Window = window,
 ) {
 	const request = createAnnotationViewerSurfaceRequest(input)
-	target.dispatchEvent(new CustomEvent('wm-managed-surface-request', {
-		detail: { request },
-	}))
-	return request
+	return requestManagedSurface(target, request)
 }
 
 export function dispatchManagedAnnotationViewerHide(target: Window = window) {
-	target.dispatchEvent(new CustomEvent('wm-managed-surface-dismiss', {
-		detail: { kind: 'annotation-viewer' },
-	}))
+	dismissManagedSurface(target, 'annotation-viewer')
 }

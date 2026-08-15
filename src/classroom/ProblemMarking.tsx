@@ -166,7 +166,17 @@ export function ProblemMarking() {
       // being destroyed and the replacement opened at the top. Changing student
       // is a different document and should remount; changing problem is a move
       // within the same one.
-      ? <SvgDocumentEditor key={answer?.contentRef} document={document} roomId={`doc-${answer?.contentRef}`} classroomMarking />
+      ? <SvgDocumentEditor
+          key={answer?.contentRef}
+          document={document}
+          roomId={`doc-${answer?.contentRef}`}
+          classroomMarking
+          classroomGrading={{
+            assignmentId,
+            problemId: problem.problemId,
+            studentId: answer!.studentId,
+          }}
+        />
       : <main className="classroomWorkspace"><p className={error ? 'classroomError' : undefined}>{error || `${answer?.displayName} did not answer this one.`}</p></main>}
     <aside className="markingLifecycle" aria-label="Marking">
       <select value={problem.problemId} onChange={e => { setProblemIndex(problemOptions.indexOf(e.target.value)); setStudentIndex(0) }}>

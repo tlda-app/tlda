@@ -23,7 +23,7 @@ import {
 } from './wm/canvas-clip-panel'
 import {
   cameraToCoordinateTransform,
-  ensureLayer,
+  ensureViewLayer,
   registerViewportLayer,
   removeLayers,
   unregisterViewportLayer,
@@ -309,12 +309,12 @@ export function CanvasClipPanel({
         scale: 1,
       }
     }
-    ensureLayer(wmSurface.wm, frameLayerId, {
+    ensureViewLayer(wmSurface.wm, frameLayerId, {
       parent: wmSurface.wm.rootLayerId,
       policy: { x: 'pin', y: 'pin', zoom: 'lock' },
       transform: readFrame(),
     })
-    ensureLayer(wmSurface.wm, coordinateLayerId, {
+    ensureViewLayer(wmSurface.wm, coordinateLayerId, {
       parent: frameLayerId,
       policy: { x: 'pin', y: 'pin', zoom: 'lock' },
       transform: cameraToCoordinateTransform(camera),

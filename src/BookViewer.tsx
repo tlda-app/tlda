@@ -13,13 +13,15 @@ import { clearDocumentStores } from './stores'
 import { BookContext, type BookMember, type BookContextValue } from './BookContext'
 import type { SvgDocument } from './loaders/types'
 import { HTML_PAGE_FORMATS } from '../shared/document-formats.mjs'
+import type { Editor } from 'tldraw'
 
 interface BookViewerProps {
   bookName: string
   members: BookMember[]
+  onEditorMount?: (editor: Editor | null) => void
 }
 
-export function BookViewer({ bookName, members }: BookViewerProps) {
+export function BookViewer({ bookName, members, onEditorMount }: BookViewerProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const [document, setDocument] = useState<SvgDocument | null>(null)
   const [loading, setLoading] = useState(true)
@@ -159,7 +161,7 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
       <div className="book-viewer">
         {loading && <div className="book-loading">Loading {activeMember?.name}...</div>}
         {!loading && document && (
-          <SvgDocumentEditor key={activeMember.key} document={document} roomId={roomId} />
+          <SvgDocumentEditor key={activeMember.key} document={document} roomId={roomId} onEditorMount={onEditorMount} />
         )}
       </div>
     </BookContext.Provider>

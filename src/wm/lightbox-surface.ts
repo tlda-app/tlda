@@ -31,7 +31,7 @@ export function createLightboxSurfaceRequest({
 	source,
 	anchor,
 	viewport = typeof window !== 'undefined' ? { w: window.innerWidth, h: window.innerHeight } : { w: 0, h: 0 },
-}: LightboxSurfaceInput): ManagedSurfaceRequest<LightboxSurfacePayload, LightboxSurfaceKind> {
+}: LightboxSurfaceInput): ManagedSurfaceRequest<LightboxSurfacePayload, LightboxSurfaceKind, ManagedSurfaceOwner, 'session'> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed lightbox surface')
 	return {
@@ -54,6 +54,7 @@ export function createLightboxSurfaceRequest({
 			onReplace: 'replace-existing-surface',
 			onOwnerChange: 'remove-surface',
 		},
+		replacementGroup: LIGHTBOX_SURFACE_PREFIX,
 		persistence: { pinned: true, scope: 'session' },
 		source,
 		payload: { surfaceKey, coordinateSpace: 'viewport', source },

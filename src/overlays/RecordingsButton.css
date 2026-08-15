@@ -1,0 +1,84 @@
+.recordings-button-wrap {
+  position: absolute;
+  left: 118px;
+  bottom: 16px;
+  z-index: 999;
+  pointer-events: all;
+}
+
+.recordings-button {
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+}
+
+.recordings-button:hover {
+  opacity: 0.85;
+}
+
+.recordings-list {
+  position: absolute;
+  bottom: 38px;
+  left: 0;
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.82);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+
+.recordings-list__empty {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.recordings-list__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: white;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.recordings-list__item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.recordings-list__title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recordings-list__dur {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+@media (pointer: coarse) {
+  .recordings-button {
+    width: 36px;
+    height: 36px;
+    opacity: 0.55;
+  }
+}

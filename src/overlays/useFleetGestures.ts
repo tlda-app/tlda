@@ -26,7 +26,13 @@ import { useEffect } from 'react'
 import type { Editor, TLShape, TLViewportId } from 'tldraw'
 import { log } from '../logger'
 import { pagePointToClient } from '../wm/viewport-coordinates'
-import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
+import {
+  FLEET_SHAPE_TYPES,
+  isMyFleetShape,
+  nudgeFleetPanelResize,
+  nudgeFleetPanelTranslate,
+  type FleetNudgeGuide,
+} from '../shapes/fleet-utils'
 import {
   MOVE_LOCK_ON,
   PAN_AXIS_DECAY,
@@ -35,7 +41,8 @@ import {
   PAN_OFFAXIS_DAMP,
   RESIZE_LOCK_AFTER_MOVE,
   RESIZE_LOCK_ON,
-  applyShapeResizeAxisLock,
+  RESIZE_SNAP_RESISTANCE,
+  applyAxisResistance,
   classifySoftGesture,
   type GestureFrameSelectors,
 } from '../wm'
@@ -502,7 +509,7 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
 
 type GestureState =
   | { kind: 'none' }
-  | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; resizeAxis: 'x' | 'y' | null; resizeAccX: number; resizeAccY: number; writeCount: number }
+  | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; resizeResistance: number; resizeStuckX: boolean; resizeStuckY: boolean; writeCount: number }
   | { kind: 'cluster'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; shapes: { id: string; type: string; x0: number; y0: number; w0: number; h0: number }[]; anchor: { x: number; y: number }; d0: number; sx0: number; sy0: number; c0: { x: number; y: number }; p0: { x: number; y: number }; writeCount: number }
   // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
   // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
@@ -734,7 +741,7 @@ export function useFleetGestures(opts: {
             kind: 'shape', mode: 'pending', moveActive: false, resizeActive: false, id: shape.id, type: shape.type as string,
             x0: mainShape.x, y0: mainShape.y,
             w0, h0: height0, d0: touchDist(ts[0], ts[1]), sx0: span0.x, sy0: span0.y, relX, relY, c0, p0: pivotPage,
-            resizeAxis: null, resizeAccX: 0, resizeAccY: 0, writeCount: 0,
+            resizeResistance: RESIZE_LOCK_ON, resizeStuckX: false, resizeStuckY: false, writeCount: 0,
           }
           log.warn(LOG_NS, 'gesture start: shape', {
             id: shape.id,
@@ -864,9 +871,14 @@ export function useFleetGestures(opts: {
         })
         if (!nextMoveActive && !nextResizeActive && !state.moveActive && !state.resizeActive) return
         const activationChanged = nextMoveActive !== state.moveActive || nextResizeActive !== state.resizeActive
+        const wasMoveActive = state.moveActive
+        const wasResizeActive = state.resizeActive
         state.mode = 'combined'
         state.moveActive = nextMoveActive
         state.resizeActive = nextResizeActive
+        if (!wasResizeActive && nextResizeActive) {
+          state.resizeResistance = (wasMoveActive ? RESIZE_LOCK_AFTER_MOVE : RESIZE_LOCK_ON) + RESIZE_SNAP_RESISTANCE
+        }
         if (activationChanged) {
           log.warn(LOG_NS, 'shape soft gesture active', {
             id: state.id,
@@ -893,38 +905,61 @@ export function useFleetGestures(opts: {
         const dx = state.moveActive ? pageCenter.x - state.p0.x : 0
         const dy = state.moveActive ? pageCenter.y - state.p0.y : 0
         const scale = state.resizeActive && state.d0 > 0 ? d / state.d0 : 1
-        let scaleX = state.resizeActive ? (state.sx0 >= 8 ? span.x / state.sx0 : scale) : 1
-        let scaleY = state.resizeActive ? (state.sy0 >= 8 ? span.y / state.sy0 : scale) : 1
-        if (state.resizeActive) {
-          const locked = applyShapeResizeAxisLock({
-            enabled: state.sx0 >= 8 && state.sy0 >= 8,
-            axis: state.resizeAxis,
-            accX: state.resizeAccX,
-            accY: state.resizeAccY,
-            spanDx,
-            spanDy,
-            scaleX,
-            scaleY,
-          })
-          state.resizeAxis = locked.axis
-          state.resizeAccX = locked.accX
-          state.resizeAccY = locked.accY
-          scaleX = locked.scaleX
-          scaleY = locked.scaleY
-        }
+        const resistedX = applyAxisResistance(span.x - state.sx0, state.resizeResistance)
+        const resistedY = applyAxisResistance(span.y - state.sy0, state.resizeResistance)
+        const scaleX = state.resizeActive
+          ? (state.sx0 >= 8 ? (state.sx0 + resistedX.delta) / state.sx0 : scale)
+          : 1
+        const scaleY = state.resizeActive
+          ? (state.sy0 >= 8 ? (state.sy0 + resistedY.delta) / state.sy0 : scale)
+          : 1
         const pivotX = state.x0 + state.relX + dx
         const pivotY = state.y0 + state.relY + dy
         const nextX = state.resizeActive ? pivotX - state.relX * scaleX : state.x0 + dx
         const nextY = state.resizeActive ? pivotY - state.relY * scaleY : state.y0 + dy
         const newW = Math.max(80, state.w0 * scaleX)
         const newH = Math.max(60, state.h0 * scaleY)
-        main.updateShape({
-          id: state.id as any,
-          type: state.type as any,
-          x: nextX,
-          y: nextY,
-          props: { w: newW, h: newH } as any,
-        })
+        const current = main.getShape(state.id as any) as any
+        if (!current) return
+        const initial = {
+          ...current,
+          x: state.x0,
+          y: state.y0,
+          props: { ...current.props, w: state.w0, h: state.h0 },
+        }
+        if (state.resizeActive) {
+          const selfGuides: FleetNudgeGuide[] = []
+          if (resistedX.stuck) {
+            selfGuides.push({ axis: 'x', line: nextX + state.w0, spanFrom: nextY, spanTo: nextY + newH })
+          }
+          if (resistedY.stuck) {
+            selfGuides.push({ axis: 'y', line: nextY + state.h0, spanFrom: nextX, spanTo: nextX + newW })
+          }
+          const resolved = nudgeFleetPanelResize(main, initial, {
+            newPoint: { x: nextX, y: nextY },
+            handle: 'bottom_right',
+            mode: 'resize_bounds',
+            scaleX: newW / state.w0,
+            scaleY: newH / state.h0,
+            initialBounds: { x: state.x0, y: state.y0, w: state.w0, h: state.h0 },
+            initialShape: initial,
+          } as any, {
+            additionalGuides: selfGuides,
+            isActive: () => fleetTouchGestureActiveRef.current,
+          })
+          const update = { id: resolved.id, type: resolved.type, x: resolved.x, y: resolved.y, props: resolved.props } as any
+          const settlingChanged = resistedX.stuck !== state.resizeStuckX || resistedY.stuck !== state.resizeStuckY
+          state.resizeStuckX = resistedX.stuck
+          state.resizeStuckY = resistedY.stuck
+          if (settlingChanged) main.animateShape(update, { animation: { duration: 80 } })
+          else main.updateShape(update)
+        } else {
+          const moved = { ...current, x: nextX, y: nextY }
+          const resolved = nudgeFleetPanelTranslate(main, initial, moved, {
+            isActive: () => fleetTouchGestureActiveRef.current,
+          })
+          main.updateShape((resolved ?? moved) as any)
+        }
         state.writeCount += 1
         return
       }

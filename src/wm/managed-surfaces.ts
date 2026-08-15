@@ -1,170 +1,126 @@
-import type { JsonObject } from '@tldraw/utils'
+import {
+  ManagedSurfaceLifecycle,
+  type ManagedSurfaceRequest,
+} from '../../packages/tldraw-wm/src/managed-surfaces.ts'
+import type { WMCore } from '../../packages/tldraw-wm/src/wm-core.ts'
 
-export type ManagedSurfaceKind = string
-
-export type ManagedSurfaceHitPolicy =
-	| 'preview-readonly'
-	| 'chrome-catches-content-pans'
-	| 'modal-catches-all'
+export * from '../../packages/tldraw-wm/src/managed-surfaces.ts'
 
 export interface ManagedSurfaceOwner {
-	userId: string
-	deviceId: string
-}
-
-export interface ManagedSurfaceRect {
-	x: number
-	y: number
-	w: number
-	h: number
-}
-
-export interface ManagedSurfaceClientRect {
-	left: number
-	top: number
-	right: number
-	bottom: number
-	width: number
-	height: number
-}
-
-export interface ManagedSurfacePlacement {
-	mode: 'page' | 'chip-anchored' | 'viewport-centered'
-	anchor?: ManagedSurfaceClientRect
-	left?: number
-	top?: number
-	margin?: number
-}
-
-export interface ManagedSurfaceCleanup {
-	onClose: 'remove-surface' | 'hide-surface' | 'preserve-shape'
-	onReplace?: 'replace-existing-surface'
-	onOwnerChange?: 'remove-surface'
-}
-
-export interface ManagedSurfaceCameraPolicy {
-	x: 'pan' | 'pin'
-	y: 'pan' | 'pin'
-	zoom: 'inherit' | 'lock'
-}
-
-export interface ManagedSurfacePersistence {
-	pinned: boolean
-	scope: 'session' | 'room'
-}
-
-export interface ManagedSurfaceRequest<TPayload = unknown, TKind extends ManagedSurfaceKind = ManagedSurfaceKind> {
-	kind: TKind
-	surfaceId: string
-	layerId: string
-	owner: ManagedSurfaceOwner
-	extent: ManagedSurfaceRect
-	placement: ManagedSurfacePlacement
-	cameraPolicy: ManagedSurfaceCameraPolicy
-	hitPolicy: ManagedSurfaceHitPolicy
-	cleanup: ManagedSurfaceCleanup
-	persistence: ManagedSurfacePersistence
-	source: string | null
-	payload: TPayload
+  userId: string
+  deviceId: string
+  [key: string]: string
 }
 
 export function createManagedSurfaceOwner(userId = '', deviceId = ''): ManagedSurfaceOwner {
-	return { userId, deviceId }
+  return { userId, deviceId }
 }
 
 export function requireManagedSurfaceOwner(
-	owner: Partial<ManagedSurfaceOwner> | undefined,
-	context = 'managed surface',
+  owner: Partial<ManagedSurfaceOwner> | undefined,
+  context = 'managed surface',
 ): ManagedSurfaceOwner {
-	const resolved = createManagedSurfaceOwner(owner?.userId, owner?.deviceId)
-	if (!resolved.userId || !resolved.deviceId) {
-		throw new Error(`${context} requires owner userId and deviceId`)
-	}
-	return resolved
+  const resolved = createManagedSurfaceOwner(owner?.userId, owner?.deviceId)
+  if (!resolved.userId || !resolved.deviceId) {
+    throw new Error(`${context} requires owner userId and deviceId`)
+  }
+  return resolved
 }
 
-export function surfaceSlug(value: string): string {
-	const slug = value.replace(/^shape:/, '').replace(/[^a-zA-Z0-9_-]/g, '-')
-	return slug || 'surface'
+const lifecycles = new WeakMap<EventTarget, ManagedSurfaceLifecycle<ManagedSurfaceOwner, string>>()
+const appliedPolicies = new WeakMap<EventTarget, Map<string, ManagedSurfaceRequest<unknown, string, ManagedSurfaceOwner, string>>>()
+const managedSurfaceCores = new WeakMap<EventTarget, WMCore>()
+
+function policyMap(target: EventTarget) {
+  let map = appliedPolicies.get(target)
+  if (!map) {
+    map = new Map()
+    appliedPolicies.set(target, map)
+  }
+  return map
 }
 
-export function clampChipAnchoredPlacement({
-	chipRect,
-	surfaceWidth,
-	surfaceHeight,
-	viewportWidth,
-	viewportHeight,
-	margin = 8,
-}: {
-	chipRect: ManagedSurfaceClientRect
-	surfaceWidth: number
-	surfaceHeight: number
-	viewportWidth: number
-	viewportHeight: number
-	margin?: number
-}): Required<Pick<ManagedSurfacePlacement, 'left' | 'top' | 'margin'>> {
-	let left = chipRect.left
-	if (left + surfaceWidth > viewportWidth - margin) left = viewportWidth - surfaceWidth - margin
-	if (left < margin) left = margin
-
-	const chipMid = chipRect.top + chipRect.height / 2
-	let top = chipMid - surfaceHeight / 2
-	if (top < margin) top = margin
-	if (top + surfaceHeight > viewportHeight - margin) top = viewportHeight - surfaceHeight - margin
-
-	return { left, top, margin }
+function updateAppliedPolicy(
+  target: EventTarget,
+  request: ManagedSurfaceRequest<unknown, string, ManagedSurfaceOwner, string>,
+) {
+  policyMap(target).set(request.surfaceId, request)
 }
 
-function rectJson(rect: ManagedSurfaceRect): JsonObject {
-	return { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
+function persistenceStorage(target: EventTarget): Storage | null {
+  try {
+    return 'sessionStorage' in target ? (target as Window).sessionStorage : null
+  } catch {
+    return null
+  }
 }
 
-function placementJson(placement: ManagedSurfacePlacement): JsonObject {
-	return {
-		mode: placement.mode,
-		left: placement.left,
-		top: placement.top,
-		margin: placement.margin,
-	}
+function persistenceKey(surfaceId: string) {
+  return `tlda-managed-surface:${surfaceId}`
 }
 
-function cameraPolicyJson(policy: ManagedSurfaceCameraPolicy): JsonObject {
-	return { x: policy.x, y: policy.y, zoom: policy.zoom }
+function lifecycleFor(target: EventTarget) {
+  let lifecycle = lifecycles.get(target)
+  if (!lifecycle) {
+    const dismiss = (request: ManagedSurfaceRequest<unknown, string, ManagedSurfaceOwner, string>, action: string) => {
+      policyMap(target).delete(request.surfaceId)
+      const wm = managedSurfaceCores.get(target)
+      if (wm?.hasLayer(request.layerId)) wm.removeLayer(request.layerId)
+      target.dispatchEvent(new CustomEvent('wm-managed-surface-dismiss', {
+        detail: { kind: request.kind, surfaceId: request.surfaceId, action },
+      }))
+    }
+    lifecycle = new ManagedSurfaceLifecycle({
+      sameOwner: (a, b) => a.userId === b.userId && a.deviceId === b.deviceId,
+      show: request => target.dispatchEvent(new CustomEvent('wm-managed-surface-request', { detail: { request } })),
+      remove: request => dismiss(request, 'remove-surface'),
+      hide: request => dismiss(request, 'hide-surface'),
+      preserve: request => dismiss(request, 'preserve-shape'),
+      applyPlacement: request => {
+        if (request.placement.left !== undefined && request.placement.left !== request.extent.x) {
+          throw new Error(`Managed surface "${request.surfaceId}" placement does not match its extent.`)
+        }
+        if (request.placement.top !== undefined && request.placement.top !== request.extent.y) {
+          throw new Error(`Managed surface "${request.surfaceId}" placement does not match its extent.`)
+        }
+        updateAppliedPolicy(target, request)
+      },
+      applyCameraPolicy: request => {
+        updateAppliedPolicy(target, request)
+        const wm = managedSurfaceCores.get(target)
+        wm?.defineOrUpdateLayer(request.layerId, {
+          parent: wm.rootLayerId,
+          policy: request.cameraPolicy,
+        })
+      },
+      applyHitPolicy: request => updateAppliedPolicy(target, request),
+      persist: request => persistenceStorage(target)?.setItem(persistenceKey(request.surfaceId), JSON.stringify(request)),
+      clearPersistence: request => persistenceStorage(target)?.removeItem(persistenceKey(request.surfaceId)),
+    })
+    lifecycles.set(target, lifecycle)
+  }
+  return lifecycle
 }
 
-function cleanupJson(cleanup: ManagedSurfaceCleanup): JsonObject {
-	return {
-		onClose: cleanup.onClose,
-		onReplace: cleanup.onReplace,
-		onOwnerChange: cleanup.onOwnerChange,
-	}
+/** Connect the host's managed-surface lifecycle to its local editor view. */
+export function registerManagedSurfaceCore(target: EventTarget, wm: WMCore) {
+  managedSurfaceCores.set(target, wm)
+  for (const request of policyMap(target).values()) {
+    wm.defineOrUpdateLayer(request.layerId, { parent: wm.rootLayerId, policy: request.cameraPolicy })
+  }
 }
 
-function ownerJson(owner: ManagedSurfaceOwner): JsonObject {
-	return { userId: owner.userId, deviceId: owner.deviceId }
+export function requestManagedSurface<TPayload, TKind extends string>(
+  target: EventTarget,
+  request: ManagedSurfaceRequest<TPayload, TKind, ManagedSurfaceOwner, string>,
+) {
+  return lifecycleFor(target).request(request)
 }
 
-function persistenceJson(persistence: ManagedSurfacePersistence): JsonObject {
-	return { pinned: persistence.pinned, scope: persistence.scope }
+export function dismissManagedSurface(target: EventTarget, kind: string): boolean {
+  return lifecycleFor(target).closeKind(kind)
 }
 
-export function managedSurfaceShapeMeta(
-	request: ManagedSurfaceRequest,
-	options: { coordinateSpace?: string } = {},
-): JsonObject {
-	const meta: JsonObject = {
-		managedSurfaceId: request.surfaceId,
-		managedLayerId: request.layerId,
-		managedKind: request.kind,
-		managedHitPolicy: request.hitPolicy,
-		managedExtent: rectJson(request.extent),
-		managedPlacement: placementJson(request.placement),
-		managedCameraPolicy: cameraPolicyJson(request.cameraPolicy),
-		managedCleanup: cleanupJson(request.cleanup),
-		managedOwner: ownerJson(request.owner),
-		managedPersistence: persistenceJson(request.persistence),
-		managedSource: request.source,
-	}
-	if (options.coordinateSpace) meta.managedCoordinateSpace = options.coordinateSpace
-	return meta
+export function getManagedSurfacePolicy(target: EventTarget, surfaceId: string) {
+  return policyMap(target).get(surfaceId)
 }

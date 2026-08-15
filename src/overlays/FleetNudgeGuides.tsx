@@ -37,7 +37,7 @@ export function FleetNudgeGuides() {
       // Neither handler has an end hook, so the drag ending is what clears the
       // guides — and a resize is a drag, so `select.resizing` holds them up the
       // same way `select.translating` does.
-      if (held === null || !(held.editor.isIn('select.translating') || held.editor.isIn('select.resizing'))) {
+      if (held === null || !(held.isActive?.() || held.editor.isIn('select.translating') || held.editor.isIn('select.resizing'))) {
         clearFleetNudgeGuides()
         return
       }

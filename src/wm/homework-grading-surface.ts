@@ -70,7 +70,7 @@ export function createHomeworkGradingSurfaceRequest({
 	pane,
 	layerScope,
 	source,
-}: HomeworkGradingSurfaceInput): ManagedSurfaceRequest<HomeworkGradingSurfacePayload, HomeworkGradingSurfaceKind> {
+}: HomeworkGradingSurfaceInput): ManagedSurfaceRequest<HomeworkGradingSurfacePayload, HomeworkGradingSurfaceKind, ManagedSurfaceOwner, 'room'> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed homework grading surface')
 	return {

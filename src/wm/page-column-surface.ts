@@ -35,7 +35,7 @@ export function createPageColumnSurfaceRequest({
 	bounds,
 	owner,
 	source,
-}: PageColumnSurfaceInput): ManagedSurfaceRequest<PageColumnSurfacePayload, PageColumnSurfaceKind> {
+}: PageColumnSurfaceInput): ManagedSurfaceRequest<PageColumnSurfacePayload, PageColumnSurfaceKind, ManagedSurfaceOwner, 'session'> {
 	const slug = surfaceSlug(`${columnKey}-p${pageNum}`)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed page-column surface')
 	return {
@@ -76,7 +76,7 @@ export function createPageColumnHandleSurfaceRequest({
 	bounds,
 	owner,
 	source,
-}: PageColumnHandleSurfaceInput): ManagedSurfaceRequest<PageColumnHandleSurfacePayload, PageColumnHandleSurfaceKind> {
+}: PageColumnHandleSurfaceInput): ManagedSurfaceRequest<PageColumnHandleSurfacePayload, PageColumnHandleSurfaceKind, ManagedSurfaceOwner, 'session'> {
 	const slug = surfaceSlug(columnKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed page-column surface')
 	return {

@@ -88,6 +88,7 @@ import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { spawnCallerId } from './lib/spawn-caller.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
 import { scheduleSubscriptionWakes } from './lib/subscription-wake-scheduling.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
@@ -3560,11 +3561,11 @@ app.get('/auth/login', loginRoute)
 
 // Auth level — tells the client what its token allows
 app.get('/api/auth/me', async (req, res) => {
-  if (!isTokenGatingEnabled()) return res.json({ level: 'rw', presenter: true, dev: true })
   const token = extractToken(req)
   const level = validateToken(token)
+  if (!isTokenGatingEnabled() && level === 'rw') return res.json({ level, presenter: true, publisher: true, dev: true })
   if (!level) return res.status(401).json({ error: 'Unauthorized' })
-  res.json({ level, presenter: level === 'rw' })
+  res.json({ level, presenter: level === 'rw', publisher: level === 'rw', dev: !isTokenGatingEnabled() })
 })
 
 // ---------- Browser-side log sink ----------
@@ -5932,6 +5933,25 @@ async function handleFleetWsMessage(ws, msg) {
       error(e)
       return
     }
+  }
+
+  if (type === 'lecture-recording-proposal') {
+    const actor = ws._tldaAgentId || null
+    if (!actor) { error('lecture recording proposal requires an authenticated fleet-agent connection'); return }
+    const projectName = typeof msg.project === 'string' ? msg.project.trim() : ''
+    const recordingId = typeof msg.recording_id === 'string' ? msg.recording_id.trim() : ''
+    if (!projectName || !await readProject(projectName)) { error('lecture recording proposal requires an existing project'); return }
+    if (!/^[A-Za-z0-9._-]+$/.test(recordingId)) { error('lecture recording proposal has an invalid recording id'); return }
+    const dir = join(getProjectDir(projectName), 'recordings')
+    const metaPath = join(dir, `${recordingId}.json`)
+    if (!existsSync(metaPath)) { error('recording not found'); return }
+    try {
+      const recording = JSON.parse(readFileSync(metaPath, 'utf8'))
+      reply(writeCandidateClip(dir, recording, { startMs: msg.start_ms, endMs: msg.end_ms }, actor))
+    } catch (e) {
+      error(e)
+    }
+    return
   }
 
   if (type === 'notify') {

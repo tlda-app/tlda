@@ -228,9 +228,9 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     // chosen — a document running down leaves left and right, one running across
     // leaves above and below.
     //
-    // The dx is a cosmetic spread along the margin axis that the HUD compensates,
-    // so it is added wherever that axis is, and only there — the whole layout has
-    // to translate as one rigid unit or the HUD's single compensation tears it.
+    // dx is zero for this variant: both groups are positioned against document
+    // edges, which belong to the document coordinate frame. Owner separation is
+    // carried by the layout's vertical lane instead.
     const docFar = flowAxis === 'x' ? docMaxBottom : docMaxRight
     const secondMarginStart = docFar + marginGap + (flowAxis === 'x' ? 0 : dx)
     const rightChatX = flowAxis === 'x' ? anchorX : secondMarginStart

@@ -1,7 +1,7 @@
 /**
  * Token gating.
  *
- * Two tokens:
+ * Two token capabilities:
  *   - Read token (TLDA_TOKEN_READ / config.tokenRead): GET routes, /docs/*, WebSocket
  *   - RW token (TLDA_TOKEN_RW / config.tokenRw): everything including POST/DELETE API routes
  *
@@ -40,7 +40,6 @@ export function initAuth() {
 
   tokenRead = null
   tokenRw = null
-
   if (!serverConfig.tokenGating) {
     gatingEnabled = false
     return
@@ -147,3 +146,5 @@ export function requireRw(req, res, next) {
   req.authLevel = level
   next()
 }
+
+export const requireRecordingPrivateRead = requireRw

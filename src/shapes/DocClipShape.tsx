@@ -23,7 +23,7 @@ import { ProjectContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
-import { ensureLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
+import { ensureViewLayer, getEditorWMCore, removeLayers } from '../wm/editor-wm'
 
 const BAR_H = 8
 
@@ -121,7 +121,7 @@ function DocClipComponent({ shape }: { shape: any }) {
     const camY = -(boundsCenter - (contentH / zoom) / 2)
     const wm = getEditorWMCore(mainEditor)
     const layerId = `doc-clip:${shape.id}`
-    ensureLayer(wm, layerId, {
+    ensureViewLayer(wm, layerId, {
       parent: wm.rootLayerId,
       policy: { x: 'pin', y: 'pin', zoom: 'lock' },
       transform: { x: -pg.bounds.x, y: camY, scale: zoom },

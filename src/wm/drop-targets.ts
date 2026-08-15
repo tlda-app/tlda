@@ -14,6 +14,22 @@ export type WMDropTarget<T = unknown> = {
 
 const targets = new WeakMap<HTMLElement, WMDropTarget<any>>()
 let active: { element: HTMLElement; target: WMDropTarget<any> } | null = null
+let pointerClientPoint: WMDropPoint | null = null
+
+export function recordWMDropPointer(point: WMDropPoint) {
+  pointerClientPoint = { x: point.x, y: point.y }
+}
+
+export function currentWMDropPointer() {
+  return pointerClientPoint
+}
+
+if (typeof window !== 'undefined') {
+  const recordPointerEvent = (event: PointerEvent) => recordWMDropPointer({ x: event.clientX, y: event.clientY })
+  window.addEventListener('pointerdown', recordPointerEvent, true)
+  window.addEventListener('pointermove', recordPointerEvent, true)
+  window.addEventListener('pointerup', recordPointerEvent, true)
+}
 
 export function registerWMDropTarget<T>(
   element: HTMLElement,

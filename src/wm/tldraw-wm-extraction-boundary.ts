@@ -13,50 +13,84 @@ export interface WmExtractionModule {
 
 export const WM_EXTRACTION_MODULES = [
 	{
-		path: 'src/wm/wm-core.ts',
+		path: 'packages/tldraw-wm/src/wm-core.ts',
 		classification: 'wm-package-core',
 		publicContract: 'Layer graph, camera policy, transforms, and coordinate conversion model.',
 	},
 	{
-		path: 'src/wm/hosted-panel-registry.ts',
+		path: 'packages/tldraw-wm/src/layer-model.ts',
+		classification: 'wm-package-core',
+		publicContract: 'Serializable project-owned semantic layer graph and reconciliation.',
+	},
+	{
+		path: 'packages/tldraw-wm/src/hosted-panel-registry.ts',
 		classification: 'wm-package-core',
 		publicContract: 'Hosted panel app definitions, default sizes, and default props.',
 	},
 	{
-		path: 'src/wm/managed-surfaces.ts',
+		path: 'packages/tldraw-wm/src/managed-surfaces.ts',
 		classification: 'wm-package-core',
 		publicContract: 'Managed surface request vocabulary, host-extensible kind strings, owner policy, placement, cleanup, persistence, and shape metadata.',
 	},
 	{
-		path: 'src/wm/gesture-policy.ts',
+		path: 'packages/tldraw-wm/src/gesture-policy.ts',
 		classification: 'wm-package-core',
 		publicContract: 'Pure gesture thresholds, resize-axis policy, and host-supplied lane snap decisions.',
 	},
 	{
-		path: 'src/wm/editor-wm.ts',
+		path: 'packages/tldraw-wm/src/editor-wm.ts',
 		classification: 'wm-package-tldraw-adapter',
 		publicContract: 'TLDraw editor attachment, named viewport registration, and layer lookup.',
 	},
 	{
-		path: 'src/wm/viewport-coordinates.ts',
+		path: 'packages/tldraw-wm/src/viewport-coordinates.ts',
 		classification: 'wm-package-tldraw-adapter',
 		publicContract: 'Frame-aware point conversion through registered TLDraw viewport layers.',
 	},
 	{
-		path: 'src/wm/canvas-clip-panel.ts',
+		path: 'packages/tldraw-wm/src/canvas-clip-panel.ts',
 		classification: 'wm-package-tldraw-adapter',
 		publicContract: 'Fork-facing named viewport capabilities, optional viewport lookup, surface camera sync, and host-injected shape predicates.',
 	},
 	{
-		path: 'src/wm/gesture-frame.ts',
+		path: 'packages/tldraw-wm/src/gesture-frame.ts',
 		classification: 'wm-package-tldraw-adapter',
 		publicContract: 'DOM and TLDraw viewport frame helpers for gesture hit testing with host-supplied selectors.',
+	},
+	{
+		path: 'packages/tldraw-wm/src/tldraw-fork-viewport-adapter.ts',
+		classification: 'wm-package-tldraw-adapter',
+		publicContract: 'TLDraw fork named-viewport camera and coordinate adapter.',
+	},
+	{
+		path: 'src/wm/fleet-hud-layer.ts',
+		classification: 'tlda-host-adapter',
+		publicContract: 'tlda fleet HUD semantic layer policy expressed through the package core.',
+		remainingHostDependency: 'Fleet ids, owner policy, document flow axis, and HUD layout stay in tlda.',
+	},
+	{
+		path: 'src/wm/fleet-docview-layer.ts',
+		classification: 'tlda-host-adapter',
+		publicContract: 'tlda document-view surface policy expressed through the package core.',
+		remainingHostDependency: 'Fleet document identity and owner policy stay in tlda.',
+	},
+	{
+		path: 'src/wm/drop-targets.ts',
+		classification: 'tlda-host-adapter',
+		publicContract: 'tlda DOM drop-target registry and live telemetry bridge.',
+		remainingHostDependency: 'DOM hit testing and tlda telemetry remain host concerns.',
 	},
 	{
 		path: 'src/wm/tlda-shape-layers.ts',
 		classification: 'tlda-host-adapter',
 		publicContract: 'tlda shape-to-layer resolution, layer installation at editor mount, and the membership readout.',
 		remainingHostDependency: 'Fleet ownership predicates, managed-surface meta keys, and the HUD viewport id stay in tlda.',
+	},
+	{
+		path: 'src/wm/project-layer-model.ts',
+		classification: 'tlda-host-adapter',
+		publicContract: 'Binds the package LayerModel to the synced tldraw project record.',
+		remainingHostDependency: 'The tldraw/Yjs document record and hidden host shape stay in tlda.',
 	},
 	{
 		path: 'src/wm/editor-host-bridge.ts',
