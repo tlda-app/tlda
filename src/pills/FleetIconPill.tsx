@@ -327,7 +327,7 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
     setChromeCondition({
       id: FLEET_DISCONNECTED_CONDITION,
       topic: 'fleet',
-      severity: 'error',
+      severity: 'severe',
       text: 'Connection lost — chat and fleet updates paused',
     })
     return () => clearChromeCondition(FLEET_DISCONNECTED_CONDITION)
