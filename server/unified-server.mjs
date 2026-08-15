@@ -1099,7 +1099,11 @@ async function reanimateAgent(agentQuery) {
     err.status = 409
     throw err
   }
-  const daemonKey = before.daemon_key || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
+  // `findAgentStored` intentionally returns the durable agent row. The owning
+  // daemon is a separate durable address, so read it from its authority before
+  // falling back to projected legacy fields.
+  const ownerRoute = await fleetStore.getAgentDaemonRoute?.(before.id)
+  const daemonKey = ownerRoute?.daemon_key || before.daemon_key || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
   if (!daemonKey) {
     // "No daemon address" describes the symptom and hides the next action. A
     // route can be restored when the owning daemon announces agent-route, but

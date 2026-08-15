@@ -216,9 +216,10 @@ export async function injectCodexPrompt(session, prompt, {
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', exactTmuxWindowTarget(session), '-p')
-      if (stdout.includes('MCP startup interrupted') || stdout.includes('MCP startup cancelled')) {
-        return false
-      }
+      // A resumed Codex pane contains its durable transcript. Startup warnings
+      // in that transcript may belong to the previous process, so they cannot
+      // decide whether this prompt delivery succeeded. The paste-marker check
+      // below is the authority for delivery in the current process.
       const promptReady = stdout.split('\n').some((line) => line.trimStart().startsWith('›'))
       const busy = ['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt'].some((marker) => stdout.includes(marker))
       const mcpStarting = stdout.includes('Starting MCP servers')

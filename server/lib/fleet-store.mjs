@@ -3649,7 +3649,10 @@ export class FleetStore {
 
   removeAgent(id) {
     this.retireTasksForGoneAgent(id, 'agent row deleted');
-    this._deleteAgent.run(id);
+    this.db.transaction(() => {
+      this._deleteAgentDaemonRoute.run(id);
+      this._deleteAgent.run(id);
+    })();
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
   }
