@@ -483,27 +483,39 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     }))
   }
 
-  let sourceManifest
+  // A remote can only be authoritative over paths it itself introduced. Diffing
+  // against whole-project authority (as this used to) means any remote treats
+  // every other ingestion path's content — a local push's directory walk picked
+  // up a scratch file, a different remote's own tracked set — as its own to
+  // delete, just because its own tree doesn't have it either. `remoteBaseline`
+  // is what THIS remote last told us it had; only paths missing from there are
+  // this remote's business. See bin/repair-source-replica-target.mjs's
+  // basePathsAbsentFromTarget comment for the sibling problem on the replica side.
+  const remoteBaseline = Array.isArray(project.overleafSourceManifest) ? project.overleafSourceManifest : []
+  const previousManifest = await readClientSourceManifest(name)
+  let remoteManifest
   if (project.format === 'markdown') {
-    sourceManifest = scanMarkdownDependencyClosure(project.mainFile || 'index.md', dir).files
-    const next = new Set(sourceManifest)
-    const previous = new Set(await readClientSourceManifest(name))
+    remoteManifest = scanMarkdownDependencyClosure(project.mainFile || 'index.md', dir).files
+    const next = new Set(remoteManifest)
+    const previous = new Set(remoteBaseline)
     changedPaths = [...new Set([
       ...changedPaths.filter(path => next.has(path)),
-      ...sourceManifest.filter(path => !previous.has(path)),
+      ...remoteManifest.filter(path => !previous.has(path)),
     ])]
     deletedPaths = [...new Set([
       ...deletedPaths.filter(path => previous.has(path)),
       ...[...previous].filter(path => !next.has(path)),
     ])]
   } else {
-    sourceManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
-    deletedPaths = completeRemoteDeletedPaths(
-      deletedPaths,
-      await readClientSourceManifest(name),
-      sourceManifest,
-    )
+    remoteManifest = (await trackedFiles(dir)).filter(isAuthoredSource)
+    deletedPaths = completeRemoteDeletedPaths(deletedPaths, remoteBaseline, remoteManifest)
   }
+  // The remote replaces its own territory wholesale (it just told us exactly
+  // what it has now) but authority keeps every path outside that territory —
+  // content this sync neither introduced nor has any claim to remove. Carried
+  // forward by reference (project-store.mjs candidate map), not re-read here.
+  const nonRemotePaths = previousManifest.filter(path => !remoteBaseline.includes(path) && !remoteManifest.includes(path))
+  const sourceManifest = [...new Set([...remoteManifest, ...nonRemotePaths])]
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
   const expectedRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
@@ -534,6 +546,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     overleafSyncStatus: 'ok',
     overleafSyncError: null,
     overleafConflictFiles: [],
+    overleafSourceManifest: remoteManifest,
   })
   log.info('synced', { name, changed: files.length, deleted: deletedPaths.length, head: head.slice(0, 7) })
   Object.assign(result, { name, changed: files.length, deleted: deletedPaths.length, head, building: result?.building })
