@@ -137,11 +137,21 @@ const ANCHORED_SENSOR_MID = ANCHORED_SENSOR_HEIGHT / 2
 const ANCHORED_SENSOR_EDGE = 1_000_000
 const ANCHORED_ESTIMATED_ROW_HEIGHT = 80
 const ANCHORED_OVERSCAN_PX = 800
-const anchoredViewportHeight = (el: HTMLElement) => {
+// Base slack for the at-bottom test, before the container's own padding is
+// added. The container carries `padding: 4px 0` as load-bearing slack for
+// `tailTop()` (see fleet-chat.css on `.fleet-chat-log-anchored`) — that
+// padding is subtracted out of viewportHeight below, so it must be added
+// back here or the tail sits permanently `paddingBottom`-px short of
+// `tailTop()` and every scroll-up reads as a follow-off.
+const ANCHORED_TAIL_EPS_BASE = 1
+const anchoredViewportGeometry = (el: HTMLElement) => {
   const style = getComputedStyle(el)
   const paddingTop = Number.parseFloat(style.paddingTop) || 0
   const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
-  return Math.max(0, el.clientHeight - paddingTop - paddingBottom)
+  return {
+    viewportHeight: Math.max(0, el.clientHeight - paddingTop - paddingBottom),
+    paddingBottom,
+  }
 }
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
@@ -2336,6 +2346,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const heightByKeyRef = useRef<Map<string, number>>(new Map())
   const rowElsRef = useRef<Map<string, HTMLDivElement>>(new Map())
   const modelTopRef = useRef(0)
+  const tailEpsRef = useRef(ANCHORED_TAIL_EPS_BASE)
   const sensorTopRef = useRef(ANCHORED_SENSOR_MID)
   const tailModeRef = useRef(true)
   const lastWheelRef = useRef<{ at: number, deltaY: number, deltaMode: number } | null>(null)
@@ -2416,7 +2427,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const setModelTop = useCallback((nextTop: number, opts?: { forceTail?: boolean }) => {
     const top = clampTop(nextTop)
     modelTopRef.current = top
-    const atBottom = Math.abs(top - tailTop()) <= 1
+    const atBottom = Math.abs(top - tailTop()) <= tailEpsRef.current
     const getDetail = () => scrollSnapshot(nextTop, top)
     if (opts?.forceTail || atBottom) setTailMode(true, getDetail)
     else setTailMode(false, getDetail)
@@ -2454,7 +2465,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   }, [recenterSensor, setModelTop, tailTop])
 
   const isAtTail = useCallback(() => {
-    return Math.abs(modelTopRef.current - tailTop()) <= 1
+    return Math.abs(modelTopRef.current - tailTop()) <= tailEpsRef.current
   }, [tailTop])
 
   useImperativeHandle(ref, () => ({ scrollToTail, isAtTail }), [isAtTail, scrollToTail])
@@ -2465,7 +2476,9 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     if (el) {
       sensorTopRef.current = ANCHORED_SENSOR_MID
       el.scrollTop = ANCHORED_SENSOR_MID
-      setViewportHeight(anchoredViewportHeight(el))
+      const { viewportHeight: nextHeight, paddingBottom } = anchoredViewportGeometry(el)
+      tailEpsRef.current = ANCHORED_TAIL_EPS_BASE + paddingBottom
+      setViewportHeight(nextHeight)
     }
   }, [setScroller])
 
@@ -2473,7 +2486,8 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     const el = scrollerRef.current
     if (!el) return
     const update = () => {
-      const nextHeight = anchoredViewportHeight(el)
+      const { viewportHeight: nextHeight, paddingBottom } = anchoredViewportGeometry(el)
+      tailEpsRef.current = ANCHORED_TAIL_EPS_BASE + paddingBottom
       setViewportHeight(nextHeight)
       const nextTailTop = tailTop(nextHeight)
       if (tailModeRef.current) modelTopRef.current = nextTailTop
