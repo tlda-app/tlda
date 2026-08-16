@@ -6,6 +6,7 @@
  */
 import {
   BaseBoxShapeUtil,
+  EditorContext,
   HTMLContainer,
   createShapeId,
   stopEventPropagation,
@@ -2640,6 +2641,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   currentProject,
   hostShapeId,
   semanticOperationPageSize,
+  editor,
 }: {
   html: string
   postProcess: (html: string) => string
@@ -2650,6 +2652,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   currentProject?: string
   hostShapeId: TLShapeId
   semanticOperationPageSize: number
+  editor: Editor
 }) {
   recordChatRenderProbe('row-render', itemKey, { htmlLength: html.length })
   const processed = useMemo(() => probe.time('chat', 'chat-row-postprocess', () => postProcess(html), {
@@ -2725,23 +2728,33 @@ const ChatMessageRow = memo(function ChatMessageRow({
       const descriptor = decodeSemanticOperation(body)
       if (!descriptor) return
       const root = createRoot(body)
+      // createRoot mounts a React tree with no ancestors of its own, so it does
+      // not inherit context from the surrounding app -- EditorContext included.
+      // SemanticChatOperationView calls useEditor()/usePillDrag() (which itself
+      // calls useEditor()), so without this provider every render throws
+      // "useEditor must be used inside of the <Tldraw/> or <TldrawEditor/>
+      // components" before it commits any DOM, leaving `.semantic-operation-body`
+      // permanently empty. ThreadChatOperationView needs no editor access, so the
+      // same missing provider left it working and masked the gap.
       root.render(
-        descriptor.kind === 'thread'
-          ? <ThreadChatOperationView
-            descriptor={descriptor}
-            renderCtx={semanticRenderCtx}
-            currentProject={currentProject}
-            host={body}
-            restoreExpansions={restorePrettyExpansions}
-          />
-          : <SemanticChatOperationView
-            descriptor={descriptor}
-            renderCtx={semanticRenderCtx}
-            currentProject={currentProject}
-            host={body}
-            hostShapeId={hostShapeId}
-            pageSize={semanticOperationPageSize}
-          />,
+        <EditorContext.Provider value={editor}>
+          {descriptor.kind === 'thread'
+            ? <ThreadChatOperationView
+              descriptor={descriptor}
+              renderCtx={semanticRenderCtx}
+              currentProject={currentProject}
+              host={body}
+              restoreExpansions={restorePrettyExpansions}
+            />
+            : <SemanticChatOperationView
+              descriptor={descriptor}
+              renderCtx={semanticRenderCtx}
+              currentProject={currentProject}
+              host={body}
+              hostShapeId={hostShapeId}
+              pageSize={semanticOperationPageSize}
+            />}
+        </EditorContext.Provider>,
       )
       semanticRoots.push(root)
     })
@@ -2761,14 +2774,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return () => {
       for (const root of semanticRoots) root.unmount()
     }
-  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize])
+  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize, editor])
 
   return (
     <>
       <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
     </>
   )
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize)
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.editor === next.editor)
 
 function FleetChatInner({ shape }: { shape: any }) {
   const { addToast } = useToasts()
@@ -6797,6 +6810,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     currentProject={doc?.projectName}
                     hostShapeId={shape.id}
                     semanticOperationPageSize={semanticOperationPageSize}
+                    editor={editor}
                   />
                 )}
               />
