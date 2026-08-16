@@ -58,7 +58,7 @@ import {
   updateProject,
 } from '../server/lib/project-store.mjs'
 import { syncOverleaf } from '../server/lib/overleaf-sync.mjs'
-import { setAcceptedSourceMutationHandler } from '../server/routes/projects.mjs'
+import { setAcceptedSourceMutationHandler, setSourceBindingTargetProvider } from '../server/routes/projects.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-remote-pull-'))
 await initProjectStore(root)
@@ -130,6 +130,8 @@ function theCollaboratorPushes(remote) {
 // this test can observe rather than infer.
 const toldTheMachines = []
 setAcceptedSourceMutationHandler(async payload => { toldTheMachines.push(payload) })
+const linkedBinding = { bindingId: 'alice-linked-checkout', daemonKey: 'alice-laptop:test' }
+setSourceBindingTargetProvider(async project => project === NAME ? [linkedBinding] : [])
 
 try {
   // ## A remote pull tells linked machines
@@ -179,9 +181,17 @@ try {
     authority.currentRevision,
     "Alice's laptop — is told the revision the remote pull landed on",
   )
+  const lifecycle = await sourceLifecycleStore(NAME)
+  const revision = lifecycle.readRevisionLifecycle(NAME, authority.currentRevision)
+  assert.equal(
+    revision.replicas[linkedBinding.bindingId].state,
+    'pending',
+    "Alice's laptop — has a retained source update command until her daemon receives it",
+  )
 
   console.log('a remote pull tells every linked machine')
 } finally {
   setAcceptedSourceMutationHandler(null)
+  setSourceBindingTargetProvider(null)
   await closeProjectStore()
 }

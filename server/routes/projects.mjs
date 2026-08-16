@@ -944,6 +944,13 @@ export function setSourceBindingTargetProvider(provider) {
   sourceBindingTargetProvider = typeof provider === 'function' ? provider : null
 }
 
+export async function sourceBindingTargetsForProject(name, sourceBindingId = null) {
+  const bindingTargets = sourceBindingTargetProvider
+    ? await sourceBindingTargetProvider(name)
+    : []
+  return bindingTargets.filter(target => target.bindingId !== sourceBindingId)
+}
+
 export async function runSerializedProjectSourceOperation(name, operation, options = {}) {
   const previous = sourcePushQueues.get(name) || Promise.resolve()
   let release
@@ -971,13 +978,11 @@ export async function runSerializedProjectSourceOperation(name, operation, optio
 }
 
 export async function processProjectPush(name, body, transactionTest = {}) {
-  const bindingTargets = sourceBindingTargetProvider
-    ? await sourceBindingTargetProvider(name)
-    : []
+  const bindingTargets = await sourceBindingTargetsForProject(name, body?.sourceBindingId)
   const result = await runSerializedProjectSourceOperation(
     name,
     () => processProjectPushSerialized(name, body, transactionTest, {
-      bindingTargets: bindingTargets.filter(target => target.bindingId !== body?.sourceBindingId),
+      bindingTargets,
     }),
     {
       sourceDaemonKey: body?.sourceDaemonKey || null,

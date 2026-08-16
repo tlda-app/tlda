@@ -37,7 +37,7 @@ import {
 } from './project-store.mjs'
 import { isSourceFilePath, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
-import { processProjectPushSerialized, runSerializedProjectSourceOperation } from '../routes/projects.mjs'
+import { processProjectPushSerialized, runSerializedProjectSourceOperation, sourceBindingTargetsForProject } from '../routes/projects.mjs'
 import { createLogger } from '../../shared/logger.mjs'
 
 const log = createLogger('overleaf-sync')
@@ -507,6 +507,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
   const expectedRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
+  const bindingTargets = await sourceBindingTargetsForProject(name)
   const result = await processPush(name, {
     expectedRevision,
     files,
@@ -515,7 +516,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     overleafSync: true,
     overleafRemote: project.overleafRemote || null,
     overleafCommits: commits,
-  })
+  }, {}, { bindingTargets })
 
   if (!result?.ok) {
     await execAsync(`git reset --hard ${shellQuote(retryHead)}`, { cwd: dir, timeout: 30000 })
