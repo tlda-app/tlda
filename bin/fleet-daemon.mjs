@@ -920,7 +920,13 @@ daemonMintCore = createDaemonMintCore({
     name,
     tmuxSession: null,
     cwd: launch.cwd,
-    model: launch.model,
+    // The resolved alias, not the requested string: a mint that names no model
+    // still runs on one, and `register.mjs` only writes metadata.model when it
+    // is given a value. Sending the request meant every default-model agent
+    // reached the roster with no model at all — the agents panel expansion has
+    // a model chip and simply had nothing to show. `kind` below already takes
+    // the resolved harness for the same reason.
+    model: launch.modelSpec?.alias || launch.model,
     effort: launch.effort,
     kind: launch.kind || 'codex',
     metadata,
