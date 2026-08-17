@@ -53,16 +53,18 @@ setBuildReporter({
   patchShape:      (docName, shapeId, propsPatch) => sendReport('patchShape', [docName, shapeId, propsPatch]),
   writeSentinel:   (docName, propsPatch)   => callParent('writeSentinel',   [docName, propsPatch]),
   emitGlobalEvent: (type, payload)         => sendReport('emitGlobalEvent', [type, payload]),
-  // An acknowledged RPC, not a queued report. The last thing a build does is
-  // write buildStatus/lastBuild/lastBuildSuccess and then the worker exits --
-  // and a report is fire-and-forget, so that terminal write raced the exit and
-  // was lost. On 2026-08-17 a build completed at 11:34:17 and mirrored at
-  // 11:35:18 while lastBuildSuccess stayed at 11:02:55, because mirrorShadow is
-  // awaited and this was not. A field that is wrong only on success is worse
-  // than one that is obviously broken: it cost two server restarts, a killed
-  // build worker, and hours of misdiagnosis across two agents before anyone
-  // stopped believing it.
-  updateProject:   (name, patch)           => callParent('updateProject',   [name, patch]),
+  // Deliberately fire-and-forget, and it must stay that way until the relay
+  // chain is bounded. Making it an acknowledged RPC on 2026-08-17 looked right
+  // -- the terminal write of buildStatus/lastBuild/lastBuildSuccess raced the
+  // worker's exit and was being lost -- but the parent serializes every relay
+  // through one promise chain, and mirrorShadow awaits a sender chosen to retry
+  // rather than time out. So one unreachable daemon already wedged a finalize;
+  // awaiting here made the FIRST statement of every subsequent build wait on
+  // that same blocked chain, and builds stopped starting at all: worker alive,
+  // ~3s CPU, not one line in build.log. Bounding callParent and the mirror
+  // fan-out is the fix; until then a lost status write is far cheaper than a
+  // build that never begins.
+  updateProject:   (name, patch)           => sendReport('updateProject',   [name, patch]),
   mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => callParent('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
   recordRevisionPhase: (name, sourceRevision, phase, state, result) => callParent('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })
