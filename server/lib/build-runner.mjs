@@ -1660,6 +1660,32 @@ export async function finalizeBuildVersion({
   }
 
   const hash7 = recorded.hash.slice(0, 7)
+  // A project may switch the mirror off. The mirror commits the server's shadow
+  // content into the working copy's HEAD, so while the server is BEHIND the
+  // working copy it re-applies stale content on every build, and committed work
+  // the shadow lacks silently leaves HEAD. Disk is untouched, which is why
+  // nothing surfaces it: `git log` shows the work landed and `git show HEAD:file`
+  // shows it gone. On 2026-08-17 four mirror commits took the same two changes
+  // out of bregman's HEAD and an agent restored them by hand twice.
+  //
+  // It does not converge on its own -- the mirror is stale because the render is
+  // wedged, and it re-applies its stale copy every build. So this is the lever
+  // Skip asked for: turn sync off for one project rather than let it damage that
+  // project's history, without touching anyone else's. Default off, per-project,
+  // and settable through the ordinary project patch so clearing it needs no
+  // deploy.
+  if ((await readProject(name))?.mirrorPaused) {
+    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'skipped', {
+      shadowVersion: recorded.hash,
+      reason: 'mirrorPaused',
+    })
+    // Deliberately NOT stamping lastMirrorSuccess: nothing was mirrored, and a
+    // paused mirror that reports success is the class of lie this file already
+    // carries a comment about six lines down.
+    console.log(`[mirror] ${name}@${hash7} SKIPPED: mirrorPaused is set on the project; the working copy will not receive server history until it is cleared`)
+    ctx.addLog(`mirror skipped: sync to the working copy is paused for this project`)
+    return recorded
+  }
   try {
     // Re-mirror unchanged builds too. A prior build may have committed the
     // server snapshot while its owning daemon was disconnected; "unchanged"
