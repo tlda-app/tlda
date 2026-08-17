@@ -1619,6 +1619,13 @@ export class FleetStore {
     const AGENT_JOIN = `FROM agents
       LEFT JOIN lineages ON lineages.id = agents.lineage_id
       LEFT JOIN agent_daemon_routes route ON route.agent_id = agents.id`;
+    // Kept on the instance so a batched read can select the SAME row shape as a
+    // single one. getAgentsByIds used to build its own narrower query, which is
+    // survivable while it only feeds callers that want a name — and silently
+    // wrong the moment it stands in for getAgent, because the two runtime
+    // subqueries below are what keep an agent from reading as HIBERNATING.
+    this._AGENT_SELECT = AGENT_SELECT;
+    this._AGENT_JOIN = AGENT_JOIN;
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
     // A daemon's agents are the ones it most recently reported as its own.
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_daemon_routes WHERE daemon_key = @daemonKey)`);
@@ -3469,9 +3476,14 @@ export class FleetStore {
     const unique = [...new Set((ids || []).filter(Boolean).map(String))];
     if (!unique.length) return [];
     const placeholders = unique.map(() => '?').join(', ');
+    // The same row shape getAgent returns, not a narrower one. This is now the
+    // batched substitute for a per-id getAgent loop in _broadcastStateNow, and
+    // the difference is not cosmetic: without runtime_open_status every agent
+    // hydrates as HIBERNATING (see AGENT_SELECT), and without the
+    // agent_daemon_routes join projectAgentDaemonRoute has no route to project,
+    // so a routed agent broadcasts as routeless.
     const rows = this.db.prepare(`
-      SELECT agents.*, lineages.friendly_name AS lineage_name
-      FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id
+      SELECT ${this._AGENT_SELECT} ${this._AGENT_JOIN}
       WHERE agents.id IN (${placeholders})
     `).all(...unique);
     return rows.map(row => this.projectAgentDaemonRoute(this._hydrateAgent(row)));
