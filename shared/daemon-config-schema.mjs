@@ -20,6 +20,8 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   // a zero-byte log, so nothing pointed at the cause.
   'statusScanSeconds',
   'jsonlTailIdleSeconds',
+  // Read by getMintRegistrationDeadlineMs().
+  'mintRegistrationDeadlineSeconds',
   'terminalInputAllowed',
   // Named subscription sets, in the `{ default, values }` form `models:` and
   // `environments:` use. Additive only — an agent's reachability comes from the

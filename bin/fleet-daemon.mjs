@@ -66,7 +66,7 @@ import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-s
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs,
+  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
 import { terminalInputAllowedFromConfig } from '../shared/terminal-input-policy.mjs'
@@ -875,14 +875,17 @@ async function bindMintSeat(facts, processFact = facts?.processState || {}, crea
   })
 }
 
+async function mintProcessAlive(facts) {
+  const tmuxSession = facts?.processState?.tmux_session
+  if (!tmuxSession) return false
+  return (await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })).runtime
+}
+
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   envName: ACTIVE_ENV,
-  processAlive: async facts => {
-    const tmuxSession = facts.processState?.tmux_session
-    if (!tmuxSession) return false
-    return (await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })).runtime
-  },
+  registrationDeadlineMs: getMintRegistrationDeadlineMs(),
+  processAlive: mintProcessAlive,
   launchProcess: async params => {
     const launchStartedAt = new Date().toISOString()
     const processFact = await launchMintProcess({
@@ -1126,6 +1129,19 @@ async function rpcMint(params = {}) {
     throw new Error(facts.registrationError)
   }
   const joined = !!facts.joinedAt
+  // A mint that gives up returns; it does not throw. Every cleanup here was
+  // written as a `catch`, so the pre-reserved bot shell survived a failure
+  // expressed as a return value. That branch was unreachable while both mint
+  // retry loops were unbounded -- mint() could not return un-joined -- and
+  // bounding them is what makes it reachable, so it is closed in the same
+  // change.
+  //
+  // Only when nothing is running under it. An un-joined mint whose process is
+  // alive is an agent that has not bound yet, and it can still bind through the
+  // login marker; marking its seat dead would retire a live agent's identity.
+  if (!joined && !(await mintProcessAlive(facts))) {
+    await cleanupPreReservedBotSeat(facts.registrationError || 'launched but never joined the fleet')
+  }
   return {
     ok: joined,
     mint_id: facts.mintId,

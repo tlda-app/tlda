@@ -3543,6 +3543,20 @@ function printMintLifecycleEvent(event, data = {}) {
     console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}${retry}`)
     return
   }
+  // A mint that gives up. Both retry loops used to be unbounded, so there was no
+  // such thing as a mint that stopped trying and nothing here to print.
+  if (event === 'server-registration-abandoned') {
+    console.error(`Server registration ABANDONED${localId ? ` for ${localId}` : ''} after ${data.attempts || 0} attempts: ${data.reason || 'no seat'}`)
+    return
+  }
+  if (event === 'server-binding-abandoned') {
+    console.error(`Route publication ABANDONED${fleetId ? ` for ${fleetId}` : ''} after ${data.attempts || 0} attempts: ${data.reason || 'binding incomplete'}`)
+    return
+  }
+  if (event === 'server-binding-error') {
+    console.log(`Route publication failed${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'binding error'}`)
+    return
+  }
   if (event === 'server-reconciliation-deferred') {
     console.error(`Server wake reconciliation deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}`)
     return

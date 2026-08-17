@@ -78,12 +78,128 @@ const lifecycleFacts = await lifecycleCore.mint({
 })
 assert.equal(lifecycleFacts.fleetId, 'fleet:lifecycle')
 assert.equal(lifecycleFacts.joinedAt != null, true)
-assert.deepEqual(lifecycleEvents.map(([event]) => event), ['server-registration-attempt', 'server-registration-deferred', 'server-registration-attempt', 'local-launch', 'server-registration-joined', 'server-binding-joined'])
+// `local-launch` and `server-registration-joined` are two concurrent branches
+// reporting things that already happened, so their order relative to each other
+// is scheduling, not contract; it moved by one microtask when recordSeat stopped
+// awaiting bindSeat. What IS contract is that all six events are emitted and that
+// `server-binding-joined` comes last — the binding is the only one of them that
+// cannot have happened before the others.
+assert.deepEqual(
+  lifecycleEvents.map(([event]) => event).slice().sort(),
+  ['local-launch', 'server-binding-joined', 'server-registration-attempt', 'server-registration-attempt', 'server-registration-deferred', 'server-registration-joined'].slice().sort(),
+)
+assert.equal(lifecycleEvents.at(-1)[0], 'server-binding-joined')
+// Emitted once, by the binding loop. It used to be emitted from whichever branch
+// first observed `joinedAt`, in two places with the same shape.
+assert.equal(lifecycleEvents.filter(([event]) => event === 'server-binding-joined').length, 1)
+const launchEvent = lifecycleEvents.find(([event]) => event === 'local-launch')[1]
 assert.equal(lifecycleEvents[0][1].local_agent_id, 'mint:lifecycle')
-assert.equal(lifecycleEvents[3][1].tmux_session, 'fleet-lifecycle')
-assert.equal(lifecycleEvents[3][1].local_agent_id, 'mint:lifecycle')
+assert.equal(launchEvent.tmux_session, 'fleet-lifecycle')
+assert.equal(launchEvent.local_agent_id, 'mint:lifecycle')
 assert.equal(lifecycleEvents[1][1].reason, 'server unavailable')
 assert.equal(lifecycleEvents[1][1].retry_in_ms, 25)
+
+// One transient bind failure must not become a second seat request.
+//
+// This is the shell-minting loop: recordSeat ended with `await join()`, whose
+// first act is a server-backed permissionLedger.set, and that call sat inside the
+// seat-request try. So a failed ledger write was caught by the seat-request
+// handler, which asked the server for another seat — and the server has no memory
+// of a mint id, so every request minted a fresh shell row. 171 orphan rows since
+// 08-06, at the 30s backoff cap, from failures that were over in seconds.
+//
+// The store would not even let the retry adopt the row it had just created:
+// `fleet_id` is a conflict-checked fact, so the second seat's id is rejected and
+// the mint keeps its first identity while orphaning every shell after it.
+let bindFailureSeatRequests = 0
+let bindFailuresLeft = 2
+const bindRetryEvents = []
+const bindRetryCore = createDaemonMintCore({
+  store,
+  envName: 'testing',
+  mintId: () => 'mint:bind-retry',
+  launchProcess: async () => ({ session_id: 'session:bind-retry', tmux_session: 'fleet-bind-retry' }),
+  requestSeat: async () => {
+    bindFailureSeatRequests++
+    return { fleet_id: `fleet:bind-retry-${bindFailureSeatRequests}`, friendly_name: 'bind-retry' }
+  },
+  bindSeat: async () => {
+    if (bindFailuresLeft-- > 0) throw new Error('permission ledger write failed')
+  },
+  sleep: async () => {},
+  retryDelay: () => 1,
+})
+const bindRetryFacts = await bindRetryCore.mint({
+  name: 'bind-retry',
+  launch: { cwd: '/tmp/bind-retry' },
+  onLifecycleEvent: (event, data) => bindRetryEvents.push([event, data]),
+})
+assert.equal(bindFailureSeatRequests, 1, 'a bind failure must not request another seat')
+assert.equal(bindRetryFacts.fleetId, 'fleet:bind-retry-1')
+assert.equal(bindRetryFacts.joinedAt != null, true)
+assert.equal(bindRetryEvents.filter(([event]) => event === 'server-binding-error').length, 2)
+assert.equal(bindRetryEvents.at(-1)[0], 'server-binding-joined')
+
+// Both retry loops were `for (;;)` with no cap, no deadline and no give-up, so a
+// mint that could not finish never stopped and never told anyone. A seat that
+// never comes now ends, once, with a reason.
+let deadlineSeatRequests = 0
+const deadlineEvents = []
+let fakeClock = 0
+const deadlineCore = createDaemonMintCore({
+  store,
+  envName: 'testing',
+  mintId: () => 'mint:deadline',
+  launchProcess: async () => ({ session_id: 'session:deadline', tmux_session: 'fleet-deadline' }),
+  requestSeat: async () => {
+    deadlineSeatRequests++
+    throw new Error('server unavailable')
+  },
+  bindSeat: async () => { throw new Error('unreachable: no seat was ever issued') },
+  sleep: async ms => { fakeClock += ms },
+  retryDelay: () => 1_000,
+  registrationDeadlineMs: 5_000,
+  monotonicNow: () => fakeClock,
+})
+const deadlineFacts = await deadlineCore.mint({
+  name: 'deadline',
+  launch: { cwd: '/tmp/deadline' },
+  onLifecycleEvent: (event, data) => deadlineEvents.push([event, data]),
+})
+assert.equal(deadlineSeatRequests, 5)
+assert.equal(deadlineFacts.fleetId, null)
+assert.equal(deadlineFacts.joinedAt, null)
+assert.match(deadlineFacts.registrationError, /gave up requesting a fleet seat after 5 attempts/)
+assert.equal(deadlineEvents.filter(([event]) => event === 'server-registration-abandoned').length, 1)
+// No seat was issued, so there is nothing to bind and no binding loop to spin.
+assert.equal(deadlineEvents.filter(([event]) => event === 'server-binding-deferred').length, 0)
+
+// A seat that binds but never publishes its route ends too, and says which of the
+// two it was: `registrationError` stays unset, so the daemon reports `join-failed`
+// rather than `registration-deferred`.
+const bindDeadlineEvents = []
+let bindClock = 0
+const bindDeadlineCore = createDaemonMintCore({
+  store,
+  envName: 'testing',
+  mintId: () => 'mint:bind-deadline',
+  launchProcess: async () => ({ session_id: 'session:bind-deadline', tmux_session: 'fleet-bind-deadline' }),
+  requestSeat: async () => ({ fleet_id: 'fleet:bind-deadline', friendly_name: 'bind-deadline' }),
+  bindSeat: async () => { throw new Error('permission ledger unreachable') },
+  sleep: async ms => { bindClock += ms },
+  retryDelay: () => 1_000,
+  registrationDeadlineMs: 3_000,
+  monotonicNow: () => bindClock,
+})
+const bindDeadlineFacts = await bindDeadlineCore.mint({
+  name: 'bind-deadline',
+  launch: { cwd: '/tmp/bind-deadline' },
+  onLifecycleEvent: (event, data) => bindDeadlineEvents.push([event, data]),
+})
+assert.equal(bindDeadlineFacts.fleetId, 'fleet:bind-deadline')
+assert.equal(bindDeadlineFacts.joinedAt, null)
+assert.equal(bindDeadlineFacts.registrationError, undefined)
+assert.equal(bindDeadlineEvents.filter(([event]) => event === 'server-binding-abandoned').length, 1)
 
 let resumedLaunches = 0
 const resumedCore = createDaemonMintCore({

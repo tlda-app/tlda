@@ -526,6 +526,21 @@ export function getStatusScanMs() {
   return Math.round(seconds * 1000)
 }
 
+// How long a mint may keep trying to get a fleet seat and bind it before it
+// reports failure. Both mint retry loops used to be unbounded, so a mint that
+// could not finish never stopped and never said so.
+//
+// The default matches the server's spawn mailbox deadline
+// (TLDA_SPAWN_MAILBOX_DEADLINE_MS, 5 minutes): giving up later than the thing
+// waiting on the answer would mean retrying into a caller that has already gone.
+export function getMintRegistrationDeadlineMs() {
+  const seconds = loadDaemonYaml().mintRegistrationDeadlineSeconds ?? 300
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`daemon.yaml: mintRegistrationDeadlineSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
+  }
+  return Math.round(seconds * 1000)
+}
+
 export function getJsonlTailIdleMs() {
   const seconds = loadDaemonYaml().jsonlTailIdleSeconds ?? 600
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
