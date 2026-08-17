@@ -25,7 +25,11 @@ import { daemonAddress } from '../../shared/agent-move-target.mjs'
 // keeps going, and being idempotent (same hash → same ref) it is safe if it
 // lands late. It only stops the fan-out waiting on it, which is the difference
 // between one machine missing a mirror and every build stopping.
-export const MIRROR_KEY_TIMEOUT_MS = 30000
+// Must exceed the durable sender's TOTAL deadline (150s in unified-server.mjs),
+// or this cuts off the retries it is supposed to be a backstop for. See the
+// budget table there: this is the second-outermost layer, and the outermost is
+// the build worker's callParent deadline.
+export const MIRROR_KEY_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_KEY_TIMEOUT_MS) || 180000
 
 export function createShadowMirrorRpcHandler({
   readProject,

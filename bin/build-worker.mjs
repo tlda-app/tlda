@@ -47,7 +47,10 @@ function sendReport(method, args) {
 // killing the worker, restarting the daemon and restarting the server, because the
 // process dying does not release a slot whose release is chained behind the same
 // stalled relay. Failing loudly here is what lets the queue recover at all.
-const PARENT_RPC_TIMEOUT_MS = Number(process.env.TLDA_BUILD_RPC_TIMEOUT_MS) || 120000
+// Outermost layer of the mirror budget (see the table in unified-server.mjs).
+// Must exceed MIRROR_KEY_TIMEOUT_MS, or the worker abandons a mirror the server
+// is still legitimately waiting on and the build fails for the wrong reason.
+const PARENT_RPC_TIMEOUT_MS = Number(process.env.TLDA_BUILD_RPC_TIMEOUT_MS) || 240000
 
 function callParent(method, args, { timeoutMs = PARENT_RPC_TIMEOUT_MS } = {}) {
   if (!process.send) return Promise.reject(new Error(`build worker IPC unavailable for ${method}`))

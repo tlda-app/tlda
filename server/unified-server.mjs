@@ -1509,8 +1509,28 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 // The total stays under MIRROR_KEY_TIMEOUT_MS so these retries happen INSIDE the
 // fan-out's deadline; that deadline remains the outer backstop for a daemon that
 // is genuinely gone, not the first line of defence against a dropped reply.
-const MIRROR_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_ATTEMPT_TIMEOUT_MS) || 10000
-const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_MS) || 25000
+// These four numbers are ONE budget and must stay ordered. Each layer waits on
+// the one below it, so a layer that gives up before the layer beneath it is
+// allowed to finish turns slow work into a reported failure:
+//
+//   build worker callParent   240s   waits on the server
+//   mirror fan-out per key    180s   waits on the durable sender
+//   durable total deadline    150s   spends attempts
+//   durable attempt            60s   waits on the daemon
+//   daemon mirrorShadowRef    ~50s   its own sequential git budget
+//
+// The daemon's figure is not a guess: mirrorShadowRef grants itself 5s
+// rev-parse + 10s bundle verify + 3×30s fetch under gitRetryOnLock + 5s cat-file
+// + 5s preserve/update-ref. Measured on 2026-08-17, a healthy mirror took ~35s
+// end to end while the server was allowing 10s per attempt — so the server gave
+// up three times on a daemon that was still working and reported
+// `no daemon accepted the mirror` for a mirror that then completed.
+//
+// Sizing these to the payload is the mistake that produced that: the bundle is
+// ~450KB and transfers in well under a second. What takes the time is the
+// daemon's own serialized git work, and that is what the budget has to cover.
+const MIRROR_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_ATTEMPT_TIMEOUT_MS) || 60000
+const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_MS) || 150000
 
 setShadowMirrorHandler(createShadowMirrorRpcHandler({
   readProject,
