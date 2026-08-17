@@ -101,6 +101,39 @@ await check('ALLOWS existsSync inside a handler (metadata only, deliberate)', ()
   whileServing('GET /api/projects/x', () => { fs.existsSync(file) })
 })
 
+// The wire, not the two ends. `whileServing` working and the guard working
+// proves neither is connected to express -- and the middleware is the only
+// reason any of this fires against real traffic. So drive a real request
+// through a real express app.
+await check('WIRE: a real express request reaches the guard through the middleware', async () => {
+  const express = (await import('express')).default
+  const { syncIoGuardMiddleware } = await import('../server/lib/sync-io-guard.mjs')
+  const app = express()
+  app.use(syncIoGuardMiddleware)
+  let caught = null
+  app.get('/reads-a-file', (req, res) => {
+    try {
+      fs.readFileSync(file, 'utf8')
+      res.json({ threw: false })
+    } catch (e) {
+      caught = e
+      res.status(500).json({ threw: true, code: e.code })
+    }
+  })
+  const server = await new Promise(resolve => {
+    const s = app.listen(0, () => resolve(s))
+  })
+  try {
+    const port = server.address().port
+    const body = await (await fetch(`http://127.0.0.1:${port}/reads-a-file`)).json()
+    assert.equal(body.threw, true, 'a sync read inside a real express handler must throw')
+    assert.equal(caught?.code, 'ERR_TLDA_SYNC_IO_WHILE_SERVING')
+    assert.match(caught.message, /GET \/reads-a-file/, 'the error must name the request')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
 restore()
 
 await check('restores the originals on teardown', () => {
