@@ -10,6 +10,7 @@ authoritative in `tlda --help` and the running MCP schemas.
 - [Document formats](#document-formats)
 - [Markdown documents](#markdown-documents)
 - [Search and chat filters](#search-and-chat-filters)
+- [Recording and playback](#recording-and-playback)
 - [Agents](#agents)
 - [A full research setup](#a-full-research-setup)
 
