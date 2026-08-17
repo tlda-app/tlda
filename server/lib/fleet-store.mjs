@@ -3835,12 +3835,16 @@ export class FleetStore {
   // ERRATUM, 2026-08-17: this paragraph used to say the server could not
   // reconstruct a route, because `setAgentDaemonRoute` was "called from exactly
   // one place in the server, at mint". That was true when it was written and is
-  // no longer: `main` has two production call sites, NEITHER at mint —
-  // `unified-server.mjs:6550` (login, writing `routeProof.daemon_key`, from
-  // `9f535cf5e`) and `:9380` (the `agent-route` handler, from `317c53fdc`).
-  // Both landed after this comment. The conclusion below still holds; the
-  // reason given for it does not, and anyone deciding something adjacent from
-  // that sentence would be reasoning from a premise two later commits falsified.
+  // no longer. `main` has two production call sites and NEITHER is mint: the
+  // login path writes `routeProof.daemon_key` (`9f535cf5e`), and the
+  // `agent-route` message handler writes what the daemon announces
+  // (`317c53fdc`). Both landed after this comment.
+  //
+  // The conclusion below still holds; the reason given for it does not, and
+  // anyone deciding something adjacent from that sentence would be reasoning
+  // from a premise two later commits falsified. Cited by commit and by what the
+  // call site IS, deliberately — an earlier draft of this erratum gave line
+  // numbers, and they were stale within the hour.
   //
   // The result was an agent that is alive, running, and permanently
   // unreachable, with no operation available to repair it: `wake` reports
