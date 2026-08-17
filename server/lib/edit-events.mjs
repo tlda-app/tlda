@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'fs'
 import { diff } from 'node:util'
 import { projectDir, readProject, sourceLifecycleStore, getProjectsDir } from './project-store.mjs'
 import { readShadowChangelog } from './shadow-changelog.mjs'
@@ -40,13 +40,77 @@ function appendJsonl(name, file, record) {
   })}\n`)
 }
 
+// These logs are append-only -- `appendJsonl` above is the only writer in this
+// module, and nothing truncates, rewrites or removes them. So the bytes before a
+// given offset can never change, and re-reading them is pure waste.
+//
+// It was not cheap waste. On 2026-08-17 the server's own lag profiler attributed
+// its worst stalls here:
+//
+//   [event-loop-lag] max=809.5ms
+//   [lag-profiler]   548ms stall :: 254.6ms readFileSync | 219.8ms (map/JSON.parse)
+//
+// Half-second stalls on the main thread are enough to blow a `capture-pane`
+// deadline, and agent wake crosses the same server->daemon direction -- so the
+// fleet could hibernate and not come back, and nobody could reach an agent.
+//
+// This subsystem was written this way when it was added (7436a4d63, 2026-07-29);
+// it is not a regression of the work that took sync queries off the event loop,
+// it is a path that never got it. The daemon solved the identical problem in
+// `daemon/jsonl-ingestor.mjs` by tailing from a saved byte offset and never
+// re-reading. This is that, on the server.
+//
+// The trade, stated rather than buried: parsed records are retained per log
+// instead of being re-parsed and re-collected on each call. That is bounded by
+// the same bytes the old code read on EVERY call -- the same data, once.
+const jsonlTails = new Map() // path -> { ino, offset, records }
+
 function readJsonl(name, file) {
   const path = jsonlPath(name, file)
-  if (!existsSync(path)) return []
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map(line => JSON.parse(line))
+  let stat
+  try {
+    stat = statSync(path)
+  } catch {
+    jsonlTails.delete(path)
+    return []
+  }
+
+  const tail = jsonlTails.get(path)
+  // A different inode, or a file that shrank, means this is not the log we were
+  // tailing. Neither should happen for an append-only log; both are cheap to
+  // survive and expensive to get wrong, so re-read rather than splice onto a
+  // stale tail.
+  const resumable = tail && tail.ino === stat.ino && stat.size >= tail.offset
+  if (resumable && stat.size === tail.offset) return tail.records.slice()
+
+  const from = resumable ? tail.offset : 0
+  const records = resumable ? tail.records : []
+  let chunk = ''
+  const length = stat.size - from
+  if (length > 0) {
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.allocUnsafe(length)
+      const read = readSync(fd, buf, 0, length, from)
+      chunk = buf.subarray(0, read).toString('utf8')
+    } finally {
+      closeSync(fd)
+    }
+  }
+
+  // Stop at the last newline. A reader can otherwise catch an append mid-write
+  // and hand JSON.parse half a line -- the old code could throw on exactly that,
+  // and here it would additionally poison the offset. Anything after the last
+  // newline is an incomplete record, left for the next call.
+  const completeText = chunk.slice(0, chunk.lastIndexOf('\n') + 1)
+  for (const line of completeText.split('\n')) {
+    if (line) records.push(JSON.parse(line))
+  }
+
+  jsonlTails.set(path, { ino: stat.ino, offset: from + Buffer.byteLength(completeText), records })
+  // A copy: callers sort and slice what they get back, and the retained tail
+  // must not be reordered under the next reader.
+  return records.slice()
 }
 
 function textOrNull(buf) {
