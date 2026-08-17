@@ -2009,8 +2009,15 @@ async function _broadcastStateNow() {
   const changed = []
   const removed = []
   const subscriptionsByOwner = await fleetStore.getSubscriptionsByOwners?.(pendingIds) || {}
+  // One bounded getAgentsByIds instead of a store round-trip per pending id —
+  // the same inversion as getTrustedIdleSeconds above. Under churn this loop
+  // ran once per changed agent and each hop crosses to the store worker, so a
+  // broadcast serialised N round-trips behind every other store read.
+  const pendingAgents = new Map(
+    (await fleetStore.getAgentsByIds(pendingIds) || []).map(agent => [agent.id, agent]),
+  )
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(await fleetStore.getAgent(id), subscriptionsByOwner)
+    const a = _agentWithEphemeralState(pendingAgents.get(id) || null, subscriptionsByOwner)
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
