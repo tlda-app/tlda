@@ -61,6 +61,7 @@ export function createBot({
   commands = [], cwd = process.cwd(), metadata = {}, fleetId = null,
   pidFile = null, WebSocketClass = WebSocket, handshakeTimeoutMs = 10_000,
   reconnectInitialMs = 500, reconnectMaxMs = 5000, subscriptionFilter = undefined,
+  livenessProbeIntervalMs = 30_000, livenessProbeTimeoutMs = 10_000,
 } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
@@ -142,6 +143,7 @@ export function createBot({
     WebSocketImpl: BotSocket,
     onOpen: async () => {
       log(`connected to ${WS_URL}`);
+      armLivenessProbe();
       try {
         const result = await loginFleet();
         // Inertness gates the whole bot, not just its mouth. Skip, 2026-08-13:
@@ -178,8 +180,49 @@ export function createBot({
       }
       dispatch(msg);
     },
-    onClose: () => { fire('close'); },
+    onClose: () => { disarmLivenessProbe(); fire('close'); },
   });
+
+  // Why a probe rather than a silence timer. `e04564cbb` ("Stop timeout-only
+  // destructive recovery") removed exactly that: a timer that closes an
+  // established socket because nothing arrived is destroying something that may
+  // be working, and it stays removed. What the reconnect path recognises instead
+  // is a close, an error, or a *send failure* — and that is the gap, because a
+  // bot which only ever receives never sends, so it never produces the evidence
+  // its own recovery depends on.
+  //
+  // So this does not infer death from silence; it asks a question and reconnects
+  // only when the socket demonstrably cannot carry a round trip. `heartbeat` is
+  // the cheapest handled type on the server — it touches last_seen and replies
+  // `{ok:true}` (`server/unified-server.mjs:7532`) — so the probe doubles as the
+  // liveness write it is named for.
+  //
+  // Deliberately NOT gated on canonicality, unlike `send`. A bot whose login
+  // failed has no assigned name and is therefore not canonical, and that is
+  // precisely the state that gets stuck: chat-lint sat in it for six days with an
+  // open socket, one failed login, and nothing to make it try again. Gating here
+  // would exclude the only case that needs rescuing.
+  let livenessTimer = null;
+  function disarmLivenessProbe() {
+    if (!livenessTimer) return;
+    clearInterval(livenessTimer);
+    livenessTimer = null;
+  }
+  function armLivenessProbe() {
+    disarmLivenessProbe();
+    if (!livenessProbeIntervalMs) return;
+    livenessTimer = setInterval(async () => {
+      if (!rws.connected) return;
+      try {
+        await requestRaw({ type: 'heartbeat', agent: id }, livenessProbeTimeoutMs);
+      } catch (e) {
+        log(`liveness probe failed (${e.message}) — reconnecting`);
+        disarmLivenessProbe();
+        rws.reconnect();
+      }
+    }, livenessProbeIntervalMs);
+    livenessTimer.unref?.();
+  }
 
   function connect() { rws.connect(); }
   function sendRaw(msg) { if (rws.connected) rws.send({ id: msgId++, ...msg }); }
