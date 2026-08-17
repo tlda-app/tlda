@@ -2472,6 +2472,19 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   useImperativeHandle(ref, () => ({ scrollToTail, isAtTail }), [isAtTail, scrollToTail])
 
   const setScrollerRef = useCallback((el: HTMLDivElement | null) => {
+    // CanvasClipPanel's own wheel-capture handler (a capture-phase ancestor
+    // listener) claims wheel events over a chat log rendered inside the Fleet
+    // HUD before they ever bubble to our onWheel below — capture runs
+    // top-down, so an ancestor always wins the race, and it must
+    // stopImmediatePropagation to keep that same wheel from also panning/
+    // zooming the HUD's camera. It still has to move this element itself, so
+    // it writes scrollTop directly and needs a way to tell us that was real
+    // wheel input. `fleet-user-scroll` used to be that way and nothing has
+    // ever listened for it (docs/chat-rendering.md errata). This DOM-attached
+    // callback is the real one — anyone holding this exact node, without a
+    // React ref into this instance, can call it.
+    const anchoredEl = scrollerRef.current as (HTMLDivElement & { __tldaNoteWheelIntent?: ((deltaY: number, deltaMode: number) => void) | null }) | null
+    if (anchoredEl) anchoredEl.__tldaNoteWheelIntent = null
     scrollerRef.current = el
     setScroller?.(el)
     if (el) {
@@ -2480,6 +2493,9 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       const { viewportHeight: nextHeight, paddingBottom } = anchoredViewportGeometry(el)
       tailEpsRef.current = ANCHORED_TAIL_EPS_BASE + paddingBottom
       setViewportHeight(nextHeight)
+      ;(el as HTMLDivElement & { __tldaNoteWheelIntent?: (deltaY: number, deltaMode: number) => void }).__tldaNoteWheelIntent = (deltaY, deltaMode) => {
+        lastWheelRef.current = { at: Date.now(), deltaY, deltaMode }
+      }
     }
   }, [setScroller])
 

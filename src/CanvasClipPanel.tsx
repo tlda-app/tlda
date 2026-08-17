@@ -171,7 +171,13 @@ export function CanvasClipPanel({
         e.stopPropagation()
         e.stopImmediatePropagation()
         log.scrollTop += e.deltaY
-        log.dispatchEvent(new CustomEvent('fleet-user-scroll'))
+        // AnchoredChatList's own onWheel never sees this: we're an ancestor
+        // capture listener and stopImmediatePropagation keeps the same wheel
+        // from also panning/zooming the HUD camera. Tell it directly so this
+        // still counts as real wheel input instead of an untraceable scrollTop
+        // write — `fleet-user-scroll` used to be that signal and nothing has
+        // ever listened for it.
+        ;(log as HTMLElement & { __tldaNoteWheelIntent?: (deltaY: number, deltaMode: number) => void }).__tldaNoteWheelIntent?.(e.deltaY, e.deltaMode)
         return
       }
 
