@@ -100,7 +100,6 @@ import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shar
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
-import { reloadHumanFleetClients } from './lib/targeted-client-control.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
@@ -4810,21 +4809,6 @@ const fleetRouter = createFleetRouter({
   requireOperationRead: requireRw,
 })
 app.use(fleetRouter)
-
-app.post('/api/fleet/reload-client', requireRw, async (req, res) => {
-  const humanId = req.body?.humanId
-  try {
-    const result = reloadHumanFleetClients(fleetWss.clients, humanId, {
-      reason: req.body?.reason || 'operator-request',
-    })
-    if (result.sent === 0) {
-      return res.status(404).json({ ok: false, error: `No connected browser for ${humanId}`, ...result })
-    }
-    res.json({ ok: true, ...result })
-  } catch (error) {
-    res.status(400).json({ ok: false, error: error.message })
-  }
-})
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math

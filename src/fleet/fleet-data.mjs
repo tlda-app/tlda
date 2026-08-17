@@ -1179,8 +1179,6 @@ export function connect() {
         if (data.agent) notify('context', data)
       } else if (eventType === 'agent-status') {
         if (data.agent) notify('status', data)
-      } else if (eventType === 'reload') {
-        location.reload()
       } else if (eventType === 'heartbeat') {
         // ignore — keep-alive
       }
