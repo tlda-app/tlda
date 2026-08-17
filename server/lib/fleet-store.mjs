@@ -437,8 +437,40 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
+<<<<<<< HEAD
+      -- pendingEditActivities() had no index it could use, so it scanned the
+      -- whole events table -- the largest table here -- evaluating json_extract
+      -- twice per row, with no LIMIT, and it runs on EVERY accepted source
+      -- mutation. That wedged the single store worker for two minutes at a
+      -- time while the main thread stayed healthy, so every store call behind
+      -- it (login, fleet-search, chat) timed out and every aggregate measure
+      -- said the server was fine. Observed at depth 61 with this method at the
+      -- head of the queue and its elapsed time still climbing past 118s.
+      --
+      -- The WHERE here is the query's WHERE, so the index holds only the rows
+      -- still pending and a row leaves it as soon as canonical_source is set.
+      -- Cost becomes the number of pending activities rather than the number of
+      -- events that have ever happened. Leading on $.project so the project
+      -- filter in the query is served by the index too.
       CREATE INDEX IF NOT EXISTS idx_events_pending_edit_activity
         ON events(json_extract(metadata, '$.project'), id)
+=======
+      -- pendingEditActivities() had no index it could use, so it scanned the
+      -- whole events table -- the largest table here -- evaluating json_extract
+      -- twice per row, with no LIMIT, and it runs on EVERY accepted source
+      -- mutation. That wedged the single store worker for two minutes at a
+      -- time while the main thread stayed healthy, so every store call behind
+      -- it (login, fleet-search, chat) timed out and every aggregate measure
+      -- said the server was fine. Observed at depth 61 with this method at the
+      -- head of the queue and its elapsed time still climbing past 118s.
+      --
+      -- The WHERE here is the query's WHERE, so the index holds only the rows
+      -- still pending and a row leaves it as soon as canonical_source is set.
+      -- Cost becomes the number of pending activities rather than the number of
+      -- events that have ever happened.
+      CREATE INDEX IF NOT EXISTS idx_events_pending_edit_activity
+        ON events(id)
+>>>>>>> 7095fd12e (Index the pending-edit-activity scan that wedges the store worker)
         WHERE type = 'activity'
           AND json_extract(metadata, '$.input.edit_operation.operation_id') IS NOT NULL
           AND json_extract(metadata, '$.input.canonical_source') IS NULL;
