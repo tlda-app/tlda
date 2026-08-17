@@ -289,6 +289,26 @@ Adjacent scoped filters are combined. Keep boolean composition inside a scoped
 agent value; the browser’s top-level boolean parser is not yet the same as the
 MCP search grammar.
 
+## Recording and playback
+
+There is no manual record button. If your account has presenter/publish
+permission for a project, opening its document silently starts capturing a
+lecture recording for as long as the document stays open, and stops when you
+leave or lose that permission. There is nothing to turn on or off; the only
+control is whether your account holds presenter/publish permission.
+
+The recording plays back as a small window over the canvas, replaying the
+captured strokes against a synced audio track with a play/pause button, a
+scrub bar, and a close button. For a private draft, the reviewer (with
+publish permission) can also set the start/end boundaries and publish the
+selected interval as a class recording.
+
+**As of tonight (2026-08-16) there is no way to open this player.** The
+button that listed a project's recordings and opened one for playback was
+removed from the document chrome as UI clutter; nothing replaced it. Capture
+still runs in the background for presenters, but no UI surface currently
+lets you browse or play back what was captured.
+
 ## Agents
 
 The Fleet panel shows available agents and contains the mint control. Focusing
