@@ -246,8 +246,12 @@ The implementation is checked at the same boundaries:
   reconciliation-required.
 - `bin/source-change-correlation-test.mjs`: one in-flight submission, queue
   merging, bounded retry, blocking, and reconnect behavior.
-- `bin/source-conflict-delivery-test.mjs`: stale-base conflicts are written into
-  the linked checkout and automatic retry stops.
+- `bin/source-conflict-delivery-test.mjs`: stale-base conflicts and automatic
+  retry stopping. **This test is red on `main`** and has been since `cf6e30cf0`
+  deliberately removed the working-copy conflict write: it still asserts that a
+  conflict is written into the linked checkout, which is the behaviour that was
+  removed because it overwrote a file its owner was editing. The test needs
+  updating to the current contract — the code should not be reverted to match it.
 - `bin/source-server-update-apply-test.mjs`: a clean accepted server edit reaches
   a linked checkout, while a watcher-observed pending local edit produces
   conflict markers instead of being overwritten.
