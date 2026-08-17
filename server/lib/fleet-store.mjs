@@ -437,6 +437,11 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
+      CREATE INDEX IF NOT EXISTS idx_events_pending_edit_activity
+        ON events(json_extract(metadata, '$.project'), id)
+        WHERE type = 'activity'
+          AND json_extract(metadata, '$.input.edit_operation.operation_id') IS NOT NULL
+          AND json_extract(metadata, '$.input.canonical_source') IS NULL;
       CREATE TABLE IF NOT EXISTS transport_operations (
         operation_id TEXT PRIMARY KEY,
         operation_type TEXT NOT NULL,
