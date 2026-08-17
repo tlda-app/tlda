@@ -187,7 +187,15 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       try {
         const merged = Buffer.from(entry.merged, 'base64')
         if (merged.equals(fs.readFileSync(full))) continue
-        fs.writeFileSync(full, merged)
+        // Do NOT write the merge over their file. The merge was computed
+        // against the server's view of this path, not against the bytes on
+        // this disk, and the person owning this checkout is editing it — that
+        // is why there is a conflict at all. Writing here discards whatever
+        // they have typed since the push went out. On 2026-08-17 this replaced
+        // voice-dictated text four times in one session.
+        //
+        // The merged content is on the server and stays retrievable; the
+        // conflict is reported below and through the source-sync status.
         written.push(entry.path)
       } catch (e) {
         // Keep going so one unwritable file doesn't hide the others, but this
@@ -198,7 +206,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       }
     }
     if (written.length > 0) {
-      log.warn(`${message.project}: conflict written to ${written.join(', ')} — resolve the markers; the next save syncs`)
+      log.warn(`${message.project}: conflict on ${written.join(', ')} — your copy is untouched; the merged version is on the server`)
     }
     if (failed.length > 0) {
       const detail = failed.map(f => `${f.path} (${f.error})`).join(', ')
