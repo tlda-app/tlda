@@ -24,6 +24,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
 }
 
 import { createFilterSubscriptions } from './lib/filter-subscriptions.mjs'
+import { coalesceInflight } from '../shared/inflight-coalesce.mjs'
 import './lib/observability/otel-node.mjs'
 import express from 'express'
 import { createServer } from 'http'
@@ -925,6 +926,20 @@ const pendingPlanApprovals = new Map()
 const _chatTempIds = new Map()
 const _chatTempInflight = new Map()
 const CHAT_TEMPID_TTL_MS = 60_000
+
+// Spawn in-flight guard: operation_id -> the pending performSpawnRelay promise.
+// A spawn that outlives the MCP client's FLEET_DURABLE_SEND_DEADLINE_MS (15s)
+// gets retried by the client's own durable-send outbox ~1s later under the
+// SAME operation_id. The outer clientOperationId dedup below only catches an
+// ALREADY-COMPLETED spawn (it reads getTransportOperationResult, written by
+// reply() only after performSpawnRelay finishes) -- nothing marked "in
+// flight" before that, so a retry landing while the first spawn is still
+// running started a second, fully independent performSpawnRelay for the same
+// requested name, which collided with the first and got name-rotated into a
+// spurious duplicate agent (2026-08-17: every recent mint under load produced
+// exactly this ~16s-later, first-letter-decremented shadow agent). Same
+// synchronous check-then-set shape as _chatTempInflight above.
+const _spawnInflight = new Map()
 setInterval(() => {
   const cutoff = Date.now() - CHAT_TEMPID_TTL_MS
   for (const [k, v] of _chatTempIds) { if (v.ts < cutoff) _chatTempIds.delete(k) }
@@ -6442,7 +6457,7 @@ async function handleFleetWsMessage(ws, msg) {
     const caller = await fleetStore.getAgent?.(callerId)
     if (!caller) { error(`spawn caller ${callerId} is not registered`); return }
     try {
-      reply(await performSpawnRelay(caller, msg))
+      reply(await coalesceInflight(_spawnInflight, clientOperationId, () => performSpawnRelay(caller, msg)))
     } catch (e) {
       error(e)
     }
