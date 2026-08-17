@@ -9380,6 +9380,49 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  // The other half of the same detection branch as terminal_attention above.
+  // `detectPrompt` in daemon/terminal-rpc.mjs classifies a prompt as either
+  // 'surface' -- tell a human, which becomes the terminal_attention mail above --
+  // or 'auto-accept', where the daemon presses the key ITSELF on the agent's
+  // behalf and reports that it did (daemon/terminal-rpc.mjs:292,442 and
+  // daemon/prompt-plan.mjs:212).
+  //
+  // That report had no handler here from 2026-05-19, when the sender was added
+  // in 1b95014fc, until this case. So no server ever recorded that a permission
+  // prompt was answered by the machine: the one branch that acts WITHOUT a human
+  // was the one branch that left no trace, while the branch that only asks was
+  // durably recorded. `e4623647c` moved the three send sites between files and
+  // did not remove a handler -- there was never one to remove.
+  //
+  // Worse than an ordinary dropped type, because bb55dcd98 put it in
+  // DURABLE_TYPES (daemon/delivery-policy.mjs:18): the daemon persists it,
+  // retries it, holds it across reconnects, and receives a POSITIVE ack from a
+  // dispatcher that had no case for it -- see docs/current-main-architecture.md
+  // §"A daemon message is acknowledged when the dispatcher returns".
+  //
+  // Deliberately NOT the terminal_attention shape. Auto-accept exists so that
+  // nobody is interrupted, so chatting it would invert the feature. This uses
+  // the reanimate-lifecycle shape instead (`insertEventRecord` with
+  // `notify: false`, `unread: false`, addressed agent-to-agent): the fact enters
+  // the record and is searchable in the agent's own thread, and notifies no one.
+  if (type === 'prompt-auto-accepted') {
+    if (!fleetStore) return
+    const { agent_id, reason, ts } = msg
+    if (!agent_id) return
+    const agent = await fleetStore.getAgent(agent_id)
+    const label = agent?.friendly_name || agent_id.slice(0, 12)
+    await fleetStore.insertEventRecord({
+      type: 'prompt-auto-accepted',
+      timestamp: ts || new Date().toISOString(),
+      from: agent_id,
+      to: agent_id,
+      text: reason ? `auto-accepted prompt: ${reason}` : 'auto-accepted prompt',
+      unread: false,
+      metadata: { agentId: agent_id, agentLabel: label, reason: reason || null },
+    }, { notify: false })
+    return
+  }
+
   if (type === 'rpc-reply') {
     const entry = pendingRpcs.get(msg.id)
     if (!entry) return // unknown / already-timed-out RPC
