@@ -130,12 +130,19 @@ export function createTerminalRpc({
     }
   }
 
+  // Order, not distance, is what makes a prompt current: the last prompt glyph
+  // on screen is ready input as long as no busy marker printed after it. A
+  // fixed last-6-lines tail was clipping the prompt out of consideration
+  // whenever footer/status content (a context-usage line, a rotating tip, a
+  // permission-mode indicator) rendered below the input box, misreporting a
+  // genuinely ready terminal as not-ready. Scanning the full (already-bounded,
+  // see capturePaneTail's own -S limit) capture preserves the "stale busy text
+  // above the prompt doesn't block" guarantee via ordering alone.
   function terminalInputReady(pane) {
     const text = stripAnsi ? stripAnsi(pane || '') : String(pane || '')
     const lines = text.split('\n').filter(line => line.trim())
-    const tail = lines.slice(-6)
-    const promptIndex = tail.findLastIndex(line => line.includes('❯') || line.trimStart().startsWith('›'))
-    const busyIndex = tail.findLastIndex(line =>
+    const promptIndex = lines.findLastIndex(line => line.includes('❯') || line.trimStart().startsWith('›'))
+    const busyIndex = lines.findLastIndex(line =>
       ['Thinking', 'Working', 'Transmuting', 'ESC to interrupt', 'esc to interrupt', 'Starting MCP servers'].some(marker => line.includes(marker)) ||
       line.includes('✻'))
     return promptIndex >= 0 && promptIndex > busyIndex

@@ -2867,6 +2867,16 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         return { content: [{ type: 'text', text: `mint failed before delegation: ${msg}` }], isError: true };
       }
 
+      // A queued durable spawn is not a failure: the client's wait for the
+      // server response hit FLEET_DURABLE_SEND_DEADLINE_MS while the daemon was
+      // still spawning (e.g. a slow non-Claude fallback harness), and the
+      // outbox is already retrying under the same operation_id. Reporting this
+      // as "mint failed" was wrong -- the agent is frequently alive by the time
+      // that message lands. Say it is still in flight instead.
+      if (spawnResult?.queued) {
+        return { content: [{ type: 'text', text: `Mint for ${agentName} is still in flight (operation_id: ${spawnResult.operation_id}); the daemon may still be starting it. Not delegating yet -- re-check the roster shortly rather than assuming it failed.` }] };
+      }
+
       const shellAgentId = spawnResult?.agent_id || spawnResult?.agentId || spawnResult?.agent?.id;
       if (!shellAgentId) {
         return { content: [{ type: 'text', text: `mint joined as ${agentName}, but returned no agent id. Not delegating.` }], isError: true };
@@ -3222,7 +3232,12 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
       warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
     }
     if (queuedOperationId) {
-      warning += `\n\nQueued locally; no server ACK yet: ${queuedOperationId}`;
+      // Same wording as the exception-path queued outcome below (durableDelivery
+      // + describeDurableOutcome): a caller told only "no server ACK yet" with no
+      // "don't resend" had no reason not to retry -- and every retry here mints a
+      // fresh _tempId, so the resend is invisible to every idempotency check on
+      // the server and lands as a genuine second message.
+      warning += `\n\n${describeDurableOutcome('chat', { delivery: 'unknown', queued: true }) || `Queued locally; no server ACK yet: ${queuedOperationId}`} (operation_id: ${queuedOperationId})`;
       if (authoredSuggestions.length) {
         warning += '\nSuggestion chips were not posted yet because the chat message has not received a server id.';
       }

@@ -330,3 +330,113 @@ test('ready-gated notify-agent does not write after prompt readiness timeout', a
   assert.deepEqual(result, { ok: false, reason: 'terminal-not-ready', via: 'none' })
   assert.equal(calls.some(call => call.includes('send-keys')), false)
 })
+
+test('a footer rendered below the prompt does not push it out of readiness detection', async () => {
+  // Regression: terminalInputReady used to look only at the last 6 non-blank
+  // lines. A ready terminal whose prompt is followed by 6+ non-blank footer
+  // lines (a context-usage indicator, rotating tips, a permission-mode line)
+  // had its prompt clipped out of that window entirely, so notify-agent
+  // reported `reason=terminal-not-ready` for an agent that was actually idle
+  // and ready.
+  const calls = []
+  const readyPaneWithFooter = [
+    '❯ ',
+    'Context left · 42%',
+    'Tip: press ? for shortcuts',
+    'Permission mode: default',
+    'footer line 4',
+    'footer line 5',
+    'footer line 6',
+  ].join('\n')
+  const rpc = createTerminalRpc({
+    tmuxArgs: [],
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg() {},
+    detectPrompt: () => ({ type: 'none' }),
+    stripAnsi: value => String(value || ''),
+    promptCooldowns: new Map(),
+    surfacedPrompts: new Map(),
+    alivenessCache: new Map(),
+    thinkingSpinnerRe: /never-matches/,
+    interruptHintRe: /never-matches/,
+    thinkingScanLines: 20,
+    terminalSizePollMs: 5000,
+    decideTerminalWatchExit: () => ({ terminalDead: false }),
+    onArmBySession() {},
+    onEmitAgentStatus() {},
+    onPlanModeSeen() {},
+    onPlanModeGone() {},
+    hasPlanMode: () => false,
+    resolveAgentRoute: () => ({ agent_id: 'fleet:test', session_id: 'session-1', tmux_session: 'fleet-test' }),
+    resolveTerminalAgent: () => ({ id: 'fleet:test', sessionId: 'session-1', tmuxSession: 'fleet-test' }),
+    validateTmuxOwner: () => true,
+    execFileImpl: async (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (args.includes('capture-pane')) return { stdout: readyPaneWithFooter }
+      return { stdout: '' }
+    },
+  })
+
+  const result = await rpc.handlers['notify-agent']({
+    agent_id: 'fleet:test',
+    text: 'LIVE-CLAUDE-FOOTER',
+    enter_delay_ms: 0,
+    ready_timeout_ms: 1000,
+    clear_before_text: true,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(calls.some(call => call.includes('send-keys') && call.includes('Enter')), true)
+})
+
+test('a busy marker printed after the prompt still blocks readiness (no regression from widening the scan)', async () => {
+  const calls = []
+  const busyAfterPromptPane = [
+    '❯ ',
+    'Context left · 42%',
+    'Tip: press ? for shortcuts',
+    'Permission mode: default',
+    'footer line 4',
+    'footer line 5',
+    'Thinking about the next reply',
+  ].join('\n')
+  const rpc = createTerminalRpc({
+    tmuxArgs: [],
+    log: { info() {}, warn() {}, error() {} },
+    sendMsg() {},
+    detectPrompt: () => ({ type: 'none' }),
+    stripAnsi: value => String(value || ''),
+    promptCooldowns: new Map(),
+    surfacedPrompts: new Map(),
+    alivenessCache: new Map(),
+    thinkingSpinnerRe: /never-matches/,
+    interruptHintRe: /never-matches/,
+    thinkingScanLines: 20,
+    terminalSizePollMs: 5000,
+    decideTerminalWatchExit: () => ({ terminalDead: false }),
+    onArmBySession() {},
+    onEmitAgentStatus() {},
+    onPlanModeSeen() {},
+    onPlanModeGone() {},
+    hasPlanMode: () => false,
+    resolveAgentRoute: () => ({ agent_id: 'fleet:test', session_id: 'session-1', tmux_session: 'fleet-test' }),
+    resolveTerminalAgent: () => ({ id: 'fleet:test', sessionId: 'session-1', tmuxSession: 'fleet-test' }),
+    validateTmuxOwner: () => true,
+    execFileImpl: async (cmd, args) => {
+      calls.push([cmd, ...args])
+      if (args.includes('capture-pane')) return { stdout: busyAfterPromptPane }
+      return { stdout: '' }
+    },
+  })
+
+  const result = await rpc.handlers['notify-agent']({
+    agent_id: 'fleet:test',
+    text: 'LIVE-CLAUDE-STILL-BUSY',
+    enter_delay_ms: 0,
+    ready_timeout_ms: 10,
+    clear_before_text: true,
+  })
+
+  assert.deepEqual(result, { ok: false, reason: 'terminal-not-ready', via: 'none' })
+  assert.equal(calls.some(call => call.includes('send-keys')), false)
+})
