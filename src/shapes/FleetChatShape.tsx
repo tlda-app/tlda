@@ -2373,6 +2373,19 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const previousKeysRef = useRef<string[]>([])
   const [geometryVersion, setGeometryVersion] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
+  // A row's own content can grow after it's already positioned -- a search
+  // card's results arrive over the network well after the row was first
+  // measured at "loading..." height. Nothing else here re-measures rows on
+  // their own schedule (the effect below only runs when THIS component
+  // re-renders for an unrelated reason), so a growing card overflows the
+  // translateY slot it was given and overlaps the row below it instead of
+  // pushing it down. Observe every mounted row directly and re-trigger
+  // measurement the moment any of them actually changes size.
+  const rowResizeObserverRef = useRef<ResizeObserver | null>(null)
+  if (!rowResizeObserverRef.current && typeof ResizeObserver !== 'undefined') {
+    rowResizeObserverRef.current = new ResizeObserver(() => setGeometryVersion(v => v + 1))
+  }
+  useEffect(() => () => rowResizeObserverRef.current?.disconnect(), [])
 
   const itemKeys = useMemo(() => items.map(item => String(item.key)), [items])
   const itemKeySignature = useMemo(() => itemKeys.join('\u0001'), [itemKeys])
@@ -2665,8 +2678,15 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
               <div
                 key={key}
                 ref={(el) => {
-                  if (el) rowElsRef.current.set(key, el)
-                  else rowElsRef.current.delete(key)
+                  const observer = rowResizeObserverRef.current
+                  const prev = rowElsRef.current.get(key)
+                  if (prev && prev !== el) observer?.unobserve(prev)
+                  if (el) {
+                    rowElsRef.current.set(key, el)
+                    observer?.observe(el)
+                  } else {
+                    rowElsRef.current.delete(key)
+                  }
                 }}
                 className={'chat-row-wrap' + (item?._divider ? ' queue-divider' : '')}
                 data-chat-item-key={key}
