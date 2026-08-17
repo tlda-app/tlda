@@ -153,4 +153,33 @@ const afterUnblock = daemon.prepare({ type: 'source-change', project: 'blocked-p
 assert.ok(afterUnblock, 'the project can push again after the ordinary refresh')
 assert.equal(afterUnblock.expectedRevision, 'blocked-revision-2')
 
+// Recovery contract: a project that hit `blocked` retains the rejected payload so the
+// sync layer can re-arm its files, and can be released (unblock) without waiting for a
+// differing daemon-welcome or a process restart.
+//
+// Adapted from the July original: it also asserted `seed()` and
+// `state().revision`, which no longer exist here — revision tracking moved out of the
+// correlation layer to the materializer's `serverHeadRevision`, and `sendSourceChange`
+// reads the base from there. The blocked/payload contract below is what this layer
+// still owns.
+const heal = createSourceChangeCorrelation({ makeId: () => `heal-${++nextId}`, log: { warn() {} } })
+const dropped = heal.prepare({ type: 'source-change', project: 'doc', expectedRevision: 'rev-a', files: [{ path: 'main.tex', content: 'v1' }] })
+// A stale-base with no authority revision blocks immediately — there is no fresh base
+// to retry against, so there is no retry budget to spend.
+assert.equal(heal.handle({ requestId: dropped.requestId, project: 'doc', ok: false, status: 'stale-base' }), true)
+assert.equal(heal.state('doc').blocked, true)
+assert.equal(heal.prepare({ type: 'source-change', project: 'doc', files: [] }), null, 'blocked drops new sends')
+// The payload that caused the block is retained once for re-arming, then gone.
+assert.equal(heal.takeBlockedPayload('doc').files[0].content, 'v1')
+assert.equal(heal.takeBlockedPayload('doc'), null, 'the blocked payload is consumed once')
+heal.unblock('doc')
+assert.equal(heal.state('doc').blocked, false, 'unblock releases without a restart')
+const resub = heal.prepare({ type: 'source-change', project: 'doc', expectedRevision: 'rev-b', files: [{ path: 'main.tex', content: 'v2' }] })
+assert.ok(resub, 'the resubmit can be prepared once released')
+assert.equal(resub.expectedRevision, 'rev-b', 'the resubmit rides the base it is given, not the refused one')
+// A clean submit fully clears the blocked state and its retained payload.
+assert.equal(heal.handle({ requestId: resub.requestId, project: 'doc', ok: true, sourceRevision: 'rev-c' }), true)
+assert.equal(heal.state('doc').blocked, false)
+assert.equal(heal.takeBlockedPayload('doc'), null, 'a clean submit leaves nothing retained')
+
 console.log('source change correlation tests passed')

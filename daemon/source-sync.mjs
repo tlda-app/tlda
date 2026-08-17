@@ -25,7 +25,15 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
   const pendingProjects = new Set()
   const queued = new Map()
   const blocked = new Set()
+  // The payload that drove a project into `blocked`, retained so the sync layer can
+  // re-arm its file PATHS and re-submit instead of silently dropping the edit. The
+  // bytes in it are deliberately not replayed — see deferBlockedProject.
+  const blockedPayloads = new Map()
   const retries = []
+  function clearBlock(project) {
+    blocked.delete(project)
+    blockedPayloads.delete(project)
+  }
 
   function mergePayloads(previous, next) {
     if (!previous) return next
@@ -83,17 +91,21 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       pending.delete(message.requestId)
       const project = request.project
       pendingProjects.delete(project)
-      if (!message.ok) {
+      if (message.ok) {
+        clearBlock(project)
+      } else {
         const currentRevision = message.authority?.currentRevision
         if (message.status === 'stale-base' && typeof currentRevision === 'string') {
           if (!request.retried) {
-            blocked.delete(project)
+            clearBlock(project)
             retries.push({ payload: { ...request.payload, expectedRevision: currentRevision }, retried: true })
           } else {
             blocked.add(project)
+            blockedPayloads.set(project, request.payload)
           }
         } else if (message.status === 'stale-base') {
           blocked.add(project)
+          blockedPayloads.set(project, request.payload)
         }
         log.warn(`source change rejected for ${project}: ${message.error || message.status || 'unknown'}`)
       }
@@ -133,10 +145,21 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
     // save that resolves the markers pushes normally against the revision we
     // just learned.
     holdForHuman(project) {
-      blocked.delete(project)
+      clearBlock(project)
       for (let i = retries.length - 1; i >= 0; i--) {
         if (retries[i].payload?.project === project) retries.splice(i, 1)
       }
+    },
+    // Release a project's block without discarding anything else — used by the timed
+    // self-heal so the resubmit races the server's refreshed base rather than waiting
+    // for a differing daemon-welcome or a process restart.
+    unblock(project) { clearBlock(project) },
+    // The payload that drove `project` into `blocked`, consumed once. The sync layer
+    // re-arms its file set from this so the next flush re-reads current disk bytes.
+    takeBlockedPayload(project) {
+      const payload = blockedPayloads.get(project) ?? null
+      blockedPayloads.delete(project)
+      return payload
     },
     state(project) {
       return {
@@ -147,6 +170,15 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
     },
   }
 }
+
+// Self-heal cadence for a source-sync `blocked` project. Once contention drove a
+// project into `blocked`, every later edit was dropped with only a log.warn until a
+// process restart. Instead we re-submit on a bounded exponential backoff: fast
+// enough that transient two-machine contention clears in a couple of seconds,
+// capped so a persistently-contended base cannot thrash the server. Every edit is
+// eventually submitted or kept visibly failed — never lost.
+const BLOCKED_RETRY_BASE_MS = 2000
+const BLOCKED_RETRY_MAX_MS = 30000
 
 export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, editOperationStore = null, verifyOutbox = () => null, retryFault = null, reconcileIntervalMs = 1000, watch = chokidar.watch }) {
   const sourceWatchers = new Map()
@@ -162,7 +194,14 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (!message) {
       const state = sourceCorrelation.state(payload.project)
       if (state.queued) log.info(`source change queued behind in-flight request for ${payload.project}`)
-      else log.warn(`source authority blocked for ${payload.project}; refresh/reconcile required`)
+      else {
+        // Blocked by stale-base contention. Do NOT drop the edit: re-arm its file
+        // paths so the scheduled retry re-reads their current disk bytes, and
+        // surface the block where a person can see it. The timed self-heal
+        // resubmits; nothing waits for a restart.
+        log.warn(`source authority blocked for ${payload.project}; queued for automatic retry`)
+        deferBlockedProject(payload.project, payload)
+      }
       return false
     }
     return sendMsg(message)
@@ -230,6 +269,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       sourceMaterializer.observeServerHead(bindingId, message.authority.currentRevision)
     }
     const conflicted = message?.status === 'stale-base' ? writeConflictsToWorkingCopy(message) : []
+    const project = message.project
+    const wasBlocked = project ? sourceCorrelation.state(project).blocked : false
     const handled = sourceCorrelation.handle(message)
     if (!handled) return false
     const outboxId = message.outbox_id || request.payload?.[DAEMON_OUTBOX_ID_FIELD]
@@ -244,7 +285,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       else if (conflicted.length) editOperationStore.applyDisposition({ outboxId, kind: 'retired', operationIds, reason: 'conflict-human-handoff' })
       else if (message.status !== 'stale-base' || request.retried) editOperationStore.applyDisposition({ outboxId, kind: 'retired', operationIds, reason: request.retried ? 'retry-exhausted' : 'permanent-source-rejection' })
     }
-    if (!message?.ok && conflicted.length === 0) {
+    // A stale-base rejection is contention, not an incident: the daemon retries it
+    // once immediately and then on the self-heal backoff, and `raiseBlockedStatus`
+    // is what tells the author — once per episode, when the block is actually
+    // entered. Warning here as well would fire on every rejection, which is how a
+    // recoverable base collision came to look like a failed save.
+    if (!message?.ok && conflicted.length === 0 && message.status !== 'stale-base') {
       const detail = message.error || message.status || 'unknown'
       sendMsg({
         type: 'daemon-warning',
@@ -274,6 +320,20 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       if (row && createHash('sha256').update(JSON.stringify(row.payload)).digest('hex') === requestFingerprint) {
         editOperationStore.markRetryEnqueued(outboxId)
         retryFault?.('after-retry-enqueued')
+      }
+    }
+    if (project) {
+      const nowBlocked = sourceCorrelation.state(project).blocked
+      if (!wasBlocked && nowBlocked) {
+        // The bounded one-shot retry came back stale-base too, so the project has
+        // just entered `blocked`. Re-arm its files and start the self-heal cadence
+        // rather than leaving it for a restart to clear.
+        deferBlockedProject(project, sourceCorrelation.takeBlockedPayload(project))
+      } else if (message.ok && sourceWatchers.get(project)?._blockedStatusRaised) {
+        // A submit landed for a project whose alarm is up. The self-heal releases the
+        // block at resubmit time, so the flag is already clear by now; the raised
+        // alarm is what tells us contention had been holding this project.
+        recoverBlockedProject(project)
       }
     }
     return true
@@ -337,6 +397,71 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
     if (Array.isArray(sourceManifest)) state.authorityManifest = new Set(sourceManifest)
     return { ok: true, accepted: true, bindingId: state.bindingId, sourceRevision, materializedRevision: sourceRevision, applied, conflicted }
+  }
+
+  // Re-arm the files an edit could not submit, raise the visible status, and
+  // (re)start the retry cadence. Re-arming the file PATHS rather than replaying the
+  // queued payload's bytes is the whole point: the eventual resubmit reads the
+  // newest local edit, so an older queued write can never overwrite a newer one.
+  function deferBlockedProject(project, payload) {
+    const state = sourceWatchers.get(project)
+    if (state) {
+      for (const file of payload?.files || []) { if (file?.path) state.pending.add(file.path) }
+      for (const rel of payload?.deletedFiles || []) { if (rel) state.pending.add(rel) }
+    }
+    raiseBlockedStatus(project)
+    scheduleBlockedRetry(project)
+  }
+
+  // Surface the block on the supported per-doc status path: a critical
+  // daemon-warning raises the SyncErrorPill through the convergent sentinel, so it
+  // survives a reconnect, rather than living in a log nobody reads. One alarm per
+  // block episode — the server dedups repeats, and the daemon does not re-raise.
+  function raiseBlockedStatus(project) {
+    const state = sourceWatchers.get(project)
+    if (state?._blockedStatusRaised) return
+    if (state) state._blockedStatusRaised = true
+    sendMsg({
+      type: 'daemon-warning',
+      project,
+      severity: 'critical',
+      message: 'Source edits are paused: the document base changed on the server (another editor or machine). Your edits are queued and retrying automatically — nothing is lost.',
+    })
+  }
+
+  function scheduleBlockedRetry(project) {
+    const state = sourceWatchers.get(project)
+    if (!state) return
+    if (state._blockedRetryTimer) return // exactly one in-flight self-heal per project
+    const attempt = state._blockedRetryAttempt || 0
+    const delay = Math.min(BLOCKED_RETRY_BASE_MS * (2 ** attempt), BLOCKED_RETRY_MAX_MS)
+    const timer = setTimeout(() => {
+      state._blockedRetryTimer = null
+      if (sourceWatchers.get(project) !== state) return
+      state._blockedRetryAttempt = attempt + 1
+      // Release the block, then flush: the flush re-reads current disk bytes and
+      // coalesces every edit queued during the backoff into ONE payload — no stale
+      // overwrite, one request in flight. The resubmit rides the base the daemon
+      // learned from the rejection (observeServerHead), so it races the server's
+      // refreshed authority rather than replaying the one that was refused. If it
+      // comes back stale-base again, handleSourceChangeResult re-defers with a
+      // longer backoff and the alarm stays up until a clean submit clears it.
+      sourceCorrelation.unblock(project)
+      flushSourceChanges(project)
+    }, delay)
+    timer.unref?.()
+    state._blockedRetryTimer = timer
+  }
+
+  function recoverBlockedProject(project) {
+    const state = sourceWatchers.get(project)
+    if (state) {
+      state._blockedStatusRaised = false
+      state._blockedRetryAttempt = 0
+      if (state._blockedRetryTimer) { clearTimeout(state._blockedRetryTimer); state._blockedRetryTimer = null }
+    }
+    // Lower the per-doc sync alarm on the same status path that raised it.
+    sendMsg({ type: 'daemon-sync-ok', project })
   }
 
   function loadSourceBindings() {
@@ -764,6 +889,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     state.watcher = null
     if (state.reconcileTimer) clearInterval(state.reconcileTimer)
     state.reconcileTimer = null
+    if (state._blockedRetryTimer) { clearTimeout(state._blockedRetryTimer); state._blockedRetryTimer = null }
     if (state._symlinkWatchers) {
       for (const [target, watcher] of state._symlinkWatchers) closeWatcher(watcher, `symlink target ${target}`)
       state._symlinkWatchers.clear()
