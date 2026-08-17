@@ -36,6 +36,38 @@ fly status -c fly.live.toml
 `/api/build-info` must report the pushed `gitSha`; `/api/health` must return
 `ok` with `store: up`; Fly must show the machine as `started`.
 
+## A rejected push does not mean nothing shipped
+
+The deploy runs inside the pre-receive hook, so the machine is updated **before**
+the hook decides whether to accept the ref. If its verification window expires,
+the push is rejected and the ref does not move — while the new image is already
+running.
+
+Seen twice on 2026-08-17. The hook reported:
+
+```
+verify: after 240s https://tlda-fly.cormorant-matrix.ts.net is serving nothing, wanted <sha>
+push rejected: deploy did not reach the box: check whether its machine is running
+```
+
+The box came up on that exact sha about five minutes later. The server can take
+longer than the verification window to bind its port, and during that time it is
+alive and logging — `[event-loop-lag]` lines appear — while the proxy answers
+502 with `connect: connection refused` on 5176. **An alive process that is not
+yet listening looks identical to a crash loop in the logs.**
+
+So on a rejected push:
+
+1. **Do not assume the old code is running.** Read `/api/build-info` and see
+   which sha the box actually serves.
+2. **Wait for the port before concluding anything.** Poll `/api/health` for
+   several minutes rather than reading the first 502 as a failed deploy.
+3. **Reconcile the ref.** If the box is serving the new sha, push again — it
+   verifies immediately and the deploy repo catches up. Leaving it is the
+   dangerous state: the box ahead of the ref means the *next* deploy from that
+   ref silently reverts what is running, which is the stale-branch failure in
+   §"`main` is assembled by cherry-pick" wearing different clothes.
+
 The frozen release-candidate interval is defined in
 [Frozen release candidate](release-candidate.md).
 
