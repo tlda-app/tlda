@@ -583,7 +583,13 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_native_subagent_notifications_parent_pending
         ON native_subagent_notifications(parent_agent_id, acknowledged_at, event_id);
 
-      -- Materialized task state (cache, rebuilt from events)
+      -- Task state. THE RECORD, not a cache: nothing rebuilds this table from
+      -- events, so a column lost here is lost. It said "cache, rebuilt from
+      -- events" for as long as git can see, which is why removeTask() and
+      -- pruneDoneTasks() hard-delete rows -- safe under that claim, and not safe
+      -- in fact: success_criteria, blocked_by, metadata and the timestamps have
+      -- no other copy. Transitions are additionally recorded as task_update
+      -- events (_insertTaskStateEvent), but those carry the transition, not the row.
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         agent TEXT NOT NULL,
@@ -2593,6 +2599,61 @@ export class FleetStore {
     };
   }
 
+  /**
+   * Record a task transition, SYNCHRONOUSLY, for writing inside the same
+   * transaction as the task row itself.
+   *
+   * The DDL above calls `tasks` a "cache, rebuilt from events". Nothing rebuilds
+   * it -- `tasks` is the record -- and `upsertTask` writes the row and no event.
+   * So the transitions that do not go through the delegate/report paths left no
+   * trace at all: an agent's death retiring its open tasks
+   * (`retireTasksForGoneAgent`, with a reason), a retract after delivery, and an
+   * owner change on successor handoff (`transferTasks`). A task blocked for six
+   * hours and then closed was indistinguishable from one closed immediately, and
+   * "who closed this and why" was unanswerable.
+   *
+   * Synchronous on purpose, and modelled on `_insertLabelStateEvent` above --
+   * `share()`/`_insertEventRecord` is async because the events INSERT goes
+   * through the store worker, and these callers are sync code inside
+   * `db.transaction()`. Emitting afterwards instead is what `task-lifecycle.mjs`
+   * already does, and that convention is exactly how these gaps opened: the row
+   * lands, the event is a separate hopeful call. Inside the transaction the two
+   * commit together or not at all.
+   *
+   * `type` is the existing `task_update`. No new event type, no new table, and
+   * deliberately NOT added to CHAT_HISTORY_EVENT_TYPES -- task history belongs in
+   * search (where `task_update` already is), not pushed into chat panels.
+   */
+  _insertTaskStateEvent({ taskId, agentId, actorId = null, status, reason = null, detail = null, timestamp }) {
+    const metadata = {
+      status,
+      ...(reason ? { reason } : {}),
+      ...(detail ? detail : {}),
+    };
+    const text = reason ? `status → ${status}: ${reason}` : `status → ${status}`;
+    const result = this._insertEvent.run(
+      'task_update',
+      timestamp,
+      actorId,
+      text,
+      JSON.stringify(metadata),
+      taskId || null,
+      agentId || null,
+    );
+    return {
+      id: Number(result.lastInsertRowid),
+      type: 'task_update',
+      timestamp,
+      from_id: actorId,
+      recipients: [],
+      text,
+      metadata,
+      task_id: taskId || null,
+      agent_id: agentId || null,
+      read: false,
+    };
+  }
+
   _currentLabelStateFromEvents(agentId) {
     const row = this.db.prepare(`
       SELECT json_extract(metadata, '$.label_state.labels') AS labels
@@ -4355,6 +4416,19 @@ export class FleetStore {
       completed_at: task.completed_at || retractedAt,
       metadata,
     });
+    // The delivered-then-retracted case. The recipient has already seen the task,
+    // so this transition is one a reader will ask about later, and `upsertTask`
+    // records nothing on its own.
+    const insertedRetract = this._insertTaskStateEvent({
+      taskId: task.id,
+      agentId: task.agent,
+      actorId: retractedBy || null,
+      status: 'retracted',
+      reason: 'retracted after delivery',
+      detail: { retracted: true, retracted_by: retractedBy || null, retracted_at: retractedAt, retracted_after_delivery: true },
+      timestamp: retractedAt,
+    });
+    if (insertedRetract) this._notifyEvent(insertedRetract);
     if (event) {
       this.updateEventMetadata(event.id, {
         retracted: true,
@@ -4393,6 +4467,7 @@ export class FleetStore {
 
     const state = this.getTaskDeliveryState(task);
     const event = state?.event || null;
+    let inserted = null;
     this.db.transaction(() => {
       if (event && state.unread) this._clearUnreadForEvent.run(event.id, task.agent);
       this.upsertTask({
@@ -4404,7 +4479,20 @@ export class FleetStore {
           retired: { reason, by: retiredBy, at },
         },
       });
+      // In the transaction with the row: a retire that commits is a retire that
+      // is recorded. This is the path an agent's death takes
+      // (retireTasksForGoneAgent), and `reason` is the only place the why exists.
+      inserted = this._insertTaskStateEvent({
+        taskId: task.id,
+        agentId: task.agent,
+        actorId: retiredBy || null,
+        status: 'retracted',
+        reason,
+        detail: { retired: true, retired_by: retiredBy || null, retired_at: at },
+        timestamp: at,
+      });
     })();
+    if (inserted) this._notifyEvent(inserted);
 
     return { task_id: task.id, agent: task.agent, reason, retired_by: retiredBy, retired_at: at };
   }
@@ -5893,8 +5981,34 @@ export class FleetStore {
    * Returns the number of tasks transferred.
    */
   transferTasks(fromAgentId, toAgentId) {
-    return this.db.prepare("UPDATE tasks SET agent = ? WHERE agent = ? AND status != 'done'")
-      .run(toAgentId, fromAgentId).changes;
+    const at = new Date().toISOString();
+    const inserted = [];
+    // Which rows are about to move, read BEFORE the UPDATE: afterwards they are
+    // indistinguishable from tasks the successor already owned, so the old owner
+    // is unrecoverable. This was a raw UPDATE with no event and no task delta, so
+    // a compaction or respawn silently moved a task's owner and the log could not
+    // say it had ever belonged to anyone else.
+    const moving = this.db.prepare("SELECT id FROM tasks WHERE agent = ? AND status != 'done'")
+      .all(fromAgentId).map(row => row.id);
+    const changes = this.db.transaction(() => {
+      const result = this.db.prepare("UPDATE tasks SET agent = ? WHERE agent = ? AND status != 'done'")
+        .run(toAgentId, fromAgentId).changes;
+      for (const taskId of moving) {
+        const task = this.getTask(taskId);
+        inserted.push(this._insertTaskStateEvent({
+          taskId,
+          agentId: toAgentId,
+          actorId: null,
+          status: task?.status || 'pending',
+          reason: `owner transferred from ${fromAgentId} to ${toAgentId}`,
+          detail: { transferred: true, previous_agent: fromAgentId, new_agent: toAgentId, transferred_at: at },
+          timestamp: at,
+        }));
+      }
+      return result;
+    })();
+    for (const event of inserted) this._notifyEvent(event);
+    return changes;
   }
 
   /**
