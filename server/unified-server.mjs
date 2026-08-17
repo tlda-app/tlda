@@ -138,8 +138,6 @@ import {
 import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord, configuredAgentPreambleRef, shouldStoreDaemonActivity } from './lib/daemon-activity-ingest.mjs'
-import { appendAgentActionFromActivity } from './lib/edit-events.mjs'
-import { createEditActivityProjector } from './lib/edit-activity-projector.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
@@ -1545,11 +1543,6 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 
 setSourceBindingTargetProvider(sourceBindingsForProject)
 
-const editActivityProjector = createEditActivityProjector({
-  fleetStore,
-  onProjected: (id, metadataPatch) => broadcastEvent('event-update', { id, metadata_patch: metadataPatch }),
-})
-void editActivityProjector.project().catch(e => console.error(`[edit-projector] startup failed: ${e.message}`))
 const handleAcceptedSourceMutation = async ({ sourceDaemonKey, ...message }) => {
   if (!message.resumeOnly) {
     const roomResult = await sourceRoomDaemon.applyAcceptedSourceMutation({ sourceDaemonKey, ...message })
@@ -1563,7 +1556,6 @@ const handleAcceptedSourceMutation = async ({ sourceDaemonKey, ...message }) => 
     if (Array.isArray(roomResult?.applied) && roomResult.applied.length > 0) {
       await clearSourceSyncConflicts(message.project, roomResult.applied, { daemonKey: `source-room:${message.project}` })
     }
-    await editActivityProjector.project(message.project)
   }
   const lifecycle = await sourceLifecycleStore(message.project)
   const revisionLifecycle = lifecycle.readRevisionLifecycle(message.project, message.sourceRevision)
@@ -9275,13 +9267,6 @@ async function handleDaemonWsMessage(ws, msg) {
         { serverReceivedAtMs, serverBroadcastQueuedAtMs },
       )
       const storedActivity = await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
-      if (['Edit', 'Write', 'MultiEdit'].includes(tool)) {
-        appendAgentActionFromActivity({ ...activity, id: storedActivity?.id }, {
-          daemonKey: ws._daemonKey || null,
-          machineId: ws._machineId || null,
-          envName: ws._envName || null,
-        }).catch(e => console.error(`[edit-events] activity attribution ingest failed: ${e.message}`))
-      }
     } catch (e) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e

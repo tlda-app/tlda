@@ -8,10 +8,7 @@ import test from 'node:test'
 import WebSocket from 'ws'
 
 import { activityPreambleDoc } from '../../src/fleet/activity-preamble.mjs'
-import { convertChatEvent } from '../../src/fleet/convert-chat-event.mjs'
-import { renderActivityGroup } from '../../src/fleet/activity-render.mjs'
 import { buildDaemonActivityRecord, configuredAgentPreambleRef } from './daemon-activity-ingest.mjs'
-import { createEditActivityProjector } from './edit-activity-projector.mjs'
 import { FleetStore } from './fleet-store.mjs'
 
 async function unusedPort() {
@@ -144,64 +141,6 @@ test('manual preamble crosses the production daemon activity websocket and histo
     liveClient?.close()
     historyClient?.close()
     child.kill('SIGKILL')
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('manual preamble survives source edit storage and canonical projection into KaTeX', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'tlda-manual-preamble-edit-'))
-  const dbPath = join(root, 'fleet.sqlite')
-  const operation = { operation_id: 'manual-preamble-O1', kind: 'Edit', files: [{ path: 'main.tex' }] }
-  const before = ['\\begin{equation}', '\\chosen{x} = 1', '\\end{equation}'].join('\n')
-  const after = ['\\begin{equation}', '\\chosen{x} = 2', '\\end{equation}'].join('\n')
-  const preambleRef = configuredAgentPreambleRef({
-    metadata: { chatPreamble: { doc: 'manual-macros', version: 'macro-version' } },
-  })
-  let store = new FleetStore(dbPath, { taskDoc: false })
-  let storeOpen = true
-  try {
-    const activity = buildDaemonActivityRecord({
-      agent_id: 'fleet:agent', tool: 'Edit', arg: 'main.tex', project: 'source-paper', sourceFile: 'main.tex',
-      preambleRef, input: { edit_operation: operation }, ts: '2026-08-15T20:36:33.000Z',
-    })
-    const stored = await store.share(activity)
-    store.close()
-    storeOpen = false
-
-    store = new FleetStore(dbPath, { taskDoc: false })
-    storeOpen = true
-    const projector = createEditActivityProjector({
-      fleetStore: store,
-      readEvents: async () => ({ events: [{
-        previous_source_revision: 'before', after_source_revision: 'after', ambiguous: false,
-        attribution_basis: { operation_id: operation.operation_id },
-        changed_files: [{ path: 'main.tex', hunks: [{ old_start: 2, old_lines: 1, new_start: 2, new_lines: 1 }] }],
-      }] }),
-      lifecycleFor: async () => ({
-        readRevisionFile: revision => Buffer.from(revision === 'before' ? before : after),
-      }),
-    })
-    await projector.project('source-paper')
-
-    const row = store.db.prepare('SELECT id,type,timestamp,from_id,text,metadata FROM events WHERE id=?').get(stored.id)
-    const renderedEvent = convertChatEvent(row)
-    assert.deepEqual(renderedEvent.metadata.preambleRef, preambleRef)
-    assert.equal(renderedEvent._toolInput.canonical_source.project, 'source-paper')
-    assert.equal(activityPreambleDoc(renderedEvent), 'manual-macros')
-
-    const macros = { '\\chosen': '\\operatorname{chosen}' }
-    const html = renderActivityGroup([renderedEvent], {
-      agentLabel: () => 'agent', getNickClass: () => '', getAgents: () => [{ id: 'fleet:agent' }],
-      langFromFilePath: () => '', highlightSyntax: value => value,
-      renderMarkdown: value => value, preambleMacros: macros, foldHeights: {},
-    })
-    const visible = html.replace(/<annotation[\s\S]*?<\/annotation>/g, '')
-    assert.match(html, /class="katex/)
-    assert.match(html, /<math/)
-    assert.match(html, /mord mathrm">chosen/)
-    assert.doesNotMatch(visible, /\\chosen/)
-  } finally {
-    if (storeOpen) store.close()
     rmSync(root, { recursive: true, force: true })
   }
 })

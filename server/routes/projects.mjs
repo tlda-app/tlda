@@ -40,7 +40,6 @@ import {
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
-import { readEditEvents, recordAcceptedSourceTransaction } from '../lib/edit-events.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
@@ -1318,16 +1317,6 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       return { status: 596, ok: false, simulatedCrash: true, boundary: 'after-terminal-result' }
     }
     await transaction.commit()
-    if (acceptedSourceMutation) {
-      try {
-        await recordAcceptedSourceTransaction(name, body || {}, acceptedSourceMutation)
-        // Acceptance updates canonical edit history. The active editing session
-        // remains open until the agent's authoritative turn-end/idle edge.
-      } catch (attributionError) {
-        // Source is already committed; attribution is derived and must not roll it back.
-        console.error(`[${name}] edit-event attribution record failed: ${attributionError.message}`)
-      }
-    }
     await clearSourceSyncConflicts(name, [
       ...(changedPushFiles || []).map(file => file.path),
       ...(deletedFiles || []),
