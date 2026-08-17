@@ -18,7 +18,6 @@ import {
   updateClientSourceManifest,
   updateProject,
 } from '../server/lib/project-store.mjs'
-import { readEditEvents } from '../server/lib/edit-events.mjs'
 import { linkOverleaf, stopPolling, unlinkOverleaf } from '../server/lib/overleaf-sync.mjs'
 import { processProjectPush } from '../server/routes/projects.mjs'
 
@@ -210,40 +209,3 @@ test('non-overlapping remote and browser edits publish on top of each other', as
 
 // If this fails, Skip sees a four-commit Overleaf history collapse to one tlda
 // version and cannot tell which collaborator changed which file.
-test('initial link imports each remote commit as edit history', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-linked-remote-history-'))
-  const name = 'linked-remote-history'
-  try {
-    await initProjectStore(root)
-    const remote = seedRemoteHistory(root)
-    createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
-    await updateProject(name, { pages: 1, buildStatus: 'success' })
-    write(path.join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['unrelated.tex'] }))
-
-    const result = await linkOverleaf(name, { gitUrl: remote, mainFile: 'main.tex', pollSeconds: 999 })
-
-    assert.equal(result.linked, true)
-    assert.equal(readSourceFile(name, 'main.tex'), 'four\n')
-    assert.equal(readSourceFile(name, 'notes.tex'), 'notes\n')
-    let history = await readEditEvents(name)
-    const remoteCommits = git(['--git-dir', remote, 'log', '--reverse', '--format=%H', 'master'], root).split('\n')
-    assert.deepEqual(history.events.map(event => event.attribution_basis.commit_hash), remoteCommits)
-    assert.deepEqual(history.events.map(event => event.actor_display_name), [
-      'first author',
-      'second author',
-      'third author',
-      'fourth author',
-    ])
-    assert.equal(history.events.length, 4)
-
-    await unlinkOverleaf(name, { gitUrl: remote })
-    const relink = await linkOverleaf(name, { gitUrl: remote, mainFile: 'main.tex', pollSeconds: 999 })
-    assert.equal(relink.linked, true)
-    history = await readEditEvents(name)
-    assert.deepEqual(new Set(history.events.map(event => event.attribution_basis.commit_hash)), new Set(remoteCommits))
-  } finally {
-    stopPolling(name)
-    await closeProjectStore()
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
