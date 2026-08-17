@@ -566,10 +566,30 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       if (!lifecycle || lifecycle.project !== project) throw new Error(`Source revision ${sourceRevision} is not accepted for ${project}`)
       if (!bindingId) throw new Error('bindingId is required')
       const updatedAt = new Date().toISOString()
+      const previous = lifecycle.replicas?.[bindingId] || {}
+      // Drop the command payload once the replica is no longer pending.
+      //
+      // `command` carries `blobs` -- base64 of every changed file -- plus both
+      // manifests, and it exists for exactly one purpose: the fan-out at
+      // unified-server.mjs re-sends it, and that path filters on
+      // `state === 'pending'`. The moment a replica settles, nothing can read it
+      // again, and it was being kept forever.
+      //
+      // Measured on the live volume 2026-08-17, before this change: bregman's
+      // journal was 95.6 MB, of which `revisionLifecycle` was 82 MB across 22
+      // revisions -- and in the largest single revision record, `command` was
+      // 54,374,893 of its 54,376,465 bytes. 99.998%. That journal is read in
+      // full, synchronously, by every `GET /api/projects`.
+      //
+      // The revision keeps its state, its result and its timestamps. What goes
+      // is a second copy of file bytes the source revision already holds.
+      const settled = stateName !== 'pending'
+      const { command: previousCommand, ...carried } = previous
       const replicas = {
         ...(lifecycle.replicas || {}),
         [bindingId]: {
-          ...(lifecycle.replicas?.[bindingId] || {}),
+          ...carried,
+          ...(settled ? {} : { command: previousCommand }),
           state: stateName,
           result: stableValue(result),
           updatedAt,
