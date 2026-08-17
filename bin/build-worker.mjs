@@ -53,7 +53,16 @@ setBuildReporter({
   patchShape:      (docName, shapeId, propsPatch) => sendReport('patchShape', [docName, shapeId, propsPatch]),
   writeSentinel:   (docName, propsPatch)   => callParent('writeSentinel',   [docName, propsPatch]),
   emitGlobalEvent: (type, payload)         => sendReport('emitGlobalEvent', [type, payload]),
-  updateProject:   (name, patch)           => sendReport('updateProject',   [name, patch]),
+  // An acknowledged RPC, not a queued report. The last thing a build does is
+  // write buildStatus/lastBuild/lastBuildSuccess and then the worker exits --
+  // and a report is fire-and-forget, so that terminal write raced the exit and
+  // was lost. On 2026-08-17 a build completed at 11:34:17 and mirrored at
+  // 11:35:18 while lastBuildSuccess stayed at 11:02:55, because mirrorShadow is
+  // awaited and this was not. A field that is wrong only on success is worse
+  // than one that is obviously broken: it cost two server restarts, a killed
+  // build worker, and hours of misdiagnosis across two agents before anyone
+  // stopped believing it.
+  updateProject:   (name, patch)           => callParent('updateProject',   [name, patch]),
   mirrorShadow:    (name, hash, sourceRevision, acceptSeq) => callParent('mirrorShadow', [name, hash, sourceRevision, acceptSeq]),
   recordRevisionPhase: (name, sourceRevision, phase, state, result) => callParent('recordRevisionPhase', [name, sourceRevision, phase, state, result]),
 })

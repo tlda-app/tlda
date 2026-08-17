@@ -2811,7 +2811,16 @@ async function cmdErrors() {
     for (const w of data.warnings) console.log(dim(`  ${typeof w === 'string' ? w : w.message}`))
   }
   if (data.pipelineWarnings?.length > 0) {
-    console.log(`${data.pipelineWarnings.length} pipeline issue(s):`)
+    // These are parsed out of the LAST build's log, so they describe whenever
+    // that build ran -- not now. Printed bare, a 2h27m-old mirror failure read
+    // as a live fault on 2026-08-17 and cost a server restart. Say when.
+    const buildAge = data.lastBuild
+      ? (() => {
+          const ago = Math.round((Date.now() - new Date(data.lastBuild).getTime()) / 1000)
+          return ago < 60 ? `${ago}s ago` : ago < 3600 ? `${Math.round(ago / 60)}m ago` : `${Math.round(ago / 3600)}h ago`
+        })()
+      : 'unknown time'
+    console.log(`${data.pipelineWarnings.length} pipeline issue(s), from the build ${buildAge}:`)
     for (const w of data.pipelineWarnings) console.log(dim(`  ${w}`))
   }
   if (!data.errors?.length && !data.warnings?.length && !data.pipelineWarnings?.length && !data.building) {
