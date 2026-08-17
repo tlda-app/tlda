@@ -1853,6 +1853,29 @@ const spawnLibrarian = new SpawnLibrarian({
       reason: liveness?.reason || 'delivered chat produced no agent-activity advance',
       ts: new Date().toISOString(),
     }
+    // Before this line the verdict left NO trace of any kind. broadcastEvent
+    // appends a control-plane trace only when the payload carries a trace id (see
+    // traceIdFromFleetEvent) and this payload has none, so there was no log line,
+    // no trace, and no persisted event -- the same structural blindness
+    // teardownWatchers documents in bin/fleet-daemon.mjs.
+    //
+    // And the broadcast below reaches NOTHING. The comment under it claims the
+    // event is "consumed by the per-agent status line"; there is no such consumer.
+    // `agent-wedged` does not occur anywhere in src/, and the client's only
+    // msg.event dispatch chain (src/fleet/fleet-data.mjs:1119-1186) has no branch
+    // for it. So the detector runs, decides, broadcasts, and the verdict dies on
+    // the wire. broadcastState(agent) on the next line still refreshes the roster
+    // row, which is why a wedged agent looks ordinary rather than stuck.
+    //
+    // That matters right now because the ONLY thing that cancels the pending
+    // verdict is SpawnLibrarian.observeActivity, whose single caller is the
+    // 'agent-activity' dispatcher case -- and nothing sends 'agent-activity'.
+    // So the cancel path is unreachable while observeDelivery (:7482) and this
+    // callback are both live, and agent-liveness keeps the state at 'alive' past
+    // the guard. Whether that produces false verdicts in practice could not be
+    // measured, because of the blindness this line removes. Measure before
+    // changing the detector.
+    console.warn(`[spawn-librarian] agent-wedged ${label} (${agent_id}): ${metadata.reason}`)
     // Wedged is convergent agent state — surface it via the agent-wedged event
     // (consumed by the per-agent status line), NOT as a chat message. Posting it
     // to chat spammed every idle recipient of a broadcast/fan-out delivery. (Skip 6/27)
