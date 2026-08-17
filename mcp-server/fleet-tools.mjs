@@ -4212,15 +4212,21 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     };
 
     // A send carries a recipient LIST, so the direction line renders every
-    // recipient. Only the sender gets a name-provenance tag: the row stamps a
-    // period name for `from`, and there is no per-recipient equivalent, so a
-    // recipient is rendered by its durable id rather than a name it may not
-    // have held.
-    const fmtRecipients = (recipients) => (recipients || []).join(', ');
+    // recipient — each with the name it ACTUALLY held when the message was
+    // sent, the same provenance `from` already gets. `stampNames` on the server
+    // resolves one per recipient into `toNames` / `toNamesNow`, parallel to
+    // `recipients`; this reads them instead of dropping them, which is why a
+    // recipient used to render as a bare durable id.
+    //
+    // A row with no stamps falls through `tag`'s current-roster lookup. Every
+    // row reaching here is stamped (both the results and the context windows),
+    // so that path is a floor, not a mode.
+    const fmtRecipients = (recipients, atNames, nowNames) =>
+      (recipients || []).map((id, i) => tag(id, atNames?.[i], nowNames?.[i])).join(', ');
 
     const fmtCtxMsg = (c) => {
       const cFrom = tag(c.from_id || c.from, c.fromName, c.fromNameNow);
-      const cTo = fmtRecipients(c.recipients);
+      const cTo = fmtRecipients(c.recipients, c.toNames, c.toNamesNow);
       const cDir = cTo ? `${cFrom} → ${cTo}` : cFrom;
       const text = (c.text || '').length > 300 ? c.text.slice(0, 300) + '...' : (c.text || '');
       return `  [${fmtTs(c.timestamp)}] ${cDir}: ${text}`;
@@ -4291,7 +4297,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           return { timestamp: r.timestamp, text: formatProjectAgentForSearch(r) };
         }
         const from = tag(r.from, r.fromName, r.fromNameNow);
-        const to = fmtRecipients(r.recipients);
+        const to = fmtRecipients(r.recipients, r.toNames, r.toNamesNow);
         const direction = to ? `${from} → ${to}` : from;
         const display = r.type === 'activity' ? formatActivityForSearch(r, snippet) : snippet;
         let text;
@@ -4493,6 +4499,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           id: e.id, type: e.type, metadata,
           from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
           fromName: e.fromName, fromNameNow: e.fromNameNow,
+          // Per-recipient name-at-send, parallel to `recipients`. Dropping
+          // these was what made a thread render its recipients against the
+          // CURRENT roster while its senders carried their period names —
+          // present-day names projected onto old messages, in the one surface
+          // agents read history through.
+          toNames: e.toNames, toNamesNow: e.toNamesNow,
         });
       }
     };
@@ -4531,6 +4543,12 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           id: e.id, type: e.type, metadata,
           from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
           fromName: e.fromName, fromNameNow: e.fromNameNow,
+          // Per-recipient name-at-send, parallel to `recipients`. Dropping
+          // these was what made a thread render its recipients against the
+          // CURRENT roster while its senders carried their period names —
+          // present-day names projected onto old messages, in the one surface
+          // agents read history through.
+          toNames: e.toNames, toNamesNow: e.toNamesNow,
         });
       }
     };
@@ -4739,16 +4757,60 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return s;
     };
 
+    // An amend is a NEW event carrying the corrected text and pointing at the
+    // original through `metadata.amends`; the original row is never mutated
+    // (see the `type === 'amend'` branch in unified-server.mjs). Both rows are
+    // therefore in this page, and without a marker they print identically — so
+    // a reader who stops before the second one acts on text that was retracted,
+    // and a reader who reaches it sees a sender who said nearly the same thing
+    // twice.
+    //
+    // BOTH rows stay visible, unlike the browser, which folds the amend into
+    // the original behind a V{n} stepper (FleetChatShape). The browser can hide
+    // a version because it can offer a control to step back to it. This is a
+    // transcript: there is nothing to click, and the original is what the
+    // recipients actually read at the time — which is the accountability trail
+    // the immutable original exists for. Hiding it would answer "what does this
+    // message say now" while destroying "what did they act on".
+    //
+    // Scope of the back-reference: an original is marked only when its amend is
+    // on the SAME page. Amends land seconds after the message they correct and
+    // a page is 200 rows or a bounded window, so this is nearly always true —
+    // but it is not guaranteed, and it is not repaired with a second query.
+    // The forward marker on the amend row has no such gap: it always names the
+    // id it replaces, so the reader can reach the original from either side.
+    const amendsByOriginal = new Map();
+    for (const m of filtered) {
+      if (m.type !== 'amend') continue;
+      const orig = m.metadata?.amends;
+      if (orig == null) continue;
+      // Keyed as a string: the id arrives as a number from the store and as
+      // whatever JSON round-tripped through `metadata`, and a Map keyed on the
+      // raw value would miss on 123 vs "123" — silently, by printing no marker.
+      const key = String(orig);
+      if (!amendsByOriginal.has(key)) amendsByOriginal.set(key, []);
+      amendsByOriginal.get(key).push(m.id);
+    }
+
     for (const m of filtered) {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
       const from = tag(m.from, m.fromName, m.fromNameNow);
-      // Every recipient of the send, comma-separated. `tag` with no period name
-      // falls back to the agent resolved above, so each one carries its name and
-      // its durable id.
-      const to = m.recipients.map(id => tag(id)).join(', ');
+      // Every recipient of the send, comma-separated, each carrying the name it
+      // held AT SEND TIME (`toNames`, stamped per recipient by the server) plus
+      // its durable id. `tag` falls back to the currently-resolved agent only
+      // when a row arrived unstamped.
+      const to = m.recipients
+        .map((id, i) => tag(id, m.toNames?.[i], m.toNamesNow?.[i]))
+        .join(', ');
       const ver = args.project ? versionAt(m.timestamp) : null;
       const verStr = ver ? ` @${ver}` : '';
-      const line = `[${ts}${verStr}] ${from} → ${to}\n${m.text}`;
+      const supersededBy = amendsByOriginal.get(String(m.id));
+      const amendMark = m.type === 'amend' && m.metadata?.amends != null
+        ? `  [AMENDS #${m.metadata.amends} — this text replaces it]`
+        : supersededBy?.length
+        ? `  [AMENDED — superseded by #${supersededBy.join(', #')} below]`
+        : '';
+      const line = `[${ts}${verStr}] ${from} → ${to}${amendMark}\n${m.text}`;
       const lineBytes = Buffer.byteLength(line + SEP, 'utf8');
 
       // `lines.length > 0` exempts the first message, so MAX_BYTES cannot bind
