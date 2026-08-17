@@ -732,11 +732,14 @@ router.get('/:name/source-activity', requireRead, async (req, res) => {
     const agent = await fleetStore?.getAgent?.(id)
     return { id, name: agent?.friendly_name || id }
   }))
-  const editHistory = await readEditEvents(req.params.name, { limit: Infinity })
-  const last = editHistory.events.find(event =>
-    Array.isArray(event.changed_files) && event.changed_files.some(changed => changed.path === file)
-  ) || null
-  let lastChangedBy = last?.actor_display_name || last?.actor_id || null
+  // One indexed row, not the whole attribution history. This is polled every
+  // 1000ms per open file by BuildProgressPill, and it used to answer with
+  // readEditEvents(name, { limit: Infinity }) -- a full synchronous read and
+  // parse of an append-only JSONL, on the main thread, once a second. The
+  // server's own lag profiler measured 809ms stalls in it, which is enough to
+  // blow capture-pane and agent-wake deadlines and leave the fleet unreachable.
+  const last = await fleetStore?.lastSourceFileChange?.(req.params.name, file) || null
+  let lastChangedBy = last?.agentId || null
   if (lastChangedBy) {
     const agent = await fleetStore?.getAgent?.(lastChangedBy)
     lastChangedBy = agent?.friendly_name || lastChangedBy
