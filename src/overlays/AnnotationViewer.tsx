@@ -580,6 +580,7 @@ export function AnnotationViewer({
           maxHeightFraction={0.5}
           emphasizeShapeIds={data.shapeIds}
           readOnly={state === 'hovering'}
+          panInteraction
           className="annotation-viewer-clip"
           requestedShapeIds={data.shapeIds}
           interactionMode={state === 'hovering' ? 'preview' : 'pinned'}
