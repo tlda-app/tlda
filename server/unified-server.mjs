@@ -1488,9 +1488,36 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 // Mirror-back is event-based and idempotent (same hash → same ref): use the
 // resilient sender so a daemon WS reconnect flap retries instead of throwing a
 // 10s timeout that masquerades as a failure. (Skip 7/22)
+// The durable sender retries across a reconnect — but only if an attempt ever
+// ENDS. `attemptTimeoutMs` defaults to null, so with no rpcOptions each attempt
+// waits forever, `isTransientRpcError` is never consulted, and the retry loop
+// never iterates. The resilience above was unreachable in exactly the case it was
+// written for.
+//
+// 2026-08-17 is what that costs. The daemon received a mirror at 17:25:50, did the
+// whole job in two seconds, committed it, and logged `mirrored bregman@edc2989`.
+// Its reply was lost in a WS flap, so the server waited, the build worker awaiting
+// the server waited, and the queue never released — a mirror that had SUCCEEDED
+// recorded as `no daemon accepted the mirror`.
+//
+// Bounding the attempt is what makes the existing retry work: the attempt fails
+// with `RPC timeout after …`, which isTransientRpcError already classifies as
+// retryable, so it waits for a ready daemon and re-sends under the same stable
+// requestId. The mirror is idempotent (same hash → same ref), so a re-send after a
+// lost ack returns the same result rather than doing the work twice.
+//
+// The total stays under MIRROR_KEY_TIMEOUT_MS so these retries happen INSIDE the
+// fan-out's deadline; that deadline remains the outer backstop for a daemon that
+// is genuinely gone, not the first line of defence against a dropped reply.
+const MIRROR_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_ATTEMPT_TIMEOUT_MS) || 10000
+const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_MS) || 25000
+
 setShadowMirrorHandler(createShadowMirrorRpcHandler({
   readProject,
-  sendDaemonEphemeral: sendDaemonDurable,
+  sendDaemonEphemeral: (machineId, operation, params) => sendDaemonDurable(machineId, operation, params, {
+    attemptTimeoutMs: MIRROR_ATTEMPT_TIMEOUT_MS,
+    totalDeadlineMs: MIRROR_TOTAL_DEADLINE_MS,
+  }),
   // Every connected daemon, not just the one that pushed last — a machine that
   // does not hold the project declines for itself.
   listDaemonKeys: () => [...daemonConnections.keys()],
