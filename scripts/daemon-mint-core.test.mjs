@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { createDaemonMintCore } from '../daemon/mint-core.mjs'
+import { createDaemonMintCore, recordedMintIdentity } from '../daemon/mint-core.mjs'
 import { MintFactConflictError, MintStore, readMintFacts, resolveLoginFleetId } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 
@@ -304,6 +304,58 @@ const resumed = await wake('fleet:server')
 assert.equal(resumed.resumed, true)
 assert.equal(resumed.tmux_session, 'resumed-session:server')
 assert.rejects(() => wake('fleet:missing'), /no daemon mint facts/)
+
+// A supervised bot mints under the same mint id on every start. Once that mint
+// holds a fleet id, the restart must relaunch that identity and ask the allocator
+// for nothing — otherwise the launcher competes with its own child for the child's
+// name, and the shell it creates blocks the next start.
+let namedRestartLaunches = 0
+const namedRestartCore = createDaemonMintCore({
+  store,
+  envName: 'stable',
+  processAlive: async () => false,
+  launchProcess: async input => {
+    namedRestartLaunches++
+    return { fleet_id: input.fleet_id, session_id: 'session:bot-restart', tmux_session: 'fleet-bot-restart' }
+  },
+  requestSeat: async () => { throw new Error('a restart must not request a seat') },
+  bindSeat: async () => {},
+})
+store.ensure('bot:stable:restart')
+store.setFact('bot:stable:restart', 'friendly_name', 'restart')
+store.setFact('bot:stable:restart', 'fleet_id', 'fleet:bot-restart')
+store.setFact('bot:stable:restart', 'process_state', { session_id: 'session:bot-restart', tmux_session: 'fleet-bot-restart' })
+store.setFact('bot:stable:restart', 'session_id', 'session:bot-restart')
+const namedRestart = await namedRestartCore.mint({ mint_id: 'bot:stable:restart', name: 'restart' })
+assert.equal(namedRestartLaunches, 1)
+assert.equal(namedRestart.fleetId, 'fleet:bot-restart')
+
+// The same question the daemon asks before reserving a bot seat of its own. It has
+// to agree with what mint() would have done, or the reservation re-creates the
+// agent mint() was going to reuse and takes its name away from it.
+assert.equal(recordedMintIdentity(store, 'bot:stable:restart').fleetId, 'fleet:bot-restart')
+assert.equal(recordedMintIdentity(store, 'bot:stable:never-started'), null)
+assert.equal(recordedMintIdentity(store, null), null)
+store.ensure('bot:stable:reserved-not-bound')
+store.setFact('bot:stable:reserved-not-bound', 'friendly_name', 'reserved-not-bound')
+assert.equal(recordedMintIdentity(store, 'bot:stable:reserved-not-bound'), null)
+
+// A mint that asks for a taken name is assigned an alternate rather than rejected.
+// The ledger has to be able to write that answer down: treating it as a conflict
+// with the requested name leaves the seat unrecordable, and mint-core retries an
+// unrecordable seat forever.
+const rotatedCore = createDaemonMintCore({
+  store,
+  envName: 'stable',
+  mintId: () => 'bot:stable:rotated',
+  launchProcess: async () => ({ session_id: 'session:rotated', tmux_session: 'fleet-rotated' }),
+  requestSeat: async () => ({ fleet_id: 'fleet:rotated', friendly_name: 'qotated' }),
+  bindSeat: async () => {},
+})
+const rotated = await rotatedCore.mint({ name: 'rotated' })
+assert.equal(rotated.fleetId, 'fleet:rotated')
+assert.equal(rotated.friendlyName, 'qotated')
+assert.equal(store.resolve('qotated', { envName: 'stable' }).mintId, 'bot:stable:rotated')
 
 store.close()
 fs.rmSync(dir, { recursive: true, force: true })

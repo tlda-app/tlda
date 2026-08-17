@@ -150,6 +150,22 @@ export class MintStore {
       || (envName ? this.getByFriendlyName(identifier, envName) : null)
   }
 
+  // The allocator's answer is the authority on a mint's name. A mint that asks for
+  // a taken name is assigned an alternate rather than rejected — that is the
+  // design, not a failure — so the requested name written before the seat answered
+  // is superseded here. setFact would call the two a conflict and leave the mint
+  // unable to record the identity it was actually given.
+  updateFriendlyName(mintId, friendlyName, now = new Date().toISOString()) {
+    if (!mintId || !friendlyName) throw new Error('mint_id and friendly_name are required')
+    const result = this.db.prepare(`
+      UPDATE daemon_mints
+      SET friendly_name = ?, updated_at = ?
+      WHERE mint_id = ?
+    `).run(friendlyName, now, mintId)
+    if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
+    return this.get(mintId)
+  }
+
   updateProcessState(mintId, processState, now = new Date().toISOString()) {
     const incoming = encoded(processState)
     if (!mintId || incoming == null) throw new Error('mint_id and process_state are required')

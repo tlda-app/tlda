@@ -240,6 +240,7 @@ const SPAWN_NON_MODEL_OPTION_FLAGS = new Set([
   'kind', 'list-models', 'machine', 'mode', 'model', 'name', 'permissions',
   'policy', 'refresh', 'server', 'session', 'bot-script', 'bot-name',
   'bot-pid-file', 'bot-heartbeat-file', 'bot-wait-channel', 'fail-if-not-fresh',
+  'mint-id',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -2036,9 +2037,20 @@ function runBotCliCommand(args, unit) {
   })
 }
 
+// A supervised bot is one durable fleet participant per environment, not a new
+// agent per restart, so its mint id is derived from the pair that identifies it.
+// The mint core requests a server seat only when the mint has no fleet id yet
+// (daemon/mint-core.mjs), so the second and every later start reuses the identity
+// this one recorded and asks the allocator for nothing. That is what makes a bot
+// moved off its name stay moved: it never re-requests the name it lost.
+export function botMintId(envName, botName) {
+  return `bot:${envName}:${botName}`
+}
+
 async function startBot(unit) {
-  const minted = await runBotCliCommand([
+  await runBotCliCommand([
     'agent', 'mint', unit.bot.name,
+    '--mint-id', botMintId(unit.envName, unit.bot.name),
     '--model', 'bot',
     '--kind', 'bot',
     '--cwd', FLEET_DAEMON_MAIN_ROOT,
@@ -2046,13 +2058,7 @@ async function startBot(unit) {
     '--bot-name', unit.bot.name,
     '--bot-pid-file', unit.paths.pidFile,
     '--bot-heartbeat-file', unit.paths.heartbeatFile,
-    '--fail-if-not-fresh',
   ], unit)
-  if (minted === 0) return
-  // The name already belongs to a living fleet agent, which is the ordinary case
-  // for a bot whose process died: wake restarts that identity instead of minting a
-  // second one beside it.
-  await runBotCliCommand(['agent', 'wake', unit.bot.name], unit)
 }
 
 async function runBotManager() {
@@ -3729,12 +3735,20 @@ export async function runFleetSpawn(spawnArgs, {
   if (spawnMode === 'fresh') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
     const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'), { defaultEnvName: localDaemonEnvName() })
-    let mintId = randomUUID()
+    // --mint-id names the mint outright, for a caller whose agent is the same
+    // agent on every start (a supervised bot). Naming it is the whole mechanism:
+    // the mint core requests a server seat only when the mint has no fleet id, so
+    // a named mint that already recorded one is relaunched rather than re-created,
+    // and the allocator is never asked for the name a second time.
+    const explicitMintId = flagFromRaw(spawnArgs, 'mint-id') || null
+    let mintId = explicitMintId || randomUUID()
     try {
-      const partial = name ? mintStore.resolve(name) : null
-      if (partial && !partial.joinedAt) {
-        mintId = partial.mintId
-        console.log(`Resuming partial mint ${mintId}${partial.processState?.tmux_session ? ` in ${partial.processState.tmux_session}` : ''}`)
+      const known = explicitMintId ? mintStore.get(explicitMintId) : (name ? mintStore.resolve(name) : null)
+      if (explicitMintId && known?.fleetId) {
+        console.log(`Reusing mint ${mintId} (${known.fleetId}${known.friendlyName ? ` as ${known.friendlyName}` : ''})`)
+      } else if (known && !known.joinedAt) {
+        mintId = known.mintId
+        console.log(`Resuming partial mint ${mintId}${known.processState?.tmux_session ? ` in ${known.processState.tmux_session}` : ''}`)
       }
     } finally {
       mintStore.close()
