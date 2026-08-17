@@ -61,7 +61,7 @@ import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
-import { activeSourceEditors } from '../lib/source-edit-activity.mjs'
+import { sourceActivityPayload } from '../lib/source-activity-payload.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -725,30 +725,9 @@ router.get('/:name/source-activity', requireRead, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const file = typeof req.query.file === 'string' ? req.query.file.replace(/^\.\//, '') : ''
   if (!file) return res.status(400).json({ error: 'file is required' })
-  const fleetStore = req.app?.locals?.fleetStore
-  const editorIds = activeSourceEditors(req.params.name, file)
-  const editors = await Promise.all(editorIds.map(async id => {
-    const agent = await fleetStore?.getAgent?.(id)
-    return { id, name: agent?.friendly_name || id }
-  }))
-  // One indexed row, not the whole attribution history. This is polled every
-  // 1000ms per open file by BuildProgressPill, and it used to answer with
-  // readEditEvents(name, { limit: Infinity }) -- a full synchronous read and
-  // parse of an append-only JSONL, on the main thread, once a second. The
-  // server's own lag profiler measured 809ms stalls in it, which is enough to
-  // blow capture-pane and agent-wake deadlines and leave the fleet unreachable.
-  const last = await fleetStore?.lastSourceFileChange?.(req.params.name, file) || null
-  let lastChangedBy = last?.agentId || null
-  if (lastChangedBy) {
-    const agent = await fleetStore?.getAgent?.(lastChangedBy)
-    lastChangedBy = agent?.friendly_name || lastChangedBy
-  }
-  res.json({
-    file,
-    editors,
-    lastChangedAt: last?.timestamp ? Date.parse(last.timestamp) : null,
-    lastChangedBy,
-  })
+  // Read once, when a viewer opens the file. Changes after that arrive as
+  // signal:source-activity on the doc room; nobody polls this.
+  res.json(await sourceActivityPayload(req.app?.locals?.fleetStore, req.params.name, file))
 })
 
 // Read a specific source file's content

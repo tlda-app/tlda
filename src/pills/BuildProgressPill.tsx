@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useEditor } from 'tldraw'
-import { onBuildProgressSignal } from '../useYjsSync'
+import { onBuildProgressSignal, onSourceActivitySignal } from '../useYjsSync'
 import { appendToken } from '../authToken'
 import type { SvgDocument } from '../svgDocumentLoader'
 import { buildProgressLabel } from './build-progress-label.mjs'
@@ -42,6 +42,10 @@ export function BuildProgressPill({ document }: { document: SvgDocument }) {
       return
     }
     let cancelled = false
+    // Once, for the answer that already exists: a file nobody has touched in an
+    // hour still has a last-changed-by, and no signal is coming to say so.
+    // Every change after this arrives on the doc room -- this used to ask the
+    // same question every 1000ms, per open source file, forever.
     const read = async () => {
       try {
         const url = appendToken(`/api/projects/${encodeURIComponent(document.name)}/source-activity?file=${encodeURIComponent(sourceFile)}`)
@@ -49,13 +53,22 @@ export function BuildProgressPill({ document }: { document: SvgDocument }) {
         if (!response.ok) return
         const activity = await response.json()
         if (!cancelled) setSourceActivity(activity)
-      } catch { /* a later poll repairs transient disconnects */ }
+      } catch { /* the first signal for this file repairs a failed initial read */ }
     }
     void read()
-    const interval = window.setInterval(read, 1000)
+    const stop = onSourceActivitySignal((signal) => {
+      // The room is per document, not per file, so a sibling file's edits
+      // arrive here too.
+      if (cancelled || signal.file !== sourceFile) return
+      setSourceActivity({
+        editors: signal.editors || [],
+        lastChangedAt: signal.lastChangedAt,
+        lastChangedBy: signal.lastChangedBy,
+      })
+    })
     return () => {
       cancelled = true
-      window.clearInterval(interval)
+      stop()
     }
   }, [document.name, sourceFile])
 

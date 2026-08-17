@@ -204,6 +204,23 @@ const buildProgressHandle = bus.register<BuildProgressSignal>({
 })
 export const onBuildProgressSignal = buildProgressHandle.on
 
+// Who is editing a source file right now, and who changed it last. Carries the
+// same shape as GET /:name/source-activity, which the pill reads once on mount;
+// everything after that arrives here. It replaced a 1000ms poll of that route
+// per open source file.
+export type SourceActivitySignal = {
+  file: string
+  editors: Array<{ id: string; name: string }>
+  lastChangedAt: number | null
+  lastChangedBy: string | null
+  timestamp: number
+}
+const sourceActivityHandle = bus.register<SourceActivitySignal>({
+  key: 'signal:source-activity',
+  ...replayConfig('signal:source-activity'),
+})
+export const onSourceActivitySignal = sourceActivityHandle.on
+
 // Compare: side-by-side version viewer signal. initBehavior: 'none' —
 // do NOT fire cached signal on reconnect. The compare shapes persist in
 // the Yjs store; re-firing would delete them (clearCompareShapes) and

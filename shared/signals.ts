@@ -11,6 +11,12 @@ export const SIGNAL_REPLAY_WINDOWS = {
   // Presence/navigation hints. Missing one self-corrects on the next heartbeat
   // or user interaction.
   'signal:agent-heartbeat': 30_000,
+  // Who is editing a source file. Replayed because the pill reads the route
+  // once on mount and is told only about changes after that: a reconnecting
+  // viewer with no replay would sit on whatever it last saw. The editor set
+  // expires after 5 minutes server-side, so a longer window would replay
+  // editors who are already gone.
+  'signal:source-activity': 300_000,
   // TODO(signal-durability): behavior-gated; replace with doc-viewer-state if
   // confirmed durable per-build review state.
   'signal:diff-review': 86_400_000,
