@@ -175,3 +175,40 @@ export async function scanMarkdownDependencyClosureAsync(mainFile, sourceDir) {
     missing,
   }
 }
+
+// Rewrite a markdown body's LOCAL dependency refs to uploaded URLs.
+//
+// Extracted from bundleSharedMarkdownImages (mcp-server/fleet-tools.mjs) so there
+// is one implementation rather than two. It is needed in a second place: a
+// markdown file shared as an ATTACHMENT is uploaded byte-for-byte, so the copy on
+// the server still points at the sender's local paths even though the message
+// body it arrived with had them rewritten. Anything later reading the uploaded
+// file -- dragging its chip onto the canvas is the case that surfaced this --
+// finds refs it cannot resolve, and the server cannot resolve them either: they
+// name a file on the SENDER's machine, and /api/file is deliberately confined to
+// the upload directory (docs/fleet-chat-artifacts.md §"What /api/file Means").
+//
+// `upload` is injected rather than imported to keep this module pure and free of
+// a dependency on the fleet transport, which is why it can run on the agent's
+// machine.
+//
+// Rewrites only in ref position -- `](ref)` and `<img src="ref">` -- never bare
+// occurrences of the path in prose, which are chips and must stay readable.
+export async function rewriteMarkdownDepsToUrls(body, baseDir, upload) {
+  const deps = scanMarkdownDeps(body, baseDir)
+  let out = body
+  const missing = []
+  let uploaded = 0
+  for (const { ref, abs } of deps) {
+    if (!abs || !fs.existsSync(abs)) { missing.push(ref); continue }
+    let url
+    try { ({ url } = await upload(abs)) }
+    catch { missing.push(ref); continue }
+    if (!url) { missing.push(ref); continue }
+    const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(new RegExp(`\\]\\(\\s*${esc}(?:[#?][^)]*)?\\s*\\)`, 'g'), `](${url})`)
+    out = out.replace(new RegExp(`(<img\\s[^>]*\\bsrc=)(["'])${esc}(?:[#?][^"']*)?\\2`, 'g'), `$1$2${url}$2`)
+    uploaded++
+  }
+  return { body: out, uploaded, missing }
+}

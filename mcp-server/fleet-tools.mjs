@@ -25,7 +25,7 @@ import { processMessageText } from '../shared/message-processing.mjs';
 import { announcePageTop, announcePageBottom } from '../shared/pagination-announce.mjs';
 import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
-import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
+import { rewriteMarkdownDepsToUrls } from '../shared/markdown-deps.mjs';
 import { listMarkdownSectionIds, selectMarkdown } from '../shared/markdown-selector.mjs';
 import { checkChatRender as checkSharedChatRender } from '../shared/chat-render-check.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
@@ -379,26 +379,18 @@ async function withUploadedSourceFile(source, fleetServerUrl) {
 }
 
 async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
-  const baseDir = path.dirname(sourceFile);
-  const deps = scanMarkdownDeps(body, baseDir);
-  let out = body;
-  const missing = [];
-  let uploaded = 0;
-  for (const { ref, abs } of deps) {
-    if (!abs || !fs.existsSync(abs)) { missing.push(ref); continue; }
-    let url;
-    try { ({ url } = await uploadFileToServer(abs, fleetServerUrl)); }
-    catch { missing.push(ref); continue; }
+  // The rewrite itself now lives in shared/markdown-deps.mjs, because a markdown
+  // file shared as an ATTACHMENT needs the identical treatment on its own bytes
+  // (see uploadAttachments in shared/message-processing.mjs). Two copies of this
+  // loop would drift, and the two paths must agree about what a shared markdown
+  // file's refs point at.
+  return rewriteMarkdownDepsToUrls(body, path.dirname(sourceFile), async (abs) => {
+    let { url } = await uploadFileToServer(abs, fleetServerUrl);
     // /api/upload returns a server-relative url; make it absolute against the
     // fleet origin so it resolves the same from any viewer (iPad, phone, laptop).
     if (url && !/^https?:/i.test(url)) url = `${fleetServerUrl.replace(/\/$/, '')}${url}`;
-    const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Rewrite only in image contexts: `](ref...)` and `<img ... src="ref...">`.
-    out = out.replace(new RegExp(`\\]\\(\\s*${esc}(?:[#?][^)]*)?\\s*\\)`, 'g'), `](${url})`);
-    out = out.replace(new RegExp(`(<img\\s[^>]*\\bsrc=)(["'])${esc}(?:[#?][^"']*)?\\2`, 'g'), `$1$2${url}$2`);
-    uploaded++;
-  }
-  return { body: out, uploaded, missing };
+    return { url };
+  });
 }
 
 function isMarkdownFileName(name = '') {

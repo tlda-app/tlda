@@ -2,8 +2,9 @@
 // Used by MCP chat()/compose(), daemon rechat RPC, and server unquote-file.
 import fs from 'fs'
 import path from 'path'
-import { guessMimeType, resolveFilePath, uploadFileToServer } from './chat-file-processing.mjs'
+import { guessMimeType, resolveFilePath, uploadBufferToServer, uploadFileToServer } from './chat-file-processing.mjs'
 import { sha256Buffer } from './inbox-reference-materialization.mjs'
+import { rewriteMarkdownDepsToUrls } from './markdown-deps.mjs'
 
 const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd'
 const pathRe = new RegExp(
@@ -158,12 +159,51 @@ export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
   for (const att of inlineAttachments) {
     if (att.path && fs.existsSync(att.path)) {
       try {
-        const { url } = await uploadFileToServer(att.path, serverBaseUrl)
+        // A shared markdown file goes up REWRITTEN, not byte-for-byte: its local
+        // image/link refs are replaced with uploaded URLs, and those images are
+        // uploaded too.
+        //
+        // Uploading it verbatim left the server's copy pointing at the SENDER's
+        // paths. The message body had them rewritten, the file did not, so
+        // anything later reading the uploaded file found refs nothing can
+        // resolve -- and the server cannot resolve them on the reader's behalf
+        // either, because they name a file on another machine and /api/file is
+        // confined to the upload directory by design
+        // (docs/fleet-chat-artifacts.md §"What /api/file Means").
+        //
+        // The case that surfaced it: dragging a markdown chip onto the canvas
+        // appended "⚠️ Some embedded images couldn't be resolved" and dropped
+        // them. Fixing it here rather than there fixes every future reader of
+        // the file, not one drag path.
+        const isMarkdown = /\.(?:md|markdown)$/i.test(String(att.name || att.path))
+        let buf = fs.readFileSync(att.path)
+        let rewritten = null
+        if (isMarkdown) {
+          const original = buf.toString('utf8')
+          const result = await rewriteMarkdownDepsToUrls(
+            original,
+            path.dirname(att.path),
+            abs => uploadFileToServer(abs, serverBaseUrl),
+          )
+          if (result.body !== original) {
+            buf = Buffer.from(result.body, 'utf8')
+            rewritten = { uploaded: result.uploaded, missing: result.missing }
+          } else if (result.missing.length) {
+            rewritten = { uploaded: result.uploaded, missing: result.missing }
+          }
+        }
+        const { url } = await uploadBufferToServer(buf, path.basename(att.path), serverBaseUrl)
         att.url = url
-        const stat = fs.statSync(att.path)
-        att.size = stat.size
+        att.size = buf.length
         att.mimeType = guessMimeType(att.name || att.path)
-        att.sha256 = sha256Buffer(fs.readFileSync(att.path))
+        att.sha256 = sha256Buffer(buf)
+        // Named so a reader can tell "this markdown had no local deps" from
+        // "its deps could not be found" -- the second is a broken share and the
+        // sender should be able to see it.
+        if (rewritten) {
+          att.depsUploaded = rewritten.uploaded
+          if (rewritten.missing.length) att.depsMissing = rewritten.missing
+        }
       } catch (err) {
         console.error('[message-processing] upload failed:', att.path, err.message)
         att.broken = true

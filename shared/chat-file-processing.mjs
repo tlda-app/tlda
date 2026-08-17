@@ -20,11 +20,12 @@ export function resolveFilePath(filePath, cwd) {
   return cwd ? path.resolve(cwd, expanded) : expanded
 }
 
-// Upload a local file to the fleet server's /api/upload endpoint.
+// Upload bytes under a chosen name. Split out from uploadFileToServer because a
+// markdown attachment is uploaded REWRITTEN -- its local image references
+// replaced with uploaded URLs -- so the bytes that go up are not the bytes on
+// disk. See rewriteMarkdownDepsToUrls in shared/markdown-deps.mjs.
 // Returns { url, fileName, mimeType } or throws on failure.
-export async function uploadFileToServer(absPath, serverBaseUrl, timeoutMs = 10000) {
-  const buf = fs.readFileSync(absPath)
-  const fileName = path.basename(absPath)
+export async function uploadBufferToServer(buf, fileName, serverBaseUrl, timeoutMs = 10000) {
   const res = await fetch(`${serverBaseUrl}/api/upload`, {
     method: 'POST',
     headers: { 'x-filename': encodeURIComponent(fileName) },
@@ -36,4 +37,10 @@ export async function uploadFileToServer(absPath, serverBaseUrl, timeoutMs = 100
   if (!data.url) throw new Error('upload returned no url')
   const url = new URL(data.url, serverBaseUrl).toString()
   return { url, fileName, mimeType: guessMimeType(fileName) }
+}
+
+// Upload a local file to the fleet server's /api/upload endpoint.
+// Returns { url, fileName, mimeType } or throws on failure.
+export async function uploadFileToServer(absPath, serverBaseUrl, timeoutMs = 10000) {
+  return uploadBufferToServer(fs.readFileSync(absPath), path.basename(absPath), serverBaseUrl, timeoutMs)
 }
