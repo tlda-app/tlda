@@ -417,6 +417,84 @@ export function listActiveRooms() {
   return [...rooms.keys()]
 }
 
+// --- Idle room eviction ---
+//
+// `rooms` used to be unbounded for the life of the process: an entry was only
+// removed by replaceRoomSnapshot or closeAllRooms, so RSS tracked every document
+// ever *opened* rather than the ones in use. On 2026-08-17 that server sat at a
+// ~1.9GB floor on a 3.9GB machine with no swap, 97% of it anonymous — with 5,914
+// projects on the box, the floor was set by history and only a restart lowered it.
+// Each resident document costs twice: the Yjs room, plus `prevSnapshots`, which
+// holds a full copy of every record in the document as the changelog diff baseline.
+//
+// Evicting is safe because both halves are rebuildable, which is checked rather
+// than assumed:
+//   - the on-disk copy is current — onDataChange schedules a save on a 2s debounce,
+//     and we flush any pending one below before closing;
+//   - reopening re-establishes the diff baseline, because getOrCreateRoom calls
+//     setChangelogBaseline from the loaded snapshot.
+//
+// It must take the room WITH the snapshot. Dropping `prevSnapshots` alone would be
+// the cheap half and it silently costs history: getOrCreateRoom would hand back the
+// live room without re-baselining, so the next edit re-baselines instead of diffing
+// and never reaches the changelog.
+const roomEmptySince = new Map()
+const ROOM_IDLE_EVICT_MS = parseInt(process.env.SYNC_ROOM_IDLE_EVICT_MS, 10) || 15 * 60 * 1000
+const ROOM_EVICT_SWEEP_MS = parseInt(process.env.SYNC_ROOM_EVICT_SWEEP_MS, 10) || 60 * 1000
+let roomEvictTimer = null
+
+/**
+ * Evict rooms that have had no sessions for longer than the idle threshold.
+ * Exported so it can be driven directly instead of waited on.
+ * @param {{ now?: number, idleMs?: number }} [opts]
+ * @returns {Promise<string[]>} docNames evicted
+ */
+export async function evictIdleRooms({ now = Date.now(), idleMs = ROOM_IDLE_EVICT_MS } = {}) {
+  const evicted = []
+  for (const [docName, emptyAt] of [...roomEmptySince]) {
+    if (now - emptyAt < idleMs) continue
+    const room = rooms.get(docName)
+    if (!room) { roomEmptySince.delete(docName); continue }
+    // Someone reconnected without going through getOrCreateRoom. The room is in
+    // use; leave it and let the next onSessionRemoved re-mark it.
+    if (room.getSessions?.().length) { roomEmptySince.delete(docName); continue }
+    try {
+      // Take over any debounced save rather than racing it, so the close below
+      // cannot land between a change and its write.
+      const pending = saveTimers.get(docName)
+      if (pending) { clearTimeout(pending); saveTimers.delete(docName) }
+      await saveSnapshot(docName, room)
+      room.close()
+      rooms.delete(docName)
+      prevSnapshots.delete(docName)
+      prevSnapshotClocks.delete(docName)
+      roomEmptySince.delete(docName)
+      evicted.push(docName)
+      console.log(`[sync] Room evicted (idle): ${docName}`)
+    } catch (e) {
+      // Keep the room rather than drop it half-closed; try again next sweep.
+      console.error(`[sync] Failed to evict ${docName}:`, e.message)
+    }
+  }
+  return evicted
+}
+
+/** Start the periodic idle-room sweep. Idempotent. */
+export function startRoomEvictionSweep() {
+  if (roomEvictTimer) return
+  roomEvictTimer = setInterval(() => {
+    evictIdleRooms().catch(e => console.error('[sync] Room eviction sweep failed:', e.message))
+  }, ROOM_EVICT_SWEEP_MS)
+  roomEvictTimer.unref?.()
+}
+
+/** Stop the periodic sweep. */
+export function stopRoomEvictionSweep() {
+  if (!roomEvictTimer) return
+  clearInterval(roomEvictTimer)
+  roomEvictTimer = null
+}
+
 /** @type {string} */
 let projectsDir = ''
 
@@ -434,6 +512,8 @@ const changeListeners = new Map()
 export function initSyncRooms(dir, options = {}) {
   projectsDir = dir
   signalFailureReporter = typeof options.onSignalFailure === 'function' ? options.onSignalFailure : null
+  // Unref'd, so a test that forgets to stop it still exits.
+  if (options.evictIdleRooms !== false) startRoomEvictionSweep()
 }
 
 /**
@@ -748,7 +828,15 @@ function _releaseRoomLoadSlot() {
 }
 
 export async function getOrCreateRoom(docName) {
-  if (rooms.has(docName)) return rooms.get(docName)
+  if (rooms.has(docName)) {
+    // Touched, so restart its idle clock. Deliberately a refresh rather than a
+    // delete: most access is server-side and opens no session, so clearing the
+    // mark here would leave exactly those rooms resident forever — the gap this
+    // eviction exists to close. Idle means "no sessions and untouched", and the
+    // sweep still refuses to evict anything holding a live session.
+    roomEmptySince.set(docName, Date.now())
+    return rooms.get(docName)
+  }
 
   await _acquireRoomLoadSlot()
   try {
@@ -767,6 +855,8 @@ export async function getOrCreateRoom(docName) {
       },
       onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
         console.log(`[sync] Session removed from "${docName}": ${sessionId} (${numSessionsRemaining} remaining)`)
+        if (numSessionsRemaining === 0) roomEmptySince.set(docName, Date.now())
+        else roomEmptySince.delete(docName)
       },
       onDataChange: () => {
         scheduleSave(docName, room)
@@ -789,6 +879,11 @@ export async function getOrCreateRoom(docName) {
     }
 
     rooms.set(docName, room)
+    // Marked idle from birth. Plenty of rooms are created by server-side reads
+    // that never open a session, so waiting for onSessionRemoved would leave
+    // exactly those resident forever. If a session does connect, the sweep sees
+    // it and un-marks; when the last one leaves, onSessionRemoved re-marks.
+    roomEmptySince.set(docName, Date.now())
     // Yield so /health and other requests can run before the next queued load.
     await new Promise(r => setImmediate(r))
     return room
@@ -1117,6 +1212,7 @@ export function replaceRoomSnapshot(docName, snapshot) {
   if (existing) {
     existing.close()
     rooms.delete(docName)
+    roomEmptySince.delete(docName)
     console.log(`[sync] Room closed for snapshot replace: ${docName}`)
   }
   const changeTimer = changeTimers.get(docName)
@@ -1263,10 +1359,12 @@ export async function getShapesAt(projectName, timestamp) {
  * Close all rooms (for graceful shutdown).
  */
 export function closeAllRooms() {
+  stopRoomEvictionSweep()
   flushAllRooms()
   for (const [docName, room] of rooms) {
     room.close()
     console.log(`[sync] Room closed: ${docName}`)
   }
   rooms.clear()
+  roomEmptySince.clear()
 }
