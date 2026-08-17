@@ -26,9 +26,10 @@
 //     server's lag profiler measured 809ms stalls -- long enough to blow
 //     capture-pane and agent-wake deadlines and leave the fleet unreachable.
 //     The exclusion is still right for a static rule; the answer is not to add
-//     400 failures here. server/lib/sync-io-guard.mjs closes it at runtime
-//     instead, throwing only when a sync fs call actually happens while a
-//     handler is on the stack -- the property, rather than the pattern.
+//     400 failures here. What closes it is server/lib/lag-profiler.mjs, which
+//     samples the isolate and walks the stack, so it attributes ANY stall to the
+//     frames inside it regardless of which API caused it. That is what produced
+//     the 08-17 attribution -- `254.6ms readFileSync @ node:fs`.
 //
 // HOW IT FAILS. Per-file budgets below record the sync subprocess calls that
 // existed when this landed. Adding one anywhere -- including inside a file that

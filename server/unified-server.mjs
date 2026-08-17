@@ -69,7 +69,6 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import { installSyncIoGuard, syncIoGuardMiddleware } from './lib/sync-io-guard.mjs'
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
@@ -3343,23 +3342,6 @@ initAuth()
 
 // Express app
 const app = express()
-
-// Opt-in only, and the middleware itself is not installed unless it is on, so
-// production pays nothing at all -- not even the AsyncLocalStorage wrap.
-//
-// With TLDA_SYNC_IO_GUARD=1, synchronous file IO reached from a request handler
-// throws and names the request. That is the property a static rule cannot check:
-// the same `readFileSync` is correct at startup and fatal per-request, which is
-// why `bin/sync-on-event-loop-guard.mjs` excludes sync fs entirely and why the
-// 2026-08-17 stall -- 809ms, enough to blow capture-pane and agent-wake
-// deadlines and leave the fleet unreachable -- got past it.
-//
-// Turn it on in dev and in the HTTP tests. A throw here is a finding.
-if (process.env.TLDA_SYNC_IO_GUARD === '1') {
-  installSyncIoGuard()
-  app.use(syncIoGuardMiddleware)
-  console.log('[sync-io-guard] armed: synchronous file IO on a request path will throw')
-}
 
 app.use(express.json({ limit: '50mb' }))
 
