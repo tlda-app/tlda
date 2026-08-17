@@ -3828,11 +3828,19 @@ export class FleetStore {
   // The route is NOT deleted here, and that is the point.
   //
   // A route records which machine owns this agent. That does not stop being
-  // true when the agent dies, and the server cannot reconstruct it: the daemon
-  // key lives in the daemon's own mint ledger and `setAgentDaemonRoute` is
-  // called from exactly one place in the server, at mint. So deleting the route
-  // on death threw away the only copy, and `markAlive` never rebuilt it —
-  // death destroyed the route, resurrection restored only the flag.
+  // true when the agent dies. Deleting it on death threw the record away and
+  // `markAlive` never rebuilt it — death destroyed the route, resurrection
+  // restored only the flag.
+  //
+  // ERRATUM, 2026-08-17: this paragraph used to say the server could not
+  // reconstruct a route, because `setAgentDaemonRoute` was "called from exactly
+  // one place in the server, at mint". That was true when it was written and is
+  // no longer: `main` has two production call sites, NEITHER at mint —
+  // `unified-server.mjs:6550` (login, writing `routeProof.daemon_key`, from
+  // `9f535cf5e`) and `:9380` (the `agent-route` handler, from `317c53fdc`).
+  // Both landed after this comment. The conclusion below still holds; the
+  // reason given for it does not, and anyone deciding something adjacent from
+  // that sentence would be reasoning from a premise two later commits falsified.
   //
   // The result was an agent that is alive, running, and permanently
   // unreachable, with no operation available to repair it: `wake` reports
