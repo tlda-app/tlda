@@ -109,3 +109,41 @@ git checkout <known-good-sha>
 npm ci
 node scripts/live-deploy.mjs --fly-config fly.live.toml
 ```
+
+## A deploy takes the daemons offline for about ninety seconds
+
+Every app restart drops the fleet daemon's WebSocket. It reconnects with
+exponential backoff, and while it is away the machine-local half of the system
+is simply not there: mirrors are not accepted, source changes are not
+acknowledged, terminals and sessions are unreachable.
+
+Measured on 2026-08-17 in `~/.config/tlda/fleet-daemon.testing.log`: **1919
+`Unexpected server response: 502` in 33 bursts**, each 7–9 reconnect attempts
+spanning 60–120 seconds. The bursts land one per deploy. One ran nine minutes
+(16:37–16:47Z), which is the window Skip's browser showed him `HTTP ERROR 502`.
+
+Three consequences worth knowing before you push:
+
+- **A build started just after a deploy will fail, and the failure will describe
+  the wrong thing.** Its mirror lands in the disconnected window and reports
+  that no daemon accepted it. That is the deploy, not the mirror.
+- **Outbound source sync can be left blocked rather than merely delayed.**
+  `daemon/source-sync.mjs` rebases a `stale-base` rejection once and blocks the
+  project on the second failure. A reconnect storm plus a moving server head
+  reaches the second failure easily, and a person's edit then sits on disk
+  unaccepted until something clears the block.
+- **Deploying repeatedly to chase a bug can be what keeps reproducing it.** On
+  2026-08-17 the fleet deployed 33 times into a paper that was being edited, and
+  several of the build failures under investigation were caused by the
+  investigation's own deploys.
+
+So: **do not deploy while Skip is working in a document**, and when a build fails
+within two minutes of a push, re-run it in a quiet window before believing what
+it said. Neither of these is a rule about deploying less. They are about not
+reading your own outage as the app's behaviour.
+
+**The daemon log will not tell you this if you grep it by time.** `ResilientWS`
+writes its connection errors through a bare `console.log`, so those lines carry
+**no timestamp** while every other line in the file does. A grep anchored on a
+timestamp — the obvious way to search a log — silently excludes exactly the lines
+naming the error, and leaves you reading `reason: "error"` with no cause attached.
