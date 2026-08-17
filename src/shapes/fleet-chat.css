@@ -1580,11 +1580,6 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .semantic-operation-body {
   margin-top: 4px;
 }
-.fleet-chat-shape .semantic-search-operation:not(.semantic-operation-expanded) .semantic-operation-body {
-  max-height: 12em;
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
-}
 /* A real gutter column for the collapse control. It used to escape the card with
    `margin-left: -58px`, but the chat log is a scroller -- outside the content
    box is clipped, so the control was invisible and unhittable. Skip: "it needs
@@ -1631,14 +1626,18 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   -webkit-user-select: none !important;
 }
 .fleet-chat-shape .semantic-operation-collapse:hover { opacity: var(--ui-tone-full); }
-/* On a thread card the collapse exists only while the middle is open -- that is
-   the only state where it does anything. Skip: "your collapse button should be
-   invisible when the card is collapsed." The search card's collapse is
-   unaffected; it always has a body to close. */
-.fleet-chat-shape .thread-shell > .semantic-operation-collapse {
+/* The collapse control exists only while there's something open to collapse --
+   that is the only state where it does anything. Skip: "your collapse button
+   should be invisible when the card is collapsed." This held for thread cards
+   already; search cards were missing the equivalent rule, so the button showed
+   on a card still in its short/default preview -- Skip: "they shouldn't say
+   Collapse unless you expand them." */
+.fleet-chat-shape .thread-shell > .semantic-operation-collapse,
+.fleet-chat-shape .semantic-search-operation:not(.semantic-operation-expanded) > .semantic-operation-body .semantic-operation-collapse {
   display: none;
 }
-.fleet-chat-shape .thread-shell.thread-middle-open > .semantic-operation-collapse {
+.fleet-chat-shape .thread-shell.thread-middle-open > .semantic-operation-collapse,
+.fleet-chat-shape .semantic-search-operation.semantic-operation-expanded .semantic-operation-collapse {
   display: block;
 }
 .fleet-chat-shape .semantic-operation-view {
