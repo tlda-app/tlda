@@ -269,7 +269,19 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
     assert.equal(sent.length, 1, 'daemon source mutation must send one source-change')
     assert.deepEqual(sent[0].files.map(file => file.path), ['main.tex'], 'daemon files must contain only byte-bearing changed paths')
     assert.equal(sent[0].files[0].content, 'second\n')
-    assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'daemon sourceManifest must preserve inherited ownership around the changed byte inventory')
+    // CHANGED, deliberately and in the open. This assertion encoded the old
+    // membership model: the daemon inherited whatever the server said it owned and
+    // re-declared it forever. That is the mechanism by which a 240KB
+    // `.bak-before-deletion.tex` stayed project source for eleven days -- nothing
+    // referenced it, and nothing could ever stop declaring it.
+    //
+    // Membership is now the transitive closure of the document's roots (Skip,
+    // 2026-08-17: "it's the transitive closure of the document roots. that's it"),
+    // so an inherited path no document \input{}s is not preserved -- it is dropped
+    // from the manifest AND carried as a deletion, because undeclaring without
+    // deleting is what the server refuses as `missing surviving authored file`.
+    assert.deepEqual(sent[0].sourceManifest, ['main.tex'], 'daemon sourceManifest is the closure of the roots, not the inherited set')
+    assert.deepEqual(sent[0].deletedFiles, ['legacy-preserved.tex'], 'a path that left the closure is deleted, not silently undeclared')
     assert.equal(sent[0].expectedRevision, 'revision-1')
 
     write(path.join(sourceRoot, 'main.tex'), 'third\n')

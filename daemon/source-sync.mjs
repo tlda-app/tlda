@@ -690,15 +690,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   // sourceWatcherPaths join them onto sourceDir and the markdown part is never
   // watched. Normalize at the boundary so a project part such as
   // scratch/report.md is watched and uploaded under that same project path.
-  function normalizeWatchSet(sourceDir, watchFiles) {
-    const normalized = new Set()
-    for (const file of watchFiles || []) {
-      const rel = sourceRel(sourceDir, file)
-      if (rel) normalized.add(rel)
-    }
-    return normalized
-  }
-
   function closeWatcher(watcher, label) {
     if (!watcher) return
     try {
@@ -908,17 +899,20 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       activeNames.add(p.name)
 
       const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
-      const hasFlsWatchList = p.watchFiles?.length > 0
-      // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
-      // just the main, so the initial connect push contains dependencies before
-      // the first build produces a .fls.
-      const declaredWatchSet = new Set(
+      // Membership is the transitive closure of the document's roots, and only
+      // that. The previous line unioned in `p.watchFiles` -- the previous build's
+      // .fls, i.e. every file pdflatex touched -- which is a second and different
+      // notion of membership: it includes whatever the compiler happened to open.
+      //
+      // It has also been dead since `3e780cfb5` (2026-07-28) deleted the server
+      // side that populated it, so `p.watchFiles` has been undefined ever since
+      // and this branch has not run. Removing it is therefore a no-op in behaviour
+      // and the point of doing it is that the second definition stops existing in
+      // the code as well as in the runtime.
+      const projectWatchSet = new Set(
         isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
         : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
       )
-      const projectWatchSet = hasFlsWatchList
-        ? new Set([...normalizeWatchSet(sourceDir, p.watchFiles), ...declaredWatchSet])
-        : declaredWatchSet
       const referenced = scanReferencedInputs(sourceDir, p.referencedSourcePaths)
       const watchSet = new Set([...projectWatchSet, ...referenced.reached])
 
@@ -989,7 +983,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         startSourceWatcher(state, 'project sync')
         state.reconcileTimer = setInterval(() => reconcileSourceWatcher(state), reconcileIntervalMs)
         state.reconcileTimer.unref?.()
-        log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
+        log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files)`)
       } catch (e) {
         // One source watcher failing should not stop other projects from syncing.
         log.error(`source watcher failed for ${p.name}: ${e.message}`)
@@ -1068,6 +1062,29 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           log.error(`read ${full}: ${e.message}`)
         }
       }
+      // The shrink half, and the reason `.bak-before-deletion.tex` could be claimed
+      // as project source for eleven days: this rescan only ever ADDED. A file that
+      // stopped being \input never left the watchSet, so it stayed declared for as
+      // long as the daemon ran, and the server kept holding bytes no document
+      // referenced. Markdown has had this since its own wedge; TeX never did.
+      //
+      // Same guard as Markdown's: a chat-referenced root is a second root of the
+      // project, not a leaf of this closure, so it is not deleted for being
+      // unreachable from the main file.
+      // Iterate the AUTHORITY set, not the watchSet. The watchSet is now the
+      // closure, so anything outside the closure was never in it — and those are
+      // exactly the files this change sheds. Walking the watchSet would undeclare
+      // the walk's files without deleting them, and the server refuses that:
+      // `missing surviving authored file`, the same wedge pointing the other way.
+      // Authority is what the server actually holds, which is what has to shrink.
+      for (const rel of state.authorityManifest) {
+        if (state.referencedRoots.has(rel)) continue
+        if (!deps.has(rel) && !deleted.includes(rel)) deleted.push(rel)
+      }
+      state.watchSet = new Set([...deps, ...state.referencedRoots])
+      // Authority is what the server holds once this push lands: the closure plus
+      // the referenced roots, which is exactly what collectSourceManifest declares.
+      state.authorityManifest = new Set([...deps, ...state.referencedRoots])
     }
 
     // A link added or removed in any Markdown document changes the project
@@ -1177,11 +1194,18 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       sourceBindingId: state.bindingId,
       expectedRevision: sourceMaterializer.readBinding(state.bindingId)?.serverHeadRevision || null,
       files,
+      // Both arguments, together. Passing the watchSet without also dropping the
+      // authority argument would declare `closure ∪ stale authority` — and stale
+      // authority is the whole walk, including every file the closure is meant to
+      // shed. The manifest would look fixed, the wedge would survive, and the diff
+      // would read as a smaller function. Markdown has always passed `null` here
+      // for exactly this reason: the closure replaces authority, it does not
+      // supplement it.
       sourceManifest: collectSourceManifest(
         state.sourceDir,
         { format: state.format, mainFile: state.mainFile, referencedRoots: state.referencedRoots },
-        state.isMarkdown ? state.watchSet : null,
-        state.isMarkdown ? null : [...state.authorityManifest],
+        state.watchSet,
+        null,
         files.map(f => f.path),
       ),
       ...(deleted.length > 0 && { deletedFiles: deleted }),
