@@ -35,11 +35,33 @@ function sendReport(method, args) {
   process.send?.({ t: 'report', m: method, a: args })
 }
 
-function callParent(method, args) {
+// A build must not be able to wait forever on the server. `callParent` used to
+// have no deadline at all: it settled only when the parent sent `rpc-result`, and
+// the parent sends that from inside a serialized relay chain, so any earlier relay
+// that never settled blocked the reply too. `mirrorShadow` is such a relay — it
+// awaits the durable daemon sender, which retries rather than timing out.
+//
+// The result was not a slow build but a permanent one. The worker never exited, so
+// the queue's `onExit` never ran, so `_inFlight` kept the project and every later
+// dispatch answered `already-building` → `superseded`. On 2026-08-17 that outlived
+// killing the worker, restarting the daemon and restarting the server, because the
+// process dying does not release a slot whose release is chained behind the same
+// stalled relay. Failing loudly here is what lets the queue recover at all.
+const PARENT_RPC_TIMEOUT_MS = Number(process.env.TLDA_BUILD_RPC_TIMEOUT_MS) || 120000
+
+function callParent(method, args, { timeoutMs = PARENT_RPC_TIMEOUT_MS } = {}) {
   if (!process.send) return Promise.reject(new Error(`build worker IPC unavailable for ${method}`))
   const id = nextRpcId++
   return new Promise((resolve, reject) => {
-    pendingRpc.set(id, { resolve, reject })
+    // Not unref'd, for the same reason the mirror's deadline is not: if the hung
+    // RPC is the only thing outstanding, an unref'd timer never fires and the
+    // deadline does nothing. It is cleared on settle either way.
+    const timer = setTimeout(() => {
+      pendingRpc.delete(id)
+      reject(new Error(`build worker RPC ${method} got no answer from the server within ${timeoutMs}ms`))
+    }, timeoutMs)
+    const settle = fn => value => { clearTimeout(timer); fn(value) }
+    pendingRpc.set(id, { resolve: settle(resolve), reject: settle(reject) })
     process.send({ t: 'rpc', id, m: method, a: args })
   })
 }

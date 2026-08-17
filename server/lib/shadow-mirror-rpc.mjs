@@ -12,11 +12,27 @@ import { daemonAddress } from '../../shared/agent-move-target.mjs'
 // an error here, it is how a machine says "not mine". The mirror succeeds if any
 // daemon took it, and reports the ones that didn't so a machine that is
 // genuinely stuck stays visible rather than being averaged away.
+// How long one daemon may take to answer a mirror before it is treated as not
+// having answered. The fan-out below waits for every key, and the sender it uses
+// is the durable one — chosen deliberately to retry a WS flap rather than throw a
+// short timeout. That combination has no upper bound: a key that never answers
+// never settles, so the mirror never returns, so the build worker awaiting it
+// never exits, so `_inFlight` never releases and every later build is answered
+// `already-building`. On 2026-08-17 that held Skip's render five hours stale and
+// survived killing the worker, restarting the daemon, and restarting the server.
+//
+// A per-key deadline does not weaken the durable sender's retrying — the send
+// keeps going, and being idempotent (same hash → same ref) it is safe if it
+// lands late. It only stops the fan-out waiting on it, which is the difference
+// between one machine missing a mirror and every build stopping.
+export const MIRROR_KEY_TIMEOUT_MS = 30000
+
 export function createShadowMirrorRpcHandler({
   readProject,
   sendDaemonEphemeral,
   listDaemonKeys,
   daemonAddressFor = daemonAddress,
+  keyTimeoutMs = MIRROR_KEY_TIMEOUT_MS,
 }) {
   return async function mirrorShadowViaDaemon({ name, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq }) {
     const project = await readProject(name)
@@ -35,7 +51,7 @@ export function createShadowMirrorRpcHandler({
     }
 
     const settled = await Promise.allSettled(keys.map(async (key) => {
-      const result = await sendDaemonEphemeral(key, 'mirror-shadow-ref', {
+      const send = sendDaemonEphemeral(key, 'mirror-shadow-ref', {
         project: name,
         hash,
         bundleBase64,
@@ -43,7 +59,26 @@ export function createShadowMirrorRpcHandler({
         sourceRevision,
         acceptSeq,
       })
-      return { key, result }
+      // Race the send against its deadline rather than aborting it. The send is
+      // durable and idempotent, so letting it continue costs nothing and may
+      // still deliver; what must not continue is this fan-out's wait on it.
+      // Deliberately not unref'd. An unref'd deadline does not hold the event loop
+      // open, so if the only outstanding work IS the hung send, the timer never
+      // fires and the deadline silently does nothing — which is the exact failure
+      // it exists to prevent. It is always cleared in the `finally` below, so it
+      // cannot keep a process alive past its purpose either.
+      let timer
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`daemon ${key} did not answer the mirror within ${keyTimeoutMs}ms`)),
+          keyTimeoutMs,
+        )
+      })
+      try {
+        return { key, result: await Promise.race([send, deadline]) }
+      } finally {
+        clearTimeout(timer)
+      }
     }))
 
     const mirrored = []
