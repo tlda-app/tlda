@@ -21,6 +21,15 @@
 //     sub-millisecond; failing on all of them would get this guard deleted
 //     rather than obeyed. Subprocesses are what actually cost seconds.
 //
+//     That exclusion is the hole 2026-08-17 fell through: readEditEvents read a
+//     growing append-only log in full, synchronously, on a request path, and the
+//     server's lag profiler measured 809ms stalls -- long enough to blow
+//     capture-pane and agent-wake deadlines and leave the fleet unreachable.
+//     The exclusion is still right for a static rule; the answer is not to add
+//     400 failures here. server/lib/sync-io-guard.mjs closes it at runtime
+//     instead, throwing only when a sync fs call actually happens while a
+//     handler is on the stack -- the property, rather than the pattern.
+//
 // HOW IT FAILS. Per-file budgets below record the sync subprocess calls that
 // existed when this landed. Adding one anywhere -- including inside a file that
 // already has debt -- pushes that file over budget and fails. Removing them and
@@ -34,6 +43,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const CHECK_ROOTS = ['server', 'daemon']
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'server/public'])
 const PROHIBITED = ['execSync(', 'execFileSync(', 'spawnSync(']
+// A test file has no event loop to starve -- it IS the process, and spawning
+// `git` to build a fixture repo is the correct way to test code that shells out.
+// Counting those was making the guard fail for a reason it does not exist for,
+// which is how a guard gets switched off.
+const IS_TEST = /\.test\.mjs$|-test\.mjs$/
 
 // Known debt as of 2026-07-25, with what each one actually is. These are NOT
 // blessed -- they are the backlog, made countable. Lower a number when you fix
@@ -55,6 +69,13 @@ const BUDGET = {
   // some point, but for now, I don't know." Undecided, not on a hot path.
   // Excluded rather than forced into a decision nobody asked for.
   'server/lib/outline/outline.mjs': 1,
+  // `git` in the source room's Yjs participant, added 2026-08-12 in d628f27a6.
+  // It went in after this guard landed and was never budgeted, so `npm run lint`
+  // has been RED since that day -- and nothing noticed, because the deploy gate
+  // ran `npm run build` and never `npm run lint`. That is how 2026-08-17's
+  // synchronous read reached production with a guard for exactly this class
+  // already sitting in the repo. Unfixed; this records it rather than hides it.
+  'server/lib/source-room-daemon.mjs': 1,
 }
 
 function* walk(dir) {
@@ -76,6 +97,7 @@ for (const root of CHECK_ROOTS) {
   if (!fs.existsSync(dir)) continue
   for (const file of walk(dir)) {
     const rel = path.relative(ROOT, file)
+    if (IS_TEST.test(rel)) continue
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
     lines.forEach((line, index) => {
       const trimmed = line.trimStart()
