@@ -17,6 +17,18 @@ function persistentLaunchRecipe(launch = {}) {
   return rest
 }
 
+// The identity a named mint already recorded, or null. A mint id that resolves to
+// a fleet id is one agent starting again rather than a new one, which is the whole
+// difference between a supervised bot and a fresh spawn: nothing may ask the
+// allocator for that agent's name a second time. mint() applies this itself before
+// requesting a seat; a caller that reserves a seat of its own ahead of mint() has
+// to apply it too, or it re-creates the agent mint() would have reused.
+export function recordedMintIdentity(store, mintId) {
+  if (!store || !mintId) return null
+  const facts = store.get?.(mintId) || null
+  return facts?.fleetId ? facts : null
+}
+
 export function createDaemonMintCore({
   store,
   launchProcess,
@@ -81,7 +93,17 @@ export function createDaemonMintCore({
     const friendlyName = resultFact(seat, 'friendly_name', 'friendlyName')
       || resultFact(seat, 'assigned_name', 'assignedName')
       || seat?.agent?.friendly_name
-    if (friendlyName) store.setFact(mintIdValue, 'friendly_name', friendlyName)
+    // updateFriendlyName rather than setFact, because the name recorded here is
+    // frequently NOT the name that was requested. A collision assigns an
+    // alternate, and setFact treats an assigned name as conflicting with the
+    // requested one and throws -- so the seat could not be recorded at all, and
+    // the seat loop retried an unrecordable seat forever. That is the launcher
+    // half of the collision loop; a mint that collides is supposed to take the
+    // alternate name and let its bot go inert, which is the design.
+    if (friendlyName) {
+      if (store.updateFriendlyName) store.updateFriendlyName(mintIdValue, friendlyName)
+      else store.setFact(mintIdValue, 'friendly_name', friendlyName)
+    }
     // No join here. Recording a seat and binding it are two operations with two
     // failure modes, and this call sits inside the seat-request retry: a bind
     // failure -- whose first act is permissionLedger.set, an async write on a

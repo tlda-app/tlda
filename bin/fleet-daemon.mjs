@@ -136,7 +136,7 @@ import {
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
 import { acquireSingletonLock, daemonSingletonLockPath } from '../agent-runtime/singleton-lock.mjs'
-import { createDaemonMintCore } from '../daemon/mint-core.mjs'
+import { createDaemonMintCore, recordedMintIdentity } from '../daemon/mint-core.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 import { compileWakePermissionProfile } from '../daemon/wake-permission-profile.mjs'
@@ -1064,6 +1064,24 @@ async function rpcMint(params = {}) {
       await markAgentDead(preReservedBotFleetId)
     } catch (e) {
       log.warn(`mint ${params.friendly_name || params.name || '(unnamed)'}: could not mark pre-reserved bot shell ${preReservedBotFleetId} dead after ${reason}: ${e.message}`)
+    }
+  }
+  // A named bot mint that already recorded an identity is the same bot starting
+  // again, not a new one, so it launches under the identity it has. mint-core makes
+  // exactly this check before requesting a seat; the bot pre-reservation below runs
+  // outside it, and without the same check every restart asks the allocator for a
+  // fresh agent named after the bot. The shell that request creates then holds the
+  // name, so the next restart cannot have it — the launcher competes with its own
+  // child, and loses to itself every time.
+  const recordedBotMint = explicitKind === 'bot' && !(params.fleet_id || params.agent_id)
+    ? recordedMintIdentity(mintStore, params.mint_id)
+    : null
+  if (recordedBotMint) {
+    params = {
+      ...params,
+      fleet_id: recordedBotMint.fleetId,
+      friendly_name: recordedBotMint.friendlyName || params.friendly_name || params.name || null,
+      botName: params.botName || params.bot_name || params.name || null,
     }
   }
   if (explicitKind === 'bot' && !(params.fleet_id || params.agent_id)) {
