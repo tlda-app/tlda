@@ -1,0 +1,192 @@
+// source-git-store.mjs — the source lifecycle, on git.
+//
+// A revision is a commit. Its manifest is the commit's tree. A file's bytes are
+// a blob. "Which revision has this checkout applied", "which has been built",
+// "which has been mirrored" are refs. Nothing here stores file content, and
+// nothing here rewrites a file to record a fact.
+//
+// What it replaces stored every revision as a directory holding a complete
+// inline copy of the project — 13 GB for one paper whose entire history is
+// 22 MB of git objects — and recorded state in one JSON file that was fully
+// read and fully rewritten on every update: 85 MB, 815ms per touch, on the
+// server's main thread. Builds awaited those writes and hung.
+//
+// Refs live under refs/tlda/ so nothing a person looks at is touched:
+//
+//   refs/tlda/source/<project>            accepted head
+//   refs/tlda/applied/<bindingId>         what a checkout has on disk
+//   refs/tlda/built/<project>             last revision that built
+//   refs/tlda/mirrored/<project>          last revision mirrored back
+//
+// Every ref move is a compare-and-swap, so two writers cannot interleave into a
+// half-applied state — the failure mode that wedged a paper for three hours
+// when `activeTargetRevision` was a field in a JSON file and had to be edited
+// by hand to clear it.
+import { spawn } from 'node:child_process'
+
+const NULL_SHA = '0000000000000000000000000000000000000000'
+
+// execFile has no stdin, and half of these commands read one (hash-object
+// --stdin, update-index --index-info). So: spawn, write, collect.
+function run(command, args, { input = null, env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const out = []
+    const err = []
+    child.stdout.on('data', chunk => out.push(chunk))
+    child.stderr.on('data', chunk => err.push(chunk))
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) return resolve(Buffer.concat(out))
+      const detail = Buffer.concat(err).toString().trim()
+      reject(new Error(`${command} ${args.join(' ')} exited ${code}${detail ? `: ${detail}` : ''}`))
+    })
+    if (input !== null) child.stdin.end(Buffer.isBuffer(input) ? input : Buffer.from(String(input)))
+    else child.stdin.end()
+  })
+}
+
+// Binding ids are `machine:env`-shaped and project names are arbitrary, but
+// git refnames forbid a set of characters outright. Percent-encode them rather
+// than rejecting: a name we cannot express as a ref would otherwise be a
+// project that cannot sync, which is the wrong way round.
+function encodeRefComponent(name) {
+  const encoded = String(name).replace(/[\x00-\x20\x7f~^:?*[\\%]/g, ch =>
+    `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`)
+  if (encoded.includes('..') || encoded.endsWith('.lock') || encoded.startsWith('.') || encoded.endsWith('/')) {
+    throw new Error(`Cannot express as a ref: ${name}`)
+  }
+  return encoded
+}
+
+function refFor(kind, name) {
+  if (!kind || !name) throw new Error('kind and name are required')
+  return `refs/tlda/${kind}/${encodeRefComponent(name)}`
+}
+
+export function createSourceGitStore({ gitDir }) {
+  if (!gitDir) throw new Error('gitDir is required')
+
+  async function git(args, { input = null, buffer = false } = {}) {
+    const out = await run('git', ['--git-dir', gitDir, ...args], { input })
+    return buffer ? out : out.toString('utf8')
+  }
+
+  /** The sha a ref points at, or null when it does not exist. */
+  async function readRef(kind, name) {
+    try {
+      return (await git(['rev-parse', '--verify', '--quiet', `${refFor(kind, name)}^{commit}`])).trim() || null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Move a ref, refusing unless it currently holds `expected`. Pass null to
+   * require that it does not exist. This is the whole of the concurrency story:
+   * a lost race fails loudly and is retried by the caller, rather than leaving
+   * a field saying an apply is in progress that nothing will ever finish.
+   */
+  async function moveRef(kind, name, next, expected) {
+    await git(['update-ref', refFor(kind, name), next, expected ?? NULL_SHA])
+    return next
+  }
+
+  /** Write bytes as a blob and return its sha. Identical content is free. */
+  async function writeBlob(content) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content))
+    return (await git(['hash-object', '-w', '--stdin'], { input: buffer })).trim()
+  }
+
+  /**
+   * Accept a revision: build its tree from `files` (path → bytes) applied over
+   * `parent`, and commit it. Returns the commit sha, which is the revision id.
+   *
+   * Only changed paths are passed; everything else is inherited from the parent
+   * tree, so an unchanged file costs nothing. That is the property the previous
+   * store did not have and the reason it grew without bound.
+   */
+  async function acceptRevision({ project, parent = null, files = [], deleted = [], message = 'source revision', author = null }) {
+    const index = []
+    for (const file of files) {
+      if (!file || typeof file.path !== 'string') throw new Error('Every file needs a path')
+      const sha = await writeBlob(file.content)
+      index.push(`100644 blob ${sha}\t${file.path}`)
+    }
+    for (const path of deleted) index.push(`0 ${NULL_SHA}\t${path}`)
+
+    const base = parent ? (await git(['rev-parse', `${parent}^{tree}`])).trim() : null
+    const tree = await buildTree(base, index)
+
+    const args = ['commit-tree', tree, '-m', message]
+    if (parent) args.push('-p', parent)
+    const env = author
+      ? { ...process.env, GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email }
+      : process.env
+    return (await run('git', ['--git-dir', gitDir, ...args], { env })).toString('utf8').trim()
+  }
+
+  // read-tree the parent into a scratch index, apply the changed paths, write
+  // it back out. The index is a temp file so concurrent accepts do not collide.
+  async function buildTree(baseTree, indexLines) {
+    const indexFile = `${gitDir}/tlda-index-${process.pid}-${Date.now()}`
+    const env = { ...process.env, GIT_INDEX_FILE: indexFile }
+    const g = async (args, input = null) => (await run('git', ['--git-dir', gitDir, ...args], { env, input })).toString('utf8')
+    try {
+      if (baseTree) await g(['read-tree', baseTree])
+      if (indexLines.length) await g(['update-index', '--index-info'], indexLines.join('\n') + '\n')
+      return (await g(['write-tree'])).trim()
+    } finally {
+      await run('rm', ['-f', indexFile]).catch(() => {})
+    }
+  }
+
+  /** path → sha for every file in a revision. This is the manifest. */
+  async function readManifest(revision) {
+    const out = await git(['ls-tree', '-r', '--full-tree', revision])
+    return out.split('\n').filter(Boolean).map(line => {
+      const [meta, path] = line.split('\t')
+      return { path, sha256: meta.split(' ')[2] }
+    })
+  }
+
+  /** One file's bytes out of one revision, without materialising the rest. */
+  async function readRevisionFile(revision, path) {
+    try {
+      return await git(['cat-file', 'blob', `${revision}:${path}`], { buffer: true })
+    } catch {
+      return null
+    }
+  }
+
+  /** True when `candidate` is in `head`'s history — the stale-base test. */
+  async function isAncestor(candidate, head) {
+    if (!candidate || !head) return false
+    try {
+      await git(['merge-base', '--is-ancestor', candidate, head])
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  return {
+    acceptRevision,
+    readManifest,
+    readRevisionFile,
+    isAncestor,
+    writeBlob,
+
+    head: project => readRef('source', project),
+    advanceHead: (project, next, expected) => moveRef('source', project, next, expected),
+
+    applied: bindingId => readRef('applied', bindingId),
+    markApplied: (bindingId, revision, expected) => moveRef('applied', bindingId, revision, expected),
+
+    built: project => readRef('built', project),
+    markBuilt: (project, revision, expected) => moveRef('built', project, revision, expected),
+
+    mirrored: project => readRef('mirrored', project),
+    markMirrored: (project, revision, expected) => moveRef('mirrored', project, revision, expected),
+  }
+}
