@@ -5894,7 +5894,63 @@ async function drainWakeQueue() {
   }
 }
 
+// Coalesce a retried fleet operation onto the attempt already running.
+//
+// Two frames carrying the same `operation_id` are the SAME logical operation --
+// that is what the id means -- so the work behind them must run once. The
+// completed-result check below (getTransportOperationResult) only recognises an
+// operation that already FINISHED, because its row is written by reply()/error()
+// after the handler returns. Nothing marked "in flight", so a retry that landed
+// while the first attempt was still running ran the whole handler a second time.
+//
+// 217132a11 fixed this for `spawn` alone, inline, and _chatTempInflight does the
+// same job for chat. Fixing `delegate` the same way would have been the third
+// copy of one guard with the other 79 operation types still exposed, so the
+// guard lives here instead, once, for every type.
+//
+// What it cost while it was missing (2026-08-17): one delegate() of a recurring
+// task produced FOUR notifications -- two `delegate` events with consecutive ids
+// from the two runs, then two `timer` events, because each run also wrote a
+// pending reminder with the same fire_at and both later fired.
+//
+// The second frame does not share the first frame's reply: it waits, then
+// re-dispatches, and the completed-result check answers it from storage against
+// its OWN request id. That is why this awaits the recorded result rather than
+// just the handler -- reply() fires the record write without awaiting it, so
+// "the handler returned" does not yet mean "the result is readable".
+const _fleetOperationInflight = new Map() // operation_id -> in-flight attempt
+
 async function handleFleetWsMessage(ws, msg) {
+  const inflightKey = msg?.operation_id || msg?.fleet_operation?.operation_id || null
+  if (!inflightKey) return dispatchFleetWsMessage(ws, msg)
+
+  const prior = _fleetOperationInflight.get(inflightKey)
+  if (prior) {
+    // Swallowed deliberately: the first attempt's failure is reported to the
+    // first attempt's caller. This frame only needs it to be OVER before asking
+    // storage what happened.
+    await prior.catch(() => {})
+    return dispatchFleetWsMessage(ws, msg)
+  }
+
+  const attempt = (async () => {
+    try {
+      return await dispatchFleetWsMessage(ws, msg)
+    } finally {
+      // Settle only after the result row is durable, so a retry awaiting this
+      // promise cannot read back "no result yet" and re-run the work.
+      await msg._fleetResultRecorded?.catch?.(() => {})
+    }
+  })()
+  _fleetOperationInflight.set(inflightKey, attempt)
+  try {
+    return await attempt
+  } finally {
+    if (_fleetOperationInflight.get(inflightKey) === attempt) _fleetOperationInflight.delete(inflightKey)
+  }
+}
+
+async function dispatchFleetWsMessage(ws, msg) {
   const { id, type } = msg
   const operationEnvelope = msg.fleet_operation || null
   if (operationEnvelope) {
@@ -5908,8 +5964,12 @@ async function handleFleetWsMessage(ws, msg) {
   const clientOperationId = msg.operation_id || operationEnvelope?.operation_id || null
   const reply = (result) => {
     if (clientOperationId && fleetStore) {
-    fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
-      .catch(e => console.error(`[fleet-ws] record transport result failed for ${clientOperationId}: ${e?.message || e}`))
+      // Still not awaited here -- the reply must not wait on the record write.
+      // It is PARKED on the message so the coalescing wrapper above can await it
+      // before releasing a retry, which is what makes the completed-result check
+      // below reliable for the second frame.
+      msg._fleetResultRecorded = fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
+        .catch(e => console.error(`[fleet-ws] record transport result failed for ${clientOperationId}: ${e?.message || e}`))
     }
     if (id) {
       sendFleetResponseFrame(ws, { id, result })
@@ -5927,7 +5987,8 @@ async function handleFleetWsMessage(ws, msg) {
         }
       : err
     if (clientOperationId && fleetStore) {
-      fleetStore.recordTransportOperationResult(clientOperationId, type, 'error', payload, operationEnvelope)
+      // Parked for the coalescing wrapper, same as the result path above.
+      msg._fleetResultRecorded = fleetStore.recordTransportOperationResult(clientOperationId, type, 'error', payload, operationEnvelope)
         .catch(e => console.error(`[fleet-ws] record transport error failed for ${clientOperationId}: ${e?.message || e}`))
     }
     if (err && typeof err === 'object') {
