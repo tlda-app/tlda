@@ -2750,27 +2750,29 @@ const ChatMessageRow = memo(function ChatMessageRow({
       // calls useEditor()), so without this provider every render throws
       // "useEditor must be used inside of the <Tldraw/> or <TldrawEditor/>
       // components" before it commits any DOM, leaving `.semantic-operation-body`
-      // permanently empty. ThreadChatOperationView needs no editor access, so the
-      // same missing provider left it working and masked the gap.
+      // permanently empty. ThreadChatOperationView needs no editor access -- scope
+      // the provider to the branch that actually needs it rather than wrapping
+      // both, since wrapping the thread branch too broke its floating collapse
+      // button (regressed in 1bbe00cc0, fixed here).
       root.render(
-        <EditorContext.Provider value={editor}>
-          {descriptor.kind === 'thread'
-            ? <ThreadChatOperationView
+        descriptor.kind === 'thread'
+          ? <ThreadChatOperationView
               descriptor={descriptor}
               renderCtx={semanticRenderCtx}
               currentProject={currentProject}
               host={body}
               restoreExpansions={restorePrettyExpansions}
             />
-            : <SemanticChatOperationView
+          : <EditorContext.Provider value={editor}>
+            <SemanticChatOperationView
               descriptor={descriptor}
               renderCtx={semanticRenderCtx}
               currentProject={currentProject}
               host={body}
               hostShapeId={hostShapeId}
               pageSize={semanticOperationPageSize}
-            />}
-        </EditorContext.Provider>,
+            />
+          </EditorContext.Provider>,
       )
       semanticRoots.push(root)
     })
