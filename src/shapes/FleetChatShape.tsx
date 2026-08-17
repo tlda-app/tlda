@@ -145,6 +145,15 @@ const ANCHORED_OVERSCAN_PX = 800
 // back here or the tail sits permanently `paddingBottom`-px short of
 // `tailTop()` and every scroll-up reads as a follow-off.
 const ANCHORED_TAIL_EPS_BASE = 1
+// A single wheel notch is routinely 20-45px — far past ANCHORED_TAIL_EPS_BASE
+// — so applying that tolerance to the follow-off decision the instant it's
+// exceeded flips every ordinary settle-scroll near the bottom into a real
+// "left the tail" transition, then flips it straight back a fraction of a
+// second later. Reuses the 250ms settle convention already used for
+// explicit-scroll-input elsewhere in this file (explicitScrollInputTimerRef).
+// A genuine departure (he stops to read) easily outlasts this; a settle
+// bounce never does.
+const ANCHORED_FOLLOW_OFF_SETTLE_MS = 250
 const anchoredViewportGeometry = (el: HTMLElement) => {
   const style = getComputedStyle(el)
   const paddingTop = Number.parseFloat(style.paddingTop) || 0
@@ -2351,6 +2360,13 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
   const sensorTopRef = useRef(ANCHORED_SENSOR_MID)
   const tailModeRef = useRef(true)
   const lastWheelRef = useRef<{ at: number, deltaY: number, deltaMode: number } | null>(null)
+  const followOffSettleTimerRef = useRef(0)
+  // True while a departure is armed but not yet committed. The geometry/
+  // resize effects below re-sync modelTopRef to tailTop() whenever they think
+  // we're still following — correct once a departure is real, but during the
+  // settle window it would erase the very position the timer needs to see and
+  // silently cancel every debounced follow-off before it can fire.
+  const pendingDepartureRef = useRef(false)
   const didStartReachRef = useRef(false)
   const earlierHistoryWindowRef = useRef(initialHistoryWindow)
   const previousResetKeyRef = useRef(resetKey)
@@ -2430,8 +2446,27 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
     modelTopRef.current = top
     const atBottom = Math.abs(top - tailTop()) <= tailEpsRef.current
     const getDetail = () => scrollSnapshot(nextTop, top)
-    if (opts?.forceTail || atBottom) setTailMode(true, getDetail)
-    else setTailMode(false, getDetail)
+    if (opts?.forceTail || atBottom) {
+      if (followOffSettleTimerRef.current) {
+        window.clearTimeout(followOffSettleTimerRef.current)
+        followOffSettleTimerRef.current = 0
+      }
+      pendingDepartureRef.current = false
+      setTailMode(true, getDetail)
+    } else if (tailModeRef.current && !followOffSettleTimerRef.current) {
+      // Still following as of the last committed transition — give an
+      // ordinary settle-scroll bounce a chance to return on its own before
+      // it counts as leaving the tail. clampTop/atBottom already moved the
+      // rendered position; only the follow-off transition itself waits.
+      pendingDepartureRef.current = true
+      followOffSettleTimerRef.current = window.setTimeout(() => {
+        followOffSettleTimerRef.current = 0
+        pendingDepartureRef.current = false
+        if (!tailModeRef.current) return
+        const stillAway = Math.abs(modelTopRef.current - tailTop()) > tailEpsRef.current
+        if (stillAway) setTailMode(false, () => scrollSnapshot(modelTopRef.current, modelTopRef.current))
+      }, ANCHORED_FOLLOW_OFF_SETTLE_MS)
+    }
     onAtBottomChange?.(atBottom)
     // Keep one rendered viewport ahead of the reader. Event count cannot tell
     // us how much scroll distance a page bought, so each prepended page is
@@ -2471,6 +2506,10 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
 
   useImperativeHandle(ref, () => ({ scrollToTail, isAtTail }), [isAtTail, scrollToTail])
 
+  useEffect(() => () => {
+    if (followOffSettleTimerRef.current) window.clearTimeout(followOffSettleTimerRef.current)
+  }, [])
+
   const setScrollerRef = useCallback((el: HTMLDivElement | null) => {
     // CanvasClipPanel's own wheel-capture handler (a capture-phase ancestor
     // listener) claims wheel events over a chat log rendered inside the Fleet
@@ -2507,7 +2546,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       tailEpsRef.current = ANCHORED_TAIL_EPS_BASE + paddingBottom
       setViewportHeight(nextHeight)
       const nextTailTop = tailTop(nextHeight)
-      if (tailModeRef.current) modelTopRef.current = nextTailTop
+      if (tailModeRef.current && !pendingDepartureRef.current) modelTopRef.current = nextTailTop
       else modelTopRef.current = Math.max(0, Math.min(modelTopRef.current, nextTailTop))
       setGeometryVersion(version => version + 1)
     }
@@ -2568,7 +2607,7 @@ const AnchoredChatList = forwardRef<AnchoredChatListHandle, AnchoredChatListProp
       changed = true
     }
     if (!changed) return
-    if (tailModeRef.current) modelTopRef.current = tailTop()
+    if (tailModeRef.current && !pendingDepartureRef.current) modelTopRef.current = tailTop()
     else modelTopRef.current = clampTop(modelTopRef.current + topAdjustment)
     setGeometryVersion(version => version + 1)
   }, [clampTop, geometry.starts, tailTop])
