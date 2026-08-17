@@ -131,3 +131,38 @@ candidate** — it reports whoever is logged in. The discriminating form is
 `fly auth whoami --access-token <tok>`, which rejects garbage. An agent establishing whether a
 leaked credential was still live nearly reported a false positive from the first form and caught
 it by adding garbage controls.
+
+## `~/.config/tlda/<bot>.<env>.log`
+
+**It is not the bot's log. It is the launcher's.** The file holds the stdout and stderr of the
+`tlda agent mint` / `tlda agent wake` CLI children the bot manager spawns — `runBotCliCommand`
+opens it at `cli/tlda.mjs:2017` and hands it to those children as their `stdio`. **The bot
+process's own output goes to its tmux pane and is written to no file at all.**
+
+So the file named after a bot tells you what its *supervisor* tried, never what the *bot* did.
+It is also append-only across process lifetimes with no pid marker, so a `tail` silently mixes
+output from processes that died days apart.
+
+**This cost most of a night on 2026-08-17 — three separate failures, each of which reported
+healthy in every place anyone looked:**
+
+- `chat-lint.testing.log` held 79 wake deferrals and no sign of the real fault. Its pane said
+  `[lint-bot] login failed Agent login for "fleet:40af7509" requires daemon route information.`
+  **chat-lint had been unable to log in since 2026-08-11 — six days** — while its 30s `tick`
+  heartbeat kept writing, its tmux session stayed live, and its supervisor stayed satisfied.
+- `todd.stable.log` ends `assigned_name=todd canonical=true`. The **running** process's pane says
+  `assigned_name=quiet-todd canonical=false` and `inert:`. Those canonical lines belong to earlier
+  processes; nothing in the file says so. todd:stable was reported as healthy on that basis.
+- `todd.testing.log` gave no hint that every one of todd's HTTP calls was timing out at 15s. The
+  pane did, immediately — and that turned out to be the best lead on a fleet-wide query-scale
+  problem Skip was hitting as a 45s `fleet-search` timeout.
+
+**The read that works:**
+
+```sh
+tmux capture-pane -p -S -40 -t <session>     # fleet-<bot>, or fleet-bot-<bot>_<env>
+```
+
+**Check the pane before concluding anything about a bot**, and treat the `.log` as evidence about
+the launcher only. Every liveness signal available — live process, ticking heartbeat, live tmux
+session, `ESTABLISHED` socket, satisfied supervisor — was green for all three of the above.
