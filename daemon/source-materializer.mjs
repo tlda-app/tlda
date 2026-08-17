@@ -58,21 +58,6 @@ function localHash(path) {
   return existsSync(path) ? hash(readFileSync(path)) : null
 }
 
-function textBuffer(buffer) {
-  return !buffer.includes(0)
-}
-
-function conflictText(label, local, accepted) {
-  return Buffer.from([
-    `<<<<<<< local checkout (${label})`,
-    local.toString('utf8'),
-    '=======',
-    accepted === null ? '[deleted by accepted source]' : accepted.toString('utf8'),
-    '>>>>>>> accepted source',
-    '',
-  ].join('\n'))
-}
-
 export function createSourceMaterializer({ journalPath, fault = null } = {}) {
   if (!journalPath) throw new Error('journalPath is required')
 
@@ -225,7 +210,6 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     const full = safePath(record.sourceDir, pathRecord.path)
     const currentHash = localHash(full)
     const pending = record.outboundPending.includes(pathRecord.path)
-    const target = targetBytes(record, pathRecord)
     const complete = () => {
       pathRecord.state = 'complete'
       pathRecord.error = null
@@ -239,10 +223,24 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
       persistPath(state, record, pathRecord, `after-conflict:${pathRecord.path}`)
     }
 
+    // An unchanged path needs no bytes, and the server does not send bytes it
+    // did not have to: `blobs` is built from the files THIS push carried, while
+    // `targetManifest` is the whole revision. So asking for the blob before
+    // dispatching on the action threw `Missing blob` for every file a push
+    // declared and did not change -- and the throw left activeTargetRevision
+    // set, which is terminal, so one unchanged file stopped the checkout
+    // receiving anything at all.
+    //
+    // Measured on bregman's 06:55:31Z revision: baseManifest 7, targetManifest
+    // 362, 357 changed with a blob for every one of them, and 5 unchanged with
+    // a blob for none. bregman-macros.tex is the first of those five in path
+    // order. Its bytes were identical in the base, in the target, on the
+    // server, and on disk; nothing was missing except a blob nobody needed.
     if (pathRecord.action === 'unchanged') {
       if (currentHash === pathRecord.targetHash) return complete()
       return conflict('local-drift')
     }
+    const target = targetBytes(record, pathRecord)
     if (pathRecord.action === 'add') {
       if (currentHash === pathRecord.targetHash) return complete()
       if (currentHash !== null) return conflict('unmanaged-add-collision')
@@ -252,9 +250,15 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     }
     if (pathRecord.action === 'change') {
       if (currentHash === pathRecord.targetHash) return complete()
+      // The local file has moved off the base this revision expects, so the
+      // person owning that checkout is editing it right now. Report the
+      // conflict and leave their file alone: writing both copies in with
+      // markers destroys the text they are mid-sentence in, and on 2026-08-17
+      // it did so three times to a paper being dictated into, once wrapping a
+      // 282KB document into a 564KB whole-file conflict. The conflict is
+      // already surfaced to the person by the source-sync status; the file is
+      // not the place to report it.
       if (pending || currentHash !== pathRecord.baseHash) {
-        const local = existsSync(full) ? readFileSync(full) : Buffer.alloc(0)
-        if (textBuffer(local) && textBuffer(target)) atomicWrite(full, conflictText(pathRecord.path, local, target))
         return conflict(pending ? 'outbound-edit-pending' : 'local-change-conflict')
       }
       atomicWrite(full, target)
@@ -262,9 +266,9 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
       return complete()
     }
     if (currentHash === null) return complete()
+    // Same rule as the change path above: an accepted deletion does not get to
+    // overwrite a file whose owner is still editing it.
     if (pending || currentHash !== pathRecord.baseHash) {
-      const local = readFileSync(full)
-      if (textBuffer(local)) atomicWrite(full, conflictText(pathRecord.path, local, null))
       return conflict(pending ? 'outbound-edit-pending' : 'local-delete-conflict')
     }
     unlinkSync(full)
