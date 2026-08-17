@@ -7901,6 +7901,30 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
+  // The model an agent actually runs on is a daemon fact: the daemon resolved
+  // the spec and launched the process. Until the seat write carried the
+  // resolved alias, a mint that named no model reached the roster with no model
+  // at all, which is why the agents panel expansion had no model chip to show.
+  //
+  // Fill-only, deliberately. This exists to complete rows the seat write left
+  // empty; a row that already has a model is the seat's own record and this
+  // must not talk over it.
+  if (type === 'agent-model') {
+    const { agent_id: modelAgentId, model: reportedModel } = msg
+    if (!modelAgentId || !reportedModel) { error('agent_id and model required'); return }
+    if (!fleetStore) { error('Fleet not initialized'); return }
+    const modelAgent = await fleetStore.getAgent?.(modelAgentId)
+    if (!modelAgent) { error(`unknown agent: ${modelAgentId}`); return }
+    if (modelAgent.metadata?.model) {
+      reply({ ok: true, filled: false, model: modelAgent.metadata.model })
+      return
+    }
+    await fleetStore.updateAgentMeta?.(modelAgentId, { model: String(reportedModel) })
+    broadcastState(modelAgentId)
+    reply({ ok: true, filled: true, model: String(reportedModel) })
+    return
+  }
+
   // ---- rename ----
   if (type === 'rename') {
     const { agent: agentQuery, name: newName } = msg
