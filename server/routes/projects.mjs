@@ -626,6 +626,21 @@ router.patch('/:name/auto-sync', requireRw, async (req, res) => {
   }
 })
 
+// Toggle mirrorPaused (writing server history back into the working copy).
+// Separate from autoSync above, which is the inbound Git-remote poller: this is
+// the OUTBOUND half, the mirror that commits the server's shadow into the
+// working copy's HEAD. They fail independently and this one damages history
+// rather than merely lagging, so it needs its own switch.
+router.patch('/:name/mirror-paused', requireRw, async (req, res) => {
+  try {
+    const { mirrorPaused } = req.body
+    const project = await updateProject(req.params.name, { mirrorPaused: !!mirrorPaused })
+    res.json({ ok: true, mirrorPaused: project.mirrorPaused })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
+})
+
 // Link a Git remote → clone, initial sync, start polling.
 // Body: { source, token?, title?, mainFile?, format?, pollSeconds? }
 router.post('/:name/link', requireRw, async (req, res) => {
