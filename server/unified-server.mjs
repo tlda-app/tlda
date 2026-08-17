@@ -71,7 +71,7 @@ import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-
 import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
-import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
+import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-history.mjs'
@@ -3941,6 +3941,7 @@ app.get('/api/runtime-status', requireRead, async (_req, res) => {
     daemonConnections,
     fleetSummary: await fleetStore.getAgentSummary?.(),
     localHostname: hostname(),
+    syncRooms: roomResidency(),
   }))
 })
 

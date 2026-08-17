@@ -417,6 +417,22 @@ export function listActiveRooms() {
   return [...rooms.keys()]
 }
 
+/**
+ * How many documents this process is holding in memory, and how many of those
+ * are currently idle candidates for eviction.
+ *
+ * This exists because on 2026-08-17 nobody could answer "how many rooms are
+ * resident" about a server whose memory was dominated by rooms. `listActiveRooms`
+ * was already here and nothing surfaced it, so the question got answered from a
+ * two-minute log window instead — which reports "no rooms created" for a process
+ * holding hundreds, and produced a confidently wrong measurement.
+ *
+ * @returns {{ resident: number, idle: number }}
+ */
+export function roomResidency() {
+  return { resident: rooms.size, idle: roomEmptySince.size }
+}
+
 // --- Idle room eviction ---
 //
 // `rooms` used to be unbounded for the life of the process: an entry was only

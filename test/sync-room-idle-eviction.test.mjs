@@ -23,6 +23,7 @@ import {
   getOrCreateRoom,
   listActiveRooms,
   evictIdleRooms,
+  roomResidency,
   putShape,
   getRoomRecords,
 } from '../server/lib/sync-rooms.mjs'
@@ -110,6 +111,33 @@ test('an evicted document rehydrates with its records intact', async () => {
       'the shape must survive eviction and come back on reopen',
     )
     assert.ok(listActiveRooms().includes(DOC), 'reopening should make it resident again')
+  } finally {
+    closeAllRooms()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// Observability, tied to the behaviour it observes. On 2026-08-17 nobody could
+// answer "how many rooms are resident" about a server whose memory was dominated
+// by rooms, so the question got answered from a two-minute log window — which says
+// "no rooms created" for a process holding hundreds. A count that does not follow
+// an eviction would be the same trap with a nicer surface, so assert it moves.
+test('roomResidency follows what the process is actually holding', async () => {
+  const root = setup()
+  try {
+    assert.deepEqual(roomResidency(), { resident: 0, idle: 0 }, 'nothing resident before any open')
+
+    await seedDoc()
+    const open = roomResidency()
+    assert.equal(open.resident, 1, 'an open document is resident')
+    assert.equal(open.idle, 1, 'with no sessions it is an eviction candidate')
+
+    await evictIdleRooms({ idleMs: 0 })
+    assert.deepEqual(
+      roomResidency(),
+      { resident: 0, idle: 0 },
+      'the count must drop when the room is evicted, not just the Map',
+    )
   } finally {
     closeAllRooms()
     rmSync(root, { recursive: true, force: true })

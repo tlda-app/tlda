@@ -85,6 +85,8 @@ export function buildRuntimeStatus({
   fleetSummary = null,
   agents = [],
   localHostname = hostname(),
+  // Injected rather than imported, like fleetStore above, so this stays pure.
+  syncRooms = null,
 } = {}) {
   const configName = env.TLDA_ENV || 'default'
   return {
@@ -105,5 +107,12 @@ export function buildRuntimeStatus({
       builtAt: buildInfo.builtAt || null,
     } : { unavailable: true, reason: 'server/build-info.json not found' },
     fleet: fleetSummary || summarizeAgents(agents),
+    // Documents held in memory. `resident` is what the process is actually
+    // carrying; `idle` is how many of those have no sessions and are eviction
+    // candidates. Reported as unavailable rather than 0 when not supplied, so a
+    // caller cannot read "not measured" as "nothing resident".
+    sync: syncRooms
+      ? { rooms_resident: syncRooms.resident, rooms_idle: syncRooms.idle }
+      : { unavailable: true },
   }
 }
