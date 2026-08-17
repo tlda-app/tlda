@@ -155,6 +155,44 @@ acknowledges every envelope it accepts, including one whose type no handler
 claims. Anything that needs to know the work happened must carry an answer from
 the handler.
 
+#### The other direction fails differently, and neither direction reports it
+
+`handleServerMessage` in `bin/fleet-daemon.mjs` ends its dispatch chain with
+`// Unknown message — ignore for forward compatibility.` (`:1713`), and the daemon
+acks a server-originated outbox message only from inside a matched handler
+(`:1673`, `:1688`). So the two directions of the same namespace fail in opposite
+ways, and knowing which one you are looking at decides what evidence exists:
+
+- **daemon→server:** an unhandled type is positively acked and marked processed.
+  False success, no trace anywhere.
+- **server→daemon:** an unhandled type is never acked, so its
+  `server_daemon_outbox` row never clears and `pendingForDaemon` keeps returning
+  it — every flush re-sends it. No false success, but an unbounded redelivery
+  with no attempt cap and no dead-letter path in
+  `server/lib/server-daemon-outbox.mjs`.
+
+**Tolerating an unknown type is correct and must stay.** §"A deploy ships the
+server. It does not ship the daemons" in [Fly deployment](live-deploy.md) is why:
+the two halves version-skew on every deploy, in an order nobody chooses, and both
+directions of skew have shipped. A dispatcher that rejected an unrecognised type
+would turn each deploy window into an outage. The comment is original to the
+first daemon-WS commit (`1d0bc5afd`, 2026-04-10) and the reason it gives is the
+right one.
+
+**What is wrong is the silence, not the tolerance** — and the same repository
+already contains the alternative. An unknown *RPC verb* is tolerated and still
+answered: `daemon/machine-rpc.mjs:148` replies `unknown op: ${op}` without
+crashing. The RPC namespace is therefore the shape to copy — report the
+unmatched name, keep accepting the connection. Until then the cost is the one
+[Fly deployment](live-deploy.md) already names for the half-live case: *"the pair
+reads as working while being half-live."*
+
+Four types in this namespace are currently one-sided: `prompt-auto-accepted`
+(three senders in `daemon/`, no handler — and it is in `DURABLE_TYPES`, so it is
+persisted, retried across reconnects, and positively acked by a server that
+cannot act on it), `daemon-sync-ok`, `reaper-status`, and `agent-activity`
+(handlers with no sender).
+
 ## Persistent state and transient signals
 
 Document shapes use Yjs. State that must still be correct after a disconnect
