@@ -780,6 +780,11 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
   const texBase = basename(mainFile, '.tex')
   const compileDir = join(srcDir, dirname(mainFile))
 
+  // The scratch AUTHORING path was deleted deliberately -- see commit
+  // 5e8f968f8. This stays so historical checkouts whose paper contains
+  // \inputscratch{} sections still compile. Do not "finish" the cut by
+  // removing it; that breaks real, already-written papers.
+  //
   // The doc's preamble does \input{.tlda/scratch/scratch-template}. In a live
   // build, build-runner injects its own scratch-template into buildDir (first
   // on TEXINPUTS), so that path is a build artifact and is deliberately kept
