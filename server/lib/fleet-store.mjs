@@ -5596,6 +5596,52 @@ export class FleetStore {
     return FleetStore.hydrateEvents(rows);
   }
 
+  /**
+   * The events of a conversation BETWEEN two agent sets, as SQL.
+   *
+   * `A <> B` desugars to `(from:A & to:B) | (from:B & to:A)`
+   * (`desugarMessageFilter`), and that pair test used to be applied in JS after
+   * the store had already limited — so a page of N taken over one participant's
+   * whole traffic could contain none of the pair's messages and the read
+   * returned empty while the conversation was sitting right there. Measured on
+   * the deployed box: `thread(agent: app-lockup, page_size: 5)` returned 0 of 4,
+   * and the same read at 400 returned all of them.
+   *
+   * A limit only means something once the constraint that defines the result is
+   * inside the query, so both directions are their own branch here, each
+   * bounded on its own index the way the sent/received union already is.
+   */
+  _queryPairEventsForSearch({ aIds, bIds, types = null, excludeTypes = null, sinceTs = null, untilTs = null, limit = 200 }) {
+    const a = [...new Set(aIds || [])];
+    const b = [...new Set(bIds || [])];
+    if (!a.length || !b.length) return [];
+    const cols = `events.id as id, events.type as type, events.timestamp as timestamp, `
+      + `events.from_id as "from", events.text as text, events.metadata as metadata, `
+      + `events.task_id as task_id, events.agent_id as agent_id, ${FleetStore._TO_JSON('events')}`;
+    const tail = [];
+    const tailParams = [];
+    if (types && types.length) { tail.push(`events.type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
+    if (excludeTypes && excludeTypes.length) { tail.push(`events.type NOT IN (${excludeTypes.map(() => '?').join(',')})`); tailParams.push(...excludeTypes); }
+    if (sinceTs) { tail.push('events.timestamp > ?'); tailParams.push(sinceTs); }
+    if (untilTs) { tail.push('events.timestamp <= ?'); tailParams.push(untilTs); }
+    const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
+    const ph = (n) => n.map(() => '?').join(',');
+    // Newest-first inside each direction, then merged and cut once. Same reason
+    // the rest of this file reads DESC: the caller wants the recent page.
+    const branch = (from, to) => `SELECT * FROM (SELECT ${cols} FROM events
+      JOIN recipients r ON r.event_id = events.id
+      WHERE events.from_id IN (${ph(from)}) AND r.agent_id IN (${ph(to)})${tailSql}
+      ORDER BY r.timestamp DESC, r.event_id DESC LIMIT ?)`;
+    const sql = `SELECT * FROM (${branch(a, b)} UNION ${branch(b, a)})
+      ORDER BY timestamp DESC, id DESC LIMIT ?`;
+    const rows = this.db.prepare(sql).all(
+      ...a, ...b, ...tailParams, limit,
+      ...b, ...a, ...tailParams, limit,
+      limit,
+    );
+    return FleetStore.hydrateEvents(rows);
+  }
+
   // ---- Session entry indexing (JSONL text for unified search) ----
 
   async insertSessionEntries(entries) {
@@ -5742,7 +5788,7 @@ export class FleetStore {
     return ids;
   }
 
-  searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
+  searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly, between = null } = {}) {
     const textExpression = parseSearchTextExpression(query);
     const terms = textExpression ? collectTextExpressionTerms(textExpression, { includeNegated: true }) : ftsQueryTerms(query);
     const positiveTextTerms = textExpression ? collectTextExpressionTerms(textExpression) : [];
@@ -5817,15 +5863,29 @@ export class FleetStore {
     // 1. Fleet events
     let eventRows = [];
     if (includeEvents) {
-      if (effectiveHistoryMode && hasAgent && eventOnly) {
-        const rows = agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
-          agent: agentId,
-          types: eventTypes,
-          excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
-          sinceTs: since,
-          untilTs: before,
-          limit,
-        }));
+      const pairRead = between?.a?.length && between?.b?.length;
+      if (effectiveHistoryMode && (pairRead || (hasAgent && eventOnly))) {
+        // A pair read is the whole result set, so it is one bounded query rather
+        // than a union of each participant's traffic that something downstream
+        // has to narrow. See _queryPairEventsForSearch for what that cost.
+        const rows = pairRead
+          ? this._queryPairEventsForSearch({
+            aIds: between.a,
+            bIds: between.b,
+            types: eventTypes,
+            excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
+            sinceTs: since,
+            untilTs: before,
+            limit,
+          })
+          : agentIds.flatMap(agentId => this._queryAgentEventsForSearch({
+            agent: agentId,
+            types: eventTypes,
+            excludeTypes: excludeNotificationAttempts ? ['notification_attempt'] : null,
+            sinceTs: since,
+            untilTs: before,
+            limit,
+          }));
         eventRows = rows.map(r => ({
           source: 'fleet',
           id: r.id,

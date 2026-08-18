@@ -6797,6 +6797,22 @@ async function dispatchFleetWsMessage(ws, msg) {
         const ids = [...await collectPrefilterIds(messageFilter)]
         if (ids.length) searchAgent = ids
       }
+      // A bare `A <> B` is the whole of a thread read, and the pair test below
+      // runs AFTER searchAll has limited. Over one busy participant's traffic a
+      // page could therefore contain none of the pair's messages and come back
+      // empty with the conversation intact underneath — measured at 0 of 4 on
+      // page_size 5 while page_size 400 returned all four. So the pair goes to
+      // the store, where it can bound the query instead of discarding its result.
+      // Read pre-desugar: parseMessageFilter expands `between` into or/and/from/to.
+      let betweenPair = null
+      if (msg.filterExpression) {
+        const sugared = parseFilter(msg.filterExpression)
+        if (sugared?.t === 'between') {
+          const a = [...await resolveAgentNode(sugared.l)]
+          const b = [...await resolveAgentNode(sugared.r)]
+          if (a.length && b.length) betweenPair = { a, b }
+        }
+      }
       // A typed name fragment (agent:/from:) resolves on the SERVER to the set of
       // fleet ids it refers to — substring over current + historical names,
       // dawn-aware. An empty match yields an impossible id (an empty result set),
@@ -6815,6 +6831,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         historyOnly: msg.historyOnly,
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
+        between: betweenPair,
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
