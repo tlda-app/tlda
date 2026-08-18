@@ -931,8 +931,43 @@ export function setAcceptedRevisionMirrorHandler(handler) {
  * next accept bundling from the same older basis rather than assuming this one
  * landed.
  */
+// One mirror at a time per project.
+//
+// Without this, two mirrors for the same project run concurrently — they are
+// kicked off per accepted push and never awaited — and they collide inside
+// `preserveAuthorCommit` on the author's real git index. The later one finishes,
+// commits, and its `refreshRealIndex` points the index at ITS blobs; the earlier
+// one then reaches `validateTargetIndex`, finds an index matching neither the
+// HEAD it captured at the start nor its own shadow entry, and refuses with
+// `staged <file> differs from shadow`.
+//
+// **The refusal looks exactly like the author having staged something, and they
+// have not.** By the time anyone looks, the winner has finished and
+// `git diff --cached` is empty — which is what made this hard to see from
+// outside. That guard is correct and stays; it just must not be handed a race
+// to adjudicate.
+const projectMirrorQueues = new Map()
+
+async function serializeProjectMirror(name, run) {
+  const previous = projectMirrorQueues.get(name) || Promise.resolve()
+  let release
+  const current = new Promise(resolve => { release = resolve })
+  projectMirrorQueues.set(name, current)
+  await previous
+  try {
+    return await run()
+  } finally {
+    release()
+    if (projectMirrorQueues.get(name) === current) projectMirrorQueues.delete(name)
+  }
+}
+
 async function mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq) {
   if (!acceptedRevisionMirrorHandler || !sourceRevision) return
+  return serializeProjectMirror(name, () => mirrorAcceptedRevisionNow(name, lifecycle, sourceRevision, acceptSeq))
+}
+
+async function mirrorAcceptedRevisionNow(name, lifecycle, sourceRevision, acceptSeq) {
   const payload = await lifecycle.mirrorPayload(sourceRevision)
   if (!payload) return
   const short = sourceRevision.slice(0, 7)
