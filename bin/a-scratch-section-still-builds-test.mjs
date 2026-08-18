@@ -13,13 +13,30 @@
 // scratch content actually reaches the rendered PDF's page count -- not that
 // a file exists, that pdflatex accepted \inputscratch and moved on.
 //
-// Known gap, stated rather than hidden: convertScratchMarkdown's pandoc
-// conversion (.md -> .tex) is NOT exercised here -- this sandbox has no
-// `pandoc` binary. That function is real, undiminished risk (existing
-// projects may still carry scratch/*.md that pandoc has to convert every
-// build), and it is untested by this file. If pandoc becomes available,
-// extend this test with a .md-sourced scratch section rather than trusting
-// that the .tex-only case stands in for it.
+// This file covers two of the three deliberately-preserved sites --
+// convertScratchMarkdown's context and the \inputscratch macro override,
+// both in build-runner.mjs. Do NOT read that as three-of-three; the other
+// two gaps are real and are why:
+//
+// 1. convertScratchMarkdown's actual pandoc conversion (.md -> .tex) is NOT
+//    exercised here -- this sandbox has no `pandoc` binary (confirmed with
+//    a positive control: `git` resolves fine, so the absence is real, not
+//    an instrument fault). That function is real, undiminished risk --
+//    existing projects may still carry scratch/*.md that pandoc has to
+//    convert every build -- and it is untested by this file. Whether pandoc
+//    is present in the deployed container is an open question, not
+//    investigated further here. If pandoc becomes available wherever this
+//    runs, extend this test with a .md-sourced scratch section rather than
+//    trusting that the .tex-only case stands in for it.
+//
+// 2. server/lib/shadow-repo.mjs's compileHistoricalDvi -- the third
+//    deliberately-preserved site, a no-op \inputscratch injection so a
+//    HISTORICAL version-history checkout still compiles even when the
+//    scratch content it once referenced was never versioned -- is not
+//    tested anywhere. It needs its own shadow-repo git-checkout fixture.
+//    That is real, separate work this file does not do. Do not delete
+//    compileHistoricalDvi's scratch handling on the strength of this test
+//    passing; this test says nothing about it.
 import assert from 'assert/strict'
 import { execFileSync } from 'child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
