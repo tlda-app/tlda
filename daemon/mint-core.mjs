@@ -67,11 +67,18 @@ export function createDaemonMintCore({
   }
 
   async function recordSession(mintIdValue, session) {
-    if (resultFact(session, 'session_id', 'sessionId')) {
-      store.setFact(mintIdValue, 'session_id', resultFact(session, 'session_id', 'sessionId'))
-    }
-    if (resultFact(session, 'session_path', 'sessionPath')) {
-      store.setFact(mintIdValue, 'session_path', resultFact(session, 'session_path', 'sessionPath'))
+    const sessionId = resultFact(session, 'session_id', 'sessionId')
+    const sessionPath = resultFact(session, 'session_path', 'sessionPath')
+    if (sessionId || sessionPath) {
+      // A supervised bot reuses its mint id across restarts, so the session
+      // recorded here is routinely a different one from the session already
+      // stored. setFact treats that as a fact conflict and throws, which stops
+      // the restart -- the same failure `friendly_name` had, one field over.
+      if (store.updateSessionFacts) store.updateSessionFacts(mintIdValue, { sessionId, sessionPath })
+      else {
+        if (sessionId) store.setFact(mintIdValue, 'session_id', sessionId)
+        if (sessionPath) store.setFact(mintIdValue, 'session_path', sessionPath)
+      }
     }
     await join(mintIdValue)
     return store.get(mintIdValue)
@@ -140,7 +147,20 @@ export function createDaemonMintCore({
     if (envName) store.setFact(id, 'env_name', envName)
     if (name) store.setFact(id, 'friendly_name', name)
     if (metadata) store.setFact(id, 'metadata', metadata)
-    store.setFact(id, 'launch_recipe', persistentLaunchRecipe(launch))
+    // The recipe of THIS launch, not of the first one. A supervised bot reuses its
+    // mint id across restarts by design, and its recipe legitimately differs
+    // between them -- a resolved model alias, a changed daemon config, a field a
+    // newer build adds. setFact calls any difference a conflict and throws, so
+    // `mint bot:testing:todd already has a different launch_recipe` stopped every
+    // supervised bot from restarting at all.
+    //
+    // Reachable only since mint-id reuse became structural: before that a bot got
+    // a fresh mint row per start, so this always wrote to an empty column. The
+    // reuse is what this file wanted; the conflict check is what it outgrew.
+    // wake-core and wake-permission-profile read this back to relaunch, and they
+    // need the current recipe rather than the first one ever recorded.
+    if (store.updateLaunchRecipe) store.updateLaunchRecipe(id, persistentLaunchRecipe(launch))
+    else store.setFact(id, 'launch_recipe', persistentLaunchRecipe(launch))
     if (suppliedFleetId) store.setFact(id, 'fleet_id', suppliedFleetId)
 
     // CLI mint starts both actions before awaiting either. Server mint supplies

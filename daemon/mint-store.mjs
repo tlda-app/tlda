@@ -178,6 +178,27 @@ export class MintStore {
     return this.get(mintId)
   }
 
+  // A restart is a new process under the same identity, so its session is new.
+  // `setFact` would call the previous session a conflict, which is what it is for
+  // an identity fact and wrong for a per-launch one. Same reasoning as
+  // updateProcessState directly above, which exists because the process changes
+  // for exactly the same reason.
+  updateSessionFacts(mintId, { sessionId = null, sessionPath = null } = {}, now = new Date().toISOString()) {
+    if (!mintId) throw new Error('mint_id is required')
+    if (sessionId == null && sessionPath == null) return this.get(mintId)
+    const sets = []
+    const values = []
+    if (sessionId != null) { sets.push('session_id = ?'); values.push(sessionId) }
+    if (sessionPath != null) { sets.push('session_path = ?'); values.push(sessionPath) }
+    const result = this.db.prepare(`
+      UPDATE daemon_mints
+      SET ${sets.join(', ')}, updated_at = ?
+      WHERE mint_id = ?
+    `).run(...values, now, mintId)
+    if (result.changes !== 1) throw new Error(`no daemon mint facts for ${mintId}`)
+    return this.get(mintId)
+  }
+
   updateLaunchRecipe(mintId, launchRecipe, now = new Date().toISOString()) {
     const incoming = encoded(launchRecipe)
     if (!mintId || incoming == null) throw new Error('mint_id and launch_recipe are required')
