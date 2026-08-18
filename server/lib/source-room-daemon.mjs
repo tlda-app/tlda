@@ -350,6 +350,12 @@ export function createSourceRoomDaemon({
         files: [{ path: room.filePath, content: submission.content }],
         sourceManifest,
         editedBy: sourceRoomDaemonKey(room.project),
+        // **The echo guard.** `applyAcceptedSourceMutation` skips a message
+        // whose origin is a source room, so the room does not re-apply its own
+        // edit to itself. The fan-out only sees that origin if the accept
+        // carries it, and dropping this field in the repoint would have fed the
+        // room's own checkpoint straight back into the room.
+        sourceDaemonKey: sourceRoomDaemonKey(room.project),
         requestId: submission.requestId,
         expectedRevision: submission.expectedRevision,
       })

@@ -1162,6 +1162,10 @@ export async function acceptUnderOperationJournal(name, lifecycle, payload, run)
  */
 export async function applyAcceptedSourceEffects(name, lifecycle, {
   sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
+  // Which daemon's push this was, so the fan-out can avoid echoing the change
+  // back to the machine it came from. Absent means "tell everyone", which is
+  // correct for a carrier that is not a daemon.
+  sourceDaemonKey = null,
 }) {
   if (!sourceRevision) return []
   const ran = []
@@ -1203,6 +1207,37 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
       blobs,
     })
     ran.push('replicas')
+
+    // **Recording a replica is not sending it.**
+    //
+    // `recordReplicaTargets` writes the pending rows; `acceptedSourceMutationHandler`
+    // is what reads them and sends `apply-source-update` to each daemon. The old
+    // path reached it by tagging its result with `acceptedSourceMutation`, which
+    // `runSerializedProjectSourceOperation` notices on the way out. This path
+    // cannot use that hook: the serialized operation returns BEFORE the effects
+    // run, so the handler would fire while there is nothing recorded to send.
+    //
+    // Left alone, every carrier records replicas that nothing dispatches — so no
+    // linked machine is ever told the paper moved, with no error anywhere. That
+    // is not Overleaf-specific and not carrier-specific; it is every push. A
+    // person's laptop simply stops receiving their own edits.
+    //
+    // Fire-and-forget, like the mirror and the build: a sleeping machine is not
+    // a reason to tell an author their writing did not land.
+    if (acceptedSourceMutationHandler) {
+      void Promise.resolve().then(() => acceptedSourceMutationHandler({
+        project: name,
+        sourceRevision,
+        previousRevision,
+        files: changed.map(path => ({ path })),
+        deletedFiles: deleted,
+        sourceManifest: targetRevision?.files?.map(entry => entry.path) || [],
+        sourceDaemonKey: sourceDaemonKey || null,
+        sourceBindingId: sourceBindingId || null,
+        requestId: requestId || null,
+      })).catch(error => console.error(`[${name}] accepted source replica dispatch failed: ${error.message}`))
+      ran.push('replica-dispatch')
+    }
   }
 
   // **The server's own working copy.** Everything that reads a project's source
@@ -2414,7 +2449,7 @@ export async function acceptSourceSnapshot(name, payload = {}) {
     // enumerating the call sites never sees them. Omit them here and session
     // attribution on his own pushes breaks silently, and only there.
     session = null, sessionAt = null, editedBy = null,
-    sourceBindingId = null, requestId = null,
+    sourceBindingId = null, requestId = null, sourceDaemonKey = null,
   } = payload
   // `sourceDir` is NOT carried. It is already dropped by the old destructure and
   // every server use reads `project.sourceDir` from storage, so the cross-server
@@ -2494,6 +2529,7 @@ export async function acceptSourceSnapshot(name, payload = {}) {
       previousRevision: result.previous ?? previousRevision,
       editedBy,
       sourceBindingId,
+      sourceDaemonKey,
       requestId: requestId || randomUUID(),
     })
     return {
@@ -2600,6 +2636,10 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
       previousRevision: result.previous ?? null,
       editedBy: req.get('x-tlda-edited-by') || null,
       sourceBindingId: req.get('x-tlda-source-binding') || null,
+      // So the fan-out does not send this change back to the machine it came
+      // from. A daemon that materializes its own push would overwrite the file
+      // its author is still editing.
+      sourceDaemonKey: req.get('x-tlda-source-daemon') || null,
       requestId: req.get('x-tlda-request-id') || randomUUID(),
     })
     res.json({
