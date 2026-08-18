@@ -39,7 +39,16 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { acceptSourceSnapshot as processProjectPush } from './lib/accept-source-snapshot.mjs'
+// `createSourceRoomDaemon` takes `acceptSourceSnapshot` now, not
+// `processProjectPush` -- it throws at construction if it isn't a function,
+// naming the old key, precisely so a stale stub cannot look wired while the
+// room falls through to the real accept underneath it. This is the real
+// exported function (`POST /:name/source-snapshot`'s handler), not a
+// hand-rolled adapter: the room daemon already does its own field remapping
+// from `{status, body}` onto what its conflict-handling branches read, so
+// injecting a second reshaping here would be a second implementation of that
+// remap, drifting the moment one of them is edited without the other.
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
 import { clearSourceSyncRefusal, recordSourceSyncRefusal, sourceSyncIsStale, sourceSyncLedger } from '../server/lib/source-sync-conflicts.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-reached-nowhere-'))
@@ -51,7 +60,7 @@ const daemons = []
 function makeRoomDaemon(pushDelayMs) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush, pushDelayMs, log: { error() {} },
+    acceptSourceSnapshot, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
@@ -62,11 +71,14 @@ async function paper(name, content) {
   await updateProject(name, { pages: 1, buildStatus: 'success' })
   mkdirSync(outputDir(name), { recursive: true })
   writeFileSync(join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
-  const start = await processProjectPush(name, {
+  // `acceptSourceSnapshot` returns `{status, body}` -- the status is already
+  // the HTTP code, the rest of the old payload (`error`, `sourceRevision`) is
+  // nested under `body`, unlike the flat shape `processProjectPush` returned.
+  const start = await acceptSourceSnapshot(name, {
     expectedRevision: null, sourceManifest: ['main.tex'], files: [{ path: 'main.tex', content }],
   })
-  assert.equal(start.status, 200, `the paper had to exist first: ${start.error}`)
-  return start
+  assert.equal(start.status, 200, `the paper had to exist first: ${start.body?.error}`)
+  return start.body
 }
 
 /**
@@ -176,9 +188,9 @@ try {
       log: { error() {} },
       recordHeldEdit: recordSourceSyncRefusal,
       clearHeldEdit: clearSourceSyncRefusal,
-      processProjectPush: async (project, body) => (refuse
-        ? { status: 500, ok: false, error: 'the paper is being rebuilt' }
-        : processProjectPush(project, body)),
+      acceptSourceSnapshot: async (project, body) => (refuse
+        ? { status: 500, body: { ok: false, error: 'the paper is being rebuilt' } }
+        : acceptSourceSnapshot(project, body)),
     })
     daemons.push(roomDaemon)
     const room = await roomDaemon.getRoom(name, 'main.tex')
