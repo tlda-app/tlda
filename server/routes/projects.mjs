@@ -1940,13 +1940,48 @@ router.get('/:name/recording-draft/:id', requireRecordingPrivateRead, (req, res)
   res.json({ ...recording, publication: readRecordingPublication(dir, recording.id), privateDraft: true })
 })
 
+// Serve a recording's audio without reading it into memory.
+//
+// Both audio routes used to do `readFileSync(audioPath)` and `.send(buf)` with
+// `Accept-Ranges: none`, against an upload limit of 500mb. That is a synchronous
+// read of the whole file on the event loop: one student opening one lecture
+// blocks every other request, every socket message and every daemon RPC for the
+// length of that read. It is the same shape as the 809ms edit-log stall, on a
+// bigger file.
+//
+// res.sendFile streams it and handles Range, ETag and Last-Modified — so seeking
+// in a lecture fetches the bytes around the seek instead of the whole recording,
+// which is also what `Accept-Ranges: none` was denying. Using express's own
+// implementation rather than hand-rolling range parsing, because that is a
+// solved problem with edge cases (suffix ranges, unsatisfiable ranges, HEAD)
+// that a hand-rolled version gets wrong quietly.
+export function sendRecordingAudio(res, audioPath, metaPath) {
+  let mime = 'audio/webm'
+  if (existsSync(metaPath)) {
+    try {
+      mime = (JSON.parse(readFileSync(metaPath, 'utf8')).audioMime || mime).split(';')[0]
+    } catch { /* a corrupt meta file must not make the audio unplayable */ }
+  }
+  res.type(mime)
+  return res.sendFile(audioPath, { acceptRanges: true, dotfiles: 'deny' }, (error) => {
+    if (!error || res.headersSent) return
+    // Carry sendFile's OWN status. A first version of this returned 500 for
+    // everything, which turned a client asking for a range past the end of the
+    // file -- an ordinary, correct thing for a player to do while seeking --
+    // into a server error. Caught only once the test stopped exercising a copy
+    // of this handler and imported the real one.
+    const status = error.status || error.statusCode || 500
+    if (status === 416) return res.status(416).end()
+    res.status(status).json({ error: `Audio read failed: ${error.message}` })
+  })
+}
+
 router.get('/:name/recording-draft/:id/audio', requireRecordingPrivateRead, (req, res) => {
   const dir = recordingsDir(req.params.name)
   const audioPath = join(dir, `${req.params.id}.audio`)
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(audioPath) || !existsSync(metaPath)) return res.status(404).json({ error: 'Audio not found' })
-  const mime = (JSON.parse(readFileSync(metaPath, 'utf8')).audioMime || 'audio/webm').split(';')[0]
-  res.type(mime).set('Accept-Ranges', 'none').send(readFileSync(audioPath))
+  return sendRecordingAudio(res, audioPath, metaPath)
 })
 
 router.put('/:name/recording/:id/owner-interval', requireRw, (req, res) => {
@@ -2013,12 +2048,7 @@ router.get('/:name/recording/:id/audio', requireRead, (req, res) => {
   const audioPath = join(dir, 'publication', `${req.params.id}.audio`)
   const metaPath = join(dir, `${req.params.id}.json`)
   if (!existsSync(audioPath)) return res.status(404).json({ error: 'Audio not found' })
-  let mime = 'audio/webm'
-  if (existsSync(metaPath)) {
-    mime = (JSON.parse(readFileSync(metaPath, 'utf8')).audioMime || mime).split(';')[0]
-  }
-  const buf = readFileSync(audioPath)
-  res.type(mime).set('Accept-Ranges', 'none').send(buf)
+  return sendRecordingAudio(res, audioPath, metaPath)
 })
 
 // PUT /:name/shapes/:id — atomic update (send partial props to merge)
