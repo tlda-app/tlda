@@ -98,6 +98,44 @@ The check is the same shape as verifying `/api/build-info` reports the pushed
 sha: **a deployed sha is not a loaded module.** Ask what each side is actually
 running, not what was pushed.
 
+## What you push replaces what the daemon is running, so it must contain it
+
+`post-receive` on the deploy repo does not only ship the server. It fetches the
+deployed sha into the daemon's checkout, `reset --hard`s that checkout to it, and
+`launchctl kickstart -k`s the daemon. So **the daemon tracks the deployed sha, not
+`main`** — it cannot be left behind it and cannot be left ahead of it.
+
+That makes a push a replacement rather than an addition. **If the sha you push does
+not contain what the server and daemon are running now, the push removes it** — no
+one chooses that, and nothing reports it.
+
+**It fires on any accepted push, not only a push of `main`.** A hotfix, an unrelated
+branch or a revert moves the daemon off its current sha just as completely.
+
+**Check before pushing, not after:**
+
+```sh
+# what the server is running now
+curl -s -H "Authorization: Bearer $TOKEN" "$SERVER/api/build-info"   # -> gitSha
+
+# every commit live on that sha that the sha you are about to push does NOT contain
+git cherry <sha-you-are-pushing> <deployed-gitSha>   # any "+" line is work the push deletes
+```
+
+`git cherry` rather than `git merge-base --is-ancestor`: `main` here is assembled by
+cherry-pick, so the deployed sha is a copy and ancestry reports "missing" for work that
+is fully present. `git cherry` compares patches and marks a landed copy `-`.
+
+**A "+" line is not a merge conflict to resolve later. It is code that is running in
+production and will stop running the moment the push is accepted.**
+
+Measured instance, 2026-08-18: the server reported `gitSha fb985dd4`, which was not an
+ancestor of this repo's `main`, and `main` was missing **all 29** of its commits —
+including two fixes to the daemon's outbox ack path that existed nowhere else. Deploying
+`main` at that moment would have reverted the running server and daemon by 29 commits
+and reintroduced the outage that had been diagnosed hours earlier. The 29 were landed
+onto `main` first; `git cherry main fb985dd4` then reported all 29 as `-`.
+
 ## Rollback
 
 To deploy a known-good sha directly:
