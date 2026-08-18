@@ -39,6 +39,37 @@
 // test for a feature that does not exist yet, this describes something people
 // are using tonight. If that is the wrong call, rename it rather than weaken
 // the assertion.
+//
+// ---------------------------------------------------------------------------
+// Status during the sync strip (tonight) -- decided-not-closed, not broken.
+//
+// The Overleaf pull itself was repointed at the new accept path
+// (server/lib/overleaf-sync.mjs) and both gates that used to block it --
+// the plain working-copy write, the client-manifest DB update -- are fixed
+// and this test gets past both of those assertions now.
+//
+// It still fails at the assertion this file is actually named for: nothing
+// tells Alice's laptop. Root cause, confirmed by reading, not carried
+// forward from the paragraphs above: `acceptedSourceMutationHandler` (the
+// thing that fans `apply-source-update` out to connected daemons) fires only
+// when a `runSerializedProjectSourceOperation` result carries an
+// `acceptedSourceMutation` field, and neither `acceptSourceSnapshot` nor
+// `applyAcceptedSourceEffects` -- the new accept, for every carrier -- ever
+// sets it. This is wider than an Overleaf-specific bug now: it is dark for
+// the plain JSON-carrier HTTP route too, not just the pull this test
+// exercises. Confirmed tonight, not fixed tonight: reported, not this
+// file's fix to make.
+//
+// Separately, and not the reason this test is red: the OUTBOUND half --
+// pushing a local edit back out to a linked Overleaf remote --
+// (`pushSourceToOverleaf`, `server/lib/overleaf-sync.mjs`) already exists,
+// already matches the no-rollback prepare-then-publish-last shape decided
+// for tonight, and has never been called by anything, ever (unlike
+// `prepareSourcePushToOverleaf`, which the dying `processProjectPushSerialized`
+// still calls). Wiring never-executed code into the path Skip's paper
+// travels, at this hour, was judged the wrong risk to take even though the
+// gap is real. It stays unwired on purpose, alongside the WS handler, until
+// something replaces the call site that still needs it.
 import assert from 'assert/strict'
 import { execFileSync } from 'child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'fs'
