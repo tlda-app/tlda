@@ -422,7 +422,12 @@ async function assertMcpPushOrchestrationBehavior() {
       if (urlPath === '/api/projects/mcp-project') return { format: 'svg', mainFile: 'main.tex' }
       if (urlPath === '/api/projects/mcp-project/files') return { files: ['main.tex', 'notes.tex'] }
       if (urlPath === '/api/projects/mcp-project/source-authority') return { currentRevision: 'revision-1' }
-      if (urlPath === '/api/projects/mcp-project/push') return { ok: true }
+      // The MCP push moved off /push onto the JSON accept carrier. The stub
+      // predated that, so this test aborted on `unexpected fetch` before it
+      // reached anything it was written to check -- which reads as the strip
+      // having broken the manifest contract when the strip is what it is
+      // catching up with.
+      if (urlPath === '/api/projects/mcp-project/source-snapshot') return { ok: true }
       throw new Error(`unexpected fetch ${urlPath}`)
     },
   })
@@ -430,7 +435,7 @@ async function assertMcpPushOrchestrationBehavior() {
     '/api/projects/mcp-project',
     '/api/projects/mcp-project/files',
     '/api/projects/mcp-project/source-authority',
-    '/api/projects/mcp-project/push',
+    '/api/projects/mcp-project/source-snapshot',
   ])
   const pushBody = JSON.parse(calls[3].options.body)
   assert.deepEqual(pushBody.files, files)
@@ -454,13 +459,16 @@ async function assertMcpPushOrchestrationBehavior() {
           if (urlPath === '/api/projects/mcp-project') return { format: 'svg', mainFile: 'main.tex' }
           if (urlPath === '/api/projects/mcp-project/files') return filesResponse
           if (urlPath === '/api/projects/mcp-project/source-authority') return { currentRevision: 'revision-1' }
-          if (urlPath === '/api/projects/mcp-project/push') return { ok: true }
+          if (urlPath === '/api/projects/mcp-project/source-snapshot') return { ok: true }
           throw new Error(`unexpected fetch ${urlPath}`)
         },
       }),
       /files failed|files array/,
     )
-    assert.equal(failedCalls.some(call => call.urlPath === '/api/projects/mcp-project/push'), false)
+    // The point of this case: a bad file listing must never reach the carrier.
+    // It checked /push, which the code no longer calls, so it would have passed
+    // no matter what the code did.
+    assert.equal(failedCalls.some(call => call.urlPath === '/api/projects/mcp-project/source-snapshot'), false)
   }
 }
 
