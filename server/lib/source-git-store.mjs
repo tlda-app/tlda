@@ -397,6 +397,16 @@ export function createSourceGitStore({ gitDir }) {
     mirrored: project => readRef('mirrored', project),
     markMirrored: (project, revision, expected) => moveRef('mirrored', project, revision, expected),
 
+    // What the SERVER's own working copy holds. The fourth of these, and the
+    // one whose absence let a document go missing: the effects computed what to
+    // write by diffing the accepted revision against its PARENT, which assumes
+    // the disk already matches the parent. After a crash before the effects
+    // ran, it does not -- and the retry's clean rebase has an identical tree,
+    // so the diff is empty and nothing is ever written. Accepted, reported
+    // preserved, and not on disk.
+    materialized: project => readRef('materialized', project),
+    markMaterialized: (project, revision, expected) => moveRef('materialized', project, revision, expected),
+
     // The last push this project refused. Not a lifecycle phase like the others
     // — it is the pointer that makes a refused commit reachable, and reachable
     // is the whole difference between "nothing was lost" and "he can see it".

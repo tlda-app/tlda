@@ -908,6 +908,12 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     /** The last refused push, and the record that it was refused. */
     lastRefused: async () => (await sourceGit()).refused(project),
 
+    /** What the server's own working copy holds, and the record that it does. */
+    lastMaterialized: async () => (await sourceGit()).materialized(project),
+    async markMaterialized(id, expected) {
+      return (await sourceGit()).markMaterialized(project, id, expected)
+    },
+
     /** The last revision a daemon took, and the record that it did. */
     lastMirrored: async () => (await sourceGit()).mirrored(project),
     async markMirrored(id, expected) {
