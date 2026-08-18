@@ -1149,6 +1149,16 @@ export async function acceptUnderOperationJournal(name, lifecycle, payload, run)
  *
  * So this is the one implementation, and it takes a revision rather than a
  * carrier.
+ *
+ * **`postAcceptEffects` names what RAN, not what was requested**, which is why
+ * it is an array rather than a boolean — *the accept worked* and *the work was
+ * preserved* are different facts and a caller cannot see the second. The
+ * consequence for callers: a field that used to describe an intention now
+ * describes an outcome, and the two agree until they do not. A caller reading
+ * `building` to decide whether to say "build queued" is reading whether a build
+ * was actually dispatched, so on an accept where it was not, the honest answer
+ * is that it was not — silently showing the less informative of two true
+ * strings is the least visible way to get this wrong.
  */
 export async function applyAcceptedSourceEffects(name, lifecycle, {
   sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
@@ -2494,6 +2504,16 @@ export async function acceptSourceSnapshot(name, payload = {}) {
  * manifest of `{path, sha256}` references. That is the reference form
  * `carryForward` already emits and `canonicalSnapshot` already accepts, so
  * nothing about the accept changes.
+ *
+ * **An upload nobody references is an unreachable git object, collected by
+ * `git gc` — which nothing on this path currently runs.** `hash-object -w`
+ * writes a real object, so there is no store of ours accumulating and no
+ * bespoke collection to write. But this store uses plumbing almost
+ * exclusively, and plumbing does not trigger `gc --auto` the way porcelain
+ * does; the one incidental trigger is `ingestBundle`'s `git fetch`, which is
+ * the *other* carrier. So orphaned uploads are recoverable by a standard
+ * mechanism that nothing here schedules. Written down rather than left
+ * implicit: an admitted gap costs nothing and a silent one costs a night.
  */
 router.post('/:name/source-blob', requireRw, express.raw({ type: () => true, limit: '100mb' }), async (req, res) => {
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
