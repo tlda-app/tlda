@@ -615,8 +615,12 @@ async function cmdBook() {
     console.log(green(`Created book "${name}" with ${members.length} members.`))
   } catch (e) {
     if (e.message.includes('already exists')) {
-      // Update members on existing book
-      await api('POST', `/api/projects/${name}/push`, { files: [], members })
+      // Update members on existing book. Membership is not a source
+      // transaction -- it carries no files, no manifest and no expected
+      // revision -- so it moves to the members route rather than a source
+      // carrier. `members` replaces the set: `--members` names the intended
+      // membership, and the additive form cannot express a removal.
+      await api('PATCH', `/api/projects/${name}/members`, { members })
       console.log(`Updated book "${name}" with ${members.length} members.`)
     } else {
       throw e
@@ -682,7 +686,7 @@ async function cmdScratch() {
   // Push the file
   const content = readFileSync(absPath)
   const files = [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }]
-  await api('POST', `/api/projects/${name}/push`, {
+  await api('POST', `/api/projects/${name}/source-snapshot`, {
     files,
     sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile: fileName }),
     expectedRevision: await currentSourceRevision(name),
@@ -857,7 +861,7 @@ async function cmdCreate() {
     }
 
     console.log(`Pushing ${allFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, {
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
       files: allFiles,
       sourceManifest: sourceManifestForFiles(allFiles, { format: 'html' }),
       expectedRevision: await currentSourceRevision(name),
@@ -1013,7 +1017,7 @@ async function cmdCreate() {
       const labels = closure.missing.slice(0, 5).map(item => `${item.from} → ${item.ref}`)
       console.log(dim(`  Skipped ${closure.missing.length} unresolved local ref(s): ${labels.join(', ')}${closure.missing.length > 5 ? '…' : ''}`))
     }
-    await api('POST', `/api/projects/${name}/push`, {
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
       files,
       sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
       expectedRevision: await currentSourceRevision(name),
@@ -1314,7 +1318,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1331,7 +1335,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'html', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1348,7 +1352,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'svg', mainFile }),
         expectedRevision: await currentSourceRevision(name),
