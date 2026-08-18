@@ -225,8 +225,29 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     }
   }
 
+  // The storage shape is enforced here, over every record, rather than only on
+  // the record being written.
+  //
+  // Writing it only on the new record fixes nothing that already exists: each
+  // caller reads the whole journal, mutates one key, and writes the object back,
+  // so records written before this change carry their bytes forward verbatim on
+  // every subsequent write, forever. bregman's 12.2 MB would have stayed 12.2 MB
+  // and the listing would have gone on parsing it -- the growth would stop and
+  // the cost would not. Applying it to the whole map means the first push after
+  // this lands rewrites the file lean.
+  function journalStorageShape(journal) {
+    const byRequestId = {}
+    for (const [requestId, operation] of Object.entries(journal.byRequestId || {})) {
+      const { descriptor: _unread, ...carried } = operation
+      byRequestId[requestId] = carried.orderedEffects
+        ? { ...carried, orderedEffects: withoutFileContent(carried.orderedEffects) }
+        : carried
+    }
+    return { ...journal, byRequestId }
+  }
+
   function writeOperationJournal(journal) {
-    atomicJson(operationsPath, journal, fault)
+    atomicJson(operationsPath, journalStorageShape(journal), fault)
   }
 
   // An accepted push's effect carried `mutation.files`, and those entries carry
