@@ -461,7 +461,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           const authorityRes = await fetch(`/api/projects/${projectName}/source-authority`)
           if (!authorityRes.ok) throw new Error(`source authority failed: ${authorityRes.status}`)
           const sourceAuthority = await authorityRes.json()
-          await fetch(`/api/projects/${projectName}/push`, {
+          // The JSON sibling of `/source-bundle`. A browser has no repository and
+          // no git objects, so it cannot propose a bundle; it hands over the bytes
+          // and the server writes the blob. Same accept, same fast-forward rule
+          // against `expectedRevision`, same post-accept effects — only the
+          // carrier differs. `content` here is raw UTF-8 with no `encoding` field,
+          // which is the other half of what that endpoint has to accept.
+          const pushRes = await fetch(`/api/projects/${projectName}/source-files`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -470,7 +476,19 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               expectedRevision: sourceAuthority.currentRevision,
             }),
           })
-        } catch { /* ignore — server may not be running */ }
+          // This push is the note's only persistence, and `fetch` does not throw
+          // on a rejected revision — so without this, a refused write is a lost
+          // edit that looks exactly like a saved one. Raising it here puts it in
+          // the catch below, which is where every other failure on this path
+          // already goes: same behaviour, now visible.
+          if (!pushRes.ok) throw new Error(`note push refused (${pushRes.status})`)
+        } catch (err) {
+          // Swallowed on purpose: this runs from a debounce timer on every
+          // keystroke, so there is nobody to catch a rethrow and the server may
+          // legitimately not be running. What was missing was not a throw, it
+          // was any trace at all — a refused revision left no evidence anywhere.
+          console.error(`[math-note] ${projectName}: source push failed —`, err)
+        }
         // Hold the suppression flag long enough to skip the next poll cycle
         setTimeout(() => { pushingToDocRef.current = false }, 2500)
       }, 1000)

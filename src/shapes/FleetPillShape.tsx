@@ -201,7 +201,11 @@ export async function createTemporaryMarkdownPageUrl(title: string, markdown: st
   const authorityRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/source-authority`)
   if (!authorityRes.ok) throw new Error(`markdown source authority failed: ${authorityRes.status}`)
   const sourceAuthority = await authorityRes.json()
-  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
+  // The JSON sibling of `/source-bundle`. A browser has no repository and no git
+  // objects, so it cannot propose a bundle; it hands over the bytes and the
+  // server writes the blob. Same accept, same fast-forward rule against
+  // `expectedRevision`, same post-accept effects — only the carrier differs.
+  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/source-files`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -212,7 +216,12 @@ export async function createTemporaryMarkdownPageUrl(title: string, markdown: st
   })
   if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
   const pushResult = await pushRes.json().catch(() => null)
-  await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
+  // Re-pushing identical bytes is still a revision, but it does not rebuild — so
+  // the wait below must accept the build that is already there or it spends its
+  // whole 8s deadline waiting for one that will never start. The old route said
+  // this with `unchanged: true`; the accept says it as `already-current`.
+  const noRebuild = pushResult?.status === 'already-current' || !!pushResult?.unchanged
+  await waitForTemporaryMarkdownBuild(startedAt, noRebuild)
   return `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
 }
 
