@@ -99,22 +99,28 @@ export function buildFleetLayoutPlanInput({
   const naturalSpan = railSpan + variantContentW(variant, vp, layoutTokens.leftW, layoutTokens.chatW, gap)
   // A down-flowing paper is sized to screen height, and its columns are derived
   // from that height (readabilityProfile.ts: leftW = totalH * railAspect). So a
-  // TALLER screen produces WIDER columns, and their sum was checked against the
-  // screen only in the transposed case above — which is the same defect that
-  // comment describes, still live for the ordinary case of a paper read down.
+  // TALLER screen produces WIDER columns, and their sum was never checked against
+  // the screen at all in this case — the same defect the comment above describes,
+  // still live for the ordinary case of a paper read down.
   //
-  // It bites by aspect ratio rather than by size, which is why it survived: with
-  // the default profile a 13" Air M2 (1470x956, viewport 866) yields a natural
-  // span of 1484 against 1470 and runs off the screen, while a 1728-wide screen
-  // yields 1558 against 1728 and fits with 170px to spare. Skip's own machine is
-  // the second one; his advisor's is the first.
+  // The panels sit in the document's margin at 1:1 screen px, so the document and
+  // the layout compete for one screen width. Skip asked for "doc and
+  // chat-over-editor col in the editing layout" to fit ON SCREEN TOGETHER, which
+  // is a co-visibility requirement rather than a don't-run-off-the-edge one:
+  // pulling the layout back to exactly the viewport leaves the document nowhere
+  // to be. So the span the layout may claim is the same layoutSpanFrac the
+  // transposed case already uses, and the 20% it leaves is the document's room.
   //
-  // Clamped at 1, so this only ever pulls an overflowing layout back onto the
-  // screen and never enlarges or rescales one that already fits. Nothing changes
-  // on a screen where the layout was already within the viewport.
+  // With the default profile a 13" Air M2 (1470x956, viewport 866) gives a big-chat
+  // natural span of 1474 against a 1470 screen — the layout alone is the whole
+  // display and the document is off it entirely. At layoutSpanFrac that becomes
+  // ~1176, leaving ~294 for the document.
+  //
+  // Clamped at 1 for the down-flow case, so this only ever pulls a layout in and
+  // never enlarges one whose columns are already narrower than their share.
   const columnScale = flowAxis === 'x' || variant === 'two-chat'
     ? (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan)
-    : Math.min(1, vp.w / Math.max(1, naturalSpan))
+    : Math.min(1, (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan))
   const leftW = Math.round(layoutTokens.leftW * columnScale)
   const chatW3 = Math.round(layoutTokens.chatW * columnScale)
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
