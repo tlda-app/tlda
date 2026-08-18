@@ -5,6 +5,7 @@ import { dirname, join } from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { isTextSourcePath, normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { createSourceGitStore } from './source-git-store.mjs'
+import { gitBlobId } from '../../shared/git-blob-id.mjs'
 
 export const SOURCE_AUTHORITY_UNINITIALIZED = 'uninitialized'
 export const SOURCE_AUTHORITY_CURRENT = 'current'
@@ -47,15 +48,6 @@ function runGitInit(gitDir) {
       ? resolve()
       : reject(new Error(`git init --bare ${gitDir} exited ${code}: ${Buffer.concat(err).toString().trim()}`)))
   })
-}
-
-// Git's object id for a blob, computed here rather than by asking git: sha1
-// over the header `blob <byte length>\0` and then the bytes. It is the same
-// number `git hash-object` returns, and this is a hash of something already in
-// memory, so a subprocess per file would be the whole cost of the operation.
-function gitBlobSha(buffer) {
-  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer))
-  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
 }
 
 function stableValue(value) {
@@ -587,7 +579,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     if (!entry) return null
     if (entry.sha256 && isGitObjectId(entry.sha256)) return entry.sha256
     const content = await entryContent(entry)
-    return content ? gitBlobSha(content) : null
+    return content ? gitBlobId(content) : null
   }
 
   // Only the paths that could have changed are read, and only one revision's
@@ -683,6 +675,34 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
   return {
     readAuthority: state,
     readRevision: revision,
+
+    /**
+     * What a checkout needs to be brought to `id`: the commits it does not
+     * have, and the paths they cover.
+     *
+     * `sourceScope` is this revision's manifest rather than every path the
+     * project has ever held. That is narrower than the scope the build-era
+     * mirror sent, and deliberately: a historical union puts files in scope
+     * that this revision does not contain, and the daemon then has to decide
+     * what a missing file means.
+     */
+    async mirrorPayload(id) {
+      const store = await sourceGit()
+      const record = await revision(id)
+      if (!record) return null
+      return {
+        hash: id,
+        bundleBase64: await store.bundleSince(project, id),
+        sourceScope: record.manifest,
+      }
+    },
+
+    /** The last revision a daemon took, and the record that it did. */
+    lastMirrored: async () => (await sourceGit()).mirrored(project),
+    async markMirrored(id, expected) {
+      const store = await sourceGit()
+      return store.markMirrored(project, id, expected ?? await store.mirrored(project))
+    },
     /** Raw bytes of one file in one revision, without loading the rest. */
     async readRevisionFile(id, path) {
       return revisionFileContent(await revision(id), path)

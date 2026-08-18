@@ -43,7 +43,7 @@ export function daemonOn(who, where, project, manifest) {
 
     /** The daemon starts up and asks what the current revision is. */
     async arrives() {
-      heldRevision = (await sourceLifecycleStore(project)).readAuthority().currentRevision
+      heldRevision = (await (await sourceLifecycleStore(project)).readAuthority()).currentRevision
       return heldRevision
     },
 

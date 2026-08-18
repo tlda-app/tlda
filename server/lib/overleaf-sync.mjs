@@ -518,7 +518,7 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   const sourceManifest = [...new Set([...remoteManifest, ...nonRemotePaths])]
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
-  const expectedRevision = (await sourceLifecycleStore(name)).readAuthority().currentRevision
+  const expectedRevision = (await (await sourceLifecycleStore(name)).readAuthority()).currentRevision
   const bindingTargets = await sourceBindingTargetsForProject(name)
   const result = await processPush(name, {
     expectedRevision,

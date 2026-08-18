@@ -57,6 +57,7 @@ import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
+import { gitBlobId } from '../../shared/git-blob-id.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
@@ -715,7 +716,7 @@ router.get('/:name/files', requireRead, async (req, res) => {
 })
 
 router.get('/:name/source-authority', requireRead, async (req, res) => {
-  try { res.json((await sourceLifecycleStore(req.params.name)).readAuthority()) }
+  try { res.json(await (await sourceLifecycleStore(req.params.name)).readAuthority()) }
   catch (e) { res.status(404).json({ error: e.message }) }
 })
 
@@ -724,7 +725,7 @@ router.get('/:name/source/:file', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   try {
-    const current = (await sourceLifecycleStore(req.params.name)).readCurrentFile(req.params.file)
+    const current = await (await sourceLifecycleStore(req.params.name)).readCurrentFile(req.params.file)
     if (current) {
       if (current.content === null) return res.status(404).json({ error: 'File not found' })
       res.set('X-TLDA-Source-Revision', current.sourceRevision)
@@ -921,6 +922,45 @@ export function setAcceptedSourceMutationHandler(handler) {
   acceptedSourceMutationHandler = typeof handler === 'function' ? handler : null
 }
 
+let acceptedRevisionMirrorHandler = null
+
+export function setAcceptedRevisionMirrorHandler(handler) {
+  acceptedRevisionMirrorHandler = typeof handler === 'function' ? handler : null
+}
+
+/**
+ * Send an accepted revision to the machines holding this project, so the
+ * author's checkout gains a commit for work the server has just accepted.
+ *
+ * **The trigger is the accept, not a build.** Before this, the only caller of
+ * the mirror was the tail of a successful build, so a paper that failed to
+ * build was a paper whose author's disk was never committed — which is how
+ * three hours of somebody's prose came to exist only in a working directory on
+ * 2026-08-18.
+ *
+ * It does not run inside the push transaction and its failure never rejects a
+ * push: the revision is accepted and durable either way, and a machine that is
+ * asleep is not a reason to refuse somebody's writing. `refs/tlda/mirrored`
+ * advances only when a daemon actually took it, so a failed attempt leaves the
+ * next accept bundling from the same older basis rather than assuming this one
+ * landed.
+ */
+async function mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq) {
+  if (!acceptedRevisionMirrorHandler || !sourceRevision) return
+  const payload = await lifecycle.mirrorPayload(sourceRevision)
+  if (!payload) return
+  const previous = await lifecycle.lastMirrored()
+  const result = await acceptedRevisionMirrorHandler({
+    name,
+    ...payload,
+    sourceRevision,
+    acceptSeq,
+  })
+  await lifecycle.markMirrored(sourceRevision, previous)
+  const short = sourceRevision.slice(0, 7)
+  console.log(`[mirror] ${name}@${short} accepted revision mirrored to ${(result?.mirrored || []).join(', ') || 'no daemon'}`)
+}
+
 export function setPendingSourceReplicaHandler(handler) {
   pendingSourceReplicaHandler = typeof handler === 'function' ? handler : null
 }
@@ -977,7 +1017,12 @@ export async function processProjectPush(name, body, transactionTest = {}) {
   )
   if ((((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
     const lifecycle = await sourceLifecycleStore(name)
-    if (result.ok) result.sourceRevision = lifecycle.readAuthority().currentRevision
+    if (result.ok) result.sourceRevision = (await lifecycle.readAuthority()).currentRevision
+    if (result.ok && result.acceptedSourceMutation?.sourceRevision) {
+      const accepted = result.acceptedSourceMutation.sourceRevision
+      void mirrorAcceptedRevision(name, lifecycle, accepted, result.sourceOperationResult?.acceptSeq ?? null)
+        .catch(error => console.error(`[${name}] mirroring accepted revision ${accepted.slice(0, 7)} failed: ${error.message}`))
+    }
     if (typeof body?.requestId === 'string' && body.requestId.trim()) {
       const operationResult = lifecycle.readOperationByRequestId(name, body.requestId)?.terminalResult
       if (operationResult) Object.defineProperty(result, 'sourceOperationResult', { value: operationResult })
@@ -1045,14 +1090,14 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   // the first push of a newly-referenced file does not contain it yet — and the
   // snapshot guard would reject the manifest the client was just told to send.
   const lifecycle = await sourceLifecycleStore(name, { context: pushContext })
-  const authorityBefore = lifecycle.readAuthority()
+  const authorityBefore = await lifecycle.readAuthority()
   if (sourceMutation && expectedRevision === undefined) {
     return { status: 428, ok: false, error: 'expectedRevision is required for source mutations', authority: authorityBefore }
   }
   let lifecycleCandidate = null
   let sourceOperation = null
   if (sourceMutation) {
-    const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
+    const current = authorityBefore.currentRevision ? await lifecycle.readRevision(authorityBefore.currentRevision) : null
     // A v2 entry is `{path, sha256, size}` and carries forward as a reference —
     // an unchanged file costs nothing on the next push, which is what stops a
     // batched bootstrap from re-serializing the whole book once per batch.
@@ -1195,8 +1240,8 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     if (lifecycleCandidate) {
       const { observedServerFiles, observedSourceManifest, ...candidate } = lifecycleCandidate
       const lifecycleResult = authorityBefore.state === 'uninitialized'
-        ? lifecycle.bootstrap({ ...candidate, observedServerFiles, observedSourceManifest })
-        : lifecycle.submit(candidate)
+        ? await lifecycle.bootstrap({ ...candidate, observedServerFiles, observedSourceManifest })
+        : await lifecycle.submit(candidate)
       if (!lifecycleResult.ok) {
         const error = new Error(lifecycleResult.status)
         error.lifecycleResult = lifecycleResult
@@ -1204,7 +1249,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       }
       if (lifecycleResult.status === 'accepted-clean-rebase' && Array.isArray(lifecycleResult.revision?.files)) {
         for (const rebasedFile of lifecycleResult.revision.files) {
-          const content = lifecycle.snapshotFile(lifecycleResult.revision, rebasedFile.path)
+          const content = await lifecycle.snapshotFile(lifecycleResult.revision, rebasedFile.path)
           const previousContent = await readSourceFileAsync(name, rebasedFile.path)
           if (!await writeSourceFileAsync(name, rebasedFile.path, content)) continue
           const existing = changedPushFiles.find(file => file.path === rebasedFile.path)
@@ -1252,7 +1297,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       if (transactionTest.failAt === 'after-remote') throw new Error('Injected failure after remote success')
     }
     if (sourceOperation && acceptedSourceMutation) {
-      const authority = lifecycle.readAuthority()
+      const authority = await lifecycle.readAuthority()
       const terminalResult = {
         ok: true,
         httpStatus: 200,
@@ -1275,20 +1320,22 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         }],
       })
     } else if (acceptedSourceMutation?.sourceRevision) {
-      const authority = lifecycle.readAuthority()
+      const authority = await lifecycle.readAuthority()
       lifecycle.recordAcceptedRevision(name, acceptedSourceMutation.sourceRevision, authority.acceptSeq)
     }
     if (acceptedSourceMutation?.sourceRevision) {
-      const targetRevision = lifecycle.readRevision(acceptedSourceMutation.sourceRevision)
+      const targetRevision = await lifecycle.readRevision(acceptedSourceMutation.sourceRevision)
       const baseRevision = acceptedSourceMutation.previousRevision
-        ? lifecycle.readRevision(acceptedSourceMutation.previousRevision)
+        ? await lifecycle.readRevision(acceptedSourceMutation.previousRevision)
         : null
       const blobs = {}
       for (const file of acceptedSourceMutation.files || []) {
         const bytes = file.encoding === 'base64'
           ? Buffer.from(file.content || '', 'base64')
           : Buffer.from(String(file.content ?? ''))
-        blobs[createHash('sha256').update(bytes).digest('hex')] = bytes.toString('base64')
+        // Keyed by git's blob id, because that is what the revision's manifest
+        // names and what the materializer looks the bytes up by.
+        blobs[gitBlobId(bytes)] = bytes.toString('base64')
       }
       lifecycle.recordReplicaTargets(name, acceptedSourceMutation.sourceRevision, operationOptions.bindingTargets || [], {
         project: name,
@@ -1476,7 +1523,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
   if (decision.eager) {
     // Non-SVG formats: kick off build async, return immediately.
-    const buildAuthority = lifecycle.readAuthority()
+    const buildAuthority = await lifecycle.readAuthority()
     dispatchBuild(name, {
       sourceRevision: acceptedSourceMutation?.sourceRevision || buildAuthority.currentRevision || null,
       acceptSeq: buildAuthority.acceptSeq ?? null,

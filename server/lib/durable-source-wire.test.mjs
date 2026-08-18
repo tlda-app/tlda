@@ -242,7 +242,7 @@ test('two independent daemon writers interleave against one accepted source revi
     mkdirSync(join(projectsDir, project, 'output'), { recursive: true })
     writeFileSync(join(projectsDir, project, 'output', 'relevant-files.json'), JSON.stringify(['other.tex']))
     const lifecycle = await sourceLifecycleStore(project, { context: { referencedRoots: ['main.tex'] } })
-    const base = lifecycle.bootstrap({
+    const base = await lifecycle.bootstrap({
       expectedRevision: null,
       files: [{ path: 'main.tex', content: 'base\n' }],
       sourceManifest: ['main.tex'],
@@ -320,7 +320,7 @@ test('offline binding remains required and completes when its daemon reconnects'
     writeFileSync(join(projectsDir, project, 'source', 'delete.tex'), 'delete me\n')
     await updateClientSourceManifest(project, ['delete.tex', 'main.tex'])
     const lifecycle = await sourceLifecycleStore(project, { context: { referencedRoots: ['delete.tex', 'main.tex'] } })
-    const base = lifecycle.bootstrap({
+    const base = await lifecycle.bootstrap({
       expectedRevision: null,
       sourceManifest: ['delete.tex', 'main.tex'],
       files: [

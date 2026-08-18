@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from 'crypto'
+import { gitBlobId } from '../shared/git-blob-id.mjs'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
@@ -76,10 +77,6 @@ function stableValue(value) {
   return value
 }
 
-function sha256(buffer) {
-  return createHash('sha256').update(buffer).digest('hex')
-}
-
 function byPath(snapshot) {
   return new Map((snapshot?.files || []).map(file => [file.path, file]))
 }
@@ -111,9 +108,9 @@ function resolveBaseRevision({ materializationsFile, bindingId, baseRevision, li
   return { baseRevision: previous.sourceRevision, materializerBinding: null, source: 'previous-accept-seq' }
 }
 
-function changedFiles({ lifecycle, baseRevision, targetRevision }) {
-  const base = lifecycle.readRevision(baseRevision)
-  const target = lifecycle.readRevision(targetRevision)
+async function changedFiles({ lifecycle, baseRevision, targetRevision }) {
+  const base = await lifecycle.readRevision(baseRevision)
+  const target = await lifecycle.readRevision(targetRevision)
   if (!base) throw new Error(`Base revision not found: ${baseRevision}`)
   if (!target) throw new Error(`Target revision not found: ${targetRevision}`)
 
@@ -126,9 +123,9 @@ function changedFiles({ lifecycle, baseRevision, targetRevision }) {
   for (const targetFile of [...targetFiles.values()].sort((a, b) => a.path.localeCompare(b.path))) {
     const old = baseFiles.get(targetFile.path)
     if (old?.sha256 === targetFile.sha256) continue
-    const bytes = lifecycle.readRevisionFile(targetRevision, targetFile.path)
+    const bytes = await lifecycle.readRevisionFile(targetRevision, targetFile.path)
     if (!bytes) throw new Error(`Target file content missing for ${targetFile.path}`)
-    const hash = sha256(bytes)
+    const hash = gitBlobId(bytes)
     if (targetFile.sha256 && targetFile.sha256 !== hash) {
       throw new Error(`Stored hash mismatch for ${targetFile.path}: ${targetFile.sha256} != ${hash}`)
     }
@@ -164,7 +161,7 @@ if (!existsSync(projectDir) || !statSync(projectDir).isDirectory()) throw new Er
 if (!existsSync(operationsPath)) throw new Error(`Source lifecycle operations file not found: ${operationsPath}`)
 
 const lifecycle = createSourceLifecycleStore({ root: lifecycleRoot })
-const authority = lifecycle.readAuthority()
+const authority = await lifecycle.readAuthority()
 const sourceRevision = args.sourceRevision || authority.currentRevision
 if (!sourceRevision) throw new Error('No source revision supplied and authority has no current revision')
 const revisionLifecycle = lifecycle.readRevisionLifecycle(args.project, sourceRevision)
@@ -184,7 +181,7 @@ if (baseRevision === sourceRevision) {
   throw new Error(`Base revision already equals target revision: ${sourceRevision}`)
 }
 
-const manifests = changedFiles({ lifecycle, baseRevision, targetRevision: sourceRevision })
+const manifests = await changedFiles({ lifecycle, baseRevision, targetRevision: sourceRevision })
 const operationId = `materialize:${args.bindingId}:${sourceRevision}`
 const updatedAt = new Date().toISOString()
 const command = stableValue({

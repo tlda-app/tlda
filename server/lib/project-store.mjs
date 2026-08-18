@@ -399,6 +399,10 @@ export async function sourceLifecycleStore(name, options = {}) {
   if (!project) throw new Error(`Project "${name}" not found`)
   return createSourceLifecycleStore({
     root: join(projectDir(name), '.source-lifecycle'),
+    // Names the refs inside the project's revision repository. The repository is
+    // already per project, so this is not what keeps them apart — it is so that
+    // somebody reading `git for-each-ref` in there sees which paper they are in.
+    project: name,
     // The snapshot guard rejects a manifest containing anything it does not
     // consider authored, so it needs the same membership answer as the walk and
     // the push validator. A store built without the chat roots refuses the very

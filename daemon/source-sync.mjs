@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
+import { gitBlobId } from '../shared/git-blob-id.mjs'
 
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, isTextSourcePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
@@ -932,7 +933,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       if (!entry?.path || typeof entry.sha256 !== 'string') continue
       const full = path.join(state.sourceDir, entry.path)
       let local = null
-      try { local = createHash('sha256').update(fs.readFileSync(full)).digest('hex') } catch { local = null }
+      try { local = gitBlobId(fs.readFileSync(full)) } catch { local = null }
       if (local !== entry.sha256) changed.push(entry.path)
     }
     if (changed.length === 0) return
@@ -1002,7 +1003,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       if (state.watcher !== watcher) return
       const rel = sourceRel(state.sourceDir, filePath)
       const fingerprint = sourcePathFingerprint(filePath)
-      const targetHash = fs.existsSync(filePath) ? createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') : null
+      const targetHash = fs.existsSync(filePath) ? gitBlobId(fs.readFileSync(filePath)) : null
       if (rel && sourceMaterializer.consumeCompletedPath(state.bindingId, rel, targetHash)) {
         state.pathFingerprints.set(filePath, fingerprint)
         return

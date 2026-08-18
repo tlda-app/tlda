@@ -11,10 +11,20 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
+import { gitBlobId } from '../shared/git-blob-id.mjs'
 
-function hash(buffer) {
-  return createHash('sha256').update(buffer).digest('hex')
-}
+// Git's object id for a blob: sha1 over the header `blob <byte length>\0` and
+// then the bytes. This is the same number `git hash-object` returns.
+//
+// It is git's rather than a plain sha256 because the server's manifest entries
+// ARE git blob ids now — a revision is a commit and its tree names blobs. Every
+// hash in this file is compared against one the server sent, so the two sides
+// have to name content the same way or an untouched file reads as changed.
+//
+// While a daemon is older than its server the comparisons fail closed: the blob
+// checks throw and materialization refuses. That is the safe direction and it is
+// why this is a hash change rather than a tolerance.
+const hash = gitBlobId
 
 function syncPath(path) {
   const fd = openSync(path, 'r')

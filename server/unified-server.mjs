@@ -68,7 +68,7 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { processProjectPush, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
+import projectRoutes, { processProjectPush, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -1529,7 +1529,7 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 const MIRROR_ATTEMPT_TIMEOUT_MS = Number(process.env.TLDA_MIRROR_ATTEMPT_TIMEOUT_MS) || 60000
 const MIRROR_TOTAL_DEADLINE_MS = Number(process.env.TLDA_MIRROR_TOTAL_DEADLINE_MS) || 150000
 
-setShadowMirrorHandler(createShadowMirrorRpcHandler({
+const mirrorShadowViaDaemon = createShadowMirrorRpcHandler({
   readProject,
   sendDaemonEphemeral: (machineId, operation, params) => sendDaemonDurable(machineId, operation, params, {
     attemptTimeoutMs: MIRROR_ATTEMPT_TIMEOUT_MS,
@@ -1538,7 +1538,16 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
   // Every connected daemon, not just the one that pushed last — a machine that
   // does not hold the project declines for itself.
   listDaemonKeys: () => [...daemonConnections.keys()],
-}))
+})
+
+setShadowMirrorHandler(mirrorShadowViaDaemon)
+
+// The same sender, driven by an accepted revision rather than by a finished
+// build. This is what makes the author's checkout follow the paper: their work
+// is committed because the server accepted it, not because a build later
+// succeeded. Nothing here is a second mirror — it is the one mirror, reached
+// from the event that actually means "there is new work to preserve".
+setAcceptedRevisionMirrorHandler(mirrorShadowViaDaemon)
 
 setSourceBindingTargetProvider(sourceBindingsForProject)
 

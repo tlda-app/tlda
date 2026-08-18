@@ -23,6 +23,7 @@
 // when `activeTargetRevision` was a field in a JSON file and had to be edited
 // by hand to clear it.
 import { spawn } from 'node:child_process'
+import { readFile, rm } from 'node:fs/promises'
 
 const NULL_SHA = '0000000000000000000000000000000000000000'
 
@@ -213,6 +214,39 @@ export function createSourceGitStore({ gitDir }) {
     }
   }
 
+  /**
+   * A bundle carrying `revision`, containing only what the recipient does not
+   * already have.
+   *
+   * `refs/tlda/mirrored/<project>` records the last revision a daemon took, so
+   * it is a *have*: bundling `mirrored..revision` sends the commits since then
+   * rather than the project's whole history. That is the difference between a
+   * few kilobytes and a whole repository on every accept, and the whole
+   * repository in one base64 RPC body is what timed out at 53 s on 2026-08-17
+   * and stopped mirroring bregman altogether.
+   *
+   * With no `mirrored` ref there is nothing to subtract and the bundle carries
+   * everything reachable — the first mirror into a checkout, which is the one
+   * time the full history is the right answer.
+   *
+   * The bundle names a ref rather than a bare sha: `git bundle` refuses to
+   * create a bundle that carries no refs, so a sha alone writes nothing.
+   */
+  async function bundleSince(project, revision) {
+    const have = await readRef('mirrored', project)
+    const ref = refFor('source', project)
+    const bundlePath = `${gitDir}/tlda-bundle-${process.pid}-${revision.slice(0, 7)}`
+    const range = have && await isAncestor(have, revision)
+      ? [`${have}..${ref}`]
+      : [ref]
+    try {
+      await git(['bundle', 'create', bundlePath, ...range])
+      return (await readFile(bundlePath)).toString('base64')
+    } finally {
+      await rm(bundlePath, { force: true }).catch(() => {})
+    }
+  }
+
   /** True when `candidate` is in `head`'s history — the stale-base test. */
   async function isAncestor(candidate, head) {
     if (!candidate || !head) return false
@@ -233,6 +267,7 @@ export function createSourceGitStore({ gitDir }) {
     blobSize,
     readBlobBytes,
     readCommitMeta,
+    bundleSince,
 
     head: project => readRef('source', project),
     advanceHead: (project, next, expected) => moveRef('source', project, next, expected),

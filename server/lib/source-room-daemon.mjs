@@ -41,10 +41,10 @@ function bufferFromBase64(value) {
   return Buffer.from(String(value || ''), 'base64')
 }
 
-function sourceRoomFileText(lifecycle, { revisionId = null, filePath }) {
+async function sourceRoomFileText(lifecycle, { revisionId = null, filePath }) {
   const content = revisionId
-    ? lifecycle.readRevisionFile(revisionId, filePath)
-    : lifecycle.readCurrentFile(filePath)?.content
+    ? await lifecycle.readRevisionFile(revisionId, filePath)
+    : (await lifecycle.readCurrentFile(filePath))?.content
   return content ? content.toString('utf8') : ''
 }
 
@@ -142,7 +142,7 @@ export function createSourceRoomDaemon({
     const snapshot = readJson(paths.snapshot)
     const state = snapshot || readJson(paths.state) || {}
     const lifecycle = await sourceLifecycleStore(project)
-    const authority = lifecycle.readAuthority()
+    const authority = await lifecycle.readAuthority()
     const ydoc = new Y.Doc()
     const ytext = ydoc.getText('source')
     if (typeof snapshot?.yjs === 'string') {
@@ -150,7 +150,7 @@ export function createSourceRoomDaemon({
     } else if (existsSync(paths.yjs)) {
       Y.applyUpdate(ydoc, new Uint8Array(readFileSync(paths.yjs)), SERVER_ORIGIN)
     } else {
-      const text = sourceRoomFileText(lifecycle, { filePath })
+      const text = await sourceRoomFileText(lifecycle, { filePath })
       ytext.insert(0, text)
       atomicWrite(paths.yjs, Buffer.from(Y.encodeStateAsUpdate(ydoc)))
       atomicWrite(paths.working, text)
@@ -427,7 +427,7 @@ export function createSourceRoomDaemon({
     for (const room of targetRooms) {
       const lifecycle = await sourceLifecycleStore(room.project)
       const file = (message.files || []).find(candidate => candidate?.path === room.filePath)
-      const base = sourceRoomFileText(lifecycle, { revisionId: message.previousRevision, filePath: room.filePath })
+      const base = await sourceRoomFileText(lifecycle, { revisionId: message.previousRevision, filePath: room.filePath })
       const incoming = file ? bufferFromBase64(file.content).toString('utf8') : ''
       const merged = mergeText({ base, current: room.ytext.toString(), incoming, project: room.project, filePath: room.filePath })
       if (!merged.ok) {
