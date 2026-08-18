@@ -1253,13 +1253,40 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   // tell an author their writing did not land.
   void mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq)
   ran.push('mirror')
-  // Gated on the working copy, because a build over bytes we failed to write is
-  // a rendered document of the PREVIOUS revision published under this one's
-  // number -- worse than no build, which at least leaves the old output honest.
-  if (materialized) {
+  // **Ask whether to build, rather than always building.**
+  //
+  // The old path asked `shouldBuildOnPush` and suppressed for `unchanged`,
+  // `outside-tree`, `already-building` and a failed relevant-files parse. This
+  // path dispatched unconditionally, so the difference is not new behaviour
+  // appearing — it is a suppression that stopped happening.
+  //
+  // `already-building` is the one that bites: without it a project being edited
+  // continuously stacks a build worker per accept, on a box this fleet has
+  // already taken down once. Each of those workers also outlives the accept
+  // that spawned it, which is how an accept that completed can look like one
+  // that hung.
+  //
+  // Still gated on the working copy, because a build over bytes we failed to
+  // write publishes a render of the PREVIOUS revision under this one's number —
+  // worse than no build, which at least leaves the old output honest.
+  const project = await readProject(name)
+  const decision = shouldBuildOnPush(project, name, {
+    changedFiles: [...changed, ...deleted],
+    anyChanged: changed.length > 0 || deleted.length > 0,
+    building: isBuildKindPending(name, 'build'),
+    ready: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status === 'success',
+  })
+  if (materialized && decision.build) {
     void dispatchBuild(name, { sourceRevision, acceptSeq })
       .catch(error => console.error(`[${name}] build dispatch after accept failed: ${error.message}`))
     ran.push('build')
+  } else if (sourceRevision) {
+    // A revision that correctly did not build still says so. Without these a
+    // suppressed build is indistinguishable from one that never got dispatched.
+    const terminalState = decision.reason === 'already-building' ? 'superseded' : 'not_required'
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'build', terminalState, { reason: decision.reason })
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: terminalState })
+    ran.push(`build-skipped:${decision.reason}`)
   }
 
   // Whoever's work reached the paper is no longer stuck, whichever files it was.
