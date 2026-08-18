@@ -114,6 +114,7 @@ import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemo
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
+import { createSourceChangeAckGate } from '../daemon/source-change-ack-gate.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
@@ -1379,12 +1380,7 @@ const daemonDelivery = new DaemonDeliveryRuntime({
   inflightDeadlineMs: getOutboxInflightDeadlineMs(),
   activityDeliveryCounters: daemonActivityDeliveryCounters,
   beforeSend: message => { if (message?.type === 'source-change') sourceSync.restoreDurableSourceChange(message) },
-  ackGate: payload => {
-    const disposition = editOperationStore.disposition(payload?.__daemon_outbox_id)
-    if (!disposition) return !(payload?.editOperations?.length || payload?.editOperation)
-    if (disposition.kind === 'retry_pending') return disposition.retry_enqueued === 1 && !!daemonOutbox.get(disposition.retry_outbox_id)
-    return disposition.operationIds.every(id => editOperationStore.state(id)?.state !== 'pending')
-  },
+  ackGate: createSourceChangeAckGate({ editOperationStore, outbox: daemonOutbox }),
   onDeadLetter: (payload, outboxId) => {
     if (payload?.type !== 'source-change') return
     const ids = (payload.editOperations || (payload.editOperation ? [{ operation: payload.editOperation }] : [])).map(record => record.operation?.operation_id).filter(Boolean)

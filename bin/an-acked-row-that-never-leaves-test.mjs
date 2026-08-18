@@ -29,6 +29,7 @@ import path from 'node:path'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
+import { createSourceChangeAckGate } from '../daemon/source-change-ack-gate.mjs'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acked-row-'))
 const outbox = new DaemonOutbox(path.join(root, 'outbox.sqlite'))
@@ -39,27 +40,25 @@ const outbox = new DaemonOutbox(path.join(root, 'outbox.sqlite'))
 const received = []
 let clock = Date.parse('2026-08-18T09:36:54Z')
 
-// **The gate here is a faithful re-implementation, not production's own**, and
-// that is this test's one real limitation. The daemon builds its gate inline at
-// `bin/fleet-daemon.mjs:1352` and does not export it, so what is exercised below
-// is `DaemonDeliveryRuntime`'s ack-refusal path driven by a gate shaped like the
-// real one — the same no-disposition-with-edit-operations rule:
+// **The daemon's own gate, not a copy of it.** It used to be declared inline
+// inside the runtime's construction, so a test could only re-implement it and
+// then prove its own re-implementation. Exporting it was a refactor with no
+// behaviour change, and it is what turns "I exercised the runtime" into "I
+// exercised the daemon's gate".
 //
-//     if (!disposition) return !(payload?.editOperations?.length || payload?.editOperation)
-//
-// So this proves the RUNTIME refuses an ack it has received and never releases
-// the row. It does not prove the daemon's own gate reaches that state on a real
-// rejection; that needs the degenerate stale-base — `ok:false`,
-// `status: 'stale-base'`, first attempt, no conflict markers, and crucially **no
-// `authority.currentRevision`**, without which no retry is produced and no
+// What is still stubbed is the STORE the gate consults, which is honest: the
+// question here is what the runtime does when the gate says not-yet, and the
+// store is how the gate is told. Reaching that state from a real rejection needs
+// the degenerate stale-base -- `ok:false`, first attempt, no conflict markers,
+// and no `authority.currentRevision`, without which no retry is produced and no
 // disposition is ever written.
-//
-// Saying which of the two this covers is the whole point of saying it at all.
 const dispositions = new Map()
-const ackGate = payload => {
-  if (!payload?.editOperations?.length) return true
-  return dispositions.get(payload.requestId) === 'settled'
+const editOperationStore = {
+  disposition: outboxId => dispositions.get(outboxId) || null,
+  state: id => ({ state: settledOperations.has(id) ? 'settled' : 'pending' }),
 }
+const settledOperations = new Set()
+const ackGate = createSourceChangeAckGate({ editOperationStore, outbox })
 
 const runtime = new DaemonDeliveryRuntime({
   outbox,
@@ -112,6 +111,11 @@ assert.equal(runtime.handleAck(rowId), false, 'the daemon refuses the ack it has
 // silently: nothing was logged, nothing was marked, and neither end can tell
 // this happened. The server counts a delivered, acked envelope; the daemon holds
 // a row it will never release.
+// **This assertion pins broken behaviour on purpose.** When the defect is
+// fixed it will go red, and that is the signal rather than a regression: the
+// run below is what a fix has to make impossible. Whoever fixes it should
+// invert these three lines rather than delete the file — the recovery
+// assertions at the bottom already describe the shape a fix should have.
 assert.equal(depth(), 1, 'THE DEFECT: the server acked and the row never left the outbox')
 assert.equal(oldest(), firstOldest, 'oldest-pending never advances past the acked row')
 
@@ -128,7 +132,8 @@ assert.ok(received.length >= 3, `the payload is re-uploaded on every cycle (${re
 
 // The recovery that does exist, so the test says what fixes it as well as what
 // breaks it: once the operations settle, the gate opens and the row leaves.
-dispositions.set('req-1', 'settled')
+dispositions.set(rowId, { kind: 'settled', operationIds: ['op-1'] })
+settledOperations.add('op-1')
 clock += 121_000
 runtime.flushDurable()
 assert.equal(runtime.handleAck(rowId), true, 'a settled disposition opens the gate')
