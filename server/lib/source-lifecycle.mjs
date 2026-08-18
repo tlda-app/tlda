@@ -743,6 +743,15 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       return { ...result, authority, revision: record }
     },
 
+    /**
+     * What moved between two accepted revisions. The post-accept effects need
+     * a changed-file set and a bundle does not carry one, so they ask the tree
+     * rather than being handed a list the way the old push route is.
+     */
+    async diffRevisions(base, head) {
+      return (await sourceGit()).diffRevisions(base, head)
+    },
+
     /** The last refused push, and the record that it was refused. */
     lastRefused: async () => (await sourceGit()).refused(project),
 

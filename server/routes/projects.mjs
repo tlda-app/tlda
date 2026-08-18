@@ -977,6 +977,84 @@ async function serializeProjectMirror(name, run) {
   }
 }
 
+/**
+ * What the accept path owes a revision after it has taken it.
+ *
+ * The old push route does four things past the commit: it mirrors to the
+ * author's checkout, fans the revision out to other bound checkouts, dispatches
+ * a build, and clears the stuck-marks of whoever's work just landed. An accept
+ * that does none of them is a green path with the work silently not happening,
+ * which is the failure the replacement exists to remove.
+ *
+ * **Derived, not declared.** The old path is handed `files: [{path, content}]`
+ * and builds the replica payload from it. A bundle carries a tree and no list,
+ * so the changed set comes from `diffRevisions` — the same property that makes
+ * the tree authoritative makes the list unavailable.
+ *
+ * **The journal entry comes first and is not optional.** `recordReplicaTargets`
+ * throws for a revision it has never seen accepted, and `acceptBundle` moves
+ * the ref without touching the journal, so the registration below is the thing
+ * that makes a bundle-accepted revision addressable by every phase after it.
+ *
+ * Returns which effects ran, so the response can say so rather than implying
+ * it. A caller reading `ok: true` cannot otherwise distinguish an accept that
+ * preserved the work from one that dropped it on the floor.
+ */
+async function applyAcceptedBundleEffects(name, lifecycle, {
+  sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
+}) {
+  if (!sourceRevision) return []
+  const ran = []
+  lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq)
+  ran.push('journal')
+
+  const { changed, deleted } = await lifecycle.diffRevisions(previousRevision, sourceRevision)
+
+  const targets = await sourceBindingTargetsForProject(name, sourceBindingId)
+  if (targets.length) {
+    const targetRevision = lifecycle.readRevision(sourceRevision)
+    const baseRevision = previousRevision ? lifecycle.readRevision(previousRevision) : null
+    const blobs = {}
+    for (const path of changed) {
+      const bytes = await lifecycle.readRevisionFile(sourceRevision, path)
+      if (bytes) blobs[createHash('sha256').update(bytes).digest('hex')] = bytes.toString('base64')
+    }
+    lifecycle.recordReplicaTargets(name, sourceRevision, targets, {
+      project: name,
+      sourceRevision,
+      previousRevision,
+      files: changed.map(path => ({ path })),
+      deletedFiles: deleted,
+      sourceBindingId: sourceBindingId || null,
+      requestId: requestId || null,
+      baseManifest: baseRevision?.files || [],
+      targetManifest: targetRevision?.files || [],
+      blobs,
+    })
+    ran.push('replicas')
+  }
+
+  // Neither of these gates the response. The revision is accepted and durable
+  // either way, and a sleeping machine or a busy build queue is not a reason to
+  // tell an author their writing did not land.
+  void mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq)
+  ran.push('mirror')
+  void dispatchBuild(name, { sourceRevision, acceptSeq })
+    .catch(error => console.error(`[${name}] build dispatch after bundle accept failed: ${error.message}`))
+  ran.push('build')
+
+  // Whoever's work reached the paper is no longer stuck, whichever files it was.
+  try {
+    await clearSourceSyncConflicts(name, [...changed, ...deleted], editedBy || null)
+    if (editedBy) await clearSourceSyncRefusal(name, editedBy)
+    ran.push('cleared-conflicts')
+  } catch (error) {
+    // Derived state. It must not unwind an accept that already happened.
+    console.error(`[${name}] clearing sync conflicts after bundle accept failed: ${error.message}`)
+  }
+  return ran
+}
+
 async function mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq) {
   if (!acceptedRevisionMirrorHandler || !sourceRevision) return
   return serializeProjectMirror(name, () => mirrorAcceptedRevisionNow(name, lifecycle, sourceRevision, acceptSeq))
@@ -2040,22 +2118,24 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
         refusedRevision: result.refusedRevision ?? null,
       })
     }
-    // **This accepts and does nothing else, and that is a hole with a deadline.**
-    // The old push route also mirrors to the author's checkout, dispatches a
-    // build, and fans the revision out to other bound checkouts. None of that
-    // runs here yet, which is harmless only while nothing calls this endpoint.
-    //
-    // Wiring the daemon to it before those effects exist would produce a system
-    // that accepts everything and preserves nothing -- a green path with the
-    // work silently not happening, which is the exact failure shape this
-    // replacement is being built to remove. Deploy 2 carries both together or
-    // neither.
+    const sourceRevision = result.revision?.id ?? result.revision ?? null
+    const acceptSeq = result.authority?.acceptSeq ?? null
+    const ran = await applyAcceptedBundleEffects(name, lifecycle, {
+      sourceRevision,
+      acceptSeq,
+      previousRevision: result.previous ?? null,
+      editedBy: req.get('x-tlda-edited-by') || null,
+      sourceBindingId: req.get('x-tlda-source-binding') || null,
+      requestId: req.get('x-tlda-request-id') || randomUUID(),
+    })
     res.json({
       ok: true,
       status: result.status,
-      sourceRevision: result.revision?.id ?? result.revision ?? null,
-      acceptSeq: result.authority?.acceptSeq ?? null,
-      postAcceptEffects: 'none-yet',
+      sourceRevision,
+      acceptSeq,
+      // Named rather than boolean, because "the accept worked" and "the work was
+      // preserved" are different facts and the caller cannot see the second.
+      postAcceptEffects: ran,
     })
   } catch (error) {
     console.error(`[${name}] proposed bundle failed: ${error.message}`)
