@@ -214,7 +214,7 @@ export function TocTab({ query = '' }: { query?: string }) {
       // git objects, so it cannot propose a bundle; it hands over the bytes and
       // the server writes the blob. Same accept, same fast-forward rule against
       // `expectedRevision`, same post-accept effects — only the carrier differs.
-      await fetch(`/api/projects/${slug}/source-files`, {
+      await fetch(`/api/projects/${slug}/source-snapshot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
