@@ -298,6 +298,49 @@ export function createSourceGitStore({ gitDir }) {
     return { ok: true, status: 'accepted', revision: proposed, previous: current }
   }
 
+  /**
+   * What changed between two revisions, derived rather than declared.
+   *
+   * The old push route is handed `files: [{path, content}]` and builds every
+   * post-accept effect from that list. A bundle carries a tree and no list, so
+   * the effects have to ask what moved — which is the same reason the tree is
+   * authoritative in the first place: a path is gone because it is absent, not
+   * because somebody remembered to name it.
+   *
+   * `base` is null for a project's first revision, and then every path in
+   * `head` is a change. That is not an edge case to guard; it is what a first
+   * revision means.
+   *
+   * `-z` rather than the tab-splitting the readers above use: this feeds the
+   * replica fan-out, and a path this misses is a path a bound checkout never
+   * hears changed. A filename containing a tab or newline is unlikely and
+   * silent, which is the combination worth one flag to remove.
+   */
+  async function diffRevisions(base, head) {
+    if (!head) return { changed: [], deleted: [] }
+    // No --full-tree here: it is an ls-tree option and diff-tree rejects it
+    // with a usage error, which `git()` surfaces as a throw rather than an
+    // empty diff. Checked against real output rather than assumed.
+    const args = base
+      ? ['diff-tree', '-r', '-z', '--name-status', base, head]
+      : ['diff-tree', '-r', '-z', '--name-status', '--root', head]
+    const fields = (await git(args)).split('\0').filter(Boolean)
+    const changed = []
+    const deleted = []
+    // NUL-separated status/path pairs. With --root the first field is the
+    // commit id rather than a status, so anything that is not a known status
+    // letter is skipped rather than read as a path.
+    for (let i = 0; i < fields.length - 1; i += 1) {
+      const status = fields[i]
+      if (!/^[AMDTC]/.test(status) || status.length > 3) continue
+      const path = fields[i + 1]
+      i += 1
+      if (status.startsWith('D')) deleted.push(path)
+      else changed.push(path)
+    }
+    return { changed, deleted }
+  }
+
   /** True when `candidate` is in `head`'s history — the stale-base test. */
   async function isAncestor(candidate, head) {
     if (!candidate || !head) return false
@@ -316,6 +359,7 @@ export function createSourceGitStore({ gitDir }) {
     isAncestor,
     ingestBundle,
     fastForward,
+    diffRevisions,
     writeBlob,
     blobSize,
     readBlobBytes,
