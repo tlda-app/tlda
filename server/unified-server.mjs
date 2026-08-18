@@ -92,7 +92,6 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { writeCandidateClip } from './lib/recording-publication.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle } from './lib/wake-route-lifecycle.mjs'
-import { scheduleSubscriptionWakes } from './lib/subscription-wake-scheduling.mjs'
 import { unroutedNativeDescendantIds } from './lib/native-subagent-lifecycle.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
@@ -6933,33 +6932,18 @@ async function dispatchFleetWsMessage(ws, msg) {
     }
     return { ...delivery, notifyBy: state.notifyBy, batch_key: key }
   }
-  const queueSubscriptionBatchWake = ({ delivery, eventId, text, from, traceId, priority }) => {
-    if (delivery.delivery !== 'batched' || !delivery.batch_key) return
-    const state = _subscriptionBatchWakes.get(delivery.batch_key)
-    if (!state) return
-    state.eventIds.add(eventId)
-    state.preview ||= text
-    state.from ||= from
-    state.traceId ||= traceId
-    state.priority ||= priority
-    if (state.timer) return
-    const delay = Math.max(0, Date.parse(state.notifyBy) - Date.now())
-    state.timer = setTimeout(() => { (async () => {
-      _subscriptionBatchWakes.delete(state.key)
-      let pending = false
-      for (const id of state.eventIds) {
-        if (await unreadPendingFor(id, state.recipient)) { pending = true; break }
-      }
-      if (!pending) return
-      const latestStatus = await inboxStatusFor(state.recipient)
-      await requestWake(state.recipient, wakeText({
-        what: `messages from ${await agentDisplayName(state.from)}`,
-        preview: previewForWake(state.preview),
-      }), state.from, state.traceId, { sourceEventIds: [...state.eventIds], priority: state.priority, subscriptionId: state.subscriptionId })
-    })().catch(e => console.error(`[wake] subscription batch wake failed for ${state.recipient}: ${e?.message || e}`))
-    }, delay)
-    state.timer.unref?.()
-  }
+  // NOTE: queueSubscriptionBatchWake was deleted here on 2026-08-17. It was the
+  // only consumer of _subscriptionBatchWakes, and it had been unreachable since
+  // the observer-wake rule landed -- it was passed as an argument to
+  // scheduleSubscriptionWakes(), whose body was empty, so it was never invoked.
+  //
+  // Consequence, recorded rather than fixed in the same pass: reserveSubscriptionBatch
+  // above still WRITES _subscriptionBatchWakes and nothing drains it now, because
+  // the only `.delete` lived in the function removed here. The map grows one entry
+  // per (recipient, subscription, policy). It was already leaking -- the drain was
+  // in dead code -- so this does not make it worse, but it is now unambiguous.
+  // batch_key is still consumed by the delivery record, so reserveSubscriptionBatch
+  // itself is not dead and must not be removed to 'fix' this.
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -7313,19 +7297,14 @@ async function dispatchFleetWsMessage(ws, msg) {
         }
       }
     }
-    await scheduleSubscriptionWakes({
-      deliveries: subscriptionDeliveriesAll,
-      eventId,
-      text,
-      from,
-      traceId,
-      priority: basePriority,
-      wakeRequests,
-      wakeText,
-      agentDisplayName,
-      previewForWake,
-      queueBatchWake: queueSubscriptionBatchWake,
-    })
+    // Observer subscriptions deliberately schedule NO wake. They keep messages
+    // discoverable in inbox and history; only a message addressed to an agent
+    // may create a turn for it. That rule used to live inside
+    // scheduleSubscriptionWakes(), whose body had been emptied when the rule
+    // landed -- so every chat send awaited an empty async function with eleven
+    // arguments, and its two tests asserted that nothing happened. The rule is
+    // enforced by there being no code here; it is written down here so that
+    // whoever considers adding some reads it first.
     // Cache _tempId for idempotent retries
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
