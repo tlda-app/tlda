@@ -804,11 +804,34 @@ async function cmdCreate() {
     if (deletedFiles.length > 0) {
       console.log(dim(`  Removing ${deletedFiles.length} stale artifact file(s) from server`))
     }
-    await api('POST', `/api/projects/${name}/push`, {
-      files: allFiles,
+    // The snapshot IS the project, so every manifest path needs an entry in
+    // `files`. `allFiles` covers the artifacts we just built; the preserved
+    // server paths are files only the server holds, and they are carried
+    // forward by reference rather than re-uploaded. Stale artifacts are not
+    // listed as deletions -- they are absent from the manifest, and a path
+    // that leaves the manifest is deleted by not being named.
+    const current = await api('GET', `/api/projects/${name}/source-entries`)
+    const entryByPath = new Map((current.files || []).map(entry => [entry.path, entry]))
+    // A preserved path with no entry in the current revision can be carried
+    // neither by reference nor by content -- only the server has the bytes.
+    // Dropping it from the manifest would delete someone's file to make this
+    // request well-formed, so fail and name them instead.
+    const uncarriable = preservedServerPaths.filter(path => !entryByPath.has(path))
+    if (uncarriable.length > 0) {
+      throw new Error(
+        `cannot carry ${uncarriable.length} server file(s) forward -- absent from revision ` +
+        `${current.sourceRevision || 'none'}: ${uncarriable.slice(0, 5).join(', ')}` +
+        `${uncarriable.length > 5 ? ', ...' : ''}`
+      )
+    }
+    const carriedForward = preservedServerPaths.map(path => {
+      const entry = entryByPath.get(path)
+      return { path, sha256: entry.sha256, size: entry.size }
+    })
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
+      files: [...allFiles, ...carriedForward],
       sourceManifest,
       expectedRevision: await currentSourceRevision(name),
-      ...(deletedFiles.length > 0 && { deletedFiles }),
     })
     console.log(green('Slides processed.'))
 
