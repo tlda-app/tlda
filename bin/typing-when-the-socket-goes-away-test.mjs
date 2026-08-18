@@ -36,56 +36,26 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { SOURCE_AUTHORITY_UNINITIALIZED } from '../server/lib/source-lifecycle.mjs'
-import { applyAcceptedSourceEffects } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
 
-// `processProjectPush` (the old accept, deleted with the strip) is not the
-// dependency this test needs -- it is a stand-in for whatever a room's
-// checkpoint calls to durably accept a file. This shim calls the same
-// `bootstrap`/`submit` primitives the new JSON carrier's route
-// (`POST /:name/source-snapshot`) calls, in the shape `flushRoom` and
-// `paper()` below already expect: `{status, ok, sourceRevision, building}` on
-// success, `{status: 409, ok: false, error, lifecycleStatus, evidence,
-// authority}` on refusal -- read from the real route on
-// `accept-path-daemon-push`, not guessed. It DOES call the real
-// `applyAcceptedSourceEffects` (journal/replicas/mirror/build/working-copy) --
-// that function is what writes the server's own working copy this test reads
-// back with `readSourceFile`, since `bootstrap`/`submit` alone only commit to
-// the git-object store.
-async function pushViaSourceLifecycle(project, body) {
-  const { files, sourceManifest, expectedRevision = null, editedBy = null, requestId = null } = body
-  const lifecycle = await sourceLifecycleStore(project)
-  const before = await lifecycle.readAuthority()
-  const input = { expectedRevision, files, sourceManifest, dependencyPins: [] }
-  const result = before.state === SOURCE_AUTHORITY_UNINITIALIZED
-    ? await lifecycle.bootstrap(input)
-    : await lifecycle.submit(input)
-  if (!result.ok) {
-    return {
-      status: 409,
-      ok: false,
-      error: result.status,
-      lifecycleStatus: result.status,
-      authority: result.authority,
-      evidence: result.evidence || null,
-      refusedRevision: result.refusedRevision || null,
-    }
-  }
-  const sourceRevision = result.revision?.id ?? null
-  const ran = await applyAcceptedSourceEffects(project, lifecycle, {
-    sourceRevision,
-    acceptSeq: result.authority?.acceptSeq ?? null,
-    previousRevision: before.currentRevision || null,
-    editedBy,
-    sourceBindingId: null,
-    requestId,
-  })
+// `processProjectPush` (the old accept, deleted with the strip) is gone from
+// `createSourceRoomDaemon`'s dependency shape too -- it now takes
+// `acceptSourceSnapshot` directly (production commit `5438a28e2`, "Let the
+// room checkpoint reach the accept without a request") and throws at
+// construction if it is missing, precisely so a stale test cannot silently
+// fall through to the real accept against a store it never set up. This
+// helper mirrors the ONE real adapter `source-room-daemon.mjs` itself uses
+// (`flushRoom`), rather than re-deriving one: `acceptSourceSnapshot` returns
+// `{status, body}`, and the room maps `body` plus `status`-as-HTTP into the
+// `{ok, sourceRevision, building, authority.currentRevision, lifecycleStatus,
+// evidence}` shape this test's `paper()` helper and `flushRoom` both read.
+async function pushViaAcceptSourceSnapshot(project, body) {
+  const response = await acceptSourceSnapshot(project, body)
   return {
-    status: 200,
-    ok: true,
-    sourceRevision,
-    building: ran.includes('build'),
-    authority: result.authority,
+    ...response.body,
+    status: response.status,
+    lifecycleStatus: response.body.status ?? null,
+    authority: { currentRevision: response.body.currentRevision ?? response.body.sourceRevision ?? null },
   }
 }
 
@@ -99,7 +69,7 @@ const findings = []
 function makeRoomDaemon(pushDelayMs = 1_000_000) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush: pushViaSourceLifecycle, pushDelayMs, log: { error() {} },
+    acceptSourceSnapshot: pushViaAcceptSourceSnapshot, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
@@ -110,7 +80,7 @@ async function paper(name, content) {
   await updateProject(name, { pages: 1, buildStatus: 'success' })
   mkdirSync(outputDir(name), { recursive: true })
   writeFileSync(join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
-  const start = await pushViaSourceLifecycle(name, {
+  const start = await pushViaAcceptSourceSnapshot(name, {
     expectedRevision: null, sourceManifest: ['main.tex'], files: [{ path: 'main.tex', content }],
   })
   assert.equal(start.status, 200, `the paper had to exist first: ${start.error}`)
@@ -344,3 +314,11 @@ try {
   for (const daemon of daemons) daemon.closeAll()
   await closeProjectStore()
 }
+
+// `acceptSourceSnapshot` dispatches a real, unawaited build per accept
+// (`void dispatchBuild(...)` inside `applyAcceptedSourceEffects`) -- correct
+// production behaviour, but this test's verdict is already decided above, and
+// with the store closed those builds go on to error into a torn-down store
+// while never letting the event loop drain. Exit once the real assertions
+// have run rather than waiting on work this test was never about.
+process.exit(0)
