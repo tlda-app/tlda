@@ -134,6 +134,55 @@ async function syncTree(root, durabilityProbe) {
   await syncPath(root, durabilityProbe, 'snapshot-directory')
 }
 
+// The only mutable state under `.source-lifecycle`. `revisions/`, `blobs/` and
+// `evidence/` are content-addressed and append-only — a transaction adds entries
+// and never rewrites one — so copying them in order to be able to restore them
+// protects nothing, because nothing damages them.
+//
+// It was not free. On `bregman` that copy was 14 GB of revision history against a
+// 33 MB source tree, taken before `lifecycle.submit` had judged the push, and
+// again in reverse on rollback. The daemon holds one in-flight source request per
+// project, so it held that slot for the whole copy: measured rejection latencies
+// of 14m 26s, 21m 10s and 53m 47s on 2026-08-17, for pushes whose answer was
+// `stale-base`. And it worsened with use — every accepted push appends a revision,
+// so the next push copies a larger history.
+//
+// A rolled-back transaction now leaves its revision directory and blobs behind.
+// They are unreferenced: the restored `authority.json` and `operations.json` are
+// the only things that name a revision, and a later submit of the same content
+// writes the same content-addressed path. Orphans are inert, not garbage to
+// collect.
+const LIFECYCLE_MUTABLE_FILES = ['authority.json', 'operations.json']
+
+async function snapshotLifecycleMutableState(lifecycleRoot, snapshot) {
+  if (!await pathExists(lifecycleRoot)) return
+  await mkdir(snapshot, { recursive: true })
+  for (const file of LIFECYCLE_MUTABLE_FILES) {
+    const from = join(lifecycleRoot, file)
+    if (await pathExists(from)) await cp(from, join(snapshot, file), { preserveTimestamps: true })
+  }
+}
+
+// Restore in place, one file at a time, through a rename. The path this replaces
+// removed the live `.source-lifecycle` and copied the snapshot back over it, so a
+// failure between the two lost the project's entire version history. Here the
+// history is never unlinked, and each mutable file arrives whole or not at all.
+async function restoreLifecycleMutableState(lifecycleRoot, snapshot) {
+  if (!await pathExists(snapshot)) return
+  await mkdir(lifecycleRoot, { recursive: true })
+  for (const file of LIFECYCLE_MUTABLE_FILES) {
+    const from = join(snapshot, file)
+    const to = join(lifecycleRoot, file)
+    if (!await pathExists(from)) {
+      await rm(to, { force: true })
+      continue
+    }
+    const pending = join(lifecycleRoot, `.${file}.rollback-${process.pid}-${randomUUID()}`)
+    await cp(from, pending, { preserveTimestamps: true })
+    await rename(pending, to)
+  }
+}
+
 async function writeRecoveryJournal(snapshotRoot, journal, durabilityProbe) {
   const target = join(snapshotRoot, 'recovery.json')
   const pending = join(snapshotRoot, `.recovery.json.pending-${process.pid}-${randomUUID()}`)
@@ -166,7 +215,7 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       await cp(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
     }
   }
-  if (await pathExists(lifecycleRoot)) await cp(lifecycleRoot, join(snapshotRoot, 'source-lifecycle'), { recursive: true, preserveTimestamps: true })
+  await snapshotLifecycleMutableState(lifecycleRoot, join(snapshotRoot, 'source-lifecycle'))
   await syncTree(snapshotRoot, durabilityProbe)
   await syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
   await syncPath(dir, durabilityProbe, 'project-directory')
@@ -213,10 +262,7 @@ export async function beginProjectSourceTransaction(name, { originalLocalHead = 
       await rename(metadataRestore, metadata)
       await restoreClientSourceManifestSnapshot(name, snapshotRoot)
       await restoreCloneWorktreeAsync(clone, join(snapshotRoot, 'overleaf-worktree'))
-      await rm(lifecycleRoot, { recursive: true, force: true })
-      if (await pathExists(join(snapshotRoot, 'source-lifecycle'))) {
-        await cp(join(snapshotRoot, 'source-lifecycle'), lifecycleRoot, { recursive: true, preserveTimestamps: true })
-      }
+      await restoreLifecycleMutableState(lifecycleRoot, join(snapshotRoot, 'source-lifecycle'))
       finished = true
       await rm(snapshotRoot, { recursive: true })
     },
@@ -264,11 +310,7 @@ export async function rollbackProjectSourceRecovery(name, id) {
   await rename(metadataRestore, metadata)
   await restoreClientSourceManifestSnapshot(name, snapshotRoot)
   await restoreCloneWorktreeAsync(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
-  const lifecycleRoot = join(dir, '.source-lifecycle')
-  await rm(lifecycleRoot, { recursive: true, force: true })
-  if (await pathExists(join(snapshotRoot, 'source-lifecycle'))) {
-    await cp(join(snapshotRoot, 'source-lifecycle'), lifecycleRoot, { recursive: true, preserveTimestamps: true })
-  }
+  await restoreLifecycleMutableState(join(dir, '.source-lifecycle'), join(snapshotRoot, 'source-lifecycle'))
 }
 
 export async function removeProjectSourceRecovery(name, id) {
