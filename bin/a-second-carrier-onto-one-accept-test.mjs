@@ -126,6 +126,75 @@ assert.ok(await lifecycle.diffRevisions(firstId, secondId), 'the two accepts are
 const { changed } = await lifecycle.diffRevisions(firstId, secondId)
 assert.deepEqual(changed, ['main.tex'], 'and the unchanged file cost nothing, carried by sha')
 
+// ---------------------------------------------------------------------------
+// **A caller that sends one file does not delete the others.**
+//
+// The accept needs the whole project; callers know only what changed. The room
+// checkpoint sends exactly one file with a manifest of the whole project, and
+// four CLI sites send `files: []` with a manifest wider still. `carryForward`
+// fills every unnamed manifest path from the current revision BY REFERENCE,
+// which is what keeps an incremental push incremental — without it the only
+// compliant push is the entire project on every flush.
+
+const complete = await lifecycle.carryForward(
+  ['main.tex', 'notes.md'],
+  [{ path: 'main.tex', content: 'one file, changed on its own\n' }],
+)
+assert.deepEqual(complete.map(f => f.path), ['main.tex', 'notes.md'], 'the snapshot covers the manifest')
+assert.ok(complete[1].sha256, 'and the untouched file is carried by reference, not by bytes')
+assert.equal(complete[1].content, undefined, 'so an unchanged file costs nothing to push')
+
+const partial = await lifecycle.submit({
+  expectedRevision: secondId,
+  sourceManifest: ['main.tex', 'notes.md'],
+  files: complete,
+})
+assert.equal(partial.ok, true, 'a one-file push is accepted')
+const partialId = partial.revision?.id ?? partial.revision
+assert.equal((await lifecycle.readRevisionFile(partialId, 'notes.md')).toString(), base64Text,
+  'THE CARRY-FORWARD: the file nobody mentioned still holds its bytes')
+assert.equal((await lifecycle.readRevisionFile(partialId, 'main.tex')).toString(),
+  'one file, changed on its own\n', 'and the one they did mention changed')
+
+// A path declared but neither sent nor held is an error, not an empty file —
+// that is a caller declaring something it never sent, which is the shape that
+// cost bregman four refused pushes in 2.5 hours.
+await assert.rejects(
+  () => lifecycle.carryForward(['main.tex', 'never-existed.tex'], []),
+  /neither sent nor already held/,
+  'a path that was never sent and is not held is refused rather than invented',
+)
+
+// ---------------------------------------------------------------------------
+// **A project too big for one body: upload the bytes, then reference them.**
+//
+// A snapshot is atomic, so it cannot be split the way the old batched push
+// could — and a bootstrap carries nothing forward, so every byte is content.
+// The classroom book is 1492 files and ~525MB, which is not a JSON body.
+//
+// Uploading blobs first turns one enormous request into many bounded ones plus
+// a small manifest of references. The reference is the SAME `{path, sha256}`
+// shape `carryForward` emits, so the accept needs no new case — which is the
+// whole reason this is a few lines rather than a second ingest path.
+
+const uploaded = await lifecycle.putBlob(Buffer.from('a chapter uploaded on its own\n'))
+assert.ok(uploaded.sha256, 'the blob upload returns an id')
+
+const byReference = await lifecycle.submit({
+  expectedRevision: partialId,
+  sourceManifest: ['chapter.tex', 'main.tex', 'notes.md'],
+  files: await lifecycle.carryForward(
+    ['chapter.tex', 'main.tex', 'notes.md'],
+    [{ path: 'chapter.tex', sha256: uploaded.sha256, size: uploaded.size }],
+  ),
+})
+assert.equal(byReference.ok, true, 'a snapshot referencing a pre-uploaded blob is accepted')
+assert.equal(
+  (await lifecycle.readRevisionFile(byReference.revision?.id ?? byReference.revision, 'chapter.tex')).toString(),
+  'a chapter uploaded on its own\n',
+  'THE TWO-PHASE PUSH: bytes that never travelled in the snapshot body are in the revision',
+)
+
 // **The same first write with the field OMITTED**, in a fresh project of its
 // own — because a caller that leaves it out and a caller that sends `null` must
 // not get different answers, and the old sentinel gave them different answers
