@@ -120,6 +120,12 @@ const ALLOWED = {
   // shipped both ends of a severed wire more than once while every unit test
   // stayed green.
 
+  'bin/a-message-id-can-be-read-back-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Reads a message back by the id the server assigned it, over the socket the MCP transport uses. The wire is the whole claim: thread(message_id:) sends the ephemeral verb `event-by-id` and dispatchFleetWsMessage answers it, and calling both functions in one process would prove the two ends and not that they are joined. Endpoint: /ws/fleet.',
+  },
+
   'bin/the-room-and-a-git-remote-test.mjs': {
     count: 1,
     category: 'tooling',
