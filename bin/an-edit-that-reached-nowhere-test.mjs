@@ -39,7 +39,7 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot as processProjectPush } from './lib/accept-source-snapshot.mjs'
 import { clearSourceSyncRefusal, recordSourceSyncRefusal, sourceSyncIsStale, sourceSyncLedger } from '../server/lib/source-sync-conflicts.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-reached-nowhere-'))
