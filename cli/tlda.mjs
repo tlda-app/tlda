@@ -240,7 +240,7 @@ const SPAWN_NON_MODEL_OPTION_FLAGS = new Set([
   'kind', 'list-models', 'machine', 'mode', 'model', 'name', 'permissions',
   'policy', 'refresh', 'server', 'session', 'bot-script', 'bot-name',
   'bot-pid-file', 'bot-heartbeat-file', 'bot-wait-channel', 'fail-if-not-fresh',
-  'mint-id',
+  'mint-id', 'bot-env',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -1580,6 +1580,24 @@ function botMachineId(bot) {
   return bot.machine_id || localMachineId()
 }
 
+// The declared `env:` arrives as one JSON argument. Malformed is an error rather
+// than an empty object: silently launching a bot without the settings its config
+// declares is the failure this whole path is being fixed for, and a second, quieter
+// version of it is not an improvement.
+function parseBotEnvFlag(raw) {
+  if (!raw) return undefined
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`--bot-env must be a JSON object: ${e.message}`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('--bot-env must be a JSON object of NAME=value pairs')
+  }
+  return parsed
+}
+
 function botEnvironmentEntries(bot, paths) {
   const entries = [
     ['PATH', daemonPathEnv()],
@@ -2048,6 +2066,16 @@ export function botMintId(envName, botName) {
 }
 
 async function startBot(unit) {
+  // `bots.yaml`'s `env:` travels as an argument, not as ambient environment. It
+  // is configuration the operator wrote for this bot, so it is data; the
+  // environment this process happens to hold is a different thing, and the
+  // harness allowlist exists to keep that from leaking into a launched bot.
+  // Putting the declared values into our own environment and hoping they carry
+  // meant they met that allowlist and were dropped — the config file has been
+  // describing settings the bot never received.
+  const declaredEnv = Object.fromEntries(
+    Object.entries(unit.bot.env || {}).map(([key, value]) => [key, String(value)]),
+  )
   await runBotCliCommand([
     'agent', 'mint', unit.bot.name,
     '--mint-id', botMintId(unit.envName, unit.bot.name),
@@ -2058,6 +2086,7 @@ async function startBot(unit) {
     '--bot-name', unit.bot.name,
     '--bot-pid-file', unit.paths.pidFile,
     '--bot-heartbeat-file', unit.paths.heartbeatFile,
+    ...(Object.keys(declaredEnv).length ? ['--bot-env', JSON.stringify(declaredEnv)] : []),
   ], unit)
 }
 
@@ -3773,6 +3802,7 @@ export async function runFleetSpawn(spawnArgs, {
       botPidFile: flagFromRaw(spawnArgs, 'bot-pid-file') || undefined,
       botHeartbeatFile: flagFromRaw(spawnArgs, 'bot-heartbeat-file') || undefined,
       botWaitChannel: flagFromRaw(spawnArgs, 'bot-wait-channel') || undefined,
+      botEnv: parseBotEnvFlag(flagFromRaw(spawnArgs, 'bot-env')),
     }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
     printLocalDaemonOutcome(result)
