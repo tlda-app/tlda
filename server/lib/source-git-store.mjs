@@ -232,8 +232,15 @@ export function createSourceGitStore({ gitDir }) {
    * The bundle names a ref rather than a bare sha: `git bundle` refuses to
    * create a bundle that carries no refs, so a sha alone writes nothing.
    */
-  async function bundleSince(project, revision, { includeRefused = false } = {}) {
-    const have = await readRef('mirrored', project)
+  async function bundleSince(project, revision, { includeRefused = false, have: declaredHave } = {}) {
+    // `have` defaults to the `mirrored` ref because the mirror is this
+    // function's original caller and that ref is what the checkout last took.
+    // A proposer recovering from a refusal is asking on its OWN behalf and
+    // holds something different, so it says what it has. Defaulting to the
+    // mirrored ref for that caller would ship a bundle computed against a third
+    // party's position -- correct-looking, and missing exactly the commits the
+    // proposer needs when the two have diverged.
+    const have = declaredHave !== undefined ? declaredHave : await readRef('mirrored', project)
     const ref = refFor('source', project)
     const bundlePath = `${gitDir}/tlda-bundle-${process.pid}-${revision.slice(0, 7)}`
     const range = have && await isAncestor(have, revision)

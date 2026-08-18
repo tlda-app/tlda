@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFile, rm } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createSourceGitStore } from '../server/lib/source-git-store.mjs'
 
@@ -161,5 +161,45 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
     return result
   }
 
-  return { proposeCommit, bundleSince, rebaseOnto, held: () => readRef(HELD_REF), local: () => readRef(LOCAL_REF) }
+  /**
+   * Make the server's commits ours, so that a head we were refused against is
+   * something we can actually rebase onto.
+   *
+   * Fetched into a quarantine ref for the same reason the server quarantines
+   * ours: having somebody's commits and agreeing they are the paper are
+   * different acts, and only the local ref says what this checkout holds.
+   */
+  async function ingest(bundleBase64) {
+    const bundlePath = join(gitDir, `tlda-fetched-${process.pid}-${Date.now()}.bundle`)
+    try {
+      await writeFile(bundlePath, Buffer.from(bundleBase64, 'base64'))
+      await git(['bundle', 'verify', bundlePath])
+      const heads = (await git(['bundle', 'list-heads', bundlePath])).toString('utf8').split('\n').filter(Boolean)
+      for (const line of heads) {
+        const [sha, ref] = line.split(/\s+/)
+        await git(['fetch', bundlePath, `+${sha}:refs/tlda/fetched/${project}/${(ref || sha).replace(/^refs\//, '')}`])
+      }
+      return heads.length
+    } finally {
+      await rm(bundlePath, { force: true }).catch(() => {})
+    }
+  }
+
+  return {
+    proposeCommit,
+    bundleSince,
+    rebaseOnto,
+    ingest,
+    isAncestor,
+    held: () => readRef(HELD_REF),
+    local: () => readRef(LOCAL_REF),
+    hasCommit: async sha => {
+      try {
+        await git(['cat-file', '-e', `${sha}^{commit}`])
+        return true
+      } catch {
+        return false
+      }
+    },
+  }
 }

@@ -707,6 +707,35 @@ router.get('/:name/source-authority', requireRead, async (req, res) => {
   catch (e) { res.status(404).json({ error: e.message }) }
 })
 
+/**
+ * The commits a proposer lacks, so that a refusal is recoverable.
+ *
+ * **Without this the 409 is a dead end that reads as working.** A refusal names
+ * `currentRevision`, and the proposer is told to rebase onto it -- but it cannot
+ * rebase onto a commit whose objects it does not have, and the accept that beat
+ * it is by definition somebody else's commit. The replica fan-out does not close
+ * this: it ships blobs and manifests, not git objects.
+ *
+ * The mirror does eventually deliver the objects, on accept, to every bound
+ * checkout. That is a race, not a mechanism: the 409 can arrive first, and a
+ * recovery path that works only when it loses the race is the shape this
+ * replacement exists to remove. So the proposer asks, and is answered now.
+ *
+ * `have` is what the proposer holds, so the bundle is `have..source` -- and it
+ * carries the refused ref too, because a proposer that wants to show somebody
+ * what was refused needs the commit, not the sha.
+ */
+router.get('/:name/source-bundle', requireRead, async (req, res) => {
+  try {
+    const lifecycle = await sourceLifecycleStore(req.params.name)
+    const payload = await lifecycle.proposerBundle(req.query.have || null)
+    if (!payload) return res.status(404).json({ ok: false, error: 'the project has no accepted revision' })
+    res.json({ ok: true, ...payload })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 // Read a specific source file's content
 router.get('/:name/source/:file', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
@@ -1062,6 +1091,43 @@ async function applyAcceptedBundleEffects(name, lifecycle, {
   } catch (error) {
     // Derived state. It must not unwind an accept that already happened.
     console.error(`[${name}] clearing sync conflicts after bundle accept failed: ${error.message}`)
+  }
+
+  // The edit event, which carries line-level regions rather than filenames.
+  //
+  // The old push route has these handed to it: it was given the file contents,
+  // so it knows what moved inside each one. **A bundle carries a tree and no
+  // regions**, so this path derives them the same way it derives `changed` --
+  // by asking git for both sides and diffing them. Dropping the event instead
+  // would leave the accept correct and the attribution silently gone, which is
+  // not a smaller failure than dropping the mirror, only a quieter one.
+  if (editedBy) {
+    try {
+      const editedFiles = []
+      for (const file of changed) {
+        if (!file.endsWith('.tex') && !file.endsWith('.md')) continue
+        const after = await lifecycle.readRevisionFile(sourceRevision, file)
+        const before = previousRevision ? await lifecycle.readRevisionFile(previousRevision, file) : null
+        const regions = changedTextRegions(before ? before.toString('utf8') : '', after ? after.toString('utf8') : '')
+        if (regions.length) editedFiles.push({ path: file, regions })
+      }
+      if (editedFiles.length) {
+        emitSourceEditEvent({
+          emit: emitGlobalEvent,
+          result: { ok: true, acceptedChangedFiles: editedFiles },
+          project: name,
+          editedBy,
+          requestId: requestId || randomUUID(),
+        })
+        ran.push('edit-event')
+      }
+    } catch (error) {
+      // Swallowed deliberately: the revision is already accepted and durable at
+      // this point, and attribution is derived from it. Letting a diff failure
+      // bubble would turn a missing notification into a failed push and tell an
+      // author their writing did not land when it did.
+      console.error(`[${name}] source edit event after bundle accept failed: ${error.message}`)
+    }
   }
   return ran
 }

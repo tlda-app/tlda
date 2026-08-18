@@ -710,6 +710,27 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     },
 
     /**
+     * The commits a proposer lacks, computed against what the proposer says it
+     * has rather than against the mirror's position.
+     *
+     * This is what makes a refusal recoverable. `mirrorPayload` answers a
+     * different question — what a *bound checkout* needs — and its `have` is the
+     * `mirrored` ref, which is some other party's position. Asking it on a
+     * proposer's behalf returns a bundle that looks right and can omit the very
+     * commits the proposer is missing.
+     */
+    async proposerBundle(have) {
+      const store = await sourceGit()
+      const head = await store.head(project)
+      if (!head) return null
+      return {
+        currentRevision: head,
+        bundleBase64: await store.bundleSince(project, head, { includeRefused: true, have: have || null }),
+        refusedRevision: await store.refused(project),
+      }
+    },
+
+    /**
      * Take a bundle a checkout has proposed and accept it iff it fast-forwards.
      *
      * **This is the accept path with the machinery removed.** There is no
