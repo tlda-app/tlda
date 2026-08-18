@@ -17,6 +17,7 @@ import {
 } from 'tldraw'
 import { toolNameHud } from '../overlays/ToolNameHud'
 import { getPref, subscribePref } from '../preferences'
+import { getZoneWidth } from '../panels/TocTab'
 
 
 const highlightColors: Record<string, string> = {
@@ -37,10 +38,10 @@ export function HighlighterSlider() {
   const isEmbed = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('embed')
   // Default ON. Toggled from the prefs menu (server-backed pref).
   const [zoneEnabled, setZoneEnabled] = useState(() => getPref('hl-zone-enabled'))
-  const [zoneWidth, setZoneWidth] = useState(() => {
-    const stored = parseInt(typeof localStorage !== 'undefined' ? (localStorage.getItem('zone-width') || '') : '')
-    return isNaN(stored) ? 60 : Math.max(20, Math.min(250, stored))
-  })
+  // Third copy of this default, and the one that had diverged furthest: it read
+  // the legacy localStorage key directly and never consulted the pref, so it
+  // carried its own 60 and its own 20/250 clamp. getZoneWidth is the one reader.
+  const [zoneWidth, setZoneWidth] = useState(() => getZoneWidth())
   // subscribePref fires synchronously in-tab the instant the pref changes — no polling.
   useEffect(() => subscribePref(() => setZoneEnabled(getPref('hl-zone-enabled'))), [])
   useEffect(() => {
