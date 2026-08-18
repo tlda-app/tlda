@@ -95,6 +95,8 @@ import {
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
+import { createSourceProposal } from '../daemon/source-proposal.mjs'
+import { createSourcePush } from '../daemon/source-push.mjs'
 import { resolveMintCwd } from '../daemon/mint-cwd.mjs'
 import { sourceFilesFromApiResponse } from '../shared/source-manifest.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
@@ -521,6 +523,16 @@ const sourceSync = createSourceSync({
   sourceChangeSettleDeadlineMs: getSourceChangeSettleDeadlineMs(),
   editOperationStore,
   verifyOutbox: id => daemonOutbox?.get(id),
+  // Source changes are proposed as commits over HTTP rather than sent as file
+  // contents over the socket. `TOKEN` is the rw token, which is what
+  // `requireRw` on the endpoint wants.
+  createSourcePushFor: ({ sourceDir, project }) => createSourcePush({
+    proposal: createSourceProposal({ sourceDir, project, log }),
+    project,
+    server: SERVER,
+    token: TOKEN,
+    log,
+  }),
 })
 
 let lastInvalidSourceOwnerSignature = null

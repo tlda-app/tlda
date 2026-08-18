@@ -232,8 +232,15 @@ export function createSourceGitStore({ gitDir }) {
    * The bundle names a ref rather than a bare sha: `git bundle` refuses to
    * create a bundle that carries no refs, so a sha alone writes nothing.
    */
-  async function bundleSince(project, revision, { includeRefused = false } = {}) {
-    const have = await readRef('mirrored', project)
+  async function bundleSince(project, revision, { includeRefused = false, have: declaredHave } = {}) {
+    // `have` defaults to the `mirrored` ref because the mirror is this
+    // function's original caller and that ref is what the checkout last took.
+    // A proposer recovering from a refusal is asking on its OWN behalf and
+    // holds something different, so it says what it has. Defaulting to the
+    // mirrored ref for that caller would ship a bundle computed against a third
+    // party's position -- correct-looking, and missing exactly the commits the
+    // proposer needs when the two have diverged.
+    const have = declaredHave !== undefined ? declaredHave : await readRef('mirrored', project)
     const ref = refFor('source', project)
     const bundlePath = `${gitDir}/tlda-bundle-${process.pid}-${revision.slice(0, 7)}`
     const range = have && await isAncestor(have, revision)
@@ -298,6 +305,49 @@ export function createSourceGitStore({ gitDir }) {
     return { ok: true, status: 'accepted', revision: proposed, previous: current }
   }
 
+  /**
+   * What changed between two revisions, derived rather than declared.
+   *
+   * The old push route is handed `files: [{path, content}]` and builds every
+   * post-accept effect from that list. A bundle carries a tree and no list, so
+   * the effects have to ask what moved — which is the same reason the tree is
+   * authoritative in the first place: a path is gone because it is absent, not
+   * because somebody remembered to name it.
+   *
+   * `base` is null for a project's first revision, and then every path in
+   * `head` is a change. That is not an edge case to guard; it is what a first
+   * revision means.
+   *
+   * `-z` rather than the tab-splitting the readers above use: this feeds the
+   * replica fan-out, and a path this misses is a path a bound checkout never
+   * hears changed. A filename containing a tab or newline is unlikely and
+   * silent, which is the combination worth one flag to remove.
+   */
+  async function diffRevisions(base, head) {
+    if (!head) return { changed: [], deleted: [] }
+    // No --full-tree here: it is an ls-tree option and diff-tree rejects it
+    // with a usage error, which `git()` surfaces as a throw rather than an
+    // empty diff. Checked against real output rather than assumed.
+    const args = base
+      ? ['diff-tree', '-r', '-z', '--name-status', base, head]
+      : ['diff-tree', '-r', '-z', '--name-status', '--root', head]
+    const fields = (await git(args)).split('\0').filter(Boolean)
+    const changed = []
+    const deleted = []
+    // NUL-separated status/path pairs. With --root the first field is the
+    // commit id rather than a status, so anything that is not a known status
+    // letter is skipped rather than read as a path.
+    for (let i = 0; i < fields.length - 1; i += 1) {
+      const status = fields[i]
+      if (!/^[AMDTC]/.test(status) || status.length > 3) continue
+      const path = fields[i + 1]
+      i += 1
+      if (status.startsWith('D')) deleted.push(path)
+      else changed.push(path)
+    }
+    return { changed, deleted }
+  }
+
   /** True when `candidate` is in `head`'s history — the stale-base test. */
   async function isAncestor(candidate, head) {
     if (!candidate || !head) return false
@@ -316,6 +366,7 @@ export function createSourceGitStore({ gitDir }) {
     isAncestor,
     ingestBundle,
     fastForward,
+    diffRevisions,
     writeBlob,
     blobSize,
     readBlobBytes,
