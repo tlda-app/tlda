@@ -96,10 +96,20 @@ try {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
   assert.equal(sent.length, 2, 'the save that resolves the markers pushes')
+  // A rejection teaches the server's head HASH, not its content. Pushing against
+  // it claims a base this checkout does not hold, which is precisely how the
+  // resolved save can delete whatever the server has that never came down. So the
+  // base is what this checkout holds; this fixture materializes nothing, holds
+  // nothing, and therefore claims nothing.
+  //
+  // Asserted 'rev-server' until 2026-08-18 — "pushes against the revision the
+  // rejection taught us". What the test is for is the line below and is
+  // unchanged: the save that resolves a conflict pushes, and it sends the
+  // resolved text rather than the markers.
   assert.equal(
     sent[1].expectedRevision,
-    'rev-server',
-    'and pushes against the revision the rejection taught us, not the stale one',
+    null,
+    'and claims only a base this checkout holds, not the head the rejection named',
   )
   const resolvedFile = sent[1].files.find(f => f.path === 'main.tex')
   const resolvedText = resolvedFile.encoding === 'base64'

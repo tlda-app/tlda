@@ -120,7 +120,19 @@ try {
   await sleep(1800)
   assert.equal(sourceChanges().length, 3, 'self-heal resubmitted exactly once, no restart')
   const resubmit = lastSourceChange()
-  assert.equal(resubmit.expectedRevision, 'rev-3', 'resubmit rides the refreshed authority revision')
+  // The resubmit is composed fresh from disk, so its base is what this checkout
+  // HOLDS. This fixture materializes nothing, so it holds nothing and claims
+  // nothing. Asserted 'rev-3' until 2026-08-18 — "rides the refreshed authority
+  // revision" — which required the daemon to claim a base whose content it does
+  // not have, and that is how a retry re-deletes what a merge just preserved.
+  //
+  // What this test is actually for is untouched and still asserted below: the
+  // block raises one alarm, edits during backoff are coalesced and not dropped,
+  // the resubmit re-reads current disk bytes, and a clean submit lowers the
+  // alarm. Contention still clears without a human — proved separately, over the
+  // wire, in server/lib/push-base-means-content.test.mjs, where two editors
+  // changing different paragraphs merge and accept with nobody asked.
+  assert.equal(resubmit.expectedRevision, null, 'resubmit claims only a base this checkout holds')
   const mainFile = resubmit.files.find(f => f.path === 'main.tex')
   assert.equal(mainFile.content, 'v2-while-blocked', 'resubmit re-read current disk bytes (no stale overwrite)')
   assert.equal(oks().length, 0, 'alarm still up while unresolved')

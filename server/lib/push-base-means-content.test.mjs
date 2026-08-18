@@ -91,6 +91,7 @@ test('a declined materialization does not let the next push delete what it decli
     watcher.close = () => Promise.resolve()
     const targetSent = []
     targetSync = createSourceSync({
+      sourceChangeSettleDeadlineMs: 300_000,
       sourceBindingsFile: join(root, 'target-bindings.json'),
       log: { info() {}, warn() {}, error() {} },
       sendMsg(message) { targetSent.push(message); return true },
@@ -265,6 +266,7 @@ test('non-overlapping contention still merges and accepts on its own', { timeout
     watcher.close = () => Promise.resolve()
     const targetSent = []
     targetSync = createSourceSync({
+      sourceChangeSettleDeadlineMs: 300_000,
       sourceBindingsFile: join(root, 'target-bindings.json'),
       log: { info() {}, warn() {}, error() {} },
       sendMsg(message) { targetSent.push(message); return true },

@@ -271,7 +271,19 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
     assert.deepEqual(sent[0].files.map(file => file.path), ['main.tex'], 'daemon files must contain only byte-bearing changed paths')
     assert.equal(sent[0].files[0].content, 'second\n')
     assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'daemon sourceManifest must preserve inherited ownership around the changed byte inventory')
-    assert.equal(sent[0].expectedRevision, 'revision-1')
+    // The base is what this checkout HOLDS (materializedRevision), never the
+    // server head it has merely been told about. This fixture never materializes
+    // anything, so it holds nothing and claims nothing — `null` is the honest
+    // value here, not a weakened assertion. The case where a real revision IS
+    // held is covered over the wire in
+    // server/lib/push-base-means-content.test.mjs.
+    //
+    // This asserted 'revision-1' — "reads the durable observed server head" —
+    // until 2026-08-18. That is the defect written down as a requirement: a
+    // source-change carries whole file contents, so a base naming a revision the
+    // sender was refused permission to materialize is a claim it cannot honour,
+    // and the server accepting it deleted three passages of his paper.
+    assert.equal(sent[0].expectedRevision, null)
 
     write(path.join(sourceRoot, 'main.tex'), 'third\n')
     watchers[0].emit('change', path.join(sourceRoot, 'main.tex'))
@@ -282,14 +294,25 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
       ok: true, sourceRevision: 'revision-2',
     }), true)
     assert.equal(sent.length, 2, 'the queued local edit is emitted after acceptance')
-    assert.equal(sent[1].expectedRevision, 'revision-2', 'queued emission reads the durable post-accept server head')
+    // Same value as before, different reason, and the reason is the contract:
+    // the accept advanced what this checkout HOLDS, so it may claim it.
+    assert.equal(sent[1].expectedRevision, 'revision-2', 'queued emission claims the revision the accept made this checkout hold')
     assert.equal(sourceSync.handleSourceChangeResult({
       type: 'source-change-result', project: 'daemon-source-change', requestId: sent[1].requestId,
       ok: false, status: 'stale-base', authority: { state: 'current', currentRevision: 'revision-3' },
     }), true)
     const sourceChanges = sent.filter(message => message.type === 'source-change')
     assert.equal(sourceChanges.length, 3, 'stale-base observation emits one retry')
-    assert.equal(sourceChanges[2].expectedRevision, 'revision-3', 'retry emission reads the durable observed server head')
+    // The clearest statement of the rule in this file. The rejection named
+    // 'revision-3' as the server's head; this checkout still holds 'revision-2',
+    // which is what the accept above gave it, and 'revision-3' never came down.
+    // So the retry claims 'revision-2' and lets the server merge from a base it
+    // can actually reason about — rather than claiming 'revision-3' and handing
+    // over a whole file that is 'revision-3' MINUS whatever it never received.
+    //
+    // Asserted 'revision-3' until 2026-08-18. Three passages of his paper were
+    // deleted by exactly that claim.
+    assert.equal(sourceChanges[2].expectedRevision, 'revision-2', 'retry claims the revision this checkout holds, not the head the rejection named')
   } finally {
     sourceSync.closeAll()
   }

@@ -50,17 +50,25 @@ stateDiagram-v2
     queued --> in_flight: accepted\nadvance revision; submit merged queue
     in_flight --> retrying: first stale-base\nlearn current revision; retry once
     retrying --> blocked: second stale-base
-    retrying --> idle: conflict markers written locally\nwait for human save
+    retrying --> idle: conflict reported\nlocal copy untouched\nwait for human save
     blocked --> idle: authoritative project sync supplies a new revision
     in_flight --> queued: connection lost\nmerge unknown request into queue
     queued --> in_flight: reconnect + authoritative revision seed
 ```
 
 The retry is bounded to one stale-base response. If the server supplied a
-textual merge conflict, the daemon writes those markers into the linked
-checkout and stops deciding. The person's next save is a new ordinary
-submission. A second stale-base without a writable conflict blocks automatic
-submission until an authoritative project sync changes the known revision.
+textual merge conflict, the daemon **reports it and stops deciding**, leaving
+the linked checkout byte-identical to whatever its owner wrote. The person's
+next save is a new ordinary submission. A second stale-base without a conflict
+to report blocks automatic submission until an authoritative project sync
+changes the known revision.
+
+This document said until 2026-08-18 that the daemon *writes those markers into
+the linked checkout*. It stopped doing that in `cf6e30cf0`, because it was
+overwriting a file its owner was editing — on 2026-08-17 it replaced
+voice-dictated text four times in one session. **The merged text is on the
+server and is not currently surfaced anywhere a person can see it.** That is a
+known gap, recorded here rather than described as working.
 
 Known follow-up: non-conflict source-change rejections now surface as critical
 daemon warnings, but the warning goes to the server owner and not to whoever
@@ -222,10 +230,10 @@ The local decision is per changed path. Let:
 | --- | --- | --- |
 | `same` | Leave unchanged | Leave unchanged |
 | neither `pending` nor `drifted` | Apply accepted bytes | Apply accepted bytes |
-| `pending` or `drifted` | Write local/remote conflict markers | Refuse and emit a critical warning |
+| `pending` or `drifted` | Refuse, report the conflict, leave the file untouched | Refuse and emit a critical warning |
 
 Deletion uses the same rule: an unchanged path is deleted; a pending or drifted
-text path receives local content versus an empty remote side; a binary delete
+text path is refused and reported rather than rewritten; a binary delete
 conflict is refused and surfaced.
 
 `pending` and `drifted` are deliberately independent. A filesystem watcher
@@ -247,18 +255,31 @@ The implementation is checked at the same boundaries:
 - `bin/source-change-correlation-test.mjs`: one in-flight submission, queue
   merging, bounded retry, blocking, and reconnect behavior.
 - `bin/source-conflict-delivery-test.mjs`: stale-base conflicts and automatic
-  retry stopping. **This test is red on `main`** and has been since `cf6e30cf0`
-  deliberately removed the working-copy conflict write: it still asserts that a
-  conflict is written into the linked checkout, which is the behaviour that was
-  removed because it overwrote a file its owner was editing. The test needs
-  updating to the current contract — the code should not be reverted to match it.
+  retry stopping.
 - `bin/source-server-update-apply-test.mjs`: a clean accepted server edit reaches
-  a linked checkout, while a watcher-observed pending local edit produces
-  conflict markers instead of being overwritten.
+  a linked checkout, while a watcher-observed pending local edit is refused and
+  reported with the local file left byte-identical.
+- `bin/an-unanswered-source-push-releases-the-project-test.mjs`: a submission
+  whose reply never arrives is released at a bounded deadline instead of pinning
+  the project, its expiry is loud, and the late answer that arrives afterwards is
+  dropped rather than applied to a newer base.
+- `bin/an-edit-made-before-a-restart-is-still-pushed-test.mjs`: an edit made while
+  the daemon was not running is detected by content against the revision the
+  checkout holds, since a fingerprint cannot survive a restart.
+- `server/lib/push-base-means-content.test.mjs`: over a real daemon-to-server
+  wire, a push whose base names a revision this checkout was refused permission
+  to materialize does not delete what it was refused, and ordinary
+  non-overlapping contention still merges and accepts with no human involved.
 
 The live acceptance gate is the same final transition: start from one accepted
 revision, pause the owning daemon, make divergent local and server edits, then
-resume it. The linked checkout must contain both sides as conflict markers.
+resume it. **The linked checkout must be byte-identical to what its owner
+wrote**, the conflict must be reported, and the server must still hold its own
+side — neither side's text may be lost.
+
+Until 2026-08-18 this gate read *"the linked checkout must contain both sides as
+conflict markers."* No implementation could have passed it since `cf6e30cf0`,
+and nothing complained.
 
 ## A push cannot carry a file larger than one request
 
