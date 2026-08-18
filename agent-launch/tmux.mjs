@@ -98,21 +98,39 @@ export function runtimeStateFromProcessList(panePids, psText) {
   return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
 }
 
+// `probed` says whether this answer is an observation or a failure to observe.
+// `runtime: false` alone cannot tell those apart: it is returned both when tmux
+// answered and the session has no runtime, and when the catch below fired
+// because tmux was missing or `ps` blew its 5s timeout. Every caller that only
+// reads `runtime` treats "I could not look" as "nothing is there", which is
+// safe for a retry and unsafe for anything destructive -- and the two diverge
+// exactly under load, when `ps` is slowest and the wrong answer is likeliest.
+// A caller about to do something irreversible must require `probed`.
 export async function sessionRuntimeState(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   try {
     const panes = await tmux(tmuxSocket, 'list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}')
     const panePids = panes.stdout.trim().split(/\s+/).filter(Boolean)
-    if (!panePids.length) return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
+    // tmux answered and the session has no panes. That is an observation.
+    if (!panePids.length) return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null, probed: true }
     const ps = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' })
-    return runtimeStateFromProcessList(panePids, ps.stdout)
+    return { ...runtimeStateFromProcessList(panePids, ps.stdout), probed: true }
   } catch {
     // Missing tmux sessions or ps failures mean no confirmed runtime.
   }
-  return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null }
+  return { runtime: false, mcp: false, daemonKey: null, fleetId: null, envName: null, probed: false }
 }
 
 export async function sessionHasRuntime(session, options = {}) {
   return (await sessionRuntimeState(session, options)).runtime
+}
+
+// Did we observe that nothing is running, as opposed to failing to observe?
+// Only a completed probe can answer yes. Callers about to do something
+// irreversible -- retiring an identity, marking a seat dead -- must ask this
+// rather than negating `runtime`, because `!runtime` is also true when the probe
+// never ran.
+export function sessionConfirmedDead(state) {
+  return !!state?.probed && !state.runtime
 }
 
 export async function terminateTmuxSession(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {

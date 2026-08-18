@@ -120,7 +120,7 @@ import { EditOperationStore } from '../daemon/edit-operation-store.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { launchMintProcess } from '../agent-launch/index.mjs'
-import { sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { sessionConfirmedDead, sessionRuntimeState, terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { markAgentDead, wsMintShell } from '../agent-launch/register.mjs'
 import { resolveModelSpec } from '../agent-launch/models.mjs'
 import { compilePermissionGrant, permissionClampLine, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
@@ -883,6 +883,15 @@ async function mintProcessAlive(facts) {
   return (await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET })).runtime
 }
 
+// The same probe, but reporting whether it managed to look. `mintProcessAlive`
+// folds "no runtime" and "could not tell" into one `false`, which is right for a
+// caller that will retry and wrong for one that is about to retire an identity.
+async function mintProcessConfirmedDead(facts) {
+  const tmuxSession = facts?.processState?.tmux_session
+  if (!tmuxSession) return true
+  return sessionConfirmedDead(await sessionRuntimeState(tmuxSession, { tmuxSocket: TMUX_SOCKET }))
+}
+
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   envName: ACTIVE_ENV,
@@ -1165,7 +1174,14 @@ async function rpcMint(params = {}) {
   // Only when nothing is running under it. An un-joined mint whose process is
   // alive is an agent that has not bound yet, and it can still bind through the
   // login marker; marking its seat dead would retire a live agent's identity.
-  if (!joined && !(await mintProcessAlive(facts))) {
+  //
+  // Confirmed dead, not merely not-confirmed-alive. The probe answers `runtime:
+  // false` both when the session is empty and when it could not look -- a missing
+  // tmux socket, or `ps` exceeding its 5s timeout, which is likeliest exactly when
+  // the box is loaded and mints are already failing. Read as a plain boolean it
+  // retires the identity of a live agent on a slow `ps`, which is the outcome the
+  // paragraph above exists to prevent. Not looking is not evidence of absence.
+  if (!joined && await mintProcessConfirmedDead(facts)) {
     await cleanupPreReservedBotSeat(facts.registrationError || 'launched but never joined the fleet')
   }
   return {
