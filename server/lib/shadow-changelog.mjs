@@ -126,12 +126,39 @@ export async function readShadowIndexInfo(name) {
   const repoDir = getShadowRepoDir(name)
   if (!existsSync(join(repoDir, '.git'))) return null
 
-  const { stdout } = await execFileAsync(
+  // This wants two facts: how many real commits there are, and the oldest one.
+  // It used to read the entire log -- `%H%x09%at%x09%s` for every commit -- and
+  // throw all of it away except `length` and `[0]`. Reading a commit's subject
+  // means reading the commit object, so the cost was one object read per commit,
+  // per project, on every app load. Measured on the live volume 2026-08-18 there
+  // are 758 shadow repos and the client asks for all of them:
+  //
+  //   balancing-act             951 commits   full log 986.8ms   rev-list 28.8ms
+  //   dev-linked-remote-probe   905 commits   full log 1434.2ms  rev-list 26.0ms
+  //
+  // `rev-list` walks the same graph without reading commit contents, so the
+  // count is 34-55x cheaper. Only the two oldest commits are then read, because
+  // only they can be the answer: `init` is the synthetic root.
+  //
+  // `git log --reverse -n 2` looks like it would do this and does not -- the
+  // limit is applied before the reverse, so it returns the two NEWEST. That
+  // silently wrong form is why the oldest pair comes off `rev-list` instead.
+  const { stdout: revList } = await execFileAsync(
     'git',
-    ['log', '--reverse', '--format=%H%x09%at%x09%s'],
+    ['rev-list', 'HEAD'],
     { cwd: repoDir, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
   )
-  const versions = stdout
+  const hashes = revList.trim().split('\n').filter(Boolean)
+  if (hashes.length === 0) return null
+
+  // rev-list is newest-first, so the tail is the oldest.
+  const oldestPair = hashes.slice(-2).reverse()
+  const { stdout: oldestLog } = await execFileAsync(
+    'git',
+    ['log', '--no-walk', '--format=%H%x09%at%x09%s', ...oldestPair],
+    { cwd: repoDir, timeout: 10000, maxBuffer: 1024 * 1024 },
+  )
+  const oldestCommits = oldestLog
     .trim()
     .split('\n')
     .filter(Boolean)
@@ -139,11 +166,15 @@ export async function readShadowIndexInfo(name) {
       const [hash, unixTime, message] = line.split('\t')
       return { hash, timestamp: parseInt(unixTime, 10) * 1000, message }
     })
-    .filter(version => version.message !== 'init')
+    .sort((a, b) => a.timestamp - b.timestamp)
 
-  if (versions.length <= 1) return null
+  const initCount = oldestCommits.filter(commit => commit.message === 'init').length
+  const versions = oldestCommits.filter(commit => commit.message !== 'init')
+  const commitCount = hashes.length - initCount
+
+  if (commitCount <= 1 || versions.length === 0) return null
   return {
-    commitCount: versions.length,
+    commitCount,
     oldest: {
       hash: versions[0].hash,
       timestamp: versions[0].timestamp,
