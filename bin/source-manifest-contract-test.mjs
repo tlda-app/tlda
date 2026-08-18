@@ -27,13 +27,28 @@
 //     real, load-bearing invariant (local and remote both roll back
 //     together, or neither does) that also needs re-expression once the
 //     daemon effects wiring is in place.
-//   - assertPushSuppliersCarryManifest / assertPutRequiresCallerManifest /
-//     assertMcpCallersCarryManifest / assertMcpPushOrchestrationBehavior
-//     grep caller source for the OLD wire shape (sourceManifest +
-//     expectedRevision as manifest-comparison inputs). Whether callers still
-//     carry sourceManifest under the new mechanism, or whether that concept
-//     moves to something else, is a question for whoever owns the caller
-//     tracks (CLI/browser) — not decided here.
+//   - assertPushSuppliersCarryManifest was RETIRED (2026-08-18) rather than
+//     repointed: it looped over 10 caller files matching a text pattern of
+//     the OLD wire shape and asserted nothing when a row matched zero lines,
+//     so as callers actually migrated to `/source-snapshot`'s new envelope
+//     tonight, rows went silently vacuous one at a time (6 of 10 already had)
+//     rather than failing. Each caller track (CLI/browser/daemon/MCP) now
+//     owns proving its own migrated callers carry the new envelope, inside
+//     its own tests -- a second cross-cutting grep here duplicating that is
+//     the enumerated-list-kept-twice failure this repo has already shipped
+//     once. See its former definition (left in place, emptied) for the full
+//     reasoning.
+//   - assertPutRequiresCallerManifest / assertMcpCallersCarryManifest /
+//     assertMcpPushOrchestrationBehavior still grep caller source for the OLD
+//     wire shape, but fail loudly (assert.ok on route/text found) rather than
+//     silently -- they do not have assertPushSuppliersCarryManifest's
+//     vacuous-loop shape, so they were left as-is here. Whether their callers
+//     still carry sourceManifest under the new mechanism, or whether that
+//     concept moves to something else, is still a question for whoever owns
+//     those caller tracks. One correction if anyone touches them: do NOT
+//     assert that a caller sends explicit carry-forward references --
+//     `acceptSourceSnapshot` now calls `carryForward` before
+//     `canonicalSnapshot` itself, so no caller needs to do that anymore.
 //
 // This file currently imports `processProjectPush`, which still exists on
 // `main`, so nothing below is red because of this pass. See pm-sync for the
@@ -238,32 +253,23 @@ function advanceRemote(root, remote, { resetTo = null } = {}) {
   git(['push', 'origin', 'HEAD:master'], checkout)
 }
 
-function assertPushSuppliersCarryManifest() {
-  const checks = [
-    ['cli/tlda.mjs', line => line.includes('/push') && line.includes('files')],
-    ['daemon/source-sync.mjs', line => line.includes("type: 'source-change'")],
-    ['server/unified-server.mjs', line => line.includes('processProjectPush(project')],
-    ['server/lib/overleaf-sync.mjs', line => line.includes('processProjectPush(name')],
-    ['mcp-server/fleet-tools.mjs', line => line.includes('/push')],
-    ['mcp-server/source-push-orchestration.mjs', line => line.includes('/push')],
-    ['mcp-server/index.mjs', line => line.includes('/push')],
-    ['src/panels/TocTab.tsx', line => line.includes('/push')],
-    ['src/shapes/FleetPillShape.tsx', line => line.includes('/push')],
-    ['src/shapes/MathNoteShape.tsx', line => line.includes('/push')],
-  ]
-  for (const [file, isSupplierLine] of checks) {
-    const lines = fs.readFileSync(path.join(process.cwd(), file), 'utf8').split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      if (!isSupplierLine(lines[i])) continue
-      const snippet = lines.slice(i, i + 16).join('\n')
-      if (snippet.includes('files: []') && snippet.includes('members')) continue
-      assert.match(snippet, /sourceManifest/, `${file} file-push supplier missing sourceManifest:\n${snippet}`)
-      if (lines[i].includes('/push')) {
-        assert.match(snippet, /expectedRevision/, `${file} source-mutation supplier missing expectedRevision:\n${snippet}`)
-      }
-    }
-  }
-}
+// assertPushSuppliersCarryManifest was RETIRED here (2026-08-18, during the
+// old-sync strip). It grepped 10 caller files for a text pattern of the OLD
+// wire shape (`sourceManifest` + `expectedRevision` beside a `/push` or
+// push-shaped line) and asserted nothing when a row's pattern matched zero
+// lines -- so as callers actually migrated to `/source-snapshot`'s new
+// envelope tonight, rows went vacuous one at a time rather than failing: 6 of
+// 10 already matched nothing, and one (MathNoteShape) matched a stray
+// unrelated `/push` string elsewhere in the file rather than the caller shape
+// the row was meant to name, so it neither failed nor tested anything real.
+//
+// Not repointed at the new shape either, on purpose: each caller track
+// (CLI/browser/daemon/MCP) now owns proving its OWN migrated callers carry
+// the new envelope correctly, inside its own tests. A second, cross-cutting
+// grep here duplicating that -- an enumerated list of callers kept in a
+// second place -- is the exact failure this repo has already shipped once
+// (`passthroughConfigEnv`, four copies, already diverged). Silent-vacuous was
+// the bug; a second copy of the same check is not the fix for it.
 
 async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
   const sourceRoot = path.join(root, 'daemon-source-change')
@@ -480,7 +486,7 @@ async function main() {
     assert.equal(isSourceFilePath('main.synctex.gz', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('main.run.xml', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('main.fdb_latexmk', { mainFile: 'main.tex' }), false)
-    assertPushSuppliersCarryManifest()
+    // assertPushSuppliersCarryManifest() retired -- see its former definition above.
     await assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root)
     assertPutRequiresCallerManifest()
     assertMcpCallersCarryManifest()
