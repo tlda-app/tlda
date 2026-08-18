@@ -38,7 +38,7 @@ export function createShadowMirrorRpcHandler({
   daemonAddressFor = daemonAddress,
   keyTimeoutMs = MIRROR_KEY_TIMEOUT_MS,
 }) {
-  return async function mirrorShadowViaDaemon({ name, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq }) {
+  return async function mirrorShadowViaDaemon({ name, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq, refusedRevision = null }) {
     const project = await readProject(name)
     const lastKey = project?.lastSourceMachineId && project?.lastSourceEnvName
       ? daemonAddressFor(project.lastSourceMachineId, project.lastSourceEnvName)
@@ -58,6 +58,12 @@ export function createShadowMirrorRpcHandler({
       const send = sendDaemonEphemeral(key, 'mirror-shadow-ref', {
         project: name,
         hash,
+        // Forwarded explicitly. This function rebuilds the params object field
+        // by field rather than spreading, so anything added at either end and
+        // not added HERE is produced by the server, consumed by the daemon, and
+        // silently dropped in between — which is what happened to this field on
+        // its first day.
+        refusedRevision,
         bundleBase64,
         sourceScope,
         sourceRevision,
