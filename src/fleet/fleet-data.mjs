@@ -1033,6 +1033,11 @@ export function connect() {
   _ws.onopen = () => {
     _clearConnectTimeout()
     _lastWsOpenAt = Date.now()
+    // Ends this outage. Without it, `_disconnectedAt = _disconnectedAt ||
+    // Date.now()` in onclose only ever takes a value the FIRST time the socket
+    // closes, so disconnectedFor() measures from the first disconnect this page
+    // ever had rather than from the current one — see the comment there.
+    _disconnectedAt = 0
     markWsActivity()
     _wsReconnectBuffer.resolveConnected()
     _reconnectDelay = 1000
@@ -1111,6 +1116,10 @@ export function connect() {
     resetWsRequestIdleTimers(_wsCallbacks)
     _ws = null
     _connected = false
+    // `||` so a burst of closes does not restart the clock mid-outage. It is
+    // only correct because onopen clears this back to 0 — without that, this
+    // line silently means "the first disconnect ever" and disconnectedFor()
+    // reports a number that is plausible whenever anyone can see it.
     _disconnectedAt = _disconnectedAt || Date.now()
     if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null }
     notify('connection', { type: 'connection', connected: false })
