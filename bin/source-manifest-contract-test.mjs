@@ -1,5 +1,44 @@
 #!/usr/bin/env node
 
+// STATUS during the old-sync strip (2026-08-18): the 3 promises in this file
+// that did not depend on `processProjectPush` at all (project-files DB
+// pragmas, isSourceFilePath classification, cmdInit's no-README/manifest
+// contract) have been extracted unchanged to
+// bin/source-project-store-contract-test.mjs and removed from here.
+//
+// Everything remaining below is still entangled with the mechanism being
+// deleted and needs a full re-derivation pass, not a mechanical repoint,
+// once `applyAcceptedBundleEffects` (accept-path-daemon-push) lands on
+// `main` and its real crash/failure points are known. In particular:
+//   - assertDaemonSourceChangeSeparatesOwnershipFromBytePayload is the
+//     incident test itself (three deleted passages of his paper, see the
+//     comments inline) and must survive in some form — do not delete it.
+//   - The crash-recovery mechanics (snapshot-file/snapshot-directory/
+//     journal-temp-file/journal-file/journal-directory ordering,
+//     `.source-transactions` recovery states, credential-non-leak checks)
+//     are old-mechanism-specific: acceptRevision is a single atomic
+//     `commit-tree`, there is no separate snapshot/journal phase, so these
+//     dangerous-window assertions have no equivalent shape yet. The
+//     *promise* (a crash mid-push does not corrupt local state or leak
+//     credentials, and recovery is possible) is real and owed; the window
+//     needs to be re-derived the way bin/source-restart-mid-edit-test.mjs's
+//     window was, once the new mechanism's actual failure points exist.
+//   - The Overleaf remote push/rollback/compensation-race sections assert a
+//     real, load-bearing invariant (local and remote both roll back
+//     together, or neither does) that also needs re-expression once the
+//     daemon effects wiring is in place.
+//   - assertPushSuppliersCarryManifest / assertPutRequiresCallerManifest /
+//     assertMcpCallersCarryManifest / assertMcpPushOrchestrationBehavior
+//     grep caller source for the OLD wire shape (sourceManifest +
+//     expectedRevision as manifest-comparison inputs). Whether callers still
+//     carry sourceManifest under the new mechanism, or whether that concept
+//     moves to something else, is a question for whoever owns the caller
+//     tracks (CLI/browser) — not decided here.
+//
+// This file currently imports `processProjectPush`, which still exists on
+// `main`, so nothing below is red because of this pass. See pm-sync for the
+// disposition once the daemon caller lands.
+
 import assert from 'assert/strict'
 import { execFileSync } from 'child_process'
 import { createHash } from 'crypto'
