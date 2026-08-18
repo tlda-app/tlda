@@ -79,6 +79,13 @@ export class DaemonOutbox {
     return this.queue.pending([], limit).map(parseRow)
   }
 
+  // Same order, minus the types the caller cannot currently send. See
+  // SqliteTransportOutbox.pendingExcludingTypes for why this is not a filter
+  // applied after the fetch.
+  pendingExcludingTypes(types = [], limit = 100) {
+    return this.queue.pendingExcludingTypes(types, [], limit).map(parseRow)
+  }
+
   markAttempt(id) {
     this.queue.markAttempt(id)
   }
