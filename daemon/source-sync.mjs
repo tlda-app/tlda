@@ -887,9 +887,50 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
+  // An edit made shortly before the daemon restarts is invisible to everything
+  // that normally notices one. chokidar was not running when it happened, and
+  // startSourceWatcher seeds pathFingerprints from CURRENT disk, so the
+  // reconciler has no earlier fingerprint to differ against and never fires. The
+  // edit is simply never pushed, and nothing brings it back except another edit
+  // to the same file.
+  //
+  // Measured 2026-08-18: his rewritten passage, written 05:36:41Z, was still
+  // unpushed at 05:44 across three samples — 165 bytes apart and flat — and the
+  // daemon had restarted at 05:38:14Z. The restart both caused it and was the
+  // only thing that could have cleared it.
+  //
+  // So compare CONTENT, once, against the revision this checkout last actually
+  // materialized. Fingerprints are a within-process signal and cannot survive a
+  // restart; the materialization journal is on disk and does. A file whose bytes
+  // differ from the revision we hold is a local edit nobody has sent.
+  function detectUnpushedLocalEdits(state) {
+    const binding = sourceMaterializer.readBinding(state.bindingId)
+    const revision = binding?.materializedRevision
+    if (!revision) return
+    const manifest = sourceMaterializer.readMaterialization(state.bindingId, revision)?.targetManifest
+    if (!Array.isArray(manifest) || manifest.length === 0) return
+    const changed = []
+    for (const entry of manifest) {
+      if (!entry?.path || typeof entry.sha256 !== 'string') continue
+      const full = path.join(state.sourceDir, entry.path)
+      let local = null
+      try { local = createHash('sha256').update(fs.readFileSync(full)).digest('hex') } catch { local = null }
+      if (local !== entry.sha256) changed.push(entry.path)
+    }
+    if (changed.length === 0) return
+    log.warn(`${state.projectName}: ${changed.join(', ')} differs from the revision this checkout holds — an edit the watcher never saw, pushing it now`)
+    for (const rel of changed) state.onFileChange(rel)
+  }
+
   function reconcileSourceWatcher(state) {
     if (sourceWatchers.get(state.projectName) !== state) return
     expireStaleSourceRequests()
+    // First tick after this watcher started, when onFileChange is wired and the
+    // fingerprint map is one cycle old at most.
+    if (!state._checkedForUnpushedEdits) {
+      state._checkedForUnpushedEdits = true
+      detectUnpushedLocalEdits(state)
+    }
     const nextPaths = sourceWatcherPaths(state)
     const next = new Map()
     for (const filePath of nextPaths) {
@@ -933,6 +974,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       ),
     })
     state.watcher = watcher
+    // Reseeding the fingerprints is exactly what blinds the reconciler to an
+    // edit made while this watcher was not running, so every watcher start —
+    // process restart, chokidar error retry, a re-sync — re-arms the content
+    // check below.
+    state._checkedForUnpushedEdits = false
     state.pathFingerprints = new Map(watchPaths.map(filePath => [filePath, sourcePathFingerprint(filePath)]))
     const handle = (filePath) => {
       if (state.watcher !== watcher) return
