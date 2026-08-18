@@ -235,6 +235,7 @@ async function assertDaemonSourceChangeSeparatesOwnershipFromBytePayload(root) {
   const sent = []
   const watchers = []
   const sourceSync = createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
     sourceBindingsFile: path.join(root, 'source-bindings.json'),
     log: { info() {}, warn() {}, error() {} },
     sendMsg(message) { sent.push(message); return true },

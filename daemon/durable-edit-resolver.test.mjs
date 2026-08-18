@@ -28,6 +28,7 @@ function fixture(root = mkdtempSync(join(tmpdir(), 'tlda-durable-edit-')), retry
     ackGate,
   })
   sync = createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
     sourceBindingsFile: join(root, 'bindings.json'), log: quiet,
     sendMsg: message => delivery.send(message), isConnected: () => false,
     resolveEditor: () => [], editOperationStore: operations,

@@ -20,9 +20,16 @@ export function resolveWatchedSourceFile(sourceWatchers, filePath) {
   return matches.length === 1 ? matches[0] : null
 }
 
-export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
+export function createSourceChangeCorrelation({ makeId = randomUUID, log = console, now = Date.now } = {}) {
   const pending = new Map()
   const pendingProjects = new Set()
+  // When each pending project's request went out, so a reply that never arrives
+  // can be noticed. Without this a project sits in `pendingProjects` forever and
+  // every later edit merges into `queued` and is never sent: on 2026-08-18 one
+  // unanswered reply held `bregman` for 93 minutes, and because the durable
+  // outbox re-registers an in-flight source-change through `beforeSend`, a daemon
+  // restart re-armed the same wedge within three minutes.
+  const pendingSince = new Map()
   const queued = new Map()
   const blocked = new Set()
   // The payload that drove a project into `blocked`, retained so the sync layer can
@@ -72,6 +79,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       const message = { ...payload, requestId, expectedRevision: payload.expectedRevision ?? null, [DAEMON_OUTBOX_ID_FIELD]: payload[DAEMON_OUTBOX_ID_FIELD] || randomUUID() }
       pending.set(requestId, { project: payload.project, payload, retried })
       pendingProjects.add(payload.project)
+      if (!pendingSince.has(payload.project)) pendingSince.set(payload.project, now())
       return message
     },
     beginReconnect() {
@@ -79,6 +87,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       // their original identity. Only later, unsent changes remain queued.
       pending.clear()
       pendingProjects.clear()
+      pendingSince.clear()
     },
     finishReconnect() {
       const payloads = [...queued.values()]
@@ -91,6 +100,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       pending.delete(message.requestId)
       const project = request.project
       pendingProjects.delete(project)
+      pendingSince.delete(project)
       if (message.ok) {
         clearBlock(project)
       } else {
@@ -117,6 +127,35 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       return true
     },
     takeRetry() { return retries.shift() ?? null },
+    // Release any project whose in-flight request has gone unanswered past
+    // `deadlineMs`, and hand back a descriptor per project so the caller can say
+    // so out loud. This is a DEADLINE, not a retry policy: it does not resend the
+    // request that died, it does not back off, and it does not decide when to try
+    // again. It only stops one lost reply from pinning a project for the rest of
+    // the process's life. What it does release is the payload that was queued
+    // BEHIND the dead request — those edits were never sent at all, and it hands
+    // hands them back to the caller to send. Draining through `retries` would not
+    // work here: that queue is only drained inside handleSourceChangeResult, and
+    // the whole point of this path is that no result is coming.
+    expireStalePending(deadlineMs) {
+      const cutoff = now() - deadlineMs
+      const expired = []
+      for (const [project, since] of pendingSince) {
+        if (since > cutoff) continue
+        const requestIds = []
+        for (const [requestId, request] of pending) {
+          if (request.project === project) requestIds.push(requestId)
+        }
+        for (const requestId of requestIds) pending.delete(requestId)
+        pendingProjects.delete(project)
+        pendingSince.delete(project)
+        let queuedPayload = queued.get(project) ?? null
+        if (queuedPayload && blocked.has(project)) queuedPayload = null
+        else if (queuedPayload) queued.delete(project)
+        expired.push({ project, requestIds, waitedMs: now() - since, queuedPayload })
+      }
+      return expired
+    },
     pendingRequest(requestId) { return pending.get(requestId) || null },
     settleOperations(project, operationIds) {
       if (!operationIds?.length) return
@@ -180,9 +219,12 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
 const BLOCKED_RETRY_BASE_MS = 2000
 const BLOCKED_RETRY_MAX_MS = 30000
 
-export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, editOperationStore = null, verifyOutbox = () => null, retryFault = null, reconcileIntervalMs = 1000, watch = chokidar.watch }) {
+export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, sourceChangeSettleDeadlineMs, editOperationStore = null, verifyOutbox = () => null, retryFault = null, reconcileIntervalMs = 1000, now = Date.now, watch = chokidar.watch }) {
+  if (typeof sourceChangeSettleDeadlineMs !== 'number' || !Number.isFinite(sourceChangeSettleDeadlineMs) || sourceChangeSettleDeadlineMs <= 0) {
+    throw new Error(`createSourceSync requires a positive sourceChangeSettleDeadlineMs (got ${JSON.stringify(sourceChangeSettleDeadlineMs)})`)
+  }
   const sourceWatchers = new Map()
-  const sourceCorrelation = createSourceChangeCorrelation({ log })
+  const sourceCorrelation = createSourceChangeCorrelation({ log, now })
   const sourceMaterializer = createSourceMaterializer({ journalPath: `${sourceBindingsFile}.materializations.json` })
 
   function sendSourceChange(payload, retried = false) {
@@ -263,7 +305,17 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   function handleSourceChangeResult(message) {
     const request = sourceCorrelation.pendingRequest(message.requestId)
-    if (!request) return false
+    if (!request) {
+      // Say which reply was thrown away. Dropping it in silence made a reply that
+      // never came and a reply that came under an id we do not hold look
+      // identical in the record, and both server replay paths answer with the
+      // STORED operation's requestId rather than the live one
+      // (server/unified-server.mjs:8871 and :9580) — so a mismatch is a real
+      // shape, not a hypothetical. On 2026-08-18 that indistinguishability was
+      // most of the 93 minutes nobody could see the wedge.
+      log.warn(`dropped source-change-result for ${message.project || 'unknown project'}: requestId ${message.requestId || 'missing'} is not one we have in flight`)
+      return false
+    }
     const bindingId = request.payload?.sourceBindingId
     if (!message.ok && message.status === 'stale-base' && bindingId && message.authority?.currentRevision) {
       sourceMaterializer.observeServerHead(bindingId, message.authority.currentRevision)
@@ -392,7 +444,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
     if (conflicted.length > 0) {
       sourceCorrelation.holdForHuman(project)
-      log.warn(`${project}: accepted server source conflicted locally in ${conflicted.join(', ')} — resolve the markers; the next save syncs`)
+      // Say what happened. Nothing writes conflict markers any more —
+      // writeConflictsToWorkingCopy and the materializer both deliberately leave
+      // the person's file alone — so telling them to resolve markers sends them
+      // looking for text that is not in the file.
+      log.warn(`${project}: server source diverged from this checkout in ${conflicted.join(', ')} — your copy was not modified and no conflict markers were written; the server's version is on the server`)
       return { ok: false, accepted: true, reason: 'conflicted', sourceRevision, applied, conflicted }
     }
     if (Array.isArray(sourceManifest)) state.authorityManifest = new Set(sourceManifest)
@@ -810,8 +866,30 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
+  // A source-change whose reply never comes used to pin its project forever.
+  // Expiry is deliberately LOUD: the give-up path this sits beside dead-lettered
+  // three of his edits at 18:47:24Z on 2026-08-17 with nothing in the log and
+  // nothing on screen, and a wire that reports health while it is severed is the
+  // failure this whole path exists to end. So every expiry goes to log.error AND
+  // raises the critical daemon-warning that lights the SyncErrorPill.
+  function expireStaleSourceRequests() {
+    for (const expiry of sourceCorrelation.expireStalePending(sourceChangeSettleDeadlineMs)) {
+      const waited = Math.round(expiry.waitedMs / 1000)
+      log.error(`source change for ${expiry.project} got no reply in ${waited}s (requestId ${expiry.requestIds.join(', ') || 'none'}); releasing the project so later edits can be sent`)
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'source-change-unanswered',
+        severity: 'critical',
+        project: expiry.project,
+        message: `A source push for ${expiry.project} was never answered by the server (waited ${waited}s). Edits made since then were held and are being sent now; if this repeats, this machine's edits are not reaching the server.`,
+      })
+      if (expiry.queuedPayload) sendSourceChange(expiry.queuedPayload)
+    }
+  }
+
   function reconcileSourceWatcher(state) {
     if (sourceWatchers.get(state.projectName) !== state) return
+    expireStaleSourceRequests()
     const nextPaths = sourceWatcherPaths(state)
     const next = new Map()
     for (const filePath of nextPaths) {

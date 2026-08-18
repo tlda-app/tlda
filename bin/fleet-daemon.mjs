@@ -66,7 +66,7 @@ import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-s
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs,
+  getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
 import { terminalInputAllowedFromConfig } from '../shared/terminal-input-policy.mjs'
@@ -517,6 +517,7 @@ const sourceSync = createSourceSync({
   sendMsg,
   isConnected: () => !!_rws?.connected,
   resolveEditor: jsonlIngestor.resolveEditor,
+  sourceChangeSettleDeadlineMs: getSourceChangeSettleDeadlineMs(),
   editOperationStore,
   verifyOutbox: id => daemonOutbox?.get(id),
 })

@@ -483,6 +483,7 @@ test('offline binding remains required and completes when its daemon reconnects'
     watcher.close = () => Promise.resolve()
     const targetSent = []
     targetSync = createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
       sourceBindingsFile: join(root, 'target-bindings.json'),
       log: { info() {}, warn() {}, error() {} },
       sendMsg(message) { targetSent.push(message); return true },

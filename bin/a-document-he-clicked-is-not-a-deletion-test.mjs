@@ -54,6 +54,7 @@ try {
   writeFileSync(join(root, 'AGENTS.md'), '# agents\n\nGuidance.\n')
 
   const sync = createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
     sourceBindingsFile: join(root, 'missing-bindings.json'),
     log: { info() {}, error() {}, warn() {} },
     sendMsg(message) { sent.push(message); return true },

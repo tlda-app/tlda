@@ -37,6 +37,7 @@ writeFileSync(sourceBindingsFile, JSON.stringify({
 
 const sent = []
 const sourceSync = createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
   sourceBindingsFile,
   log: { info() {}, error() {}, warn() {} },
   sendMsg(message) { sent.push(message); return true },

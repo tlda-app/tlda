@@ -26,6 +26,7 @@ const silentWatch = () => {
   return watcher
 }
 const sourceSync = createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
   sourceBindingsFile: bindingsFile,
   log: { info() {}, error() {}, warn(message) { warnings.push(message) } },
   sendMsg(message) { sent.push(message); return true },

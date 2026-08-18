@@ -541,6 +541,33 @@ export function getMintRegistrationDeadlineMs() {
   return Math.round(seconds * 1000)
 }
 
+// How long the daemon waits for the server's reply to a source-change before it
+// declares the request unanswered and releases the project.
+//
+// This is a BACKSTOP, not the cure. A source-change that goes unanswered is a
+// server-side fault; all this does is stop one of them pinning a project for the
+// life of the daemon process.
+//
+// The default is measured, and the measurement is the surprising part. Reading
+// operations.json on the Fly machine on 2026-08-18, every rejected bregman
+// operation eventually DID get its terminal result — 14m26s, 21m10s, 14m06s and
+// 53m47s after it was prepared. The server is very late, not silent. So a
+// deadline anywhere near a handful of minutes expires requests that were going
+// to be answered, and the daemon would then have two concurrent pushes in flight
+// for one project against a server already struggling to answer one.
+//
+// 5400s therefore sits clear of the worst latency observed (53m47s) with room,
+// and still converts a wedge that was unbounded — and that survived a restart,
+// because beforeSend re-arms it from the durable outbox — into one that ends and
+// says so. Shorten it here only against fresh latency numbers.
+export function getSourceChangeSettleDeadlineMs() {
+  const seconds = loadDaemonYaml().sourceChangeSettleDeadlineSeconds ?? 5400
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`daemon.yaml: sourceChangeSettleDeadlineSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
+  }
+  return Math.round(seconds * 1000)
+}
+
 export function getJsonlTailIdleMs() {
   const seconds = loadDaemonYaml().jsonlTailIdleSeconds ?? 600
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {

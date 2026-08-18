@@ -19,6 +19,7 @@ function silentWatch() {
 
 function makeSourceSync(root, sent = []) {
   return createSourceSync({
+  sourceChangeSettleDeadlineMs: 300_000,
     sourceBindingsFile: join(root, 'missing-bindings.json'),
     log: { info() {}, error() {}, warn() {} },
     sendMsg(message) { sent.push(message); return true },
@@ -81,11 +82,16 @@ try {
   assert.equal(conflicted.ok, false)
   assert.deepEqual(conflicted.applied, [])
   assert.deepEqual(conflicted.conflicted, ['main.tex'])
+  // This block used to assert the materializer wrote `<<<<<<< local checkout`
+  // into the person's file. cf6e30cf0 ("Stop the daemon writing a
+  // server-computed merge over a live file") deliberately stopped doing that and
+  // did not update this test, so it has been red on `main` ever since and nobody
+  // noticed. The shipped behaviour is the authority: the conflict is REPORTED and
+  // the local file is left exactly as its owner left it.
   const text = readFileSync(main, 'utf8')
-  assert.match(text, /^<<<<<<< local checkout/)
-  assert.match(text, /local concurrent edit/)
-  assert.match(text, /peer edit/)
-  assert.match(text, />>>>>>> accepted source/)
+  assert.equal(text, 'local concurrent edit\n', 'a conflict leaves the local file byte-identical to what its owner wrote')
+  assert.doesNotMatch(text, /<<<<<<<|>>>>>>>/, 'no conflict markers are written into a file its owner is editing')
+  assert.doesNotMatch(text, /peer edit/, 'the accepted server text is not merged over live local prose')
   assert.equal(sent.filter(message => message.type === 'daemon-warning').length, 0)
 
   console.log('source server update apply: ok')
