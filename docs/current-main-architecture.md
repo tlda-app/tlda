@@ -84,9 +84,20 @@ operation fails. The server does not fall back to processing a local lookalike.
 
 ### A deployed sha says nothing about the code a daemon is running
 
-Every environment's daemon executes the same file out of Skip's shared checkout.
-All three LaunchAgents — `com.tlda.fleet-daemon.testing`, `.stable`, and `.pic` —
-run `/Users/skip/work/tlda/bin/fleet-daemon.mjs`.
+Each environment's daemon runs whatever `bin/fleet-daemon.mjs` its own LaunchAgent
+points at, and **they do not all point at the same checkout.** As of 2026-08-18:
+
+| LaunchAgent | checkout |
+|---|---|
+| `com.tlda.fleet-daemon.testing` | `/Users/skip/worktrees/daemon-testing` |
+| `com.tlda.fleet-daemon.stable` | `/Users/skip/work/tlda` |
+| `com.tlda.fleet-daemon.pic` | `/Users/skip/work/tlda` |
+
+Read the plist rather than this table — that is the authority, and this line has
+already been stale once. `testing` is the environment Skip uses, so the one most
+likely to be reasoned about is the one that is not in the shared checkout.
+Grepping `~/work/tlda` for the code a testing daemon is running answers a question
+about a different tree.
 
 So a daemon runs **whatever the working tree held when its process started**. It
 does not track `main`, it is not shipped by a deploy, and a commit's presence in
