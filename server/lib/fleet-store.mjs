@@ -5446,7 +5446,22 @@ export class FleetStore {
       .map(b => (before && (!b.to || b.to > before) ? { ...b, to: before } : b));
     if (!usable.length) return [];
     const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
-    const E = this._EVT;
+    // The branches select only what the page is CHOSEN by. `_EVT` carries the
+    // `to_json` correlated subquery, and inside a branch that subquery runs once
+    // per candidate row — a probe into a 2.58M-row table for every row that the
+    // outer LIMIT is about to discard. Counted on the live database at limit 100:
+    //
+    //   label        candidate rows   to_json probes, before -> after
+    //   ops                   4,236          4,236 -> 100    (42x)
+    //   bot                   5,905          5,905 -> 100    (59x)
+    //   fleet                 9,868          9,868 -> 100    (99x)
+    //   dot-claude           12,281         12,281 -> 100   (123x)
+    //
+    // So the page is picked on (id, timestamp) and the winners are hydrated once,
+    // below. Warm that is worth 7-27%; the probes are random reads into
+    // `recipients`, so cold it should be worth more, and how much more is
+    // unmeasured — a cold run needs a page cache nobody may drop on this box.
+    const E = 'id, timestamp';
     const parts = [];
     const params = [];
     for (const block of usable) {
@@ -5490,9 +5505,15 @@ export class FleetStore {
     }
     const outer = order === 'desc' ? 'DESC' : 'ASC';
     params.push(limit);
+    // Same page, same order, same rows — verified against the previous form on
+    // four real labels, byte-identical id sequences on every one. The only
+    // difference is that the full row is fetched after the cut instead of before.
     const rows = this.db.prepare(
-      `SELECT * FROM (${parts.join(' UNION ')})
-        ORDER BY timestamp ${outer}, id ${outer} LIMIT ?`
+      `SELECT ${this._EVTE} FROM events e
+        JOIN (SELECT id FROM (SELECT * FROM (${parts.join(' UNION ')})
+               ORDER BY timestamp ${outer}, id ${outer} LIMIT ?)) pick
+          ON pick.id = e.id
+        ORDER BY e.timestamp ${outer}, e.id ${outer}`
     ).all(...params);
     // Same exit as queryChatHistory: `to_json` becomes the `recipients` array
     // here or not at all. Returning raw rows leaves every `to:` term matching
