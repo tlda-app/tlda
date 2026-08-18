@@ -16,8 +16,52 @@
 //
 // The count of participants is a loop bound, not a mechanism. Two daemons and
 // five daemons run the same code.
-import { processProjectPush } from '../../server/routes/projects.mjs'
+// `bootstrap`/`submit` already ARE the accept -- `canonicalSnapshot`, the
+// staleness test, `deriveClassifications`, stored evidence, clean-rebase
+// acceptance, `markRefused` -- so this calls them directly rather than
+// reimplementing a second copy, the same way the real
+// `POST /:name/source-snapshot` route does. See commit 62e046981.
+import { runSerializedProjectSourceOperation, applyAcceptedSourceEffects } from '../../server/routes/projects.mjs'
 import { sourceLifecycleStore } from '../../server/lib/project-store.mjs'
+import { SOURCE_AUTHORITY_UNINITIALIZED } from '../../server/lib/source-lifecycle.mjs'
+
+/**
+ * The in-process equivalent of `POST /:name/source-snapshot` -- same
+ * bootstrap/submit routing on authority state, same refusal shape
+ * (`evidence.classifications[]`), same post-accept effects. Not a second
+ * implementation: every branch below mirrors the route body verbatim.
+ */
+export async function pushSourceSnapshot(project, { expectedRevision, sourceManifest, files, editedBy = null }) {
+  const lifecycle = await sourceLifecycleStore(project)
+  const previousRevision = (await lifecycle.readAuthority()).currentRevision || null
+  const result = await runSerializedProjectSourceOperation(project, async () => {
+    const before = await lifecycle.readAuthority()
+    const input = { expectedRevision, files, sourceManifest, dependencyPins: [] }
+    return before.state === SOURCE_AUTHORITY_UNINITIALIZED
+      ? lifecycle.bootstrap(input)
+      : lifecycle.submit(input)
+  })
+  if (!result.ok) {
+    return {
+      status: 409,
+      status_: result.status,
+      currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
+      refusedRevision: result.refusedRevision ?? null,
+      evidence: result.evidence ?? null,
+    }
+  }
+  const sourceRevision = result.revision?.id ?? result.revision ?? null
+  const acceptSeq = result.authority?.acceptSeq ?? null
+  await applyAcceptedSourceEffects(project, lifecycle, {
+    sourceRevision,
+    acceptSeq,
+    previousRevision: result.previous ?? previousRevision,
+    editedBy,
+    sourceBindingId: null,
+    requestId: `test-${Math.random().toString(36).slice(2)}`,
+  })
+  return { status: 200, sourceRevision, acceptSeq }
+}
 
 /**
  * Someone with a checkout on their own machine.
@@ -29,6 +73,11 @@ export function daemonOn(who, where, project, manifest) {
   const checkout = new Map()
   let staged = new Map()
   let heldRevision = null
+  // The new carrier's snapshot must name every manifest path on every push --
+  // content for what changed, a carried-forward `{path, sha256}` for what
+  // didn't. This is what a daemon holding a checkout actually knows: the sha
+  // of each file as of the revision it last pulled.
+  let knownShas = new Map()
   // A push carries who made it, because a refusal that cannot name a machine
   // reports that somebody is stuck without saying who — which is most of the
   // way to reporting nothing.
@@ -43,7 +92,13 @@ export function daemonOn(who, where, project, manifest) {
 
     /** The daemon starts up and asks what the current revision is. */
     async arrives() {
-      heldRevision = (await (await sourceLifecycleStore(project)).readAuthority()).currentRevision
+      const lifecycle = await sourceLifecycleStore(project)
+      heldRevision = (await lifecycle.readAuthority()).currentRevision
+      knownShas = new Map()
+      if (heldRevision) {
+        const current = await lifecycle.readRevision(heldRevision)
+        for (const file of current?.files || []) knownShas.set(file.path, file.sha256)
+      }
       return heldRevision
     },
 
@@ -66,15 +121,28 @@ export function daemonOn(who, where, project, manifest) {
      * revision it last heard about.
      */
     async pushes() {
-      const files = [...staged].map(([path, content]) => ({ path, ...content }))
+      const changed = [...staged].map(([path, content]) => ({ path, ...content }))
       staged = new Map()
-      const result = await processProjectPush(project, {
+      const changedPaths = new Set(changed.map(f => f.path))
+      // Every manifest path must appear: content for what changed, a
+      // carried-forward sha for what didn't. Anything with neither a known sha
+      // nor a change is new to this checkout and has to be sent whole.
+      const carried = manifest
+        .filter(path => !changedPaths.has(path) && knownShas.has(path))
+        .map(path => ({ path, sha256: knownShas.get(path) }))
+      const files = [...changed, ...carried]
+      const result = await pushSourceSnapshot(project, {
         expectedRevision: heldRevision,
         sourceManifest: manifest,
-        sourceMachineId: machineId,
+        editedBy: machineId,
         files,
       })
-      if (result.status === 200) heldRevision = result.sourceRevision
+      if (result.status === 200) {
+        heldRevision = result.sourceRevision
+        const lifecycle = await sourceLifecycleStore(project)
+        const current = await lifecycle.readRevision(heldRevision)
+        knownShas = new Map((current?.files || []).map(f => [f.path, f.sha256]))
+      }
       return result
     },
 
