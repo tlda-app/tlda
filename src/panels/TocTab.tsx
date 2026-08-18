@@ -747,7 +747,6 @@ export function DarkModeToggle() {
   return null
 }
 
-const ZONE_WIDTH_KEY = 'zone-width'
 const ZONE_WIDTH_EVENT = 'zone-width-change'
 export const ZONE_WIDTH_MIN = 20
 export const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
@@ -755,6 +754,11 @@ export const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand ani
 // visible as possible", for a first-time reader on someone else's machine. The
 // widest the zone goes is the panel itself, so that is the default; the slider
 // still narrows it for anyone who wants the expand animation back.
+//
+// The value that actually reaches a reader is the pref default in
+// preferences.ts, because getPref falls back to it rather than reporting the
+// pref unset. This constant is the clamp target and the non-finite fallback;
+// the two must agree.
 export const ZONE_WIDTH_DEFAULT = ZONE_WIDTH_MAX
 
 export function normalizeZoneWidth(value: unknown): number {
@@ -764,17 +768,13 @@ export function normalizeZoneWidth(value: unknown): number {
 }
 
 export function getZoneWidth(): number {
-  // Presence, not value. This asked `normalizeZoneWidth(pref) !== ZONE_WIDTH_DEFAULT`,
-  // which cannot tell "no pref set" from "pref set to exactly the default" — so a
-  // pref holding the default value fell through to localStorage, and raising the
-  // default silently changed nothing for anyone carrying the old value in storage.
-  const raw = getPref('toc-hover-zone-width')
-  if (raw !== undefined && raw !== null && raw !== '' && Number.isFinite(Number(raw))) {
-    return normalizeZoneWidth(raw)
-  }
-  const stored = parseInt(localStorage.getItem(ZONE_WIDTH_KEY) || '')
-  if (isNaN(stored)) return ZONE_WIDTH_DEFAULT
-  return normalizeZoneWidth(stored)
+  // The pref is the value. This used to ask `normalizeZoneWidth(pref) !==
+  // ZONE_WIDTH_DEFAULT` and fall back to a `zone-width` localStorage key, which
+  // could not tell "no pref set" from "pref set to exactly the default" — getPref
+  // never reports unset, it returns the default. So a reader carrying the old
+  // 60 in localStorage would have kept it no matter what the default became.
+  // The legacy key is gone rather than reconciled; the slider writes the pref.
+  return normalizeZoneWidth(getPref('toc-hover-zone-width'))
 }
 
 export function applyZoneWidth(w: number) {
@@ -783,7 +783,6 @@ export function applyZoneWidth(w: number) {
 
 export function setZoneWidthPref(next: number) {
   const v = normalizeZoneWidth(next)
-  localStorage.setItem(ZONE_WIDTH_KEY, String(v))
   setPref('toc-hover-zone-width', v)
   applyZoneWidth(v)
   window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))

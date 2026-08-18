@@ -97,8 +97,12 @@ const DEFAULTS = {
   // Highlighter edge-zone (the HighlighterSlider). Toggled from the prefs menu.
   'hl-zone-enabled': true as boolean,
   // Document panel hover trigger width. This is the same value the old ToC
-  // bottom thumb adjusted; default preserves the historical 60px strip.
-  'toc-hover-zone-width': 60 as number,
+  // bottom thumb adjusted. Skip, 2026-08-18: "make th eTOC hover region as wide
+  // as possile" / "shit as visible as possible" — so the default is the widest
+  // the zone goes, which is the panel itself (ZONE_WIDTH_MAX in TocTab.tsx).
+  // This is THE default: getPref falls back to it, so a constant raised in
+  // TocTab alone would never have reached anyone.
+  'toc-hover-zone-width': 250 as number,
   // Provenance/cascade surfacing mode. off = no surfacing (also hides the ribbon
   // hover tooltip). hover = ephemeral tooltip; panel = docked side panel; inline =
   // click-to-pin card. Default hover preserves today's behavior; off/panel/inline opt in.
