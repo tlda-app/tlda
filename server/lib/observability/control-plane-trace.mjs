@@ -54,11 +54,24 @@ export function createControlPlaneTraceStore({ maxEvents = DEFAULT_MAX_EVENTS, m
     return trace
   }
 
+  // Runs on EVERY append, so it has to cost nothing when nothing is over a
+  // bound -- and it used to cost the full sweep regardless: a 2000-element
+  // Set rebuilt from `ordered`, plus a 500-element array of `traces.keys()`,
+  // per traced event, whether or not a single entry needed evicting. With 26
+  // call sites on the mint, chat, daemon-frame and source-op paths, that is
+  // roughly 2500 allocations per control-plane event to discover there was
+  // nothing to do.
+  //
+  // Each block below now runs only when its own bound is actually exceeded.
+  // Steady state is two length comparisons.
   function trim() {
+    const overflowed = ordered.length > maxEvents
     trimArray(ordered, maxEvents)
-    const retained = new Set(ordered.map(event => event.trace_id))
-    for (const traceId of [...traces.keys()]) {
-      if (!retained.has(traceId)) traces.delete(traceId)
+    if (overflowed) {
+      const retained = new Set(ordered.map(event => event.trace_id))
+      for (const traceId of [...traces.keys()]) {
+        if (!retained.has(traceId)) traces.delete(traceId)
+      }
     }
     while (traces.size > maxTraces) {
       let oldestId = null
