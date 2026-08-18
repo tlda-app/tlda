@@ -302,7 +302,13 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
   if (result.unchanged) {
     console.log(dim(unchangedMessage))
-  } else if (result.building) {
+  } else if (result.postAcceptEffects?.includes('build')) {
+    // The old route answered `building`, an intention. The accept answers
+    // `postAcceptEffects`, the list of what actually ran, and `build` is one of
+    // its names. Reading the old field here is not a display bug that shows
+    // something wrong -- it is `undefined`, so this falls to the else and
+    // `tlda push` silently stops ever saying "Build triggered", reporting the
+    // less informative of two true strings with no error anywhere.
     console.log(green('Build triggered.'))
   } else {
     console.log(green('Source pushed; viewer rebuilds on demand.'))
