@@ -217,11 +217,85 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
    * A project whose last accept predates the cutover has no ref, and its
    * `sha256:` id in the file is the answer until its next accept creates one.
    */
+  /**
+   * **The ref is the accepted revision; `authority.json` is derived.**
+   *
+   * Every accept moves the ref and THEN writes the JSON, so any failure between
+   * the two leaves them disagreeing — and reading the JSON first made that
+   * disagreement decide the answer. On a bootstrap it read as UNINITIALIZED
+   * while the ref pointed at a real commit, so the project appeared to have no
+   * history at all and the next push would bootstrap over it. That is *a
+   * rejected write leaves nothing behind* failing in the git layer, which is
+   * the layer that survives.
+   *
+   * Trusting the ref makes the divergence unrepresentable rather than handled:
+   * if a commit is on the ref, the project is at that commit, whatever the JSON
+   * says. `acceptSeq` still comes from the JSON because it is a counter nothing
+   * reads for correctness.
+   *
+   * `reconciliation-required` is exempt. That is a real state somebody has to
+   * clear, not a stale copy of one, and a ref must not silently clear it.
+   */
+  /**
+   * Write the derived authority record after the ref has already moved.
+   *
+   * **It must not be able to turn an accept into a rejection.** By the time
+   * this runs the ref names the accepted commit, so the revision IS accepted;
+   * throwing here would report failure for work that landed, and the caller
+   * would leave the ref moved behind a rejection — the exact "a rejected write
+   * leaves nothing behind" violation, from the other direction.
+   *
+   * `state()` reads the ref, so what is lost when this fails is `acceptSeq`, a
+   * counter nothing reads for correctness. Loudly, because a store that cannot
+   * write is still something to fix.
+   */
+  async function recordAcceptedAuthority(authority, previousHead) {
+    try {
+      atomicJson(statePath, authority, fault)
+    } catch (error) {
+      // **Put the ref back.** The promise this whole store is judged on is that
+      // a write which does not succeed leaves nothing behind, and the ref is
+      // the one thing that has already changed by the time we get here.
+      //
+      // Swallowing instead -- reporting the accept as standing because the ref
+      // says so -- also removes the divergence, and it is the wrong way round:
+      // it turns a failed write into an accept nobody was told about, and the
+      // caller then runs the post-accept effects for a revision its own record
+      // does not have. Rolling back keeps failure meaning failure.
+      //
+      // The commit itself stays in the object store, unreferenced. That costs
+      // nothing and is `git gc`'s business; what matters is that no ref names
+      // it, so nothing downstream can see a revision that was never accepted.
+      try {
+        const store = await sourceGit()
+        // Back to nothing is a DELETE, not a move: a project's first accept
+        // creates the ref rather than moving it, and there is no sha meaning
+        // "was absent". Without this the first accept's rollback silently does
+        // nothing and the project is permanently past a revision nobody
+        // accepted — the worst version of exactly the bug being fixed.
+        if (isGitObjectId(previousHead)) {
+          await store.advanceHead(project, previousHead, authority.currentRevision)
+        } else {
+          await store.retractHead(project, authority.currentRevision)
+        }
+      } catch (rollbackError) {
+        // Swallowed so the ORIGINAL failure is what the caller sees. The write
+        // failing is the fact they need to act on; a rollback that also failed
+        // would mask it behind a second error about cleanup, and the caller
+        // would treat a failed accept as a failed rollback. Logged because a
+        // ref left ahead of its record is a real thing to go and look at.
+        console.error(`[${project}] the ref could not be put back after a failed authority record: ${rollbackError.message}`)
+      }
+      throw error
+    }
+  }
+
   async function state() {
     const stored = readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
-    if (stored.state !== SOURCE_AUTHORITY_CURRENT) return stored
+    if (stored.state === SOURCE_AUTHORITY_RECONCILIATION_REQUIRED) return stored
     const head = await (await sourceGit()).head(project)
-    return head ? { ...stored, currentRevision: head } : stored
+    if (!head) return stored
+    return { ...stored, state: SOURCE_AUTHORITY_CURRENT, currentRevision: head }
   }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
@@ -731,6 +805,64 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     },
 
     /**
+     * Put bytes in the store and return the id they can be referenced by.
+     *
+     * **This is what makes a large project expressible on the JSON carrier.**
+     * A snapshot is atomic, so it cannot be batched — and a bootstrap has no
+     * previous revision to carry anything forward from, so every byte is
+     * content. The classroom book is 1492 files and ~525MB; as one JSON body
+     * that is base64 in a string in memory before it is even parsed.
+     *
+     * Uploading blobs first turns one enormous request into many bounded ones
+     * and a small manifest of `{path, sha256}` references — the SAME reference
+     * shape `carryForward` already produces, so the accept needs no new case.
+     * An orphan blob nobody references is `git gc`'s problem rather than ours.
+     */
+    async putBlob(bytes) {
+      const store = await sourceGit()
+      return { sha256: await store.writeBlob(bytes), size: bytes.length }
+    },
+
+    /**
+     * A complete snapshot built from the paths that actually changed.
+     *
+     * The accept requires `files` to cover `sourceManifest` exactly — the
+     * manifest IS the project, so a path that left it is gone because nobody
+     * named it. But most callers only know what changed: the room checkpoint
+     * sends one file, the CLI sends a batch, and both declare a manifest far
+     * wider than that.
+     *
+     * Every unnamed path is carried forward from the current revision **by
+     * reference** — `{path, sha256}` rather than bytes — which is why an
+     * unchanged file costs nothing on the next push. Without this, a caller's
+     * only compliant push is the whole project every time: on the 1492-file
+     * classroom book, every file on every flush.
+     *
+     * **This does not soften the manifest rule and must not be made to.**
+     * Removal is still expressed by a path leaving the MANIFEST. What is filled
+     * in here is only the difference between "I did not change this" and "this
+     * is gone", which are the two things the old path kept confusing.
+     *
+     * A manifest path that is neither supplied nor in the current revision is
+     * an error rather than an empty file — that is a caller declaring something
+     * it never sent, which is the shape that cost bregman four refused pushes
+     * in 2.5 hours.
+     */
+    async carryForward(sourceManifest, changed = []) {
+      const supplied = new Map(changed.map(file => [file.path, file]))
+      const current = (await state()).currentRevision
+      const held = new Map(
+        current ? ((await revision(current))?.files || []).map(entry => [entry.path, entry]) : [],
+      )
+      return sourceManifest.map(path => {
+        if (supplied.has(path)) return supplied.get(path)
+        const entry = held.get(path)
+        if (!entry) throw new Error(`${path} is declared in sourceManifest but was neither sent nor already held`)
+        return { path, sha256: entry.sha256, size: entry.size }
+      })
+    },
+
+    /**
      * Take a bundle a checkout has proposed and accept it iff it fast-forwards.
      *
      * **This is the accept path with the machinery removed.** There is no
@@ -760,7 +892,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
         currentRevision: result.revision,
         acceptSeq: ((readJson(statePath) || {}).acceptSeq || 0) + 1,
       }
-      atomicJson(statePath, authority, fault)
+      await recordAcceptedAuthority(authority, result.previous ?? null)
       return { ...result, authority, revision: record }
     },
 
@@ -1045,7 +1177,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const next = await persistSnapshot(canonical, dependencyPins)
       await advanceSourceHead(next.id, null)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-      atomicJson(statePath, authority, fault)
+      await recordAcceptedAuthority(authority, null)
       return { ok: true, status: 'accepted', authority, revision: next }
     },
     async submit({ expectedRevision, files, sourceManifest, dependencyPins = [] }) {
@@ -1073,7 +1205,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
           )
           await advanceSourceHead(rebased.id, before.currentRevision)
           const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-          atomicJson(statePath, authority, fault)
+          await recordAcceptedAuthority(authority, before.currentRevision)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
         // The refused push is already a commit — `persistSnapshot` ran before
@@ -1087,7 +1219,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       }
       await advanceSourceHead(incoming.id, before.currentRevision)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-      atomicJson(statePath, authority, fault)
+      await recordAcceptedAuthority(authority, before.currentRevision)
       return { ok: true, status: 'accepted', authority, revision: incoming }
     },
   }
