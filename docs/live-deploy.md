@@ -147,3 +147,35 @@ writes its connection errors through a bare `console.log`, so those lines carry
 **no timestamp** while every other line in the file does. A grep anchored on a
 timestamp — the obvious way to search a log — silently excludes exactly the lines
 naming the error, and leaves you reading `reason: "error"` with no cause attached.
+
+## The hook cleans up its checkout, and the hook is not in this repository
+
+Each deploy builds in a fresh checkout at
+`${TMPDIR:-/tmp}/tlda-<repo>-deploy.XXXXXX`, several GB with `node_modules`.
+**It used to leave every one of them behind.** Seventy had accumulated by
+2026-08-18, on a volume that reached **100% with 179 MiB free** — found when
+`git commit` printed `No space left on device` while still succeeding.
+
+That is not housekeeping. **A deploy that hits ENOSPC mid-build is the trigger
+for a project's sync pinning permanently**, so the release path was one push away
+from causing the failure it exists to ship fixes for.
+
+There *was* a cleanup trap. It never fired: the build runs inside a `{ … } 2>&1 |
+tee "$log"` block, the pipe makes that a subshell, and an `EXIT` trap registered
+there does not remove the directory. Reproducing the exact structure leaked on
+the **successful** path, the failed path and the killed path alike — so this was
+losing a checkout on every deploy, not only on abnormal ones.
+
+Now the checkout is created in the hook's own shell and removed after the block,
+where `work` is actually in scope; and each run first sweeps sibling
+`tlda-<repo>-deploy.*` directories, keeping its own, which is what recovers a run
+that was killed before it got there. The keep-check is by **basename**: a
+trailing slash on `TMPDIR` makes `find` emit `/tmp//tlda-…`, and a `-path`
+comparison would then fail to match and delete the checkout the deploy is about
+to use.
+
+**The hook lives in `~/work/deploy/_utils/pre-receive-common.sh`, outside git.**
+So none of this is in any commit, `git log` will never show it, and a search of
+this tree for the fix will find only this paragraph. Editing it changes the
+release path for the next push with no review and no rollback but a backup —
+treat it accordingly.
