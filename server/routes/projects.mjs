@@ -39,7 +39,7 @@ import {
   checkpointProjectPartWritebackOffloop,
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
-import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
+import { projectRevisionStatus, SOURCE_AUTHORITY_UNINITIALIZED } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -685,8 +685,34 @@ router.delete('/:name', requireRw, async (req, res) => {
 
 // Add member to book (create book project if needed)
 router.patch('/:name/members', requireRw, async (req, res) => {
-  const { add } = req.body
-  if (!add || typeof add !== 'string') return res.status(400).json({ error: 'add member name required' })
+  const { add, members } = req.body
+  // A full-set REPLACE, because the additive form cannot express a removal:
+  // looping `add` over a caller's intended set silently makes a dropped member
+  // permanent. The existing `add` branch below is untouched and its four
+  // callers keep working.
+  if (Array.isArray(members)) {
+    if (!members.every(member => typeof member === 'string')) {
+      return res.status(400).json({ error: 'members must be an array of strings' })
+    }
+    const project = await readProject(req.params.name)
+    if (!project) return res.status(404).json({ error: 'Project not found' })
+    // 400 on a non-book project. The `/push` branch that carries `members`
+    // today is guarded on `format === 'book'` and FALLS THROUGH to a normal
+    // source push when it is not -- so a members array sent to a non-book
+    // project silently becomes a file push with an empty file list. This is
+    // the error behaviour of new code, not a change to shipped behaviour.
+    if (project.format !== 'book') {
+      return res.status(400).json({ error: 'members can only be replaced on a book project' })
+    }
+    try {
+      await updateProject(req.params.name, { members })
+      res.json({ ok: true, members })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+    return
+  }
+  if (!add || typeof add !== 'string') return res.status(400).json({ error: 'add member name or members[] required' })
   try {
     const book = await addBookMember(req.params.name, add)
     res.json({ ok: true, members: book.members })
@@ -705,6 +731,35 @@ router.get('/:name/files', requireRead, async (req, res) => {
 router.get('/:name/source-authority', requireRead, async (req, res) => {
   try { res.json(await (await sourceLifecycleStore(req.params.name)).readAuthority()) }
   catch (e) { res.status(404).json({ error: e.message }) }
+})
+
+/**
+ * The current revision's entries: `{path, sha256, size}` per file.
+ *
+ * **This is what makes an incremental push expressible on the JSON carrier.**
+ * The carrier requires a complete manifest, and a path may be given either as
+ * content or as a carried-forward reference — but a client can only build the
+ * reference if it can learn the store's blob id for a file it is NOT sending.
+ * Nothing exposed one: `GET /:name/hashes` returns MD5 of the server's working
+ * files, which is a different value in a different space.
+ *
+ * Without this, four CLI sites whose manifest is deliberately wider than their
+ * `files` -- the ones carrying `preservedServerPaths`, or pruning stale paths
+ * with `files: []` -- can only comply by sending the whole project on every
+ * push. On the 1492-file classroom book that is every file on every flush,
+ * against a 20MB batch ceiling. The alternative to this route is not a slower
+ * push, it is no incremental push.
+ */
+router.get('/:name/source-entries', requireRead, async (req, res) => {
+  try {
+    const lifecycle = await sourceLifecycleStore(req.params.name)
+    const { currentRevision } = await lifecycle.readAuthority()
+    if (!currentRevision) return res.json({ ok: true, sourceRevision: null, files: [] })
+    const record = await lifecycle.readRevision(currentRevision)
+    res.json({ ok: true, sourceRevision: currentRevision, files: record?.files || [] })
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error.message })
+  }
 })
 
 /**
@@ -1029,7 +1084,21 @@ async function serializeProjectMirror(name, run) {
  * it. A caller reading `ok: true` cannot otherwise distinguish an accept that
  * preserved the work from one that dropped it on the floor.
  */
-async function applyAcceptedBundleEffects(name, lifecycle, {
+/**
+ * The six post-accept effects, for EVERY carrier.
+ *
+ * Exported and carrier-neutral on purpose. Four carriers reach this accept --
+ * the daemon bundle POST, the JSON carrier, the room checkpoint and the
+ * Overleaf remote pull -- and only the first has a bundle. Bolting the effects
+ * to the bundle route means the other three either lose them or grow copies,
+ * and an enumerated list in N places does not stay one list:
+ * `passthroughConfigEnv` exists four times in this repo and has already
+ * diverged.
+ *
+ * So this is the one implementation, and it takes a revision rather than a
+ * carrier.
+ */
+export async function applyAcceptedSourceEffects(name, lifecycle, {
   sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
 }) {
   if (!sourceRevision) return []
@@ -2175,6 +2244,95 @@ function recordingsDir(name) {
 // took a box down was a 33 MB file becoming 44 MB of body, and base64 is a third
 // of that inflation for nothing. `express.raw` is already how audio uploads
 // arrive here.
+/**
+ * The same accept, for a carrier that has no git.
+ *
+ * A browser cannot build a bundle, so the client callers send a complete
+ * snapshot as JSON. **Two carriers, one accept** — and specifically one
+ * `applyAcceptedSourceEffects`, not a second copy of it. If this path grew its
+ * own effects call the two would drift, and the browser carrier would quietly
+ * start preserving something different from the daemon carrier.
+ */
+router.post('/:name/source-snapshot', requireRw, async (req, res) => {
+  const name = req.params.name
+  const {
+    files, sourceManifest, expectedRevision = null, dependencyPins = [],
+    // Carried deliberately rather than by being remembered. `session` and
+    // `sessionAt` ride only on `tlda push` -- the one command Skip types -- and
+    // they enter through `incrementalPush`'s `extraBody`, so a reader
+    // enumerating the call sites never sees them. Omit them here and session
+    // attribution on his own pushes breaks silently, and only there.
+    session = null, sessionAt = null, editedBy = null,
+  } = req.body || {}
+  // `sourceDir` is NOT carried. It is already dropped by the old destructure and
+  // every server use reads `project.sourceDir` from storage, so the cross-server
+  // move has been sending a field nobody reads. Dropped knowingly.
+  if (!Array.isArray(files) || !Array.isArray(sourceManifest)) {
+    return res.status(400).json({ ok: false, error: 'files[] and sourceManifest[] are required' })
+  }
+  try {
+    const lifecycle = await sourceLifecycleStore(name)
+    const previousRevision = (await lifecycle.readAuthority()).currentRevision || null
+    // `bootstrap` and `submit` already ARE this accept, and they already carry
+    // the refusal shape the source editor needs -- `deriveClassifications`, the
+    // stored evidence, the clean-rebase acceptance and `markRefused`. An
+    // `acceptFiles` written beside them was a second, worse implementation of
+    // the thing this whole cut exists to stop having two of.
+    const result = await runSerializedProjectSourceOperation(name, async () => {
+      const before = await lifecycle.readAuthority()
+      const input = { expectedRevision, files, sourceManifest, dependencyPins }
+      return before.state === SOURCE_AUTHORITY_UNINITIALIZED
+        ? lifecycle.bootstrap(input)
+        : lifecycle.submit(input)
+    })
+    if (!result.ok) {
+      return res.status(409).json({
+        ok: false,
+        status: result.status,
+        currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
+        refusedRevision: result.refusedRevision ?? null,
+        // **The merge, not just the rejection.** The source editor turns
+        // `evidence.classifications[]` into conflict markers a person resolves
+        // in place. Return the bare status and "resolve the markers and it
+        // syncs" becomes "sync 409" on the surface Skip edits his paper on --
+        // a lost resolution path rather than a lost byte, invisible in every
+        // log because the write correctly refused and the caller correctly
+        // reported failure.
+        evidence: result.evidence ?? null,
+      })
+    }
+    const sourceRevision = result.revision?.id ?? result.revision ?? null
+    const acceptSeq = result.authority?.acceptSeq ?? null
+    const metadata = {
+      ...(session ? { session, sessionAt: sessionAt || Date.now() } : {}),
+      ...(editedBy ? { lastEditedBy: editedBy, lastEditedByAt: Date.now() } : {}),
+    }
+    if (Object.keys(metadata).length) await updateProject(name, metadata)
+    const ran = await applyAcceptedSourceEffects(name, lifecycle, {
+      sourceRevision,
+      acceptSeq,
+      previousRevision: result.previous ?? previousRevision,
+      editedBy: editedBy || req.get('x-tlda-edited-by') || null,
+      sourceBindingId: req.body?.sourceBindingId || null,
+      requestId: req.body?.requestId || randomUUID(),
+    })
+    res.json({
+      ok: true,
+      // `already-current` is the same fact `unchanged` used to carry, so a
+      // caller waiting on a build can stop waiting without a new field.
+      status: result.status,
+      unchanged: result.status === 'already-current',
+      sourceRevision,
+      acceptSeq,
+      filesWritten: sourceManifest.length,
+      postAcceptEffects: ran,
+    })
+  } catch (error) {
+    console.error(`[${name}] snapshot accept failed: ${error.message}`)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, limit: '500mb' }), async (req, res) => {
   const name = req.params.name
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
@@ -2197,7 +2355,7 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
     }
     const sourceRevision = result.revision?.id ?? result.revision ?? null
     const acceptSeq = result.authority?.acceptSeq ?? null
-    const ran = await applyAcceptedBundleEffects(name, lifecycle, {
+    const ran = await applyAcceptedSourceEffects(name, lifecycle, {
       sourceRevision,
       acceptSeq,
       previousRevision: result.previous ?? null,
