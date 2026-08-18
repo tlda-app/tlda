@@ -59,6 +59,10 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
     })
   }
 
+  async function treeOf(commit) {
+    return (await git(['rev-parse', `${commit}^{tree}`])).toString('utf8').trim()
+  }
+
   async function readRef(ref) {
     try {
       return (await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])).toString('utf8').trim() || null
@@ -93,7 +97,16 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
       message,
       // Deliberately absent: replaceTree. The tree is built OVER the parent's.
     })
-    if (commit === parent) return { commit, parent, changed: false }
+    // **Compare TREES, not commits.** `commit-tree` mints a fresh sha every
+    // time -- the timestamp is in it -- so `commit === parent` is never true
+    // and this guard silently did nothing. The cost is not a wasted object: an
+    // empty commit fast-forwards, so the server accepts it, `acceptSeq` moves,
+    // and all six post-accept effects fire -- mirror, build, replica fan-out --
+    // for a change that does not exist. A watcher that fires on a touched file
+    // would have driven a build storm on his paper.
+    if (parent && (await treeOf(commit)) === (await treeOf(parent))) {
+      return { commit: parent, parent, changed: false }
+    }
     const expected = await readRef(LOCAL_REF)
     await git(['update-ref', LOCAL_REF, commit, ...(expected ? [expected] : [])])
     log?.info?.(`${project}: proposing ${commit.slice(0, 7)} (${changed.length} changed, ${deleted.length} deleted)`)

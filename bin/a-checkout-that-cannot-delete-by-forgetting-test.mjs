@@ -65,6 +65,25 @@ assert.equal(
   'and the file it did mention carries the new bytes',
 )
 
+// ---------------------------------------------------------------------------
+// **A proposal with nothing in it is not a proposal.**
+//
+// `commit-tree` mints a fresh sha every time, because the timestamp is in it —
+// so a `commit === parent` guard is never true and does nothing. That is not a
+// wasted object: an empty commit FAST-FORWARDS, so the server accepts it,
+// `acceptSeq` moves, and every post-accept effect fires — mirror, build,
+// replica fan-out — for a change that does not exist. A watcher that fires on a
+// touched-but-unmodified file would drive a build storm on his paper.
+
+assert.equal(
+  (await proposal.proposeCommit({ changed: [], deleted: [] })).changed, false,
+  'a proposal with no paths in it reports no change',
+)
+assert.equal(
+  (await proposal.proposeCommit({ changed: ['main.tex'] })).changed, false,
+  'and re-proposing identical bytes reports no change — the TREE is what is compared',
+)
+
 // A deletion is expressible, and only from an observation.
 fs.rmSync(path.join(checkout, 'intro.tex'))
 const removed = await proposal.proposeCommit({ changed: [], deleted: ['intro.tex'] })
