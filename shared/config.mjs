@@ -548,20 +548,26 @@ export function getMintRegistrationDeadlineMs() {
 // server-side fault; all this does is stop one of them pinning a project for the
 // life of the daemon process.
 //
-// The default is measured, and the measurement is the surprising part. Reading
-// operations.json on the Fly machine on 2026-08-18, every rejected bregman
-// operation eventually DID get its terminal result — 14m26s, 21m10s, 14m06s and
-// 53m47s after it was prepared. The server is very late, not silent. So a
-// deadline anywhere near a handful of minutes expires requests that were going
-// to be answered, and the daemon would then have two concurrent pushes in flight
-// for one project against a server already struggling to answer one.
+// 5400s was measured against a server that took tens of minutes to answer,
+// because beginProjectSourceTransaction copied a 14 GB revision history on every
+// push. That copy is gone. Post-deploy, the same project's pushes settle in
+// about three seconds - 2.9s and 2.1s against 7m10s, 7m03s and 7m28s an hour
+// earlier, same file. Those numbers are sync-manifest-reconcile's, taken from
+// operations.json createdAt/updatedAt; there is no equivalent measurement I can
+// take myself without pushing to his live paper, and this note says so rather
+// than implying I re-ran it.
 //
-// 5400s therefore sits clear of the worst latency observed (53m47s) with room,
-// and still converts a wedge that was unbounded — and that survived a restart,
-// because beforeSend re-arms it from the durable outbox — into one that ends and
-// says so. Shorten it here only against fresh latency numbers.
+// So the old default is ~1600x the observed worst case, and its cost is real:
+// it is how long his writing sits unsent if a reply is genuinely lost. 300s is
+// still ~90x the worst push observed and bounds that to five minutes.
+//
+// Deploys skew the daemon ahead of the server, and an old server can still take
+// an hour. That is survivable now and was not before: an expiry drops the dead
+// request, the late answer is dropped rather than applied to a newer base, and
+// the held edits are re-sent. The cost of expiring early is a duplicate push,
+// not lost prose. Raise this again if that stops being true.
 export function getSourceChangeSettleDeadlineMs() {
-  const seconds = loadDaemonYaml().sourceChangeSettleDeadlineSeconds ?? 5400
+  const seconds = loadDaemonYaml().sourceChangeSettleDeadlineSeconds ?? 300
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
     throw new Error(`daemon.yaml: sourceChangeSettleDeadlineSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
   }
