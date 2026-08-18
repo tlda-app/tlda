@@ -36,7 +36,58 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { SOURCE_AUTHORITY_UNINITIALIZED } from '../server/lib/source-lifecycle.mjs'
+import { applyAcceptedSourceEffects } from '../server/routes/projects.mjs'
+
+// `processProjectPush` (the old accept, deleted with the strip) is not the
+// dependency this test needs -- it is a stand-in for whatever a room's
+// checkpoint calls to durably accept a file. This shim calls the same
+// `bootstrap`/`submit` primitives the new JSON carrier's route
+// (`POST /:name/source-snapshot`) calls, in the shape `flushRoom` and
+// `paper()` below already expect: `{status, ok, sourceRevision, building}` on
+// success, `{status: 409, ok: false, error, lifecycleStatus, evidence,
+// authority}` on refusal -- read from the real route on
+// `accept-path-daemon-push`, not guessed. It DOES call the real
+// `applyAcceptedSourceEffects` (journal/replicas/mirror/build/working-copy) --
+// that function is what writes the server's own working copy this test reads
+// back with `readSourceFile`, since `bootstrap`/`submit` alone only commit to
+// the git-object store.
+async function pushViaSourceLifecycle(project, body) {
+  const { files, sourceManifest, expectedRevision = null, editedBy = null, requestId = null } = body
+  const lifecycle = await sourceLifecycleStore(project)
+  const before = await lifecycle.readAuthority()
+  const input = { expectedRevision, files, sourceManifest, dependencyPins: [] }
+  const result = before.state === SOURCE_AUTHORITY_UNINITIALIZED
+    ? await lifecycle.bootstrap(input)
+    : await lifecycle.submit(input)
+  if (!result.ok) {
+    return {
+      status: 409,
+      ok: false,
+      error: result.status,
+      lifecycleStatus: result.status,
+      authority: result.authority,
+      evidence: result.evidence || null,
+      refusedRevision: result.refusedRevision || null,
+    }
+  }
+  const sourceRevision = result.revision?.id ?? null
+  const ran = await applyAcceptedSourceEffects(project, lifecycle, {
+    sourceRevision,
+    acceptSeq: result.authority?.acceptSeq ?? null,
+    previousRevision: before.currentRevision || null,
+    editedBy,
+    sourceBindingId: null,
+    requestId,
+  })
+  return {
+    status: 200,
+    ok: true,
+    sourceRevision,
+    building: ran.includes('build'),
+    authority: result.authority,
+  }
+}
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-socket-goes-away-'))
 await initProjectStore(root)
@@ -48,7 +99,7 @@ const findings = []
 function makeRoomDaemon(pushDelayMs = 1_000_000) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush, pushDelayMs, log: { error() {} },
+    processProjectPush: pushViaSourceLifecycle, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
@@ -59,7 +110,7 @@ async function paper(name, content) {
   await updateProject(name, { pages: 1, buildStatus: 'success' })
   mkdirSync(outputDir(name), { recursive: true })
   writeFileSync(join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
-  const start = await processProjectPush(name, {
+  const start = await pushViaSourceLifecycle(name, {
     expectedRevision: null, sourceManifest: ['main.tex'], files: [{ path: 'main.tex', content }],
   })
   assert.equal(start.status, 200, `the paper had to exist first: ${start.error}`)
