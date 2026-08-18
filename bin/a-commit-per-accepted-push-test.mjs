@@ -135,5 +135,71 @@ assert.deepEqual(second.payload.sourceScope, ['main.tex'])
 // next bundle subtracts.
 assert.equal(await lifecycle.lastMirrored(), second.revision)
 
+// ---------------------------------------------------------------------------
+// What happens when the author's tree is dirty.
+//
+// This is the case that decides whether re-pointing the trigger at the accept
+// is safe, because it makes the mirror fire far more often than a build did,
+// and the mirror compare-and-swaps the author's real branch. The switch in
+// front of it exists because this half "damages history rather than merely
+// lagging".
+
+// An unstaged edit the server has never seen -- the ordinary state of a paper
+// somebody is writing.
+fs.writeFileSync(path.join(checkout, 'main.tex'), 'what the author is typing right now\n')
+const third = await acceptAndMirror('fourth draft\n')
+
+// HEAD advanced and the commit records the accepted version. Skip ruled on
+// exactly this on 2026-08-11, asked whether the snapshot should record the
+// version that was built or skip the file: "The version that was built,
+// please."
+const { stdout: committedThird } = await git(checkout, ['show', 'HEAD:main.tex'])
+assert.equal(committedThird, 'fourth draft\n')
+
+// And this is the line that matters: their unsaved text is still on disk,
+// untouched. Preservation commits through a temporary index and never writes
+// the working tree, so what they were typing reads afterwards as an
+// uncommitted modification -- which is the truth, because they changed it
+// after the revision was accepted.
+assert.equal(
+  fs.readFileSync(path.join(checkout, 'main.tex'), 'utf8'),
+  'what the author is typing right now\n',
+  'mirroring an accepted revision overwrote the author\'s uncommitted text',
+)
+const { stdout: dirtyStatus } = await git(checkout, ['status', '--porcelain'])
+assert.match(dirtyStatus, /^ M main\.tex$/m, 'the author\'s edit should survive as an uncommitted modification')
+
+// A STAGED conflicting change is refused outright rather than committed over.
+// The author has said something about this file with the index, and the mirror
+// does not get to answer for them.
+fs.writeFileSync(path.join(checkout, 'main.tex'), 'staged by the author\n')
+await git(checkout, ['add', 'main.tex'])
+const { stdout: headBeforeRefusal } = await git(checkout, ['rev-parse', 'HEAD'])
+
+const authorityBefore = await lifecycle.readAuthority()
+const refusedResult = await lifecycle.submit({
+  expectedRevision: authorityBefore.currentRevision,
+  sourceManifest: ['main.tex'],
+  files: [{ path: 'main.tex', content: 'fifth draft\n' }],
+})
+assert.equal(refusedResult.ok, true)
+const refusedRevision = refusedResult.authority.currentRevision
+const refusedPayload = await lifecycle.mirrorPayload(refusedRevision)
+await assert.rejects(
+  () => mirror.mirrorShadowRef({ project: 'paper', ...refusedPayload, sourceRevision: refusedRevision }),
+  /staged .* differs from shadow/,
+  'a staged conflicting change must refuse the mirror rather than commit over it',
+)
+
+// Refused means refused: the branch did not move and the staged content stands.
+const { stdout: headAfterRefusal } = await git(checkout, ['rev-parse', 'HEAD'])
+assert.equal(headAfterRefusal.trim(), headBeforeRefusal.trim(), 'a refused mirror must not move HEAD')
+assert.equal(fs.readFileSync(path.join(checkout, 'main.tex'), 'utf8'), 'staged by the author\n')
+
+// And because the mirror refused, refs/tlda/mirrored still names the last
+// revision a checkout actually took -- so the next attempt bundles from there
+// and carries the refused revision along, rather than assuming it landed.
+assert.equal(await lifecycle.lastMirrored(), third.revision)
+
 fs.rmSync(root, { recursive: true, force: true })
 console.log('a commit per accepted push: passed')
