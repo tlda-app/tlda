@@ -66,6 +66,17 @@ function atomicJson(path, value, fault) {
   atomicWrite(path, JSON.stringify(value, null, 2), fault)
 }
 
+// A replica that has been pending this long is not going to be re-sent usefully:
+// its command carries base64 of every changed file, the fan-out re-sends it on
+// every accepted revision, and the journal holding it is read in full by
+// GET /api/projects. Measured on the live volume 2026-08-17: ONE replica pending
+// since 06:55 that morning was pinning 54,374,893 bytes -- 42% of all 130 MB of
+// lifecycle journals on the box.
+//
+// Env-overridable rather than a magic number, and expressed in hours because
+// that is the unit the decision is made in.
+const PENDING_REPLICA_EXPIRY_MS = Number(process.env.TLDA_PENDING_REPLICA_EXPIRY_HOURS || 6) * 60 * 60 * 1000
+
 function readJson(path) {
   return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null
 }
@@ -358,6 +369,39 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     })
   }
 
+  // Drop the payload of any replica that has been pending past the expiry, and
+  // mark it terminal so the fan-out (which filters `state === 'pending'`) stops
+  // re-sending it and the journal stops carrying it.
+  //
+  // Sweeps EVERY revision in the journal, not just the one being written. A
+  // stuck replica is by definition on an older revision -- scoping this to the
+  // current one made it almost a no-op, which the test caught.
+  //
+  // Re-materialising is always available, since the source revision still holds
+  // the content, so this loses recoverable work rather than work.
+  function expireStalePendingReplicas(journal, nowIso) {
+    const cutoff = Date.parse(nowIso) - PENDING_REPLICA_EXPIRY_MS
+    let changed = false
+    for (const lifecycle of Object.values(journal.revisionLifecycle || {})) {
+      const replicas = lifecycle?.replicas
+      if (!replicas) continue
+      for (const [bindingId, replica] of Object.entries(replicas)) {
+        if (replica?.state !== 'pending' || !('command' in replica)) continue
+        const seen = Date.parse(replica.updatedAt || '') || 0
+        if (seen === 0 || seen > cutoff) continue
+        const { command, ...carried } = replica
+        replicas[bindingId] = {
+          ...carried,
+          state: 'expired',
+          result: { ok: false, error: `replica pending longer than ${PENDING_REPLICA_EXPIRY_MS}ms; payload dropped, re-materialise from the source revision` },
+          updatedAt: nowIso,
+        }
+        changed = true
+      }
+    }
+    return changed
+  }
+
   return {
     readAuthority: state,
     readRevision: revision,
@@ -543,7 +587,8 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       if (!lifecycle || lifecycle.project !== project) throw new Error(`Source revision ${sourceRevision} is not accepted for ${project}`)
       if (lifecycle.replicaTargetsRecorded) return lifecycle
       const updatedAt = new Date().toISOString()
-      const replicas = { ...(lifecycle.replicas || {}) }
+      expireStalePendingReplicas(journal, updatedAt)
+      const replicas = { ...(journal.revisionLifecycle[sourceRevision]?.replicas || lifecycle.replicas || {}) }
       const uniqueTargets = new Map((targets || []).filter(target => target?.bindingId && target?.daemonKey)
         .map(target => [target.bindingId, target]))
       for (const target of [...uniqueTargets.values()].sort((a, b) => a.bindingId.localeCompare(b.bindingId))) {

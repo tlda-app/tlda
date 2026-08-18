@@ -16,7 +16,7 @@
 // command (or the retry cannot fire), and a SETTLED one does not (or the
 // journal grows without bound).
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -97,6 +97,57 @@ try {
     const replica = store.readRevisionLifecycle(project, revision).replicas['binding-2']
     assert.equal(replica.state, 'failed')
     assert.equal(replica.command, undefined, 'a failed replica is not re-sent from the journal either')
+  })
+  // Expiry. A pending replica whose daemon never answers pins its payload
+  // forever, and the payload is base64 of every changed file. On 2026-08-17 one
+  // such replica -- pending since 06:55 that morning -- held 54,374,893 bytes,
+  // 42% of every lifecycle journal on the box, re-read by every project-list
+  // request and re-sent on every fan-out.
+  //
+  // The boundary matters in BOTH directions: expire too eagerly and a live
+  // retry is killed while its daemon is merely reconnecting.
+  check('a recently-pending replica is NOT expired', () => {
+    const store2 = createSourceLifecycleStore({ root: mkdtempSync(join(tmpdir(), 'tlda-exp-a-')), context: { referencedRoots: ['main.tex'] } })
+    const b = store2.bootstrap({ expectedRevision: null, files: [{ path: 'main.tex', content: 'x\n' }], sourceManifest: ['main.tex'] })
+    const rev = b.authority.currentRevision
+    store2.recordAcceptedRevision(project, rev, 1)
+    store2.recordReplicaTargets(project, rev, [{ bindingId: 'fresh', daemonKey: 'mini:testing' }], { project, blobs: { a: 'x' } })
+    // A second accepted revision drives the expiry sweep.
+    const b2 = store2.submit({ expectedRevision: rev, files: [{ path: 'main.tex', content: 'y\n' }], sourceManifest: ['main.tex'] })
+    if (b2?.ok) {
+      store2.recordAcceptedRevision(project, b2.authority.currentRevision, 2)
+      store2.recordReplicaTargets(project, b2.authority.currentRevision, [{ bindingId: 'other', daemonKey: 'mini:testing' }], { project, blobs: { a: 'x' } })
+    }
+    const replica = store2.readRevisionLifecycle(project, rev).replicas.fresh
+    assert.equal(replica.state, 'pending', 'a replica pending for seconds must stay pending')
+    assert.ok(replica.command, 'and must keep its payload, or a reconnecting daemon loses its retry')
+  })
+
+  check('a long-pending replica is expired and loses its payload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tlda-exp-b-'))
+    const store3 = createSourceLifecycleStore({ root: dir, context: { referencedRoots: ['main.tex'] } })
+    const b = store3.bootstrap({ expectedRevision: null, files: [{ path: 'main.tex', content: 'x\n' }], sourceManifest: ['main.tex'] })
+    const rev = b.authority.currentRevision
+    store3.recordAcceptedRevision(project, rev, 1)
+    store3.recordReplicaTargets(project, rev, [{ bindingId: 'stuck', daemonKey: 'mini:testing' }], { project, blobs: { big: 'A'.repeat(1024) } })
+
+    // Age it on disk, the way seventeen hours would.
+    const jp = join(dir, 'operations.json')
+    const j = JSON.parse(readFileSync(jp, 'utf8'))
+    j.revisionLifecycle[rev].replicas.stuck.updatedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+    writeFileSync(jp, JSON.stringify(j))
+
+    const store4 = createSourceLifecycleStore({ root: dir, context: { referencedRoots: ['main.tex'] } })
+    const b2 = store4.submit({ expectedRevision: rev, files: [{ path: 'main.tex', content: 'z\n' }], sourceManifest: ['main.tex'] })
+    assert.ok(b2?.ok, 'second submit must be accepted to drive the sweep')
+    store4.recordAcceptedRevision(project, b2.authority.currentRevision, 2)
+    store4.recordReplicaTargets(project, b2.authority.currentRevision, [{ bindingId: 'other', daemonKey: 'mini:testing' }], { project, blobs: { a: 'x' } })
+
+    const replica = store4.readRevisionLifecycle(project, rev).replicas.stuck
+    assert.equal(replica.state, 'expired', 'a replica pending past the cutoff must go terminal')
+    assert.equal(replica.command, undefined, 'and must lose its payload')
+    assert.equal(replica.daemonKey, 'mini:testing', 'while keeping what it was')
+    assert.match(replica.result.error, /re-materialise/, 'and saying how to recover')
   })
 } finally {
   rmSync(root, { recursive: true, force: true })
