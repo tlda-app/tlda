@@ -97,9 +97,24 @@ export function buildFleetLayoutPlanInput({
   // two-chat has no rail hanging outside it, so its span is just its content.
   const railSpan = variant === 'two-chat' ? 0 : layoutTokens.leftW + gap
   const naturalSpan = railSpan + variantContentW(variant, vp, layoutTokens.leftW, layoutTokens.chatW, gap)
+  // A down-flowing paper is sized to screen height, and its columns are derived
+  // from that height (readabilityProfile.ts: leftW = totalH * railAspect). So a
+  // TALLER screen produces WIDER columns, and their sum was checked against the
+  // screen only in the transposed case above — which is the same defect that
+  // comment describes, still live for the ordinary case of a paper read down.
+  //
+  // It bites by aspect ratio rather than by size, which is why it survived: with
+  // the default profile a 13" Air M2 (1470x956, viewport 866) yields a natural
+  // span of 1484 against 1470 and runs off the screen, while a 1728-wide screen
+  // yields 1558 against 1728 and fits with 170px to spare. Skip's own machine is
+  // the second one; his advisor's is the first.
+  //
+  // Clamped at 1, so this only ever pulls an overflowing layout back onto the
+  // screen and never enlarges or rescales one that already fits. Nothing changes
+  // on a screen where the layout was already within the viewport.
   const columnScale = flowAxis === 'x' || variant === 'two-chat'
     ? (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan)
-    : 1
+    : Math.min(1, vp.w / Math.max(1, naturalSpan))
   const leftW = Math.round(layoutTokens.leftW * columnScale)
   const chatW3 = Math.round(layoutTokens.chatW * columnScale)
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
