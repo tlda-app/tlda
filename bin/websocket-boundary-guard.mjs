@@ -372,7 +372,23 @@ function trackedSourceFiles() {
     .filter(rel => !LIBRARY.some(p => rel.startsWith(p)))
 }
 
-const WALK_SKIP = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next', 'out'])
+// Build output and vendored trees. The fallback approximates what git would
+// have ignored, and the way to check that approximation is not "does it run" --
+// it is whether it yields the SAME file set git yields. There is a comparison
+// at the bottom of this file for exactly that.
+//
+// server/public is the built client bundle: it is .js, it constructs a
+// WebSocket, and git ignores it. Without it here the fallback reports a
+// violation in generated code, which is what the first gated deploy did.
+const WALK_SKIP = new Set([
+  '.git', 'node_modules', 'dist', 'build', 'coverage', '.next', 'out',
+  '.venv', '__pycache__',
+])
+// Skipped by PATH, not by name. `server/public` is the built client bundle and
+// git ignores it; top-level `public/` is tracked source -- excluding every
+// directory called "public" silently dropped two real files, which the
+// comparison against git's own file list is what caught.
+const WALK_SKIP_PATHS = new Set(['server/public'])
 
 function walkSourceFiles(root, prefix = '') {
   const out = []
@@ -385,6 +401,7 @@ function walkSourceFiles(root, prefix = '') {
   for (const entry of entries) {
     if (WALK_SKIP.has(entry.name)) continue
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (WALK_SKIP_PATHS.has(rel)) continue
     if (entry.isDirectory()) out.push(...walkSourceFiles(root, rel))
     else if (entry.isFile()) out.push(rel)
   }
