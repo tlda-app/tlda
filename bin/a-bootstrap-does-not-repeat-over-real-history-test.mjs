@@ -1,41 +1,40 @@
 #!/usr/bin/env node
-// The window this file protects is narrower than "does the ref move
-// atomically" -- it is specifically bootstrap's, and it is not the same
-// window bin/source-restart-mid-edit-test.mjs already covers.
+// The window this file protects is bootstrap's specifically, and it is
+// narrower than -- and different in shape from -- what
+// bin/source-restart-mid-edit-test.mjs already covers.
 //
-// state() in source-lifecycle.mjs reconciles a stale authority.json against
-// the live ref ONLY when the cached state says CURRENT:
+// state() in source-lifecycle.mjs reconciles against the live ref whenever a
+// ref exists at all (as of commit f0eda05b6, "Put the ref back when the
+// record that follows it fails"):
 //
 //   async function state() {
 //     const stored = readJson(statePath) || { state: UNINITIALIZED, ... }
-//     if (stored.state !== SOURCE_AUTHORITY_CURRENT) return stored
+//     if (stored.state === RECONCILIATION_REQUIRED) return stored
 //     const head = await sourceGit().head(project)
-//     return head ? { ...stored, currentRevision: head } : stored
+//     if (!head) return stored
+//     return { ...stored, state: CURRENT, currentRevision: head }
 //   }
 //
-// bootstrap() is the one caller that runs while the cache is still
-// UNINITIALIZED -- there is no prior authority.json to be stale, because
-// there is no prior authority.json at all. If bootstrap's ref-move
-// (advanceSourceHead) lands and the process dies before the FIRST
-// authority.json write, the cache goes on reporting UNINITIALIZED forever:
-// state()'s reconciliation branch never fires, because it only fires for
-// CURRENT.
+// That widened check (any ref, not only a cached CURRENT) is what closes the
+// gap this file originally found: bootstrap's cache starts UNINITIALIZED
+// (there is no prior authority.json to be stale), so the OLD narrower check
+// (`if (stored.state !== CURRENT) return stored`) never reconciled bootstrap's
+// own ref-move at all. f0eda05b6 also added a synchronous compensation path
+// (recordAcceptedAuthority's try/catch, which retracts the ref if the
+// authority.json write throws) -- but that path can only run in the SAME
+// process, so it protects against a catchable failure, not against the
+// process dying before it gets the chance to run at all.
 //
-// The next caller through bootstrap() then sees `before.state ===
-// UNINITIALIZED` -- exactly the precondition bootstrap requires to proceed --
-// and bootstraps a SECOND time, with parent: null, on top of a project that
-// already has real, accepted, ref-reachable history. That is not a crash
-// losing unsaved work; it is a crash making a durable accept invisible to the
-// one code path that is supposed to notice it happened.
-//
-// Uses the real fault hook (`createSourceLifecycleStore({fault})`), which
-// atomicWrite already calls at 'before-rename' -- the same point a real crash
-// would land at, between the ref move and the json rename -- rather than an
-// injected throw inside application logic, so this proves the actual code
-// path's ordering, not a mock of it.
+// This file tests the case compensation cannot reach: the ref moves, durably,
+// and the process is simply gone before anything -- compensation included --
+// runs again. It builds that state by hand with the same low-level primitives
+// bootstrap() itself uses (rather than injecting a catchable exception into
+// bootstrap(), which would only exercise the try/catch, not the crash it is
+// there to compensate for), then asks a FRESH store instance -- the shape a
+// restart produces -- whether it reconciles correctly.
 import assert from 'assert/strict'
 import { execFileSync } from 'child_process'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -51,41 +50,29 @@ function freshRoot() {
 
 try {
   const root = freshRoot()
+  const gitDir = join(root, 'git')
 
-  // A fault that throws exactly once, only for the authority.json rename, so
-  // the ref-move that already happened inside bootstrap() is real and
-  // durable, and only the json write after it is interrupted.
-  let armed = true
-  const fault = (point, { path }) => {
-    if (armed && point === 'before-rename' && path.endsWith('authority.json')) {
-      armed = false
-      throw new Error('simulated crash between ref-move and authority.json write')
-    }
-  }
+  // The exact sequence bootstrap() runs, up to and including the ref move --
+  // and stopping there, the way a process that died right after would.
+  const store = createSourceGitStore({ gitDir })
+  const firstHead = await store.acceptRevision({
+    project: 'p',
+    files: [{ path: 'main.tex', content: 'first accepted content\n' }],
+  })
+  await store.advanceHead('p', firstHead, null)
+  // No authority.json write at all -- this IS the crash: bootstrap's cache
+  // never gets its first write, the same as a process dying between
+  // advanceSourceHead and recordAcceptedAuthority.
 
-  const crashingStore = createSourceLifecycleStore({ root, project: 'p', fault })
-  await assert.rejects(
-    () => crashingStore.bootstrap({
-      expectedRevision: null,
-      files: [{ path: 'main.tex', content: 'first accepted content\n' }],
-      sourceManifest: ['main.tex'],
-    }),
-    /simulated crash/,
-    'bootstrap — must actually throw here, or nothing below tests a crash at all',
-  )
-
-  // Ground truth: the ref already moved. bootstrap's persistSnapshot +
-  // advanceSourceHead ran to completion before the injected fault fired.
-  const gitStore = createSourceGitStore({ gitDir: join(root, 'git') })
-  const firstHead = await gitStore.head('p')
-  assert.notEqual(firstHead, null, 'the ref — bootstrap moved it before the crash; otherwise this is not the window under test')
+  assert.notEqual(firstHead, null, 'the ref — bootstrap-equivalent moved it; otherwise this is not the window under test')
   assert.equal(
-    (await gitStore.readRevisionFile(firstHead, 'main.tex')).toString(),
+    (await store.readRevisionFile(firstHead, 'main.tex')).toString(),
     'first accepted content\n',
     'the ref — points at the real, durable, accepted first revision',
   )
 
-  // A fresh store, as a restart would produce, with no fault this time.
+  // A fresh store, as a restart would produce: no fault, no prior
+  // authority.json, exactly the "died before ever writing the cache" shape.
   const restarted = createSourceLifecycleStore({ root, project: 'p' })
   const authority = await restarted.readAuthority()
 
@@ -97,7 +84,7 @@ try {
     'the authority read after restart — must not report UNINITIALIZED when the ref already holds a real accepted revision; ' +
     'reporting UNINITIALIZED here is what lets the next bootstrap() run again and stack a second unrelated first-revision on top of real history',
   )
-  assert.equal(authority.currentRevision, firstHead, 'the authority read — reconciles to the ref bootstrap actually advanced, not to a null/stale cache')
+  assert.equal(authority.currentRevision, firstHead, 'the authority read — reconciles to the ref, not to a null/absent cache')
 
   // And the concrete failure this promise exists to prevent: bootstrap()
   // itself must refuse a second time now that state correctly reports
