@@ -782,17 +782,31 @@ router.post('/:name/synctex-path', requireRead, async (req, res) => {
 
 // Preamble macros (KaTeX-compatible, parsed during build from main tex file).
 // Outputs are now per-target — fetch the primary target's macros.
+// Four different conditions used to answer 200 {macros:{}} here: no such
+// project, no macros artifact yet, an unparseable artifact, and a document
+// whose preamble genuinely defines nothing. The caller could not tell them
+// apart, so a failure arrived as the fact "this document has no macros" -- and
+// the chat lint then reported that to an agent as "you have no project
+// preamble set", which sent Skip to set a preamble that was already set.
+//
+// An empty body is now only ever the last of the four: a document that really
+// has no macros. Everything else says what went wrong.
 router.get('/:name/macros', requireRead, async (req, res) => {
   const project = await readProject(req.params.name)
-  if (!project) return res.json({ macros: {} })
+  if (!project) return res.status(404).json({ error: `No project "${req.params.name}"` })
   const texBase = (project.mainFile || 'main.tex').replace(/\.tex$/, '').split('/').pop()
   const outputPath = join(getOutputDir(req.params.name), `${texBase}-macros.json`)
-  if (!await pathExists(outputPath)) return res.json({ macros: {} })
+  // Not built yet is not "no macros": the preamble is unknown until a build has
+  // produced the artifact, and a document that has never been built is the case
+  // most likely to be read as "you have no preamble".
+  if (!await pathExists(outputPath)) {
+    return res.status(404).json({ error: `No macros artifact for "${req.params.name}" — the project has not been built yet` })
+  }
   try {
     const data = JSON.parse(await readFile(outputPath, 'utf8'))
     res.json({ macros: data.macros || {} })
-  } catch {
-    res.json({ macros: {} })
+  } catch (e) {
+    res.status(500).json({ error: `Macros artifact for "${req.params.name}" is unreadable: ${e.message}` })
   }
 })
 

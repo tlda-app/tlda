@@ -399,7 +399,9 @@ function isMarkdownFileName(name = '') {
   return lower.endsWith('.md') || lower.endsWith('.markdown');
 }
 
-function checkSharedMarkdownAttachments(inlineAttachments = [], macros = {}) {
+// `macros` may be null (could not be loaded) — passed straight through to
+// checkChatRender, which is what distinguishes that from an empty preamble.
+function checkSharedMarkdownAttachments(inlineAttachments = [], macros = null) {
   const warnings = [];
   for (const att of inlineAttachments || []) {
     if (att?.broken || !att?.path || !isMarkdownFileName(att.name || att.path)) continue;
@@ -730,20 +732,40 @@ const DOC_VERSION_CACHE_MS = 5000;
 // to katex.renderToString so the chat linter doesn't false-positive on them.
 const _macrosCache = new Map(); // doc → { macros, ts }
 const MACROS_CACHE_MS = 5 * 60_000; // 5 min
+// Returns the macro map, or NULL when it could not be determined.
+//
+// The distinction is the whole point. Every failure here used to return `{}`,
+// which is indistinguishable from a document whose preamble defines nothing --
+// so a 2-second timeout against a busy server arrived at the chat lint as the
+// fact "this agent has no preamble", and the lint told an agent to go set one.
+// Skip set his twice because of that sentence.
+//
+// Null means "I don't know". Callers must not turn it back into {}: an empty
+// object is a measurement and null is the absence of one.
 async function getMacrosForDoc(doc) {
-  if (!doc) return {};
+  if (!doc) return null;   // no project resolved — nothing was asked, so nothing is known
   const cached = _macrosCache.get(doc);
   if (cached && Date.now() - cached.ts < MACROS_CACHE_MS) return cached.macros;
+  const url = `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`;
   try {
-    const url = `${TLDA_SERVER}/api/projects/${encodeURIComponent(doc)}/macros`;
     const headers = _tldaToken ? { Authorization: `Bearer ${_tldaToken}` } : {};
     const res = await fleetFetch(url, { headers, signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return {};
+    if (!res.ok) {
+      process.stderr.write(`[fleet] macros for "${doc}": HTTP ${res.status}\n`);
+      return null;
+    }
     const body = await res.json();
     const macros = body?.macros || {};
     _macrosCache.set(doc, { macros, ts: Date.now() });
     return macros;
-  } catch { return {}; }
+  } catch (e) {
+    // Reported, not swallowed: a timeout here is the single most likely cause
+    // of the lint firing, and it left no trace anywhere before this line. Do
+    // not lengthen the 2s budget to make it rarer -- that hides it again. The
+    // fix is that the caller can tell a timeout from an empty preamble.
+    process.stderr.write(`[fleet] macros for "${doc}" did not load: ${e.name === 'TimeoutError' ? 'timed out after 2s' : e.message}\n`);
+    return null;
+  }
 }
 
 // Resolve which project an agent "is on" from its working folder. This is the
@@ -3217,7 +3239,11 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     for (const fileIssue of inlineMarkdownFileIssues) {
       warning += `\n\n⚠ **Shared markdown file won't render properly (${fileIssue.issues.length} issue${fileIssue.issues.length > 1 ? 's' : ''}): \`${fileIssue.name}\`.** The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${fileIssue.issues.map(l => `- ${l}`).join('\n')}`;
     }
-    const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
+    // Unknown macros count as not-a-paper-context, which is what an unreadable
+    // preamble already produced before macros could be null. Deliberately not
+    // upgraded to a third state: paperContext only tunes a different lint's
+    // sensitivity and is never reported to anyone as a fact about their setup.
+    const launderIssues = checkLaunderChatLint(message, sent, { paperContext: !!macros && Object.keys(macros).length > 0 });
     if (launderIssues.length > 0) {
       warning += `\n\n${launderIssues.map(issue => formatLaunderChatWarning(issue, messageId)).join('\n')}`;
     }

@@ -21,11 +21,23 @@ function proseOnly(message) {
     .replace(/(`+)[\s\S]*?\1/g, ' ')
 }
 
-export function checkChatRender(message, macros = {}) {
+/**
+ * `macros` is the project's macro map, or NULL when it could not be loaded.
+ *
+ * Those are different facts and this function must not collapse them. An empty
+ * map is a measurement — the preamble defines nothing — and null is the absence
+ * of one: a timeout, an unbuilt project, an unreachable server. Reporting the
+ * second as the first is what told an agent "you have no project preamble set"
+ * while 56 macros sat in the artifact, and what had Skip set his preamble twice.
+ *
+ * Null is the default because a caller that passes nothing has measured nothing.
+ */
+export function checkChatRender(message, macros = null) {
   const validity = []
   const style = []
-  const hasPaperMacros = Object.keys(macros).length > 0
-  const renderMacros = { ...baseMacros, ...macros }
+  const macrosKnown = macros !== null && macros !== undefined
+  const hasPaperMacros = macrosKnown && Object.keys(macros).length > 0
+  const renderMacros = { ...baseMacros, ...(macros || {}) }
   let suggestedSetMacros = false
   const normalizedMathMessage = normalizeChatDisplayMathDelimiters(proseOnly(message))
 
@@ -65,7 +77,13 @@ export function checkChatRender(message, macros = {}) {
       if (undefinedMacro && !hasPaperMacros) {
         if (!suggestedSetMacros) {
           suggestedSetMacros = true
-          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Your preamble is normally the project your working directory belongs to; if you are outside a linked checkout, point it at a document once with \`configuration({ project: "<name>" })\`, or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`)
+          validity.push(macrosKnown
+            ? `Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Your preamble is normally the project your working directory belongs to; if you are outside a linked checkout, point it at a document once with \`configuration({ project: "<name>" })\`, or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`
+            // Say the measured thing. We could not read the preamble, so we do
+            // not know whether these macros are defined — they may well render
+            // for him exactly as written, and telling an agent to go set a
+            // preamble it already has is how this cost Skip the same work twice.
+            : `Math uses macros that aren't loaded here, and your project's preamble could not be read — so this may render correctly for him and this check cannot tell. Nothing to fix if the macros are defined in your paper. If you want certainty, \`configuration()\` reports the preamble it can see, or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`)
         }
       } else {
         const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex
