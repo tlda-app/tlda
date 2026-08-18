@@ -44,7 +44,13 @@ export async function pushSourceSnapshot(project, { expectedRevision, sourceMani
   if (!result.ok) {
     return {
       status: 409,
-      status_: result.status,
+      // The HTTP body's own field is named `status` (the lifecycle status
+      // string, e.g. `stale-base`), which collides with the HTTP status code
+      // above. The route's callers on the client side read it as `status`
+      // too; this helper's callers read it as `lifecycleStatus` so both the
+      // HTTP-status and the lifecycle-status stay distinguishable in one
+      // object rather than one shadowing the other.
+      lifecycleStatus: result.status,
       currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
       refusedRevision: result.refusedRevision ?? null,
       evidence: result.evidence ?? null,

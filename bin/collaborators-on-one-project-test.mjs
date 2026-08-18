@@ -23,8 +23,7 @@ import {
   sourceLifecycleStore,
   updateProject,
 } from '../server/lib/project-store.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
-import { daemonOn, everyoneArrivesAt } from './lib/source-collaborators.mjs'
+import { daemonOn, everyoneArrivesAt, pushSourceSnapshot } from './lib/source-collaborators.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-collaborators-'))
 await initProjectStore(root)
@@ -38,7 +37,7 @@ async function paper(name, manifest, opening) {
   createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
   await updateProject(name, { pages: 1, buildStatus: 'success' })
   suppressBuilds(name)
-  const start = await processProjectPush(name, {
+  const start = await pushSourceSnapshot(name, {
     expectedRevision: null,
     sourceManifest: manifest,
     files: manifest.map(path => ({ path, content: opening(path) })),
@@ -69,7 +68,7 @@ try {
 
     // ### Everyone arrives
     await everyoneArrivesAt(alice, bob)
-    assert.equal((await sourceLifecycleStore(name)).readAuthority().currentRevision, r1, 'the paper — r1, both files unchanged')
+    assert.equal((await (await sourceLifecycleStore(name)).readAuthority()).currentRevision, r1, 'the paper — r1, both files unchanged')
     assert.equal(alice.heldRevision, r1, "Alice's laptop — r1, clean")
     assert.equal(bob.heldRevision, r1, "Bob's desktop — r1, clean")
 
@@ -138,13 +137,13 @@ try {
     // of the snapshot record into content-addressed blobs, so reading the
     // representation broke here while the property it was asserting did not.
     // This asks for one file's bytes and lets the store decide where they live.
-    daemons.forEach((daemon, index) => {
+    for (const [index, daemon] of daemons.entries()) {
       assert.equal(
-        String(lifecycle.readRevisionFile(authority.currentRevision, manifest[index])),
+        String(await lifecycle.readRevisionFile(authority.currentRevision, manifest[index])),
         `${daemon.who} wrote this\n`,
         `the recorded revision does not contain ${daemon.who}'s ${manifest[index]}, so the next rebase will drop it`,
       )
-    })
+    }
   }
 
   // ---------------------------------------------------------------------
