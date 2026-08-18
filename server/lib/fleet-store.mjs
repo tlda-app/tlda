@@ -2634,6 +2634,37 @@ export class FleetStore {
     return this.getAgentDaemonRoute(agentId);
   }
 
+  // The whole of a daemon's routing picture, replacing what we held for it.
+  //
+  // setAgentDaemonRoute can only ever ADD -- one message says "this agent is
+  // here" and there is no way to say "and nobody else is". So a route for an
+  // agent that has died or moved stayed until its agent row was deleted, which
+  // is the only thing that has ever removed one. This is the operation that can
+  // say it.
+  //
+  // The delete is scoped to daemon_key on purpose. An agent that MOVED to
+  // another daemon already carries that daemon's key on its row, so a roster
+  // from the daemon it left must not delete it -- the scope gives that for free.
+  replaceAgentDaemonRoutes(daemonKey, agentIds) {
+    if (!daemonKey) throw new Error('agent daemon routes require daemonKey');
+    const key = String(daemonKey);
+    const ids = [...new Set((agentIds || []).map(id => String(id || '')).filter(Boolean))];
+    const before = this.db.prepare('SELECT count(*) AS n FROM agent_daemon_routes WHERE daemon_key = ?').get(key).n;
+    const touched = this.db.transaction(() => {
+      if (ids.length) {
+        const holes = ids.map(() => '?').join(',');
+        this.db.prepare(`DELETE FROM agent_daemon_routes WHERE daemon_key = ? AND agent_id NOT IN (${holes})`).run(key, ...ids);
+      } else {
+        this.db.prepare('DELETE FROM agent_daemon_routes WHERE daemon_key = ?').run(key);
+      }
+      for (const id of ids) this._setAgentDaemonRoute.run(id, key);
+      return ids;
+    })();
+    this._bustAgentsCache();
+    for (const id of touched) this._syncAgentRegistry(id);
+    return { daemonKey: key, kept: touched.length, removed: Math.max(0, before - touched.length) };
+  }
+
 
   upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {

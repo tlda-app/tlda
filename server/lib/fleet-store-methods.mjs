@@ -68,6 +68,7 @@ export const FLEET_STORE_METHODS = Object.freeze([
   'getAgentDaemonRoute',
   'getAgentDaemonRoutes',
   'setAgentDaemonRoute',
+  'replaceAgentDaemonRoutes',
   'getDelegateOperationResult',
   'getDrillCards',
   'getEventById',

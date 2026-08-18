@@ -9476,6 +9476,43 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  // A daemon's whole routing picture in one message, sent once when it starts.
+  //
+  // This replaces a republish of every agent on every roster change and every
+  // reconnect -- 8,532 messages in 5h40m against ~200/day of genuine mints. It
+  // is not only cheaper: a per-agent route can only add, so a route for an agent
+  // that died or moved had nothing that could remove it. A roster is
+  // authoritative, so this is the first thing that can correct the picture
+  // rather than only append to it.
+  //
+  // Replace, not merge. The merge would leave exactly the stale entries the
+  // per-agent scheme already cannot remove, which would make this a volume fix
+  // and nothing else.
+  if (type === 'daemon-roster') {
+    if (!fleetStore) return
+    const rosterDaemonKey = ws._daemonKey || msg.daemon_key
+    if (!rosterDaemonKey) return
+    if (!Array.isArray(msg.agent_ids)) return
+    try {
+      const result = await fleetStore.replaceAgentDaemonRoutes(rosterDaemonKey, msg.agent_ids)
+      // Removals are the part nobody could see before, so say them out loud
+      // rather than leaving the count to be inferred from a roster that changed.
+      if (result?.removed) {
+        console.log(`[daemon-roster] ${rosterDaemonKey}: kept ${result.kept}, removed ${result.removed} stale route(s)`)
+      }
+      recordServerPerfEvent('daemon-roster', {
+        daemon_key: rosterDaemonKey,
+        kept: result?.kept ?? 0,
+        removed: result?.removed ?? 0,
+      })
+      if (msg.agent_ids.length) broadcastState(msg.agent_ids)
+    } catch (e) {
+      await reportDaemonEventFailure(msg, 'daemon-roster-write', e)
+      throw e
+    }
+    return
+  }
+
   if (type === 'spawn-startup-failed') {
     if (!fleetStore) return
     const { agent_id, agent_name, harness, model, respawn, code, reason, snippet } = msg

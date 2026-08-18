@@ -7,6 +7,7 @@ const DURABLE_TYPES = new Set([
   'activity-event',
   'activity-health',
   'agent-route',
+  'daemon-roster',
   'agent-compacting',
   'agent-context',
   'agent-status',

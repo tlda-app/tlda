@@ -441,19 +441,38 @@ function bufferActivity(agentId, evts) {
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
 }
 
-function registerHostedAgentRoutes() {
+// This daemon's whole routing picture, in one message, once per process start.
+//
+// It replaces registerHostedAgentRoutes(), which sent one `agent-route` per
+// agent and was called from reconcileRoster().onChanged -- every roster change --
+// and from the welcome handler -- every connect and reconnect. So one agent
+// appearing republished every agent: 8,532 messages in 5h40m against the ~200/day
+// of real mints. Per-mint publication is untouched and still carries a new agent.
+//
+// Not on reconnect: a reconnect is not a restart and the agent set has not
+// changed. Skip, on the shape: "demon route says / here i am and these ate my
+// agents / 1 message".
+let _daemonRosterSent = false
+function sendDaemonRoster(reason) {
+  if (_daemonRosterSent) return
   const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
+  const agentIds = []
   for (const row of permissionLedger.listProcessBindings()) {
     if (!row?.id || row.daemonKey !== daemonKey) continue
-    try {
-      sendMsg({
-        type: 'agent-route',
-        agent_id: row.id,
-        daemon_key: daemonKey,
-      })
-    } catch (e) {
-      log.warn(`agent route registration failed for ${row.id}: ${e.message}`)
-    }
+    agentIds.push(row.id)
+  }
+  try {
+    sendMsg({ type: 'daemon-roster', daemon_key: daemonKey, agent_ids: agentIds })
+    _daemonRosterSent = true
+    log.info(`daemon roster sent (${reason}): ${agentIds.length} agent(s) for ${daemonKey}`)
+  } catch (e) {
+    // Recovered rather than swallowed: the sent flag stays false, so the next
+    // welcome sends the roster again. Rethrowing here would abort the rest of
+    // the welcome handler -- JSONL resume, liveness, prompt sweeps -- for a
+    // message the very next reconnect retries. Every route this daemon owns
+    // going unpublished is the failure to avoid, and leaving the flag down is
+    // what avoids it.
+    log.warn(`daemon roster send failed for ${daemonKey}, will retry on next welcome: ${e.message}`)
   }
 }
 
@@ -1633,7 +1652,9 @@ function reconcileRoster(reason) {
     syncIdentityNames: roster => jsonlIngestor.syncIdentityNames(roster),
     syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
     onChanged: () => {
-      registerHostedAgentRoutes()
+      // The roster is no longer republished here. A roster change means one
+      // agent arrived or left; a new agent publishes its own route at mint, and
+      // this callback used to re-announce every other agent to carry that one.
       void agentLiveness.reportHostedSessions(reason)
     },
   })
@@ -1724,7 +1745,7 @@ async function handleServerMessage(msg, wsAttemptId) {
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.flushPending()
     await reconcileJsonlProcessBindings('daemon-welcome')
-    registerHostedAgentRoutes()
+    sendDaemonRoster('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
     jsonlIngestor.retryPendingNativeSubagents()
     gooseSupervisor.startActivityPolling()
