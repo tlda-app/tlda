@@ -1012,12 +1012,23 @@ async function applyAcceptedBundleEffects(name, lifecycle, {
 
   const targets = await sourceBindingTargetsForProject(name, sourceBindingId)
   if (targets.length) {
-    const targetRevision = lifecycle.readRevision(sourceRevision)
-    const baseRevision = previousRevision ? lifecycle.readRevision(previousRevision) : null
+    // `readRevision` is async since revisions became commits. Unawaited it
+    // yields a Promise, `?.files` is undefined, and BOTH manifests arrive as
+    // `[]` -- so the materializer plans a union of two empty sets, finds no
+    // paths, and applies nothing. The registration succeeds, the response says
+    // `replicas`, and no checkout receives the change: a green path with the
+    // work silently not happening, which is the sentence this function's own
+    // comment was written against.
+    const targetRevision = await lifecycle.readRevision(sourceRevision)
+    const baseRevision = previousRevision ? await lifecycle.readRevision(previousRevision) : null
     const blobs = {}
     for (const path of changed) {
       const bytes = await lifecycle.readRevisionFile(sourceRevision, path)
-      if (bytes) blobs[createHash('sha256').update(bytes).digest('hex')] = bytes.toString('base64')
+      // Keyed by git's blob id, because that is what the manifest entries name
+      // and what `source-materializer.mjs` looks the bytes up by -- its `hash`
+      // is `gitBlobId`. Keyed by sha256 the lookup misses and the apply throws
+      // `Missing blob`, on the far side, after the accept has been reported.
+      if (bytes) blobs[gitBlobId(bytes)] = bytes.toString('base64')
     }
     lifecycle.recordReplicaTargets(name, sourceRevision, targets, {
       project: name,
