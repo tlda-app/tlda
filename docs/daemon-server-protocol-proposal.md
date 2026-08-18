@@ -1,109 +1,115 @@
-# The daemon–server protocol: what it should be {#proposal}
+# The daemon–server protocol {#proposal}
 
-**This is a proposal, not a description.** What the protocol currently *is* — including six
+**A proposal, written to be said no to.** What the protocol currently *is* — including six
 states where one end can do something the other has no answer for — is
-[the protocol document](daemon-server-protocol.md). This is the argument for changing its
-shape, written to be said no to.
+[the protocol document](daemon-server-protocol.md).
 
-Skip, 2026-08-18, on being shown a fix for one message type at a time:
+## The problem in one sentence
 
-> you guys are trying to coalesce atuff thay necer shluldve been split in the first place
+**One durable, ordered, acknowledged queue carries every kind of fact the daemon has**, so
+the cheapest and most disposable traffic gets the same guarantees as a paper edit, and
+anything stuck at the head stops everything behind it.
 
-> stop taking such a like, low level look at how to fix things
+On 2026-08-18 that queue reached **60,970 rows**. A single `source-change` for one project
+held the head while **10,479 route publications and 1,061 RPC replies** waited behind it —
+messages with no ordering relationship to it whatsoever. Nobody could mint an agent for
+most of a day.
 
-> write up the protocol and ask
+## Three kinds of fact, needing three different things
 
-## The one sentence
+The current protocol treats these identically. They are not alike.
 
-**The daemon splits facts it holds whole into thousands of per-entity messages, and then
-treats every one of them as though losing it would matter.** Both halves are wrong, and
-they are wrong together: the splitting creates the volume, and the durability makes the
-volume expensive.
+**1. A record — activity events.** Tool calls, status changes. **These are evidence.**
+Losing one is data loss even though nothing breaks at the time: something happened and
+there is no trace of it. Skip, 2026-08-18: *"mostly ifnorable but if its the wrong event
+not good"* — you cannot know at write time which one you will need at 3am.
 
-## What that costs, measured 2026-08-18
+**2. A current value — roster, liveness.** Which agents live on this machine; whether one
+is alive. **Losing one is free**, because the next one says the same thing. These are
+self-healing by nature and we currently spend disk, retries and delivery slots defending
+them.
 
-| | |
-|---|---|
-| route publications in 5h40m | **8,532** (~36,000/day) |
-| what Skip says it should be | **~200/day, one per mint** |
-| re-offers of those in the same window | **237,158** |
-| queue at one point | **60,970 rows**, ~47,000 of them telemetry |
-| agents actually alive | ~30 |
+**3. A question — RPC, and an accept.** "Run this." "Take this commit." **These need an
+answer**, and an unanswered question is not recoverable by resending state.
 
-The mechanism for the routes: **every daemon start republishes one message per known agent.**
-355 of them inside 375 milliseconds, one per agent, no duplicates. There are ~2,500 agents in
-the ledger.
+## What each should use
 
-## Why splitting is the error, not the volume
+### Records: batch over HTTP, with a cursor
 
-A daemon knows its agent set **as one fact**. Splitting it into N messages does three things,
-all bad:
+The daemon POSTs whatever activity it has accumulated, on a short interval. Each event
+carries its own **stable id** and its own **timestamp**. The server stores them and orders
+by timestamp on read.
 
-1. **It multiplies cost by N** — N disk writes, N delivery slots, N acks, N retries.
-2. **It destroys the information that matters.** A per-agent message can only *add*: "this
-   agent is here." It cannot say **"and nobody else is."** So the server's picture can gain
-   entries and never lose them, and nothing in the protocol can correct it. That is why
-   stale routes exist at all.
-3. **It makes a restart look like news.** Re-announcing an unchanged fact 2,500 times is the
-   protocol having no way to say "nothing has changed."
+**No outbox, no per-message ack, no retry ledger, no delivery window.** If a POST fails,
+the next one carries the same batch plus whatever is new. The daemon tracks **one cursor** —
+what the server has confirmed — instead of sixty thousand rows.
 
-**Coalescing these back into one message is treating the symptom.** The design error is that
-they were ever separate.
+**Why this loses nothing, and it is the load-bearing part: the daemon is tailing files that
+already persist.** The agent JSONL on disk *is* the durable record. The outbox is a second
+copy of something already durable, and the cursor makes the copy unnecessary rather than
+unreliable.
 
-## Why uniform durability is the other half
+**Requirement this creates:** events need **stable ids**, so a resent batch is idempotent
+and the server can discard what it already has. Without that, a retry duplicates.
 
-Every message on this wire gets the same contract: persisted to SQLite, offered, acked,
-retried until it lands. **That is correct for a route and absurd for a heartbeat.**
+**Ordering:** within one agent, the batch preserves it and the timestamps make it explicit.
+Across agents there is no ordering relationship, and the current arrival order is an
+artifact of tailer scheduling rather than of when anything happened — so the transport is
+already not delivering the order it appears to.
 
-- **A route publication** is a durable fact. Losing it makes an agent unreachable — that is
-  what a husk is.
-- **An `activity-health` beat** is a claim about a moment. One that arrives four minutes late
-  is worthless, and it currently occupies a disk write, a delivery slot and a retry budget
-  exactly as if it were a source edit. There were **26,744** of them queued.
+### Current values: declare the whole thing, no acknowledgement
 
-**So the protocol has one tier where it needs at least two**, and the cheap tier is most of
-the traffic.
+The daemon sends its **entire** roster — daemon key plus the agent set — on start and on
+change. The server **replaces** its picture rather than merging.
 
-## The shape being proposed
+**Replacement is the point.** A per-agent message can only add; it has no way to say *"and
+nobody else."* That is why stale routes exist and why nothing can clear them. This is
+already built and shipped tonight (`3f69ce005`) and took `agent-route` from ~36,000/day to
+~200/day.
 
-**State, not events, for anything the daemon holds whole.**
+**No cursor and no ack here** — the next declaration supersedes the last, so a lost one
+repairs itself.
 
-- The daemon says **"here is my current state"** — its identity, and its full agent set — as
-  one message, on start and on change.
-- The server **replaces** its picture of that daemon rather than merging into it. Replacement
-  is what makes stale entries disappear; a merge cannot.
-- **Deltas afterwards** for individual changes: one mint, one delta. Skip's ~200/day, which
-  he has said is unproblematic.
+### Questions: HTTP request and response
 
-This is the ordinary reconciliation pattern — the receiver converges on the sender's declared
-state rather than replaying its history — and it is **idempotent by construction**, which is
-the property he asked us to design for: *"the key to having ok behavior is a messy
-environment."* Re-sending the state is free. Missing one is self-correcting. A crash mid-way
-costs a resend rather than a permanently wrong picture.
+The answer is the response. This is already how the new source accept works, and the reason
+is measured rather than aesthetic — `cfc1cdb43`: *"A 33 MB file becoming 44 MB of body is
+what took a box down; a third of that inflation was encoding."*
 
-**And two tiers of delivery:**
+## What the socket is for afterwards
 
-- **durable** — must arrive, retried, acked: routes, RPC replies, source changes.
-- **disposable** — latest-wins, not persisted, not retried, dropped under pressure:
-  health, status, thinking, context.
+**Only the direction that genuinely needs it: the server reaching the daemon.** Restart your
+MCP, resolve this route, run this. The daemon does not need a socket to talk to the server —
+HTTP is sufficient and it has no head-of-line blocking, because each request is independent.
+
+**So the socket stops carrying a queue.** No durable outbox, no ack gate, no in-flight
+window, no re-offer loop, no dead-letter path. **Those exist to make delivery reliable on a
+channel that would no longer need reliability.**
+
+## The redundancy this exposes, which is the immediate win
+
+`activity-health` is emitted **per JSONL line** — `bin/fleet-daemon.mjs:432`, comment *"A
+JSONL line is a per-turn heartbeat"*, reason `activity extracted from harness stream`.
+
+**So every turn produces two messages: the activity event, and a separate assertion that the
+agent is alive, derived from the same line.** The event already proves liveness. Measured
+tonight: heartbeats returned from 0 to 119 within 90 seconds of being wiped — about 70 a
+minute, from roughly 30 agents.
+
+**This is not a change in what we send. It is that the rate scales with how much the fleet
+talks, and tonight is the first night with this many agents working this hard.**
 
 ## What is his to decide
 
-1. **Is state-replacement right for the agent set**, or is there a reason the server must
-   never be told "these and no others"?
-2. **Which types are disposable?** The proposal says health, status, thinking, context. That
-   list is a product judgement about what is worth surviving a crash, not a technical one.
-3. **Should a disposable message be dropped under pressure, or just not retried?** Dropping
-   is cheaper and means his activity cards can skip rather than queue.
-4. **What does "I cannot tell you" look like?** This is the gap under every failure tonight —
-   a mint reporting success with no process, an ack refused with no error recorded, a grep
-   returning zero from the wrong branch. **Nothing in the contract says what a surface should
-   say when it does not know.** Every one of them said "fine."
+1. **Is a one-second batch acceptable for activity cards**, or do they need to feel live?
+2. **Should the server pull state rather than the daemon pushing it?** Pull is simpler still —
+   nothing to buffer — but the server has to know when to ask.
+3. **Does anything else genuinely need the socket** from daemon to server, or can it become
+   server-to-daemon only?
 
-## What is not being proposed
+## What this is not
 
-- **No new subsystem.** This deletes message volume and one delivery tier; it does not add a
-  journal, a registry or a control plane.
-- **No batching.** Batching would make the split cheaper to deliver. The point is not to
-  split.
-- **No compression.** The messages are 502 bytes.
+- **Not a new subsystem.** It deletes an outbox, an ack gate, a retry ledger and a delivery
+  window. It adds a cursor and an id.
+- **Not batching as an optimisation.** Batching here is a consequence of dropping
+  per-message delivery, not a way to make per-message delivery cheaper.
