@@ -151,6 +151,25 @@ async function stateAgent(predicate, timeoutMs = 180_000) {
 }
 stateAgent.lastAgents = []
 
+// The same poll against `/api/fleet-table`, which merges pending shell rows into
+// a filtered roster read. `/api/state` cannot answer a question about a row that
+// has not logged in yet; this can.
+async function rosterAgent(predicate, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastAgents = []
+  while (Date.now() < deadline) {
+    const r = await fetch(`${base}/api/fleet-table?filter=${encodeURIComponent(MINT_NAME)}`)
+    const table = await r.json()
+    lastAgents = table.agents || []
+    const agent = lastAgents.find(predicate)
+    if (agent) return agent
+    await sleep(500)
+  }
+  rosterAgent.lastAgents = lastAgents
+  return null
+}
+rosterAgent.lastAgents = []
+
 async function waitForChatFrom(agentId, timeoutMs = 240_000) {
   const ws = await openFleet()
   try {
@@ -206,7 +225,13 @@ async function startMcpClient() {
       FLEET_HARNESS: 'codex',
       FLEET_TMUX_SESSION: 'fleet-real-mint-requester',
       TLDA_MCP_FLEET_ONLY: '1',
-      TLDA_FLEET_DURABLE_SEND_DEADLINE_MS: '180000',
+      // No deadline override here. Nothing ever read
+      // TLDA_FLEET_DURABLE_SEND_DEADLINE_MS -- the constant in fleet-tools.mjs is
+      // hard-coded -- so this test always ran at the real 15s bound while
+      // appearing to run at 180s. It is deleted rather than wired up: the mint
+      // ack no longer waits on the minted agent's login, so 15s is no longer a
+      // deadline this path cannot meet, and this test now proves that at the
+      // bound the product actually uses.
     },
     cwd: process.cwd(),
   })
@@ -318,18 +343,62 @@ jsonlTailIdleSeconds: 600
       operation_id: `real-mint-gate:${process.pid}`,
     },
   })
+  const mintAckAt = Date.now()
   const text = result.content?.map(part => part.text || '').join('\n') || ''
   assert.equal(result.isError, undefined, text)
   const agentId = text.match(/agent_id:\s*`?([^`\s]+)`?/)?.[1] || null
   assert.ok(agentId, `delegate(mint:) returned no agent_id:\n${text}`)
-  const shell = await stateAgent(a => a.id === agentId && a.friendly_name === MINT_NAME, 60_000)
-  assert.ok(shell, `minted shell not found for ${agentId}; result:\n${text}\nTMUX PANE:\n${captureMintTmuxPane()}\nSTATE AGENTS:\n${JSON.stringify(stateAgent.lastAgents, null, 2)}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`)
-  await capturePane(agentId)
-  console.log(`PASS: delegate(mint:) committed route-present shell ${agentId}`)
+
+  // The bug this covers: the delegation was dropped whenever the mint's
+  // acknowledgement outlived the client's 15s durable-send deadline, which a
+  // Claude seat's login always does. So assert the task exists NOW -- before the
+  // agent has logged in -- and that the login it is waiting for really does land
+  // after that deadline. If login started arriving inside 15s this assertion
+  // would stop being about the bug, and it says so rather than passing quietly.
+  const mintTaskId = text.match(/delegated \[([^\]]+)\]/)?.[1] || null
+  assert.ok(mintTaskId, `delegate(mint:) reported no task id:\n${text}`)
+  const preLoginTask = await (async () => {
+    const ws = await openFleet()
+    try {
+      return await request(ws, 'my-task', { agent: agentId })
+    } finally {
+      ws.close()
+    }
+  })()
+  assert.equal(preLoginTask.task?.id, mintTaskId, `mint task not attached before login:\n${JSON.stringify(preLoginTask, null, 2)}`)
+  assert.equal(preLoginTask.task?.agent, agentId)
+  console.log(`PASS: task ${mintTaskId} attached to ${agentId} at mint, before the agent logged in`)
+  // Not `/api/state`: its roster is `dead = 0 AND metadata.shell != 1`, so a row
+  // that has been reserved but has not logged in is excluded by construction and
+  // this could only ever have passed after login. It never ran to find out --
+  // every mint failed above, at the drop this test now covers. `/api/fleet-table`
+  // with a filter is the surface that merges pending shells back in, which is
+  // where a reserved-but-not-yet-joined row is visible.
+  const shell = await rosterAgent(a => a.id === agentId && a.name === MINT_NAME, 60_000)
+  assert.ok(shell, `minted shell not found for ${agentId}; result:\n${text}\nTMUX PANE:\n${captureMintTmuxPane()}\nROSTER ROWS:\n${JSON.stringify(rosterAgent.lastAgents, null, 2)}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`)
+  // The roster row is a projection and carries no `metadata`. This reason is
+  // emitted by agent-runtime-status.mjs exactly when `metadata.shell` is set, so
+  // it is how "reserved but not yet joined" reads on this surface -- and it is
+  // the state the task above was attached in.
+  assert.equal(shell.runtime_status?.reason, 'reserved-shell-unclaimed', `expected ${agentId} to still be an unclaimed reserved shell before login`)
+  console.log(`PASS: delegate(mint:) committed reserved shell ${agentId} with its task`)
 
   const live = await stateAgent(a => a.id === agentId && a.metadata?.shell !== true, 180_000)
   assert.ok(live, `minted agent never logged in as live ${agentId}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`)
-  console.log(`PASS: real daemon-spawned agent logged in ${agentId}`)
+  const loginAfterAckMs = Date.now() - mintAckAt
+  assert.ok(
+    loginAfterAckMs > 15_000,
+    `login landed ${loginAfterAckMs}ms after the mint ack, inside the 15s client durable-send deadline. The task-attached-before-login assertion above no longer exercises the dropped-delegation case; re-check what changed before trusting this suite.`,
+  )
+  console.log(`PASS: real daemon-spawned agent logged in ${agentId} ${loginAfterAckMs}ms after the mint ack (past the 15s client deadline)`)
+
+  // Route presence is checked here rather than beside the shell assertion above.
+  // A reserved shell has no daemon address -- the route is published at login --
+  // so capture-pane there answered `agent has no daemon address`, and the line
+  // that claimed a "route-present shell" was claiming it of a row that by design
+  // is not yet routed. It had never run: every mint failed before reaching it.
+  await capturePane(agentId)
+  console.log(`PASS: ${agentId} is route-present through its daemon after login`)
 
   const chat = await waitForChatFrom(agentId)
   assert.ok(chat, `minted agent did not answer with ${PHRASE}\nSERVER LOG:\n${serverLog}\nDAEMON LOG:\n${daemonLog}`)

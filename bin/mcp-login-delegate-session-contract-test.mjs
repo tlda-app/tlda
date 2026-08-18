@@ -48,7 +48,9 @@ wss.on('connection', ws => {
         reply({ ok: false, reason: 'login-timeout', error: 'spawn failed before the agent joined' })
         return
       }
-      reply({ ok: true, agent_id: 'fleet:session-contract-minted', mailbox_id: 'mailbox:test' })
+      // mint+delegate is one operation: the server attaches the task to the
+      // shell it reserves and answers with the task id.
+      reply({ ok: true, agent_id: 'fleet:session-contract-minted', mailbox_id: 'mailbox:test', task_id: 'task:session-contract' })
       return
     }
     if (message.type === 'delegate') {
@@ -95,11 +97,18 @@ try {
   assert.match(delegated.content[0].text, /delegated \[task:session-contract\]/)
 
   assert.equal(seen[0]?.type, 'login')
-  assert.equal(seen.find(entry => entry.type === 'spawn')?.authenticatedId, childId)
-  assert.equal(seen.find(entry => entry.type === 'spawn')?.await_ready, true)
-  assert.equal(seen.find(entry => entry.type === 'delegate')?.authenticatedId, childId)
+  const spawn = seen.find(entry => entry.type === 'spawn')
+  assert.equal(spawn?.authenticatedId, childId)
+  // The delegation rides on the mint as one operation rather than following it
+  // as a second send. It used to go out separately, gated on `await_ready`
+  // resolving from the agent's real login -- which no client ever waited long
+  // enough to see, so the second send was never made.
+  assert.equal(spawn?.await_ready, undefined)
+  assert.equal(spawn?.delegate?.message, 'Prove login authenticates the immediately following mint.')
+  assert.equal(spawn?.delegate?.allow_pending_agent, true)
+  assert.equal(spawn?.delegate?.operation_id, spawn?.operation_id)
+  assert.equal(seen.filter(entry => entry.type === 'delegate').length, 0)
 
-  const delegatesBeforeFailure = seen.filter(entry => entry.type === 'delegate').length
   failSpawn = true
   const failed = await handleFleetTool('delegate', {
     mint: { name: 'session-contract-never-joined' },
@@ -107,8 +116,7 @@ try {
   }, context)
   assert.equal(failed.isError, true)
   assert.match(failed.content[0].text, /mint failed before delegation: spawn failed before the agent joined/)
-  assert.equal(seen.filter(entry => entry.type === 'delegate').length, delegatesBeforeFailure)
-  console.log('PASS: MCP delegate waits for joined mint outcome and does not delegate after join failure')
+  console.log('PASS: MCP delegate sends mint+delegate as one operation and does not delegate after a failed mint')
 } finally {
   for (const client of wss.clients) client.close()
   await new Promise(resolve => server.close(resolve))
