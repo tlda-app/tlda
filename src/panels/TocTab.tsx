@@ -749,9 +749,13 @@ export function DarkModeToggle() {
 
 const ZONE_WIDTH_KEY = 'zone-width'
 const ZONE_WIDTH_EVENT = 'zone-width-change'
-export const ZONE_WIDTH_DEFAULT = 60
 export const ZONE_WIDTH_MIN = 20
 export const ZONE_WIDTH_MAX = 250  // full panel width — at max, no expand animation
+// Skip, 2026-08-18: "make th eTOC hover region as wide as possile" / "shit as
+// visible as possible", for a first-time reader on someone else's machine. The
+// widest the zone goes is the panel itself, so that is the default; the slider
+// still narrows it for anyone who wants the expand animation back.
+export const ZONE_WIDTH_DEFAULT = ZONE_WIDTH_MAX
 
 export function normalizeZoneWidth(value: unknown): number {
   const parsed = Number(value)
@@ -760,10 +764,16 @@ export function normalizeZoneWidth(value: unknown): number {
 }
 
 export function getZoneWidth(): number {
-  const pref = normalizeZoneWidth(getPref('toc-hover-zone-width'))
-  if (pref !== ZONE_WIDTH_DEFAULT) return pref
+  // Presence, not value. This asked `normalizeZoneWidth(pref) !== ZONE_WIDTH_DEFAULT`,
+  // which cannot tell "no pref set" from "pref set to exactly the default" — so a
+  // pref holding the default value fell through to localStorage, and raising the
+  // default silently changed nothing for anyone carrying the old value in storage.
+  const raw = getPref('toc-hover-zone-width')
+  if (raw !== undefined && raw !== null && raw !== '' && Number.isFinite(Number(raw))) {
+    return normalizeZoneWidth(raw)
+  }
   const stored = parseInt(localStorage.getItem(ZONE_WIDTH_KEY) || '')
-  if (isNaN(stored)) return pref
+  if (isNaN(stored)) return ZONE_WIDTH_DEFAULT
   return normalizeZoneWidth(stored)
 }
 
