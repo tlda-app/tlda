@@ -229,9 +229,27 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   function sendSourceChange(payload, retried = false) {
     const binding = payload.sourceBindingId ? sourceMaterializer.readBinding(payload.sourceBindingId) : null
+    // The base is `materializedRevision` — what this machine actually WROTE
+    // DOWN — never `serverHeadRevision`, which is only what the server said
+    // exists. A source-change carries whole file contents, so a base the sender
+    // does not hold the content of is a claim it cannot honour: on 2026-08-18
+    // the materializer correctly declined to write server-only prose over a file
+    // its author was editing, the daemon then pushed that file under the
+    // server's head revision anyway, and the server accepted it as-is and
+    // deleted three passages of his writing with acceptSeq up by one and no
+    // error anywhere.
+    //
+    // Basing on what we hold makes that base stale BY CONSTRUCTION after a
+    // declined materialization, so the server answers stale-base and the
+    // three-way merge that already exists runs and keeps both sides. Nothing new
+    // decides this and there is no second field to agree with: the honest number
+    // was already sitting beside the dishonest one.
+    if (binding && binding.serverHeadRevision && binding.materializedRevision !== binding.serverHeadRevision) {
+      log.warn(`${payload.project}: pushing against ${binding.materializedRevision || 'no materialized revision'} because ${binding.serverHeadRevision} was never written to this checkout — the server will merge`)
+    }
     const message = sourceCorrelation.prepare({
       ...payload,
-      expectedRevision: binding?.serverHeadRevision ?? payload.expectedRevision ?? null,
+      expectedRevision: binding?.materializedRevision ?? payload.expectedRevision ?? null,
     }, retried)
     if (!message) {
       const state = sourceCorrelation.state(payload.project)
@@ -1340,7 +1358,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       type: 'source-change',
       project: projectName,
       sourceBindingId: state.bindingId,
-      expectedRevision: sourceMaterializer.readBinding(state.bindingId)?.serverHeadRevision || null,
+      // Same rule as sendSourceChange: the base is what this checkout HOLDS, so
+      // it comes from materializedRevision. Reading serverHeadRevision here was
+      // the second copy of the base and it silently won over the first.
+      expectedRevision: sourceMaterializer.readBinding(state.bindingId)?.materializedRevision || null,
       files,
       sourceManifest: collectSourceManifest(
         state.sourceDir,
