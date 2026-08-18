@@ -235,13 +235,58 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   // and the listing would have gone on parsing it -- the growth would stop and
   // the cost would not. Applying it to the whole map means the first push after
   // this lands rewrites the file lean.
+  // A refused push's `terminalResult` carries the whole stale-base evidence --
+  // `classifications`, one entry per file in the project, 3.95 MB across 13
+  // records on bregman. `submit` already writes that object to
+  // `evidence/<id>.json`, so the journal is a second copy of a file beside it.
+  //
+  // It could not be dereferenced until 2026-08-18. Rollback used to `rm -rf` the
+  // whole `.source-lifecycle` tree and restore the pre-push snapshot, which
+  // deleted the evidence file the same refused request had just written -- so the
+  // inline copy was the ONLY copy, and pointing at the file would have lost it.
+  // Measured on the live volume the morning that stopped: of the evidence ids
+  // inline in the journal, 0 of 13 written before the fix had a file on disk,
+  // and 2 of 2 written after it did.
+  //
+  // So where the file is missing it is written from the inline copy before the
+  // reference is taken, which restores the evidence rollback destroyed rather
+  // than discarding it. Nothing is dropped that is not first on disk.
+  //
+  // What this does NOT survive is the file being deleted *after* the reference
+  // is taken -- then the bytes are gone, because a reference is all that is
+  // left. That is true of any reference and it is why this waited on the
+  // rollback fix rather than shipping beside it. `hydrateOperation` returns the
+  // record without its evidence in that case rather than throwing, because the
+  // caller is a replay answering a push and a missing conflict report should not
+  // wedge the write path.
+  function evidenceReference(terminalResult) {
+    const evidence = terminalResult?.evidence
+    if (!evidence?.id) return terminalResult
+    const path = join(evidenceRoot, `${evidence.id}.json`)
+    if (!existsSync(path)) atomicJson(path, evidence, fault)
+    const { evidence: _inline, ...rest } = terminalResult
+    return { ...rest, evidenceId: evidence.id }
+  }
+
+  function hydrateOperation(operation) {
+    const evidenceId = operation?.terminalResult?.evidenceId
+    if (!evidenceId) return operation
+    const evidence = readJson(join(evidenceRoot, `${evidenceId}.json`))
+    if (!evidence) return operation
+    const { evidenceId: _ref, ...rest } = operation.terminalResult
+    return { ...operation, terminalResult: { ...rest, evidence } }
+  }
+
   function journalStorageShape(journal) {
     const byRequestId = {}
     for (const [requestId, operation] of Object.entries(journal.byRequestId || {})) {
       const { descriptor: _unread, ...carried } = operation
-      byRequestId[requestId] = carried.orderedEffects
+      const shaped = carried.orderedEffects
         ? { ...carried, orderedEffects: withoutFileContent(carried.orderedEffects) }
         : carried
+      byRequestId[requestId] = shaped.terminalResult
+        ? { ...shaped, terminalResult: evidenceReference(shaped.terminalResult) }
+        : shaped
     }
     return { ...journal, byRequestId }
   }
@@ -476,7 +521,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     },
     readOperationByRequestId(project, requestId) {
       const operation = operationJournal().byRequestId[operationKey(requestId)] || null
-      return operation?.project === project ? operation : null
+      return operation?.project === project ? hydrateOperation(operation) : null
     },
     readOperationByDeliveryId(project, deliveryId) {
       if (typeof deliveryId !== 'string' || !deliveryId.trim()) throw new Error('deliveryId is required')
@@ -484,7 +529,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       const requestId = journal.requestIdByDeliveryId[deliveryId]
       if (!requestId) return null
       const operation = journal.byRequestId[requestId] || null
-      return operation?.project === project ? operation : null
+      return operation?.project === project ? hydrateOperation(operation) : null
     },
     prepareOperation(payload) {
       const requestId = operationKey(payload.requestId)
@@ -505,7 +550,8 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
             },
           }
         }
-        return { replay: true, invalidReuse: false, operation: existing, result: existing.terminalResult ?? null }
+        const hydrated = hydrateOperation(existing)
+        return { replay: true, invalidReuse: false, operation: hydrated, result: hydrated.terminalResult ?? null }
       }
       const deliveryId = typeof payload.deliveryId === 'string' && payload.deliveryId.trim() ? payload.deliveryId : null
       if (deliveryId) {
@@ -556,7 +602,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       const existing = journal.byRequestId[operationKey(requestId)] || null
       if (!existing) throw new Error(`Source operation ${requestId} was not prepared`)
       if (existing.project !== project) throw new Error(`Source operation ${requestId} does not belong to ${project}`)
-      if (existing.terminalResult) return existing
+      if (existing.terminalResult) return hydrateOperation(existing)
       const operation = {
         ...existing,
         state: stateName,
@@ -584,7 +630,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         }
       }
       writeOperationJournal(journal)
-      return operationJournal().byRequestId[requestId]
+      return hydrateOperation(operationJournal().byRequestId[requestId])
     },
     readRevisionLifecycle(project, sourceRevision) {
       const lifecycle = operationJournal().revisionLifecycle[sourceRevision] || null
