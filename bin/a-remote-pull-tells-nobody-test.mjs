@@ -16,51 +16,39 @@
 // against is simply gone.
 //
 // ---------------------------------------------------------------------------
-// Where it is, in one line each
+// Where it was, before tonight's sync strip (history, not the current path)
 //
-// An accepted push notifies every linked machine: `processProjectPush`
-// (server/routes/projects.mjs) calls `acceptedSourceMutationHandler`, and
-// unified-server fans `apply-source-update` out to every connected daemon.
-// That is how one person's push reaches everybody else's checkout.
-//
-// The Overleaf pull path does not go through that function. It applies the
-// remote's change with `processProjectPushSerialized` -- the inner function the
-// wrapper calls inside the lock (server/lib/overleaf-sync.mjs). The handler
-// lives on the wrapper. So the pull lands on the source authority and the fan-
-// out never runs.
-//
-// This is not about the source room. The room would inherit it, not cause it.
-// It is shipped behaviour and it affects anyone with a linked project today.
+// On the OLD path, an accepted push notified every linked machine:
+// `processProjectPush` (server/routes/projects.mjs) called
+// `acceptedSourceMutationHandler`, and unified-server fanned
+// `apply-source-update` out to every connected daemon. The Overleaf pull
+// applied the remote's change with `processProjectPushSerialized` -- the
+// inner function the wrapper called inside the lock -- and the fan-out ran
+// from there.
 //
 // ---------------------------------------------------------------------------
-// FAILS ON MAIN BY DESIGN -- it asserts what should happen.
+// PASSES now. It did not for most of tonight; the history below is why.
 //
-// It is `-test.mjs` so it will be discovered, which is deliberate: unlike a
-// test for a feature that does not exist yet, this describes something people
-// are using tonight. If that is the wrong call, rename it rather than weaken
-// the assertion.
+// It is `-test.mjs` so it is discovered, which is deliberate: this describes
+// something people are using tonight, not a feature that does not exist yet.
 //
 // ---------------------------------------------------------------------------
-// Status during the sync strip (tonight) -- decided-not-closed, not broken.
+// What actually closed it, in order
 //
-// The Overleaf pull itself was repointed at the new accept path
-// (server/lib/overleaf-sync.mjs) and both gates that used to block it --
-// the plain working-copy write, the client-manifest DB update -- are fixed
-// and this test gets past both of those assertions now.
+// 1. The Overleaf pull was repointed at the new accept path
+//    (server/lib/overleaf-sync.mjs, commit 1aaed25e9) -- fixed the plain
+//    working-copy write and the client-manifest DB update gates.
+// 2. `acceptedSourceMutationHandler` -- the fan-out to `apply-source-update`
+//    -- was wired into the new accept for every carrier (commit 4d9dcbd06).
+//    Before that commit, neither `acceptSourceSnapshot` nor
+//    `applyAcceptedSourceEffects` ever set the field the fan-out checks for,
+//    so nobody was told about ANY accepted push, not just an Overleaf pull.
+// 3. Two unawaited-async calls in this file's own fixture (`bootstrap()`,
+//    `readAuthority()`) silently returned Promises instead of values, which
+//    hid the real result behind an assertion failure at fixture setup rather
+//    than the fan-out assertion this file is named for.
 //
-// It still fails at the assertion this file is actually named for: nothing
-// tells Alice's laptop. Root cause, confirmed by reading, not carried
-// forward from the paragraphs above: `acceptedSourceMutationHandler` (the
-// thing that fans `apply-source-update` out to connected daemons) fires only
-// when a `runSerializedProjectSourceOperation` result carries an
-// `acceptedSourceMutation` field, and neither `acceptSourceSnapshot` nor
-// `applyAcceptedSourceEffects` -- the new accept, for every carrier -- ever
-// sets it. This is wider than an Overleaf-specific bug now: it is dark for
-// the plain JSON-carrier HTTP route too, not just the pull this test
-// exercises. Confirmed tonight, not fixed tonight: reported, not this
-// file's fix to make.
-//
-// Separately, and not the reason this test is red: the OUTBOUND half --
+// Separately, and never the reason this test was red: the OUTBOUND half --
 // pushing a local edit back out to a linked Overleaf remote --
 // (`pushSourceToOverleaf`, `server/lib/overleaf-sync.mjs`) already exists,
 // already matches the no-rollback prepare-then-publish-last shape decided
