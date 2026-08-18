@@ -30,14 +30,16 @@ const execAsync = (cmd, opts = {}) =>
 
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
+import { randomUUID } from 'crypto'
 import {
   projectDir, readProject, updateProject, createProject,
   listProjectSourceRecoveries, rollbackProjectSourceRecovery, removeProjectSourceRecovery,
   sourceLifecycleStore, readClientSourceManifest,
 } from './project-store.mjs'
-import { isSourceFilePath, sourceManifestContext } from '../../shared/source-manifest.mjs'
+import { isSourceFilePath, sourceManifestContext, normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { scanMarkdownDependencyClosure } from '../../shared/markdown-deps.mjs'
-import { processProjectPushSerialized, runSerializedProjectSourceOperation, sourceBindingTargetsForProject } from '../routes/projects.mjs'
+import { runSerializedProjectSourceOperation, applyAcceptedSourceEffects, acceptUnderOperationJournal } from '../routes/projects.mjs'
+import { SOURCE_AUTHORITY_UNINITIALIZED, SOURCE_AUTHORITY_RECONCILIATION_REQUIRED } from './source-lifecycle.mjs'
 import { createLogger } from '../../shared/logger.mjs'
 
 const log = createLogger('overleaf-sync')
@@ -516,29 +518,80 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   // forward by reference (project-store.mjs candidate map), not re-read here.
   const nonRemotePaths = previousManifest.filter(path => !remoteBaseline.includes(path) && !remoteManifest.includes(path))
   const sourceManifest = [...new Set([...remoteManifest, ...nonRemotePaths])]
-  const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  const processPush = testHooks?.processProjectPush || processProjectPushSerialized
-  const expectedRevision = (await (await sourceLifecycleStore(name)).readAuthority()).currentRevision
-  const bindingTargets = await sourceBindingTargetsForProject(name)
-  const result = await processPush(name, {
-    expectedRevision,
-    files,
-    deletedFiles: deletedPaths,
-    sourceManifest,
-    overleafSync: true,
-    overleafRemote: project.overleafRemote || null,
-    overleafCommits: commits,
-  }, {}, { bindingTargets })
+
+  // The changed files only -- `lifecycle.carryForward` fills in every other
+  // `sourceManifest` path (the remote's own untouched files, and every
+  // `nonRemotePaths` entry) by blob reference from the current revision. This
+  // is the same primitive `acceptSourceSnapshot` uses now, not a
+  // reimplementation of it: hand-rolling the carry-forward here risks
+  // silently drifting from what the JSON/bundle carriers do with the same
+  // manifest shape.
+  const changed = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
+
+  const context = sourceManifestContext(project)
+  const lifecycle = await sourceLifecycleStore(name, { context })
+  const manifest = normalizeSourceManifest(sourceManifest, context)
+
+  // `overleafSync`/`overleafRemote`/`overleafCommits` carried no weight worth
+  // threading through here: `overleafRemote` and `overleafCommits` were never
+  // read by the old push handler (it consulted `project.overleafRemote` from
+  // storage, not the body, and nothing read `overleafCommits` at all);
+  // `overleafSync` existed only to stop the old handler's own "push changes
+  // back to the linked remote" branch from firing on a pull that came FROM
+  // that remote. Calling the accept directly here, rather than through that
+  // generic push handler, means that branch is never reached in the first
+  // place -- the guard has nothing to guard.
+  //
+  // `sourceBindingId: null` reproduces the old unfiltered replica-target set:
+  // this sync is not a source-binding participant with a binding of its own
+  // to exclude.
+  //
+  // Not run through `acceptSourceSnapshot` or `runSerializedProjectSourceOperation`
+  // -- both wrap the accept in the SAME per-project queue this function
+  // already runs inside (`syncOverleaf`, above), and a second wrap on the
+  // same project name would await its own outer promise and deadlock. So this
+  // calls the accept's own unwrapped pieces directly: `acceptUnderOperationJournal`
+  // for the idempotency/journal record, `carryForward` for the manifest
+  // completion, `bootstrap`/`submit` for the write, `applyAcceptedSourceEffects`
+  // for the six effects -- the same primitives `acceptSourceSnapshot` composes,
+  // just without its own outer lock.
+  const previousRevision = (await lifecycle.readAuthority()).currentRevision || null
+  const payload = { requestId: null, expectedRevision: previousRevision, files: changed, sourceManifest: manifest, dependencyPins: [] }
+  const result = await acceptUnderOperationJournal(name, lifecycle, payload, async () => {
+    const before = await lifecycle.readAuthority()
+    const complete = await lifecycle.carryForward(manifest, changed)
+    const input = { expectedRevision: previousRevision, files: complete, sourceManifest: manifest, dependencyPins: [] }
+    return before.state === SOURCE_AUTHORITY_UNINITIALIZED
+      ? lifecycle.bootstrap(input)
+      : lifecycle.submit(input)
+  })
 
   if (!result?.ok) {
     await execAsync(`git reset --hard ${shellQuote(retryHead)}`, { cwd: dir, timeout: 30000 })
+    // A stale-base/reconciliation refusal means the remote and tlda's
+    // authority diverged and a person needs to look, not that the pull
+    // itself failed -- reporting it as `error` told a collaborator their
+    // sync was broken when it only needed rebasing (the bug named tonight
+    // in the old handler's own failure path, not carried forward here).
+    const isConflict = result?.status === 'stale-base' || result?.status === SOURCE_AUTHORITY_RECONCILIATION_REQUIRED
     const message = result?.error || `Source transaction failed with status ${result?.status || 'unknown'}`
     await updateProject(name, {
-      overleafSyncStatus: 'error',
+      overleafSyncStatus: isConflict ? 'conflict' : 'error',
       overleafSyncError: scrubCreds(message),
     })
     throw new Error(scrubCreds(message))
   }
+
+  const sourceRevision = result.revision?.id ?? result.revision ?? null
+  const acceptSeq = result.authority?.acceptSeq ?? null
+  const ran = await applyAcceptedSourceEffects(name, lifecycle, {
+    sourceRevision,
+    acceptSeq,
+    previousRevision: result.previous ?? previousRevision,
+    editedBy: null,
+    sourceBindingId: null,
+    requestId: randomUUID(),
+  })
 
   await updateProject(name, {
     overleafHead: head,
@@ -548,8 +601,8 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
     overleafConflictFiles: [],
     overleafSourceManifest: remoteManifest,
   })
-  log.info('synced', { name, changed: files.length, deleted: deletedPaths.length, head: head.slice(0, 7) })
-  Object.assign(result, { name, changed: files.length, deleted: deletedPaths.length, head, building: result?.building })
+  log.info('synced', { name, changed: changedPaths.length, deleted: deletedPaths.length, head: head.slice(0, 7) })
+  Object.assign(result, { name, changed: changedPaths.length, deleted: deletedPaths.length, head, building: result?.building, postAcceptEffects: ran })
   return result
 }
 
