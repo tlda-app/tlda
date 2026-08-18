@@ -1659,6 +1659,22 @@ async function handleServerMessage(msg, wsAttemptId) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === 'source-change-result') {
     sourceSync.handleSourceChangeResult(msg)
+    // A refusal is an answer, so it settles the delivery — and it settles by
+    // deliveryId, NOT by requestId, because that is the only identifier both
+    // sides still agree on after a reconnect. handleSourceChangeResult above
+    // returns early for a requestId it has no pending entry for, and `pending`
+    // is cleared wholesale on every reconnect, so keying this on the request
+    // would make it inert on exactly the long-lived rows it exists for.
+    //
+    // Without it a refused row is re-offered on every inflight deadline and
+    // refused again: bregman at 13:39Z had 35 pending source-change rows,
+    // ~105 attempts each, `last_error: null` on all of them.
+    //
+    // Only refusals. An accepted push settles through handleAck, where the
+    // ackGate is doing its real job of not dropping an unresolved edit.
+    if (msg.ok === false && msg.deliveryId) {
+      daemonDelivery.settleRefused(msg.deliveryId, msg.error || msg.status || 'refused')
+    }
     return
   }
   if (msg.type === 'project-metadata-changed') {

@@ -107,6 +107,39 @@ export class DaemonDeliveryRuntime {
     return true
   }
 
+  /**
+   * A refusal is an answer. Settle the row on it.
+   *
+   * `handleAck` refuses to settle a source-change whose ackGate is closed, and
+   * the gate reads dispositions that a refused push does not always produce. So
+   * a refused row was re-offered on every inflight deadline, re-sent, refused
+   * again, forever: measured on bregman at 13:39Z, 35 pending rows, ~105
+   * attempts each, `last_error: null` -- the outbox had never recorded that the
+   * server said anything at all, which is why its own warning read "the server
+   * received it and never answered" while the server had answered every time.
+   *
+   * Deliberately NOT gated. The gate exists so an unanswered push does not
+   * disappear while its edits are unresolved; this path runs only when the
+   * server HAS answered, and only after the sync layer has taken its action on
+   * that answer -- enqueued the retry, blocked the project, or handed the
+   * conflict to a person. The bytes are held above the transport in either
+   * `blockedPayloads` or the retry row, so what leaves here is a delivery that
+   * is finished, not an edit that is unresolved.
+   *
+   * Loud, because a row leaving without a trace is the same disease as one that
+   * never leaves.
+   */
+  settleRefused(outboxId, reason) {
+    if (!outboxId) return false
+    const row = this.outbox.get(outboxId)
+    if (!row) return false
+    this.log?.warn?.(`daemon durable message settled by refusal after ${row.attempts || 0} attempt(s) (type=${row.payload?.type || 'unknown'}, id=${outboxId}): ${reason || 'refused'} — the sync layer owns what happens to the edit now, the transport does not re-send it`)
+    this.outbox.ack(outboxId)
+    this.inflight.delete(outboxId)
+    this.scheduleFlush()
+    return true
+  }
+
   handleError(outboxId, error, { permanent = false } = {}) {
     if (!outboxId) return
     if (permanent) {

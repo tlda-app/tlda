@@ -9708,6 +9708,14 @@ async function handleDaemonWsMessage(ws, msg) {
           type: 'source-change-result',
           project,
           ...replay,
+          // The row this answers, echoed back so the daemon can settle its
+          // delivery without consulting correlation state. It cannot: this
+          // branch answers with the STORED operation's requestId, and the
+          // daemon clears `pending` on every reconnect, so a replayed result
+          // routinely names a requestId the daemon no longer holds and is
+          // dropped. The deliveryId is the outbox row's own identity and
+          // survives both.
+          deliveryId,
           requestId: replay.requestId || requestId,
           httpStatus: replay.httpStatus || 200,
           status: replay.lifecycleStatus || replay.status || (replay.ok ? 'accepted' : 'error'),
@@ -9754,7 +9762,10 @@ async function handleDaemonWsMessage(ws, msg) {
       }, transactionTest)
       const { status: httpStatus, lifecycleStatus, ...payload } = result
       const durablePayload = result.sourceOperationResult || payload
-      const reply = { type: 'source-change-result', requestId, project, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
+      // deliveryId travels on every reply for the same reason it does on the
+      // replay above: it is the only identifier in this exchange that both
+      // sides still agree on after a reconnect.
+      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
       ws.send(JSON.stringify(reply))
       replied = true
       if (!result.ok) {
