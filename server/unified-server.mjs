@@ -6622,6 +6622,19 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
+  // The id the system hands out everywhere -- `id:2923649` in inbox(), the
+  // number chat() returns, the one approval_id and amend_id take -- is only a
+  // real reference if it can be read back. This is the read.
+  if (type === 'event-by-id') {
+    const eventId = Number(msg.event_id)
+    if (!Number.isSafeInteger(eventId) || eventId <= 0) {
+      error('event-by-id requires a positive integer event_id')
+      return
+    }
+    reply({ event: await fleetStore.getEventById(eventId) || null })
+    return
+  }
+
   if (type === 'task-events') {
     if (!msg.task_id) {
       error('task-events requires task_id')

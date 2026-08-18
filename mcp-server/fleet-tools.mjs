@@ -24,6 +24,7 @@ import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
 import { announcePageTop, announcePageBottom } from '../shared/pagination-announce.mjs';
 import { compactPrettyResult, indentPrettyResult } from '../shared/activity-pretty-result.mjs';
+import { parseCanonicalEventReference } from '../shared/canonical-references.mjs';
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { rewriteMarkdownDepsToUrls } from '../shared/markdown-deps.mjs';
 import { listMarkdownSectionIds, selectMarkdown } from '../shared/markdown-selector.mjs';
@@ -1644,13 +1645,14 @@ export function getFleetTools() {
     },
     {
       name: 'thread',
-      description: 'Read a conversation thread. A thread is between you and one other agent: thread(agent: "skip") returns everything the two of you said to each other, in both directions. That is the usual read and the one to reach for whenever you are going back over what someone told YOU. filter: "from:skip" is a different thing and is rarely what you want — it returns that agent talking to everybody, so most of what comes back was addressed to other agents; agents have read those as their own instructions and acted on them. Use filter only when you deliberately want a set that is not between you and one other party. task_id reads one task\'s history. Returns complete formatted messages in chronological order. This is the PRIMARY tool for reading what was said — do NOT read JSONL files directly, use this instead.',
+      description: 'Read a conversation thread. A thread is between you and one other agent: thread(agent: "skip") returns everything the two of you said to each other, in both directions. That is the usual read and the one to reach for whenever you are going back over what someone told YOU. filter: "from:skip" is a different thing and is rarely what you want — it returns that agent talking to everybody, so most of what comes back was addressed to other agents; agents have read those as their own instructions and acted on them. Use filter only when you deliberately want a set that is not between you and one other party. task_id reads one task\'s history, and message_id reads the single message an id names. Returns complete formatted messages in chronological order. This is the PRIMARY tool for reading what was said — do NOT read JSONL files directly, use this instead.',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'The other party — name, friendly name, or fleet: id. Returns the conversation between you and them: everything either of you said to the other, both directions (shorthand for filter="me <> <agent>"). Try this first; it is what you want unless you specifically want someone else\'s wider traffic. Required unless task_id or filter is given.' },
           filter: { type: 'string', description: 'Explicit unified message filter, for reads that are NOT between you and one other agent. What the shapes mean: "me <> skip" is the conversation between you and Skip, which is what agent: "skip" already gives you; "from:skip" is Skip talking to EVERYONE, most of it to other agents and not to you; "skip <> tabby" is someone else\'s two-party conversation; "from:(chief | tabby) & type:chat" combines terms. If what you want is what someone said to you, use agent instead.' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
+          message_id: { type: ['number', 'string'], description: 'Read ONE message by the id the system already gave you — the number in inbox()\'s `id:2923649`, the id chat() returns, the id approval_id and amend_id take. Accepts the bare number or its canonical form ("chat#2923649"). Use it whenever you have an id and want the message it names; the other arguments read conversations, this one dereferences a single id.' },
           since: { type: 'string', description: 'ISO timestamp or relative shorthand — "30s", "20m", "2h", "1d". Only messages after this time. An unreadable value is an error, not an unbounded read; weeks and months are query-only, so write 7d or 90d here.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand ("30s", "20m", "2h", "1d"), or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
@@ -4469,6 +4471,31 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return lines.join('\n');
     };
 
+    // One event row → one thread message. Every read that fills `filtered`
+    // shapes rows identically, so a lookup by id renders exactly as the same
+    // message does inside a conversation.
+    const toThreadMessage = (e) => {
+      const metadata = parseEventMetadata(e.metadata);
+      const text = e.type === 'activity'
+        ? formatActivityForThread(e, metadata)
+        : e.type === 'delegate'
+        ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
+        : e.type === 'task_done'
+        ? `[DONE] ${e.description || ''}`
+        : e.text || e.message || '';
+      return {
+        id: e.id, type: e.type, metadata,
+        from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
+        fromName: e.fromName, fromNameNow: e.fromNameNow,
+        // Per-recipient name-at-send, parallel to `recipients`. Dropping
+        // these was what made a thread render its recipients against the
+        // CURRENT roster while its senders carried their period names —
+        // present-day names projected onto old messages, in the one surface
+        // agents read history through.
+        toNames: e.toNames, toNamesNow: e.toNamesNow,
+      };
+    };
+
     const fetchEventsForAgent = async (agentId) => {
       // Fetch one extra row so we can detect "there's more" without a COUNT.
       const params = {
@@ -4487,25 +4514,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const data = await mcpFleetTransport.ephemeral('fleet-search', params);
       if (!data) return;
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
-        const metadata = parseEventMetadata(e.metadata);
-        const text = e.type === 'activity'
-          ? formatActivityForThread(e, metadata)
-          : e.type === 'delegate'
-          ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
-          : e.type === 'task_done'
-          ? `[DONE] ${e.description || ''}`
-          : e.text || e.message || '';
-        filtered.push({
-          id: e.id, type: e.type, metadata,
-          from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
-          fromName: e.fromName, fromNameNow: e.fromNameNow,
-          // Per-recipient name-at-send, parallel to `recipients`. Dropping
-          // these was what made a thread render its recipients against the
-          // CURRENT roster while its senders carried their period names —
-          // present-day names projected onto old messages, in the one surface
-          // agents read history through.
-          toNames: e.toNames, toNamesNow: e.toNamesNow,
-        });
+        filtered.push(toThreadMessage(e));
       }
     };
 
@@ -4531,30 +4540,51 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       threadUnresolvedNames = data.unresolvedNames || [];
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
         if (args.types?.length > 1 && !args.types.includes(e.type)) continue;
-        const metadata = parseEventMetadata(e.metadata);
-        const text = e.type === 'activity'
-          ? formatActivityForThread(e, metadata)
-          : e.type === 'delegate'
-          ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
-          : e.type === 'task_done'
-          ? `[DONE] ${e.description || ''}`
-          : e.text || e.message || '';
-        filtered.push({
-          id: e.id, type: e.type, metadata,
-          from: e.from_id || e.from, recipients: e.recipients || [], text, timestamp: e.timestamp,
-          fromName: e.fromName, fromNameNow: e.fromNameNow,
-          // Per-recipient name-at-send, parallel to `recipients`. Dropping
-          // these was what made a thread render its recipients against the
-          // CURRENT roster while its senders carried their period names —
-          // present-day names projected onto old messages, in the one surface
-          // agents read history through.
-          toNames: e.toNames, toNamesNow: e.toNamesNow,
-        });
+        filtered.push(toThreadMessage(e));
       }
     };
 
     let primaryId = null;
-    if (args.task_id) {
+    if (args.message_id !== undefined && args.message_id !== null && args.message_id !== '') {
+      // The id is handed out everywhere and accepted nowhere: `id:2923649` in
+      // inbox(), the number chat() returns, what approval_id and amend_id take.
+      // Reading one back is what makes it a reference rather than a decoration.
+      // The canonical `chat#<id>` form is the same reference wearing the
+      // presentation syntax chips use, so it resolves here too.
+      const raw = String(args.message_id).trim();
+      const canonical = parseCanonicalEventReference(raw);
+      const messageId = canonical ? canonical.id : Number(raw);
+      if (!Number.isSafeInteger(messageId) || messageId <= 0) {
+        return {
+          content: [{ type: 'text', text: `"${raw}" is not a message id. Pass the number an id: prefix carries (e.g. 2923649), or its canonical form (e.g. chat#2923649).` }],
+          isError: true,
+        };
+      }
+      let event;
+      try {
+        event = (await mcpFleetTransport.ephemeral('event-by-id', { event_id: messageId }))?.event || null;
+      } catch (e) {
+        // Same rule as the filter read below: a failed fetch is not an absent
+        // message, and reporting it as one is how a server error reaches the
+        // caller disguised as an answer.
+        process.stderr.write(`[fleet] thread message_id fetch failed: ${e.message}\n`);
+        return { content: [{ type: 'text', text: `Message lookup failed: ${e.message}` }], isError: true };
+      }
+      if (!event) {
+        return {
+          content: [{ type: 'text', text: `No message ${messageId} in environment "${activeEnvName()}". Ids are per-environment — pass env explicitly to read another one.` }],
+          isError: true,
+        };
+      }
+      if (canonical && event.type !== canonical.type) {
+        return {
+          content: [{ type: 'text', text: `${raw} does not exist: message ${messageId} is a ${event.type}, not a ${canonical.type}. Read it as ${event.type}#${messageId}, or pass the bare id.` }],
+          isError: true,
+        };
+      }
+      filtered.push(toThreadMessage(event));
+      primaryId = event.from_id || event.from || null;
+    } else if (args.task_id) {
       if (!task) {
         return { content: [{ type: 'text', text: `Task ${args.task_id} not found.` }], isError: true };
       }
@@ -4625,7 +4655,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         return { content: [{ type: 'text', text: `Thread read failed: ${e.message}` }], isError: true };
       }
     } else {
-      return { content: [{ type: 'text', text: 'Provide agent, filter, or task_id.' }], isError: true };
+      return { content: [{ type: 'text', text: 'Provide agent, filter, task_id, or message_id.' }], isError: true };
     }
 
     // Sort by time and deduplicate (server already filters by since/until)
