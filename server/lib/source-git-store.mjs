@@ -93,6 +93,17 @@ export function createSourceGitStore({ gitDir }) {
     return next
   }
 
+  /**
+   * Remove a ref, compare-and-swap, so that undoing the FIRST accept is
+   * expressible. `moveRef` cannot express it: there is no sha meaning "back to
+   * nothing", and a project's very first accept creates the ref rather than
+   * moving it. Without this, a failed first accept leaves a head behind and the
+   * project is permanently past a revision nobody accepted.
+   */
+  async function removeRef(kind, name, expected) {
+    await git(['update-ref', '-d', refFor(kind, name), expected])
+  }
+
   /** Write bytes as a blob and return its sha. Identical content is free. */
   async function writeBlob(content) {
     const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content))
@@ -375,6 +386,7 @@ export function createSourceGitStore({ gitDir }) {
 
     head: project => readRef('source', project),
     advanceHead: (project, next, expected) => moveRef('source', project, next, expected),
+    retractHead: (project, expected) => removeRef('source', project, expected),
 
     applied: bindingId => readRef('applied', bindingId),
     markApplied: (bindingId, revision, expected) => moveRef('applied', bindingId, revision, expected),

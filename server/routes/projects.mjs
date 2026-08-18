@@ -1085,6 +1085,58 @@ async function serializeProjectMirror(name, run) {
  * preserved the work from one that dropped it on the floor.
  */
 /**
+ * Run an accept under the operation journal, so a retry cannot land twice.
+ *
+ * **This is the wrapper promise, and it had exactly one caller.**
+ * `prepareOperation` / `finishOperation` were reached only from inside
+ * `processProjectPushSerialized`, so the new carriers had no dedup, no
+ * crash-safe replay, and no record that an operation was ever attempted.
+ * Deleting the old path without moving this is the one way this cut ends worse
+ * than it started: the app looks fine, and a guarantee that survived a crash
+ * quietly does not exist any more.
+ *
+ * A retried push is not hypothetical — a client that times out and resends is
+ * the ordinary case, and landing it twice means two revisions where the author
+ * made one edit.
+ *
+ * Carrier-neutral for the same reason the effects are: one implementation, or
+ * the copies diverge.
+ */
+export async function acceptUnderOperationJournal(name, lifecycle, payload, run) {
+  const requestId = typeof payload?.requestId === 'string' && payload.requestId.trim() ? payload.requestId : null
+  // No requestId means the caller is not asking for idempotency, which is the
+  // daemon's case: it holds the change and re-proposes rather than retrying.
+  if (!requestId) return run()
+
+  const prepared = lifecycle.prepareOperation({ project: name, ...payload })
+  // A request id reused with a DIFFERENT payload is a caller bug, not a retry,
+  // and answering it with the first result would silently discard the second
+  // edit. It is refused by name.
+  if (prepared.invalidReuse) return { ...prepared.result, replayed: true, invalidReuse: true }
+  if (prepared.result) return { ...prepared.result, replayed: true }
+
+  const result = await run()
+  const authority = await lifecycle.readAuthority()
+  const sourceRevision = result?.revision?.id ?? result?.revision ?? null
+  lifecycle.finishOperation(
+    name,
+    requestId,
+    result?.ok ? 'accepted' : 'rejected',
+    {
+      ok: !!result?.ok,
+      httpStatus: result?.ok ? 200 : 409,
+      lifecycleStatus: result?.status ?? null,
+      requestId,
+      sourceRevision,
+      acceptSeq: authority.acceptSeq,
+      disposition: result?.ok ? 'accepted' : 'rejected',
+    },
+    { acceptSeq: authority.acceptSeq, acceptedRevision: result?.ok ? sourceRevision : null },
+  )
+  return result
+}
+
+/**
  * The six post-accept effects, for EVERY carrier.
  *
  * Exported and carrier-neutral on purpose. Four carriers reach this accept --
@@ -1097,6 +1149,16 @@ async function serializeProjectMirror(name, run) {
  *
  * So this is the one implementation, and it takes a revision rather than a
  * carrier.
+ *
+ * **`postAcceptEffects` names what RAN, not what was requested**, which is why
+ * it is an array rather than a boolean — *the accept worked* and *the work was
+ * preserved* are different facts and a caller cannot see the second. The
+ * consequence for callers: a field that used to describe an intention now
+ * describes an outcome, and the two agree until they do not. A caller reading
+ * `building` to decide whether to say "build queued" is reading whether a build
+ * was actually dispatched, so on an accept where it was not, the honest answer
+ * is that it was not — silently showing the less informative of two true
+ * strings is the least visible way to get this wrong.
  */
 export async function applyAcceptedSourceEffects(name, lifecycle, {
   sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
@@ -1143,14 +1205,89 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
     ran.push('replicas')
   }
 
+  // **The server's own working copy.** Everything that reads a project's source
+  // as FILES reads it from here: the build pipeline, `listSourceFiles`,
+  // `hashSourceFiles`, and `GET /:name/source/:file` -- which is the source
+  // editor's read, the surface Skip edits his paper on.
+  //
+  // The mirror does not cover this. It sends the revision to the DAEMON's
+  // checkout, on his machine. Without the write below, a push is accepted, the
+  // revision is recorded, `acceptSeq` moves, the response says the work is
+  // preserved, and the document on this disk never changes -- so the build
+  // renders stale content and the editor reads stale content. He would
+  // experience it as editing his paper, being told it synced, and the paper not
+  // changing.
+  //
+  // It is written from the accepted revision rather than from the request,
+  // because the revision is what was accepted -- a carried-forward path and a
+  // clean rebase both differ from what the caller sent.
+  let materialized = true
+  try {
+    for (const file of changed) {
+      const bytes = await lifecycle.readRevisionFile(sourceRevision, file)
+      if (bytes) await writeSourceFileAsync(name, file, bytes)
+    }
+    for (const file of deleted) await deleteSourceFileAsync(name, file)
+
+    // **And the file LIST, which is a table rather than a scan of the disk.**
+    // `project-store.mjs` refuses to store it any other way. Writing the bytes
+    // without it produces a file that is perfectly correct on disk and does not
+    // appear in the project at all: invisible to `listSourceFiles`, to the
+    // client's manifest, and to anything that enumerates a project rather than
+    // reading a path it already knows.
+    //
+    // A new chapter that syncs and never appears is indistinguishable from a
+    // sync that did nothing, which is the same silent direction as the bytes.
+    // Taken from the accepted revision's manifest, because that is what was
+    // accepted.
+    const accepted = await lifecycle.readRevision(sourceRevision)
+    if (accepted?.manifest) await updateClientSourceManifest(name, accepted.manifest)
+    ran.push('working-copy')
+  } catch (error) {
+    materialized = false
+    console.error(`[${name}] writing the working copy after accept failed: ${error.message}`)
+  }
+
   // Neither of these gates the response. The revision is accepted and durable
   // either way, and a sleeping machine or a busy build queue is not a reason to
   // tell an author their writing did not land.
   void mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq)
   ran.push('mirror')
-  void dispatchBuild(name, { sourceRevision, acceptSeq })
-    .catch(error => console.error(`[${name}] build dispatch after bundle accept failed: ${error.message}`))
-  ran.push('build')
+  // **Ask whether to build, rather than always building.**
+  //
+  // The old path asked `shouldBuildOnPush` and suppressed for `unchanged`,
+  // `outside-tree`, `already-building` and a failed relevant-files parse. This
+  // path dispatched unconditionally, so the difference is not new behaviour
+  // appearing — it is a suppression that stopped happening.
+  //
+  // `already-building` is the one that bites: without it a project being edited
+  // continuously stacks a build worker per accept, on a box this fleet has
+  // already taken down once. Each of those workers also outlives the accept
+  // that spawned it, which is how an accept that completed can look like one
+  // that hung.
+  //
+  // Still gated on the working copy, because a build over bytes we failed to
+  // write publishes a render of the PREVIOUS revision under this one's number —
+  // worse than no build, which at least leaves the old output honest.
+  const project = await readProject(name)
+  const decision = shouldBuildOnPush(project, name, {
+    changedFiles: [...changed, ...deleted],
+    anyChanged: changed.length > 0 || deleted.length > 0,
+    building: isBuildKindPending(name, 'build'),
+    ready: projectRevisionStatus(lifecycle.listRevisionLifecycles(name)).status === 'success',
+  })
+  if (materialized && decision.build) {
+    void dispatchBuild(name, { sourceRevision, acceptSeq })
+      .catch(error => console.error(`[${name}] build dispatch after accept failed: ${error.message}`))
+    ran.push('build')
+  } else if (sourceRevision) {
+    // A revision that correctly did not build still says so. Without these a
+    // suppressed build is indistinguishable from one that never got dispatched.
+    const terminalState = decision.reason === 'already-building' ? 'superseded' : 'not_required'
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'build', terminalState, { reason: decision.reason })
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: terminalState })
+    ran.push(`build-skipped:${decision.reason}`)
+  }
 
   // Whoever's work reached the paper is no longer stuck, whichever files it was.
   try {
@@ -2253,8 +2390,22 @@ function recordingsDir(name) {
  * own effects call the two would drift, and the browser carrier would quietly
  * start preserving something different from the daemon carrier.
  */
-router.post('/:name/source-snapshot', requireRw, async (req, res) => {
-  const name = req.params.name
+/**
+ * The accept, callable — not a route.
+ *
+ * **Four carriers reach this accept and only one of them speaks HTTP.** The
+ * room checkpoint and the Overleaf remote pull run in-process with the
+ * lifecycle store, so making them manufacture a request to talk to their own
+ * server is ceremony that buys nothing and costs a second copy of the accept.
+ *
+ * Everything a carrier must not get wrong lives here once: the operation
+ * journal, the carry-forward, the bootstrap/submit routing, the refusal shape,
+ * the metadata, and the six effects. A carrier's only job is to deliver bytes.
+ *
+ * Returns `{ status, body }` rather than writing a response, so an in-process
+ * caller reads a value and the route sends it.
+ */
+export async function acceptSourceSnapshot(name, payload = {}) {
   const {
     files, sourceManifest, expectedRevision = null, dependencyPins = [],
     // Carried deliberately rather than by being remembered. `session` and
@@ -2263,43 +2414,72 @@ router.post('/:name/source-snapshot', requireRw, async (req, res) => {
     // enumerating the call sites never sees them. Omit them here and session
     // attribution on his own pushes breaks silently, and only there.
     session = null, sessionAt = null, editedBy = null,
-  } = req.body || {}
+    sourceBindingId = null, requestId = null,
+  } = payload
   // `sourceDir` is NOT carried. It is already dropped by the old destructure and
   // every server use reads `project.sourceDir` from storage, so the cross-server
   // move has been sending a field nobody reads. Dropped knowingly.
   if (!Array.isArray(files) || !Array.isArray(sourceManifest)) {
-    return res.status(400).json({ ok: false, error: 'files[] and sourceManifest[] are required' })
+    return { status: 400, body: { ok: false, error: 'files[] and sourceManifest[] are required' } }
   }
   try {
-    const lifecycle = await sourceLifecycleStore(name)
+    const project = await readProject(name)
+    if (!project) return { status: 404, body: { ok: false, error: 'Project not found' } }
+    // **The carrier normalizes; the caller does not have to.**
+    //
+    // `canonicalSnapshot` demands a manifest that is already normalized, unique
+    // and SORTED, and rejects the whole push otherwise. The old route
+    // normalized on the caller's behalf before handing it down, so no caller
+    // has ever sorted one. Requiring it here would 400 every existing push with
+    // an error about the manifest rather than about anything the author did --
+    // and it would do so on the first write of every new project.
+    const context = sourceManifestContext(project)
+    const lifecycle = await sourceLifecycleStore(name, { context })
+    const manifest = normalizeSourceManifest(sourceManifest, context)
     const previousRevision = (await lifecycle.readAuthority()).currentRevision || null
     // `bootstrap` and `submit` already ARE this accept, and they already carry
     // the refusal shape the source editor needs -- `deriveClassifications`, the
     // stored evidence, the clean-rebase acceptance and `markRefused`. An
     // `acceptFiles` written beside them was a second, worse implementation of
     // the thing this whole cut exists to stop having two of.
-    const result = await runSerializedProjectSourceOperation(name, async () => {
-      const before = await lifecycle.readAuthority()
-      const input = { expectedRevision, files, sourceManifest, dependencyPins }
-      return before.state === SOURCE_AUTHORITY_UNINITIALIZED
-        ? lifecycle.bootstrap(input)
-        : lifecycle.submit(input)
-    })
+    const result = await runSerializedProjectSourceOperation(name, () =>
+      acceptUnderOperationJournal(name, lifecycle, payload, async () => {
+        const before = await lifecycle.readAuthority()
+        // Callers know what CHANGED; the accept needs the whole project. Every
+        // unnamed manifest path is carried forward by reference from the
+        // current revision, which is what keeps an incremental push
+        // incremental. Removal is still expressed by leaving the manifest.
+        const complete = await lifecycle.carryForward(manifest, files)
+        const input = { expectedRevision, files: complete, sourceManifest: manifest, dependencyPins }
+        return before.state === SOURCE_AUTHORITY_UNINITIALIZED
+          ? lifecycle.bootstrap(input)
+          : lifecycle.submit(input)
+      }))
+    // A replay is the SAME answer to the same request, not a second accept, so
+    // it must not re-run the effects: mirroring and dispatching a build again
+    // for a push that already landed is the retry storm this journal exists to
+    // prevent, one layer up.
+    if (result.replayed) {
+      return { status: result.invalidReuse ? 400 : (result.httpStatus || 200), body: result }
+    }
     if (!result.ok) {
-      return res.status(409).json({
-        ok: false,
-        status: result.status,
-        currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
-        refusedRevision: result.refusedRevision ?? null,
-        // **The merge, not just the rejection.** The source editor turns
-        // `evidence.classifications[]` into conflict markers a person resolves
-        // in place. Return the bare status and "resolve the markers and it
-        // syncs" becomes "sync 409" on the surface Skip edits his paper on --
-        // a lost resolution path rather than a lost byte, invisible in every
-        // log because the write correctly refused and the caller correctly
-        // reported failure.
-        evidence: result.evidence ?? null,
-      })
+      return {
+        status: 409,
+        body: {
+          ok: false,
+          status: result.status,
+          currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
+          refusedRevision: result.refusedRevision ?? null,
+          // **The merge, not just the rejection.** The source editor turns
+          // `evidence.classifications[]` into conflict markers a person
+          // resolves in place. Return the bare status and "resolve the markers
+          // and it syncs" becomes "sync 409" on the surface Skip edits his
+          // paper on -- a lost resolution path rather than a lost byte,
+          // invisible in every log because the write correctly refused and the
+          // caller correctly reported failure.
+          evidence: result.evidence ?? null,
+        },
+      }
     }
     const sourceRevision = result.revision?.id ?? result.revision ?? null
     const acceptSeq = result.authority?.acceptSeq ?? null
@@ -2312,25 +2492,74 @@ router.post('/:name/source-snapshot', requireRw, async (req, res) => {
       sourceRevision,
       acceptSeq,
       previousRevision: result.previous ?? previousRevision,
-      editedBy: editedBy || req.get('x-tlda-edited-by') || null,
-      sourceBindingId: req.body?.sourceBindingId || null,
-      requestId: req.body?.requestId || randomUUID(),
+      editedBy,
+      sourceBindingId,
+      requestId: requestId || randomUUID(),
     })
-    res.json({
-      ok: true,
-      // `already-current` is the same fact `unchanged` used to carry, so a
-      // caller waiting on a build can stop waiting without a new field.
-      status: result.status,
-      unchanged: result.status === 'already-current',
-      sourceRevision,
-      acceptSeq,
-      filesWritten: sourceManifest.length,
-      postAcceptEffects: ran,
-    })
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        // `already-current` is the same fact `unchanged` used to carry, so a
+        // caller waiting on a build can stop waiting without a new field.
+        status: result.status,
+        unchanged: result.status === 'already-current',
+        sourceRevision,
+        acceptSeq,
+        filesWritten: manifest.length,
+        postAcceptEffects: ran,
+      },
+    }
   } catch (error) {
     console.error(`[${name}] snapshot accept failed: ${error.message}`)
+    return { status: 400, body: { ok: false, error: error.message } }
+  }
+}
+
+/**
+ * Upload one file's bytes and get back the id the snapshot can reference.
+ *
+ * The ceiling on a JSON snapshot is aggregate, because an atomic snapshot
+ * cannot be split the way the old batched push could — and a bootstrap carries
+ * nothing forward, so every byte is content. Raising the JSON parser's limit to
+ * match the bundle route's 500mb is not symmetric with it: the bundle is
+ * streamed to a file, while a JSON body of the same project is base64 held as a
+ * string and then parsed into objects, several times its own size in memory,
+ * per concurrent request.
+ *
+ * So the large case uploads blobs first, each request bounded, and then sends a
+ * manifest of `{path, sha256}` references. That is the reference form
+ * `carryForward` already emits and `canonicalSnapshot` already accepts, so
+ * nothing about the accept changes.
+ *
+ * **An upload nobody references is an unreachable git object, collected by
+ * `git gc` — which nothing on this path currently runs.** `hash-object -w`
+ * writes a real object, so there is no store of ours accumulating and no
+ * bespoke collection to write. But this store uses plumbing almost
+ * exclusively, and plumbing does not trigger `gc --auto` the way porcelain
+ * does; the one incidental trigger is `ingestBundle`'s `git fetch`, which is
+ * the *other* carrier. So orphaned uploads are recoverable by a standard
+ * mechanism that nothing here schedules. Written down rather than left
+ * implicit: an admitted gap costs nothing and a silent one costs a night.
+ */
+router.post('/:name/source-blob', requireRw, express.raw({ type: () => true, limit: '100mb' }), async (req, res) => {
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ ok: false, error: 'a body is required' })
+  }
+  try {
+    const lifecycle = await sourceLifecycleStore(req.params.name)
+    res.json({ ok: true, ...(await lifecycle.putBlob(req.body)) })
+  } catch (error) {
     res.status(400).json({ ok: false, error: error.message })
   }
+})
+
+router.post('/:name/source-snapshot', requireRw, async (req, res) => {
+  const { status, body } = await acceptSourceSnapshot(req.params.name, {
+    ...(req.body || {}),
+    editedBy: req.body?.editedBy || req.get('x-tlda-edited-by') || null,
+  })
+  res.status(status).json(body)
 })
 
 router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, limit: '500mb' }), async (req, res) => {
@@ -2342,7 +2571,17 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
   try {
     await writeFile(bundlePath, req.body)
     const lifecycle = await sourceLifecycleStore(name)
-    const result = await runSerializedProjectSourceOperation(name, () => lifecycle.acceptBundle(bundlePath))
+    // Through the same journal as the JSON carrier, so the two cannot diverge
+    // on idempotency. In practice the daemon sends no requestId and wants none:
+    // it holds the change and RE-PROPOSES rather than retrying, which is a new
+    // commit rather than the same one twice. A caller that does send one gets
+    // the same dedup the other carrier gets.
+    const result = await runSerializedProjectSourceOperation(name, () =>
+      acceptUnderOperationJournal(name, lifecycle, { requestId: req.get('x-tlda-request-id') || null }, () =>
+        lifecycle.acceptBundle(bundlePath)))
+    if (result.replayed) {
+      return res.status(result.invalidReuse ? 400 : (result.httpStatus || 200)).json(result)
+    }
     if (!result.ok) {
       // A non-fast-forward is the proposer's to resolve, not ours to merge. They
       // hold the commits; they rebase and propose again.

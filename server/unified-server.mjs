@@ -68,7 +68,7 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { processProjectPush, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
+import projectRoutes, { acceptSourceSnapshot, processProjectPush, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -227,7 +227,7 @@ const sourceRoomDaemon = createSourceRoomDaemon({
   readProject,
   sourceLifecycleStore,
   readClientSourceManifest,
-  processProjectPush,
+  acceptSourceSnapshot,
   recordHeldEdit: recordSourceSyncRefusal,
   clearHeldEdit: clearSourceSyncRefusal,
 })
