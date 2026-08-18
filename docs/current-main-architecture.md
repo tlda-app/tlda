@@ -108,6 +108,38 @@ This is `AGENTS.md` §"Verify the relevant surface" pointing the other way: a
 deployed sha is not a loaded module, and here the mismatch is invisible from any
 sha at all. One daemon carried 34 hours of staleness that nothing could reveal.
 
+### A field on the daemon wire is removed in three deploys, or it is removed in production
+
+The section above says a daemon runs whatever its working tree held when it
+started, and that restart is the only thing that changes that. The consequence
+nobody had written down: **the server and the daemon are never at the same commit
+at the same moment**, they skew on every deploy in an order nobody chooses, and
+both orders have shipped here.
+
+So a field in a `source-change` — or any message either half sends the other —
+cannot be removed in one change. It comes out in three, each its own deploy:
+
+1. the **receiver stops requiring** it, and does the right thing when it is absent;
+2. the **sender stops sending** it;
+3. the **receiver stops reading** it, and the parameter, its validation and its
+   stored form are deleted.
+
+Doing (3) first, or all three at once, breaks whichever half deploys second, for
+however long the window between them lasts.
+
+**This is not a compatibility shim and it must not be argued down as one.**
+`AGENTS.md` says this project does not preserve deprecated aliases, and says our
+client/server line is ours to move because both processes are ours. Neither of
+those says the two processes restart together, and this one does not: a server
+deploy replaces a machine, and a daemon changes code only when someone restarts
+it. Step 1 is not kept around — it exists for one deploy window and is deleted by
+step 3.
+
+The rule earned itself on `sourceManifest`. Removing it looked like one deletion
+until the same question was asked of the *sender*, at which point it was three
+changes across two processes and a design dependency — the daemon proposing a
+commit — that did not exist yet.
+
 ### Which environment owns a checkout is decided by the binding files
 
 `~/.config/tlda/source-bindings.<environment>.json` is the authority. A daemon
