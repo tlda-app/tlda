@@ -106,16 +106,23 @@ export function createSourceGitStore({ gitDir }) {
    * tree, so an unchanged file costs nothing. That is the property the previous
    * store did not have and the reason it grew without bound.
    */
-  async function acceptRevision({ project, parent = null, files = [], deleted = [], message = 'source revision', author = null }) {
+  async function acceptRevision({ project, parent = null, files = [], deleted = [], message = 'source revision', author = null, replaceTree = false }) {
     const index = []
     for (const file of files) {
       if (!file || typeof file.path !== 'string') throw new Error('Every file needs a path')
-      const sha = await writeBlob(file.content)
+      // A caller that already hashed the bytes passes the blob sha instead.
+      // Re-writing the blob would be identical work for an identical result.
+      const sha = file.sha || await writeBlob(file.content)
       index.push(`100644 blob ${sha}\t${file.path}`)
     }
     for (const path of deleted) index.push(`0 ${NULL_SHA}\t${path}`)
 
-    const base = parent ? (await git(['rev-parse', `${parent}^{tree}`])).trim() : null
+    // `replaceTree` builds the tree from `files` alone rather than over the
+    // parent's. A caller holding the project's COMPLETE manifest wants that: a
+    // path that left the manifest is then absent because it was not named,
+    // which is exact, rather than absent because someone remembered to list it
+    // as deleted — and forgetting is how a file outlives its own removal.
+    const base = parent && !replaceTree ? (await git(['rev-parse', `${parent}^{tree}`])).trim() : null
     const tree = await buildTree(base, index)
 
     const args = ['commit-tree', tree, '-m', message]
@@ -141,13 +148,46 @@ export function createSourceGitStore({ gitDir }) {
     }
   }
 
-  /** path → sha for every file in a revision. This is the manifest. */
+  /**
+   * path → sha, and size, for every file in a revision. This is the manifest.
+   *
+   * `-l` carries the blob sizes, which costs nothing here and saves a
+   * `cat-file -s` per file at the caller: a revision record reports the
+   * project's byte size, and asking per file turns one subprocess into one per
+   * file on a book with 1499 of them.
+   */
   async function readManifest(revision) {
-    const out = await git(['ls-tree', '-r', '--full-tree', revision])
+    const out = await git(['ls-tree', '-r', '-l', '--full-tree', revision])
     return out.split('\n').filter(Boolean).map(line => {
       const [meta, path] = line.split('\t')
-      return { path, sha256: meta.split(' ')[2] }
+      const [, , sha, size] = meta.split(/\s+/)
+      return { path, sha256: sha, size: Number(size) || 0 }
     })
+  }
+
+  /** One blob's bytes by its own sha, for a manifest entry already in hand. */
+  async function readBlobBytes(sha) {
+    try {
+      return await git(['cat-file', 'blob', sha], { buffer: true })
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * A commit's subject, body and author date. The revision record's
+   * non-tree parts — its dependency pins and when it was accepted — are
+   * carried in the commit object rather than beside it, so there is one thing
+   * to write and one thing that can be lost.
+   */
+  async function readCommitMeta(revision) {
+    try {
+      const out = await git(['show', '-s', '--format=%aI%n%B', revision])
+      const newline = out.indexOf('\n')
+      return { date: out.slice(0, newline).trim(), message: out.slice(newline + 1) }
+    } catch {
+      return { date: null, message: '' }
+    }
   }
 
   /** One file's bytes out of one revision, without materialising the rest. */
@@ -156,6 +196,20 @@ export function createSourceGitStore({ gitDir }) {
       return await git(['cat-file', 'blob', `${revision}:${path}`], { buffer: true })
     } catch {
       return null
+    }
+  }
+
+  /**
+   * A blob's size in bytes, without reading it. The revision record reports a
+   * project's byte size, and a file carried forward unchanged from the parent
+   * revision has no bytes in hand to measure — asking git is one `cat-file -s`
+   * against reading a file that did not change.
+   */
+  async function blobSize(sha) {
+    try {
+      return Number((await git(['cat-file', '-s', sha])).trim())
+    } catch {
+      return 0
     }
   }
 
@@ -176,6 +230,9 @@ export function createSourceGitStore({ gitDir }) {
     readRevisionFile,
     isAncestor,
     writeBlob,
+    blobSize,
+    readBlobBytes,
+    readCommitMeta,
 
     head: project => readRef('source', project),
     advanceHead: (project, next, expected) => moveRef('source', project, next, expected),

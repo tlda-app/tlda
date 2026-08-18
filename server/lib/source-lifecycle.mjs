@@ -2,8 +2,9 @@ import { createHash, randomUUID } from 'crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
-import { spawnSync } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { isTextSourcePath, normalizeSourceManifest } from '../../shared/source-manifest.mjs'
+import { createSourceGitStore } from './source-git-store.mjs'
 
 export const SOURCE_AUTHORITY_UNINITIALIZED = 'uninitialized'
 export const SOURCE_AUTHORITY_CURRENT = 'current'
@@ -31,6 +32,30 @@ export function projectRevisionStatus(lifecycles) {
     version: revision.version,
     mirror: revision.mirror,
   }
+}
+
+// `git init --bare` on the revision repository. Async on purpose: this runs on
+// the server's main thread and the whole reason the revision store is moving to
+// git is that the thing it replaces did its work synchronously.
+function runGitInit(gitDir) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['init', '--bare', '--quiet', gitDir], { stdio: ['ignore', 'ignore', 'pipe'] })
+    const err = []
+    child.stderr.on('data', chunk => err.push(chunk))
+    child.on('error', reject)
+    child.on('close', code => code === 0
+      ? resolve()
+      : reject(new Error(`git init --bare ${gitDir} exited ${code}: ${Buffer.concat(err).toString().trim()}`)))
+  })
+}
+
+// Git's object id for a blob, computed here rather than by asking git: sha1
+// over the header `blob <byte length>\0` and then the bytes. It is the same
+// number `git hash-object` returns, and this is a hash of something already in
+// memory, so a subprocess per file would be the whole cost of the operation.
+function gitBlobSha(buffer) {
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer))
+  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
 }
 
 function stableValue(value) {
@@ -123,29 +148,79 @@ function cleanRebaseFiles(classifications) {
 }
 
 /**
- * A revision is a manifest of content hashes; the bytes live once each under
- * `blobs/`.
+ * A revision is a commit in the project's own bare repository under
+ * `.source-lifecycle/git`. Its manifest is the commit's tree, a file is a blob,
+ * and the revision id is the commit sha.
  *
- * It used to be one `snapshot.json` carrying every file's base64 content, which
- * meant each push re-serialized the whole project. On the QTM 285 book — 1499
- * files, 394 MB — that is 525 MB of base64 against V8's 512 MiB ceiling on a
- * single string, so `JSON.stringify` threw `RangeError: Invalid string length`
- * before machine size was even the question. Content-addressing removes the
- * ceiling and the quadratic together: a push writes only blobs the store does
- * not already hold, and `snapshot.json` stays a few hundred kilobytes whatever
- * the project weighs.
+ * That is the whole of the storage. There is no directory per revision, no
+ * parallel blob store, and no snapshot file — a push writes the blobs git does
+ * not already hold and one commit, and an unchanged file costs nothing because
+ * it is the same blob.
  *
- * Snapshots written before this (`version: 1`, content inline) stay readable
- * through `entryContent` below, at the ids they already have. See `revisionFor`
- * for how new ids are computed and why that does not strand them.
+ * **The history it makes is the point, not a side effect.** The commits are the
+ * project's version history in accepted order, which is the thing mirrored into
+ * the author's checkout: the author's work is versioned because accepting it
+ * IS committing it, rather than because something later remembered to.
+ *
+ * Two consequences worth stating, because they are what the previous shape got
+ * wrong:
+ *
+ * - **Advancing the head is a compare-and-swap on a ref.** Two overlapping
+ *   accepts cannot interleave into a half-applied state, and the loser fails
+ *   loudly instead of landing last and winning.
+ * - **Identical content accepted twice is two revisions.** A commit carries when
+ *   it happened and what it followed, so the id is no longer a function of the
+ *   bytes alone. Anything asking "do these say the same thing" wants
+ *   `manifestDigest`, not the id.
+ *
+ * Revisions accepted before this — ids of the form `sha256:…`, bytes under
+ * `blobs/` — stay readable at the ids they already have. Nothing writes that
+ * shape any more, and the first accept after the cutover carries their content
+ * into git as ordinary blobs, so no project needs a migration pass.
  */
-export function createSourceLifecycleStore({ root, context = {}, fault = null }) {
+export function createSourceLifecycleStore({ root, context = {}, fault = null, project = 'project' }) {
   const statePath = join(root, 'authority.json')
   const revisionsRoot = join(root, 'revisions')
   const evidenceRoot = join(root, 'evidence')
   const blobsRoot = join(root, 'blobs')
   const operationsPath = join(root, 'operations.json')
-  const state = () => readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
+  const gitDir = join(root, 'git')
+
+  // One bare repository per project, created on first use. `git init` on an
+  // existing repo is a no-op, but doing it once per store rather than once per
+  // accept keeps a push from paying for a subprocess it does not need.
+  let gitReady = null
+  function sourceGit() {
+    if (!gitReady) {
+      gitReady = (async () => {
+        if (!existsSync(join(gitDir, 'HEAD'))) {
+          mkdirSync(gitDir, { recursive: true })
+          await runGitInit(gitDir)
+        }
+        return createSourceGitStore({ gitDir })
+      })()
+    }
+    return gitReady
+  }
+  /**
+   * The authority, with **the ref as the answer for which revision is current**.
+   *
+   * `authority.json` still carries the state name and `acceptSeq`, but it is no
+   * longer what says where the project is. That matters at exactly one moment
+   * and it is the moment that has hurt: an accept commits, swings the ref, then
+   * writes this file, and a crash in between used to leave a project claiming a
+   * revision the store had not accepted. Reading the ref makes the ref the only
+   * thing that can be half-written, and moving it is atomic.
+   *
+   * A project whose last accept predates the cutover has no ref, and its
+   * `sha256:` id in the file is the answer until its next accept creates one.
+   */
+  async function state() {
+    const stored = readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
+    if (stored.state !== SOURCE_AUTHORITY_CURRENT) return stored
+    const head = await (await sourceGit()).head(project)
+    return head ? { ...stored, currentRevision: head } : stored
+  }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
   // an entry built from a file on disk stores utf8 in `content` and also does
@@ -153,22 +228,72 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   // ambiguity decodes a legacy file into the literal text of its own base64 —
   // silently, and into the authority store. The store tags what it emits so no
   // caller has to remember.
-  function revision(id) {
+  // A revision id is a commit sha. `sha256:`-prefixed ids are the shape the
+  // directory-per-revision store wrote, and they stay readable at the ids they
+  // already have — a project mid-cutover holds one as its `expectedRevision`,
+  // and a push whose base it could not read would be refused for a reason
+  // nobody caused. Nothing writes that shape any more.
+  const isGitObjectId = id => /^[0-9a-f]{40}$/i.test(String(id || ''))
+
+  async function revision(id) {
+    if (!id) return null
+    if (isGitObjectId(id)) return gitRevision(id)
     const record = readJson(join(revisionsRoot, encodeURIComponent(id), 'snapshot.json'))
     if (!record || record.version !== 1) return record
     return { ...record, files: (record.files || []).map(file => ({ ...file, encoding: 'base64' })) }
   }
 
-  const blobPath = sha => join(blobsRoot, sha.slice(0, 2), sha)
-
-  function writeBlob(buffer) {
-    const sha = createHash('sha256').update(buffer).digest('hex')
-    const path = blobPath(sha)
-    if (!existsSync(path)) atomicWrite(path, buffer, fault)
-    return { sha256: sha, size: buffer.length }
+  // The commit is the record: its tree is the manifest, and the pins ride in a
+  // commit trailer rather than in the tree. They belong to the revision's
+  // identity — the commit sha covers the message, so pins still change the id —
+  // but they are not a file of the author's, and the tree is what gets mirrored
+  // onto their disk.
+  async function gitRevision(id) {
+    const store = await sourceGit()
+    let files
+    try {
+      files = await store.readManifest(id)
+    } catch {
+      return null
+    }
+    const meta = await store.readCommitMeta(id)
+    return {
+      version: 3,
+      id,
+      manifest: files.map(entry => entry.path),
+      files,
+      byteSize: files.reduce((total, entry) => total + (entry.size || 0), 0),
+      dependencyPins: pinsFromMessage(meta.message),
+      createdAt: meta.date,
+    }
   }
 
-  function readBlob(sha) {
+  const blobPath = sha => join(blobsRoot, sha.slice(0, 2), sha)
+
+  const PINS_TRAILER = 'tlda-dependency-pins: '
+
+  function pinsTrailer(pins) {
+    return `${PINS_TRAILER}${JSON.stringify(pins)}`
+  }
+
+  function pinsFromMessage(message) {
+    const line = String(message || '').split('\n').find(candidate => candidate.startsWith(PINS_TRAILER))
+    if (!line) return []
+    try {
+      return JSON.parse(line.slice(PINS_TRAILER.length))
+    } catch {
+      return []
+    }
+  }
+
+  // Bytes for a content hash, whichever store holds it. A git blob sha is 40
+  // hex and a legacy sha256 is 64, so the id says where to look and no caller
+  // has to know which era its revision came from.
+  async function readBlob(sha) {
+    if (isGitObjectId(sha)) {
+      const store = await sourceGit()
+      return store.readBlobBytes(sha)
+    }
     const path = blobPath(sha)
     return existsSync(path) ? readFileSync(path) : null
   }
@@ -176,38 +301,15 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   // Raw bytes for one snapshot entry, whichever form it is in: a v2 blob
   // reference, or a `version: 1` snapshot's inline base64 from before this
   // change. Snapshots have always stored content base64-encoded.
-  function entryContent(entry) {
+  async function entryContent(entry) {
     if (!entry) return null
     if (entry.content !== undefined) {
       return Buffer.isBuffer(entry.content) ? entry.content : Buffer.from(String(entry.content), 'base64')
     }
     if (!entry.sha256) throw new Error(`Corrupt revision file entry: ${entry.path || '<unknown>'} has neither content nor sha256`)
-    const blob = readBlob(entry.sha256)
+    const blob = await readBlob(entry.sha256)
     if (!blob) throw new Error(`Corrupt revision file entry: ${entry.path || '<unknown>'} blob ${entry.sha256} is missing`)
     return blob
-  }
-
-  /**
-   * A revision is identified by its tree of `(path, content hash)`, the way a
-   * git tree is identified by the blobs it names rather than by their bytes.
-   *
-   * The previous definition hashed the concatenated base64 of every file, so
-   * computing a revision id meant reading the whole project — measured at 2.2 s
-   * per 75 MB, which is 65% of a push and would make a one-line save on a
-   * 394 MB book cost about eleven seconds of blocked event loop, forever. The
-   * blobs are already sha256-addressed, so hashing those instead is the same
-   * collision resistance at O(files) rather than O(bytes).
-   *
-   * Ids therefore differ from the ones the concatenating definition produced.
-   * Nothing recomputes an id to check it: `expectedRevision` is whatever the
-   * server last handed the client, and old snapshots keep their old ids on disk
-   * and stay resolvable, so no live project needs migrating.
-   */
-  function revisionFor(entries, dependencyPins) {
-    const hash = createHash('sha256')
-    for (const entry of entries) hash.update(entry.path).update('\0').update(entry.sha256).update('\0')
-    hash.update(JSON.stringify(dependencyPins)).update('\0')
-    return `sha256:${hash.digest('hex')}`
   }
 
   function operationKey(requestId) {
@@ -351,8 +453,9 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
    * `{path, sha256}` reference carried forward from the current revision — the
    * second form is what lets an unchanged file cost nothing on the next push.
    */
-  function canonicalSnapshot(files, manifest, snapshotContext) {
+  async function canonicalSnapshot(files, manifest, snapshotContext) {
     if (!Array.isArray(files) || !Array.isArray(manifest)) throw new Error('A complete files array and sourceManifest are required')
+    const store = await sourceGit()
     const normalized = normalizeSourceManifest(manifest, snapshotContext)
     if (normalized.length !== manifest.length || normalized.some((path, index) => path !== manifest[index])) {
       throw new Error('sourceManifest must be normalized, unique, and contain only authored source paths')
@@ -364,11 +467,21 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         throw new Error(`Invalid or duplicate snapshot file: ${file?.path ?? ''}`)
       }
       if (file.sha256 && file.content === undefined) {
-        if (!existsSync(blobPath(file.sha256))) throw new Error(`Missing blob for ${file.path}`)
-        byPath.set(file.path, { path: file.path, sha256: file.sha256, size: file.size ?? statSync(blobPath(file.sha256)).size })
+        // A reference carried forward from the current revision. It may name a
+        // git blob (an id from this store) or a legacy sha256 from a revision
+        // accepted before the cutover — in the second case the bytes are read
+        // once out of the old blob store and written into git, which is what
+        // moves a live project across without a migration pass.
+        if (isGitObjectId(file.sha256)) {
+          byPath.set(file.path, { path: file.path, sha256: file.sha256, size: file.size ?? await store.blobSize(file.sha256) })
+        } else {
+          const carried = await readBlob(file.sha256)
+          if (!carried) throw new Error(`Missing blob for ${file.path}`)
+          byPath.set(file.path, { path: file.path, sha256: await store.writeBlob(carried), size: carried.length })
+        }
       } else {
         const raw = file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(String(file.content ?? ''))
-        byPath.set(file.path, { path: file.path, ...writeBlob(raw) })
+        byPath.set(file.path, { path: file.path, sha256: await store.writeBlob(raw), size: raw.length })
       }
     }
     if (byPath.size !== normalized.length) {
@@ -377,20 +490,72 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     return normalized.map(path => byPath.get(path))
   }
 
-  function persistSnapshot(entries, dependencyPins = []) {
+  /**
+   * Commit a canonical snapshot. The commit is the revision and its sha is the
+   * revision id.
+   *
+   * The parent is the authority's current revision, so the commits form the
+   * project's history in the order it was accepted — that history is the thing
+   * being mirrored, and it is why the id must be a commit rather than a hash of
+   * the manifest. Two accepts of identical content are two revisions, because
+   * they happened at different times and the second is not the first.
+   *
+   * The tree is built from the complete manifest rather than over the parent's
+   * tree: `entries` IS the whole project, so a path that has left the manifest
+   * is absent because nobody named it.
+   */
+  async function persistSnapshot(entries, dependencyPins = [], parent = null) {
+    const store = await sourceGit()
     const pins = canonicalPins(dependencyPins)
-    const id = revisionFor(entries, pins)
-    const path = join(revisionsRoot, encodeURIComponent(id), 'snapshot.json')
-    if (existsSync(path)) return readJson(path)
-    const record = {
-      version: 2, id, manifest: entries.map(entry => entry.path), files: entries,
+    const id = await store.acceptRevision({
+      project,
+      // A revision accepted before the cutover is not a commit, so it cannot be
+      // a parent. The first commit after it is a root, and the project's git
+      // history therefore begins at the cutover rather than pretending to
+      // reach back through revisions git never held.
+      parent: isGitObjectId(parent) ? parent : null,
+      replaceTree: true,
+      files: entries.map(entry => ({ path: entry.path, sha: entry.sha256 })),
+      message: `source revision\n\n${pinsTrailer(pins)}`,
+    })
+    return {
+      version: 3, id, manifest: entries.map(entry => entry.path), files: entries,
       byteSize: entries.reduce((total, entry) => total + entry.size, 0),
       dependencyPins: pins, createdAt: new Date().toISOString(),
     }
-    atomicJson(path, record, fault)
-    // `record` is exactly what was serialized, so reading it back would be a
-    // second copy for nothing.
-    return record
+  }
+
+  /**
+   * Move `refs/tlda/source/<project>` to the accepted revision, refusing unless
+   * it still holds what we accepted against.
+   *
+   * The ref, not `authority.json`, is what makes two overlapping accepts
+   * impossible: a compare-and-swap either moves or fails, where a
+   * read-modify-write of a JSON file lets the slower writer land last and put
+   * the project on a revision nobody accepted. That is the shape of tonight's
+   * two-builds fault, one layer down.
+   *
+   * A project whose previous revision predates the cutover has no ref to
+   * compare against — its id is not a commit — so the first accept creates the
+   * ref rather than swinging it, and the CAS is honest from the second onwards.
+   */
+  async function advanceSourceHead(next, expected) {
+    const store = await sourceGit()
+    // A legacy `sha256:` id has no ref behind it, so the first accept after the
+    // cutover creates the ref instead of swinging it. From the second onwards
+    // `expected` is a commit and the swap is a real one — and it must be, or
+    // this is a read-modify-write wearing a compare-and-swap's name.
+    await store.advanceHead(project, next, isGitObjectId(expected) ? expected : await store.head(project))
+  }
+
+  // Two snapshots say the same thing when they name the same paths with the
+  // same blobs. This is identity of CONTENT, which is what bootstrap asks; a
+  // revision id is identity of a COMMIT, which is content plus when and after
+  // what, and two bootstraps of one project would never match on it.
+  function manifestDigest(entries) {
+    const hash = createHash('sha256')
+    for (const entry of entries) hash.update(entry.path).update('\0').update(entry.sha256).update('\0')
+    return hash.digest('hex')
   }
 
   function fileEntry(snapshot, path) {
@@ -401,28 +566,42 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     return entryContent(fileEntry(snapshot, path))
   }
 
-  // sha256 of the file's raw bytes. Free for a v2 entry, which already is that
-  // hash; computed for a `version: 1` entry. Callers comparing two revisions
-  // want this rather than the content, and on a large project the difference is
-  // reading nothing instead of reading everything.
-  function revisionFileHash(snapshot, path) {
+  /**
+   * A file's content hash **in one space**, so two revisions can be compared.
+   *
+   * This is the cutover's sharp edge and it is worth being explicit about. A
+   * revision accepted before the cutover hashes raw bytes with sha256; one
+   * accepted after carries git's blob sha, which is sha1 over `blob <n>\0` and
+   * the bytes. Comparing the two spaces directly never matches, so on the first
+   * push after the cutover EVERY path would look like both sides moved, and a
+   * paper that had nothing wrong with it would come back a wall of conflicts.
+   *
+   * So the git blob sha is the one space, and a legacy entry is converted into
+   * it. That costs reading the legacy revision's bytes — which is the thing the
+   * hash comparison exists to avoid — but only for a revision written before
+   * the cutover, and only until the next accept replaces it. A git-side entry
+   * stays free.
+   */
+  async function revisionFileHash(snapshot, path) {
     const entry = fileEntry(snapshot, path)
     if (!entry) return null
-    if (entry.sha256) return entry.sha256
-    const content = entryContent(entry)
-    return content ? createHash('sha256').update(content).digest('hex') : null
+    if (entry.sha256 && isGitObjectId(entry.sha256)) return entry.sha256
+    const content = await entryContent(entry)
+    return content ? gitBlobSha(content) : null
   }
 
   // Only the paths that could have changed are read, and only one revision's
   // copy of each at a time. Reading all three revisions whole is what this
   // avoids: on a large book that is three full projects resident to classify a
   // handful of edited files.
-  function deriveClassifications(base, current, incoming) {
+  async function deriveClassifications(base, current, incoming) {
     const snapshots = [base, current, incoming]
     const paths = [...new Set(snapshots.flatMap(snapshot => (snapshot?.files || []).map(file => file.path)))].sort()
-    return paths.map(path => {
+    return Promise.all(paths.map(async path => {
       const entries = snapshots.map(snapshot => fileEntry(snapshot, path))
-      const [baseHash, currentHash, incomingHash] = snapshots.map(snapshot => revisionFileHash(snapshot, path))
+      const [baseHash, currentHash, incomingHash] = await Promise.all(
+        snapshots.map(snapshot => revisionFileHash(snapshot, path)),
+      )
 
       // A path only needs merging if both sides moved away from the base. One
       // side moving is not a merge, it is a choice with one option, and a path
@@ -435,10 +614,10 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       // `classification-unavailable` and cleanRebaseFiles requires every entry
       // to be a candidate. It worked on a probe and failed on any real paper,
       // which all have figures in them.
-      const settled = entry => ({
+      const settled = async entry => ({
         path,
         status: 'clean-rebase-candidate',
-        ...(entry.sha256 ? { sha256: entry.sha256 } : { merged: entryContent(entry).toString('base64') }),
+        ...(entry.sha256 ? { sha256: entry.sha256 } : { merged: (await entryContent(entry)).toString('base64') }),
       })
       // Nobody disagrees: both sides hold the same bytes.
       if (currentHash != null && currentHash === incomingHash) return settled(entries[2])
@@ -448,7 +627,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       if (baseHash != null && baseHash === currentHash && entries[2]) return settled(entries[2])
 
       if (entries.some(entry => entry == null)) return { path, status: 'classification-unavailable' }
-      const contents = entries.map(entry => entryContent(entry))
+      const contents = await Promise.all(entries.map(entry => entryContent(entry)))
       if (contents.some(value => value == null)) return { path, status: 'classification-unavailable' }
       const binary = !isTextSourcePath(path) || contents.some(value => value.includes(0))
       const result = classifyThreeWay({ base: contents[0], current: contents[1], incoming: contents[2], binary })
@@ -458,7 +637,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         ...(result.merged != null ? { merged: Buffer.from(result.merged).toString('base64') } : {}),
         ...(result.error ? { error: result.error } : {}),
       }
-    })
+    }))
   }
 
   // Drop the payload of any replica that has been pending past the expiry, and
@@ -505,18 +684,18 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     readAuthority: state,
     readRevision: revision,
     /** Raw bytes of one file in one revision, without loading the rest. */
-    readRevisionFile(id, path) {
-      return revisionFileContent(revision(id), path)
+    async readRevisionFile(id, path) {
+      return revisionFileContent(await revision(id), path)
     },
     /** The same, for a snapshot record the caller already holds. */
     snapshotFile: revisionFileContent,
     snapshotFileHash: revisionFileHash,
-    readCurrentFile(path) {
-      const authority = state()
+    async readCurrentFile(path) {
+      const authority = await state()
       if (authority.state !== SOURCE_AUTHORITY_CURRENT || !authority.currentRevision) return null
       return {
         sourceRevision: authority.currentRevision,
-        content: revisionFileContent(revision(authority.currentRevision), path),
+        content: await revisionFileContent(await revision(authority.currentRevision), path),
       }
     },
     readOperationByRequestId(project, requestId) {
@@ -743,34 +922,41 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       writeOperationJournal(journal)
       return operationJournal().revisionLifecycle[sourceRevision]
     },
-    bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
-      const before = state()
+    async bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
+      const before = await state()
       if (before.state !== SOURCE_AUTHORITY_UNINITIALIZED || expectedRevision !== null) {
         return { ok: false, status: 'stale-base', authority: before }
       }
-      const canonical = canonicalSnapshot(files, sourceManifest, context)
-      const next = persistSnapshot(canonical, dependencyPins)
+      const canonical = await canonicalSnapshot(files, sourceManifest, context)
+      // Bootstrap compares the two sides by TREE, before committing either. The
+      // question is whether the server's source and the submitted source say
+      // the same thing, and two commits of identical content have different
+      // shas — so comparing revision ids here would report every bootstrap as a
+      // disagreement.
       if (observedServerFiles !== null) {
-        const observed = canonicalSnapshot(observedServerFiles, observedSourceManifest || sourceManifest, context)
-        if (revisionFor(observed, next.dependencyPins) !== next.id) {
-          const evidence = persistSnapshot(observed)
+        const observed = await canonicalSnapshot(observedServerFiles, observedSourceManifest || sourceManifest, context)
+        if (manifestDigest(observed) !== manifestDigest(canonical)) {
+          const next = await persistSnapshot(canonical, dependencyPins)
+          const evidence = await persistSnapshot(observed, [], next.id)
           const authority = { state: SOURCE_AUTHORITY_RECONCILIATION_REQUIRED, currentRevision: null, proposedRevision: next.id, evidenceRevision: evidence.id }
           atomicJson(statePath, authority, fault)
           return { ok: false, status: SOURCE_AUTHORITY_RECONCILIATION_REQUIRED, authority }
         }
       }
+      const next = await persistSnapshot(canonical, dependencyPins)
+      await advanceSourceHead(next.id, null)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id, acceptSeq: (before.acceptSeq || 0) + 1 }
       atomicJson(statePath, authority, fault)
       return { ok: true, status: 'accepted', authority, revision: next }
     },
-    submit({ expectedRevision, files, sourceManifest, dependencyPins = [] }) {
-      const before = state()
-      const canonical = canonicalSnapshot(files, sourceManifest, context)
-      const incoming = persistSnapshot(canonical, dependencyPins)
+    async submit({ expectedRevision, files, sourceManifest, dependencyPins = [] }) {
+      const before = await state()
+      const canonical = await canonicalSnapshot(files, sourceManifest, context)
+      const incoming = await persistSnapshot(canonical, dependencyPins, before.currentRevision)
       if (before.state !== SOURCE_AUTHORITY_CURRENT || expectedRevision !== before.currentRevision) {
-        const base = expectedRevision ? revision(expectedRevision) : null
-        const current = before.currentRevision ? revision(before.currentRevision) : null
-        const classifications = deriveClassifications(base, current, incoming)
+        const base = expectedRevision ? await revision(expectedRevision) : null
+        const current = before.currentRevision ? await revision(before.currentRevision) : null
+        const classifications = await deriveClassifications(base, current, incoming)
         const evidence = {
           version: 1, id: randomUUID(), status: 'stale-base', expectedRevision,
           currentRevision: before.currentRevision, incomingRevision: incoming.id,
@@ -781,13 +967,19 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         atomicJson(join(evidenceRoot, `${evidence.id}.json`), evidence, fault)
         const rebasedFiles = cleanRebaseFiles(classifications)
         if (rebasedFiles) {
-          const rebased = persistSnapshot(canonicalSnapshot(rebasedFiles, incoming.manifest, context), incoming.dependencyPins)
+          const rebased = await persistSnapshot(
+            await canonicalSnapshot(rebasedFiles, incoming.manifest, context),
+            incoming.dependencyPins,
+            before.currentRevision,
+          )
+          await advanceSourceHead(rebased.id, before.currentRevision)
           const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id, acceptSeq: (before.acceptSeq || 0) + 1 }
           atomicJson(statePath, authority, fault)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
         return { ok: false, status: 'stale-base', authority: before, evidence }
       }
+      await advanceSourceHead(incoming.id, before.currentRevision)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }
       atomicJson(statePath, authority, fault)
       return { ok: true, status: 'accepted', authority, revision: incoming }
