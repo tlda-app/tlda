@@ -5528,33 +5528,67 @@ export class FleetStore {
   // shapes the callers need: timestamp range, afterId, beforeId, plain.
   // Returns rows in the same order/orientation the old inline query did.
   _queryAgentEventsForSearch({ agent, types = null, excludeTypes = null, sinceTs = null, untilTs = null, afterId = 0, beforeId = null, limit = 200 }) {
-    const cols = `id, type, timestamp, from_id as "from", text, metadata, task_id, agent_id, ${FleetStore._TO_JSON('events')}`;
+    // Aliased back to the bare names the outer UNION and hydrateEvents expect.
+    // Qualifying is required, not tidiness: the received branch joins
+    // `recipients`, which has its own `timestamp`, and an unqualified one there
+    // is an "ambiguous column name" error at prepare time.
+    const cols = `events.id as id, events.type as type, events.timestamp as timestamp, `
+      + `events.from_id as "from", events.text as text, events.metadata as metadata, `
+      + `events.task_id as task_id, events.agent_id as agent_id, ${FleetStore._TO_JSON('events')}`;
     const tail = [];
     const tailParams = [];
-    if (types && types.length) { tail.push(`type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
-    if (excludeTypes && excludeTypes.length) { tail.push(`type NOT IN (${excludeTypes.map(() => '?').join(',')})`); tailParams.push(...excludeTypes); }
+    // Every predicate is qualified with `events.` because the received branch
+    // joins `recipients`, which carries its own `timestamp` — unqualified it is
+    // an ambiguous column, and the sent branch reads the same either way.
+    if (types && types.length) { tail.push(`events.type IN (${types.map(() => '?').join(',')})`); tailParams.push(...types); }
+    if (excludeTypes && excludeTypes.length) { tail.push(`events.type NOT IN (${excludeTypes.map(() => '?').join(',')})`); tailParams.push(...excludeTypes); }
     let order;
+    let recvOrder;
     // `id` is the deterministic tiebreaker on equal timestamps — without it the
     // page boundary at LIMIT is nondeterministic (the old OR query had this
     // latent bug; the UNION makes it visible, so fix it here).
     if (sinceTs || untilTs) {
-      if (sinceTs) { tail.push('timestamp > ?'); tailParams.push(sinceTs); }
-      if (untilTs) { tail.push('timestamp <= ?'); tailParams.push(untilTs); }
+      if (sinceTs) { tail.push('events.timestamp > ?'); tailParams.push(sinceTs); }
+      if (untilTs) { tail.push('events.timestamp <= ?'); tailParams.push(untilTs); }
       order = 'timestamp ASC, id ASC';
+      recvOrder = 'r.timestamp ASC, r.event_id ASC';
     } else if (afterId) {
-      tail.push('id > ?'); tailParams.push(afterId); order = 'id ASC';
+      tail.push('events.id > ?'); tailParams.push(afterId);
+      order = 'id ASC';
+      // `recipients` has no (agent_id, event_id) index, but ids and timestamps
+      // are both assigned at insert, so walking idx_recipients_agent_ts forward
+      // is the same order — and it is an index walk rather than a sort.
+      recvOrder = 'r.timestamp ASC, r.event_id ASC';
     } else if (beforeId) {
-      tail.push('id < ?'); tailParams.push(beforeId); order = 'id DESC';
+      tail.push('events.id < ?'); tailParams.push(beforeId);
+      order = 'id DESC';
+      recvOrder = 'r.timestamp DESC, r.event_id DESC';
     } else {
-      order = 'timestamp ASC, id ASC';
+      // Newest, like every other history read here. ASC took the OLDEST `limit`
+      // of this agent's whole traffic, and searchAll's JS sort below cannot
+      // recover rows the SQL never fetched — so an uncursored thread() over a
+      // busy id returned ancient rows and dropped the recent ones silently.
+      order = 'timestamp DESC, id DESC';
+      recvOrder = 'r.timestamp DESC, r.event_id DESC';
     }
     const tailSql = tail.length ? ' AND ' + tail.join(' AND ') : '';
     const sentBranch = `SELECT * FROM (SELECT ${cols} FROM events WHERE from_id = ?${tailSql} ORDER BY ${order} LIMIT ?)`;
-    // The received branch walks idx_recipients_agent_ts for this agent and joins
-    // events by primary key, which is what the old idx_events_to scan did.
+    // `events.id IN (SELECT event_id FROM recipients WHERE agent_id = ?)` had no
+    // bound on the subquery, so SQLite materialized EVERY id the agent had ever
+    // received (110,759 for fleet:skip), probed `events` by rowid once per id
+    // across a 2.7GB table, temp-b-tree sorted the result, and only then applied
+    // the LIMIT. All of that is paid before the limit, so the cost was the same
+    // whatever the answer was — one measured call took 39.4s to return 0 rows.
+    //
+    // Joining instead lets SQLite drive from idx_recipients_agent_ts in the
+    // order we already want and stop at `limit`: no id set, no temp sort, and it
+    // reads ~limit rows rather than the agent's whole history. Ordering on the
+    // recipients columns is what keeps it index-ordered — that is what the
+    // event timestamp is doing in that table, per queryChatHistory's note.
     const receivedBranch = `SELECT * FROM (SELECT ${cols} FROM events
-      WHERE events.id IN (SELECT event_id FROM recipients WHERE agent_id = ?)${tailSql}
-      ORDER BY ${order} LIMIT ?)`;
+      JOIN recipients r ON r.event_id = events.id
+      WHERE r.agent_id = ?${tailSql}
+      ORDER BY ${recvOrder} LIMIT ?)`;
     const sql = `SELECT * FROM (${sentBranch} UNION ${receivedBranch}) ORDER BY ${order} LIMIT ?`;
     const params = [agent, ...tailParams, limit, agent, ...tailParams, limit, limit];
     const rows = this.db.prepare(sql).all(...params);
