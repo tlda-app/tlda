@@ -2923,10 +2923,15 @@ async function cmdMoveProject() {
   const moveContext = { format: project.format, mainFile: project.mainFile }
   const files = collectSourceFiles(sourceDir, moveContext)
   const targetAuthority = await apiAt(targetServer, 'GET', `/api/projects/${encodeURIComponent(name)}/source-authority`)
-  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, {
+  // A move carries the whole project, and the manifest is derived from the
+  // files being sent, so the two match without carry-forward references.
+  //
+  // `sourceDir` is not sent. The old route never read it -- it is absent from
+  // that handler's destructure, and every server use reads `project.sourceDir`
+  // from storage -- so the move has been sending a field nobody consumes.
+  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/source-snapshot`, {
     files,
     sourceManifest: sourceManifestForFiles(files, moveContext),
-    sourceDir,
     expectedRevision: targetAuthority.currentRevision,
   }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
