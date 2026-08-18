@@ -97,30 +97,24 @@ export function buildFleetLayoutPlanInput({
   // two-chat has no rail hanging outside it, so its span is just its content.
   const railSpan = variant === 'two-chat' ? 0 : layoutTokens.leftW + gap
   const naturalSpan = railSpan + variantContentW(variant, vp, layoutTokens.leftW, layoutTokens.chatW, gap)
-  // A down-flowing paper is sized to screen height, and its columns are derived
-  // from that height (readabilityProfile.ts: leftW = totalH * railAspect). So a
-  // TALLER screen produces WIDER columns, and their sum was never checked against
-  // the screen at all in this case — the same defect the comment above describes,
-  // still live for the ordinary case of a paper read down.
+  // Deriving column widths from viewport HEIGHT is deliberate, not a defect.
+  // Skip, 2026-08-18: "I don't really want to change the panel widths derived
+  // from viewport height thing. That's a natural thing to do because you can pan
+  // across but you can't move up and down. Right? That's how the HUD works."
+  // Height is the dimension that is actually fixed, so it is the sane one to
+  // derive from. Two of us read this as the bug; it is the design.
   //
-  // The panels sit in the document's margin at 1:1 screen px, so the document and
-  // the layout compete for one screen width. Skip asked for "doc and
-  // chat-over-editor col in the editing layout" to fit ON SCREEN TOGETHER, which
-  // is a co-visibility requirement rather than a don't-run-off-the-edge one:
-  // pulling the layout back to exactly the viewport leaves the document nowhere
-  // to be. So the span the layout may claim is the same layoutSpanFrac the
-  // transposed case already uses, and the 20% it leaves is the document's room.
+  // The document and the layout do compete for one screen width — the panels sit
+  // in the document's margin at 1:1 screen px — but the lever for that is the
+  // ASPECT, not a scale applied here. Narrower columns per unit of height give
+  // the document the difference and leave this mechanism alone. See
+  // readabilityDefaults.ts. Skip: "Changing the aspect ratio is something you can
+  // for sure do."
   //
-  // With the default profile a 13" Air M2 (1470x956, viewport 866) gives a big-chat
-  // natural span of 1474 against a 1470 screen — the layout alone is the whole
-  // display and the document is off it entirely. At layoutSpanFrac that becomes
-  // ~1176, leaving ~294 for the document.
-  //
-  // Clamped at 1 for the down-flow case, so this only ever pulls a layout in and
-  // never enlarges one whose columns are already narrower than their share.
+  // So this stays 1 for a down-flowing paper, as it always was.
   const columnScale = flowAxis === 'x' || variant === 'two-chat'
     ? (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan)
-    : Math.min(1, (vp.w * layoutSpanFrac) / Math.max(1, naturalSpan))
+    : 1
   const leftW = Math.round(layoutTokens.leftW * columnScale)
   const chatW3 = Math.round(layoutTokens.chatW * columnScale)
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
