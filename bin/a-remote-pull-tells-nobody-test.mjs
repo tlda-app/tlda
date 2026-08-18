@@ -129,7 +129,7 @@ async function paperWithARemote(name) {
   write(join(sourceDir(name), 'main.tex'), 'old main\n')
   write(join(sourceDir(name), 'notes.tex'), 'old notes\n')
   await updateClientSourceManifest(name, MANIFEST)
-  const bootstrap = (await sourceLifecycleStore(name)).bootstrap({
+  const bootstrap = await (await sourceLifecycleStore(name)).bootstrap({
     expectedRevision: null,
     sourceManifest: MANIFEST,
     files: MANIFEST.map(path => ({ path, content: readSourceFile(name, path) })),
@@ -192,7 +192,7 @@ try {
     'the collaborator rewrote the introduction\n',
     'the project source — has the collaborator rewrite from the remote',
   )
-  const authority = (await sourceLifecycleStore(NAME)).readAuthority()
+  const authority = await (await sourceLifecycleStore(NAME)).readAuthority()
   assert.notEqual(
     authority.currentRevision,
     startRevision,
