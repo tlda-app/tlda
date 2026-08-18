@@ -84,7 +84,22 @@ export class DaemonDeliveryRuntime {
   handleAck(outboxId) {
     if (!outboxId) return
     const row = this.outbox.get(outboxId)
-    if (row?.type === 'source-change' && this.ackGate && !this.ackGate(row.payload)) return false
+    if (row?.type === 'source-change' && this.ackGate && !this.ackGate(row.payload)) {
+      // **Say it.** Refusing an ack we have already received leaves a row that
+      // cannot leave the outbox, and until now it did so in total silence: the
+      // server counts a delivered, acked envelope while the daemon holds the row
+      // forever. Neither end can tell, and on 2026-08-18 the only trace was a
+      // frozen `min(created_at)` reconstructed twenty-five minutes later.
+      //
+      // One line, and it makes the next occurrence visible while it is
+      // happening. It is deliberately at warn: a row that can never leave is not
+      // routine, however ordinary the reason.
+      this.log?.warn?.(
+        `refused the server's ack for ${row.type} ${outboxId}: its edit operations have not settled, `
+        + `so the row stays in the outbox and will be re-sent (attempts=${row.attempts ?? 0})`,
+      )
+      return false
+    }
     this.recordActivityDelivery('daemonAcked', row?.payload || { type: row?.type || 'unknown' })
     this.outbox.ack(outboxId)
     this.inflight.delete(outboxId)
