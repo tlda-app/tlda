@@ -1589,16 +1589,38 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       sourceRevision: acceptedSourceMutation?.sourceRevision || buildAuthority.currentRevision || null,
       acceptSeq: buildAuthority.acceptSeq ?? null,
     }).then(async () => {
-      if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
-      const updated = await readProject(name)
-      const completedStatus = projectRevisionStatus(lifecycle.listRevisionLifecycles(name))
-      if (completedStatus.status === 'success') {
-        emitGlobalEvent('doc-arrived', {
-          name, title: updated.title || name,
-          format: updated.format, pages: updated.pages || 0,
-        })
+      // Announcing a build is not building it. This used to share a `.catch`
+      // with the dispatch above, so anything throwing HERE — a parts broadcast,
+      // a project read, the event — stamped `buildStatus: 'error'` on a project
+      // whose document had already been built and whose page count was right.
+      //
+      // 160 projects were in that state on 2026-08-18, 157 of them Markdown.
+      // Six sampled at random fetched 200 with 33-37 KB of rendered content
+      // while their stored status said the build had failed. A status a build
+      // earned must not be overwritable by a step that did not do the build.
+      //
+      // Two-argument `.then` is what separates them: the rejection handler sees
+      // the dispatch's failure and nothing this function does.
+      try {
+        if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
+        const updated = await readProject(name)
+        const completedStatus = projectRevisionStatus(lifecycle.listRevisionLifecycles(name))
+        if (completedStatus.status === 'success') {
+          emitGlobalEvent('doc-arrived', {
+            name, title: updated.title || name,
+            format: updated.format, pages: updated.pages || 0,
+          })
+        }
+      } catch (announceError) {
+        // Swallowed on purpose, and this is the fix rather than an oversight:
+        // rethrowing sends it to the rejection handler below, which is exactly
+        // the path that stamped `error` on 160 built, serving documents. The
+        // build is done and the document exists; a broadcast or an event that
+        // failed is a notification defect and belongs in the log, not in the
+        // project's build status. Nothing downstream waits on this promise.
+        console.error(`[${project.format}] ${name} built, but announcing it failed: ${announceError.message}`)
       }
-    }).catch(async e => {
+    }, async e => {
       console.error(`[${project.format}] Build failed for ${name}: ${e.message}`)
       try {
         await updateProject(name, { buildStatus: 'error' })
