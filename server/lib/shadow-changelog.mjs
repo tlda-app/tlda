@@ -140,6 +140,14 @@ export async function readShadowIndexInfo(name) {
   // count is 34-55x cheaper. Only the two oldest commits are then read, because
   // only they can be the answer: `init` is the synthetic root.
   //
+  // One behaviour did change, and it is deliberate. The old form filtered
+  // `init` across the whole log; this one can only see it in the oldest two, so
+  // a repo carrying an `init`-messaged commit mid-history would now be counted
+  // where it previously was not. That is not reasoning -- both implementations
+  // were run over all 758 shadow repos on the live volume 2026-08-18 and agreed
+  // on every one, so no such repo exists today. If one is ever created, this is
+  // the line that predicted it.
+  //
   // `git log --reverse -n 2` looks like it would do this and does not -- the
   // limit is applied before the reverse, so it returns the two NEWEST. That
   // silently wrong form is why the oldest pair comes off `rev-list` instead.
