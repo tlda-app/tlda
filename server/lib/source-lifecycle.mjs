@@ -229,6 +229,33 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     atomicJson(operationsPath, journal, fault)
   }
 
+  // An accepted push's effect carried `mutation.files`, and those entries carry
+  // `content` -- base64 of every changed file. The source revision already holds
+  // those bytes once each under `blobs/`, so the journal was a second copy of
+  // them, kept forever, in the file that `GET /api/projects` parses in full and
+  // synchronously on every request.
+  //
+  // Measured on the live volume 2026-08-18: bregman's journal was 13,346,381
+  // bytes, of which `byRequestId` was 12,215,402 across 41 records. Of that,
+  // `orderedEffects` was 7,455,226 -- and in its largest single effect,
+  // `mutation.files[0].content` was 376,324 of the effect's 394,426 bytes.
+  // `revisionLifecycle`, the only part a project listing reads, was 20,686.
+  //
+  // This is the same deletion `recordReplicaResult` makes for `command` below,
+  // one level up: the effect keeps what identifies the mutation, and the bytes
+  // stay where they already live.
+  function withoutFileContent(orderedEffects) {
+    return (orderedEffects || []).map(effect => (effect?.mutation?.files
+      ? {
+        ...effect,
+        mutation: {
+          ...effect.mutation,
+          files: effect.mutation.files.map(({ content: _bytes, encoding: _enc, ...file }) => file),
+        },
+      }
+      : effect))
+  }
+
   function operationFingerprint({ project, expectedRevision, sourceManifest, files = [], deletedFiles = [], dependencyPins = [], editedBy = null }) {
     const pins = canonicalPins(dependencyPins)
     const entries = files.map(file => {
@@ -247,7 +274,6 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     })
     return {
       payloadFingerprint: createHash('sha256').update(JSON.stringify(descriptor)).digest('hex'),
-      descriptor,
     }
   }
 
@@ -441,7 +467,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     },
     prepareOperation(payload) {
       const requestId = operationKey(payload.requestId)
-      const { payloadFingerprint, descriptor } = operationFingerprint(payload)
+      const { payloadFingerprint } = operationFingerprint(payload)
       const journal = operationJournal()
       const existing = journal.byRequestId[requestId] || null
       if (existing) {
@@ -485,7 +511,6 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         requestId,
         deliveryId,
         payloadFingerprint,
-        descriptor,
         state: 'prepared',
         terminalResult: null,
         createdAt: now,
@@ -519,7 +544,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
         ...(recoveryId == null ? {} : { recoveryId }),
         previousRevision,
         acceptedRevision,
-        orderedEffects: stableValue(orderedEffects),
+        orderedEffects: stableValue(withoutFileContent(orderedEffects)),
         updatedAt: new Date().toISOString(),
       }
       journal.byRequestId[requestId] = operation
