@@ -275,9 +275,25 @@ async function fetchAndDiff(dir) {
  * Push tlda-side source changes back to the linked Overleaf/git remote.
  *
  * Preparation performs every fallible local git operation and returns a
- * publish closure. The normal source transaction publishes only after local
- * source and metadata are durably committed, leaving no fallible local commit
- * after remote success.
+ * publish closure. **Call this before the local accept, call `.publish()`
+ * only after it durably succeeds — never the other way round.** Publishing
+ * first would let the remote say something the local authority has not yet
+ * agreed to, which is the exact remote-ahead-of-local shape this ordering
+ * exists to make unreachable.
+ *
+ * On the new accept path there is nothing after `publish()` to fail: the
+ * local write is durable the moment its ref moves, so `publish()` being last
+ * means a crash can only land before it (remote stays behind, self-heals on
+ * the project's next push -- no record needed) or during it (git's own
+ * atomicity, same as any interrupted push). **Known, accepted gap:** a crash
+ * strictly between the local accept committing and `publish()` completing
+ * leaves the remote one revision behind until the next push. No rollback is
+ * attempted for that window on purpose -- undoing an already-published
+ * remote write is a force-push over anything a collaborator wrote since,
+ * which is a worse failure than a temporarily stale remote. `restoreLocal`/
+ * `restoreRemote` below exist for a caller that still wants them, but neither
+ * is part of the current pattern (see `pushSourceToOverleaf`) and neither
+ * should be wired into new call sites.
  */
 export async function prepareSourcePushToOverleaf(name, { files = [], deletedFiles = [], editedBy } = {}) {
   const project = await readProject(name)
@@ -428,6 +444,21 @@ export async function recoverProjectSourceTransactions(name) {
   return results
 }
 
+/**
+ * The outbound half, called by whoever just accepted a local source change
+ * on a project linked to a remote -- after that accept is durable, never
+ * before. `prepare` runs first so a remote-side conflict aborts the whole
+ * push before the caller decides whether to accept anything; this function
+ * assumes that decision has already been made and only publishes.
+ *
+ * No rollback: see `prepareSourcePushToOverleaf`'s docstring for why a crash
+ * between accept and publish is a named, accepted gap rather than a case
+ * this recovers from.
+ *
+ * The caller is responsible for the `!overleafSync` check -- do not call
+ * this from a change that itself came from `syncOverleaf`'s own pull, or a
+ * pull immediately re-triggers a push back to the remote it just read from.
+ */
 export async function pushSourceToOverleaf(name, changes = {}) {
   const prepared = await prepareSourcePushToOverleaf(name, changes)
   return prepared.publish()
