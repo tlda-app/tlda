@@ -1164,6 +1164,51 @@ export async function acceptUnderOperationJournal(name, lifecycle, payload, run,
 }
 
 /**
+ * Bring the server's working copy to a revision, idempotently.
+ *
+ * Separate and callable because it has to run in two places: after an accept,
+ * and after a REPLAY whose accept happened in a process that died before
+ * getting here. A replay deliberately returns before the effects — it must not
+ * re-mirror or re-dispatch a build — but the document still has to be on disk,
+ * and nothing else will ever put it there.
+ *
+ * Driven by `refs/tlda/materialized/<project>`, which is what the disk holds
+ * rather than what it should hold. A null ref means the whole manifest: not a
+ * diff, because `diffRevisions(null, head)` returns nothing despite its
+ * `--root` branch — measured, and the reason an earlier version of this fix
+ * looked right and changed nothing.
+ */
+async function materializeWorkingCopy(name, lifecycle, sourceRevision) {
+  const accepted = await lifecycle.readRevision(sourceRevision)
+  const onDisk = await lifecycle.lastMaterialized().catch(() => null)
+  if (onDisk === sourceRevision) return true
+  const { changed: writePaths, deleted: removePaths } = onDisk
+    ? await lifecycle.diffRevisions(onDisk, sourceRevision)
+    : { changed: accepted?.manifest || [], deleted: [] }
+  for (const file of writePaths) {
+    const bytes = await lifecycle.readRevisionFile(sourceRevision, file)
+    if (bytes) await writeSourceFileAsync(name, file, bytes)
+  }
+  for (const file of removePaths) await deleteSourceFileAsync(name, file)
+
+  // **And the file LIST**, which is a table rather than a scan of the disk.
+  // `project-store.mjs` refuses to store it any other way, so correct bytes
+  // with no row is a file that is right on disk and does not appear in the
+  // project at all -- invisible to `listSourceFiles` and to anything that
+  // enumerates rather than reading a path it already knows.
+  if (accepted?.manifest) await updateClientSourceManifest(name, accepted.manifest)
+
+  // Only now, so a crash before this leaves the ref behind the accept and the
+  // next attempt writes what the disk is missing.
+  await lifecycle.markMaterialized(sourceRevision, onDisk).catch(error => {
+    // Not fatal: the bytes are on disk, which is what the author needs. A stale
+    // ref costs a redundant write next time, never a missing file.
+    console.error(`[${name}] could not record the materialized revision: ${error.message}`)
+  })
+  return true
+}
+
+/**
  * The six post-accept effects, for EVERY carrier.
  *
  * Exported and carrier-neutral on purpose. Four carriers reach this accept --
@@ -1285,36 +1330,13 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   // clean rebase both differ from what the caller sent.
   let materialized = true
   try {
-    for (const file of changed) {
-      const bytes = await lifecycle.readRevisionFile(sourceRevision, file)
-      if (bytes) await writeSourceFileAsync(name, file, bytes)
-    }
-    for (const file of deleted) await deleteSourceFileAsync(name, file)
-
-    // **And the file LIST, which is a table rather than a scan of the disk.**
-    // `project-store.mjs` refuses to store it any other way. Writing the bytes
-    // without it produces a file that is perfectly correct on disk and does not
-    // appear in the project at all: invisible to `listSourceFiles`, to the
-    // client's manifest, and to anything that enumerates a project rather than
-    // reading a path it already knows.
-    //
-    // A new chapter that syncs and never appears is indistinguishable from a
-    // sync that did nothing, which is the same silent direction as the bytes.
-    // Taken from the accepted revision's manifest, because that is what was
-    // accepted.
-    const accepted = await lifecycle.readRevision(sourceRevision)
-    if (accepted?.manifest) await updateClientSourceManifest(name, accepted.manifest)
+    await materializeWorkingCopy(name, lifecycle, sourceRevision)
     ran.push('working-copy')
   } catch (error) {
     materialized = false
     console.error(`[${name}] writing the working copy after accept failed: ${error.message}`)
   }
 
-  // Neither of these gates the response. The revision is accepted and durable
-  // either way, and a sleeping machine or a busy build queue is not a reason to
-  // tell an author their writing did not land.
-  void mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq)
-  ran.push('mirror')
   // **Ask whether to build, rather than always building.**
   //
   // The old path asked `shouldBuildOnPush` and suppressed for `unchanged`,
@@ -2529,6 +2551,47 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
     // for a push that already landed is the retry storm this journal exists to
     // prevent, one layer up.
     if (result.replayed) {
+      // **A replay must resume replicas that were recorded and never sent.**
+      //
+      // The effects record pending replica rows and then dispatch them. A
+      // process dying between those two leaves a checkout owed a revision that
+      // nothing will ever send it — and the retry cannot fix it by re-running,
+      // because a replay deliberately returns before the effects.
+      //
+      // So the replay resumes rather than re-dispatches: `resumeOnly` tells the
+      // handler to send what is still pending instead of treating this as a new
+      // acceptance. Without it the only recovery is somebody noticing a
+      // checkout is behind.
+      const replayedRevision = result.operationResult?.sourceRevision ?? null
+
+      // **A replay still owes the document.** The accept it is answering for
+      // may have happened in a process that died before the effects ran, so the
+      // revision is durable and the disk is empty. Returning the stored result
+      // without this reports success over a paper that is not there.
+      //
+      // Only the working copy, deliberately: mirroring or dispatching a build
+      // again is the retry storm the journal exists to prevent. This is
+      // idempotent and no-ops when the disk is already at the revision.
+      if (!result.invalidReuse && replayedRevision) {
+        try {
+          await materializeWorkingCopy(name, lifecycle, replayedRevision)
+        } catch (error) {
+          // Swallowed deliberately: this is a recovery attempt on an accept
+          // that already happened, and the caller is owed the stored terminal
+          // result. Throwing would turn a successful replay into a failure to
+          // report that the catch-up failed -- and the next replay tries again,
+          // because the ref still says the disk is behind.
+          console.error(`[${name}] could not materialize on replay: ${error.message}`)
+        }
+      }
+
+      if (!result.invalidReuse && replayedRevision && pendingSourceReplicaHandler) {
+        void Promise.resolve().then(() => pendingSourceReplicaHandler({
+          project: name,
+          sourceRevision: replayedRevision,
+          resumeOnly: true,
+        })).catch(error => console.error(`[${name}] pending source replica replay failed: ${error.message}`))
+      }
       return {
         status: result.invalidReuse ? 400 : (result.httpStatus || 200),
         body: { ...result, operationReplay: !result.invalidReuse, sourceOperationResult: result.operationResult ?? null },
@@ -2544,7 +2607,18 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
       // The asymmetry is what made it invisible: the CLEAR side already moved
       // to the shared effects, so the new path erased the trace on accept and
       // never wrote it on refusal.
-      const refusalOwner = sourceConflictOwner({ editedBy, sourceBindingId, daemonKey: sourceDaemonKey })
+      // **Hand it the payload, do not enumerate.** `sourceConflictOwner` reads
+      // `sourceMachineId` and `sourceEnvName` as well as the daemon key, and an
+      // enumerated call drops whatever nobody remembered — silently, while
+      // every grep for daemon identity still finds `sourceDaemonKey` and looks
+      // healthy. The WS handler sends `sourceMachineId` today.
+      //
+      // It costs the ledger the thing it exists for: `sourceSyncRefusals`
+      // answers *whose work is stuck and where is it*, and an owner with a
+      // participant but no machine says somebody is stuck without saying which
+      // machine to go and look at. For anyone working from two machines that is
+      // the whole content of the row.
+      const refusalOwner = sourceConflictOwner(payload)
       const conflicted = conflictFilesFromLifecycleResult(result)
       try {
         if (conflicted.length > 0) {
