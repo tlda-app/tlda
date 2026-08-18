@@ -709,6 +709,40 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       }
     },
 
+    /**
+     * Take a bundle a checkout has proposed and accept it iff it fast-forwards.
+     *
+     * **This is the accept path with the machinery removed.** There is no
+     * expected-revision handshake, no declared manifest to validate, no
+     * three-way merge and no retry state machine: the proposer either had our
+     * head when they wrote, in which case nothing of ours is discarded, or they
+     * did not, in which case it goes back to them to rebase. Git already knows
+     * how to answer that question and every bug we shipped on this path was our
+     * own answer to it.
+     *
+     * A refusal is not a failure and costs nothing: the candidate is already in
+     * the object store under a quarantine ref, so it can be named, mirrored and
+     * looked at rather than existing only as a rejection payload.
+     */
+    async acceptBundle(bundlePath) {
+      const store = await sourceGit()
+      const proposed = await store.ingestBundle(project, bundlePath)
+      if (!proposed) return { ok: false, status: 'empty-bundle' }
+      const result = await store.fastForward(project, proposed)
+      if (!result.ok) {
+        await store.markRefused(project, proposed, await store.refused(project))
+        return { ...result, refusedRevision: proposed }
+      }
+      const record = await revision(result.revision)
+      const authority = {
+        state: SOURCE_AUTHORITY_CURRENT,
+        currentRevision: result.revision,
+        acceptSeq: ((readJson(statePath) || {}).acceptSeq || 0) + 1,
+      }
+      atomicJson(statePath, authority, fault)
+      return { ...result, authority, revision: record }
+    },
+
     /** The last refused push, and the record that it was refused. */
     lastRefused: async () => (await sourceGit()).refused(project),
 

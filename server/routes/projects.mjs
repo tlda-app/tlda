@@ -22,6 +22,7 @@ import { createHash, randomUUID } from 'crypto'
 import { access, mkdir, readFile, readdir, rm, unlink, writeFile } from 'fs/promises'
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'fs'
 import { join, basename, dirname, resolve } from 'path'
+import { tmpdir } from 'os'
 import { promisify } from 'util'
 import { requireRead, requireRecordingPrivateRead, requireRw } from '../lib/auth.mjs'
 import {
@@ -2004,6 +2005,57 @@ function recordingsDir(name) {
 }
 
 // POST /:name/recording — store metadata + events JSON (audio uploaded separately)
+// A checkout proposes a commit, and the server accepts it iff it fast-forwards.
+//
+// **Nothing calls this yet, and that is deliberate.** The daemon and the server
+// version-skew on every deploy in an order nobody chooses, so the half that
+// tolerates the new shape ships first, the half that uses it ships second, and
+// the old path is deleted third. A change needing both at once is broken for
+// whichever window separates them, and both orders have shipped here.
+//
+// So this is not a second accept path to live beside the first. It is the first
+// deploy of three, and if it is still unused a week from now that is a bug.
+//
+// The body is the bundle's raw bytes rather than base64 in JSON: the thing that
+// took a box down was a 33 MB file becoming 44 MB of body, and base64 is a third
+// of that inflation for nothing. `express.raw` is already how audio uploads
+// arrive here.
+router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, limit: '500mb' }), async (req, res) => {
+  const name = req.params.name
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ ok: false, error: 'a bundle body is required' })
+  }
+  const bundlePath = join(tmpdir(), `tlda-proposed-${process.pid}-${randomUUID()}.bundle`)
+  try {
+    await writeFile(bundlePath, req.body)
+    const lifecycle = await sourceLifecycleStore(name)
+    const result = await runSerializedProjectSourceOperation(name, () => lifecycle.acceptBundle(bundlePath))
+    if (!result.ok) {
+      // A non-fast-forward is the proposer's to resolve, not ours to merge. They
+      // hold the commits; they rebase and propose again.
+      return res.status(409).json({
+        ok: false,
+        status: result.status,
+        currentRevision: result.revision ?? null,
+        refusedRevision: result.refusedRevision ?? null,
+      })
+    }
+    res.json({
+      ok: true,
+      status: result.status,
+      sourceRevision: result.revision?.id ?? result.revision ?? null,
+      acceptSeq: result.authority?.acceptSeq ?? null,
+    })
+  } catch (error) {
+    console.error(`[${name}] proposed bundle failed: ${error.message}`)
+    res.status(400).json({ ok: false, error: error.message })
+  } finally {
+    await rm(bundlePath, { force: true }).catch(() => {
+      // Best effort on a temp file; the accept result is what the caller needs.
+    })
+  }
+})
+
 router.post('/:name/recording', requireRw, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })

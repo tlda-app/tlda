@@ -251,6 +251,53 @@ export function createSourceGitStore({ gitDir }) {
     }
   }
 
+  /**
+   * Take a bundle a daemon has proposed and make its commits ours, under a
+   * quarantine ref rather than anywhere meaningful.
+   *
+   * Quarantine because a bundle is somebody else's claim until it has been
+   * judged: fetching it straight onto `refs/tlda/source` would make accepting
+   * and receiving the same act, and the whole point of a fast-forward check is
+   * that they are not. Objects are cheap and unreferenced ones are `gc`'s
+   * problem; a ref that means "the paper" is not.
+   *
+   * Returns the proposed commit, or null when the bundle carries nothing we can
+   * read — which is a refusal, not a crash.
+   */
+  async function ingestBundle(project, bundlePath) {
+    const quarantine = refFor('proposed', project)
+    try {
+      await git(['bundle', 'verify', bundlePath])
+    } catch (error) {
+      throw new Error(`unreadable bundle for ${project}: ${error.message.split('\n')[0]}`)
+    }
+    const heads = (await git(['bundle', 'list-heads', bundlePath])).split('\n').filter(Boolean)
+    if (!heads.length) return null
+    const [proposed] = heads[heads.length - 1].split(/\s+/)
+    await git(['fetch', bundlePath, `+${proposed}:${quarantine}`])
+    return proposed
+  }
+
+  /**
+   * Accept a proposed commit iff it descends from what the project already has.
+   *
+   * **This is the whole accept decision.** Fast-forward means the proposer had
+   * our head when they wrote, so nothing of ours is being discarded; anything
+   * else is a non-fast-forward and belongs back with the proposer to rebase.
+   * There is no three-way merge here and no manifest to compare — the tree that
+   * arrived IS the manifest, so a path that left the paper is absent because
+   * nobody named it rather than because somebody remembered to list it.
+   */
+  async function fastForward(project, proposed) {
+    const current = await readRef('source', project)
+    if (current === proposed) return { ok: true, status: 'already-current', revision: current }
+    if (current && !(await isAncestor(current, proposed))) {
+      return { ok: false, status: 'non-fast-forward', revision: current, proposed }
+    }
+    await moveRef('source', project, proposed, current)
+    return { ok: true, status: 'accepted', revision: proposed, previous: current }
+  }
+
   /** True when `candidate` is in `head`'s history — the stale-base test. */
   async function isAncestor(candidate, head) {
     if (!candidate || !head) return false
@@ -267,6 +314,8 @@ export function createSourceGitStore({ gitDir }) {
     readManifest,
     readRevisionFile,
     isAncestor,
+    ingestBundle,
+    fastForward,
     writeBlob,
     blobSize,
     readBlobBytes,
