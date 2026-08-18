@@ -112,6 +112,89 @@ const MINIFIED = /\.min\.js$/
 // a product site that has not been looked at yet.
 
 const ALLOWED = {
+  // --- wire tests: the socket IS the thing under test ----------------------
+  //
+  // Each of these drives a real endpoint to prove frames cross it. Routing them
+  // through the transport library would test the library instead of the wire,
+  // which is the one thing these exist to check -- and this repository has
+  // shipped both ends of a severed wire more than once while every unit test
+  // stayed green.
+
+  'bin/source-activity-push-wire-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Wire proof for the source-activity push: connects a real daemon socket, sends an activity-event, and reads signal:source-activity back off the SSE stream. The point is that nothing in it can see the server memory. Endpoint: /ws/fleet-daemon.',
+  },
+  'bin/the-room-and-a-git-remote-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Source-room client speaking the room\'s JSON frames against a linked git remote. Endpoint: /source-sync/.',
+  },
+  'bin/typing-when-the-socket-goes-away-test.mjs': {
+    count: 2,
+    category: 'tooling',
+    reason: 'Two source-room clients: the story is a socket dying mid-edit, which needs one connection to lose and one to observe with. Endpoint: /source-sync/.',
+  },
+  'scripts/backfill-agent-models.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'One-off backfill script. Not a server path and not a product site; it opens /ws/fleet once to write agent models and exits. Endpoint: /ws/fleet.',
+  },
+  'server/lib/agent-model-backfill-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Wire test for the model backfill: drives /ws/fleet directly to prove the frames, not the function. Endpoint: /ws/fleet.',
+  },
+  'server/lib/conversation-search-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Wire test for conversation search over /ws/fleet. Endpoint: /ws/fleet.',
+  },
+  'server/lib/durable-source-wire.test.mjs': {
+    count: 2,
+    category: 'tooling',
+    reason: 'Durable source acceptance across the daemon socket: two connections because the case is a daemon reconnecting mid-operation. Endpoint: /ws/fleet-daemon.',
+  },
+  'server/lib/lifecycle-reanimate-authority-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Reanimate authority over the daemon socket -- the wire is the thing under test. Endpoint: /ws/fleet-daemon.',
+  },
+  'server/lib/manual-preamble-edit-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Manual preamble crossing the production daemon activity websocket and a history reconnect. Endpoint: /ws/fleet.',
+  },
+  'server/lib/operation-coalesce-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Operation coalescing over /ws/fleet: coalescing is a property of the wire, not of a function. Endpoint: /ws/fleet.',
+  },
+  'server/lib/read-receipt-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Read receipts over /ws/fleet. Endpoint: /ws/fleet.',
+  },
+  'server/lib/recording-authority.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Recording authority: needs a real fleet socket to exercise the token levels. Endpoint: /ws/fleet.',
+  },
+  'server/lib/short-image-reference-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Short image references over /ws/fleet. Endpoint: /ws/fleet.',
+  },
+  'server/lib/subscription-history-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Subscription history over /ws/fleet. Endpoint: /ws/fleet.',
+  },
+  'server/lib/unknown-codex-tool-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'An unknown Codex tool arriving over /ws/fleet and rendering without a handler for it. Endpoint: /ws/fleet.',
+  },
   // --- exceptions: protocols the fleet transport does not carry ------------
   'src/voice.mjs': {
     count: 2,

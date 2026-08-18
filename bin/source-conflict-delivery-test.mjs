@@ -65,8 +65,19 @@ try {
     },
   })
 
-  // 1. The conflict is in the person's own file, as real git markers.
-  assert.equal(readFileSync(main, 'utf8'), CONFLICTED, 'conflict written to the working copy')
+  // 1. The person's own file is UNTOUCHED. The merged version stays on the
+  //    server and they are told about it.
+  //
+  //    This assertion used to be the opposite -- it required the conflict to be
+  //    written into the working copy as git markers. cf6e30cf0 removed that
+  //    deliberately: it overwrote a file while its owner was editing it, which
+  //    is the one thing a sync system must never do. The test kept asserting
+  //    the removed behaviour, so it has been red on main ever since, and a red
+  //    test that encodes a bug invites the next person to "fix" the code back.
+  assert.equal(readFileSync(main, 'utf8'), 'mine after sync\n',
+    'the working copy must not be overwritten while its owner is editing it')
+  assert.ok(!readFileSync(main, 'utf8').includes('<<<<<<<'),
+    'no conflict markers may be written into a live file')
 
   // 2. No automatic retry. Re-sending the pre-merge text would have silently
   //    clobbered the peer whose work is inside those markers.
