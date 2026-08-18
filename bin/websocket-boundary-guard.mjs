@@ -151,10 +151,15 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Wire test for conversation search over /ws/fleet. Endpoint: /ws/fleet.',
   },
-  'server/lib/durable-source-wire.test.mjs': {
-    count: 2,
+  'server/lib/durable-source-wire-harness.mjs': {
+    count: 1,
     category: 'tooling',
-    reason: 'Durable source acceptance across the daemon socket: two connections because the case is a daemon reconnecting mid-operation. Endpoint: /ws/fleet-daemon.',
+    reason: 'The shared daemon-socket harness the durable source wire tests drive: it spawns a real unified-server child process and opens the one daemon connection they all reconnect and re-drive. The wire is the entire claim in these tests -- push-base-means-content puts the daemon\'s OWN composed source-change on this socket to prove a server accept deleted prose, and calling both ends in one process is precisely the proof that missed that bug for a night. Routing it through shared/fleet-transport.mjs would prove the library instead of the thing under test. Endpoint: /ws/fleet-daemon.',
+  },
+  'server/lib/durable-source-wire.test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Durable source acceptance across the daemon socket. One inline connection for the hello-ordering case, which has to send its own daemon-hello rather than take the harness\'s; the rest come from durable-source-wire-harness.mjs. Endpoint: /ws/fleet-daemon.',
   },
   'server/lib/lifecycle-reanimate-authority-wire.test.mjs': {
     count: 1,
