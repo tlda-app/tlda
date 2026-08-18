@@ -267,6 +267,15 @@ function textMatchesSearchExpression(row, textExpression) {
 // (statusLabels), re-exported here for the name-collision checks.
 export { PSEUDO_LABELS };
 
+// A daemon redelivers an envelope it did not see acked, so the ledger has to
+// outlive a reconnect -- but not a week of them. Env-overridable; days, because
+// that is the unit the decision is made in.
+const DAEMON_OUTBOX_LEDGER_RETENTION_MS =
+  Number(process.env.TLDA_DAEMON_OUTBOX_LEDGER_RETENTION_DAYS || 7) * 24 * 60 * 60 * 1000
+// And the sweep itself is time-boxed, so it never lands on a per-envelope path.
+const DAEMON_OUTBOX_LEDGER_PRUNE_INTERVAL_MS =
+  Number(process.env.TLDA_DAEMON_OUTBOX_LEDGER_PRUNE_INTERVAL_MS || 60 * 60 * 1000)
+
 export class FleetStore {
   constructor(dbPath, options = {}) {
     dbPath = dbPath || DB_PATH;
@@ -5212,6 +5221,30 @@ export class FleetStore {
 
   markDaemonOutboxProcessed(outboxId, type, processedAt) {
     this._daemonOutboxProcessedInsert.run(outboxId, type || 'unknown', processedAt);
+    this._pruneDaemonOutboxLedger();
+  }
+
+  // The at-most-once ledger is load-bearing -- a daemon redelivers an envelope
+  // it did not see acked, and this is how the server recognises one it already
+  // handled -- so it is pruned rather than removed. What it is not is permanent:
+  // no daemon redelivers an envelope from last week.
+  //
+  // It had never been pruned. Measured on the live database 2026-08-18:
+  // 6,376,523 rows, 621 MB, spanning 2026-07-10 to that moment. The table had a
+  // CREATE, a SELECT and an INSERT, and no DELETE anywhere in the tree.
+  //
+  // Pruning is time-boxed rather than per-insert: this runs on the store's
+  // worker thread, and a DELETE on every processed envelope would put the sweep
+  // on the hot path it is meant to keep clear.
+  _pruneDaemonOutboxLedger() {
+    const now = Date.now();
+    if (now - (this._lastOutboxLedgerPrune || 0) < DAEMON_OUTBOX_LEDGER_PRUNE_INTERVAL_MS) return;
+    this._lastOutboxLedgerPrune = now;
+    const cutoff = new Date(now - DAEMON_OUTBOX_LEDGER_RETENTION_MS).toISOString();
+    this._daemonOutboxProcessedPrune ||= this.db.prepare(
+      'DELETE FROM daemon_outbox_processed WHERE processed_at < ?');
+    const removed = this._daemonOutboxProcessedPrune.run(cutoff).changes;
+    if (removed > 0) console.log(`[fleet-store] pruned ${removed} daemon outbox ledger rows older than ${cutoff}`);
   }
 
   updateEventText(eventId, newText) {
