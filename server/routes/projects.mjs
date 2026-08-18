@@ -1075,7 +1075,27 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     })
     const manifest = normalizeSourceManifest(sourceManifest, pushContext)
     if (candidate.size !== manifest.length || manifest.some(path => !candidate.has(path))) {
-      return { status: 409, ok: false, error: authorityBefore.state === 'uninitialized' ? 'Bootstrap requires a complete source snapshot' : 'Proposed snapshot does not match sourceManifest', authority: authorityBefore }
+      // Name the difference. This rejection refuses the push whole and is
+      // permanent while the cause stands: bregman repeated this exact cycle four
+      // times in 2.5 hours on 2026-08-18 and none of Skip's edits reached the
+      // paper, because the message said only THAT the sets differ. Which way
+      // they differ is the entire diagnosis — a path the manifest declares and
+      // the snapshot lacks is a file the daemon never sent, while a path the
+      // snapshot holds and the manifest omits is one it should have deleted.
+      // Those are opposite bugs and the error read the same for both.
+      const undelivered = manifest.filter(path => !candidate.has(path))
+      const declaredPaths = new Set(manifest)
+      const undeclared = [...candidate.keys()].filter(path => !declaredPaths.has(path))
+      const sample = paths => paths.slice(0, 8).join(', ') + (paths.length > 8 ? `, +${paths.length - 8} more` : '')
+      const detail = [
+        `snapshot ${candidate.size} vs manifest ${manifest.length}`,
+        undelivered.length ? `declared but not in snapshot (${undelivered.length}): ${sample(undelivered)}` : null,
+        undeclared.length ? `in snapshot but undeclared (${undeclared.length}): ${sample(undeclared)}` : null,
+      ].filter(Boolean).join('; ')
+      const error = authorityBefore.state === 'uninitialized'
+        ? `Bootstrap requires a complete source snapshot — ${detail}`
+        : `Proposed snapshot does not match sourceManifest — ${detail}`
+      return { status: 409, ok: false, error, authority: authorityBefore }
     }
     // Bootstrap is the only consumer: `lifecycle.submit` is handed neither
     // `observedServerFiles` nor `observedSourceManifest` below, so on an
