@@ -201,5 +201,47 @@ assert.equal(fs.readFileSync(path.join(checkout, 'main.tex'), 'utf8'), 'staged b
 // and carries the refused revision along, rather than assuming it landed.
 assert.equal(await lifecycle.lastMirrored(), third.revision)
 
+// ---------------------------------------------------------------------------
+// A refused push is a thing he can look at.
+//
+// `submit` commits the incoming snapshot before it tests staleness, so a
+// refused push has always been a real commit and nothing about it was ever
+// lost. What it lacked was a ref: unreachable is invisible to its author, and
+// one `git gc` from actually being lost. Before this it lived in a rejection
+// payload on a server, which meant a diverged push looked to him exactly like
+// silence -- he writes and nothing happens.
+
+// Clear the staged conflict from the case above so the mirror can proceed.
+await git(checkout, ['reset', '--hard', 'HEAD'])
+
+const stale = await lifecycle.submit({
+  // Deliberately stale: this is what a second writer's push looks like.
+  expectedRevision: first.revision,
+  sourceManifest: ['main.tex'],
+  files: [{ path: 'main.tex', content: 'the paragraph he could not land\n' }],
+})
+assert.equal(stale.ok, false)
+assert.equal(stale.status, 'stale-base')
+assert.ok(stale.refusedRevision, 'a refusal must name the commit it refused')
+assert.equal(await lifecycle.lastRefused(), stale.refusedRevision)
+
+// The head did not move. A refusal is still a refusal.
+assert.equal((await lifecycle.readAuthority()).currentRevision, refusedRevision)
+
+// It rides the same bundle, and the daemon gives it a ref.
+const carrying = await lifecycle.mirrorPayload(refusedRevision)
+assert.equal(carrying.refusedRevision, stale.refusedRevision)
+const surfaced = await mirror.mirrorShadowRef({ project: 'paper', ...carrying, sourceRevision: refusedRevision })
+assert.equal(surfaced.refused, stale.refusedRevision)
+
+// And this is the whole point: he can read his own refused paragraph out of
+// his own checkout, with git, without anyone fetching him a payload.
+const { stdout: refusedText } = await git(checkout, ['show', 'refs/tlda/refused/HEAD:main.tex'])
+assert.equal(refusedText, 'the paragraph he could not land\n')
+
+// It is a pointer, not an application. HEAD is untouched by it.
+const { stdout: headText } = await git(checkout, ['show', 'HEAD:main.tex'])
+assert.notEqual(headText, refusedText)
+
 fs.rmSync(root, { recursive: true, force: true })
 console.log('a commit per accepted push: passed')

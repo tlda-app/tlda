@@ -4,6 +4,102 @@ The server owns the accepted source revision. A linked checkout is a peer:
 its daemon submits local changes against the last accepted revision and applies
 accepted changes from other peers. There is no last-writer-wins fallback.
 
+## A revision is a commit, and accepting is committing
+
+Each project has a bare git repository at `.source-lifecycle/git`. A revision is
+a commit in it: the tree is the manifest, a file is a blob, and the revision id
+is the commit sha. Four refs carry the state, and the refs *are* the state:
+
+| ref | means |
+| --- | --- |
+| `refs/tlda/source/<project>` | the accepted head |
+| `refs/tlda/applied/<bindingId>` | what a checkout has on disk |
+| `refs/tlda/mirrored/<project>` | the last revision a checkout took |
+| `refs/tlda/refused/<project>` | the last push the server refused |
+
+Advancing the head is a compare-and-swap, so two overlapping accepts cannot
+interleave into a half-applied state and the loser fails loudly rather than
+landing last and winning.
+
+**Accepting a push commits it, and that commit is mirrored into the author's
+checkout.** That is what versions their work: nothing has to remember to do it
+afterwards. Mirroring is driven by the accept and **not by a build** — the
+previous arrangement put the only mirror call in the tail of a successful build,
+so a paper that failed to build was a paper whose author's disk was never
+committed, and on 2026-08-18 that left three hours of somebody's prose living
+only in a working directory.
+
+Three consequences that are easy to get wrong:
+
+- **A revision id is not a function of its content.** A commit carries when it
+  happened and what it followed, so identical bytes accepted twice are two
+  revisions. Anything asking *do these say the same thing* — bootstrap's
+  reconciliation check, for one — compares manifests, not ids.
+- **Content is named by git's blob id everywhere**, in `shared/git-blob-id.mjs`.
+  The server's manifests, the daemon's materializer, the watcher's drift check
+  and the replica payload all have to agree, because a file that reads as
+  changed on one side and unchanged on the other becomes a whole-project push,
+  and a whole-project push is how passages get deleted.
+- **Revisions accepted before this keep their `sha256:` ids** and stay readable
+  at them. Nothing writes that shape any more, and the first accept after the
+  cutover carries their bytes into git, so no project needs a migration pass.
+  `revisionFileHash` converts a legacy entry into git's space before comparing —
+  without it, every untouched file on the one push crossing the cutover reads as
+  moved by both sides.
+
+### What the mirror does to a checkout someone is writing in
+
+The mirror compare-and-swaps the author's real branch, and driving it from the
+accept makes it fire far more often than a build did, so this is load-bearing
+rather than incidental:
+
+| in the checkout | what happens |
+| --- | --- |
+| clean | the branch advances to the accepted revision |
+| unstaged edit | the branch advances and records the **accepted** version; their file on disk is untouched and reads afterwards as an uncommitted modification |
+| staged conflicting change | **refused** — `validateTargetIndex` throws, the branch does not move, and `refs/tlda/mirrored` does not advance |
+
+Recording the accepted version rather than skipping the file is Skip's ruling,
+2026-08-11 19:41:53 EDT, asked in plain terms whether the snapshot should record
+the version that was built or skip the file: *"The version that was built,
+please."*
+
+**Nothing in the mirror writes a working-tree file.** The verbs it runs are
+`bundle`, `cat-file`, `commit-tree`, `fetch`, `hash-object`, `log`, `ls-files`,
+`ls-tree`, `read-tree`, `rev-parse`, `symbolic-ref`, `update-index`,
+`update-ref`, `write-tree`. `checkout`, `reset`, `restore`, `merge`, `switch`,
+`stash`, `clean` and `pull` appear nowhere — not in a fallback, not in an error
+handler. Preservation commits through a temporary index (`GIT_INDEX_FILE`), so
+the only write outside `.git`'s refs and objects is the git index, which exists
+to keep `git status` honest after HEAD moves. Known gap: if `refreshRealIndex`
+throws after the ref moved, the index is stale and `git status` misreports until
+the next successful mirror. That is confusion, not loss.
+
+This is why `mirrorPaused` is gone rather than repurposed. It existed because the
+build-era mirror committed the *shadow's* content, which lags the accepted source
+and **does not converge** — while a render was wedged it re-applied its stale copy
+on every build, and on 2026-08-17 four mirror commits took the same two changes
+out of bregman's HEAD. The accepted revision is the head, so the new path cannot
+be stale by construction, and anything newer arrives with the next accept.
+
+### A refused push is something its author can look at
+
+`submit` commits the incoming snapshot **before** it tests staleness, so a
+refused push has always been a real commit and nothing about it was ever lost.
+What it lacked was a ref. `refs/tlda/refused/<project>` names it, the mirror
+carries it — in its own refspec, because it is a *sibling* of the accepted
+commit rather than an ancestor and the head's fetch does not reach it — and the
+daemon writes it to `refs/tlda/refused/HEAD` in the checkout.
+
+So `git diff HEAD refs/tlda/refused/HEAD` exists, instead of the author's work
+sitting in a rejection payload on a server where the one person who can fix it
+cannot see it. **It is a pointer, not an application**: the refusal stands and
+HEAD is untouched.
+
+It is mirrored **on the refusal**, not on the next accept. A stalemate is a run
+of refusals with no accept between them, so a refused revision waiting for an
+accept to carry it would wait exactly as long as the author was stuck.
+
 ## Server authority
 
 Each project authority is in exactly one of these states:
@@ -280,6 +376,41 @@ side — neither side's text may be lost.
 Until 2026-08-18 this gate read *"the linked checkout must contain both sides as
 conflict markers."* No implementation could have passed it since `cf6e30cf0`,
 and nothing complained.
+
+Added 2026-08-18 with the move to commits:
+
+- `bin/a-commit-per-accepted-push-test.mjs`: accepting a push commits the
+  author's checkout with no build involved, one commit per push, and the second
+  bundle carrying only what the checkout lacks. It also holds the three
+  dirty-checkout rows above, the refused push readable at
+  `refs/tlda/refused/HEAD`, and the forward-only rule for
+  `refs/tlda/mirrored`.
+- `bin/mirror-failure-visible-test.mjs`: a failed mirror still reaches
+  `SyncErrorPill`, and does **not** throw — a push must not be rejected because
+  a laptop is asleep.
+
+`a-commit-per-accepted-push` crosses the accept producing a bundle, the bundle
+format, and the daemon receiver applying it to a real repository. It does not
+cross the WebSocket: the accept path hands the same payload to the same
+`mirror-shadow-ref` sender the build path used, and that transport is covered by
+`bin/shadow-mirror-rpc-adapter-test.mjs`.
+
+**Known red, and not from this work:** `bin/shadow-mirror-rpc-adapter-test.mjs`
+fails on `main`. It expects the RPC params without `sourceRevision` and
+`acceptSeq`, which the adapter has been sending for some time. Verified on
+2026-08-18 by running `main`'s own copy of the module and the test in isolation.
+
+**`bin/source-conflict-delivery-test.mjs` is green as of 2026-08-18.** This
+section described it as red since `cf6e30cf0` and needing an update to the
+current contract. Somebody did that and the note outlived the repair — the same
+failure as the unreachable gate above, pointing the other way, and worse in one
+respect: a stale red hides a real one.
+
+**There is a second live gate, for versioning rather than for conflicts:** the
+author's checkout gains a commit for work they did that never built. Start from
+a project whose build is failing, edit a source file on the linked machine, and
+let the push land. `git log` in the checkout must show a commit carrying that
+edit, and their working copy must be untouched.
 
 ## A push cannot carry a file larger than one request
 

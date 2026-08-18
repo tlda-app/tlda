@@ -1513,6 +1513,18 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         // cannot, to report that the note-taking failed.
         console.error(`[${name}] could not record a stale-base refusal: ${recordError.message}`)
       }
+      // And put the refused commit where the person who made it can see it.
+      //
+      // Riding the next accepted push would be simpler and would fail in
+      // exactly the case this is for: a stalemate is a run of refusals with no
+      // accept between them, so a refused revision waiting for an accept to
+      // carry it would wait forever. Mirroring on the refusal is what makes a
+      // stuck author's own work visible to them while they are stuck.
+      const refused = e.lifecycleResult.refusedRevision
+      if (refused) {
+        void mirrorAcceptedRevision(name, lifecycle, (await lifecycle.readAuthority()).currentRevision, null)
+          .catch(error => console.error(`[${name}] could not surface refused ${refused.slice(0, 7)}: ${error.message}`))
+      }
     }
     console.error(`[${name}] Source transaction failed: ${e.message}`)
     return {

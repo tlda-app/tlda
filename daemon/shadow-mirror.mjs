@@ -25,7 +25,7 @@ async function gitRetryOnLock(fn, retries = 3, delayMs = 500) {
 }
 
 export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef = null }) {
-  async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq }) {
+  async function mirrorShadowRef({ project, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq, refusedRevision = null }) {
     if (!project) throw new Error('missing project')
     if (!/^[0-9a-f]{40}$/i.test(String(hash || ''))) throw new Error(`invalid shadow hash: ${hash}`)
     if (!bundleBase64) throw new Error('missing shadow bundle')
@@ -48,8 +48,37 @@ export function createShadowMirror({ getSourceDir, log, beforePreserveUpdateRef 
       await execFileP('git', ['cat-file', '-e', `${hash}^{commit}`], { cwd: sourceDir, timeout: 5000 })
       const preservation = await preserveAuthorCommit({ sourceDir, project, hash, sourceScope, log, beforeUpdateRef: beforePreserveUpdateRef })
       await gitRetryOnLock(() => execFileP('git', ['update-ref', 'refs/tlda/shadow/HEAD', hash], { cwd: sourceDir, timeout: 5000 }))
+
+      // A push the server refused is carried in the same bundle, and it gets a
+      // ref here for one reason: so the person who made it can see it. Without
+      // one it is an unreachable commit — not lost, but invisible to them and
+      // one `git gc` from actually being lost.
+      //
+      // It is deliberately NOT merged, applied, or offered as a choice. The
+      // refusal stands; this is `git diff HEAD refs/tlda/refused/HEAD` existing
+      // at all, instead of their work sitting in a rejection payload on a
+      // server where the one person who can fix it cannot look at it.
+      let refused = null
+      if (refusedRevision && /^[0-9a-f]{40}$/i.test(String(refusedRevision))) {
+        try {
+          // Fetched separately, because it is a SIBLING of the accepted commit
+          // rather than an ancestor: the fetch above carries only what is
+          // reachable from the head, so a refused push is in the bundle's
+          // objects and reachable from nothing. Naming it in its own refspec is
+          // what actually brings it across.
+          await gitRetryOnLock(() => execFileP('git', ['fetch', bundlePath, `+${refusedRevision}:refs/tlda/refused/HEAD`], { cwd: sourceDir, timeout: 30000 }))
+          refused = refusedRevision
+        } catch (e) {
+          // Never let this cost the mirror. The accepted revision reaching their
+          // checkout is the thing that matters; a pointer to a refused one is
+          // strictly extra, and failing the whole checkpoint over it would
+          // trade the important half for the informative half.
+          log.warn(`could not record refused ${project}@${String(refusedRevision).slice(0, 7)}: ${e.message}`)
+        }
+      }
+
       log.info(`mirrored ${project}@${hash7} into ${sourceDir}`)
-      return { ok: true, project, hash, sourceRevision, acceptSeq, sourceDir, tag: `shadow/${hash7}`, preservation }
+      return { ok: true, project, hash, sourceRevision, acceptSeq, sourceDir, tag: `shadow/${hash7}`, preservation, refused }
     } finally {
       try {
         fs.rmSync(bundlePath, { force: true })

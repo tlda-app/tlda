@@ -700,12 +700,17 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const store = await sourceGit()
       const record = await revision(id)
       if (!record) return null
+      const refusedRevision = await store.refused(project)
       return {
         hash: id,
-        bundleBase64: await store.bundleSince(project, id),
+        bundleBase64: await store.bundleSince(project, id, { includeRefused: true }),
         sourceScope: record.manifest,
+        refusedRevision,
       }
     },
+
+    /** The last refused push, and the record that it was refused. */
+    lastRefused: async () => (await sourceGit()).refused(project),
 
     /** The last revision a daemon took, and the record that it did. */
     lastMirrored: async () => (await sourceGit()).mirrored(project),
@@ -1007,7 +1012,14 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
           atomicJson(statePath, authority, fault)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
-        return { ok: false, status: 'stale-base', authority: before, evidence }
+        // The refused push is already a commit — `persistSnapshot` ran before
+        // staleness was tested — so nothing about it is lost. What it lacks is
+        // a ref, and an unreachable commit is one `git gc` from gone and
+        // invisible to its author meanwhile. Naming it is the difference
+        // between "we still have your work" and "you can look at your work".
+        const store = await sourceGit()
+        await store.markRefused(project, incoming.id, await store.refused(project))
+        return { ok: false, status: 'stale-base', authority: before, evidence, refusedRevision: incoming.id }
       }
       await advanceSourceHead(incoming.id, before.currentRevision)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }

@@ -232,13 +232,17 @@ export function createSourceGitStore({ gitDir }) {
    * The bundle names a ref rather than a bare sha: `git bundle` refuses to
    * create a bundle that carries no refs, so a sha alone writes nothing.
    */
-  async function bundleSince(project, revision) {
+  async function bundleSince(project, revision, { includeRefused = false } = {}) {
     const have = await readRef('mirrored', project)
     const ref = refFor('source', project)
     const bundlePath = `${gitDir}/tlda-bundle-${process.pid}-${revision.slice(0, 7)}`
     const range = have && await isAncestor(have, revision)
       ? [`${have}..${ref}`]
       : [ref]
+    // A refused push is a real commit that never became the head. It rides the
+    // same bundle so the person who made it can look at it, rather than living
+    // only in a rejection payload on a server.
+    if (includeRefused && await readRef('refused', project)) range.push(refFor('refused', project))
     try {
       await git(['bundle', 'create', bundlePath, ...range])
       return (await readFile(bundlePath)).toString('base64')
@@ -280,5 +284,11 @@ export function createSourceGitStore({ gitDir }) {
 
     mirrored: project => readRef('mirrored', project),
     markMirrored: (project, revision, expected) => moveRef('mirrored', project, revision, expected),
+
+    // The last push this project refused. Not a lifecycle phase like the others
+    // — it is the pointer that makes a refused commit reachable, and reachable
+    // is the whole difference between "nothing was lost" and "he can see it".
+    refused: project => readRef('refused', project),
+    markRefused: (project, revision, expected) => moveRef('refused', project, revision, expected),
   }
 }
