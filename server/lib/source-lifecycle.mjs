@@ -731,6 +731,64 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     },
 
     /**
+     * Put bytes in the store and return the id they can be referenced by.
+     *
+     * **This is what makes a large project expressible on the JSON carrier.**
+     * A snapshot is atomic, so it cannot be batched — and a bootstrap has no
+     * previous revision to carry anything forward from, so every byte is
+     * content. The classroom book is 1492 files and ~525MB; as one JSON body
+     * that is base64 in a string in memory before it is even parsed.
+     *
+     * Uploading blobs first turns one enormous request into many bounded ones
+     * and a small manifest of `{path, sha256}` references — the SAME reference
+     * shape `carryForward` already produces, so the accept needs no new case.
+     * An orphan blob nobody references is `git gc`'s problem rather than ours.
+     */
+    async putBlob(bytes) {
+      const store = await sourceGit()
+      return { sha256: await store.writeBlob(bytes), size: bytes.length }
+    },
+
+    /**
+     * A complete snapshot built from the paths that actually changed.
+     *
+     * The accept requires `files` to cover `sourceManifest` exactly — the
+     * manifest IS the project, so a path that left it is gone because nobody
+     * named it. But most callers only know what changed: the room checkpoint
+     * sends one file, the CLI sends a batch, and both declare a manifest far
+     * wider than that.
+     *
+     * Every unnamed path is carried forward from the current revision **by
+     * reference** — `{path, sha256}` rather than bytes — which is why an
+     * unchanged file costs nothing on the next push. Without this, a caller's
+     * only compliant push is the whole project every time: on the 1492-file
+     * classroom book, every file on every flush.
+     *
+     * **This does not soften the manifest rule and must not be made to.**
+     * Removal is still expressed by a path leaving the MANIFEST. What is filled
+     * in here is only the difference between "I did not change this" and "this
+     * is gone", which are the two things the old path kept confusing.
+     *
+     * A manifest path that is neither supplied nor in the current revision is
+     * an error rather than an empty file — that is a caller declaring something
+     * it never sent, which is the shape that cost bregman four refused pushes
+     * in 2.5 hours.
+     */
+    async carryForward(sourceManifest, changed = []) {
+      const supplied = new Map(changed.map(file => [file.path, file]))
+      const current = (await state()).currentRevision
+      const held = new Map(
+        current ? ((await revision(current))?.files || []).map(entry => [entry.path, entry]) : [],
+      )
+      return sourceManifest.map(path => {
+        if (supplied.has(path)) return supplied.get(path)
+        const entry = held.get(path)
+        if (!entry) throw new Error(`${path} is declared in sourceManifest but was neither sent nor already held`)
+        return { path, sha256: entry.sha256, size: entry.size }
+      })
+    },
+
+    /**
      * Take a bundle a checkout has proposed and accept it iff it fast-forwards.
      *
      * **This is the accept path with the machinery removed.** There is no
