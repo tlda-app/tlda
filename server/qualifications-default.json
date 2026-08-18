@@ -7,7 +7,6 @@
     { "tool": "playwright/*", "requires": ["app-testing"] },
     { "tool": "tlda/delegate", "requires": ["point-dont-paraphrase", "manager-team-stewardship"] },
     { "tool": "Agent", "requires": ["subagents"] },
-    { "tool": "tlda/input_scratch", "requires": ["where-to-write"] },
     { "tool": "tlda/chat", "requires": ["explain-math-concretely"], "condition": "math-heavy" }
   ]
 }
