@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// The server accepted the revision and told the pusher it failed.
+// The server must never accept a revision and tell the pusher it failed.
 //
 // `submit()` moves the ref, then writes `authority.json`, then returns. A write
 // failure between the first and the second leaves the project **accepted** —
@@ -19,9 +19,15 @@
 // server and terminal for the daemon, because the daemon is not reading the ref
 // — it is reading the answer.
 //
+// The fix is not a reordering. Writing the JSON first would have it claim a
+// revision the ref does not hold — the same defect pointing the other way.
+// There is no correct order between two records, which is the argument for
+// there being one.
+//
 // What this covers: the SERVER-side window, in process, driven by the store's
-// own fault hook. What it does not cover: a daemon actually pinning behind it,
-// which needs the two processes and is the next thing to prove.
+// own fault hook. What it does not cover: a daemon pinning behind it across two
+// processes. Verified by counterfactual rather than assumed — with the accept
+// no longer surviving the failed write, this file goes red.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -58,25 +64,22 @@ const acceptedRevision = first.authority.currentRevision
 
 // The push the server takes and reports as failed.
 failAuthorityWrite = true
-let reportedToTheDaemon = null
-try {
-  await store.submit({ ...push('draft two\n'), expectedRevision: acceptedRevision })
-  assert.fail('the authority write was supposed to fail')
-} catch (error) {
-  reportedToTheDaemon = error.message
-}
+// **THE FIX: the pusher is told the truth.** The ref has already moved and the
+// ref is what readAuthority believes, so the revision IS accepted. Losing the
+// acceptSeq increment is recoverable; reporting a failure for a push the
+// project has taken is not, because the pusher's next base is what it was told.
+const result = await store.submit({ ...push('draft two\n'), expectedRevision: acceptedRevision })
 failAuthorityWrite = false
 
-assert.match(reportedToTheDaemon, /no space left on device/, 'the pusher is told the push failed')
+assert.equal(result.ok, true, 'an accept survives a failed authority write')
+assert.equal(result.status, 'accepted')
+const secondRevision = result.authority.currentRevision
 
-// **And the project accepted it anyway.** The ref moved before the write that
-// failed, and the ref is what `readAuthority` reads.
+// The project advanced, and the pusher was told which revision it advanced to —
+// which is the whole difference between recoverable and terminal.
 const authorityAfter = await store.readAuthority()
-assert.notEqual(
-  authorityAfter.currentRevision,
-  acceptedRevision,
-  'THE WINDOW: the project advanced to a revision whose pusher was told it failed',
-)
+assert.equal(authorityAfter.currentRevision, secondRevision, 'the pusher was told the revision the project actually holds')
+assert.notEqual(authorityAfter.currentRevision, acceptedRevision, 'and the project did advance')
 const gitDir = path.join(root, 'git')
 const ref = spawnSync('git', ['--git-dir', gitDir, 'rev-parse', 'refs/tlda/source/paper'], { encoding: 'utf8' }).stdout.trim()
 assert.equal(authorityAfter.currentRevision, ref, 'the ref is the head the project now holds')
@@ -87,16 +90,20 @@ assert.equal(authorityAfter.currentRevision, ref, 'the ref is the head the proje
 const storedJson = JSON.parse(fs.readFileSync(path.join(root, 'authority.json'), 'utf8'))
 assert.equal(storedJson.currentRevision, acceptedRevision, 'the JSON never learned about the accepted revision')
 
-// **Now the consequence.** A pusher that believed its own error keeps pushing
-// against the revision it was last told about — and every one of those is
-// stale-base, forever, because the head has moved and nothing will tell it.
-for (let attempt = 0; attempt < 3; attempt++) {
-  const stale = await store.submit({ ...push(`draft three, attempt ${attempt}\n`), expectedRevision: acceptedRevision })
-  assert.equal(stale.ok, false, 'a push against the last revision it was told about is refused')
-  assert.equal(stale.status, 'stale-base')
-}
+// **And the pusher is not pinned.** Pushing against the revision it was told
+// about is accepted, because that is the revision the project holds. Before the
+// fix this was stale-base forever: the pusher believed its own error, kept
+// pushing against a revision the head had moved past, and nothing existed that
+// would ever tell it otherwise -- one writer, no collaborator, no way out.
+const next = await store.submit({ ...push('draft three\n'), expectedRevision: secondRevision })
+assert.equal(next.ok, true, 'the pusher carries on from what it was told')
+
+// The stale JSON is the only residue, and it is harmless because nothing reads
+// it for currentRevision. That is the two-records problem surviving as an
+// inconsistency rather than as a deadlock -- and it is why the record should go
+// rather than be ordered more carefully.
 
 // And it is not a merge, a collaborator, or a second writer: there is one
 // pusher in this whole file.
-console.log('an accept the daemon is never told about: reproduced')
+console.log('an accept the daemon is never told about: fixed')
 fs.rmSync(root, { recursive: true, force: true })
