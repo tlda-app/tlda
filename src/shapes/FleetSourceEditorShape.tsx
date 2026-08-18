@@ -951,7 +951,10 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setSourceHasConflictMarkers(hasConflictMarkers(nextFullText))
       sourceWindowRef.current = sourceWindowForText(nextFullText, sourceWindowRef.current.targetLine)
       setStatus('synced')
-      setStatusText(payload?.building ? 'Synced; build queued' : 'Synced')
+      // `building` was the old route's word for it. The accept names what it
+      // actually ran instead, and a build is one of the named effects — read the
+      // gone field and this line silently stops ever saying "build queued".
+      setStatusText(payload?.postAcceptEffects?.includes('build') ? 'Synced; build queued' : 'Synced')
     } catch (err: any) {
       if (seq !== saveSeqRef.current) return
       // A conflict is not an error to report — it is work to do. Put the merged
