@@ -385,10 +385,17 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
     for (const lifecycle of Object.values(journal.revisionLifecycle || {})) {
       const replicas = lifecycle?.replicas
       if (!replicas) continue
+      // Age from when the REVISION was accepted, not from the replica's
+      // updatedAt. A stuck replica is re-sent by the fan-out on every accepted
+      // revision, and each attempt refreshes updatedAt -- so a replica that has
+      // never once succeeded looks permanently fresh and never ages out.
+      // Measured against live data 2026-08-18: the 54 MB replica had been
+      // pending since 06:55 the previous morning and its updatedAt was minutes
+      // old. Expiring on updatedAt reclaimed nothing from it.
+      const acceptedAt = Date.parse(lifecycle.acceptedAt || '') || 0
       for (const [bindingId, replica] of Object.entries(replicas)) {
         if (replica?.state !== 'pending' || !('command' in replica)) continue
-        const seen = Date.parse(replica.updatedAt || '') || 0
-        if (seen === 0 || seen > cutoff) continue
+        if (acceptedAt === 0 || acceptedAt > cutoff) continue
         const { command, ...carried } = replica
         replicas[bindingId] = {
           ...carried,

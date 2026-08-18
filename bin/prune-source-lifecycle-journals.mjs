@@ -56,6 +56,10 @@ for (const path of journals) {
   for (const lifecycle of Object.values(journal.revisionLifecycle || {})) {
     const replicas = lifecycle?.replicas
     if (!replicas) continue
+    // Age from the revision's acceptedAt, not the replica's updatedAt: every
+    // fan-out attempt refreshes updatedAt, so a replica that has never once
+    // succeeded looks permanently fresh.
+    const acceptedAt = Date.parse(lifecycle.acceptedAt || '') || 0
     for (const [bindingId, replica] of Object.entries(replicas)) {
       if (!replica || !('command' in replica)) continue
       const { command, ...carried } = replica
@@ -65,8 +69,7 @@ for (const path of journals) {
         changed = true
         continue
       }
-      const seen = Date.parse(replica.updatedAt || '') || 0
-      if (seen !== 0 && seen <= cutoff) {
+      if (acceptedAt !== 0 && acceptedAt <= cutoff) {
         replicas[bindingId] = {
           ...carried,
           state: 'expired',

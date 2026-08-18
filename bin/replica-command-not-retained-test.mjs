@@ -134,7 +134,12 @@ try {
     // Age it on disk, the way seventeen hours would.
     const jp = join(dir, 'operations.json')
     const j = JSON.parse(readFileSync(jp, 'utf8'))
-    j.revisionLifecycle[rev].replicas.stuck.updatedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+    // Age the REVISION, and deliberately leave the replica's updatedAt fresh --
+    // that is exactly the live shape: the fan-out re-sends a stuck replica and
+    // refreshes its updatedAt every time, so ageing on updatedAt reclaims
+    // nothing. Measured against the live volume 2026-08-18.
+    j.revisionLifecycle[rev].acceptedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+    j.revisionLifecycle[rev].replicas.stuck.updatedAt = new Date().toISOString()
     writeFileSync(jp, JSON.stringify(j))
 
     const store4 = createSourceLifecycleStore({ root: dir, context: { referencedRoots: ['main.tex'] } })
