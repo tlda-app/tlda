@@ -108,7 +108,7 @@ export function createSourceRoomDaemon({
   readProject,
   sourceLifecycleStore,
   readClientSourceManifest,
-  processProjectPush,
+  acceptSourceSnapshot,
   // How the room says it is holding an edit that never reached the paper, and
   // that it has stopped. Injected like everything else this file touches: the
   // room tests stand up their own project store, so importing the real
@@ -119,6 +119,16 @@ export function createSourceRoomDaemon({
   pushDelayMs = 250,
   log = console,
 }) {
+  // **Loud, because the rename makes an old stub inert rather than wrong.**
+  // This used to take `processProjectPush`, and every caller that still passes
+  // that key would otherwise hand over a stub nothing reads — the room would
+  // fall through to whatever the real accept does, against a store the test
+  // never set up, while the test looked wired. That is the reconstruction
+  // hazard this repo names: a dependency assembled from named keys silently
+  // drops the one nobody renamed.
+  if (typeof acceptSourceSnapshot !== 'function') {
+    throw new Error('createSourceRoomDaemon requires acceptSourceSnapshot (it previously took processProjectPush)')
+  }
   const rooms = new Map()
 
   function roomKey(project, filePath) {
@@ -331,14 +341,29 @@ export function createSourceRoomDaemon({
       submission.sourceManifest = sourceManifest
       room.sourceManifest = sourceManifest
       persistRoom(room)
-      const result = await processProjectPush(room.project, {
+      // The room runs in-process with the lifecycle store, so it calls the
+      // accept directly rather than manufacturing a request for the server to
+      // send itself. It sends ONE file with a whole-project manifest; the
+      // accept carries every other path forward by reference, which is what
+      // makes a per-keystroke checkpoint cost one blob instead of the project.
+      const response = await acceptSourceSnapshot(room.project, {
         files: [{ path: room.filePath, content: submission.content }],
         sourceManifest,
         editedBy: sourceRoomDaemonKey(room.project),
-        sourceDaemonKey: sourceRoomDaemonKey(room.project),
         requestId: submission.requestId,
         expectedRevision: submission.expectedRevision,
       })
+      // Named rather than spread wholesale: the branches below read
+      // `lifecycleStatus`, `authority.currentRevision` and `status`-as-HTTP,
+      // and the new shape spells the first two differently. Mapping them here
+      // keeps the conflict handling -- which is what puts merge markers in
+      // front of the person -- reading the fields it was written against.
+      const result = {
+        ...response.body,
+        status: response.status,
+        lifecycleStatus: response.body.status ?? null,
+        authority: { currentRevision: response.body.currentRevision ?? response.body.sourceRevision ?? null },
+      }
       if (result.ok) {
         if (typeof result.sourceRevision === 'string') room.heldRevision = result.sourceRevision
         room.submission = null
