@@ -356,8 +356,17 @@ function DocumentApp() {
       return
     }
 
-    // If project is missing, still building, or has no pages yet, poll until ready
-    if (!config || config.buildStatus === 'building' || config.pages === 0) {
+    // If project is missing or has no pages yet, poll until ready.
+    //
+    // A build in flight is NOT an empty document. `pages === 0` means nothing
+    // has been rendered yet and there is genuinely nothing to show; `building`
+    // with pages > 0 means the previous render is still on disk and still being
+    // served, and blanking it for a spinner is the app lying about its own
+    // state. Skip writes continuously, so every save rebuilds an 87-page
+    // document and this gate caught most of his navigations:
+    // "it is really hard to work because your app doesnt display what is on
+    // the filesystem".
+    if (!config || config.pages === 0) {
       if (!config) {
         setState({ phase: 'error', message: `Document "${projectName}" not found.`, errorType: 'not-found' })
         return
@@ -370,7 +379,10 @@ function DocumentApp() {
           if (gen !== loadGeneration) return
           try {
             const c = await fetchDocConfig(projectName)
-            if (c && c.pages > 0 && c.buildStatus !== 'building') break
+            // Pages existing is the whole condition now: the moment there is a
+            // render to show, show it, rather than waiting for the build that
+            // produced it to also finish reporting.
+            if (c && c.pages > 0) break
           } catch (e) {
             if (e instanceof Error && e.message.includes('Authentication')) {
               setState({ phase: 'error', message: e.message })
