@@ -38,8 +38,24 @@ function handlerWith({ daemons, send, last = 'air:stable' }) {
   })
   const result = await handler(args)
   assert.deepEqual(calls.map(c => c.daemonKey).sort(), ['air:stable', 'mini:stable'])
-  assert.deepEqual(calls[0].payload, { project: 'balancing-act', hash: args.hash, bundleBase64: 'bundle-payload', sourceScope })
+  assert.deepEqual(calls[0].payload, {
+    project: 'balancing-act', hash: args.hash, bundleBase64: 'bundle-payload', sourceScope,
+    sourceRevision: undefined, acceptSeq: undefined, refusedRevision: null,
+  })
   assert.equal(calls[0].payload.sourceScope, sourceScope, 'sourceScope passes through by reference')
+
+  // **Every field the daemon consumes must appear here.** This adapter rebuilds
+  // the params object field by field rather than spreading, so a field added at
+  // both ends and not added in the middle is produced, consumed, and silently
+  // dropped in between — which is exactly what happened to `refusedRevision` on
+  // 2026-08-18, and what `sourceRevision` and `acceptSeq` had done quietly
+  // before that, leaving this test red on `main` while nobody looked.
+  //
+  // Asserting the WHOLE payload rather than the fields someone remembered is
+  // what makes the next omission fail here instead of in production.
+  const consumed = ['project', 'hash', 'bundleBase64', 'sourceScope', 'sourceRevision', 'acceptSeq', 'refusedRevision']
+  assert.deepEqual(Object.keys(calls[0].payload).sort(), [...consumed].sort(),
+    'the daemon-facing params must carry exactly what daemon/shadow-mirror.mjs destructures')
   assert.deepEqual(result.mirrored.sort(), ['air:stable', 'mini:stable'])
   assert.deepEqual(result.declined, [])
 }
