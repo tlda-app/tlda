@@ -61,7 +61,6 @@ import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner } from '../lib/source-sync-conflicts.mjs'
-import { sourceActivityPayload } from '../lib/source-activity-payload.mjs'
 
 const router = Router()
 const execFileAsync = promisify(execFile)
@@ -718,16 +717,6 @@ router.get('/:name/files', requireRead, async (req, res) => {
 router.get('/:name/source-authority', requireRead, async (req, res) => {
   try { res.json((await sourceLifecycleStore(req.params.name)).readAuthority()) }
   catch (e) { res.status(404).json({ error: e.message }) }
-})
-
-router.get('/:name/source-activity', requireRead, async (req, res) => {
-  const project = await readProject(req.params.name)
-  if (!project) return res.status(404).json({ error: 'Project not found' })
-  const file = typeof req.query.file === 'string' ? req.query.file.replace(/^\.\//, '') : ''
-  if (!file) return res.status(400).json({ error: 'file is required' })
-  // Read once, when a viewer opens the file. Changes after that arrive as
-  // signal:source-activity on the doc room; nobody polls this.
-  res.json(await sourceActivityPayload(req.app?.locals?.fleetStore, req.params.name, file))
 })
 
 // Read a specific source file's content

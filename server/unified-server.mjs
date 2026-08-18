@@ -63,8 +63,7 @@ import { initProjectStore, listProjects, readProject, updateProject, getProjects
 import { projectRevisionStatus } from './lib/source-lifecycle.mjs'
 import { clearSourceSyncConflicts, clearSourceSyncRefusal, describeStuckEntry, recordSourceSyncConflicts, recordSourceSyncRefusal, sourceConflictOwner, staleSourceSyncEntries } from './lib/source-sync-conflicts.mjs'
 import { createSourceRoomDaemon } from './lib/source-room-daemon.mjs'
-import { clearSourceEditsForAgent, onSourceEditActivityChange, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
-import { sourceActivityPayload } from './lib/source-activity-payload.mjs'
+import { clearSourceEditsForAgent, recordSourceEditActivity, recordSourceEditTurnEnded } from './lib/source-edit-activity.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
@@ -4820,25 +4819,6 @@ app.use('/docs', (req, res, next) => {
 app.locals.fleetStore = fleetStore
 app.locals.sendDaemonEphemeral = sendDaemonEphemeral
 
-// Push the editor set when it changes, rather than answering the same question
-// once a second forever. BuildProgressPill polled /source-activity every 1000ms
-// per open source file; the question only has a new answer when an agent starts
-// or stops editing, which is exactly when this fires.
-function announceSourceActivity(project, file) {
-  void (async () => {
-    try {
-      broadcastSignal(`doc-${project}`, 'signal:source-activity', await sourceActivityPayload(fleetStore, project, file))
-    } catch (e) {
-      // Best-effort, and deliberately swallowed: this runs detached from the
-      // request and the edit that triggered it is already done. Rethrowing here
-      // reaches nobody except the unhandled-rejection handler, and a failed
-      // notification must not take down the server that accepted the edit. The
-      // cost of losing one is a pill that is stale until the next edit.
-      console.error(`[source-activity] broadcast failed for ${project}/${file}: ${e.message}`)
-    }
-  })()
-}
-onSourceEditActivityChange(({ project, file }) => announceSourceActivity(project, file))
 
 app.use('/api/projects', projectRoutes)
 // Constructed here, not at import: a module-level router opened its database
@@ -9268,11 +9248,7 @@ async function handleDaemonWsMessage(ws, msg) {
         preambleRef ? { ...msg, preambleRef } : msg,
         { serverReceivedAtMs, serverBroadcastQueuedAtMs },
       )
-      const storedActivity = await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
-      // lastSourceFileChange() reads the row that was just written, so this edge
-      // has to be announced here rather than inside recordSourceEditActivity --
-      // from there the query runs before the insert and answers one edit stale.
-      if (sourceEditActivity && msg.project && msg.sourceFile) announceSourceActivity(msg.project, msg.sourceFile)
+      await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
     } catch (e) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e

@@ -1,16 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useEditor } from 'tldraw'
-import { onBuildProgressSignal, onSourceActivitySignal } from '../useYjsSync'
-import { appendToken } from '../authToken'
+import { onBuildProgressSignal } from '../useYjsSync'
 import type { SvgDocument } from '../svgDocumentLoader'
 import { buildProgressLabel } from './build-progress-label.mjs'
+import { sourceActivityFromEvents } from './source-activity-from-events'
+import { useFleetEvents } from '../fleet-data-adapter'
+import { getAgents } from '../fleet/fleet-data.mjs'
 import './BuildProgressPill.css'
-
-type SourceActivity = {
-  editors: Array<{ id: string; name: string }>
-  lastChangedAt: number | null
-  lastChangedBy: string | null
-}
 
 function timeLabel(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(timestamp)
@@ -23,7 +19,6 @@ export function BuildProgressPill({ document }: { document: SvgDocument }) {
   const [visible, setVisible] = useState(false)
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [sourceFile, setSourceFile] = useState<string | null>(null)
-  const [sourceActivity, setSourceActivity] = useState<SourceActivity | null>(null)
 
   useEffect(() => {
     const read = () => {
@@ -36,41 +31,21 @@ export function BuildProgressPill({ document }: { document: SvgDocument }) {
     return editor.store.listen(read, { scope: 'session', source: 'all' })
   }, [document, editor])
 
-  useEffect(() => {
-    if (!sourceFile) {
-      setSourceActivity(null)
-      return
-    }
-    let cancelled = false
-    // Once, for the answer that already exists: a file nobody has touched in an
-    // hour still has a last-changed-by, and no signal is coming to say so.
-    // Every change after this arrives on the doc room -- this used to ask the
-    // same question every 1000ms, per open source file, forever.
-    const read = async () => {
-      try {
-        const url = appendToken(`/api/projects/${encodeURIComponent(document.name)}/source-activity?file=${encodeURIComponent(sourceFile)}`)
-        const response = await fetch(url)
-        if (!response.ok) return
-        const activity = await response.json()
-        if (!cancelled) setSourceActivity(activity)
-      } catch { /* the first signal for this file repairs a failed initial read */ }
-    }
-    void read()
-    const stop = onSourceActivitySignal((signal) => {
-      // The room is per document, not per file, so a sibling file's edits
-      // arrive here too.
-      if (cancelled || signal.file !== sourceFile) return
-      setSourceActivity({
-        editors: signal.editors || [],
-        lastChangedAt: signal.lastChangedAt,
-        lastChangedBy: signal.lastChangedBy,
-      })
-    })
-    return () => {
-      cancelled = true
-      stop()
-    }
-  }, [document.name, sourceFile])
+  // Who is editing this file, and who last changed it -- read off the events the
+  // client already receives. Skip: "you can just push to the pill like we push
+  // to chat", "it's just a different filter on events".
+  //
+  // This replaced a /:name/source-activity route polled every 1000ms per open
+  // file, and then a bespoke signal:source-activity broadcast that was a second
+  // push mechanism beside the one already here. Both are deleted.
+  const events = useFleetEvents()
+  const sourceActivity = useMemo(() => {
+    if (!sourceFile) return null
+    const agents = getAgents() || []
+    const nameOf = (id: string) =>
+      agents.find((a: any) => a?.id === id)?.friendly_name || id
+    return sourceActivityFromEvents(events, document.name, sourceFile, nameOf)
+  }, [events, document.name, sourceFile])
 
   useEffect(() => {
     return onBuildProgressSignal((signal) => {

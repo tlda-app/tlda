@@ -120,11 +120,6 @@ const ALLOWED = {
   // shipped both ends of a severed wire more than once while every unit test
   // stayed green.
 
-  'bin/source-activity-push-wire-test.mjs': {
-    count: 1,
-    category: 'tooling',
-    reason: 'Wire proof for the source-activity push: connects a real daemon socket, sends an activity-event, and reads signal:source-activity back off the SSE stream. The point is that nothing in it can see the server memory. Endpoint: /ws/fleet-daemon.',
-  },
   'bin/the-room-and-a-git-remote-test.mjs': {
     count: 1,
     category: 'tooling',
@@ -412,7 +407,17 @@ const found = new Map()   // rel -> { lines: number[] }
 const listeners = []      // { rel, line }
 
 for (const rel of trackedSourceFiles()) {
-  const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  // `git ls-files` lists a file that has been deleted in the working tree but
+  // not yet staged, and reading it blind crashes the whole guard -- so deleting
+  // a file made the check that protects the deploy stop running entirely, which
+  // is worse than any violation it could report.
+  let raw
+  try {
+    raw = fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  } catch (e) {
+    if (e.code === 'ENOENT') continue
+    throw e
+  }
   const src = stripCommentsAndStrings(raw)
   const names = socketBindings(src)
 
