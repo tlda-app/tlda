@@ -33,7 +33,8 @@
 // would pass this vacuously, which is the shape of every green that means
 // nothing.
 import assert from 'assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { spawnSync } from 'child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -41,7 +42,16 @@ import {
   closeProjectStore, createProject, initProjectStore, outputDir,
   projectDir, sourceLifecycleStore, updateProject,
 } from '../server/lib/project-store.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+
+// The old accept (`processProjectPush` -> `lifecycle.bootstrap`/`.submit`,
+// manifest-diff bookkeeping over a directory-per-revision store) is being
+// deleted. Seeding now goes the way a real checkout does: build the files as
+// a real git commit and hand the lifecycle a bundle, exactly like
+// `bin/a-checkout-proposes-a-commit-test.mjs` proves the wire for. This test's
+// subject -- reading one file's bytes without touching any other file's --
+// is unaffected by the switch: `readRevisionFile` already reads git objects
+// for a commit-id revision (`gitRevision` in source-lifecycle.mjs), so only
+// how the revision gets created changes here, not what is asserted about it.
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-one-file-'))
 await initProjectStore(root)
@@ -60,24 +70,44 @@ try {
   mkdirSync(outputDir(NAME), { recursive: true })
   writeFileSync(join(outputDir(NAME), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
 
-  const manifest = ['main.tex', TARGET]
   const files = [
     { path: 'main.tex', content: 'the book\n' },
     { path: TARGET, content: TARGET_TEXT },
   ]
   for (let i = 0; i < CHAPTERS; i++) {
-    manifest.push(`chapters/ch-${i}.tex`)
     files.push({ path: `chapters/ch-${i}.tex`, content: OTHER_TEXT })
   }
 
-  const pushed = await processProjectPush(NAME, { expectedRevision: null, sourceManifest: manifest, files })
-  assert.equal(pushed.status, 200, `the book had to exist first: ${pushed.error}`)
+  // Build the book as a real git commit, the way a checkout proposes one --
+  // see bin/a-checkout-proposes-a-commit-test.mjs for the reference pattern.
+  const checkout = mkdtempSync(join(tmpdir(), 'tlda-one-file-checkout-'))
+  const git = (args, opts = {}) => {
+    const r = spawnSync('git', args, { cwd: checkout, encoding: 'utf8', ...opts })
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr || r.stdout}`)
+    return r.stdout.trim()
+  }
+  git(['init', '-b', 'main'])
+  git(['config', 'user.name', 'the author'])
+  git(['config', 'user.email', 'author@example.test'])
+  const indexInfo = files.map(file => {
+    const sha = git(['hash-object', '-w', '--stdin'], { input: file.content })
+    return `100644 blob ${sha}\t${file.path}`
+  }).join('\n') + '\n'
+  git(['update-index', '--index-info'], { input: indexInfo })
+  const tree = git(['write-tree'])
+  const commit = git(['commit-tree', tree, '-m', 'the book'])
+  const bundlePath = join(checkout, 'seed.bundle')
+  git(['update-ref', 'refs/heads/main', commit])
+  git(['bundle', 'create', bundlePath, 'main'])
 
   const lifecycle = await sourceLifecycleStore(NAME)
-  const revision = lifecycle.readAuthority().currentRevision
+  const accepted = await lifecycle.acceptBundle(bundlePath)
+  assert.equal(accepted.ok, true, `the book had to exist first: ${JSON.stringify(accepted)}`)
+
+  const revision = (await lifecycle.readAuthority()).currentRevision
 
   // ### The book is stored as blobs, not as one document
-  const snapshot = lifecycle.readRevision(revision)
+  const snapshot = await lifecycle.readRevision(revision)
   const inlined = snapshot.files.filter(file => file.content !== undefined)
   assert.equal(
     inlined.length, 0,
@@ -87,21 +117,45 @@ try {
   assert.ok(target?.sha256, 'the revision — the file we open is named by a hash; otherwise there is no blob to read and the story below is about nothing')
 
   // ### Reading one file does not read any other file's bytes
-  const before = String(lifecycle.readRevisionFile(revision, TARGET))
+  const before = String(await lifecycle.readRevisionFile(revision, TARGET))
   assert.equal(before, TARGET_TEXT, 'the file we open — its own text; otherwise the read is already wrong before we prove anything about it')
 
   // Take every other chapter's bytes away. If the read still works, it never
-  // needed them.
+  // needed them. Blobs now live as git loose objects under the lifecycle's own
+  // bare repo (`.source-lifecycle/git/objects/<sha[0:2]>/<sha[2:]>`), not the
+  // old `blobs/<sha>` directory — the sha itself is a git blob sha (40 hex)
+  // rather than the old 64-hex sha256, per readManifest in source-git-store.mjs.
+  // `acceptBundle` ingests via `git fetch` from a bundle, which packs the
+  // incoming objects rather than leaving them loose -- so there is no
+  // single per-blob file to delete straight off. Unpack the bare repo's own
+  // pack into loose objects first; this only changes how the objects are
+  // *stored* on disk, not what `readBlobBytes` does to read one (`git
+  // cat-file blob <sha>`, which does not care whether its target is loose or
+  // packed), so it does not weaken what the deletion-and-control below proves.
+  const gitDir = join(projectDir(NAME), '.source-lifecycle', 'git')
+  const packFile = spawnSync('sh', ['-c', 'ls objects/pack/*.pack'], { cwd: gitDir, encoding: 'utf8' }).stdout.trim()
+  assert.ok(packFile, 'the ingest — produced a pack to unpack; otherwise this setup step needs a different approach')
+  const packBytes = readFileSync(join(gitDir, packFile))
+  // `unpack-objects` skips writing an object it can already find -- which,
+  // with the pack still present, is every object in it. Remove the pack
+  // first so unpacking the same bytes actually lands loose copies.
+  spawnSync('sh', ['-c', 'rm -f objects/pack/*.pack objects/pack/*.idx objects/pack/*.rev'], { cwd: gitDir })
+  const unpack = spawnSync('git', ['unpack-objects'], {
+    cwd: gitDir, env: { ...process.env, GIT_DIR: gitDir },
+    input: packBytes,
+  })
+  assert.equal(unpack.status, 0, `git unpack-objects: ${unpack.stderr}`)
+
   const keep = new Set([target.sha256, snapshot.files.find(f => f.path === 'main.tex')?.sha256])
   let removed = 0
   for (const file of snapshot.files) {
     if (!file.sha256 || keep.has(file.sha256)) continue
-    const path = join(projectDir(NAME), '.source-lifecycle', 'blobs', file.sha256.slice(0, 2), file.sha256)
+    const path = join(gitDir, 'objects', file.sha256.slice(0, 2), file.sha256.slice(2))
     if (existsSync(path)) { rmSync(path); removed++ }
   }
   assert.ok(removed > 0, 'the book — other chapters had blobs to remove; otherwise nothing was deleted and the assertion below proves nothing')
 
-  const after = String(lifecycle.readRevisionFile(revision, TARGET))
+  const after = String(await lifecycle.readRevisionFile(revision, TARGET))
   assert.equal(
     after, TARGET_TEXT,
     "the file we open — still its own text with other chapters' bytes deleted",
@@ -110,11 +164,13 @@ try {
   // ### The control: the deletion was real
   // Without this, an inlined or cached read passes the assertion above while
   // reading everything — a green that means nothing.
-  // It throws rather than returning null, and that is 19c033441: a sha256
-  // naming a blob that is not there is a corrupt revision, which is a
-  // different fact from "no such path" and no longer wears the same value.
+  // `readBlobBytes` catches a failing `git cat-file` and returns null rather
+  // than throwing, and `entryContent` turns that null into the same
+  // "Corrupt revision file entry" it always has -- a blob a revision's tree
+  // names but the object store does not have is a corrupt revision, a
+  // different fact from "no such path" and it must not wear the same value.
   const gone = snapshot.files.find(file => file.sha256 && !keep.has(file.sha256))
-  assert.throws(
+  await assert.rejects(
     () => lifecycle.readRevisionFile(revision, gone.path),
     /Corrupt revision file entry/,
     'the deleted chapter — unreadable now its blob is deleted',
@@ -122,7 +178,7 @@ try {
 
   // ### And a path that was never in the book is absent, not corrupt
   assert.equal(
-    lifecycle.readRevisionFile(revision, 'chapters/never-written.tex'), null,
+    await lifecycle.readRevisionFile(revision, 'chapters/never-written.tex'), null,
     'a file nobody wrote — absent',
   )
 
