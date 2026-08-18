@@ -65,6 +65,7 @@ const runtime = new DaemonDeliveryRuntime({
   isConnected: () => true,
   isReady: () => true,
   inflightDeadlineMs: 120_000,
+  flushByteBudget: 1_048_576,
   now: () => clock,
   ackGate,
   send: message => {

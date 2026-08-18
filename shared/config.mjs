@@ -604,6 +604,31 @@ export function getOutboxInflightDeadlineMs() {
   return Math.round(seconds * 1000)
 }
 
+// How many bytes of payload one durable flush may read, parse and hand to the
+// socket before yielding. This bounds the daemon's *relay* latency against its
+// *queue* depth -- the two jobs Skip named as being in tension -- so that no
+// backlog, and no single large message, can hold the event loop long enough to
+// stop the daemon answering.
+//
+// 1 MB, derived rather than picked. Measured on the live testing outbox on
+// 2026-08-18, reading and JSON.parse-ing one 100-row window of 11.0 MB took
+// 271ms at best and 702ms at worst across three runs -- 24.6 to 63.8 ms per MB,
+// all of it synchronous. At 1 MB the worst of those becomes ~64ms per flush,
+// which keeps the relay inside a frame-scale pause while still clearing several
+// MB a second across ticks. Measured ceiling before the change: 84 delivered/min
+// against 104 produced.
+//
+// It is a budget, not a cap: consulted between rows, so a message larger than
+// the whole budget is still sent, alone, on its own tick. Raising it trades
+// relay latency for throughput and nothing else.
+export function getOutboxFlushByteBudget() {
+  const bytes = loadDaemonYaml().outboxFlushByteBudget ?? 1048576
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    throw new Error(`daemon.yaml: outboxFlushByteBudget must be a positive number (got ${JSON.stringify(bytes)})`)
+  }
+  return Math.round(bytes)
+}
+
 export function getJsonlTailIdleMs() {
   const seconds = loadDaemonYaml().jsonlTailIdleSeconds ?? 600
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {

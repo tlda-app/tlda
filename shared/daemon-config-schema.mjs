@@ -26,6 +26,8 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'sourceChangeSettleDeadlineSeconds',
   // Read by getOutboxInflightDeadlineMs().
   'outboxInflightDeadlineSeconds',
+  // Read by getOutboxFlushByteBudget().
+  'outboxFlushByteBudget',
   'terminalInputAllowed',
   // Named subscription sets, in the `{ default, values }` form `models:` and
   // `environments:` use. Additive only — an agent's reachability comes from the

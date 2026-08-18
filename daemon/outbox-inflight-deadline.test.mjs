@@ -27,6 +27,21 @@ function fakeOutbox(rows) {
   return {
     rows: store,
     pending: (limit = 100) => store.filter(r => !r.acked).slice(0, limit),
+    // The claim step the flush actually uses: same window and order, ids and
+    // types only. A double that served payloads here would hide the whole point
+    // of the change -- the flush must decide skips without reading them.
+    pendingRefs: (limit = 100) => store.filter(r => !r.acked).slice(0, limit)
+      .map(r => ({ id: r.id, type: r.payload?.type || r.type || '' })),
+    pendingRefsExcludingTypes: (types = [], limit = 100) => {
+      const skip = new Set(types)
+      return store.filter(r => !r.acked && !skip.has(r.payload?.type || r.type || ''))
+        .slice(0, limit).map(r => ({ id: r.id, type: r.payload?.type || r.type || '' }))
+    },
+    getWithSize: id => {
+      const r = store.find(x => x.id === id && !x.acked) || store.find(x => x.id === id)
+      if (!r || r.acked) return null
+      return { ...r, payloadBytes: JSON.stringify(r.payload ?? null).length }
+    },
     markAttempt: id => { const r = store.find(x => x.id === id); if (r) r.attempts = (r.attempts || 0) + 1 },
     markTransientError: () => {},
     deadLetter: () => {},
@@ -46,6 +61,7 @@ function runtimeOver(rows, { clock }) {
     isReady: () => true,
     log: { warn: m => warnings.push(m) },
     inflightDeadlineMs: DEADLINE_MS,
+    flushByteBudget: 1_048_576,
     now: () => clock.ms,
   })
   return { delivery, sent, warnings }
@@ -110,6 +126,7 @@ test('an acked row leaves inflight and stops being sent', () => {
     isConnected: () => true,
     isReady: () => true,
     inflightDeadlineMs: DEADLINE_MS,
+    flushByteBudget: 1_048_576,
     now: () => clock.ms,
   })
 

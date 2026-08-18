@@ -52,6 +52,7 @@ function harness(t, { inflightDeadlineMs = 60_000, now = () => 0 } = {}) {
     // mechanism from stream blocking. Default far enough out that these tests
     // exercise the blocking; the interaction gets its own test below.
     inflightDeadlineMs,
+    flushByteBudget: 1_048_576,
     now,
   })
   return { outbox, delivery, sent }

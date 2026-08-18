@@ -67,7 +67,7 @@ import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs, getJsonlTailIdleMs, getMintRegistrationDeadlineMs, getSourceChangeSettleDeadlineMs,
-  getOutboxInflightDeadlineMs,
+  getOutboxInflightDeadlineMs, getOutboxFlushByteBudget,
   getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
 import { terminalInputAllowedFromConfig } from '../shared/terminal-input-policy.mjs'
@@ -1403,6 +1403,7 @@ const daemonDelivery = new DaemonDeliveryRuntime({
   isReady: () => _serverReady === true,
   log,
   inflightDeadlineMs: getOutboxInflightDeadlineMs(),
+  flushByteBudget: getOutboxFlushByteBudget(),
   activityDeliveryCounters: daemonActivityDeliveryCounters,
   beforeSend: message => { if (message?.type === 'source-change') sourceSync.restoreDurableSourceChange(message) },
   ackGate: createSourceChangeAckGate({ editOperationStore, outbox: daemonOutbox }),

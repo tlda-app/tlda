@@ -47,6 +47,7 @@ try {
   const sent = []
   const delivery = new DaemonDeliveryRuntime({
     inflightDeadlineMs: 120_000,
+    flushByteBudget: 1_048_576,
     outbox,
     send: msg => { sent.push(msg); return true },
     isConnected: () => false,

@@ -24,6 +24,7 @@ function fixture(root = mkdtempSync(join(tmpdir(), 'tlda-durable-edit-')), retry
   }
   const delivery = new DaemonDeliveryRuntime({
     inflightDeadlineMs: 120_000,
+    flushByteBudget: 1_048_576,
     outbox, send: () => false, isConnected: () => false, isReady: () => false,
     beforeSend: message => { if (message.type === 'source-change') sync.restoreDurableSourceChange(message) },
     ackGate,

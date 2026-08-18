@@ -86,6 +86,28 @@ export class DaemonOutbox {
     return this.queue.pendingExcludingTypes(types, [], limit).map(parseRow)
   }
 
+  // The claim step: which rows are waiting, and of what type, without their
+  // payloads. Pair with getWithSize() to read only what you are going to send.
+  pendingRefs(limit = 100) {
+    return this.queue.pendingRefs([], limit)
+  }
+
+  pendingRefsExcludingTypes(types = [], limit = 100) {
+    return this.queue.pendingRefsExcludingTypes(types, [], limit)
+  }
+
+  // get(), plus the payload's size on the wire, taken from the stored JSON
+  // before it is parsed -- so a caller spending a byte budget bills itself for
+  // what it actually sent rather than estimating.
+  getWithSize(id) {
+    const raw = this.queue.get(id)
+    if (!raw) return null
+    const parsed = parseRow(raw)
+    if (!parsed) return null
+    parsed.payloadBytes = raw.payload_json.length
+    return parsed
+  }
+
   markAttempt(id) {
     this.queue.markAttempt(id)
   }
