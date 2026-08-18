@@ -17,7 +17,6 @@ export function NoteDropHandler() {
       const types = e.dataTransfer?.types
       if (!types) return false
       return types.includes('application/x-tlda-note') ||
-             types.includes('application/x-tlda-drop') ||
              types.includes('application/x-chat-attachment') ||
              // Cross-window: only accept text/plain if it's likely our JSON payload
              // (can't read data during dragover, so accept text/plain broadly)
@@ -73,52 +72,6 @@ export function NoteDropHandler() {
       if (isOverOpenPanel(e)) return
       // Don't create math notes on the fleet HUD
       if (isOverHud(e)) return
-
-      // Fleet scratch card drop — full content as MathNote
-      const tldaDrop = e.dataTransfer?.getData('application/x-tlda-drop')
-      if (tldaDrop) {
-        try {
-          const dropData = JSON.parse(tldaDrop)
-          if (dropData.type === 'scratch-doc' && dropData.content) {
-            e.preventDefault()
-            const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
-            const shapeId = createShapeId()
-            const lineCount = dropData.content.split('\n').length
-            const h = Math.min(600, Math.max(200, lineCount * 16 + 40))
-            void (async () => {
-              const anchorMeta = await noteSourceAnchorMeta(editor, point.x, point.y)
-              editor.createShape({
-                id: shapeId,
-                type: 'math-note',
-                x: point.x,
-                y: point.y,
-                opacity: 1,
-                props: {
-                  text: dropData.content,
-                  color: 'violet',
-                  w: 300,
-                  h,
-                  collapsed: false,
-                },
-                meta: {
-                  createdAt: Date.now(),
-                  copiedFromDoc: 'fleet',
-                  copiedFromShapeId: '',
-                  copiedFromTimestamp: Date.now(),
-                  fleetSource: JSON.stringify({ type: 'scratch-doc', name: dropData.name, path: dropData.path }),
-                  projectName: dropData.name,
-                  docPath: dropData.path,
-                  ...anchorMeta,
-                },
-              } as any)
-            })()
-            return
-          }
-        } catch {
-          // Accepted scratch-doc drops have no owned non-modal error surface in
-          // this document-level handler; leave the failed note uncreated.
-        }
-      }
 
       // Accept fleet chat attachments — convert to tlda note format
       const item = parseFleetDrop(e)
