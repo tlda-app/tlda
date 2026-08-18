@@ -881,11 +881,16 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       ...projectInfo,
       referencedRoots: referencedRootsFromPaths(projectInfo.referencedSourcePaths, manifestPaths),
     })
-    const res = await fetch(projectApiPath(doc.projectName, `/source/${encodeURIComponent(sourcePath)}`), {
-      method: 'PUT',
+    // The JSON accept carrier. A browser has no repository and no git objects,
+    // so it cannot propose a bundle — it hands over the bytes and the server
+    // writes the blob. Only the changed file travels: every other path in the
+    // manifest is carried forward by reference from the current revision, which
+    // is what keeps an edit's payload the size of the edit.
+    const res = await fetch(projectApiPath(doc.projectName, '/source-snapshot'), {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        content: nextFullText,
+        files: [{ path: sourcePath, content: nextFullText }],
         sourceManifest,
         editedBy: shape.props.userId || shape.props.deviceId || 'fleet-source-editor',
         expectedRevision,
@@ -904,7 +909,13 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           sourceRevision?: string
         }
         conflict.conflictText = merged
-        conflict.sourceRevision = payload?.authority?.currentRevision
+        // The head we were refused against, which becomes this editor's
+        // `expectedRevision` for the resolved write. The carrier returns it at
+        // the top level; the old route nested it under `authority`. Read the
+        // wrong one and it is `undefined`, the editor keeps the stale revision
+        // it already had, and the resolved write is refused for the same reason
+        // as the first — a conflict a person cannot get out of by resolving it.
+        conflict.sourceRevision = payload?.currentRevision
         throw conflict
       }
       throw new Error(payload?.error || `sync ${res.status}`)
