@@ -348,12 +348,47 @@ function socketBindings(src) {
   return names
 }
 
+// `git ls-files` when there is a git checkout, a filesystem walk when there is
+// not.
+//
+// This guard used to require git, which meant it could not run in the one place
+// it most needs to: the deploy hook checks out into a work tree where
+// `git ls-files` fails, so the first push that put the guards into the gate was
+// rejected by this crashing rather than by anything it found. A guard that
+// cannot run where it is meant to protect is not a guard.
+//
+// git is still preferred -- it excludes ignored files for free and is faster on
+// a big tree -- so the fallback is only for the case where git is unavailable.
 function trackedSourceFiles() {
-  const out = execFileSync('git', ['-C', ROOT, 'ls-files', '-z'], { encoding: 'utf8', maxBuffer: 64 << 20 })
-  return out
-    .split('\0')
+  let rels
+  try {
+    rels = execFileSync('git', ['-C', ROOT, 'ls-files', '-z'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+      .split('\0')
+  } catch {
+    rels = walkSourceFiles(ROOT)
+  }
+  return rels
     .filter(rel => rel && SOURCE.test(rel) && !MINIFIED.test(rel))
     .filter(rel => !LIBRARY.some(p => rel.startsWith(p)))
+}
+
+const WALK_SKIP = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.next', 'out'])
+
+function walkSourceFiles(root, prefix = '') {
+  const out = []
+  let entries
+  try {
+    entries = fs.readdirSync(path.join(root, prefix), { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    if (WALK_SKIP.has(entry.name)) continue
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) out.push(...walkSourceFiles(root, rel))
+    else if (entry.isFile()) out.push(rel)
+  }
+  return out
 }
 
 const found = new Map()   // rel -> { lines: number[] }
