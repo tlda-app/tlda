@@ -270,6 +270,25 @@ export { PSEUDO_LABELS };
 // A daemon redelivers an envelope it did not see acked, so the ledger has to
 // outlive a reconnect -- but not a week of them. Env-overridable; days, because
 // that is the unit the decision is made in.
+// `activity_events_fts` indexes tool-call exhaust — text plus `tool`,
+// `description`, `command` — and nothing ever swept it. Measured on the live
+// database 2026-08-18: 1,092,963 activity events, 603,124 of them older than 30
+// days, in a 1.03 GB index that every activity search walks (measured at 273-698ms).
+//
+// Conversation and transcripts are deliberately NOT pruned with it, and that is
+// the whole shape of this decision. `events_fts` is external-content over
+// `events`, so dropping entries there makes search silently stop finding
+// messages that are still present; and `session_entries` cannot be re-indexed
+// after deletion, because the JSONL ingester keeps a per-file {inode, offset}
+// cursor and only ever forwards new bytes. Nothing anyone said stops being
+// findable — only old tool calls do.
+//
+// Backlog drains at batch/interval: 2,000 per minute clears 603k in about five
+// hours, then tracks. Both are env-tunable without a deploy.
+const ACTIVITY_FTS_RETENTION_DAYS = envNumber('TLDA_ACTIVITY_FTS_RETENTION_DAYS', 30)
+const ACTIVITY_FTS_PRUNE_INTERVAL_MS = envNumber('TLDA_ACTIVITY_FTS_PRUNE_INTERVAL_MS', 60 * 1000)
+const ACTIVITY_FTS_PRUNE_BATCH_MAX = envNumber('TLDA_ACTIVITY_FTS_PRUNE_BATCH_MAX', 2000)
+
 const DAEMON_OUTBOX_LEDGER_RETENTION_MS =
   Number(process.env.TLDA_DAEMON_OUTBOX_LEDGER_RETENTION_DAYS || 7) * 24 * 60 * 60 * 1000
 // And the sweep itself is time-boxed, so it never lands on a per-envelope path.
@@ -1274,6 +1293,12 @@ export class FleetStore {
         WHERE type = 'activity';
         INSERT OR REPLACE INTO search_index_meta(key, value)
         VALUES ('events_fts_content_version', 'primary-events-plus-activity-diagnostics-v3');
+        -- This rebuild just re-indexed every activity event, including the ones
+        -- the retention sweep had already dropped, so its watermark is no longer
+        -- true. Left standing it would say "pruned through id X" over an index
+        -- that holds those rows again, and the sweep would never look below X
+        -- again -- a prune that reports nothing to do while the entries are back.
+        DELETE FROM search_index_meta WHERE key = 'activity_fts_pruned_through_id';
       `);
     }
 
@@ -2021,7 +2046,90 @@ export class FleetStore {
   }
 
   insertEventRecord(event, options = {}) {
-    return this._insertEventRecord(event, options);
+    const result = this._insertEventRecord(event, options);
+    this._maybePruneActivityEventsFts();
+    return result;
+  }
+
+  // Deleting a row from an external-content FTS5 table requires handing back the
+  // text that was indexed, EXACTLY. A mismatch does not error — it corrupts the
+  // index. So this is the live `events_ai` trigger's expression, verbatim, read
+  // off sqlite_master on the deployed database rather than copied from a source
+  // file (three definitions of that trigger exist in this file, and only the one
+  // the database actually holds is authoritative).
+  static _ACTIVITY_FTS_TEXT(alias) {
+    return `trim(
+      coalesce(${alias}.text, '') || ' ' ||
+      coalesce(json_extract(${alias}.metadata, '$.tool'), '') || ' ' ||
+      coalesce(json_extract(${alias}.metadata, '$.description'), '') || ' ' ||
+      coalesce(json_extract(${alias}.metadata, '$.input.description'), '') || ' ' ||
+      coalesce(json_extract(${alias}.metadata, '$.arg'), '') || ' ' ||
+      coalesce(json_extract(${alias}.metadata, '$.input.command'), '')
+    )`
+  }
+
+  /**
+   * Drop `activity_events_fts` entries for activity events past the retention
+   * horizon. The events themselves are untouched and stay readable in history;
+   * only full-text search over old tool calls goes.
+   *
+   * Progress is a monotonic id watermark in `search_index_meta`, and that is a
+   * correctness device, not bookkeeping: FTS5 has no "delete if present", so
+   * deleting the same rowid twice corrupts the index. Only ids strictly above
+   * the mark are ever touched, so a crash or an overlapping run repeats nothing.
+   *
+   * The mark advances to the last id in the batch, which can step over a row
+   * whose id is in range but whose timestamp is not yet past the cutoff — that
+   * row then keeps its index entry for good. That is the safe direction to be
+   * wrong in: the failure is a few stale entries, never a double delete.
+   */
+  pruneActivityEventsFts({
+    now = new Date(),
+    retentionDays = ACTIVITY_FTS_RETENTION_DAYS,
+    batchMax = ACTIVITY_FTS_PRUNE_BATCH_MAX,
+  } = {}) {
+    const limit = Math.floor(Number(batchMax) || 0)
+    if (limit <= 0 || !(Number(retentionDays) > 0)) return { deleted: 0, through: null }
+    const cutoff = new Date(now.getTime() - Number(retentionDays) * 24 * 60 * 60 * 1000).toISOString()
+    return this.db.transaction(() => {
+      const mark = Number(this.db.prepare(
+        "SELECT value FROM search_index_meta WHERE key = 'activity_fts_pruned_through_id'"
+      ).get()?.value) || 0
+      // (type, id) is idx_events_type_id, so this is an index walk from the mark.
+      const rows = this.db.prepare(`
+        SELECT id FROM events
+         WHERE type = 'activity' AND id > ? AND timestamp < ?
+         ORDER BY id ASC LIMIT ?
+      `).all(mark, cutoff, limit)
+      if (!rows.length) return { deleted: 0, through: mark }
+      const through = rows[rows.length - 1].id
+      const deleted = this.db.prepare(`
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT 'delete', e.id, ${FleetStore._ACTIVITY_FTS_TEXT('e')}
+        FROM events e
+        WHERE e.type = 'activity' AND e.id > ? AND e.id <= ? AND e.timestamp < ?
+      `).run(mark, through, cutoff).changes
+      this.db.prepare(`
+        INSERT INTO search_index_meta(key, value) VALUES ('activity_fts_pruned_through_id', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(through))
+      return { deleted, through }
+    })()
+  }
+
+  _maybePruneActivityEventsFts(nowMs = Date.now()) {
+    if (ACTIVITY_FTS_PRUNE_INTERVAL_MS <= 0 || ACTIVITY_FTS_PRUNE_BATCH_MAX <= 0) return
+    if (this._lastActivityFtsPruneAt && nowMs - this._lastActivityFtsPruneAt < ACTIVITY_FTS_PRUNE_INTERVAL_MS) return
+    this._lastActivityFtsPruneAt = nowMs
+    try {
+      const { deleted, through } = this.pruneActivityEventsFts({ now: new Date(nowMs) })
+      if (deleted > 0) console.log(`[fleet-store] pruned ${deleted} activity_events_fts entries through id ${through}`)
+    } catch (e) {
+      // Swallowed like the transport and ledger prunes beside it: this rides on
+      // the event insert path, and housekeeping must never fail the write it
+      // piggybacks on. A skipped sweep costs index size until the next one.
+      console.warn(`[fleet-store] activity fts prune failed: ${e.message}`)
+    }
   }
 
   // A retried send is now ONE event, so its recipients come from that event's
