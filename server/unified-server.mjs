@@ -2386,8 +2386,225 @@ async function failServerMintShell(agentId, reason) {
   spawnLibrarian.failPending(agentId, reason || 'launch-failed')
   const shell = await fleetStore.getAgent?.(agentId)
   if (!shell?.metadata?.shell) return
+  // A composed mint+delegate attaches the task to this shell before the daemon
+  // is asked to launch, so a launch that fails must take the task with it. The
+  // two-call form got this for free by refusing to send leg 2 after a join
+  // failure; composing the operation moves that guard here, where it also covers
+  // a caller that stopped listening.
+  for (const task of await fleetStore.getActiveTasksByAgent?.(agentId) || []) {
+    await fleetStore.retractTask?.(task.id, { retractedBy: 'mint-launch-failed' })
+  }
   await fleetStore.markDead(agentId)
   broadcastState()
+}
+
+// The delegate operation, callable from somewhere other than the WS case that
+// used to hold it inline. `performSpawnRelay` composes mint+delegate into one
+// server-side operation, and it needs to attach the task itself rather than
+// handing the caller an agent id and trusting it to come back for leg 2.
+//
+// Returns `{ error }` for a refusal the caller should surface, or
+// `{ reply, finish }` on success. `finish` is the post-reply work (the wake);
+// the WS case runs it after replying, exactly as the inline body did.
+async function performDelegate(msg) {
+  const {
+    agent: agentQuery,
+    description,
+    message: taskMsg,
+    success_criteria,
+    blocked_by,
+    from,
+    requires_approval,
+    at,
+    notify_every,
+    expires_at,
+    allow_pending_agent,
+    operation_id,
+    task_id,
+  } = msg
+  if (!agentQuery || (!description && !task_id)) return { error: 'missing agent or description' }
+  if (task_id && !taskMsg) return { error: 'missing message for existing task delegation' }
+  const previous = operation_id ? await fleetStore.getDelegateOperationResult?.(operation_id) : null
+  if (previous?.delegateEventId) {
+    return {
+      reply: {
+        ok: true,
+        task_id: previous.taskId,
+        delegate_event_id: previous.delegateEventId,
+        event_id: previous.delegateEventId,
+        event_ids: previous.eventIds,
+        operation_id,
+        idempotent: true,
+      },
+    }
+  }
+  const traceId = msg.trace_id || (operation_id ? `delegate:${operation_id}` : createTraceId('delegate'))
+  controlPlaneTraces.append({
+    trace_id: traceId,
+    component: 'server',
+    operation: 'delegate.ingress',
+    status: 'received',
+    detail: { from, agent: agentQuery, operation_id: operation_id || null },
+  })
+  const resolved = await fleetStore.findAgent(agentQuery) || (
+    allow_pending_agent && typeof agentQuery === 'string' && agentQuery.startsWith('fleet:')
+      ? { id: agentQuery, friendly_name: null }
+      : null
+  )
+  if (!resolved) return { error: `agent not found: ${agentQuery}` }
+  const existingTask = task_id ? await fleetStore.getTask?.(task_id) : null
+  if (task_id && !existingTask) return { error: `task not found: ${task_id}` }
+  if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) return { error: `cannot delegate closed task: ${task_id}` }
+  const fromAgent = from ? await fleetStore.findAgent(from) : null
+  // No authorization gate here. The fence lives in the MCP layer, which is where
+  // agents act — see the authorization gate section in AGENTS.md. The HTTP twin at
+  // POST /api/tasks/delegate is ungated in the same way, so the two agree on who
+  // may re-delegate. They do NOT otherwise agree — the HTTP route sends no wake,
+  // has no operation_id idempotency, and drops at/expires_at and
+  // requires_approval. That divergence is a known bug, not a licence to add a
+  // gate back here.
+  const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  const atMs = at ? Date.parse(at) : nowMs
+  const expiresAtMs = expires_at ? Date.parse(expires_at) : Infinity
+  if (at && !Number.isFinite(atMs)) return { error: 'at must be an ISO timestamp' }
+  if (notify_every != null && (!Number.isFinite(Number(notify_every)) || Number(notify_every) <= 0)) return { error: 'notify_every must be a positive number of seconds' }
+  if (expires_at && !Number.isFinite(expiresAtMs)) return { error: 'expires_at must be an ISO timestamp' }
+  if (Number.isFinite(expiresAtMs) && Number.isFinite(atMs) && expiresAtMs <= atMs) return { error: 'expires_at must be later than at' }
+  const notifyEverySeconds = notify_every != null ? Number(notify_every) : null
+  const reminderAtMs = atMs > nowMs
+    ? atMs
+    : notifyEverySeconds
+      ? nowMs + notifyEverySeconds * 1000
+      : NaN
+  const metadata = {
+    trace_id: traceId,
+    ...(operation_id ? { client_operation_id: operation_id } : {}),
+    ...(requires_approval ? { requires_approval: true } : {}),
+    ...(allow_pending_agent && !await fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
+    ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
+    at: new Date(atMs).toISOString(),
+    ...(notify_every != null ? { notify_every: Number(notify_every) } : {}),
+    ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
+  }
+  const delegateMetadata = {
+    trace_id: traceId,
+    ...(operation_id ? { client_operation_id: operation_id } : {}),
+    fromLabel: fromAgent?.friendly_name || from || '',
+    toLabel: resolved.friendly_name || resolved.id,
+    criteria: success_criteria || [],
+    message: taskMsg || '',
+    ...(at ? { at: new Date(atMs).toISOString() } : {}),
+    ...(Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs
+      ? { next_fire_at: new Date(reminderAtMs).toISOString() }
+      : {}),
+    ...(notifyEverySeconds ? { repeat_seconds: notifyEverySeconds } : {}),
+    ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
+    ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
+  }
+  let delegateEvent
+  if (existingTask) {
+    const transfer = await transferTaskLifecycle({
+      fleetStore,
+      task: existingTask,
+      fromAgentId: from || null,
+      toAgentId: resolved.id,
+      message: taskMsg,
+      // `delegate` has always accepted `description`; on this branch it was
+      // silently dropped, so a caller restating a standing task got its old
+      // headline back. Absent, the existing description stands.
+      description,
+      delegatedAt: now,
+      eventMetadata: delegateMetadata,
+      eventOptions: { unread: atMs <= nowMs },
+      taskMetadataPatch: {
+        at: new Date(atMs).toISOString(),
+        notify_every: notify_every != null ? Number(notify_every) : undefined,
+        expires_at: expires_at ? new Date(expiresAtMs).toISOString() : undefined,
+      },
+    })
+    delegateEvent = transfer.event
+  } else {
+    const task = {
+      id: taskId, agent: resolved.id, description,
+      message: taskMsg || description,
+      delegated_by: from || null, delegated_at: now,
+      status: blocked_by?.length ? 'blocked' : 'pending',
+      acknowledged: false,
+      blockedBy: blocked_by || undefined,
+      success_criteria: success_criteria || undefined,
+      metadata: Object.keys(metadata).length ? metadata : undefined,
+    }
+    await fleetStore.upsertTask(task)
+    delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata, {
+      unread: !Number.isFinite(atMs) || atMs <= Date.now(),
+    })
+  }
+  if (existingTask) {
+    const pendingTimers = await fleetStore.listPendingTimerEvents?.() || []
+    for (const timer of pendingTimers) {
+      if (timer.metadata?.task_id === taskId) await serverTimerScheduler?.cancel(Number(timer.id))
+    }
+  }
+  if (Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs) {
+    await fleetStore.share({
+      type: 'timer',
+      from: from || resolved.id,
+      to: resolved.id,
+      text: `⏱ ${description}`,
+      metadata: {
+        pending: true,
+        fire_at: new Date(reminderAtMs).toISOString(),
+        message: `Task reminder: ${description}`,
+        task_id: taskId,
+        ...(notifyEverySeconds ? { repeat_seconds: notifyEverySeconds } : {}),
+        ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
+      },
+      unread: false,
+    })
+    await serverTimerScheduler?.refresh()
+  }
+  if (Number.isFinite(expiresAtMs)) {
+    await fleetStore.share({
+      type: 'timer',
+      from: from || resolved.id,
+      to: resolved.id,
+      text: `Task expired: ${description}`,
+      metadata: {
+        pending: true,
+        fire_at: new Date(expiresAtMs).toISOString(),
+        task_id: taskId,
+        task_expiry: true,
+      },
+      unread: false,
+    })
+    await serverTimerScheduler?.refresh()
+  }
+  controlPlaneTraces.append({
+    trace_id: traceId,
+    component: 'fleet-store',
+    operation: existingTask ? 'delegate.transfer' : 'delegate.insert',
+    status: 'stored',
+    detail: { task_id: taskId, event_id: delegateEvent?.id, from, to: resolved.id },
+  })
+  broadcastState(resolved.id)
+  return {
+    reply: {
+      ok: true,
+      task_id: taskId,
+      delegate_event_id: delegateEvent?.id || null,
+      event_id: delegateEvent?.id || null,
+      event_ids: [delegateEvent?.id].filter(id => id != null),
+      operation_id: operation_id || null,
+      trace_id: traceId,
+    },
+    finish: async () => {
+      if (!Number.isFinite(atMs) || atMs <= Date.now()) {
+        await requestWake(resolved.id, await delegateWakeText(description, resolved.id, from), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+      }
+    },
+  }
 }
 
 async function performSpawnRelay(caller, msg) {
@@ -2535,6 +2752,48 @@ async function performSpawnRelay(caller, msg) {
       })
     }
   }
+  // mint+delegate is ONE operation, and the delegation happens here rather than
+  // in a second call from the client.
+  //
+  // It used to be two: the MCP client sent `spawn` with await_ready, then sent
+  // `delegate` once it had the agent id back. await_ready resolves only from the
+  // agent's real login (~20s for a Claude seat), the client's durable send gives
+  // up at 15s and answers "queued", and the mint path treated queued as "stop" --
+  // so leg 2 was never sent. Not sometimes: 15 < 20 with no concurrency, so the
+  // delegation was dropped on every mint from 42fe1daa2 (2026-08-08) onward.
+  //
+  // Composing it server-side removes the failure rather than moving it: there is
+  // no second leg to abandon, one operation_id covers both halves, and the ack no
+  // longer has to arrive before a deadline for the task to exist. The task is
+  // attached to the shell row that was just reserved above, so it is in the store
+  // before the daemon is even asked to launch -- and it is retracted below if the
+  // launch fails, which is the guard the old two-call form got from waiting.
+  let attachedDelegate = null
+  let deliverAttachedDelegate = null
+  // A delegation can only ride on a mint, because only a mint reserves the shell
+  // row it attaches to. A wake or respawn carries no such row, so there is
+  // nowhere to put the task -- and dropping it quietly is the same defect in a
+  // different place: the caller is told the spawn succeeded and the task is
+  // nowhere. No current caller does this; it fails so that none can start.
+  if (msg.delegate && !pendingAgentId) {
+    throw new Error('a delegation may only ride on a fresh mint; this spawn is a wake or respawn and has no reserved row to attach it to')
+  }
+  if (msg.delegate) {
+    const outcome = await performDelegate({
+      ...msg.delegate,
+      agent: pendingAgentId,
+      allow_pending_agent: true,
+    })
+    if (outcome.error) {
+      await failServerMintShell(pendingAgentId, 'delegate-refused')
+      throw new Error(`mint delegation refused: ${outcome.error}`)
+    }
+    attachedDelegate = outcome.reply
+    // The wake is held until the agent has actually joined. A shell row has no
+    // session to wake, and a wake that lands on nothing is not delivery -- the
+    // agent's own login/inbox() is what surfaces the task until then.
+    deliverAttachedDelegate = outcome.finish || null
+  }
   const spawnRequest = {
     agent_id: targetAgentId,
     friendly_name: reservedFriendlyName || undefined,
@@ -2675,10 +2934,19 @@ async function performSpawnRelay(caller, msg) {
         spawnerPermission: result?.spawnerPermission,
         projectPermission: result?.projectPermission,
         modelPermission: result?.modelPermission,
+        ...(attachedDelegate ? {
+          task_id: attachedDelegate.task_id,
+          delegate_event_id: attachedDelegate.delegate_event_id,
+        } : {}),
       }
       const settled = mailboxLibrarian.complete(mailbox.id, completion)
       if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
       if (settled) deliverSpawnPermissionClamp(settled, completion)
+      // Now that the agent exists there is a session to wake, so the task
+      // attached at reservation time gets its notification.
+      if (deliverAttachedDelegate) {
+        await deliverAttachedDelegate().catch(e => console.error(`[spawn] mint delegate wake failed: ${e?.message || e}`))
+      }
       broadcastState()
     } catch (e) {
       if (pendingAgentId) await failServerMintShell(pendingAgentId, 'launch-failed')
@@ -2711,8 +2979,17 @@ async function performSpawnRelay(caller, msg) {
     mailbox_id: mailbox.id,
     agent_id: targetAgentId,
     name: spawnName,
+    // The reserved name, which is what the agent will actually answer to: a
+    // collision rotates it, and the caller was previously told the name it asked
+    // for. This is known before the daemon is contacted, so the async ack can
+    // carry it.
+    assigned_name: reservedFriendlyName || spawnName,
     machine_id: machineId,
     env_name: route.env_name,
+    ...(attachedDelegate ? {
+      task_id: attachedDelegate.task_id,
+      delegate_event_id: attachedDelegate.delegate_event_id,
+    } : {}),
   }
 }
 
@@ -7411,199 +7688,10 @@ async function dispatchFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delegate') {
-    const {
-      agent: agentQuery,
-      description,
-      message: taskMsg,
-      success_criteria,
-      blocked_by,
-      from,
-      requires_approval,
-      at,
-      notify_every,
-      expires_at,
-      allow_pending_agent,
-      operation_id,
-      task_id,
-    } = msg
-    if (!agentQuery || (!description && !task_id)) { error('missing agent or description'); return }
-    if (task_id && !taskMsg) { error('missing message for existing task delegation'); return }
-    const previous = operation_id ? await fleetStore.getDelegateOperationResult?.(operation_id) : null
-    if (previous?.delegateEventId) {
-      reply({
-        ok: true,
-        task_id: previous.taskId,
-        delegate_event_id: previous.delegateEventId,
-        event_id: previous.delegateEventId,
-        event_ids: previous.eventIds,
-        operation_id,
-        idempotent: true,
-      })
-      return
-    }
-    const traceId = msg.trace_id || (operation_id ? `delegate:${operation_id}` : createTraceId('delegate'))
-    controlPlaneTraces.append({
-      trace_id: traceId,
-      component: 'server',
-      operation: 'delegate.ingress',
-      status: 'received',
-      detail: { from, agent: agentQuery, operation_id: operation_id || null },
-    })
-    const resolved = await fleetStore.findAgent(agentQuery) || (
-      allow_pending_agent && typeof agentQuery === 'string' && agentQuery.startsWith('fleet:')
-        ? { id: agentQuery, friendly_name: null }
-        : null
-    )
-    if (!resolved) { error(`agent not found: ${agentQuery}`); return }
-    const existingTask = task_id ? await fleetStore.getTask?.(task_id) : null
-    if (task_id && !existingTask) { error(`task not found: ${task_id}`); return }
-    if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
-    const fromAgent = from ? await fleetStore.findAgent(from) : null
-    // No authorization gate here. The fence lives in the MCP layer, which is where
-    // agents act — see the authorization gate section in AGENTS.md. The HTTP twin at
-    // POST /api/tasks/delegate is ungated in the same way, so the two agree on who
-    // may re-delegate. They do NOT otherwise agree — the HTTP route sends no wake,
-    // has no operation_id idempotency, and drops at/expires_at and
-    // requires_approval. That divergence is a known bug, not a licence to add a
-    // gate back here.
-    const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
-    const nowMs = Date.now()
-    const now = new Date(nowMs).toISOString()
-    const atMs = at ? Date.parse(at) : nowMs
-    const expiresAtMs = expires_at ? Date.parse(expires_at) : Infinity
-    if (at && !Number.isFinite(atMs)) { error('at must be an ISO timestamp'); return }
-    if (notify_every != null && (!Number.isFinite(Number(notify_every)) || Number(notify_every) <= 0)) { error('notify_every must be a positive number of seconds'); return }
-    if (expires_at && !Number.isFinite(expiresAtMs)) { error('expires_at must be an ISO timestamp'); return }
-    if (Number.isFinite(expiresAtMs) && Number.isFinite(atMs) && expiresAtMs <= atMs) { error('expires_at must be later than at'); return }
-    const notifyEverySeconds = notify_every != null ? Number(notify_every) : null
-    const reminderAtMs = atMs > nowMs
-      ? atMs
-      : notifyEverySeconds
-        ? nowMs + notifyEverySeconds * 1000
-        : NaN
-    const metadata = {
-      trace_id: traceId,
-      ...(operation_id ? { client_operation_id: operation_id } : {}),
-      ...(requires_approval ? { requires_approval: true } : {}),
-      ...(allow_pending_agent && !await fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
-      ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
-      at: new Date(atMs).toISOString(),
-      ...(notify_every != null ? { notify_every: Number(notify_every) } : {}),
-      ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
-    }
-    const delegateMetadata = {
-      trace_id: traceId,
-      ...(operation_id ? { client_operation_id: operation_id } : {}),
-      fromLabel: fromAgent?.friendly_name || from || '',
-      toLabel: resolved.friendly_name || resolved.id,
-      criteria: success_criteria || [],
-      message: taskMsg || '',
-      ...(at ? { at: new Date(atMs).toISOString() } : {}),
-      ...(Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs
-        ? { next_fire_at: new Date(reminderAtMs).toISOString() }
-        : {}),
-      ...(notifyEverySeconds ? { repeat_seconds: notifyEverySeconds } : {}),
-      ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
-      ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
-    }
-    let delegateEvent
-    if (existingTask) {
-      const transfer = await transferTaskLifecycle({
-        fleetStore,
-        task: existingTask,
-        fromAgentId: from || null,
-        toAgentId: resolved.id,
-        message: taskMsg,
-        // `delegate` has always accepted `description`; on this branch it was
-        // silently dropped, so a caller restating a standing task got its old
-        // headline back. Absent, the existing description stands.
-        description,
-        delegatedAt: now,
-        eventMetadata: delegateMetadata,
-        eventOptions: { unread: atMs <= nowMs },
-        taskMetadataPatch: {
-          at: new Date(atMs).toISOString(),
-          notify_every: notify_every != null ? Number(notify_every) : undefined,
-          expires_at: expires_at ? new Date(expiresAtMs).toISOString() : undefined,
-        },
-      })
-      delegateEvent = transfer.event
-    } else {
-      const task = {
-        id: taskId, agent: resolved.id, description,
-        message: taskMsg || description,
-        delegated_by: from || null, delegated_at: now,
-        status: blocked_by?.length ? 'blocked' : 'pending',
-        acknowledged: false,
-        blockedBy: blocked_by || undefined,
-        success_criteria: success_criteria || undefined,
-        metadata: Object.keys(metadata).length ? metadata : undefined,
-      }
-      await fleetStore.upsertTask(task)
-      delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata, {
-        unread: !Number.isFinite(atMs) || atMs <= Date.now(),
-      })
-    }
-    if (existingTask) {
-      const pendingTimers = await fleetStore.listPendingTimerEvents?.() || []
-      for (const timer of pendingTimers) {
-        if (timer.metadata?.task_id === taskId) await serverTimerScheduler?.cancel(Number(timer.id))
-      }
-    }
-    if (Number.isFinite(reminderAtMs) && reminderAtMs < expiresAtMs) {
-      await fleetStore.share({
-        type: 'timer',
-        from: from || resolved.id,
-        to: resolved.id,
-        text: `⏱ ${description}`,
-        metadata: {
-          pending: true,
-          fire_at: new Date(reminderAtMs).toISOString(),
-          message: `Task reminder: ${description}`,
-          task_id: taskId,
-          ...(notifyEverySeconds ? { repeat_seconds: notifyEverySeconds } : {}),
-          ...(expires_at ? { expires_at: new Date(expiresAtMs).toISOString() } : {}),
-        },
-        unread: false,
-      })
-      await serverTimerScheduler?.refresh()
-    }
-    if (Number.isFinite(expiresAtMs)) {
-      await fleetStore.share({
-        type: 'timer',
-        from: from || resolved.id,
-        to: resolved.id,
-        text: `Task expired: ${description}`,
-        metadata: {
-          pending: true,
-          fire_at: new Date(expiresAtMs).toISOString(),
-          task_id: taskId,
-          task_expiry: true,
-        },
-        unread: false,
-      })
-      await serverTimerScheduler?.refresh()
-    }
-    controlPlaneTraces.append({
-      trace_id: traceId,
-      component: 'fleet-store',
-      operation: existingTask ? 'delegate.transfer' : 'delegate.insert',
-      status: 'stored',
-      detail: { task_id: taskId, event_id: delegateEvent?.id, from, to: resolved.id },
-    })
-    broadcastState(resolved.id)
-    reply({
-      ok: true,
-      task_id: taskId,
-      delegate_event_id: delegateEvent?.id || null,
-      event_id: delegateEvent?.id || null,
-      event_ids: [delegateEvent?.id].filter(id => id != null),
-      operation_id: operation_id || null,
-      trace_id: traceId,
-    })
-    if (!Number.isFinite(atMs) || atMs <= Date.now()) {
-      await requestWake(resolved.id, await delegateWakeText(description, resolved.id, from), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
-    }
+    const outcome = await performDelegate(msg)
+    if (outcome.error) { error(outcome.error); return }
+    reply(outcome.reply)
+    await outcome.finish?.()
     return
   }
 

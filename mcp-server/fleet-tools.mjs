@@ -2816,7 +2816,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
 
-    async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
+    async function buildDelegateBody(targetAgent, operationId, opts = {}) {
       const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.mint);
       const routedMessage = applyNonClaudeRolePack(message, {
         template: args.template,
@@ -2825,8 +2825,7 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         harnessKind,
       });
 
-      const operationId = args.operation_id || `${activeAgentId()}:mcp-delegate:${crypto.randomUUID()}`;
-      const delegateBody = {
+      return {
         from: activeAgentId(),
         agent: targetAgent,
         task_id: args.task_id || undefined,
@@ -2841,6 +2840,11 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         allow_pending_agent: opts.allowPendingAgent || undefined,
         operation_id: operationId,
       };
+    }
+
+    async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
+      const operationId = args.operation_id || `${activeAgentId()}:mcp-delegate:${crypto.randomUUID()}`;
+      const delegateBody = await buildDelegateBody(targetAgent, operationId, opts);
       const data = await mcpFleetTransport.durable('delegate', delegateBody, { operationId });
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
       if (data.queued && !data.task_id) return { data, spawnedInfo: targetSpawnedInfo, queued: true, operationId };
@@ -2855,11 +2859,29 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
     let agent = args.agent;
     let spawnedInfo = null;
 
-    // Combined mint+delegate: mint a fresh agent, then delegate to its fleet ID
+    // Combined mint+delegate: ONE durable operation. The spawn carries the
+    // delegation, and the server attaches the task to the shell row it reserves
+    // before it asks the daemon to launch anything.
+    //
+    // It used to be two sends: `spawn` with await_ready, then `delegate` once the
+    // agent id came back. await_ready resolves only from the agent's real
+    // login(), which is ~20s for a Claude seat; this client gives up waiting for
+    // a durable ack at 15s and answers `queued`; and the queued branch returned
+    // without ever sending leg 2. So the delegation was dropped on every mint,
+    // not on a slow one -- 15 < 20 with no concurrency and no load.
+    //
+    // Composing it server-side is what removes the drop. Raising the deadline
+    // would only move the same landmine to a bigger number, and the second leg
+    // would still be abandoned whenever the first leg's *acknowledgement* -- not
+    // the first leg itself -- ran late. With one operation there is no second leg
+    // to abandon, one operation_id covers both halves, and the outbox retries the
+    // whole thing. The ack is no longer gated on login either, so this path does
+    // not need a deadline it cannot meet.
     if (args.mint) {
       const spawnOpts = args.mint;
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
+      const operationId = args.operation_id || `${activeAgentId()}:mcp-mint-delegate:${crypto.randomUUID()}`;
       let spawnResult = null;
 
       try {
@@ -2867,14 +2889,18 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
         spawnResult = await mcpFleetTransport.durable('spawn', {
           fresh: true,
-          await_ready: true,
           name: agentName,
           model: spawnOpts.model,
           modelOptions: spawnModelOptionsFromArgs(spawnOpts),
           effort: spawnOpts.effort,
           cwd: agentCwd,
           permissionRequest: spawnOpts.permissionRequest,
-        });
+          // The delegation travels with the mint. `agent` is filled in by the
+          // server with the fleet id it allocates, which is why the client no
+          // longer needs it back before the task can exist.
+          delegate: await buildDelegateBody(null, operationId, { allowPendingAgent: true }),
+          operation_id: operationId,
+        }, { operationId });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `mint failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
         }
@@ -2883,36 +2909,27 @@ async function handleFleetToolWithIdentity(name, args, context = {}) {
         return { content: [{ type: 'text', text: `mint failed before delegation: ${msg}` }], isError: true };
       }
 
-      // A queued durable spawn is not a failure: the client's wait for the
-      // server response hit FLEET_DURABLE_SEND_DEADLINE_MS while the daemon was
-      // still spawning (e.g. a slow non-Claude fallback harness), and the
-      // outbox is already retrying under the same operation_id. Reporting this
-      // as "mint failed" was wrong -- the agent is frequently alive by the time
-      // that message lands. Say it is still in flight instead.
+      // Queued is now honest and harmless: the whole operation -- mint and task
+      // both -- is in the outbox under one operation_id and will be retried. It
+      // is no longer a point at which half the work is silently discarded.
       if (spawnResult?.queued) {
-        return { content: [{ type: 'text', text: `Mint for ${agentName} is still in flight (operation_id: ${spawnResult.operation_id}); the daemon may still be starting it. Not delegating yet -- re-check the roster shortly rather than assuming it failed.` }] };
+        return { content: [{ type: 'text', text: `Mint of ${agentName} with its task is queued durably (operation_id: ${spawnResult.operation_id}); it will be retried under that id. The delegation travels with the mint, so nothing is lost -- do not re-send.\ntask: ${description}` }] };
       }
 
       const shellAgentId = spawnResult?.agent_id || spawnResult?.agentId || spawnResult?.agent?.id;
+      const assignedName = spawnResult?.assigned_name || spawnResult?.name || agentName;
       if (!shellAgentId) {
-        return { content: [{ type: 'text', text: `mint joined as ${agentName}, but returned no agent id. Not delegating.` }], isError: true };
+        return { content: [{ type: 'text', text: `mint accepted as ${agentName}, but returned no agent id. The task may not have attached; check the roster.` }], isError: true };
       }
-
-      try {
-        const assignedName = spawnResult?.assigned_name || spawnResult?.name || agentName;
-        const { data, queued, operationId } = await delegateToResolvedAgent(shellAgentId, { agent_id: shellAgentId, friendly_name: assignedName });
-        if (queued) {
-          return { content: [{ type: 'text', text: `Minted ${assignedName}; delegation queued durably for ${shellAgentId}: ${description}\noperation_id: ${data.operation_id || operationId}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}` }] };
-        }
-        return {
-          content: [{
-            type: 'text',
-            text: `Minted ${assignedName} and delegated [${data.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}`,
-          }],
-        };
-      } catch (e) {
-        return { content: [{ type: 'text', text: `mint reserved ${agentName} (${shellAgentId}), but durable delegation failed: ${e.message}` }], isError: true };
+      if (!spawnResult?.task_id) {
+        return { content: [{ type: 'text', text: `mint reserved ${assignedName} (${shellAgentId}), but the server returned no task id, so the delegation did not attach: ${description}` }], isError: true };
       }
+      return {
+        content: [{
+          type: 'text',
+          text: `Minted ${assignedName} and delegated [${spawnResult.task_id}] to ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${assignedName}\nThe task is attached now; the agent is still starting and is notified when it joins. A launch failure retracts the task.`,
+        }],
+      };
     }
 
     try {
