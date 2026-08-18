@@ -1925,7 +1925,15 @@ router.get('/:name/recording-drafts', requireRecordingPrivateRead, (req, res) =>
         const publication = readRecordingPublication(dir, m.id)
         if (publication?.state === 'published') return null
         return { id: m.id, title: m.title, created: m.created, duration_ms: m.duration_ms, publication }
-      } catch { return null }
+      } catch (error) {
+        // A recording that will not parse is NOT the same as no recording, and
+        // this used to answer 200 {"recordings":[]} for both. Nothing is slow
+        // and nothing throws outward, so no profiler and no guard can see it --
+        // the only thing that finds it is a person noticing their lecture is
+        // missing. Say so instead.
+        console.error(`[recordings] unreadable recording metadata ${f}: ${error.message}`)
+        return { id: f.replace(/\.json$/, ''), unreadable: true, error: error.message }
+      }
     })
     .filter(Boolean)
     .sort((a, b) => String(b.created).localeCompare(String(a.created)))
@@ -2022,7 +2030,11 @@ router.get('/:name/recordings', requireRead, (req, res) => {
         const m = JSON.parse(readFileSync(join(dir, f), 'utf8'))
         if (readRecordingPublication(dir, m.id)?.state !== 'published') return null
         return { id: m.id, title: m.title, created: m.created, duration_ms: m.duration_ms }
-      } catch { return null }
+      } catch (error) {
+        // Same as the drafts listing above: unreadable is not absent.
+        console.error(`[recordings] unreadable recording metadata ${f}: ${error.message}`)
+        return { id: f.replace(/\.json$/, ''), unreadable: true, error: error.message }
+      }
     })
     .filter(Boolean)
     .sort((a, b) => String(b.created).localeCompare(String(a.created)))
