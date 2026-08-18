@@ -432,32 +432,47 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
     console.log(dim(`  ${deletedFiles.length} files deleted on server`))
   }
 
-  const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
-  let expectedRevision = sourceAuthority.currentRevision
-  let result = null
-  if (changedFiles.length > 0) {
-    const pushed = await pushSourceFileBatches(name, changedFiles, {
-      context: sourceContext,
-      initialManifestPaths: survivingServerPaths,
-      expectedRevision,
-      readBatchFiles: batch => batch.map(file => ({ path: file.path, ...readForUpload(file.fullPath) })),
-      extraBody,
-      logProgress: changedFiles.length !== changedPaths.length || changedFiles.some(file => file.size > 0),
-    })
-    result = pushed.result
-    expectedRevision = pushed.expectedRevision
-  }
+  const { staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
+  const expectedRevision = sourceAuthority.currentRevision
   const cleanupFiles = [...new Set([...(deletedFiles || []), ...staleServerPaths])]
-  if (cleanupFiles.length > 0 || forceMetadata || changedFiles.length === 0) {
-    result = await api('POST', `/api/projects/${name}/push`, {
-      files: [],
-      sourceManifest,
-      expectedRevision,
-      ...(cleanupFiles.length > 0 && { deletedFiles: cleanupFiles }),
-      ...extraBody,
-    })
+  if (changedFiles.length === 0 && cleanupFiles.length === 0 && !forceMetadata) {
+    return { ok: true, unchanged: true }
   }
-  return result || { ok: true, unchanged: true }
+
+  // One snapshot, not a batch sequence followed by a cleanup push. The carrier
+  // takes the whole intended project in a single accept, so the batching and
+  // its per-batch expectedRevision re-threading are gone -- and losing them is
+  // the point rather than a side effect. A mid-sequence failure used to leave
+  // earlier batches landed and later ones not; the accept is now atomic, so
+  // that partial landing cannot happen.
+  //
+  // Deletions are not sent. `sourceManifest` is every local path, so a file the
+  // server holds and the checkout does not is absent from the manifest, and a
+  // path that leaves the manifest is deleted by not being named.
+  const current = await api('GET', `/api/projects/${name}/source-entries`)
+  const entryByPath = new Map((current.files || []).map(entry => [entry.path, entry]))
+  const changedSet = new Set(changedFiles.map(file => file.path))
+  warnAboutFilesTooBigToCarry(changedFiles)
+  const files = sourceManifest.map(path => {
+    // Unchanged paths ride as references to the blob the server already has,
+    // which is what keeps this incremental: without them the only way to
+    // satisfy "an entry per manifest path" is to re-upload the whole project
+    // on every push. An unchanged path with no entry in the current revision
+    // falls back to content -- `/hashes` is the server's working directory and
+    // the entries are the accepted revision, so the two can disagree, and the
+    // bytes are on disk here either way.
+    if (!changedSet.has(path)) {
+      const entry = entryByPath.get(path)
+      if (entry) return { path, sha256: entry.sha256, size: entry.size }
+    }
+    return { path, ...readForUpload(join(dir, path)) }
+  })
+  return await api('POST', `/api/projects/${name}/source-snapshot`, {
+    files,
+    sourceManifest,
+    expectedRevision,
+    ...extraBody,
+  })
 }
 
 function sourceManifestForFiles(files, context = {}) {
@@ -537,33 +552,6 @@ export function warnAboutFilesTooBigToCarry(files) {
   console.warn(yellow(`    Files are grouped into requests of ${mb(SOURCE_PUSH_MAX_RAW_BYTES)}, and a file cannot be split,`))
   console.warn(yellow('    so each of these goes out alone as a request about four thirds its size.'))
   console.warn(yellow('    A file this large has taken the server down rather than being rejected.'))
-}
-
-async function pushSourceFileBatches(name, files, {
-  context,
-  initialManifestPaths,
-  expectedRevision,
-  readBatchFiles,
-  extraBody = {},
-  logProgress = true,
-}) {
-  const currentPaths = new Set(initialManifestPaths)
-  const batches = sourceFileBatches(files)
-  warnAboutFilesTooBigToCarry(files)
-  let result = null
-  for (let index = 0; index < batches.length; index++) {
-    const batch = batches[index]
-    for (const file of batch) currentPaths.add(file.path)
-    result = await api('POST', `/api/projects/${name}/push`, {
-      files: readBatchFiles(batch),
-      sourceManifest: normalizeSourceManifest([...currentPaths], context),
-      expectedRevision,
-      ...extraBody,
-    })
-    expectedRevision = result.sourceRevision || await currentSourceRevision(name)
-    if (logProgress) console.log(dim(`  ${index + 1}/${batches.length}: ${batch.length} file(s)`))
-  }
-  return { result, expectedRevision, currentPaths }
 }
 
 function findMainTex(dir) {
@@ -969,36 +957,25 @@ async function cmdCreate() {
     }
     collectQmdDir(dir)
 
-    const readBatchFiles = batch => batch.map(file => ({
-      path: file.path,
-      content: readFileSync(file.fullPath).toString('base64'),
-      encoding: 'base64',
-    }))
     const finalManifest = normalizeSourceManifest(qmdFiles.map(file => file.path), qmdContext)
-    const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
-    const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, finalManifest)
-    let expectedRevision = await currentSourceRevision(name)
-    const priority = new Set([mainFile, '_quarto.yml', '_quarto_book.yml', 'development.qmd', 'scratch/fall-2026-development-schedule.html'])
-    qmdFiles.sort((a, b) => Number(priority.has(b.path)) - Number(priority.has(a.path)) || a.path.localeCompare(b.path))
-    const batches = sourceFileBatches(qmdFiles)
+    const expectedRevision = await currentSourceRevision(name)
 
-    console.log(`Pushing ${qmdFiles.length} file(s) in ${batches.length} bounded request(s)...`)
-    const pushed = await pushSourceFileBatches(name, qmdFiles, {
-      context: qmdContext,
-      initialManifestPaths: survivingServerPaths,
+    // This path sends every file's content rather than a diff, so the snapshot
+    // is the whole project in one accept. The ordering that fed the batcher is
+    // gone with it: a single request has no first batch to put the main file
+    // in. Stale server files are deleted by being absent from the manifest, so
+    // there is no cleanup push after this one.
+    console.log(`Pushing ${qmdFiles.length} file(s) in one snapshot...`)
+    warnAboutFilesTooBigToCarry(qmdFiles)
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
+      files: qmdFiles.map(file => ({
+        path: file.path,
+        content: readFileSync(file.fullPath).toString('base64'),
+        encoding: 'base64',
+      })),
+      sourceManifest: finalManifest,
       expectedRevision,
-      readBatchFiles,
     })
-    expectedRevision = pushed.expectedRevision
-    const staleFiles = staleServerPaths
-    if (staleFiles.length > 0) {
-      await api('POST', `/api/projects/${name}/push`, {
-        files: [],
-        deletedFiles: staleFiles,
-        sourceManifest: finalManifest,
-        expectedRevision,
-      })
-    }
     console.log(green('Quarto project processed.'))
 
     const server = getServer()
