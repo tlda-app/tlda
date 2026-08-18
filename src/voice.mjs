@@ -4132,6 +4132,13 @@ export async function initVoice() {
       prefMeter = nextPrefMeter
       paintMicLevel()
     }
+    // "Agent subtitles" off means off now, not off for the next one. The gate in
+    // maybeShowRadioSubtitleForIncomingChat only decides whether the NEXT card
+    // appears, and two paths leave a visible one with no collapse timer at all:
+    // dictating a reply (setRadioDraftText) and expanding the transcript, which
+    // re-arms the timer only on collapse. So unchecking the box while reading a
+    // subtitle used to do nothing at all, for as long as it was left there.
+    if (_radioExpanded && !getPref('radio-subtitles-enabled')) collapseRadioSubtitle()
   })
 
   // Right Shift: tap counting within 300ms windows.
