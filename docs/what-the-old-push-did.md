@@ -72,18 +72,44 @@ every pushed and deleted path. **The new path calls neither.**
 `AGENTS.md` lists path containment as a real authority boundary that survives
 this cut, so this is the most important row in this file.
 
-**What probably covers it, and why "probably" is not good enough.** The carrier
-normalizes the manifest, and `normalizeSourceManifest` filters through
-`isManagedSourcePath` — so a traversal path is dropped from the manifest rather
-than accepted, and `carryForward` maps over the normalized manifest, so it never
-reaches `acceptRevision`. The working-copy write iterates paths that came back
-out of the git tree.
+**Measured, so the "probably" is now settled in both directions.** Four
+adversarial paths pushed through `acceptSourceSnapshot` — `../escaped.tex`,
+`sub/../../escaped.tex`, an absolute path, and `link/escaped.tex` where `link`
+is a symlink out of the project:
 
-**But filtering and rejecting are not the same thing**, and nobody has checked
-that the filter's coverage equals the validator's. A path that is silently
-dropped is also a path whose absence the caller is never told about. **Do not
-delete the validator on the strength of this paragraph** — establish the
-equivalence, or call the validator from the accept.
+| | result |
+|---|---|
+| anything written outside the project | **no, on all four** |
+| the push's reported status | **200 on all four, no error** |
+
+**So the gap is not an escape. It is silence.**
+
+**Containment holds because the boundary is the WRITE, not the validator.**
+`writeSourceFileAsync`, `deleteSourceFileAsync` and `readSourceFileAsync` each
+resolve through `sourceFilePath()` → `resolveContainedPath()`, which realpaths
+the nearest existing ancestor and throws. `validateSourceFilePath` **is that
+same call with its result discarded** — an early, friendlier rejection of what
+the writer refuses anyway. The two cannot drift apart because they are one
+function.
+
+**And normalization is NOT equivalent to validation** — that assumption was
+wrong. `isManagedSourcePath` reasons about the *string*, so `link/paper.tex`
+survives it looking like an ordinary relative path; only resolving the real path
+catches it. A textual `../` is filtered, which is exactly why this looked like
+coverage.
+
+**What the missing validator actually costs:** a traversal path is filtered out
+of the manifest and the push returns 200, or it reaches the working copy and the
+write throws into a caught branch — and either way **the caller is told their
+file landed.** The legitimate files in the same push do land, so nothing looks
+wrong. A file that did not land, reported as landed, is the family this whole
+cut exists to remove.
+
+**The fix is to call `validateSourceFilePath` on every manifest and file path in
+the accept and reject with the offending path named.** It is not built: Skip
+ruled that the protocol is written up and put to him before anything else is
+changed. **Do not delete the validator, and do not build this without that
+ruling.**
 
 ### 2. The build fires unconditionally
 
@@ -165,6 +191,45 @@ can unwind a remote head**, so a failed publish becomes unrecoverable rather
 than rolled back. This is Overleaf-repoint work.
 
 ---
+
+---
+
+## What an accept costs, measured
+
+**Nobody chose this and nobody has said it is acceptable.** Recorded here
+because a measurement is a timestamp rather than a state — these are the
+conditions, not a property of the code forever.
+
+**Nine subprocess spawns per two-file accept: 8 `git`, 1 `rm`.**
+
+| condition | time per accept |
+|---|---|
+| sequential, load average ~22–35 | **3.0–4.5s** |
+| six concurrent accepts, same box | **8–9s** |
+
+**Flat in file count** — 1, 2 and 4 files all measured the same, so the cost is
+per-accept rather than per-file.
+
+**This is what produced the "intermittent hang" that stopped the line.** A repro
+with a 10-second deadline timed out on ~half of its runs; the identical build
+with a 60-second deadline completed 6 of 6 in 8–9 seconds. A deadlock does not
+complete when you wait longer. Instrumenting the spawn helper to log `exit` and
+`close` separately showed the stuck child had emitted **neither** — it was still
+running when the clock fired, not exited with a pipe held open.
+
+**Why it matters past a test deadline:** the source editor writes on a debounce,
+the daemon flushes on a watcher, and `tlda push` is a command someone waits on.
+A save that takes four seconds idle and nine under load is user-visible, on the
+surface Skip writes his paper on.
+
+**One obvious piece, not the whole of it:** `run('rm', ['-f', indexFile])` in
+`buildTree`'s cleanup spawns a whole subprocess to delete a temp file that
+`fs.rm` handles in-process — 1 of the 9.
+
+**And the comparison nobody can make yet:** whether this is faster or slower
+than the path it replaces is **not established**. The old path did a different
+amount of work, so "it was always slow" is not a defence and is not asserted
+here.
 
 ## The check that found the last one, and the one to keep using
 
