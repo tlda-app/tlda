@@ -455,10 +455,9 @@ function findLabelLine(sourceDir, sourceMap, mainFile, label) {
 //
 // `chat` is deliberately NOT gated: it is the accessibility-critical channel to
 // Skip, and a dropped retry there would lose a message. Only the producing tools
-// (report/input_scratch), where a missed retry is harmless, gate.
+// (report), where a missed retry is harmless, gate.
 const GATED_MCP_TOOLS = {
   report:        { tool: 'tlda/report' },
-  input_scratch: { tool: 'tlda/input_scratch' },
 };
 
 async function eduCheckOwedSkills(toolNorm, { file = '', content = '' } = {}) {
@@ -2247,49 +2246,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'input_scratch',
-      description: 'Inject a scratch section into a document at a specific location. Use this ONCE to place a new scratch section. After placement, edit your scratch file directly — the watcher detects changes and rebuilds automatically. Never create version-suffixed files (v2, v3); git handles versioning. Never write to .tlda/ directly. Accepts .tex or .md/.qmd. Write plain content — no \\begin{scratch} wrapper. Requires exactly one of: after, before, replace. If the build fails, you will receive an automatic fleet chat with the LaTeX errors.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
-          content_path: { type: 'string', description: 'Local path to .tex or .md/.qmd file containing the scratch content. Markdown files are preserved as-is and converted at build time.' },
-          label: { type: 'string', description: 'Label for this scratch section. Convention: "scratch:descriptive-name" (e.g. "scratch:thm-bias-alt"). Used for cross-referencing and as the visible header.' },
-          after: { type: 'string', description: 'Insert after this existing label (e.g. "thm:bias-decomp") or "line:N". Exclusive with before/replace.' },
-          before: { type: 'string', description: 'Insert before this existing label or "line:N". Exclusive with after/replace.' },
-          replace: { type: 'string', description: 'Label of an existing scratch section to overwrite in-place. Content is replaced; the \\inputscratch{} in main.tex stays. Exclusive with after/before.' },
-        },
-        required: ['project', 'content_path', 'label'],
-      },
-    },
-    {
-      name: 'inline_scratch',
-      description: 'Promote a polished scratch section into the document proper. Replaces the \\inputscratch{}{}{} line in main.tex with the raw content from the scratch file. Use this when a scratch section is ready to become real document content.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project: { type: 'string', description: 'Project name (e.g. "bregman")' },
-          label: { type: 'string', description: 'Label of the scratch section to inline (same label used when it was created with input_scratch)' },
-        },
-        required: ['project', 'label'],
-      },
-    },
-    {
-      name: 'extract_to_scratch',
-      description: 'Extract a range of source lines from the document into a markdown scratch note. Converts LaTeX to markdown via pandoc (\\ref{} → @label). Creates a backed math note on the canvas at the extracted region, and writes the .md file to the scratch directory.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project: { type: 'string', description: 'Project name' },
-          startLine: { type: 'number', description: 'First source line to extract' },
-          endLine: { type: 'number', description: 'Last source line to extract' },
-          name: { type: 'string', description: 'Name for the scratch file (e.g. "bias-rework"). Creates scratch/{name}.md' },
-          file: { type: 'string', description: 'Source file (for multi-file projects). Omit for main file.' },
-        },
-        required: ['project', 'startLine', 'endLine', 'name'],
-      },
-    },
-    {
       name: 'set_preamble',
       description: 'Point your chat preamble at a document. Your math in chat is rendered (and linted) with that document\'s macros, and every message you send carries the reference so readers see it rendered with your preamble — not theirs. By default your preamble is the project in your working directory; use this to override it to any document (e.g. when you are not working inside a paper\'s source dir). Physics-package commands (\\norm, \\qty, …) are always available regardless.',
       inputSchema: {
@@ -2313,9 +2269,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     'build',
     'push',
     'lookup_theorem',
-    'input_scratch',
-    'inline_scratch',
-    'extract_to_scratch',
     'set_preamble',
   ].includes(tool.name)),
 }));
@@ -3422,193 +3375,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `lookup_theorem error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'input_scratch') {
-    const { project: doc, content_path, label, after, before, replace } = args;
-    if (!doc || !content_path || !label) {
-      return { content: [{ type: 'text', text: 'project, content_path, and label are required.' }], isError: true };
-    }
-    if (!after && !before && !replace) {
-      return { content: [{ type: 'text', text: 'One of after, before, or replace is required.' }], isError: true };
-    }
-    const resolved = path.resolve(content_path);
-    // .tlda/scratch/ is fully tlda-managed. Block content_path pointing inside
-    // it to prevent self-referential symlinks that destroy the file.
-    if (/(^|\/)\.tlda\/scratch(\/|$)/.test(resolved)) {
-      return { content: [{ type: 'text', text: `content_path "${resolved}" is inside the tlda-managed .tlda/scratch/ directory. Keep your scratch source elsewhere (e.g. a scratch/ dir) and pass that path — tlda owns .tlda/scratch/ and will create the link itself.` }], isError: true };
-    }
-    let content;
-    try { content = fs.readFileSync(resolved, 'utf8'); } catch (e) {
-      return { content: [{ type: 'text', text: `Cannot read ${resolved}: ${e.message}` }], isError: true };
-    }
-    const isMd = resolved.endsWith('.md') || resolved.endsWith('.qmd');
-    try {
-      const agentId = process.env.FLEET_ID || null;
-      const agentName = process.env.FLEET_NAME || null;
-      // Relativize content_path to sourceDir for display in \inputscratch
-      const projectInfo = await serverFetch(`/api/projects/${doc}`);
-      const relContentPath = projectInfo.sourceDir ? path.relative(projectInfo.sourceDir, resolved) : path.basename(resolved);
-      const result = await serverFetch(`/api/projects/${doc}/input-scratch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, label, after, before, replace, agentId, agentName, format: isMd ? 'md' : 'tex', contentPath: relContentPath }),
-      });
-      const { scratchPath, wrappedContent, scratchTemplatePath, scratchTemplateContent, mainFile, mainContent, targetFile, targetContent, sourceDir } = result;
-      if (!sourceDir) {
-        return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first so the server knows the local project path.` }], isError: true };
-      }
-      // Write files to the local source directory; the watcher will push them and trigger the build
-      const scratchDir = path.join(sourceDir, path.dirname(scratchPath));
-      fs.mkdirSync(scratchDir, { recursive: true });
-      // Auto-add .tlda/ to .gitignore
-      const gitignorePath = path.join(sourceDir, '.gitignore');
-      try {
-        const existing = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
-        if (!existing.split('\n').some(l => l.trim() === '.tlda/' || l.trim() === '.tlda')) {
-          const suffix = existing.endsWith('\n') || existing === '' ? '' : '\n';
-          fs.writeFileSync(gitignorePath, existing + suffix + '.tlda/\n', 'utf8');
-        }
-      } catch {}
-      // .tlda/scratch/ is fully tlda-managed — agents never edit it. Rewrite
-      // the template whenever it doesn't match the current canonical content.
-      if (scratchTemplatePath && scratchTemplateContent) {
-        const templateAbsPath = path.join(sourceDir, scratchTemplatePath);
-        const existing = fs.existsSync(templateAbsPath) ? fs.readFileSync(templateAbsPath, 'utf8') : null;
-        if (existing !== scratchTemplateContent) fs.writeFileSync(templateAbsPath, scratchTemplateContent, 'utf8');
-      }
-      const scratchAbsPath = path.join(sourceDir, scratchPath);
-      if (!isMd) fs.writeFileSync(scratchAbsPath, wrappedContent, 'utf8');
-      if (result.sourcePath) {
-        const symlinkPath = path.join(sourceDir, result.sourcePath);
-        // Belt-and-suspenders: don't self-link
-        if (path.resolve(symlinkPath) !== resolved) {
-          try { fs.unlinkSync(symlinkPath); } catch {}
-          fs.symlinkSync(resolved, symlinkPath);
-        }
-      }
-      if (mainContent) {
-        fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
-      }
-      if (targetFile && targetContent) {
-        fs.writeFileSync(path.join(sourceDir, targetFile), targetContent, 'utf8');
-      }
-      const refValidation = validateRefs(content, doc);
-      const refWarning = formatRefWarnings(refValidation);
-      const lang = isMd ? 'markdown' : 'latex';
-      const contentLines = content.split('\n');
-      const preview = contentLines.length > 30
-        ? contentLines.slice(0, 30).join('\n') + `\n… (${contentLines.length - 30} more lines)`
-        : content;
-      const contentBlock = `\n\n**Content written:**\n\`\`\`${lang}\n${preview}\n\`\`\``;
-      if (result.action === 'replaced') {
-        return { content: [{ type: 'text', text: `Replaced scratch section "${replace}". Your file: \`${resolved}\`. Watcher will rebuild on edits.${refWarning}${contentBlock}` }] };
-      }
-      const loc = after ? `after "${after}"` : `before "${before}"`;
-      return { content: [{ type: 'text', text: `Inserted scratch section "${label}" ${loc}. Your file: \`${resolved}\`. Watcher will rebuild on edits.${refWarning}${contentBlock}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'inline_scratch') {
-    const { project: doc, label } = args;
-    if (!doc || !label) {
-      return { content: [{ type: 'text', text: 'project and label are required.' }], isError: true };
-    }
-    try {
-      const result = await serverFetch(`/api/projects/${doc}/inline-scratch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label }),
-      });
-      const { mainFile, mainContent, scratchPath, sourceDir } = result;
-      if (!sourceDir) {
-        return { content: [{ type: 'text', text: `Error: project "${doc}" has no sourceDir — run the file watcher first.` }], isError: true };
-      }
-      fs.writeFileSync(path.join(sourceDir, mainFile), mainContent, 'utf8');
-      const scratchAbsPath = path.join(sourceDir, scratchPath);
-      try { fs.unlinkSync(scratchAbsPath); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-      return { content: [{ type: 'text', text: `Inlined "${label}" into ${path.join(sourceDir, mainFile)} and removed ${scratchAbsPath}. Watcher will sync and rebuild.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'extract_to_scratch') {
-    const { project: doc, startLine, endLine, name: scratchName, file: sourceFile } = args;
-    if (!doc || !startLine || !endLine || !scratchName) {
-      return { content: [{ type: 'text', text: 'project, startLine, endLine, and name are required.' }], isError: true };
-    }
-    try {
-      const projectInfo = await serverFetch(`/api/projects/${doc}`);
-      if (!projectInfo) return { content: [{ type: 'text', text: `Document "${doc}" not found.` }], isError: true };
-      const sourceDir = projectInfo.sourceDir;
-      if (!sourceDir) return { content: [{ type: 'text', text: `No sourceDir for "${doc}".` }], isError: true };
-
-      const texFile = sourceFile || projectInfo.mainFile || 'main.tex';
-      const texPath = path.join(sourceDir, texFile);
-      const texContent = fs.readFileSync(texPath, 'utf8');
-      const lines = texContent.split('\n');
-      const extracted = lines.slice(startLine - 1, endLine).join('\n');
-
-      // Generate three format views
-      let mdContent;
-      try {
-        mdContent = execSync('pandoc -f latex -t markdown --wrap=none', { input: extracted, encoding: 'utf8', timeout: 10000 });
-      } catch (e) {
-        return { content: [{ type: 'text', text: `pandoc conversion failed: ${e.message}` }], isError: true };
-      }
-      mdContent = mdContent.replace(/\\ref\{([\w:.-]+)\}/g, '@$1');
-
-      const texView = extracted;
-
-      // Outline: extract structural elements (environments, labels, refs, section commands)
-      const outlineLines = [];
-      for (const l of extracted.split('\n')) {
-        const trimmed = l.trim();
-        if (!trimmed || trimmed.startsWith('%')) continue;
-        const beginM = trimmed.match(/\\begin\{(\w+)\}(?:\[([^\]]*)\])?(?:\{([^}]*)\})?/);
-        if (beginM) { outlineLines.push(`- **${beginM[1]}**${beginM[2] ? ` [${beginM[2]}]` : ''}${beginM[3] ? ` {${beginM[3]}}` : ''}`); continue; }
-        const secM = trimmed.match(/\\(section|subsection|paragraph)\*?\{([^}]+)\}/);
-        if (secM) { outlineLines.push(`- **${secM[1]}**: ${secM[2]}`); continue; }
-        const labelM = trimmed.match(/\\label\{([^}]+)\}/);
-        if (labelM) { outlineLines.push(`  - label: \`${labelM[1]}\``); continue; }
-        const eqM = trimmed.match(/\\(eqref|ref)\{([^}]+)\}/g);
-        if (eqM) { outlineLines.push(`  - refs: ${eqM.map(r => '`' + r + '`').join(', ')}`); }
-      }
-      const outlineView = outlineLines.length > 0 ? outlineLines.join('\n') : '(no structural elements found)';
-
-      const scratchDir = path.join(sourceDir, 'scratch');
-      fs.mkdirSync(scratchDir, { recursive: true });
-      const mdPath = path.join(scratchDir, `${scratchName}.md`);
-      fs.writeFileSync(mdPath, mdContent, 'utf8');
-
-      const result = await addAnnotation(doc, startLine, mdContent, {
-        color: 'violet', size: 'lg', side: 'right',
-      });
-
-      // Add format tabs to the created note
-      if (result.ok) {
-        try {
-          const fullId = result.shapeId.startsWith('shape:') ? result.shapeId : `shape:${result.shapeId}`;
-          await updateShapeRest(doc, fullId, {
-            props: {
-              tabs: [mdContent, texView, outlineView],
-              activeTab: 0,
-            },
-          });
-        } catch (e) {
-          process.stderr.write(`[mcp] failed to add format tabs: ${e.message}\n`);
-        }
-      }
-
-      const refValidation = validateRefs(mdContent, doc);
-      const refWarning = formatRefWarnings(refValidation);
-      return { content: [{ type: 'text', text: `Extracted lines ${startLine}–${endLine} to ${mdPath}${result.ok ? ` (note ${result.shapeId})` : ''}. Format tabs: prose / tex / outline.${refWarning}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
 
