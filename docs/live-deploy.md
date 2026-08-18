@@ -95,22 +95,106 @@ connection is dropped with a line in `fly logs`.
 The measured app-machine gap on 2026-08-18 was about 60 seconds — machine stop
 03:11:45Z, serving 03:12:45Z. A cold start on this box has been measured near 90s.
 
-### The .ts.net name must not move
+### The cutover, once
 
-The tldraw licence is bound to `*.cormorant-matrix.ts.net`, and Skip has that URL
-open. The node keeps its identity because the edge volume holds the *existing*
-`tailscaled.state` — it is the same node, on a different machine, not a new one.
+The tldraw licence is bound to `*.cormorant-matrix.ts.net` and Skip has that URL
+open, so the node has to keep its identity: the edge volume holds a **copy of the
+existing `tailscaled.state`**, which makes it the same node on a different
+machine. A fresh tailscaled registers a new node, Tailscale names it
+`tlda-fly-1`, and his URL moves.
 
-**Seed it before the first edge boot.** A fresh tailscaled registers a new node,
-Tailscale names it `tlda-fly-1`, and the URL moves:
+**Edge goes up first, while the app machine is still running its old image and
+still holding the tailnet node.** That ordering is the whole safety property: if
+anything about the edge machine is wrong, destroying it puts things back exactly,
+and the name is never down. Deploying both groups at once would be one step
+shorter and would mean a failed edge boot leaves him with no app at all.
+
+**0. Nothing else may be deploying.** Two `fly deploy` runs against one app race,
+and these steps bypass the `pre-receive` lock:
+
+```bash
+cat /Users/skip/work/deploy/locks/fly.live.toml.lock   # absent, or a dead pid
+```
+
+**1. Take a copy of the node state.** Copy, never move — the app machine keeps
+its own until step 5.
+
+```bash
+fly sftp get -c fly.live.toml /app/server/persist/tailscale/tailscaled.state ./tailscaled.state
+test -s tailscaled.state && echo "have $(wc -c < tailscaled.state) bytes"
+```
+
+**2. Create the edge volume, same region as the app.**
 
 ```bash
 fly volumes create edge_ts_state -c fly.live.toml -r sjc -s 1
-# copy the node state off the app machine's volume onto the edge volume, then
-fly deploy -c fly.live.toml            # both groups, once
 ```
 
-Every deploy after that names `--process-groups app`.
+**3. Seed it.** A throwaway machine is the only way to write a volume no machine
+has mounted yet. Use the image the app is running now:
+
+```bash
+fly machine run "$(fly status -c fly.live.toml --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).Machines[0].config.image))')" \
+  -c fly.live.toml -r sjc -v edge_ts_state:/var/lib/tlda-edge --rm sleep 600
+# in another shell, against the machine id it printed:
+fly ssh console -c fly.live.toml -s -C "mkdir -p /var/lib/tlda-edge/tailscale"
+fly sftp shell -c fly.live.toml    # put ./tailscaled.state /var/lib/tlda-edge/tailscale/tailscaled.state
+```
+
+**Check before going on:** the file is on the volume, 2.7 KB, not zero.
+
+**4. Bring up the edge machine only.** The app group keeps its current image and
+its tailscaled.
+
+```bash
+fly deploy -c fly.live.toml --process-groups edge
+```
+
+**Check, and this is the one that matters:** the node did not rename, and the
+name serves through the proxy.
+
+```bash
+curl -fsS https://tlda-fly.cormorant-matrix.ts.net/api/build-info
+fly logs -c fly.live.toml --no-tail | grep '\[edge\]'
+```
+
+If the hostname moved to `tlda-fly-1`, **stop**: destroy the edge machine, and
+the app machine still holds `tlda-fly`. Nothing was lost and step 1 or 3 is
+wrong.
+
+There is a brief window here where the app machine and the edge machine hold the
+same node key. That is why step 5 follows immediately rather than later.
+
+**5. Land the app group.** This is the deploy that deletes tailscaled from the
+app container — and it is the first live proof of the whole thing, because the
+front door should hold his connections across it.
+
+```bash
+fly deploy -c fly.live.toml --process-groups app
+```
+
+**6. Make it the default.** In `/Users/skip/work/deploy/hooks/pre-receive-common.sh`,
+which is outside git:
+
+```diff
+-    fly deploy -c "$fly_config"
++    fly deploy -c "$fly_config" --process-groups app
+```
+
+Until that line lands, an ordinary `git push` deploys **both** groups and takes
+the name down — which is the thing this arrangement exists to stop. Do not land
+it before step 5; it buys nothing until the edge group exists.
+
+### Rollback
+
+Before step 6, the whole cutover is undone by destroying one machine:
+
+```bash
+fly machine destroy <edge-machine-id> -c fly.live.toml --force
+```
+
+After step 5 the app container no longer runs tailscaled, so a rollback is that
+destroy **plus** redeploying the app group from a `main` without these commits.
 
 ### What the move costs
 
