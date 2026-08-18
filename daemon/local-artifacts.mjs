@@ -27,10 +27,15 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl, resolveA
     return await uploadFileToServer(abs, serverBase)
   }
 
-  async function rechat({ text, agent_id, server_url }) {
+  // No `server_url` parameter. The only sender — server/routes/fleet.mjs — has
+  // never passed one, so `server_url || getServerUrl()` always took the
+  // fallback: a field that existed to be ignored. Which server this daemon
+  // talks to is the daemon's own configuration, not something the server tells
+  // it, so the fallback was the real behaviour and the parameter was the lie.
+  async function rechat({ text, agent_id }) {
     const cwd = resolveAgentCwd?.(agent_id)
     if (!cwd) throw new Error(`agent cwd unavailable for ${agent_id || 'unknown agent'}`)
-    const serverBase = server_url || getServerUrl()
+    const serverBase = getServerUrl()
     const result = await processMessageText(text, cwd, serverBase)
     const markdownRenderIssues = []
     for (const att of result.inlineAttachments || []) {
