@@ -5,7 +5,8 @@ export const DELIVERY_DIRECT = 'direct'
 
 const DURABLE_TYPES = new Set([
   'activity-event',
-  'activity-health',
+  // NOT activity-health -- see LATEST_WINS_TYPES. It is a heartbeat, and the
+  // name is the only thing it shares with activity-event.
   'agent-route',
   'daemon-roster',
   'agent-compacting',
@@ -35,6 +36,23 @@ const LATEST_WINS_TYPES = new Set([
   // reconnect would replay a past state over the present one.
   'agent-liveness-snapshot',
   'terminal-size',
+  // A heartbeat, not activity. Skip: "a heartbeat is not activity", and on the
+  // rest: "we dont drop activity dude" -- a lost activity event is data loss,
+  // "mostly ignorable but if its the wrong event not good", and you cannot know
+  // at write time which one you will need. A heartbeat is the opposite: the
+  // server assigns it to a single overwritten field, so every one but the newest
+  // per agent is superseded before anything reads it.
+  //
+  // Measured 2026-08-18: 4,940 queued heartbeats carrying 18 agents' state, and
+  // ~70/min production -- back to 119 within 90 seconds of wiping 5,339 of them.
+  // The backlog was never the problem; the rate is. Retrying a claim about a
+  // moment that has passed cost a durable write, a delivery slot and a retry
+  // budget, ahead of the activity events that are Skip's cards.
+  //
+  // Latest-wins keys on `${type}:${agent_id}`, so the newest heartbeat per agent
+  // supersedes the queued one rather than accumulating behind it, and a drop
+  // goes through warnDropped -- counted in `daemonDropped`, not silent.
+  'activity-health',
 ])
 
 const DIRECT_TYPES = new Set([
