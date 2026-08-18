@@ -5899,24 +5899,34 @@ export class FleetStore {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
     if (!baseFragment) return [];
-    // An exact match against a lineage name takes precedence, but only while
-    // that lineage still has occupants. An emptied lineage used to swallow the
-    // name and return [], so `from:skip` resolved to nothing while `from:ski`
-    // found him through the substring branch below — an exact name was the one
-    // input that failed.
+    // An exact match against a lineage name puts that lineage's stack first, but
+    // it does NOT stand in for the rest of the resolution. A lineage that still
+    // has occupants used to return here, which meant a name resolved to whoever
+    // holds it NOW and to nobody who held it before: `chief` found only the
+    // current chief, and a read of the previous chief's whole day came back zero
+    // — a zero indistinguishable from an empty world, which is the failure this
+    // resolver exists to prevent. Membership is not current occupancy; a name is
+    // a pointer, and reading history through it has to reach everyone it ever
+    // pointed at. Row rendering carries the period name and the durable id, so
+    // which era a row belongs to is visible in the result.
+    //
+    // An emptied lineage was the earlier version of the same bug: it swallowed
+    // the name and returned [], so `from:skip` resolved to nothing while
+    // `from:ski` found him through the substring branch below.
     const lineage = this.getLineage(selector.fragment)
     const stackIds = lineage ? this._lineageStackIds(lineage.id) : [];
-    if (stackIds.length) {
+    // A positional or ranged selector — `*chief[2]` — counts occupants of the
+    // seat, so when the name has a stack it counts against the stack and only
+    // the stack. Letting it run off the end into name-history matches would
+    // silently answer a different question than the one the index asked.
+    if (stackIds.length && (selector.position != null || selector.range)) {
       if (selector.position != null) {
         const idx = Math.max(0, Number(selector.position) - 1)
         return stackIds[idx] ? [stackIds[idx]] : []
       }
-      if (selector.range) {
-        const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1)
-        const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to))
-        return stackIds.slice(from, to)
-      }
-      return stackIds
+      const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1)
+      const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to))
+      return stackIds.slice(from, to)
     }
     const q = baseFragment;
     const idAliases = q.startsWith('fleet:') ? [q] : [q, `fleet:${q}`];
@@ -5936,7 +5946,10 @@ export class FleetStore {
       GROUP BY id
       ORDER BY max(seen_at) DESC, id ASC
     `).all(...idAliases, like, like);
-    let ids = rows.map(r => r.id);
+    // Lineage stack first — its order is occupancy order, which is what a
+    // positional selector like `*chief[2]` counts against — then everything the
+    // name matched directly or historically, most recently seen first.
+    let ids = [...new Set([...stackIds, ...rows.map(r => r.id)])];
     if (selector.position != null) {
       const idx = Math.max(0, Number(selector.position) - 1);
       ids = ids[idx] ? [ids[idx]] : [];
