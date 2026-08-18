@@ -39,7 +39,7 @@ import {
   checkpointProjectPartWritebackOffloop,
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
-import { projectRevisionStatus } from '../lib/source-lifecycle.mjs'
+import { projectRevisionStatus, SOURCE_AUTHORITY_UNINITIALIZED } from '../lib/source-lifecycle.mjs'
 import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -685,8 +685,34 @@ router.delete('/:name', requireRw, async (req, res) => {
 
 // Add member to book (create book project if needed)
 router.patch('/:name/members', requireRw, async (req, res) => {
-  const { add } = req.body
-  if (!add || typeof add !== 'string') return res.status(400).json({ error: 'add member name required' })
+  const { add, members } = req.body
+  // A full-set REPLACE, because the additive form cannot express a removal:
+  // looping `add` over a caller's intended set silently makes a dropped member
+  // permanent. The existing `add` branch below is untouched and its four
+  // callers keep working.
+  if (Array.isArray(members)) {
+    if (!members.every(member => typeof member === 'string')) {
+      return res.status(400).json({ error: 'members must be an array of strings' })
+    }
+    const project = await readProject(req.params.name)
+    if (!project) return res.status(404).json({ error: 'Project not found' })
+    // 400 on a non-book project. The `/push` branch that carries `members`
+    // today is guarded on `format === 'book'` and FALLS THROUGH to a normal
+    // source push when it is not -- so a members array sent to a non-book
+    // project silently becomes a file push with an empty file list. This is
+    // the error behaviour of new code, not a change to shipped behaviour.
+    if (project.format !== 'book') {
+      return res.status(400).json({ error: 'members can only be replaced on a book project' })
+    }
+    try {
+      await updateProject(req.params.name, { members })
+      res.json({ ok: true, members })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+    return
+  }
+  if (!add || typeof add !== 'string') return res.status(400).json({ error: 'add member name or members[] required' })
   try {
     const book = await addBookMember(req.params.name, add)
     res.json({ ok: true, members: book.members })
@@ -705,6 +731,64 @@ router.get('/:name/files', requireRead, async (req, res) => {
 router.get('/:name/source-authority', requireRead, async (req, res) => {
   try { res.json(await (await sourceLifecycleStore(req.params.name)).readAuthority()) }
   catch (e) { res.status(404).json({ error: e.message }) }
+})
+
+/**
+ * The current revision's entries: `{path, sha256, size}` per file.
+ *
+ * **This is what makes an incremental push expressible on the JSON carrier.**
+ * The carrier requires a complete manifest, and a path may be given either as
+ * content or as a carried-forward reference — but a client can only build the
+ * reference if it can learn the store's blob id for a file it is NOT sending.
+ * Nothing exposed one: `GET /:name/hashes` returns MD5 of the server's working
+ * files, which is a different value in a different space.
+ *
+ * Without this, four CLI sites whose manifest is deliberately wider than their
+ * `files` -- the ones carrying `preservedServerPaths`, or pruning stale paths
+ * with `files: []` -- can only comply by sending the whole project on every
+ * push. On the 1492-file classroom book that is every file on every flush,
+ * against a 20MB batch ceiling. The alternative to this route is not a slower
+ * push, it is no incremental push.
+ */
+router.get('/:name/source-entries', requireRead, async (req, res) => {
+  try {
+    const lifecycle = await sourceLifecycleStore(req.params.name)
+    const { currentRevision } = await lifecycle.readAuthority()
+    if (!currentRevision) return res.json({ ok: true, sourceRevision: null, files: [] })
+    const record = await lifecycle.readRevision(currentRevision)
+    res.json({ ok: true, sourceRevision: currentRevision, files: record?.files || [] })
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error.message })
+  }
+})
+
+/**
+ * The commits a proposer lacks, so that a refusal is recoverable.
+ *
+ * **Without this the 409 is a dead end that reads as working.** A refusal names
+ * `currentRevision`, and the proposer is told to rebase onto it -- but it cannot
+ * rebase onto a commit whose objects it does not have, and the accept that beat
+ * it is by definition somebody else's commit. The replica fan-out does not close
+ * this: it ships blobs and manifests, not git objects.
+ *
+ * The mirror does eventually deliver the objects, on accept, to every bound
+ * checkout. That is a race, not a mechanism: the 409 can arrive first, and a
+ * recovery path that works only when it loses the race is the shape this
+ * replacement exists to remove. So the proposer asks, and is answered now.
+ *
+ * `have` is what the proposer holds, so the bundle is `have..source` -- and it
+ * carries the refused ref too, because a proposer that wants to show somebody
+ * what was refused needs the commit, not the sha.
+ */
+router.get('/:name/source-bundle', requireRead, async (req, res) => {
+  try {
+    const lifecycle = await sourceLifecycleStore(req.params.name)
+    const payload = await lifecycle.proposerBundle(req.query.have || null)
+    if (!payload) return res.status(404).json({ ok: false, error: 'the project has no accepted revision' })
+    res.json({ ok: true, ...payload })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
 })
 
 // Read a specific source file's content
@@ -975,6 +1059,146 @@ async function serializeProjectMirror(name, run) {
     release()
     if (projectMirrorQueues.get(name) === current) projectMirrorQueues.delete(name)
   }
+}
+
+/**
+ * What the accept path owes a revision after it has taken it.
+ *
+ * The old push route does four things past the commit: it mirrors to the
+ * author's checkout, fans the revision out to other bound checkouts, dispatches
+ * a build, and clears the stuck-marks of whoever's work just landed. An accept
+ * that does none of them is a green path with the work silently not happening,
+ * which is the failure the replacement exists to remove.
+ *
+ * **Derived, not declared.** The old path is handed `files: [{path, content}]`
+ * and builds the replica payload from it. A bundle carries a tree and no list,
+ * so the changed set comes from `diffRevisions` — the same property that makes
+ * the tree authoritative makes the list unavailable.
+ *
+ * **The journal entry comes first and is not optional.** `recordReplicaTargets`
+ * throws for a revision it has never seen accepted, and `acceptBundle` moves
+ * the ref without touching the journal, so the registration below is the thing
+ * that makes a bundle-accepted revision addressable by every phase after it.
+ *
+ * Returns which effects ran, so the response can say so rather than implying
+ * it. A caller reading `ok: true` cannot otherwise distinguish an accept that
+ * preserved the work from one that dropped it on the floor.
+ */
+/**
+ * The six post-accept effects, for EVERY carrier.
+ *
+ * Exported and carrier-neutral on purpose. Four carriers reach this accept --
+ * the daemon bundle POST, the JSON carrier, the room checkpoint and the
+ * Overleaf remote pull -- and only the first has a bundle. Bolting the effects
+ * to the bundle route means the other three either lose them or grow copies,
+ * and an enumerated list in N places does not stay one list:
+ * `passthroughConfigEnv` exists four times in this repo and has already
+ * diverged.
+ *
+ * So this is the one implementation, and it takes a revision rather than a
+ * carrier.
+ */
+export async function applyAcceptedSourceEffects(name, lifecycle, {
+  sourceRevision, acceptSeq, previousRevision, editedBy, sourceBindingId, requestId,
+}) {
+  if (!sourceRevision) return []
+  const ran = []
+  lifecycle.recordAcceptedRevision(name, sourceRevision, acceptSeq)
+  ran.push('journal')
+
+  const { changed, deleted } = await lifecycle.diffRevisions(previousRevision, sourceRevision)
+
+  const targets = await sourceBindingTargetsForProject(name, sourceBindingId)
+  if (targets.length) {
+    // `readRevision` is async since revisions became commits. Unawaited it
+    // yields a Promise, `?.files` is undefined, and BOTH manifests arrive as
+    // `[]` -- so the materializer plans a union of two empty sets, finds no
+    // paths, and applies nothing. The registration succeeds, the response says
+    // `replicas`, and no checkout receives the change: a green path with the
+    // work silently not happening, which is the sentence this function's own
+    // comment was written against.
+    const targetRevision = await lifecycle.readRevision(sourceRevision)
+    const baseRevision = previousRevision ? await lifecycle.readRevision(previousRevision) : null
+    const blobs = {}
+    for (const path of changed) {
+      const bytes = await lifecycle.readRevisionFile(sourceRevision, path)
+      // Keyed by git's blob id, because that is what the manifest entries name
+      // and what `source-materializer.mjs` looks the bytes up by -- its `hash`
+      // is `gitBlobId`. Keyed by sha256 the lookup misses and the apply throws
+      // `Missing blob`, on the far side, after the accept has been reported.
+      if (bytes) blobs[gitBlobId(bytes)] = bytes.toString('base64')
+    }
+    lifecycle.recordReplicaTargets(name, sourceRevision, targets, {
+      project: name,
+      sourceRevision,
+      previousRevision,
+      files: changed.map(path => ({ path })),
+      deletedFiles: deleted,
+      sourceBindingId: sourceBindingId || null,
+      requestId: requestId || null,
+      baseManifest: baseRevision?.files || [],
+      targetManifest: targetRevision?.files || [],
+      blobs,
+    })
+    ran.push('replicas')
+  }
+
+  // Neither of these gates the response. The revision is accepted and durable
+  // either way, and a sleeping machine or a busy build queue is not a reason to
+  // tell an author their writing did not land.
+  void mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq)
+  ran.push('mirror')
+  void dispatchBuild(name, { sourceRevision, acceptSeq })
+    .catch(error => console.error(`[${name}] build dispatch after bundle accept failed: ${error.message}`))
+  ran.push('build')
+
+  // Whoever's work reached the paper is no longer stuck, whichever files it was.
+  try {
+    await clearSourceSyncConflicts(name, [...changed, ...deleted], editedBy || null)
+    if (editedBy) await clearSourceSyncRefusal(name, editedBy)
+    ran.push('cleared-conflicts')
+  } catch (error) {
+    // Derived state. It must not unwind an accept that already happened.
+    console.error(`[${name}] clearing sync conflicts after bundle accept failed: ${error.message}`)
+  }
+
+  // The edit event, which carries line-level regions rather than filenames.
+  //
+  // The old push route has these handed to it: it was given the file contents,
+  // so it knows what moved inside each one. **A bundle carries a tree and no
+  // regions**, so this path derives them the same way it derives `changed` --
+  // by asking git for both sides and diffing them. Dropping the event instead
+  // would leave the accept correct and the attribution silently gone, which is
+  // not a smaller failure than dropping the mirror, only a quieter one.
+  if (editedBy) {
+    try {
+      const editedFiles = []
+      for (const file of changed) {
+        if (!file.endsWith('.tex') && !file.endsWith('.md')) continue
+        const after = await lifecycle.readRevisionFile(sourceRevision, file)
+        const before = previousRevision ? await lifecycle.readRevisionFile(previousRevision, file) : null
+        const regions = changedTextRegions(before ? before.toString('utf8') : '', after ? after.toString('utf8') : '')
+        if (regions.length) editedFiles.push({ path: file, regions })
+      }
+      if (editedFiles.length) {
+        emitSourceEditEvent({
+          emit: emitGlobalEvent,
+          result: { ok: true, acceptedChangedFiles: editedFiles },
+          project: name,
+          editedBy,
+          requestId: requestId || randomUUID(),
+        })
+        ran.push('edit-event')
+      }
+    } catch (error) {
+      // Swallowed deliberately: the revision is already accepted and durable at
+      // this point, and attribution is derived from it. Letting a diff failure
+      // bubble would turn a missing notification into a failed push and tell an
+      // author their writing did not land when it did.
+      console.error(`[${name}] source edit event after bundle accept failed: ${error.message}`)
+    }
+  }
+  return ran
 }
 
 async function mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq) {
@@ -2020,6 +2244,95 @@ function recordingsDir(name) {
 // took a box down was a 33 MB file becoming 44 MB of body, and base64 is a third
 // of that inflation for nothing. `express.raw` is already how audio uploads
 // arrive here.
+/**
+ * The same accept, for a carrier that has no git.
+ *
+ * A browser cannot build a bundle, so the client callers send a complete
+ * snapshot as JSON. **Two carriers, one accept** — and specifically one
+ * `applyAcceptedSourceEffects`, not a second copy of it. If this path grew its
+ * own effects call the two would drift, and the browser carrier would quietly
+ * start preserving something different from the daemon carrier.
+ */
+router.post('/:name/source-snapshot', requireRw, async (req, res) => {
+  const name = req.params.name
+  const {
+    files, sourceManifest, expectedRevision = null, dependencyPins = [],
+    // Carried deliberately rather than by being remembered. `session` and
+    // `sessionAt` ride only on `tlda push` -- the one command Skip types -- and
+    // they enter through `incrementalPush`'s `extraBody`, so a reader
+    // enumerating the call sites never sees them. Omit them here and session
+    // attribution on his own pushes breaks silently, and only there.
+    session = null, sessionAt = null, editedBy = null,
+  } = req.body || {}
+  // `sourceDir` is NOT carried. It is already dropped by the old destructure and
+  // every server use reads `project.sourceDir` from storage, so the cross-server
+  // move has been sending a field nobody reads. Dropped knowingly.
+  if (!Array.isArray(files) || !Array.isArray(sourceManifest)) {
+    return res.status(400).json({ ok: false, error: 'files[] and sourceManifest[] are required' })
+  }
+  try {
+    const lifecycle = await sourceLifecycleStore(name)
+    const previousRevision = (await lifecycle.readAuthority()).currentRevision || null
+    // `bootstrap` and `submit` already ARE this accept, and they already carry
+    // the refusal shape the source editor needs -- `deriveClassifications`, the
+    // stored evidence, the clean-rebase acceptance and `markRefused`. An
+    // `acceptFiles` written beside them was a second, worse implementation of
+    // the thing this whole cut exists to stop having two of.
+    const result = await runSerializedProjectSourceOperation(name, async () => {
+      const before = await lifecycle.readAuthority()
+      const input = { expectedRevision, files, sourceManifest, dependencyPins }
+      return before.state === SOURCE_AUTHORITY_UNINITIALIZED
+        ? lifecycle.bootstrap(input)
+        : lifecycle.submit(input)
+    })
+    if (!result.ok) {
+      return res.status(409).json({
+        ok: false,
+        status: result.status,
+        currentRevision: result.authority?.currentRevision ?? result.revision ?? null,
+        refusedRevision: result.refusedRevision ?? null,
+        // **The merge, not just the rejection.** The source editor turns
+        // `evidence.classifications[]` into conflict markers a person resolves
+        // in place. Return the bare status and "resolve the markers and it
+        // syncs" becomes "sync 409" on the surface Skip edits his paper on --
+        // a lost resolution path rather than a lost byte, invisible in every
+        // log because the write correctly refused and the caller correctly
+        // reported failure.
+        evidence: result.evidence ?? null,
+      })
+    }
+    const sourceRevision = result.revision?.id ?? result.revision ?? null
+    const acceptSeq = result.authority?.acceptSeq ?? null
+    const metadata = {
+      ...(session ? { session, sessionAt: sessionAt || Date.now() } : {}),
+      ...(editedBy ? { lastEditedBy: editedBy, lastEditedByAt: Date.now() } : {}),
+    }
+    if (Object.keys(metadata).length) await updateProject(name, metadata)
+    const ran = await applyAcceptedSourceEffects(name, lifecycle, {
+      sourceRevision,
+      acceptSeq,
+      previousRevision: result.previous ?? previousRevision,
+      editedBy: editedBy || req.get('x-tlda-edited-by') || null,
+      sourceBindingId: req.body?.sourceBindingId || null,
+      requestId: req.body?.requestId || randomUUID(),
+    })
+    res.json({
+      ok: true,
+      // `already-current` is the same fact `unchanged` used to carry, so a
+      // caller waiting on a build can stop waiting without a new field.
+      status: result.status,
+      unchanged: result.status === 'already-current',
+      sourceRevision,
+      acceptSeq,
+      filesWritten: sourceManifest.length,
+      postAcceptEffects: ran,
+    })
+  } catch (error) {
+    console.error(`[${name}] snapshot accept failed: ${error.message}`)
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
+
 router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, limit: '500mb' }), async (req, res) => {
   const name = req.params.name
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
@@ -2040,22 +2353,24 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
         refusedRevision: result.refusedRevision ?? null,
       })
     }
-    // **This accepts and does nothing else, and that is a hole with a deadline.**
-    // The old push route also mirrors to the author's checkout, dispatches a
-    // build, and fans the revision out to other bound checkouts. None of that
-    // runs here yet, which is harmless only while nothing calls this endpoint.
-    //
-    // Wiring the daemon to it before those effects exist would produce a system
-    // that accepts everything and preserves nothing -- a green path with the
-    // work silently not happening, which is the exact failure shape this
-    // replacement is being built to remove. Deploy 2 carries both together or
-    // neither.
+    const sourceRevision = result.revision?.id ?? result.revision ?? null
+    const acceptSeq = result.authority?.acceptSeq ?? null
+    const ran = await applyAcceptedSourceEffects(name, lifecycle, {
+      sourceRevision,
+      acceptSeq,
+      previousRevision: result.previous ?? null,
+      editedBy: req.get('x-tlda-edited-by') || null,
+      sourceBindingId: req.get('x-tlda-source-binding') || null,
+      requestId: req.get('x-tlda-request-id') || randomUUID(),
+    })
     res.json({
       ok: true,
       status: result.status,
-      sourceRevision: result.revision?.id ?? result.revision ?? null,
-      acceptSeq: result.authority?.acceptSeq ?? null,
-      postAcceptEffects: 'none-yet',
+      sourceRevision,
+      acceptSeq,
+      // Named rather than boolean, because "the accept worked" and "the work was
+      // preserved" are different facts and the caller cannot see the second.
+      postAcceptEffects: ran,
     })
   } catch (error) {
     console.error(`[${name}] proposed bundle failed: ${error.message}`)
