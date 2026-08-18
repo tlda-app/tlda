@@ -19,14 +19,24 @@ export class DaemonDeliveryRuntime {
     beforeSend = null,
     ackGate = null,
     onDeadLetter = null,
+    inflightDeadlineMs,
+    now = () => Date.now(),
   }) {
+    if (!Number.isFinite(inflightDeadlineMs) || inflightDeadlineMs <= 0) {
+      throw new Error(`DaemonDeliveryRuntime requires a positive inflightDeadlineMs (got ${JSON.stringify(inflightDeadlineMs)})`)
+    }
     this.outbox = outbox
     this.sendDirect = send
     this.isConnected = isConnected
     this.isReady = isReady
     this.log = log
     this.ephemeralQueueLimit = ephemeralQueueLimit
-    this.inflight = new Set()
+    // id → the time we handed it to the socket. A Set was enough while the
+    // only exits were ack, error and reconnect; it has to carry the send time
+    // now so a row that is never answered can be released.
+    this.inflight = new Map()
+    this.inflightDeadlineMs = inflightDeadlineMs
+    this.now = now
     this.ephemeralQueues = new Map()
     this.flushTimer = null
     this.flushRunning = false
@@ -115,8 +125,20 @@ export class DaemonDeliveryRuntime {
     this.flushRunning = true
     try {
       for (const row of this.outbox.pending(100)) {
-        if (this.inflight.has(row.id)) continue
-        this.inflight.add(row.id)
+        const sentAt = this.inflight.get(row.id)
+        if (sentAt !== undefined) {
+          const heldMs = this.now() - sentAt
+          if (heldMs < this.inflightDeadlineMs) continue
+          // Loud on purpose. Reaching here means the server took this message
+          // and neither acked nor errored it, which the sender cannot tell
+          // from a message still in transit -- a severed wire reporting
+          // health. Releasing the slot keeps the queue moving; it does not
+          // make the silence acceptable, and this line is the only place that
+          // silence becomes visible.
+          this.log?.warn?.(`daemon durable message unanswered for ${Math.round(heldMs / 1000)}s (type=${row.payload?.type || 'unknown'}, id=${row.id}) — releasing its delivery slot and offering it again; the server received it and never answered`)
+          this.inflight.delete(row.id)
+        }
+        this.inflight.set(row.id, this.now())
         this.outbox.markAttempt(row.id)
         if (!this.trySend(row.payload)) {
           this.inflight.delete(row.id)

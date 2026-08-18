@@ -19,6 +19,7 @@ function harness(t) {
   let ready = true
   let receiver = () => {}
   const delivery = new DaemonDeliveryRuntime({
+    inflightDeadlineMs: 120_000,
     outbox,
     send: message => {
       if (!connected) return false

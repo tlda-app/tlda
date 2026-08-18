@@ -23,6 +23,7 @@ function fixture(root = mkdtempSync(join(tmpdir(), 'tlda-durable-edit-')), retry
     return disposition.operationIds.every(id => operations.state(id)?.state !== 'pending')
   }
   const delivery = new DaemonDeliveryRuntime({
+    inflightDeadlineMs: 120_000,
     outbox, send: () => false, isConnected: () => false, isReady: () => false,
     beforeSend: message => { if (message.type === 'source-change') sync.restoreDurableSourceChange(message) },
     ackGate,

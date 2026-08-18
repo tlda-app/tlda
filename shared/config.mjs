@@ -574,6 +574,36 @@ export function getSourceChangeSettleDeadlineMs() {
   return Math.round(seconds * 1000)
 }
 
+// How long a durable outbox row may sit marked in-flight before the daemon
+// stops skipping it and offers it again.
+//
+// `inflight` exists so a row that has been handed to the socket is not sent
+// twice on the next flush pass. It is cleared by an ack, an error, a failed
+// send, or a reconnect — and by nothing else, so a message the server
+// RECEIVED and never answered stays in it. On 2026-08-18 seven rejected
+// bregman source-changes did exactly that and pinned the head of the queue
+// for 22 minutes: 1,496 messages backed up behind them, 387 of them the
+// activity events Skip was watching, which reached his screen up to seven
+// minutes late.
+//
+// This is a backstop, not a retry policy. It does not decide whether a
+// message should be re-sent; it decides that no single message may occupy a
+// slot in the delivery window forever. The cure for a rejection that never
+// acks is on the server side, where the rejection is.
+//
+// 120s: two minutes is far longer than any healthy round trip (the daemon
+// acks observed tonight are sub-second) and short enough that a pinned head
+// clears well inside the time it takes anyone to notice. Releasing early
+// costs a duplicate send, which the server already deduplicates by
+// operation_id; releasing late costs exactly the outage this fixes.
+export function getOutboxInflightDeadlineMs() {
+  const seconds = loadDaemonYaml().outboxInflightDeadlineSeconds ?? 120
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`daemon.yaml: outboxInflightDeadlineSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
+  }
+  return Math.round(seconds * 1000)
+}
+
 export function getJsonlTailIdleMs() {
   const seconds = loadDaemonYaml().jsonlTailIdleSeconds ?? 600
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
