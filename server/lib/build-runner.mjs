@@ -217,6 +217,37 @@ function convertScratchMarkdown(srcDir, addLog) {
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
+/**
+ * acceptSeq of the build whose artifacts are currently published, or null when
+ * nothing has published yet or the stamp is unreadable. build.stamp is written
+ * with String(acceptSeq) at the end of every successful build, so it already
+ * answers "how new is what is on disk" -- this only reads it.
+ *
+ * null, not 0, on a missing or unparseable stamp: 0 would rank as older than
+ * every real build and silently discard the first one after a wipe.
+ */
+export function readPublishedAcceptSeq(outDir) {
+  try {
+    const raw = readFileSync(join(outDir, 'build.stamp'), 'utf8').trim()
+    const seq = Number(raw)
+    return Number.isInteger(seq) ? seq : null
+  } catch {
+    return null   // no stamp yet, or unreadable: nothing published to be newer than
+  }
+}
+
+/**
+ * Is this build older than what is already on disk?
+ *
+ * Only a build carrying a real acceptSeq can lose. A manual or bootstrap build
+ * has none, and ranking it as 0 would make it lose to everything and silently
+ * do nothing -- the opposite of what asking for a rebuild means. Equal is not
+ * older, so rebuilding the same revision stays idempotent.
+ */
+export function isSupersededByPublished(acceptSeq, publishedSeq) {
+  return Number.isInteger(acceptSeq) && Number.isInteger(publishedSeq) && acceptSeq < publishedSeq
+}
+
 /** Atomically publish a file: copy to dest.tmp, then rename into place. */
 function publishFile(src, dest) {
   const tmp = dest + '.tmp'
@@ -1949,6 +1980,45 @@ async function _runBuildInner(name, { sourceRevision = null, acceptSeq = null } 
 
       // Phase 2: Publish DVI for on-demand SVG builds, then signal reload.
       // SVGs are built lazily when pages are first requested.
+      //
+      // Skip, 2026-08-18: "you just dont use a earlier build even if it ends
+      // later". A build that finishes after a newer one must not publish over
+      // it. The per-project lock in runBuild serializes builds and orders them
+      // by INVOCATION, which is not the same as ordering them by source: a
+      // build started from an older accepted revision can still be the last
+      // one to reach this line, and until now it overwrote the newer DVI and
+      // wiped the SVG cache, so every later page request re-rendered older
+      // text. The document went backwards and stayed there -- the sentinel is
+      // already guarded the same way, so it kept the newer hash and the
+      // viewer's reload observer saw nothing to correct.
+      //
+      // acceptSeq is the ordering key because it is the only one that orders:
+      // sourceRevision is a content hash and identifies without ranking, and
+      // wall-clock start times drift. This is the same comparison the sentinel
+      // (sentinel.mjs shouldSkipSentinelWrite) and the persistent build status
+      // already make -- of the three publish points this was the only one that
+      // made none, and it is the one he reads.
+      const publishedSeq = readPublishedAcceptSeq(outDir)
+      if (isSupersededByPublished(acceptSeq, publishedSeq)) {
+        ctx.addLog(`discarded: build for acceptSeq ${acceptSeq} finished after published acceptSeq ${publishedSeq}`)
+        // Leaving early with the status still 'building' (set at :1858) would
+        // strand the project there forever, since nothing later in this
+        // invocation runs. What is on disk is the newer build that wrote this
+        // stamp at its own finalization, and that build succeeded -- so
+        // 'success' is the honest description of the published state, not a
+        // claim about this discarded build. The per-project lock in runBuild
+        // means no other build can be mid-flight to contradict it.
+        try { await _reporter.updateProject(name, { buildStatus: 'success' }) }
+        catch (e) {
+          // Report, don't rethrow: this build is already being discarded, and
+          // throwing here would route it into the failure path and publish a
+          // 'failed' status over a project whose artifacts are fine. The status
+          // is descriptive, the discard is the decision, and the discard has
+          // already succeeded by the time we get here.
+          console.error(`[build:${name}] failed to restore status after discard: ${e.message}`)
+        }
+        return
+      }
       status.phase = 'converting'
       const dviFile = join(tBuildDir, `${tBase}.dvi`)
       publishFile(dviFile, join(outDir, `${tBase}.dvi`))
