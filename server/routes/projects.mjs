@@ -1102,7 +1102,7 @@ async function serializeProjectMirror(name, run) {
  * Carrier-neutral for the same reason the effects are: one implementation, or
  * the copies diverge.
  */
-export async function acceptUnderOperationJournal(name, lifecycle, payload, run) {
+export async function acceptUnderOperationJournal(name, lifecycle, payload, run, { crashAt = null } = {}) {
   const requestId = typeof payload?.requestId === 'string' && payload.requestId.trim() ? payload.requestId : null
   // No requestId means the caller is not asking for idempotency, which is the
   // daemon's case: it holds the change and re-proposes rather than retrying.
@@ -1113,27 +1113,54 @@ export async function acceptUnderOperationJournal(name, lifecycle, payload, run)
   // and answering it with the first result would silently discard the second
   // edit. It is refused by name.
   if (prepared.invalidReuse) return { ...prepared.result, replayed: true, invalidReuse: true }
-  if (prepared.result) return { ...prepared.result, replayed: true }
+  // A replay hands back the SAME terminal result the journal stored, which is
+  // the fact a caller needs: not that it replayed, but what the canonical
+  // answer was.
+  if (prepared.result) return { ...prepared.result, replayed: true, operationResult: prepared.result }
 
   const result = await run()
+
+  // **The first crash boundary: the revision is durable and the journal is
+  // not.** A process dying here has accepted the work and recorded no terminal
+  // result — the case the durability promise is actually about.
+  //
+  // Taken as an argument rather than off the request body, so a remote caller
+  // cannot ask a server to pretend to crash.
+  if (crashAt === 'after-accept') return { ...result, simulatedCrash: true, crashedAt: crashAt }
+
   const authority = await lifecycle.readAuthority()
   const sourceRevision = result?.revision?.id ?? result?.revision ?? null
-  lifecycle.finishOperation(
-    name,
+  // Which edit operations this revision carried. They are a real property of
+  // the accepted mutation rather than bookkeeping: after a crash, this is how
+  // anyone can tell WHICH agent's edit the surviving revision contains.
+  const editOperations = payload?.editOperations
+    || (payload?.editOperation ? [{ agentId: payload?.editedBy || null, operation: payload.editOperation }] : [])
+  const operationResult = {
+    ok: !!result?.ok,
+    httpStatus: result?.ok ? 200 : 409,
+    lifecycleStatus: result?.status ?? null,
     requestId,
-    result?.ok ? 'accepted' : 'rejected',
-    {
-      ok: !!result?.ok,
-      httpStatus: result?.ok ? 200 : 409,
-      lifecycleStatus: result?.status ?? null,
-      requestId,
-      sourceRevision,
-      acceptSeq: authority.acceptSeq,
-      disposition: result?.ok ? 'accepted' : 'rejected',
-    },
-    { acceptSeq: authority.acceptSeq, acceptedRevision: result?.ok ? sourceRevision : null },
-  )
-  return result
+    sourceRevision,
+    acceptSeq: authority.acceptSeq,
+    disposition: result?.ok ? 'accepted' : 'rejected',
+    operationIds: editOperations.map(record => record.operation?.operation_id).filter(Boolean),
+  }
+  lifecycle.finishOperation(name, requestId, result?.ok ? 'accepted' : 'rejected', operationResult, {
+    acceptSeq: authority.acceptSeq,
+    acceptedRevision: result?.ok ? sourceRevision : null,
+    orderedEffects: result?.ok
+      ? [{ type: 'accepted-source-mutation', acceptSeq: authority.acceptSeq, editOperations }]
+      : [],
+  })
+
+  // **The second boundary: the journal is durable and the effects have not
+  // run.** A crash here must leave the request replayable with the same
+  // canonical result, which is what makes the effects safe to be
+  // fire-and-forget.
+  if (crashAt === 'after-terminal-result') {
+    return { ...result, simulatedCrash: true, crashedAt: crashAt, operationResult }
+  }
+  return { ...result, operationResult }
 }
 
 /**
@@ -2440,7 +2467,7 @@ function recordingsDir(name) {
  * Returns `{ status, body }` rather than writing a response, so an in-process
  * caller reads a value and the route sends it.
  */
-export async function acceptSourceSnapshot(name, payload = {}) {
+export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null } = {}) {
   const {
     files, sourceManifest, expectedRevision = null, dependencyPins = [],
     // Carried deliberately rather than by being remembered. `session` and
@@ -2489,15 +2516,55 @@ export async function acceptSourceSnapshot(name, payload = {}) {
         return before.state === SOURCE_AUTHORITY_UNINITIALIZED
           ? lifecycle.bootstrap(input)
           : lifecycle.submit(input)
-      }))
+      }, { crashAt }))
+    // A crash boundary stops here deliberately: the revision may be durable but
+    // the effects have not run, which is the state the next attempt has to
+    // recover from. Returned rather than thrown, so a caller can tell a
+    // simulated crash from a failure.
+    if (result.simulatedCrash) {
+      return { status: 599, body: { ok: false, simulatedCrash: true, crashedAt: result.crashedAt } }
+    }
     // A replay is the SAME answer to the same request, not a second accept, so
     // it must not re-run the effects: mirroring and dispatching a build again
     // for a push that already landed is the retry storm this journal exists to
     // prevent, one layer up.
     if (result.replayed) {
-      return { status: result.invalidReuse ? 400 : (result.httpStatus || 200), body: result }
+      return {
+        status: result.invalidReuse ? 400 : (result.httpStatus || 200),
+        body: { ...result, operationReplay: !result.invalidReuse, sourceOperationResult: result.operationResult ?? null },
+      }
     }
     if (!result.ok) {
+      // **Record the refusal, or the person stuck outside the paper leaves no
+      // trace.** The 409 tells the pusher; without this, nobody else ever
+      // learns — not the surface that shows who is held, not another
+      // participant, not anyone looking later. Measured on a real paper on
+      // 2026-08-13, on a bibliography nobody else had touched.
+      //
+      // The asymmetry is what made it invisible: the CLEAR side already moved
+      // to the shared effects, so the new path erased the trace on accept and
+      // never wrote it on refusal.
+      const refusalOwner = sourceConflictOwner({ editedBy, sourceBindingId, daemonKey: sourceDaemonKey })
+      const conflicted = conflictFilesFromLifecycleResult(result)
+      try {
+        if (conflicted.length > 0) {
+          await recordSourceSyncConflicts(name, conflicted.map(file => ({
+            file, owner: refusalOwner, source: 'source-authority',
+          })))
+        } else if (result.status === 'stale-base') {
+          await recordSourceSyncRefusal(name, {
+            owner: refusalOwner,
+            reason: result.status,
+            files: [...(files || []).map(file => file?.path).filter(Boolean)],
+          })
+        }
+      } catch (error) {
+        // Swallowed on purpose, and this is the reason rather than a habit: an
+        // instrument must not be able to change the answer it is recording.
+        // Throwing here would replace a 409 the caller can act on with a 500
+        // they cannot, in order to report that the note-taking failed.
+        console.error(`[${name}] could not record a refusal: ${error.message}`)
+      }
       return {
         status: 409,
         body: {
@@ -2544,6 +2611,10 @@ export async function acceptSourceSnapshot(name, payload = {}) {
         acceptSeq,
         filesWritten: manifest.length,
         postAcceptEffects: ran,
+        // The terminal result this request was journalled under. A caller that
+        // retries gets this same object back, which is what makes a retry
+        // answerable rather than re-runnable.
+        sourceOperationResult: result.operationResult ?? null,
       },
     }
   } catch (error) {
