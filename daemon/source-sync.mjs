@@ -896,6 +896,36 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
+  // Anything the SERVER says it holds that is not on disk has to be deleted on
+  // the server. Nothing else in this file can do it: the watcher only reports
+  // paths it watches, and a file that was deleted before the daemon started --
+  // or that is outside the watch set, like a dotfile -- is never reported at
+  // all. So the phantom sits in the server's manifest forever and every push is
+  // refused with `sourceManifest contains nonexistent authored file`.
+  //
+  // That is not hypothetical. `.bak-before-deletion.tex` did exactly this to
+  // bregman: deleted locally, kept by the server, and from 2026-08-07 every
+  // push Skip made was refused for eleven days. It was still refusing at
+  // 04:43 on 2026-08-18.
+  //
+  // Queue them as pending. flushSourceChanges puts any pending path that does
+  // not exist into `deletedFiles`, so this becomes a real deletion rather than
+  // the daemon quietly forgetting the server disagrees with it.
+  function queueServerHeldButMissing(state) {
+    let queued = 0
+    for (const rel of state.authorityManifest) {
+      if (fs.existsSync(path.join(state.sourceDir, rel))) continue
+      state.pending.add(rel)
+      queued += 1
+    }
+    if (queued > 0) {
+      log.info(`${state.projectName}: ${queued} file(s) the server holds are gone from disk; sending deletions`)
+      clearTimeout(state.debounce)
+      state.debounce = setTimeout(() => flushSourceChanges(state.projectName), 200)
+    }
+    return queued
+  }
+
   function sync(projectList, { authoritativeRevisions = false } = {}) {
     const activeNames = new Set()
     const bindings = loadSourceBindings()
@@ -939,6 +969,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           existing.format = p.format
           existing.authorityManifest = new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : [])
           existing.bindingId = binding.bindingId
+          queueServerHeldButMissing(existing)
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
           for (const rel of referenced.reached) {
@@ -987,6 +1018,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       try {
         sourceWatchers.set(p.name, state)
         startSourceWatcher(state, 'project sync')
+        queueServerHeldButMissing(state)
         state.reconcileTimer = setInterval(() => reconcileSourceWatcher(state), reconcileIntervalMs)
         state.reconcileTimer.unref?.()
         log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
@@ -1167,6 +1199,15 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
     const nextWatcherKey = sourceWatcherKey(state)
     if (state.watcherKey !== nextWatcherKey) startSourceWatcher(state, 'dependency rescan')
+
+    // A path cannot be in `deletedFiles` and in `sourceManifest` at once -- the
+    // server refuses the whole push. The manifest is built from
+    // `authorityManifest`, and collectSourceManifest deliberately never
+    // existence-checks an authority entry (undeclaring one the server still
+    // holds is the same wedge pointing the other way, `missing surviving
+    // authored file`). So the deletion has to be taken out of authority HERE,
+    // where we already know the file is going away.
+    for (const rel of deleted) state.authorityManifest.delete(rel)
 
     // Edit attribution: which agent's recent Edit/Write touched a changed file.
     const editors = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel))) || []
