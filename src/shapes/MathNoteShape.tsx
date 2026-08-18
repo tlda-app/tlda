@@ -48,7 +48,6 @@ import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMove
 import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts, genBulletId } from '../stores'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
-import { appendToken } from '../authToken'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady } from '../fleet/fleet-data.mjs'
 import {
@@ -389,8 +388,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // but a drag still moves the shape (see the dot's onPointerUp).
     const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
-    const projectName = shape.props.docName as string | undefined
-    const showDoc = !!(shape.props.docName && shape.props.docView)
 
     // Label regions from the current document (for [->label] links)
     const pageDoc = useContext(ProjectContext)
@@ -1562,44 +1559,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
             title="Collapse in place"
           />
-          {/* Toggle doc view — top-right tlda logo button (only when projectName is set) */}
-          {projectName && (
-            <div
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                editor.updateShape({
-                  id: shape.id,
-                  type: 'math-note' as any,
-                  props: { docView: !shape.props.docView },
-                })
-              }}
-              title={showDoc ? 'Show note' : `Open doc: ${projectName}`}
-              style={{
-                position: 'absolute',
-                top: 3,
-                right: 4,
-                width: 16,
-                height: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                opacity: showDoc ? 0.8 : 0.3,
-                transition: 'opacity 0.15s',
-                zIndex: 10,
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = showDoc ? '0.8' : '0.3' }}
-            >
-              {/* tlda logo — stylized "t" document shape */}
-              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor">
-                <rect x="2" y="1" width="13" height="16" rx="2" opacity="0.9"/>
-                <rect x="5" y="5" width="7" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
-                <rect x="5" y="8" width="7" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
-                <rect x="5" y="11" width="4" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
-              </svg>
-            </div>
-          )}
           {(shape.meta?.friendly_name || markdownSelectorFooterLabel(shape.meta)) && (
             <div style={{
               fontSize: 9,
@@ -1629,19 +1588,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           <div style={{
             flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
           }}>
-            {showDoc && projectName ? (
-              <iframe
-                src={appendToken(`/?project=${projectName}`)}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                  display: 'block',
-                  pointerEvents: 'all',
-                }}
-                sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
-              />
-            ) : content}
+            {content}
           </div>
       </HTMLContainer>
     )
