@@ -550,6 +550,50 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
     await store.advanceHead(project, next, isGitObjectId(expected) ? expected : await store.head(project))
   }
 
+  /**
+   * Record the accept in `authority.json` — and never let that write undo it.
+   *
+   * The ref has already moved by the time this runs, and the ref is what
+   * `readAuthority` believes, so the revision **is** accepted. What this file
+   * still carries is `state` and `acceptSeq`, and losing an `acceptSeq`
+   * increment is recoverable in a way that losing the accept is not.
+   *
+   * Letting the write throw here reported a failure for a push the project had
+   * taken. That is terminal for the pusher rather than untidy: its next push
+   * uses the revision it was *told* about, which is now behind the head, so
+   * every push after it is stale-base — with one writer, no collaborator and
+   * nothing that will ever move it forward. It is the state a full disk left on
+   * 2026-08-18 and it is reproduced in
+   * `bin/an-accept-the-daemon-is-never-told-about-test.mjs`.
+   *
+   * So: the accept stands, and the failure is said out loud rather than
+   * returned. There is no ordering of these two writes that is correct — the
+   * other way round has `authority.json` claiming a revision the ref does not
+   * have — which is the argument for one record rather than a better order
+   * between two.
+   */
+  function recordAcceptedAuthority(authority, { refIsBelieved }) {
+    // **On a bootstrap the ref is NOT believed**, because `state()` only
+    // consults it once the stored state says `current` — so swallowing the
+    // failure there would report an accept the store then refuses to
+    // acknowledge, which is a worse inconsistency than the one being fixed.
+    // Nothing is current yet, nothing is pinned, and the pusher retrying is
+    // correct. `bin/source-lifecycle-authority-test.mjs` asserts exactly that
+    // and caught this.
+    if (!refIsBelieved) {
+      atomicJson(statePath, authority, fault)
+      return
+    }
+    try {
+      atomicJson(statePath, authority, fault)
+    } catch (error) {
+      console.error(
+        `[${project}] accepted ${String(authority.currentRevision).slice(0, 12)} but could not record it in authority.json: `
+        + `${error.message}. The ref is the authority and the accept stands; acceptSeq may lag.`,
+      )
+    }
+  }
+
   // Two snapshots say the same thing when they name the same paths with the
   // same blobs. This is identity of CONTENT, which is what bootstrap asks; a
   // revision id is identity of a COMMIT, which is content plus when and after
@@ -1015,7 +1059,9 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const next = await persistSnapshot(canonical, dependencyPins)
       await advanceSourceHead(next.id, null)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-      atomicJson(statePath, authority, fault)
+      // Bootstrap: the stored state is not yet `current`, so the ref is not
+      // consulted and a failure here must fail the push.
+      recordAcceptedAuthority(authority, { refIsBelieved: false })
       return { ok: true, status: 'accepted', authority, revision: next }
     },
     async submit({ expectedRevision, files, sourceManifest, dependencyPins = [] }) {
@@ -1043,7 +1089,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
           )
           await advanceSourceHead(rebased.id, before.currentRevision)
           const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-          atomicJson(statePath, authority, fault)
+          recordAcceptedAuthority(authority, { refIsBelieved: before.state === SOURCE_AUTHORITY_CURRENT })
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
         // The refused push is already a commit — `persistSnapshot` ran before
@@ -1057,7 +1103,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       }
       await advanceSourceHead(incoming.id, before.currentRevision)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-      atomicJson(statePath, authority, fault)
+      recordAcceptedAuthority(authority, { refIsBelieved: before.state === SOURCE_AUTHORITY_CURRENT })
       return { ok: true, status: 'accepted', authority, revision: incoming }
     },
   }
