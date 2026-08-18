@@ -27,8 +27,7 @@ import {
   sourceLifecycleStore,
   updateProject,
 } from '../server/lib/project-store.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
-import { daemonOn, everyoneArrivesAt } from './lib/source-collaborators.mjs'
+import { daemonOn, everyoneArrivesAt, pushSourceSnapshot } from './lib/source-collaborators.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-figures-'))
 await initProjectStore(root)
@@ -56,7 +55,7 @@ try {
   mkdirSync(outputDir(PROJECT), { recursive: true })
   writeFileSync(join(outputDir(PROJECT), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
 
-  const started = await processProjectPush(PROJECT, {
+  const started = await pushSourceSnapshot(PROJECT, {
     expectedRevision: null,
     sourceManifest: MANIFEST,
     files: MANIFEST.map(path => ({ path, ...opening(path) })),
@@ -86,14 +85,14 @@ try {
 
   // ### The paper has both chapters, and the figures are untouched
   const lifecycle = await sourceLifecycleStore(PROJECT)
-  const landed = lifecycle.readAuthority().currentRevision
-  const text = path => lifecycle.readRevisionFile(landed, path).toString('utf8')
-  assert.equal(text('intro.tex'), 'alice rewrites the introduction\n',
+  const landed = (await lifecycle.readAuthority()).currentRevision
+  const text = async path => (await lifecycle.readRevisionFile(landed, path)).toString('utf8')
+  assert.equal(await text('intro.tex'), 'alice rewrites the introduction\n',
     "the paper — kept Alice's chapter through Bob's rebase")
-  assert.equal(text('method.tex'), 'bob rewrites the method\n',
+  assert.equal(await text('method.tex'), 'bob rewrites the method\n',
     "the paper — has Bob's chapter")
   for (const figure of FIGURES.filter(path => path.endsWith('.png'))) {
-    assert.deepEqual([...lifecycle.readRevisionFile(landed, figure)], [...PNG],
+    assert.deepEqual([...await lifecycle.readRevisionFile(landed, figure)], [...PNG],
       `${figure} — is the bytes it always was, carried across the rebase rather than merged`)
   }
 
@@ -120,7 +119,7 @@ try {
     writeFileSync(join(outputDir(NESTED_PROJECT), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
 
     // ### The paper exists, with its figure a directory away from its chapters
-    const begun = await processProjectPush(NESTED_PROJECT, {
+    const begun = await pushSourceSnapshot(NESTED_PROJECT, {
       expectedRevision: null,
       sourceManifest: NESTED,
       files: NESTED.map(path => ({ path, ...opening(path) })),
@@ -142,12 +141,12 @@ try {
 
     // ### The paper has both chapters and the figure is untouched bytes
     const nestedLifecycle = await sourceLifecycleStore(NESTED_PROJECT)
-    const at = nestedLifecycle.readAuthority().currentRevision
-    assert.equal(nestedLifecycle.readRevisionFile(at, 'chapters/intro.tex').toString('utf8'),
+    const at = (await nestedLifecycle.readAuthority()).currentRevision
+    assert.equal((await nestedLifecycle.readRevisionFile(at, 'chapters/intro.tex')).toString('utf8'),
       'ada rewrites the introduction\n', "the paper — kept Ada's chapter through Raj's rebase")
-    assert.equal(nestedLifecycle.readRevisionFile(at, 'chapters/method.tex').toString('utf8'),
+    assert.equal((await nestedLifecycle.readRevisionFile(at, 'chapters/method.tex')).toString('utf8'),
       'raj rewrites the method\n', "the paper — has Raj's chapter")
-    assert.deepEqual([...nestedLifecycle.readRevisionFile(at, 'figures/plot.png')], [...PNG],
+    assert.deepEqual([...await nestedLifecycle.readRevisionFile(at, 'figures/plot.png')], [...PNG],
       'the figure — is the bytes it always was, carried across a rebase from another directory')
   }
 
