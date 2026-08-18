@@ -28,6 +28,7 @@ import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selec
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
+import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
 import {
   bootstrapLaunchdJob,
   launchdDomain,
@@ -2493,6 +2494,17 @@ async function cmdFleetWatch(sub) {
       console.error(dim('  Configuration is not applied; routine restart does not bootstrap launchd jobs.'))
       process.exit(1)
     }
+    // Rotate BEFORE the kickstart, which is the only safe point for this log.
+    // launchd owns the descriptor through `StandardOutPath`, so renaming the
+    // file under a running daemon does not redirect it — it keeps filling the
+    // renamed inode while the file at the original path stays empty, which
+    // looks like successful rotation and leaves the current log blank. The
+    // restart is where launchd opens the path again.
+    //
+    // Nothing had ever rotated it: 342 MB on 2026-08-18, on the machine Skip
+    // works on, on a volume that hit 100%.
+    const rotatedDaemonLog = rotateBeforeOpen(join(CONFIG_DIR, `fleet-daemon${daemonConfigSuffix(DAEMON_WORLD_NAME)}.log`))
+    if (rotatedDaemonLog) console.log(dim('  rotated the daemon log before restart'))
     await runLaunchctl(['kickstart', '-k', daemonLaunchdTarget()])
     const pid = await waitForTargetFleetDaemonCompletion({ previousPid })
     console.log(green(`Fleet daemon restarted through launchd`) + dim(` (pid ${pid})`))
