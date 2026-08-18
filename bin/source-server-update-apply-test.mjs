@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { gitBlobId } from '../shared/git-blob-id.mjs'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -37,7 +37,10 @@ const sourceSync = makeSourceSync(root, sent)
 
 function entry(path, content) {
   const bytes = Buffer.from(content)
-  return { path, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length }
+  // Git's blob id, because that is what a revision's manifest names: a revision
+  // is a commit and its tree names blobs. A fixture hashing bytes its own way
+  // would be testing the materializer against a manifest no server produces.
+  return { path, sha256: gitBlobId(bytes), size: bytes.length }
 }
 
 function materialization(previousContent, nextContent) {

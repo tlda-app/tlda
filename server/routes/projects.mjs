@@ -58,6 +58,7 @@ import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeC
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 import { FORMATS_WITH_OWN_PAGE_INFO } from '../../shared/document-formats.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
+import { writeSentinel } from '../lib/sentinel.mjs'
 import { scanMarkdownDeps } from '../../shared/markdown-deps.mjs'
 import { readSharedDocumentThroughOwner } from '../lib/document-association-sources.mjs'
 import { readShadowChangelog, readShadowIndexInfo } from '../lib/shadow-changelog.mjs'
@@ -625,21 +626,6 @@ router.patch('/:name/auto-sync', requireRw, async (req, res) => {
   }
 })
 
-// Toggle mirrorPaused (writing server history back into the working copy).
-// Separate from autoSync above, which is the inbound Git-remote poller: this is
-// the OUTBOUND half, the mirror that commits the server's shadow into the
-// working copy's HEAD. They fail independently and this one damages history
-// rather than merely lagging, so it needs its own switch.
-router.patch('/:name/mirror-paused', requireRw, async (req, res) => {
-  try {
-    const { mirrorPaused } = req.body
-    const project = await updateProject(req.params.name, { mirrorPaused: !!mirrorPaused })
-    res.json({ ok: true, mirrorPaused: project.mirrorPaused })
-  } catch (e) {
-    res.status(404).json({ error: e.message })
-  }
-})
-
 // Link a Git remote → clone, initial sync, start polling.
 // Body: { source, token?, title?, mainFile?, format?, pollSeconds? }
 router.post('/:name/link', requireRw, async (req, res) => {
@@ -949,16 +935,31 @@ async function mirrorAcceptedRevision(name, lifecycle, sourceRevision, acceptSeq
   if (!acceptedRevisionMirrorHandler || !sourceRevision) return
   const payload = await lifecycle.mirrorPayload(sourceRevision)
   if (!payload) return
-  const previous = await lifecycle.lastMirrored()
-  const result = await acceptedRevisionMirrorHandler({
-    name,
-    ...payload,
-    sourceRevision,
-    acceptSeq,
-  })
-  await lifecycle.markMirrored(sourceRevision, previous)
   const short = sourceRevision.slice(0, 7)
-  console.log(`[mirror] ${name}@${short} accepted revision mirrored to ${(result?.mirrored || []).join(', ') || 'no daemon'}`)
+  const previous = await lifecycle.lastMirrored()
+  try {
+    const result = await acceptedRevisionMirrorHandler({ name, ...payload, sourceRevision, acceptSeq })
+    // The ref moves only now, so it names a revision a checkout actually took.
+    await lifecycle.markMirrored(sourceRevision, previous)
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirrored', { result })
+    await updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
+    await writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
+    console.log(`[mirror] ${name}@${short} ok via ${(result?.mirrored || []).join(', ') || 'no daemon'}`)
+  } catch (error) {
+    lifecycle.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirror_failed', { error: error.message })
+    await updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), revision: sourceRevision, message: error.message } })
+    // `lastMirrorFailure` is read by nothing — no route, no CLI, no client. The
+    // surface a person actually sees is SyncErrorPill, which reads
+    // `syncErrorJson` off the doc-version sentinel, and the failure path not
+    // setting it is how three papers went unmirrored for weeks with every
+    // surface reporting health. It moved here with the mirror rather than being
+    // left behind attached to a build phase that no longer does this.
+    await writeSentinel(`doc-${name}`, {
+      timestamp: Date.now(),
+      syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Not saved to the working copy: ${error.message}` }]),
+    })
+    console.error(`[mirror] ${name}@${short} failed: ${error.message}`)
+  }
 }
 
 export function setPendingSourceReplicaHandler(handler) {
@@ -1500,7 +1501,6 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         { reason: decision.reason },
       )
       lifecycle.recordRevisionPhase(name, acceptedSourceMutation.sourceRevision, 'version', 'not_reached', { buildState: terminalState })
-      lifecycle.recordRevisionPhase(name, acceptedSourceMutation.sourceRevision, 'mirror', 'not_reached', { buildState: terminalState })
     }
     if (projectPartsChanged) {
       await rebuildProjectPartsView(name, project)

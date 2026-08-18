@@ -63,16 +63,16 @@ export async function recordBuildResult(name, sourceRevision, acceptSeq, state, 
     })
   }
   const terminal = lifecycle.recordRevisionPhase(name, sourceRevision, 'build', state, result)
+  // The build says nothing about the mirror any more: mirroring is driven by
+  // the accept, so a build that never ran has not "not reached" it -- it may
+  // already have happened. Writing a phase this path does not own would race
+  // the accept mirror and, being synchronous, would usually win.
   if (state !== 'built') {
-    lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: state })
-    return lifecycle.recordRevisionPhase(name, sourceRevision, 'mirror', 'not_reached', { buildState: state })
+    return lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'not_reached', { buildState: state })
   }
   const completed = lifecycle.readRevisionLifecycle(name, sourceRevision)
   if (completed.version?.state === 'pending') {
     lifecycle.recordRevisionPhase(name, sourceRevision, 'version', 'version_failed', { error: 'build completed without version disposition' })
-  }
-  if (completed.mirror?.state === 'pending') {
-    lifecycle.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirror_failed', { error: 'build completed without mirror disposition' })
   }
   return terminal
 }

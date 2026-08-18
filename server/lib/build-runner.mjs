@@ -113,7 +113,6 @@ const _directReporter = {
   },
   emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
   updateProject: (name, patch) => updateProject(name, patch),
-  mirrorShadow: (name, hash, sourceRevision, acceptSeq) => mirrorShadow(name, hash, sourceRevision, acceptSeq),
   recordRevisionPhase: async (name, sourceRevision, phase, state, result) => {
     if (!sourceRevision) return null
     return (await sourceLifecycleStore(name)).recordRevisionPhase(name, sourceRevision, phase, state, result)
@@ -1679,74 +1678,22 @@ export async function finalizeBuildVersion({
     name, ctx, expectedPages, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceRevision, acceptSeq,
   })
   if (!recorded.hash) {
-    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'not_reached', { versionState: 'version_failed' })
     return recorded
   }
 
-  const hash7 = recorded.hash.slice(0, 7)
-  // A project may switch the mirror off. The mirror commits the server's shadow
-  // content into the working copy's HEAD, so while the server is BEHIND the
-  // working copy it re-applies stale content on every build, and committed work
-  // the shadow lacks silently leaves HEAD. Disk is untouched, which is why
-  // nothing surfaces it: `git log` shows the work landed and `git show HEAD:file`
-  // shows it gone. On 2026-08-17 four mirror commits took the same two changes
-  // out of bregman's HEAD and an agent restored them by hand twice.
+  // Mirroring is no longer a build phase. It is driven by the accept, in
+  // `mirrorAcceptedRevision`, because a paper that fails to build is still a
+  // paper whose author's work has to be committed -- and this call sitting in
+  // the build's tail is why three hours of somebody's prose lived only in a
+  // working directory on 2026-08-18.
   //
-  // It does not converge on its own -- the mirror is stale because the render is
-  // wedged, and it re-applies its stale copy every build. So this is the lever
-  // Skip asked for: turn sync off for one project rather than let it damage that
-  // project's history, without touching anyone else's. Default off, per-project,
-  // and settable through the ordinary project patch so clearing it needs no
-  // deploy.
-  if ((await readProject(name))?.mirrorPaused) {
-    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'skipped', {
-      shadowVersion: recorded.hash,
-      reason: 'mirrorPaused',
-    })
-    // Deliberately NOT stamping lastMirrorSuccess: nothing was mirrored, and a
-    // paused mirror that reports success is the class of lie this file already
-    // carries a comment about six lines down.
-    console.log(`[mirror] ${name}@${hash7} SKIPPED: mirrorPaused is set on the project; the working copy will not receive server history until it is cleared`)
-    ctx.addLog(`mirror skipped: sync to the working copy is paused for this project`)
-    return recorded
-  }
-  try {
-    // Re-mirror unchanged builds too. A prior build may have committed the
-    // server snapshot while its owning daemon was disconnected; "unchanged"
-    // describes source bytes, not working-copy durability.
-    const mirrorResult = await _reporter.mirrorShadow(name, recorded.hash, sourceRevision, acceptSeq)
-    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirrored', {
-      shadowVersion: recorded.hash,
-      result: mirrorResult,
-    })
-    await _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
-    await _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
-    console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} -> ${mirrorResult?.sourceDir || 'source repo'}`)
-  } catch (mirrorErr) {
-    await _reporter.recordRevisionPhase(name, sourceRevision, 'mirror', 'mirror_failed', {
-      shadowVersion: recorded.hash,
-      error: mirrorErr.message,
-    })
-    console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
-    ctx.addLog(`mirror to working copy failed: ${mirrorErr.message}`)
-    await _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: recorded.hash, message: mirrorErr.message } })
-    // `lastMirrorFailure` is written here and read by nothing — no route, no CLI,
-    // no client. So a project whose builds render fine while never checkpointing
-    // into a working copy looks healthy from every surface a person can see.
-    // That is how minimax-linear and wildfire-plos went unmirrored from
-    // 2026-07-28 and synth-combined from 2026-07-10 without anyone noticing.
-    //
-    // The success path four lines up already clears `syncErrorJson` on the
-    // doc-version sentinel, and SyncErrorPill already renders it. The failure
-    // path simply never set it, so the one surface built for this stayed empty.
-    // Setting it is the whole fix: no new field, no new UI, and it survives
-    // reconnects because the sentinel does.
-    await _reporter.writeSentinel(`doc-${name}`, {
-      timestamp: Date.now(),
-      syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Not saved to the working copy: ${mirrorErr.message}` }]),
-    })
-    throw new Error(`working-copy checkpoint failed for ${name}@${hash7}: ${mirrorErr.message}`)
-  }
+  // Deleting it also removes the damage `mirrorPaused` existed to prevent. That
+  // switch was needed because the build mirror committed the SHADOW's content,
+  // which lags the accepted source and does not converge: while a render was
+  // wedged it re-applied its stale copy on every build, and on 2026-08-17 four
+  // mirror commits took the same two changes out of bregman's HEAD. The accept
+  // mirror commits the accepted revision, which IS the head -- so it cannot be
+  // stale by construction, and the next accept carries anything newer.
 
   if (recorded.committed) try {
     const shadowDir = join(projDir, 'shadow-repo')
