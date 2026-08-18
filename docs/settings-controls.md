@@ -81,6 +81,57 @@ git grep -c "var(--fleet-line-height" -- src
 2026-08-12: base-font 224, line-height 7, touch-target 5, chrome-alpha 14,
 content-alpha 7.
 
+### Where the default actually lives, which is none of the places you just checked
+
+The checks above find a control nothing reads. **They cannot find a control that is
+read correctly and whose default comes from somewhere else**, and that is a
+different failure with the same symptom: you change a default, ship it, and nobody
+sees a change.
+
+**`getPref` has no absent state.**
+
+```js
+export function getPref<K extends PrefKey>(key: K): (typeof DEFAULTS)[K] {
+  return (key in _cache ? _cache[key] : DEFAULTS[key]) as (typeof DEFAULTS)[K]
+}
+```
+
+Unset falls back to `DEFAULTS` in `src/preferences.ts`. **So that is where a
+default lives.** A `*_DEFAULT` constant next to the component and a `var(--x, 60px)`
+CSS fallback both look like the default and are both shadowed by it.
+
+**And the trap on top: a presence check against `getPref` is a no-op that reads as a
+fix.** On 2026-08-18 the TOC hover zone needed raising. `ZONE_WIDTH_DEFAULT` in
+`TocTab.tsx` went up; `getZoneWidth()` compared the pref to that constant, so it
+could not tell "unset" from "set to the default" and fell through to a legacy
+`localStorage` key. That comparison was replaced with a presence check —
+
+```js
+const raw = getPref('toc-hover-zone-width')
+if (raw !== undefined && …) return normalizeZoneWidth(raw)   // always taken
+```
+
+— which **always takes the first branch**, because `getPref` returns `DEFAULTS`
+rather than `undefined`. `preferences.ts` held `60`. So the constant was raised,
+the CSS fallback was raised, the fall-through was "fixed", and the zone stayed
+60px. Three changes, each verified, each shadowed by a fourth file nobody opened.
+
+**The check, and it is one line:**
+
+```sh
+grep -n "'<pref-key>'" src/preferences.ts
+```
+
+**If the key is in `DEFAULTS`, that number is the default and everything else is
+decoration.** Change it there, and delete the shadowing constant or make it read
+from the pref rather than sit beside it.
+
+**The general form, because this is what made it survive three passes of the checks
+above:** *"I verified the control is wired"* is not the same as *"I found where the
+default lives"*, and from inside your own verification there is nothing that
+distinguishes them — a wired control with a shadowed default passes every check on
+this page. Ask the second question explicitly.
+
 ## Two traps when making an inert control real
 
 **Wiring a control changes what people see, even when no default changes.** The
