@@ -1492,7 +1492,8 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         owner: conflictOwner,
         source: 'source-authority',
       })))
-    } else if (e.lifecycleResult?.status === 'stale-base') {
+    }
+    if (e.lifecycleResult?.status === 'stale-base') {
       // A refusal that produced no markers used to record nothing at all, so a
       // person stuck outside the paper left no trace: the pusher learned from
       // their HTTP status and nobody else learned ever. Measured on a real
@@ -1502,11 +1503,13 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       // can act on into a 500 it cannot. An instrument must not be able to
       // change the answer it is recording.
       try {
-        await recordSourceSyncRefusal(name, {
-          owner: conflictOwner,
-          reason: e.lifecycleResult.status,
-          files: (changedPushFiles || []).map(file => file.path),
-        })
+        if (lifecycleConflictFiles.length === 0) {
+          await recordSourceSyncRefusal(name, {
+            owner: conflictOwner,
+            reason: e.lifecycleResult.status,
+            files: (changedPushFiles || []).map(file => file.path),
+          })
+        }
       } catch (recordError) {
         // Swallowed on purpose: this is a best-effort record of a refusal that
         // has already happened, and the caller is owed the 409 that explains it.
@@ -1521,6 +1524,17 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       // accept between them, so a refused revision waiting for an accept to
       // carry it would wait forever. Mirroring on the refusal is what makes a
       // stuck author's own work visible to them while they are stuck.
+      //
+      // **This used to sit in the `else` of the conflict branch**, so it ran
+      // only for a refusal that produced NO markers -- and a refusal WITH
+      // markers is the ordinary case, the one a person is actually stuck in,
+      // and the one this feature exists for. Measured on a real paper on
+      // 2026-08-18: the ref carried an old refused push and none of the sixteen
+      // stranded lines, because every refusal that stranded them had markers
+      // and took the other branch.
+      //
+      // Populated-but-stale is worse than absent: it looks current, and someone
+      // reading it resolves the wrong merge.
       const refused = e.lifecycleResult.refusedRevision
       if (refused) {
         void mirrorAcceptedRevision(name, lifecycle, (await lifecycle.readAuthority()).currentRevision, null)
