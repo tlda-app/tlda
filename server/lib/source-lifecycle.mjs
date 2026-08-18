@@ -14,8 +14,18 @@ export const SOURCE_AUTHORITY_RECONCILIATION_REQUIRED = 'reconciliation-required
 export function projectRevisionStatus(lifecycles) {
   const revision = [...(lifecycles || [])].sort((a, b) => (b.acceptSeq ?? 0) - (a.acceptSeq ?? 0))[0] || null
   if (!revision) return { status: 'unknown', phase: null, sourceRevision: null, acceptSeq: null }
-  const phases = ['build', 'version', 'mirror']
-  const failed = phases.find(phase => ['build_failed', 'version_failed', 'mirror_failed'].includes(revision[phase]?.state))
+  // **A failed mirror is not a failed build.** The mirror stopped being a build
+  // phase when it moved to the accept, and it can fail for reasons that say
+  // nothing about the document: a laptop asleep, a checkout with a staged
+  // conflict, a machine that does not hold this project. Letting it decide the
+  // build status told an author their paper did not compile while the build log
+  // said `Build complete in 20.8s` over 88 rendered pages — which is exactly the
+  // class of lie this file's history is made of.
+  //
+  // The mirror's own state is still reported below, so nothing is hidden. It
+  // simply does not get to answer the question "did this document build".
+  const phases = ['build', 'version']
+  const failed = phases.find(phase => ['build_failed', 'version_failed'].includes(revision[phase]?.state))
   const pending = phases.find(phase => ['pending', 'leased'].includes(revision[phase]?.state))
   const terminal = revision.build?.state
   const status = failed ? 'error'
