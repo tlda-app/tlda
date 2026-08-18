@@ -1147,6 +1147,12 @@ async function rpcMint(params = {}) {
         botPidFile: params.botPidFile || params.bot_pid_file || null,
         botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
         botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
+        // The bot's declared `env:`. Both ends of this were already built --
+        // agent-launch/index.mjs threads `botEnv` through and the bot harness
+        // emits it -- and this object, the transport between them, simply did not
+        // list the field. It sits in the launch recipe, so a wake replays the
+        // same settings rather than starting the bot unconfigured.
+        botEnv: params.botEnv || params.bot_env || null,
         cwd,
         effort: params.effort,
         mode: params.mode,
