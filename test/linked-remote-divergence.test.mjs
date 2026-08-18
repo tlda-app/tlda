@@ -68,7 +68,7 @@ async function setupLinkedProject(root, { name, remote, files }) {
   const sourceManifest = Object.keys(files).sort()
   await updateClientSourceManifest(name, sourceManifest)
   const lifecycle = await sourceLifecycleStore(name)
-  const bootstrapped = lifecycle.bootstrap({
+  const bootstrapped = await lifecycle.bootstrap({
     expectedRevision: null,
     sourceManifest,
     files: sourceManifest.map(filePath => ({ path: filePath, content: files[filePath] })),
@@ -80,7 +80,7 @@ async function setupLinkedProject(root, { name, remote, files }) {
   git(['config', 'user.email', 'test@example.invalid'], clone)
   git(['config', 'user.name', 'test'], clone)
 
-  return { lifecycle, acceptedAuthority: lifecycle.readAuthority() }
+  return { lifecycle, acceptedAuthority: await lifecycle.readAuthority() }
 }
 
 function advanceRemote(root, remote, { filePath, content, message = 'remote edit' }) {
@@ -155,7 +155,7 @@ test('overlapping remote and browser edits preserve both sides and accepted auth
     assert.equal(result.status, 409)
     assert.equal(result.lifecycleStatus, 'overleaf-conflict')
     assert.deepEqual(result.conflictFiles, ['main.tex'])
-    assert.deepEqual(lifecycle.readAuthority(), acceptedAuthority)
+    assert.deepEqual(await lifecycle.readAuthority(), acceptedAuthority)
     assert.equal(readSourceFile(name, 'main.tex'), 'base main\n')
     assert.equal(git(['--git-dir', remote, 'rev-parse', 'refs/heads/master'], root), remoteHead)
     assert.equal(remoteFile(root, remote, 'main.tex'), 'remote side')
