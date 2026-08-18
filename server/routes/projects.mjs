@@ -2040,11 +2040,22 @@ router.post('/:name/source-bundle', requireRw, express.raw({ type: () => true, l
         refusedRevision: result.refusedRevision ?? null,
       })
     }
+    // **This accepts and does nothing else, and that is a hole with a deadline.**
+    // The old push route also mirrors to the author's checkout, dispatches a
+    // build, and fans the revision out to other bound checkouts. None of that
+    // runs here yet, which is harmless only while nothing calls this endpoint.
+    //
+    // Wiring the daemon to it before those effects exist would produce a system
+    // that accepts everything and preserves nothing -- a green path with the
+    // work silently not happening, which is the exact failure shape this
+    // replacement is being built to remove. Deploy 2 carries both together or
+    // neither.
     res.json({
       ok: true,
       status: result.status,
       sourceRevision: result.revision?.id ?? result.revision ?? null,
       acceptSeq: result.authority?.acceptSeq ?? null,
+      postAcceptEffects: 'none-yet',
     })
   } catch (error) {
     console.error(`[${name}] proposed bundle failed: ${error.message}`)
