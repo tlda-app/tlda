@@ -224,7 +224,11 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   top: 0;
   right: 0;
   bottom: 0;
-  width: var(--zone-width, 60px);
+  /* This fallback IS the default for a first-time reader. --zone-width is only
+     ever set by applyZoneWidth(), which runs from ZoneWidthThumbControl in the
+     prefs panel, so someone who has never opened settings gets this literal and
+     nothing else. Keep it equal to ZONE_WIDTH_DEFAULT in TocTab.tsx. */
+  width: var(--zone-width, 250px);
   pointer-events: all;
   z-index: 0;
 }
