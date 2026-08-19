@@ -4,7 +4,23 @@ import { mkdtempSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { closeProjectStore, createProject, initProjectStore, readProject, readSourceFile, sourceLifecycleStore, updateClientSourceManifest, writeSourceFile } from '../server/lib/project-store.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
+
+// `processProjectPush` returned ONE FLAT OBJECT; `acceptSourceSnapshot` returns
+// `{status, body}`, and it spells the lifecycle status `body.status` while the
+// HTTP status is the outer one. Normalised here, once, exactly the way the room
+// daemon normalises it at `source-room-daemon.mjs:367-372` -- a test that
+// normalises differently is testing a contract the production caller does not
+// have.
+//
+// The spread is safe HERE and is not a licence to copy it: `projects.mjs:972`
+// attaches `acceptedSourceMutation` NON-ENUMERABLY, so `{...response.body}`
+// drops it silently. Nothing below reads that field. Anything that does must
+// take `response.body` itself.
+async function push(name, body) {
+  const response = await acceptSourceSnapshot(name, body)
+  return { ...response.body, status: response.status, lifecycleStatus: response.body.status ?? null }
+}
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-source-http-'))
 await initProjectStore(root)
@@ -17,7 +33,7 @@ const watchedFiles = Array.from({ length: 10 }, (_, index) => ({
   path: `watched-${index + 1}.tex`,
   content: `filesystem bytes ${index + 1}\n`,
 }))
-const bootstrapped = await processProjectPush('authority-bootstrap', {
+const bootstrapped = await push('authority-bootstrap', {
   expectedRevision: null,
   sourceManifest: ['legacy-preserved.tex', ...watchedFiles.map(file => file.path)],
   files: watchedFiles,
@@ -30,7 +46,7 @@ createProject({ name: 'authority-bootstrap-collision', title: 'Authority Bootstr
 writeSourceFile('authority-bootstrap-collision', 'legacy-preserved.tex', 'surviving server bytes\n')
 writeSourceFile('authority-bootstrap-collision', 'unowned-collision.tex', 'unowned server bytes\n')
 await updateClientSourceManifest('authority-bootstrap-collision', ['legacy-preserved.tex'])
-const collision = await processProjectPush('authority-bootstrap-collision', {
+const collision = await push('authority-bootstrap-collision', {
   expectedRevision: null,
   sourceManifest: ['legacy-preserved.tex', 'unowned-collision.tex'],
   files: [{ path: 'unowned-collision.tex', content: 'incoming bytes\n' }],
@@ -39,14 +55,14 @@ assert.equal(collision.status, 409)
 assert.equal(collision.lifecycleStatus, 'reconciliation-required')
 assert.equal(readSourceFile('authority-bootstrap-collision', 'unowned-collision.tex'), 'unowned server bytes\n')
 
-const missing = await processProjectPush('authority-http', {
+const missing = await push('authority-http', {
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'must not write\n' }],
 })
 assert.equal(missing.status, 428)
 assert.equal(readSourceFile('authority-http', 'main.tex'), null)
 
-const first = await processProjectPush('authority-http', {
+const first = await push('authority-http', {
   expectedRevision: null,
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'base\n' }],
@@ -61,14 +77,14 @@ assert.deepEqual(await (await sourceLifecycleStore('authority-http')).readCurren
   content: Buffer.from('base\n'),
 })
 
-const second = await processProjectPush('authority-http', {
+const second = await push('authority-http', {
   expectedRevision: first.sourceRevision,
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'current\n' }],
 })
 assert.equal(second.status, 200)
 
-const added = await processProjectPush('authority-http', {
+const added = await push('authority-http', {
   expectedRevision: second.sourceRevision,
   sourceManifest: ['main.tex', 'notes.tex'],
   files: [{ path: 'notes.tex', content: 'notes\n' }],
@@ -78,7 +94,7 @@ assert.equal(readSourceFile('authority-http', 'notes.tex'), 'notes\n')
 const addedRevision = await (await sourceLifecycleStore('authority-http')).readRevision(added.sourceRevision)
 assert.equal(addedRevision.byteSize, Buffer.byteLength('current\n') + Buffer.byteLength('notes\n'), 'unchanged snapshot bytes must not be base64-encoded again')
 
-const renamed = await processProjectPush('authority-http', {
+const renamed = await push('authority-http', {
   expectedRevision: added.sourceRevision,
   sourceManifest: ['main.tex', 'renamed.tex'],
   files: [{ path: 'renamed.tex', content: 'notes\n' }],
@@ -88,7 +104,7 @@ assert.equal(renamed.status, 200)
 assert.equal(readSourceFile('authority-http', 'notes.tex'), null)
 assert.equal(readSourceFile('authority-http', 'renamed.tex'), 'notes\n')
 
-const deleted = await processProjectPush('authority-http', {
+const deleted = await push('authority-http', {
   expectedRevision: renamed.sourceRevision,
   sourceManifest: ['main.tex'],
   files: [],
@@ -97,7 +113,7 @@ const deleted = await processProjectPush('authority-http', {
 assert.equal(deleted.status, 200)
 assert.equal(readSourceFile('authority-http', 'renamed.tex'), null)
 
-const stale = await processProjectPush('authority-http', {
+const stale = await push('authority-http', {
   expectedRevision: first.sourceRevision,
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'stale incoming\n' }],
@@ -119,7 +135,7 @@ assert.equal(conflictState[0].source, 'source-authority')
 // protected — the conflict is recorded and recoverable — is covered above by
 // the `sourceSyncConflicts` assertions instead.
 
-const resolved = await processProjectPush('authority-http', {
+const resolved = await push('authority-http', {
   expectedRevision: deleted.sourceRevision,
   sourceManifest: ['main.tex'],
   files: [{ path: 'main.tex', content: 'resolved\n' }],
@@ -130,21 +146,31 @@ assert.equal(resolved.status, 200)
 conflictState = (await readProject('authority-http')).sourceSyncConflicts
 assert.deepEqual(conflictState, [], 'cleanly accepted file clears its owned source conflict')
 
-const failed = await processProjectPush('authority-http', {
-  expectedRevision: resolved.sourceRevision,
-  sourceManifest: ['main.tex'],
-  files: [{ path: 'main.tex', content: 'must roll back\n' }],
-}, { failAt: 'manifest' })
-assert.equal(failed.status, 409)
-assert.equal(readSourceFile('authority-http', 'main.tex'), 'resolved\n')
-// KNOWN RED, not a defect in this test: a rejected push (failAt: 'manifest')
-// still moves the git ref, so `currentRevision` reads the failed attempt's sha
-// instead of staying on the pre-attempt revision. This is the same
-// "rejected write leaves nothing behind" violation independently found in
-// `bin/source-manifest-contract-test.mjs`'s `manifest`-failAt case tonight —
-// reported to pm-sync as a pre-existing production defect in the new
-// git-ref layer, not something to fix here. Left asserting the real promise.
-assert.equal((await (await sourceLifecycleStore('authority-http')).readAuthority()).currentRevision, resolved.sourceRevision)
+// OWED, NOT RETIRED -- and it cannot be repointed, which is why it is a comment
+// rather than a call.
+//
+// This asserted that a push failing PART WAY THROUGH leaves the file and the
+// authority exactly as they were: `processProjectPush(..., { failAt: 'manifest' })`
+// injected a failure at the manifest phase and the assertions below checked the
+// rollback. `acceptSourceSnapshot` takes `{ crashAt }`, not `{ failAt }`, and its
+// only two points -- 'after-accept' and 'after-terminal-result'
+// (`projects.mjs:1111,1142`) -- both fire AFTER the accept has succeeded. There
+// is no mid-operation failure to roll back from, because `acceptRevision` is a
+// single atomic `commit-tree`: the old snapshot/journal/manifest phases it
+// injected into do not exist.
+//
+// So the WINDOW has to be re-derived against the new mechanism's real failure
+// points before this promise can be stated again. Not a repoint. This is the
+// same finding as `bin/source-manifest-contract-test.mjs`'s crash-recovery
+// section and it should be re-derived with it, not separately.
+//
+// It carried a KNOWN RED when it last ran, which survives the move and is a
+// production defect rather than a test defect: a rejected push still moved the
+// git ref, so `currentRevision` read the failed attempt's sha instead of staying
+// on the pre-attempt revision -- "a rejected write leaves nothing behind",
+// violated in the new git-ref layer. Independently found in
+// `source-manifest-contract-test`'s `manifest` failAt case the same night.
+// Whoever re-derives the window inherits that as the first thing to check.
 // Dropped: "immutable incoming revision must survive authority rollback" counted
 // entries in the old snapshot-copy store's revisions directory. The new
 // git-object store's immutability comes from content-addressing itself, not a
