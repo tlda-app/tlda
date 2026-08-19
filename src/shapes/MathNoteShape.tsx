@@ -19,7 +19,6 @@ import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
-import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 // Open all links in new tab so they don't navigate the tldraw iframe
@@ -49,7 +48,6 @@ import { setVoiceAccumulator, clearVoiceAccumulator, notifyAccumulatorCursorMove
 import { subscribeSearchFilter, getSearchFilter, addBulletContext, subscribeBulletContext, getBulletContexts, genBulletId } from '../stores'
 import { chatInsertBus } from './FleetPillShape'
 import { getVimMode, subscribeVimMode } from '../vimMode'
-import { appendToken } from '../authToken'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady } from '../fleet/fleet-data.mjs'
 import {
@@ -390,10 +388,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // but a drag still moves the shape (see the dot's onPointerUp).
     const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
-    const projectName = shape.props.docName as string | undefined
-    const showDoc = !!(shape.props.docName && shape.props.docView)
-    // True while this note is pushing content to the doc — prevents echo-back on next poll
-    const pushingToDocRef = useRef(false)
 
     // Label regions from the current document (for [->label] links)
     const pageDoc = useContext(ProjectContext)
@@ -440,63 +434,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         } catch { /* server URL fallback stays */ }
       })).then(() => { if (registered) setImgVersion(v => v + 1) })
     }, [shape.props.text, editor])
-
-    // note → doc sync: push text to linked doc (debounced 1s)
-    useEffect(() => {
-      if (!projectName) return
-      const text = shape.props.text || ''
-      const timer = setTimeout(async () => {
-        pushingToDocRef.current = true
-        try {
-          // Auto-create the doc if it doesn't exist
-          const existsRes = await fetch(`/api/projects/${projectName}`)
-          if (!existsRes.ok) {
-            await fetch('/api/projects', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: projectName, title: projectName, format: 'markdown', mainFile: 'main.md' }),
-            })
-          }
-          const files = [{ path: 'main.md', content: text }]
-          const authorityRes = await fetch(`/api/projects/${projectName}/source-authority`)
-          if (!authorityRes.ok) throw new Error(`source authority failed: ${authorityRes.status}`)
-          const sourceAuthority = await authorityRes.json()
-          await fetch(`/api/projects/${projectName}/push`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              files,
-              sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: 'main.md' }),
-              expectedRevision: sourceAuthority.currentRevision,
-            }),
-          })
-        } catch { /* ignore — server may not be running */ }
-        // Hold the suppression flag long enough to skip the next poll cycle
-        setTimeout(() => { pushingToDocRef.current = false }, 2500)
-      }, 1000)
-      return () => clearTimeout(timer)
-    }, [shape.props.text, projectName])
-
-    // doc → note sync: poll source file every 3s and apply if changed
-    useEffect(() => {
-      if (!projectName) return
-      const shapeId = shape.id
-      const poll = async () => {
-        if (pushingToDocRef.current) return
-        if (editor.getEditingShapeId() === shapeId) return
-        try {
-          const res = await fetch(`/api/projects/${projectName}/source/main.md`)
-          if (!res.ok) return
-          const content = await res.text()
-          const current = (editor.getShape(shapeId) as any)?.props?.text ?? ''
-          if (content !== current) {
-            editor.updateShape({ id: shapeId, type: 'math-note' as any, props: { text: content } })
-          }
-        } catch { /* ignore */ }
-      }
-      const interval = setInterval(poll, 3000)
-      return () => clearInterval(interval)
-    }, [projectName, shape.id, editor])
 
     const hasOutlineTabs = (shape.props.tabs as string[] | undefined)?.length === 3
     const isOutlineTabActive = hasOutlineTabs && (shape.props.activeTab as number | undefined) === 2
@@ -1622,89 +1559,6 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.5' }}
             title="Collapse in place"
           />
-          {/* Inject into document — converts markdown to LaTeX via pandoc */}
-          {pageDoc?.projectName && shape.props.text && (
-            <div
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                const btn = e.currentTarget as HTMLElement
-                btn.textContent = '⏳'
-                fetch(`/api/projects/${pageDoc!.projectName}/inject`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    markdown: shape.props.text,
-                    anchorLine: (shape.meta as any)?.sourceAnchor?.line,
-                    anchorFile: (shape.meta as any)?.sourceAnchor?.file,
-                  }),
-                }).then(r => {
-                  btn.textContent = r.ok ? '✓' : '✗'
-                  setTimeout(() => { btn.textContent = '↧' }, 2000)
-                }).catch(() => {
-                  btn.textContent = '✗'
-                  setTimeout(() => { btn.textContent = '↧' }, 2000)
-                })
-              }}
-              title="Inject into document as LaTeX"
-              style={{
-                position: 'absolute',
-                top: 3,
-                right: projectName ? 22 : 4,
-                width: 16,
-                height: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                opacity: 0.3,
-                transition: 'opacity 0.15s',
-                zIndex: 10,
-                fontSize: '12px',
-                lineHeight: '16px',
-                userSelect: 'none',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.3' }}
-            >↧</div>
-          )}
-          {/* Toggle doc view — top-right tlda logo button (only when projectName is set) */}
-          {projectName && (
-            <div
-              onPointerDown={(e) => {
-                stopEventPropagation(e)
-                editor.updateShape({
-                  id: shape.id,
-                  type: 'math-note' as any,
-                  props: { docView: !shape.props.docView },
-                })
-              }}
-              title={showDoc ? 'Show note' : `Open doc: ${projectName}`}
-              style={{
-                position: 'absolute',
-                top: 3,
-                right: 4,
-                width: 16,
-                height: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                opacity: showDoc ? 0.8 : 0.3,
-                transition: 'opacity 0.15s',
-                zIndex: 10,
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.8' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = showDoc ? '0.8' : '0.3' }}
-            >
-              {/* tlda logo — stylized "t" document shape */}
-              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor">
-                <rect x="2" y="1" width="13" height="16" rx="2" opacity="0.9"/>
-                <rect x="5" y="5" width="7" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
-                <rect x="5" y="8" width="7" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
-                <rect x="5" y="11" width="4" height="1.5" rx="0.75" fill="white" opacity="0.8"/>
-              </svg>
-            </div>
-          )}
           {(shape.meta?.friendly_name || markdownSelectorFooterLabel(shape.meta)) && (
             <div style={{
               fontSize: 9,
@@ -1734,19 +1588,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           <div style={{
             flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
           }}>
-            {showDoc && projectName ? (
-              <iframe
-                src={appendToken(`/?project=${projectName}`)}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                  display: 'block',
-                  pointerEvents: 'all',
-                }}
-                sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock"
-              />
-            ) : content}
+            {content}
           </div>
       </HTMLContainer>
     )

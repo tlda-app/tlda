@@ -42,7 +42,8 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
+import { pushSourceSnapshot } from './lib/source-collaborators.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-collaborators-and-editor-'))
 await initProjectStore(root)
@@ -57,7 +58,7 @@ const daemons = []
 function makeRoomDaemon(pushDelayMs = 1_000_000) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush, pushDelayMs, log: { error() {} },
+    acceptSourceSnapshot, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
@@ -72,7 +73,7 @@ async function paper(name, content) {
   createProject({ name, title: name, mainFile: 'main.tex', format: 'svg' })
   await updateProject(name, { pages: 1, buildStatus: 'success' })
   suppressBuilds(name)
-  const start = await processProjectPush(name, {
+  const start = await pushSourceSnapshot(name, {
     expectedRevision: null, sourceManifest: ['main.tex'],
     files: [{ path: 'main.tex', content }],
   })
@@ -86,13 +87,37 @@ async function paper(name, content) {
  * acceptedSourceMutationHandler does in unified-server.
  */
 async function pushesFromTheirMachine(roomDaemon, name, who, expectedRevision, content) {
-  const result = await processProjectPush(name, {
+  const result = await pushSourceSnapshot(name, {
     expectedRevision, sourceManifest: ['main.tex'],
-    files: [{ path: 'main.tex', content }], editedBy: who,
+    files: [{ path: 'main.tex', content }], editedBy: who, machineId: who,
   })
-  assert.equal(result.status, 200, `${who}'s push was refused: ${result.error}`)
+  assert.equal(result.status, 200, `${who}'s push was refused: ${result.lifecycleStatus ?? result.error}`)
+  // The accept no longer hands its caller an `acceptedSourceMutation` to pass
+  // along. It calls `acceptedSourceMutationHandler` itself -- but only inside
+  // `if (targets.length)`, so with no source bindings registered it never fires
+  // and this story has none. Registering the handler and awaiting it deadlocks;
+  // that was measured here, not reasoned about.
+  //
+  // So the payload is built the way `projects.mjs:1300` builds it. That is a
+  // second copy of a shape, which is the thing that bit this file's own helper
+  // tonight: if that call site grows a field, this does not, and nothing fails
+  // to say so. It is written out rather than spread so the mirroring is at
+  // least visible to whoever reads it next.
   await roomDaemon.applyAcceptedSourceMutation({
-    project: name, ...result.acceptedSourceMutation, sourceRevision: result.sourceRevision,
+    project: name,
+    sourceRevision: result.sourceRevision,
+    previousRevision: expectedRevision,
+    // Content, not just the path. The room reads `file.content` directly and a
+    // path-only entry merges an empty string over somebody's paragraph — which
+    // is what this reconstruction sent until `297baba9a` fixed the real
+    // fan-out. Base64 because that is what the fan-out sends and what
+    // `bufferFromBase64` on the other side expects.
+    files: [{ path: 'main.tex', content: Buffer.from(content).toString('base64'), encoding: 'base64' }],
+    deletedFiles: [],
+    sourceManifest: ['main.tex'],
+    sourceDaemonKey: null,
+    sourceBindingId: null,
+    requestId: null,
   })
   return result
 }

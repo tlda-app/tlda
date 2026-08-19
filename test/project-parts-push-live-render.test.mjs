@@ -25,7 +25,16 @@ import { join, resolve } from 'node:path'
 
 import { isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectProjectSourceHashes } from '../cli/lib/source-files.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
+
+// `processProjectPush` returned one flat object; `acceptSourceSnapshot` returns
+// `{status, body}` and spells the lifecycle status `body.status`. Normalised the
+// way the room daemon does it (`source-room-daemon.mjs:367-372`) so this file
+// tests the shape the production caller has.
+async function push(name, body) {
+  const response = await acceptSourceSnapshot(name, body)
+  return { ...response.body, status: response.status, lifecycleStatus: response.body.status ?? null }
+}
 import { realizeProjectMarkdownArtifact } from '../server/lib/project-artifact-materializer.mjs'
 import {
   createProject,
@@ -200,7 +209,7 @@ test('a file the client never pushed is still not adopted as source', async () =
   const name = 'ownership-check'
   const { root } = await setupSvgProject(name)
   try {
-    const pushed = await processProjectPush(name, {
+    const pushed = await push(name, {
       expectedRevision: null,
       files: [{ path: LATEX.mainFile, content: '\\documentclass{article}\n' }],
       sourceManifest: [LATEX.mainFile],
@@ -249,7 +258,7 @@ test('pushing a chat-referenced file rematerializes the column made from it', as
     )
 
     const manifest = [LATEX.mainFile, 'b4-outline.md', 'notes/tails.md']
-    const boot = await processProjectPush(name, {
+    const boot = await push(name, {
       expectedRevision: null,
       files: [
         { path: LATEX.mainFile, content: '\\documentclass{article}\n\\begin{document}\nPaper.\n\\end{document}\n' },
@@ -263,7 +272,7 @@ test('pushing a chat-referenced file rematerializes the column made from it', as
     assert.equal('b4-outline.md' in serverHashes, true, 'the chat root remains server-owned source after the push')
     assert.equal('notes/tails.md' in serverHashes, true, 'the recursive dependency remains server-owned source')
 
-    const unreferenced = await processProjectPush(name, {
+    const unreferenced = await push(name, {
       expectedRevision: boot.sourceRevision,
       files: [{ path: 'notes/unreferenced.md', content: '# nobody points here\n' }],
       sourceManifest: [...manifest, 'notes/unreferenced.md'],
@@ -271,7 +280,7 @@ test('pushing a chat-referenced file rematerializes the column made from it', as
     assert.equal(unreferenced.ok, false, 'a file reached by nothing is not a member')
     assert.match(unreferenced.error, /not an authored source path/)
 
-    const result = await processProjectPush(name, {
+    const result = await push(name, {
       expectedRevision: boot.sourceRevision,
       files: [{ path: 'b4-outline.md', content: '# Lemma B.4 outline\n\nNew body.\n\nSee [the tail bound](notes/tails.md).\n' }],
       sourceManifest: manifest,

@@ -30,9 +30,8 @@ import {
   readProject,
   updateProject,
 } from '../server/lib/project-store.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
 import { sourceSyncLedger, sourceSyncIsStale, staleSourceSyncEntries } from '../server/lib/source-sync-conflicts.mjs'
-import { daemonOn, everyoneArrivesAt } from './lib/source-collaborators.mjs'
+import { daemonOn, everyoneArrivesAt, pushSourceSnapshot } from './lib/source-collaborators.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-silent-refusal-'))
 await initProjectStore(root)
@@ -54,7 +53,7 @@ try {
   mkdirSync(outputDir(PROJECT), { recursive: true })
   writeFileSync(join(outputDir(PROJECT), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
 
-  const started = await processProjectPush(PROJECT, {
+  const started = await pushSourceSnapshot(PROJECT, {
     expectedRevision: null,
     sourceManifest: MANIFEST,
     files: MANIFEST.map(path => ({ path, ...opening(path) })),

@@ -56,7 +56,7 @@ test('successful project post: creates a missing doc, then pushes with the autho
     ['POST /api/projects/']: () => { created = true; return { name: docName }; },
     // Newly created markdown doc is uninitialized: currentRevision === null.
     [`GET /api/projects/${docName}/source-authority`]: () => ({ state: 'uninitialized', currentRevision: null }),
-    [`POST /api/projects/${docName}/push`]: () => ({ ok: true }),
+    [`POST /api/projects/${docName}/source-snapshot`]: () => ({ ok: true }),
   });
 
   const result = await postReportDoc({
@@ -71,9 +71,11 @@ test('successful project post: creates a missing doc, then pushes with the autho
   assert.equal(result.docName, docName);
   assert.ok(created, 'a missing report doc must be created, not skipped');
 
-  const push = calls.find(c => c.path === `/api/projects/${docName}/push`);
+  const push = calls.find(c => c.path === `/api/projects/${docName}/source-snapshot`);
   assert.ok(push, 'a push must be issued');
-  // The push must carry a defined expectedRevision (null is accepted; undefined is a 428).
+  // The push must carry the revision it READ, not a default. On the carrier null and
+  // absent converge -- `expectedRevision = null` is its destructuring default -- so the
+  // old route's 428 is no longer what this asserts. It asserts the value travelled.
   assert.equal(push.body.expectedRevision, null);
   assert.notEqual(push.body.expectedRevision, undefined);
   assert.deepEqual(push.body.sourceManifest, [`${docName}.md`]);
@@ -87,7 +89,7 @@ test('existing doc: skips creation and pushes with the live revision', async () 
     [`GET /api/projects/${docName}`]: () => ({ name: docName }),
     ['POST /api/projects/']: () => { createCalls++; return { name: docName }; },
     [`GET /api/projects/${docName}/source-authority`]: () => ({ state: 'current', currentRevision: 'rev-7' }),
-    [`POST /api/projects/${docName}/push`]: () => ({ ok: true }),
+    [`POST /api/projects/${docName}/source-snapshot`]: () => ({ ok: true }),
   });
 
   await postReportDoc({
@@ -98,7 +100,7 @@ test('existing doc: skips creation and pushes with the live revision', async () 
   });
 
   assert.equal(createCalls, 0, 'an existing doc must not be recreated');
-  const push = calls.find(c => c.path === `/api/projects/${docName}/push`);
+  const push = calls.find(c => c.path === `/api/projects/${docName}/source-snapshot`);
   assert.equal(push.body.expectedRevision, 'rev-7');
 });
 

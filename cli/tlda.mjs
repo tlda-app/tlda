@@ -303,7 +303,13 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
   if (result.unchanged) {
     console.log(dim(unchangedMessage))
-  } else if (result.building) {
+  } else if (result.postAcceptEffects?.includes('build')) {
+    // The old route answered `building`, an intention. The accept answers
+    // `postAcceptEffects`, the list of what actually ran, and `build` is one of
+    // its names. Reading the old field here is not a display bug that shows
+    // something wrong -- it is `undefined`, so this falls to the else and
+    // `tlda push` silently stops ever saying "Build triggered", reporting the
+    // less informative of two true strings with no error anywhere.
     console.log(green('Build triggered.'))
   } else {
     console.log(green('Source pushed; viewer rebuilds on demand.'))
@@ -433,32 +439,47 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
     console.log(dim(`  ${deletedFiles.length} files deleted on server`))
   }
 
-  const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
-  let expectedRevision = sourceAuthority.currentRevision
-  let result = null
-  if (changedFiles.length > 0) {
-    const pushed = await pushSourceFileBatches(name, changedFiles, {
-      context: sourceContext,
-      initialManifestPaths: survivingServerPaths,
-      expectedRevision,
-      readBatchFiles: batch => batch.map(file => ({ path: file.path, ...readForUpload(file.fullPath) })),
-      extraBody,
-      logProgress: changedFiles.length !== changedPaths.length || changedFiles.some(file => file.size > 0),
-    })
-    result = pushed.result
-    expectedRevision = pushed.expectedRevision
-  }
+  const { staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
+  const expectedRevision = sourceAuthority.currentRevision
   const cleanupFiles = [...new Set([...(deletedFiles || []), ...staleServerPaths])]
-  if (cleanupFiles.length > 0 || forceMetadata || changedFiles.length === 0) {
-    result = await api('POST', `/api/projects/${name}/push`, {
-      files: [],
-      sourceManifest,
-      expectedRevision,
-      ...(cleanupFiles.length > 0 && { deletedFiles: cleanupFiles }),
-      ...extraBody,
-    })
+  if (changedFiles.length === 0 && cleanupFiles.length === 0 && !forceMetadata) {
+    return { ok: true, unchanged: true }
   }
-  return result || { ok: true, unchanged: true }
+
+  // One snapshot, not a batch sequence followed by a cleanup push. The carrier
+  // takes the whole intended project in a single accept, so the batching and
+  // its per-batch expectedRevision re-threading are gone -- and losing them is
+  // the point rather than a side effect. A mid-sequence failure used to leave
+  // earlier batches landed and later ones not; the accept is now atomic, so
+  // that partial landing cannot happen.
+  //
+  // Deletions are not sent. `sourceManifest` is every local path, so a file the
+  // server holds and the checkout does not is absent from the manifest, and a
+  // path that leaves the manifest is deleted by not being named.
+  const current = await api('GET', `/api/projects/${name}/source-entries`)
+  const entryByPath = new Map((current.files || []).map(entry => [entry.path, entry]))
+  const changedSet = new Set(changedFiles.map(file => file.path))
+  warnAboutFilesTooBigToCarry(changedFiles)
+  const files = sourceManifest.map(path => {
+    // Unchanged paths ride as references to the blob the server already has,
+    // which is what keeps this incremental: without them the only way to
+    // satisfy "an entry per manifest path" is to re-upload the whole project
+    // on every push. An unchanged path with no entry in the current revision
+    // falls back to content -- `/hashes` is the server's working directory and
+    // the entries are the accepted revision, so the two can disagree, and the
+    // bytes are on disk here either way.
+    if (!changedSet.has(path)) {
+      const entry = entryByPath.get(path)
+      if (entry) return { path, sha256: entry.sha256, size: entry.size }
+    }
+    return { path, ...readForUpload(join(dir, path)) }
+  })
+  return await api('POST', `/api/projects/${name}/source-snapshot`, {
+    files,
+    sourceManifest,
+    expectedRevision,
+    ...extraBody,
+  })
 }
 
 function sourceManifestForFiles(files, context = {}) {
@@ -540,33 +561,6 @@ export function warnAboutFilesTooBigToCarry(files) {
   console.warn(yellow('    A file this large has taken the server down rather than being rejected.'))
 }
 
-async function pushSourceFileBatches(name, files, {
-  context,
-  initialManifestPaths,
-  expectedRevision,
-  readBatchFiles,
-  extraBody = {},
-  logProgress = true,
-}) {
-  const currentPaths = new Set(initialManifestPaths)
-  const batches = sourceFileBatches(files)
-  warnAboutFilesTooBigToCarry(files)
-  let result = null
-  for (let index = 0; index < batches.length; index++) {
-    const batch = batches[index]
-    for (const file of batch) currentPaths.add(file.path)
-    result = await api('POST', `/api/projects/${name}/push`, {
-      files: readBatchFiles(batch),
-      sourceManifest: normalizeSourceManifest([...currentPaths], context),
-      expectedRevision,
-      ...extraBody,
-    })
-    expectedRevision = result.sourceRevision || await currentSourceRevision(name)
-    if (logProgress) console.log(dim(`  ${index + 1}/${batches.length}: ${batch.length} file(s)`))
-  }
-  return { result, expectedRevision, currentPaths }
-}
-
 function findMainTex(dir) {
   // Prefer a .tex file matching the directory name
   const dirName = basename(dir)
@@ -616,8 +610,12 @@ async function cmdBook() {
     console.log(green(`Created book "${name}" with ${members.length} members.`))
   } catch (e) {
     if (e.message.includes('already exists')) {
-      // Update members on existing book
-      await api('POST', `/api/projects/${name}/push`, { files: [], members })
+      // Update members on existing book. Membership is not a source
+      // transaction -- it carries no files, no manifest and no expected
+      // revision -- so it moves to the members route rather than a source
+      // carrier. `members` replaces the set: `--members` names the intended
+      // membership, and the additive form cannot express a removal.
+      await api('PATCH', `/api/projects/${name}/members`, { members })
       console.log(`Updated book "${name}" with ${members.length} members.`)
     } else {
       throw e
@@ -683,7 +681,7 @@ async function cmdScratch() {
   // Push the file
   const content = readFileSync(absPath)
   const files = [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }]
-  await api('POST', `/api/projects/${name}/push`, {
+  await api('POST', `/api/projects/${name}/source-snapshot`, {
     files,
     sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile: fileName }),
     expectedRevision: await currentSourceRevision(name),
@@ -801,11 +799,34 @@ async function cmdCreate() {
     if (deletedFiles.length > 0) {
       console.log(dim(`  Removing ${deletedFiles.length} stale artifact file(s) from server`))
     }
-    await api('POST', `/api/projects/${name}/push`, {
-      files: allFiles,
+    // The snapshot IS the project, so every manifest path needs an entry in
+    // `files`. `allFiles` covers the artifacts we just built; the preserved
+    // server paths are files only the server holds, and they are carried
+    // forward by reference rather than re-uploaded. Stale artifacts are not
+    // listed as deletions -- they are absent from the manifest, and a path
+    // that leaves the manifest is deleted by not being named.
+    const current = await api('GET', `/api/projects/${name}/source-entries`)
+    const entryByPath = new Map((current.files || []).map(entry => [entry.path, entry]))
+    // A preserved path with no entry in the current revision can be carried
+    // neither by reference nor by content -- only the server has the bytes.
+    // Dropping it from the manifest would delete someone's file to make this
+    // request well-formed, so fail and name them instead.
+    const uncarriable = preservedServerPaths.filter(path => !entryByPath.has(path))
+    if (uncarriable.length > 0) {
+      throw new Error(
+        `cannot carry ${uncarriable.length} server file(s) forward -- absent from revision ` +
+        `${current.sourceRevision || 'none'}: ${uncarriable.slice(0, 5).join(', ')}` +
+        `${uncarriable.length > 5 ? ', ...' : ''}`
+      )
+    }
+    const carriedForward = preservedServerPaths.map(path => {
+      const entry = entryByPath.get(path)
+      return { path, sha256: entry.sha256, size: entry.size }
+    })
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
+      files: [...allFiles, ...carriedForward],
       sourceManifest,
       expectedRevision: await currentSourceRevision(name),
-      ...(deletedFiles.length > 0 && { deletedFiles }),
     })
     console.log(green('Slides processed.'))
 
@@ -858,7 +879,7 @@ async function cmdCreate() {
     }
 
     console.log(`Pushing ${allFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, {
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
       files: allFiles,
       sourceManifest: sourceManifestForFiles(allFiles, { format: 'html' }),
       expectedRevision: await currentSourceRevision(name),
@@ -943,36 +964,25 @@ async function cmdCreate() {
     }
     collectQmdDir(dir)
 
-    const readBatchFiles = batch => batch.map(file => ({
-      path: file.path,
-      content: readFileSync(file.fullPath).toString('base64'),
-      encoding: 'base64',
-    }))
     const finalManifest = normalizeSourceManifest(qmdFiles.map(file => file.path), qmdContext)
-    const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
-    const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, finalManifest)
-    let expectedRevision = await currentSourceRevision(name)
-    const priority = new Set([mainFile, '_quarto.yml', '_quarto_book.yml', 'development.qmd', 'scratch/fall-2026-development-schedule.html'])
-    qmdFiles.sort((a, b) => Number(priority.has(b.path)) - Number(priority.has(a.path)) || a.path.localeCompare(b.path))
-    const batches = sourceFileBatches(qmdFiles)
+    const expectedRevision = await currentSourceRevision(name)
 
-    console.log(`Pushing ${qmdFiles.length} file(s) in ${batches.length} bounded request(s)...`)
-    const pushed = await pushSourceFileBatches(name, qmdFiles, {
-      context: qmdContext,
-      initialManifestPaths: survivingServerPaths,
+    // This path sends every file's content rather than a diff, so the snapshot
+    // is the whole project in one accept. The ordering that fed the batcher is
+    // gone with it: a single request has no first batch to put the main file
+    // in. Stale server files are deleted by being absent from the manifest, so
+    // there is no cleanup push after this one.
+    console.log(`Pushing ${qmdFiles.length} file(s) in one snapshot...`)
+    warnAboutFilesTooBigToCarry(qmdFiles)
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
+      files: qmdFiles.map(file => ({
+        path: file.path,
+        content: readFileSync(file.fullPath).toString('base64'),
+        encoding: 'base64',
+      })),
+      sourceManifest: finalManifest,
       expectedRevision,
-      readBatchFiles,
     })
-    expectedRevision = pushed.expectedRevision
-    const staleFiles = staleServerPaths
-    if (staleFiles.length > 0) {
-      await api('POST', `/api/projects/${name}/push`, {
-        files: [],
-        deletedFiles: staleFiles,
-        sourceManifest: finalManifest,
-        expectedRevision,
-      })
-    }
     console.log(green('Quarto project processed.'))
 
     const server = getServer()
@@ -1014,7 +1024,7 @@ async function cmdCreate() {
       const labels = closure.missing.slice(0, 5).map(item => `${item.from} → ${item.ref}`)
       console.log(dim(`  Skipped ${closure.missing.length} unresolved local ref(s): ${labels.join(', ')}${closure.missing.length > 5 ? '…' : ''}`))
     }
-    await api('POST', `/api/projects/${name}/push`, {
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
       files,
       sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
       expectedRevision: await currentSourceRevision(name),
@@ -1315,7 +1325,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1332,7 +1342,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'html', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1349,7 +1359,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'svg', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -3016,10 +3026,15 @@ async function cmdMoveProject() {
   const moveContext = { format: project.format, mainFile: project.mainFile }
   const files = collectSourceFiles(sourceDir, moveContext)
   const targetAuthority = await apiAt(targetServer, 'GET', `/api/projects/${encodeURIComponent(name)}/source-authority`)
-  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, {
+  // A move carries the whole project, and the manifest is derived from the
+  // files being sent, so the two match without carry-forward references.
+  //
+  // `sourceDir` is not sent. The old route never read it -- it is absent from
+  // that handler's destructure, and every server use reads `project.sourceDir`
+  // from storage -- so the move has been sending a field nobody consumes.
+  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/source-snapshot`, {
     files,
     sourceManifest: sourceManifestForFiles(files, moveContext),
-    sourceDir,
     expectedRevision: targetAuthority.currentRevision,
   }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)

@@ -186,6 +186,9 @@ export async function mirrorShadow(name, hash, sourceRevision, acceptSeq) {
   return mirrorShadowSnapshot({ name, hash, bundleBase64, sourceScope, sourceRevision, acceptSeq })
 }
 
+// The scratch AUTHORING path was deleted deliberately -- see commit 5e8f968f8.
+// This reader stays so documents that already contain scratch/*.md files keep
+// building. Do not "finish" the cut by removing it; that breaks real papers.
 function convertScratchMarkdown(srcDir, addLog) {
   const scratchDir = join(srcDir, '.tlda', 'scratch')
   if (!existsSync(scratchDir)) return
@@ -538,6 +541,11 @@ async function compileLaTeX(ctx) {
     BIBINPUTS: `${texDir}:${srcDir}:`,
   }
 
+  // The scratch AUTHORING path (the routes/MCP tools that created new scratch
+  // sections) was deleted deliberately -- see commit 5e8f968f8. This stays so
+  // documents that already contain \inputscratch{} sections keep building. Do
+  // not "finish" the cut by removing it; that breaks real, already-written papers.
+  //
   // Override the scratch-template for THIS build. The user's source dir has
   // the marker version of \inputscratch (so local vanilla-latex builds show
   // a visible placeholder per scratch section); the build runner writes a

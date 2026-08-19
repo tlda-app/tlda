@@ -69,7 +69,7 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { acceptSourceSnapshot, processProjectPush, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
+import projectRoutes, { acceptSourceSnapshot, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -9790,18 +9790,47 @@ async function handleDaemonWsMessage(ws, msg) {
     if (await readProject(project)) {
       await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
-    // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
+    // Hand off to the same accept used by POST /api/projects/:name/source-snapshot.
     let replied = false
     try {
+      // `crashAt` replaces the old `transactionTest`. The two boundary names
+      // map -- `after-terminal-result` directly, `after-source-mutation` onto
+      // `after-accept`, which is the same place: the revision is durable and
+      // the effects have not run.
+      //
+      // **The kill semantics do NOT transfer, and that is not fixed here.** The
+      // old hooks called `process.kill(pid, 'SIGKILL')`; `acceptSourceSnapshot`
+      // RETURNS `{status: 599, simulatedCrash: true}` instead of dying. So a
+      // test that asserted recovery after real process death does not go red
+      // when it is repointed -- it passes while testing something weaker.
+      // `durable-source-acceptance` owes a decision about whether its window is
+      // still its window. Deciding it here would be repointing a death test
+      // onto a return value.
       const crashBoundary = process.env.TLDA_DEV_SERVER === '1'
         ? process.env.TLDA_TEST_SOURCE_CRASH_BOUNDARY
         : null
-      const transactionTest = crashBoundary === 'after-source-mutation'
-        ? { simulateCrashAfterSourceMutation: true, crash: () => process.kill(process.pid, 'SIGKILL') }
+      const crashAt = crashBoundary === 'after-source-mutation'
+        ? 'after-accept'
         : crashBoundary === 'after-terminal-result'
-          ? { simulateCrashAfterTerminalResult: true, crash: () => process.kill(process.pid, 'SIGKILL') }
-          : undefined
-      const result = await processProjectPush(project, {
+          ? 'after-terminal-result'
+          : null
+      // **Hand the accept this object whole; never trim it to what
+      // `acceptSourceSnapshot` destructures.** Its destructure names only what
+      // the accept uses itself -- the payload is passed on intact to
+      // `acceptUnderOperationJournal` (which spreads it into
+      // `prepareOperation`, where `deliveryId`, `editOperation` and
+      // `editOperations` are read) and to `sourceConflictOwner` (which reads
+      // `sourceMachineId` and `sourceEnvName`). Enumerating against the
+      // destructure list would drop five fields silently while every grep for
+      // them still succeeded. See projects.mjs:2585.
+      //
+      // `deletedFiles` is deliberately not read by the accept: removal is
+      // expressed by leaving the manifest, and the sender guarantees the
+      // omission -- daemon/source-sync.mjs:1406 deletes each path from
+      // `authorityManifest` before the manifest is built from it, because a
+      // path in both is refused whole. It stays in the payload because
+      // trimming this object is the failure above.
+      const { status: httpStatus, body } = await acceptSourceSnapshot(project, {
         files,
         deletedFiles,
         sourceManifest,
@@ -9815,17 +9844,23 @@ async function handleDaemonWsMessage(ws, msg) {
         sourceDaemonKey: ws._daemonKey || null,
         sourceMachineId: ws._machineId || null,
         sourceEnvName: ws._envName || null,
-      }, transactionTest)
-      const { status: httpStatus, lifecycleStatus, ...payload } = result
-      const durablePayload = result.sourceOperationResult || payload
+      }, { crashAt })
+      // The accept returns `{status, body}` where the old push returned one
+      // flat object. Reading it flat leaves `ok` and the lifecycle status
+      // undefined, so the ternary below falls through to `'error'` on every
+      // successful accept -- a green push reported to the daemon as a failure.
+      const { status: lifecycleStatus, ...payload } = body
+      const durablePayload = body.sourceOperationResult || payload
       // deliveryId travels on every reply for the same reason it does on the
       // replay above: it is the only identifier in this exchange that both
-      // sides still agree on after a reconnect.
-      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
+      // sides still agree on after a reconnect. It is carried through the
+      // accept's new `{status, body}` shape rather than lost with the old flat
+      // one -- the shape changed, the reason for the field did not.
+      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (body.ok ? 'accepted' : 'error') }
       ws.send(JSON.stringify(reply))
       replied = true
-      if (!result.ok) {
-        console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
+      if (!body.ok) {
+        console.error(`[fleet-daemon] source-change ${project}: ${body.error || 'unknown'}`)
       }
     } catch (e) {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)

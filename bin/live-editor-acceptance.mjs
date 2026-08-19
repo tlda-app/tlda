@@ -79,12 +79,21 @@ async function serverText() {
   return res.text()
 }
 
-/** Alice, on her own machine, pushing to the same file. */
+/** Alice, on her own machine, pushing to the same file.
+ *
+ * The JSON accept carrier, not the retired `PUT /source/:file`. That handler
+ * was a thin wrapper that turned one file into `files: [{path, content}]` and
+ * called the old push, so the translation here is the one it used to do. The
+ * stories above are unchanged: what this exercises is still a second machine
+ * pushing to the file you have open. */
 async function alicePushes(content, expectedRevision) {
-  const res = await fetch(api(`/source/${FILE}`), {
-    method: 'PUT',
+  const res = await fetch(api('/source-snapshot'), {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, sourceManifest: [FILE], editedBy: 'alice', expectedRevision }),
+    body: JSON.stringify({
+      files: [{ path: FILE, content }],
+      sourceManifest: [FILE], editedBy: 'alice', expectedRevision,
+    }),
   })
   return { status: res.status, body: await res.json().catch(() => ({})) }
 }

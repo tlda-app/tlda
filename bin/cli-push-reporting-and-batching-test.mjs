@@ -80,7 +80,18 @@ const http = createServer((req, res) => {
       send(200, { hashes: {} })
     } else if (req.method === 'GET' && req.url === '/api/projects/rejecting-book/source-authority') {
       send(200, { currentRevision: null })
-    } else if (req.method === 'POST' && req.url === '/api/projects/rejecting-book/push') {
+    } else if (req.method === 'GET' && req.url === '/api/projects/rejecting-book/source-entries') {
+      // The CLI reads the accepted revision's entries so unchanged paths can
+      // ride as references instead of being re-uploaded. This stub predates
+      // that call, so the request 404'd and the CLI failed before reaching the
+      // POST this test is actually about. Empty is the honest answer here:
+      // source-authority reports currentRevision null, so there is no accepted
+      // revision to carry anything forward from.
+      send(200, { files: [], sourceRevision: null })
+    } else if (req.method === 'POST' && req.url === '/api/projects/rejecting-book/source-snapshot') {
+      // The push moved off /push onto the JSON accept carrier. This is the
+      // request under test -- a 413 here must make the CLI exit nonzero and say
+      // why, rather than printing success.
       pushRequests += 1
       send(413, { error: 'payload too large from test server' })
     } else {
@@ -116,7 +127,7 @@ try {
       TLDA_TOKEN: 'test-token',
     },
   })
-  assert.equal(pushRequests, 1, `precondition: CLI must reach /push\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+  assert.equal(pushRequests, 1, `precondition: CLI must reach /source-snapshot\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
   assert.notEqual(result.status, 0, `CLI must exit nonzero on HTTP 413\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
   assert.match(result.stderr, /payload too large from test server/)
   assert.doesNotMatch(result.stdout, /Build triggered|Source pushed|No changes detected/)
