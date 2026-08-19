@@ -92,7 +92,7 @@ export class LocalAgentLedger {
       -- Skip, 2026-08-19 05:39 EDT: "never inhabited shells, though. Like,
       -- release the name means mark dead, dude." / "you kill a never inhabited
       -- shell. You don't delete it." The name is released because the row is
-      -- dead, not because the row is gone -- so every read here is `dead = 0`
+      -- dead, not because the row is gone -- so every read here is dead = 0
       -- and the reservation, its recipe and its conversation stay readable.
       CREATE TABLE IF NOT EXISTS local_agents (
         local_agent_id TEXT PRIMARY KEY,
