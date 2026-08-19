@@ -27,6 +27,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
+import { botServicePaths as declaredBotServicePaths, parseBotMintId, resolveBotScript } from '../shared/bot-declaration.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
 import {
@@ -1527,42 +1528,19 @@ function printSupervisedJobRefusal(verb, { label, restartCommand }) {
   console.error(dim(`  Restart: ${restartCommand}`))
 }
 
-function botServiceName(name) {
-  return String(name || '').trim()
-}
-
-function botServiceSuffix(name) {
-  const suffix = botServiceName(name).replace(/[^A-Za-z0-9_.-]/g, '-')
-  if (!suffix) throw new Error('bot name is required')
-  return suffix
-}
-
-function botEnvironmentSuffix(configName = null) {
-  if (!configName) return ''
-  return `.${String(configName).replace(/[^A-Za-z0-9_.-]/g, '-')}`
-}
-
 // A bot's files, and nothing about a terminal. There is no per-bot launchd label
 // any more — one bot manager supervises every bot on this machine — and no tmux
 // session name, which is the string that made the old per-bot supervisor restart
 // a healthy bot forever.
+// Both of these live in shared/bot-declaration.mjs now, because wake resolves a
+// bot's files from the declaration too and two encodings of where a bot's pidfile
+// is would be the same defect this change removes.
 function botServicePaths(name, { configName = null } = {}) {
-  if (!configName) {
-    const configured = getManagedBots().find(bot => bot.name === name)
-    configName = configured?.environment || getActiveEnvName()
-  }
-  const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
-  return {
-    logFile: join(CONFIG_DIR, `${suffix}.log`),
-    pidFile: join(CONFIG_DIR, `${suffix}.pid`),
-    heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
-  }
+  return declaredBotServicePaths(name, { configName })
 }
 
 function resolveBotScriptForCli(script) {
-  if (!script) throw new Error('bot script is required')
-  if (script.startsWith('/')) return script
-  return join(FLEET_DAEMON_MAIN_ROOT, script)
+  return resolveBotScript(script, FLEET_DAEMON_MAIN_ROOT)
 }
 
 function configuredBots() {
@@ -3998,7 +3976,7 @@ export async function runFleetSpawn(spawnArgs, {
     } finally {
       mintStore.close()
     }
-    assertWakeModelMatchesRecipe({ name, requestedModel: explicitModelArg, recipeModel: restored.model })
+    assertWakeModelMatches({ name, mintId: restored.identifier, requestedModel: explicitModelArg, recipeModel: restored.model })
     // The daemon has taken `permissionGrant` on wake since wake-permission-profile
     // existed; this call is the wire that was never connected, so `--permissions`
     // on wake resolved to nothing at all. The daemon writes the ledger from what
@@ -4205,7 +4183,7 @@ export function resolveWakeRecipeFields({
   if (!stored.serverAgentId || !stored.serverAgentId.startsWith('fleet:')) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no fleet_id binding`)
   }
-  assertWakeModelMatchesRecipe({ name: label, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
+  assertWakeModelMatches({ name: label, mintId: stored.mintId, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
   const permissionArg = explicitPermissionArg || stored.process.permissionGrant || undefined
   return {
     cwd: resolve(stored.process.cwd),
@@ -4216,9 +4194,31 @@ export function resolveWakeRecipeFields({
   }
 }
 
-function assertWakeModelMatchesRecipe({ name, requestedModel, recipeModel } = {}) {
+// Checked against whatever actually decides the model, which is not the same
+// source for a bot as for anyone else.
+//
+// A bot's model is declared in `bots.yaml` and carried in its mint id —
+// `bot:<env>:<model>`. It used to be checked against the stored recipe, where
+// every bot's model was the literal string `bot`, so the check compared a
+// requested `todd` against a recorded `bot` and the recorded value described the
+// harness rather than the model. Reading the declaration is the fix; renaming
+// the function around the old source would not have been.
+//
+// For every other agent the recipe's model is the only record of what was
+// launched, so it stays the source there.
+function assertWakeModelMatches({ name, mintId, requestedModel, recipeModel } = {}) {
   if (!requestedModel) return
   const label = name || '(unknown)'
+  const bot = parseBotMintId(mintId)
+  if (bot) {
+    if (!getManagedBots().some(declared => declared.name === bot.model)) {
+      throw new Error(`wake refused: bots.yaml does not declare a bot named "${bot.model}" for "${label}"`)
+    }
+    if (String(bot.model) !== String(requestedModel)) {
+      throw new Error(`wake refused: --model ${requestedModel} does not match the declared bot model ${bot.model} for "${label}"`)
+    }
+    return
+  }
   if (!recipeModel) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no model; cannot assert --model ${requestedModel}`)
   }
