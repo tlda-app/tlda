@@ -19,7 +19,7 @@ function withExplicitConjunctions(parts, junctions) {
   return explicitConjunctionSegments(parts, junctions).map(s => s.text).join(' ')
 }
 
-const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role'])
+const FILTER_KEYS = new Set(['from', 'to', 'involving', 'agent', 'since', 'after', 'before', 'type', 'role', 'id'])
 const FILTER_OPERATORS = new Set(['&', '|', '!', '(', ')'])
 
 // `agentSelector` is the search tool's `agent` parameter. It used to be spliced
@@ -141,8 +141,13 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
 
   if (filterParts.length > 0) {
     const expression = filterParts.join(' ')
-    parseUnifiedFilter(expression, { sort: 'message' })
+    const ast = parseUnifiedFilter(expression, { sort: 'message' })
     filters.filterExpression = expression
+    // The ids the query names outright. A caller renders those rows whole:
+    // `id:` is a dereference, and a snippet of a message you asked for by name
+    // is not the message. Everything else still snippets.
+    const named = messageIdsNamed(ast)
+    if (named.length) filters.messageIds = named
   }
 
   if (filterParts.length === 0 && queryParts.length > 0) {
@@ -165,6 +170,26 @@ export function parseSearchQuery(raw, { agentSelector = null, autoConjoin = fals
     filters,
     explicitQuery,
     explicitSegments: explicitConjunctionSegments(parts, impliedConjunctionAt),
+  }
+}
+
+/**
+ * Every id an `id:` term names positively, in walk order. A negated term names
+ * no row it could return, so `not` is not descended into.
+ */
+function messageIdsNamed(node, out = []) {
+  if (!node) return out
+  switch (node.t) {
+    case 'id':
+      out.push(node.v)
+      return out
+    case 'and':
+    case 'or':
+      messageIdsNamed(node.l, out)
+      messageIdsNamed(node.r, out)
+      return out
+    default:
+      return out
   }
 }
 
@@ -339,6 +364,9 @@ function collectFilterValue(parts, index) {
 function normalizeSearchFilterToken(key, valueTokens) {
   const normalizedKey = key === 'agent' ? 'involving' : key === 'after' ? 'since' : key
   const value = valueTokens.join(' ').trim()
+  if (normalizedKey === 'id') {
+    return { value, filterTokens: [`${normalizedKey}:${value}`] }
+  }
   if (normalizedKey === 'type') {
     return { value, filterTokens: [`${normalizedKey}:${value}`] }
   }

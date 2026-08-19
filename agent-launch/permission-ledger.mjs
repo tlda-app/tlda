@@ -427,7 +427,14 @@ export class PermissionLedger {
         daemon_key TEXT,
         terminal_capability TEXT,
         cwd TEXT,
-        last_seen TEXT
+        last_seen TEXT,
+        -- Skip, 2026-08-19 05:39 EDT: "you kill a never inhabited shell. You
+        -- don't delete it." A launch that fails after preallocating an id kills
+        -- its own reservation -- an explicit kill, the flag set because somebody
+        -- asked for it, which is what AGENTS.md "DEATH IS A FLAG IN THE
+        -- DATABASE" requires. It is not death inferred from a failure.
+        dead INTEGER NOT NULL DEFAULT 0,
+        died_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
         ON permission_grants(updated_at);
@@ -446,6 +453,8 @@ export class PermissionLedger {
       'ALTER TABLE permission_grants ADD COLUMN terminal_capability TEXT',
       'ALTER TABLE permission_grants ADD COLUMN cwd TEXT',
       'ALTER TABLE permission_grants ADD COLUMN last_seen TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN dead INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE permission_grants ADD COLUMN died_at TEXT',
     ]) {
       try { this.db.exec(ddl) } catch (e) {
         if (!String(e?.message || '').includes('duplicate column name')) throw e
@@ -454,6 +463,8 @@ export class PermissionLedger {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_permission_grants_friendly_name
         ON permission_grants(friendly_name, last_seen);
+      CREATE INDEX IF NOT EXISTS idx_permission_grants_friendly_name_live
+        ON permission_grants(friendly_name, last_seen) WHERE dead = 0;
     `)
     this._metaGet = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ?')
     this._metaSet = this.db.prepare(`
@@ -468,14 +479,14 @@ export class PermissionLedger {
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
-      WHERE id = ?
+      WHERE id = ? AND dead = 0
     `)
     this._findByFriendlyName = this.db.prepare(`
       SELECT id, permission_grant, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
-      WHERE friendly_name = ?
+      WHERE friendly_name = ? AND dead = 0
       ORDER BY COALESCE(last_seen, updated_at) DESC
       LIMIT 1
     `)
@@ -484,7 +495,7 @@ export class PermissionLedger {
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
-      WHERE tmux_session IS NOT NULL
+      WHERE tmux_session IS NOT NULL AND dead = 0
       ORDER BY id
     `)
     this._upsert = this.db.prepare(`
@@ -495,7 +506,7 @@ export class PermissionLedger {
         updated_at = excluded.updated_at,
         source = excluded.source
     `)
-    this._delete = this.db.prepare('DELETE FROM permission_grants WHERE id = ?')
+    this._markDead = this.db.prepare('UPDATE permission_grants SET dead = 1, died_at = ? WHERE id = ? AND dead = 0')
     this._worker = null
     this._nextRequestId = 1
     this._pending = new Map()
@@ -650,23 +661,27 @@ export class PermissionLedger {
   // agent never came into being. Do not reach for this to prune stale rows: to
   // retire a dead session, clear `tmux_session` and leave the grant, so the
   // agent stays wakeable (see the note in daemon/agent-liveness.mjs).
-  async delete(id) {
+  // Kill the grant, do not remove it. Every read above is `dead = 0`, so the row
+  // stops being found by exactly the queries that used to stop finding it when
+  // it was deleted -- and the grant, the session and the tmux binding stay
+  // readable afterwards. There is no undead transition: dead is set once.
+  async markDead(id, at = new Date().toISOString()) {
     const key = String(id || '').trim()
     if (!key) return
     const existing = this.get(key)
-    await this.writeAsync({ op: 'delete', id: key })
+    await this.writeAsync({ op: 'mark-dead', id: key, at })
     if (hasProcessBinding(existing)) {
-      this.notifyProcessBindingChange({ id: key, row: null, previous: existing, deleted: true })
+      this.notifyProcessBindingChange({ id: key, row: null, previous: existing, dead: true })
     }
   }
 
-  deleteSyncForTest(id) {
+  markDeadSyncForTest(id, at = new Date().toISOString()) {
     const key = String(id || '').trim()
     if (!key) return
     const existing = this.get(key)
-    this._delete.run(key)
+    this._markDead.run(at, key)
     if (hasProcessBinding(existing)) {
-      this.notifyProcessBindingChange({ id: key, row: null, previous: existing, deleted: true })
+      this.notifyProcessBindingChange({ id: key, row: null, previous: existing, dead: true })
     }
   }
 

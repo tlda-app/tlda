@@ -307,9 +307,9 @@ function assertTailCount(harness, expected) {
     ledger.setSessionSync('fleet:jsonl-owner', { model: 'filled-model' })
     ledger.setSessionSync('fleet:jsonl-owner', { terminalCapability: 'filled-capability' })
     assert.equal(changes.length, 1)
-    ledger.deleteSyncForTest('fleet:jsonl-owner')
+    ledger.markDeadSyncForTest('fleet:jsonl-owner')
     assert.equal(changes.length, 2)
-    assert.equal(changes[1].deleted, true)
+    assert.equal(changes[1].dead, true)
   } finally {
     cleanup()
   }
@@ -854,14 +854,14 @@ function assertTailCount(harness, expected) {
   try {
     const reconcile = createBindingReconciler({ ledger, ingestor: harness.ingestor })
     ledger.onProcessBindingChange = () => {
-      deleteReconcilePromise = reconcile('permission-ledger-delete')
+      deleteReconcilePromise = reconcile('permission-ledger-mark-dead')
     }
     writeFileSync(harness.jsonlPath, '{}\n')
     ledger.setSessionSync('fleet:jsonl-owner', fullBinding({ sessionPath: harness.jsonlPath }))
     await reconcile('attach')
     assertTailCount(harness, 1)
     assertWatcher(harness, false)
-    await ledger.delete('fleet:jsonl-owner')
+    await ledger.markDead('fleet:jsonl-owner')
     await deleteReconcilePromise
     assertWatcher(harness, false)
     assertTailCount(harness, 1)

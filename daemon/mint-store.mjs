@@ -105,6 +105,21 @@ export class MintStore {
     `)
     const cols = this.db.prepare('PRAGMA table_info(daemon_mints)').all().map(col => col.name)
     if (!cols.includes('env_name')) this.db.exec('ALTER TABLE daemon_mints ADD COLUMN env_name TEXT')
+    // Recover the environment of every mint that recorded it in `metadata` and
+    // not in the column. `getByFriendlyName` filters on the column, so those
+    // rows were unfindable by name — `tlda agent wake <name>` answered "no local
+    // mint recorded" for beings that were joined, had a fleet id, and were
+    // sitting in this table. They are agents, so leaving them stranded to avoid
+    // a backfill is not a trade worth making; the fact is already in the row and
+    // this only moves it where the lookup reads.
+    this.db.exec(`
+      UPDATE daemon_mints
+      SET env_name = json_extract(metadata, '$.envName')
+      WHERE env_name IS NULL
+        AND metadata IS NOT NULL
+        AND json_valid(metadata)
+        AND json_extract(metadata, '$.envName') IS NOT NULL
+    `)
   }
 
   ensure(mintId, now = new Date().toISOString()) {

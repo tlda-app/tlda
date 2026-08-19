@@ -15,6 +15,7 @@ import {
   HTMLContainer,
   stopEventPropagation,
   useEditor,
+  useToasts,
   useValue,
 } from 'tldraw'
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
@@ -49,7 +50,7 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { FleetHudRenderGate, useIsInViewport } from './useIsInViewport'
-import { fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
+import { CHIP_OPEN_FAILED, fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
 import { log } from '../logger'
 import { useProjectPreambleMacros } from '../fleet/useProjectPreambleMacros'
 import './fleet-chat.css'
@@ -648,6 +649,11 @@ function FleetInboxInner({ shape }: { shape: any }) {
     [editor],
   )
 
+  const { addToast } = useToasts()
+  const showError = useCallback((message: string) => {
+    addToast({ title: message, severity: 'error' })
+  }, [addToast])
+
   const markThreadRead = useCallback((t: Thread) => {
     const unread = t.messages.filter(
       (e: any) => (Array.isArray(e.recipients) ? e.recipients : [])
@@ -684,16 +690,20 @@ function FleetInboxInner({ shape }: { shape: any }) {
           sourceEl,
           placementEl: containerRef.current,
           logPrefix: 'fleet-inbox',
+          showError,
         })
       })
       // A failed load opens NO document — same rule as the chat chip path. This
       // used to open a markdown column whose body was "# Failed to load", which
       // presents a delivery failure to the user as a real but broken document.
-      .catch(err => log.error('chat-chip', 'inbox chip failed to load; opening no document', {
-        label: tag.label, path: tag.path, url: tag.url,
-        error: err instanceof Error ? err.message : String(err),
-      }))
-  }, [editor, shape])
+      .catch(err => {
+        log.error('chat-chip', 'inbox chip failed to load; opening no document', {
+          label: tag.label, path: tag.path, url: tag.url,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        showError(CHIP_OPEN_FAILED)
+      })
+  }, [editor, shape, showError])
 
   const openableItems = useMemo<DetailItem[]>(() => [
     ...ownedFleetTasks.map((task): DetailItem => ({ kind: 'fleet-task', key: `fleet-task:${task.id}`, task })),
@@ -1164,6 +1174,10 @@ function ConversationView({
   myName: string
 }) {
   const editor = useEditor()
+  const { addToast } = useToasts()
+  const showError = useCallback((message: string) => {
+    addToast({ title: message, severity: 'error' })
+  }, [addToast])
   const scrollRef = useRef<HTMLDivElement>(null)
   const wasNearBottomRef = useRef(true)
   const downTargetRef = useRef<HTMLElement | null>(null)
@@ -1258,13 +1272,14 @@ function ConversationView({
       sourceEl,
       placementEl: scrollRef.current,
       logPrefix: 'fleet-inbox',
+      showError,
     })
-  }, [editor, shapeId])
+  }, [editor, shapeId, showError])
 
   const openMarkdownChipFromEventTarget = useCallback((target: EventTarget | null, stopPropagation: () => void) => {
     if (!(target instanceof HTMLElement)) return false
-    return openMarkdownChipFromTarget({ target, stopPropagation, openMarkdownColumn })
-  }, [openMarkdownColumn])
+    return openMarkdownChipFromTarget({ target, stopPropagation, openMarkdownColumn, showError })
+  }, [openMarkdownColumn, showError])
 
   const handleConversationClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (Date.now() < suppressNativeChipClickUntilRef.current) return

@@ -220,7 +220,7 @@ export async function initShadowFromProjectRepo(name, projectRepoPath, paperScop
 function writeShadowGuardFiles(repoDir, name) {
   writeFileSync(join(repoDir, '.gitignore'), GITIGNORE_CONTENT)
 
-  const claudeMd = `# DO NOT WRITE HERE\n\nThis directory is a server-managed mirror of the paper's source files.\n\n**Do not commit changes here.** Write in your project directory instead\n(e.g. \`~/work/${name}/\`). Use the MCP \`push\` or \`input_scratch\`\ntools to send changes to the server.\n\nChanges committed directly here **do not trigger builds** and will be\n**overwritten by the next successful build**.\n\nOnly touch this repo if the build pipeline itself has broken badly and you\nare debugging the server infrastructure directly.\n`
+  const claudeMd = `# DO NOT WRITE HERE\n\nThis directory is a server-managed mirror of the paper's source files.\n\n**Do not commit changes here.** Write in your project directory instead\n(e.g. \`~/work/${name}/\`). Use the MCP \`push\`\ntool to send changes to the server.\n\nChanges committed directly here **do not trigger builds** and will be\n**overwritten by the next successful build**.\n\nOnly touch this repo if the build pipeline itself has broken badly and you\nare debugging the server infrastructure directly.\n`
   writeFileSync(join(repoDir, 'CLAUDE.md'), claudeMd)
 }
 
@@ -780,6 +780,11 @@ export async function compileHistoricalDvi({ srcDir, mainFile }) {
   const texBase = basename(mainFile, '.tex')
   const compileDir = join(srcDir, dirname(mainFile))
 
+  // The scratch AUTHORING path was deleted deliberately -- see commit
+  // 5e8f968f8. This stays so historical checkouts whose paper contains
+  // \inputscratch{} sections still compile. Do not "finish" the cut by
+  // removing it; that breaks real, already-written papers.
+  //
   // The doc's preamble does \input{.tlda/scratch/scratch-template}. In a live
   // build, build-runner injects its own scratch-template into buildDir (first
   // on TEXINPUTS), so that path is a build artifact and is deliberately kept

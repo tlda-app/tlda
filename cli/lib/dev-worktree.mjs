@@ -802,14 +802,16 @@ async function seedScratchProject(base, branch) {
     name, title: `Scratch (${branch})`, mainFile: 'main.md', format: 'markdown',
   })
   if (!created) return null
-  const pushed = await post(`/api/projects/${name}/push`, {
-    // The source push is a revision-checked transaction: the manifest is the
-    // complete file list the snapshot should consist of, and a bootstrap push
-    // has to carry it or the server rejects the snapshot as incomplete.
+  const pushed = await post(`/api/projects/${name}/source-snapshot`, {
+    // The manifest is the complete file list the snapshot consists of, and
+    // every path in it must have an entry in `files` -- the snapshot IS the
+    // project, so a path that leaves the manifest is deleted by not being
+    // named. One file here, so the two match by construction.
     sourceManifest: ['main.md'],
-    // null, not omitted: the check is `=== undefined`, and on a fresh project the
-    // authority is uninitialized with currentRevision null, so null is the
-    // honest "I expect there to be nothing here yet".
+    // A bootstrap. `expectedRevision` is the commit's parent, so null is a
+    // parentless root commit: the server has no ref for a fresh project and
+    // accepts it. It is no longer a sentinel that has to survive being
+    // distinguished from absent -- absent means the same thing now.
     expectedRevision: null,
     files: [{
       path: 'main.md',

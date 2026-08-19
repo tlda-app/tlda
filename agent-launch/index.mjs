@@ -1,11 +1,13 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
-import { activeEnvName, newLocalAgentId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { activeEnvName, newLocalAgentId, repoRoot, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { botLaunchFromDeclaration } from '../shared/bot-declaration.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { MintStore, resolveMintFacts } from '../daemon/mint-store.mjs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeSpawnModelKwargs } from './models.mjs'
+import { getMachineId } from '../shared/config.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
@@ -689,6 +691,22 @@ function defaultMintStorePath() {
   return path.join(configDir, 'daemon-mints.sqlite')
 }
 
+// The being `tlda doctor yolo --name <name>` already made in this environment,
+// or null. Name lookups in the mint ledger are environment-local, which is the
+// same namespace rule the fleet uses: two environments may each have a `chief`
+// and they are different agents.
+function existingDoctorYoloMint(mintStorePath, name, envName) {
+  if (!name || !envName) return null
+  const store = new MintStore(mintStorePath, { defaultEnvName: envName })
+  try {
+    return store.getByFriendlyName(name, envName)
+  } catch {
+    return null
+  } finally {
+    store.close()
+  }
+}
+
 function recordDoctorYoloMintFacts({
   mintStorePath,
   localAgentId,
@@ -699,11 +717,20 @@ function recordDoctorYoloMintFacts({
   cwd,
   harness,
   model,
+  envName = null,
   metadata = {},
 }) {
   const store = new MintStore(mintStorePath || defaultMintStorePath(), { defaultEnvName: activeEnvName() })
   try {
     store.ensure(localAgentId)
+    // `env_name` is the column `getByFriendlyName` filters on, and a mint the
+    // daemon made always sets it (mint-core does the same line). This path
+    // recorded the environment in `metadata` only, so every doctor yolo mint
+    // was a row that existed and could not be looked up by name: `tlda agent
+    // wake <name>` answered "no local mint recorded" for an agent whose record
+    // was sitting right there, joined, with a fleet id.
+    const env = envName || metadata?.envName || activeEnvName()
+    if (env) store.setFact(localAgentId, 'env_name', env)
     if (fleetId) store.setFact(localAgentId, 'fleet_id', fleetId)
     if (friendlyName || name) store.setFact(localAgentId, 'friendly_name', friendlyName || name)
     store.setFact(localAgentId, 'metadata', metadata)
@@ -872,6 +899,20 @@ async function spawnRespawn(params) {
   }
   const resumeId = adapter.resumeId?.(handle)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
+  // An explicit caller still wins — the bot manager passes these on a fresh
+  // mint, before any declaration lookup is needed. Otherwise a bot mint id
+  // resolves them from `bots.yaml`, and a non-bot resolves to null and passes
+  // nothing, exactly as before.
+  const botLaunch = (params.botScript || params.bot_script)
+    ? {
+      botScript: params.botScript || params.bot_script,
+      botName: params.botName || params.bot_name || null,
+      botPidFile: params.botPidFile || params.bot_pid_file || null,
+      botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
+      botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
+      botEnv: params.botEnv || params.bot_env || null,
+    }
+    : botLaunchFromDeclaration(facts.mintId, { repoRoot: repoRoot() })
   const launchPolicy = resolveLaunchPolicy({
     permissionGrant: params.permissionGrant || meta.permissionGrant,
     permissionSet: params.permissionSet || meta.permissionSet,
@@ -906,12 +947,13 @@ async function spawnRespawn(params) {
     harnessOptions: launchPolicy.harnessOptions,
     config,
     env: spawnEnv(params),
-    botScript: params.botScript || params.bot_script || facts.launchRecipe?.botScript || facts.launchRecipe?.bot_script || facts.launchRecipe?.script || null,
-    botName: params.botName || params.bot_name || facts.launchRecipe?.botName || facts.launchRecipe?.bot_name || null,
-    botPidFile: params.botPidFile || params.bot_pid_file || facts.launchRecipe?.botPidFile || facts.launchRecipe?.bot_pid_file || null,
-    botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || facts.launchRecipe?.botHeartbeatFile || facts.launchRecipe?.bot_heartbeat_file || null,
-    botWaitChannel: params.botWaitChannel || params.bot_wait_channel || facts.launchRecipe?.botWaitChannel || facts.launchRecipe?.bot_wait_channel || null,
-    botEnv: params.botEnv || params.bot_env || facts.launchRecipe?.botEnv || facts.launchRecipe?.bot_env || null,
+    // From `bots.yaml`, not from the mint's stored recipe. These six were the
+    // bot recipe: a copy of the declaration taken at mint time and replayed on
+    // every wake afterwards, free to drift the moment the file was edited.
+    // Reading the declaration means a bot is woken as what it is declared to be
+    // now. The mint id carries both halves of the lookup — `bot:<env>:<model>`
+    // — so nothing had to be threaded through to get here.
+    ...(botLaunch || {}),
   })
   const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) {
@@ -1079,13 +1121,64 @@ export async function launchDoctorYolo(params = {}) {
   const cwd = resolveSpawnCwd(params.cwd)
   const rawModel = params.model
   const config = directModelConfig(requestedKind, rawModel)
-  const localAgentId = params.localAgentId || params.local_agent_id || newLocalAgentId()
-  const tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
   const modelSpec = resolveLaunchSpec(rawModel, config)
   const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
-  const machineId = params.machineId || os.hostname().split('.')[0]
+  // The daemon's own machine id, not the hostname. They agree on this box and
+  // need not anywhere else, and a daemon_key built from the wrong half names a
+  // daemon that does not exist — which is a route to nowhere rather than an
+  // error.
+  const machineId = params.machineId || getMachineId() || os.hostname().split('.')[0]
   const envName = params.activeEnvName || activeEnvName()
   const daemonKey = machineId && envName ? `${machineId}:${envName}` : null
+  const mintStorePath = params.mintStorePath || defaultMintStorePath()
+
+  // Idempotent. Skip, 2026-08-19: "Doctor YOLO should not be deleted. It should
+  // be made fucking like, item potent and fucking try to finish, like, the rest
+  // of the shit."
+  //
+  // Asked twice for the same name, this launches the agent once. The second call
+  // finds the being it already made, re-records the facts a mint owes the ledger,
+  // and hands back the same identity — so the repeated command repairs rather
+  // than duplicates. Only a live session counts: a recorded mint whose tmux
+  // session is gone is an agent to launch again, not one to report as running.
+  const existing = existingDoctorYoloMint(mintStorePath, name, envName)
+  const existingSession = existing?.processState?.tmux_session || null
+  if (existingSession && (await (deps.sessionRuntimeState || sessionRuntimeState)(existingSession, { tmuxSocket: params.tmuxSocket })).runtime) {
+    recordDoctorYoloMintFacts({
+      mintStorePath,
+      localAgentId: existing.mintId,
+      fleetId: existing.fleetId || undefined,
+      friendlyName: existing.friendlyName || name,
+      name,
+      tmuxSession: existingSession,
+      cwd: existing.launchRecipe?.cwd || cwd,
+      harness: existing.launchRecipe?.kind || requestedKind,
+      model: existing.launchRecipe?.model || modelResolved.model,
+      envName,
+      metadata: {
+        permissionGrant: 'doctor-yolo',
+        shell: true,
+        source: 'doctor-yolo',
+        ...(daemonKey ? { daemonKey } : {}),
+        ...(envName ? { envName } : {}),
+      },
+    })
+    return {
+      ok: true,
+      reused: true,
+      localAgentId: existing.mintId,
+      fleetId: existing.fleetId || null,
+      name: existing.friendlyName || name,
+      tmuxSession: existingSession,
+      harness: existing.launchRecipe?.kind || requestedKind,
+      model: existing.launchRecipe?.model || modelResolved.model,
+      registrationDeferred: !existing.fleetId,
+      ...(existing.fleetId ? {} : { registrationError: 'recorded mint never joined the fleet' }),
+    }
+  }
+
+  const localAgentId = params.localAgentId || params.local_agent_id || newLocalAgentId()
+  const tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
   const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath || undefined)
   const localAgentLedger = params.localAgentLedger || ownedLocalLedger
   const { cmd, sendKeys, commandTrace } = await buildCommand({
@@ -1110,7 +1203,16 @@ export async function launchDoctorYolo(params = {}) {
       ? { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [] }
       : {},
     config,
-    env: spawnEnv(params),
+    // The launched process's route home. Every harness emits FLEET_DAEMON_KEY
+    // from TLDA_MACHINE_ID + TLDA_ENV, and the server writes an agent's route
+    // from the daemon key its login carries — so without these two the agent
+    // logs in routeless and nothing can wake it or deliver to it. This function
+    // already resolved both, three lines up, and then passed `params` to
+    // `spawnEnv`, which sets them only when the CALLER supplied them. `tlda
+    // doctor yolo` never does. What made break-glass agents look routable
+    // anyway is that spawnEnv copies process.env, so one launched from another
+    // agent's shell inherited that agent's daemon key by accident.
+    env: spawnEnv({ ...params, machineId, activeEnvName: envName }),
   })
   traceSpawnDecision('doctor-yolo-command', {
     name,
@@ -1134,13 +1236,14 @@ export async function launchDoctorYolo(params = {}) {
       permissionGrant: 'doctor-yolo',
     })
     recordDoctorYoloMintFacts({
-      mintStorePath: params.mintStorePath,
+      mintStorePath,
       localAgentId,
       name,
       tmuxSession,
       cwd,
       harness: requestedKind,
       model: modelResolved.model,
+      envName,
       metadata: {
         permissionGrant: 'doctor-yolo',
         shell: true,
@@ -1208,7 +1311,7 @@ export async function launchDoctorYolo(params = {}) {
       const assignedName = reserve?.assigned_name || name
       localAgentLedger.bind(localAgentId, fleetId, { friendlyName: assignedName })
       recordDoctorYoloMintFacts({
-        mintStorePath: params.mintStorePath,
+        mintStorePath,
         localAgentId,
         fleetId,
         friendlyName: assignedName,
@@ -1217,6 +1320,7 @@ export async function launchDoctorYolo(params = {}) {
         cwd,
         harness: requestedKind,
         model: modelResolved.model,
+        envName,
         metadata: {
           permissionGrant: 'doctor-yolo',
           shell: true,

@@ -210,7 +210,11 @@ export function TocTab({ query = '' }: { query?: string }) {
       const authorityRes = await fetch(`/api/projects/${slug}/source-authority`)
       if (!authorityRes.ok) throw new Error('Failed to read source authority')
       const sourceAuthority = await authorityRes.json()
-      await fetch(`/api/projects/${slug}/push`, {
+      // The JSON sibling of `/source-bundle`. A browser has no repository and no
+      // git objects, so it cannot propose a bundle; it hands over the bytes and
+      // the server writes the blob. Same accept, same fast-forward rule against
+      // `expectedRevision`, same post-accept effects — only the carrier differs.
+      await fetch(`/api/projects/${slug}/source-snapshot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

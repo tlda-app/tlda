@@ -120,7 +120,17 @@ test('a thread card carries no semantic-operation shell', () => {
   assert.match(html, /semantic-operation-body/)
 })
 
-test('a search card clips the shared search view instead of replacing it', () => {
+// Skip, 2026-08-19 05:37 EDT: "the search you just did returned four results.
+// Nonetheless, there's a button that says show all results. That does nothing
+// other than turn into a collapse button ... If there's nothing to expand, don't
+// put a fucking expand button."
+//
+// A search card shows every result it has. The clipped preview it used to expand
+// FROM -- `max-height: 12em` with a fade -- was deleted in 9496c3322 because it
+// re-truncated snippets the backend had already truncated; the control outlived
+// it. This test replaces one that asserted that deleted rule, and had therefore
+// been failing since.
+test('a search card renders neither an expand nor a collapse control', () => {
   const html = renderActivityGroup([{
     from: 'fleet:codex',
     timestamp: '2026-08-14T07:05:12.055Z',
@@ -129,15 +139,19 @@ test('a search card clips the shared search view instead of replacing it', () =>
     _toolInput: { query: 'source edit', limit: 20 },
   }], ctx)
   const source = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
-  const css = readFileSync(new URL('../src/shapes/fleet-chat.css', import.meta.url), 'utf8')
 
   assert.match(html, /semantic-search-operation/)
   assert.match(html, /class="semantic-operation-body" data-semantic-operation=/)
-  assert.match(html, /Show all search results/)
+  // The card is the whole surface: no expand marker, under any label.
+  assert.doesNotMatch(html, /pretty-expand-btn/)
+  assert.doesNotMatch(html, /Show all search results/)
   assert.doesNotMatch(html, /semantic-chat-operation-open/)
-  assert.match(source, /<FleetSearchResultsView/)
-  assert.match(source, /if \(!isSearchOperation\) semanticBody\.style\.display/)
-  assert.match(css, /\.semantic-search-operation:not\(\.semantic-operation-expanded\) \.semantic-operation-body\s*\{[^}]*max-height:[^}]*overflow:\s*hidden/s)
+  // And the collapse is a SECOND control with its own condition, so it goes
+  // separately rather than being left to a rule that can no longer fire.
+  const start = source.indexOf('function SemanticChatOperationView(')
+  const searchView = source.slice(start, source.indexOf('\ntype AnchoredChatListProps', start))
+  assert.match(searchView, /<FleetSearchResultsView/)
+  assert.equal((searchView.match(/semantic-operation-collapse/g) || []).length, 0)
 })
 
 test('a long bash tool call labels the card once', () => {
@@ -208,13 +222,17 @@ test('the gap marker and its rows name each other without counting siblings', ()
   assert.match(html, /class="pretty-expand-btn" data-fold-id="thread-middle"/)
   assert.match(html, /class="pretty-more-rows" data-fold-id="thread-middle"/)
 
-  // The count that used to shift the key. A second expand button ahead of the
-  // marker must not change what either side calls it.
+  // The arrangement that used to shift the key: a search activity ahead of the
+  // marker. It contributed the second `.pretty-expand-btn` that made the two
+  // sides count differently — this was `2` until the search card's expand
+  // control was deleted, having had nothing to expand since 9496c3322. The
+  // marker still names its rows in the markup, which is what the key reads, so
+  // the pairing does not depend on there being one button or two.
   const withSearch = renderThreadRows([
     { timestamp: '9:00:00 AM', activity: { _toolName: 'mcp__tlda__search', _toolInput: { query: 'x' }, type: 'tool', from: 'a' } },
     ...threadRows(1, 15),
   ], ctx)
-  assert.equal((withSearch.match(/pretty-expand-btn/g) || []).length, 2)
+  assert.equal((withSearch.match(/pretty-expand-btn/g) || []).length, 1)
   assert.equal((withSearch.match(/data-fold-id="thread-middle"/g) || []).length, 2)
 })
 

@@ -36,7 +36,28 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
+
+// `processProjectPush` (the old accept, deleted with the strip) is gone from
+// `createSourceRoomDaemon`'s dependency shape too -- it now takes
+// `acceptSourceSnapshot` directly (production commit `5438a28e2`, "Let the
+// room checkpoint reach the accept without a request") and throws at
+// construction if it is missing, precisely so a stale test cannot silently
+// fall through to the real accept against a store it never set up. This
+// helper mirrors the ONE real adapter `source-room-daemon.mjs` itself uses
+// (`flushRoom`), rather than re-deriving one: `acceptSourceSnapshot` returns
+// `{status, body}`, and the room maps `body` plus `status`-as-HTTP into the
+// `{ok, sourceRevision, building, authority.currentRevision, lifecycleStatus,
+// evidence}` shape this test's `paper()` helper and `flushRoom` both read.
+async function pushViaAcceptSourceSnapshot(project, body) {
+  const response = await acceptSourceSnapshot(project, body)
+  return {
+    ...response.body,
+    status: response.status,
+    lifecycleStatus: response.body.status ?? null,
+    authority: { currentRevision: response.body.currentRevision ?? response.body.sourceRevision ?? null },
+  }
+}
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-socket-goes-away-'))
 await initProjectStore(root)
@@ -48,7 +69,7 @@ const findings = []
 function makeRoomDaemon(pushDelayMs = 1_000_000) {
   const daemon = createSourceRoomDaemon({
     projectDir, readProject, sourceLifecycleStore, readClientSourceManifest,
-    processProjectPush, pushDelayMs, log: { error() {} },
+    acceptSourceSnapshot: pushViaAcceptSourceSnapshot, pushDelayMs, log: { error() {} },
   })
   daemons.push(daemon)
   return daemon
@@ -59,7 +80,7 @@ async function paper(name, content) {
   await updateProject(name, { pages: 1, buildStatus: 'success' })
   mkdirSync(outputDir(name), { recursive: true })
   writeFileSync(join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
-  const start = await processProjectPush(name, {
+  const start = await pushViaAcceptSourceSnapshot(name, {
     expectedRevision: null, sourceManifest: ['main.tex'], files: [{ path: 'main.tex', content }],
   })
   assert.equal(start.status, 200, `the paper had to exist first: ${start.error}`)
@@ -293,3 +314,11 @@ try {
   for (const daemon of daemons) daemon.closeAll()
   await closeProjectStore()
 }
+
+// `acceptSourceSnapshot` dispatches a real, unawaited build per accept
+// (`void dispatchBuild(...)` inside `applyAcceptedSourceEffects`) -- correct
+// production behaviour, but this test's verdict is already decided above, and
+// with the store closed those builds go on to error into a torn-down store
+// while never letting the event loop drain. Exit once the real assertions
+// have run rather than waiting on work this test was never about.
+process.exit(0)

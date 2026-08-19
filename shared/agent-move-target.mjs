@@ -27,6 +27,15 @@ export function daemonAddress(machineId, envName) {
   return `${machineId}:${envName}`
 }
 
+// The inverse of daemonAddress, for the display sites that want to show a box
+// name rather than the whole key. Splitting is a presentation choice made where
+// the string is rendered; nothing routes on the halves.
+export function machineOfDaemonKey(daemonKey) {
+  const key = String(daemonKey || '')
+  const separator = key.indexOf(':')
+  return separator > 0 ? key.slice(0, separator) : ''
+}
+
 export function describeAgentAddress(machineId, envName) {
   if (!machineId || !envName) return `${machineId || '(unknown)'}:${envName || '(unknown)'}`
   return `${machineId}:${envName}`

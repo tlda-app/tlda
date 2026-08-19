@@ -1,6 +1,7 @@
 import { createShapeId, type Editor, type TLCamera, type TLShape, type TLShapeId } from 'tldraw'
 import { wrapFleetLayoutAroundDocument } from './shapes/fleet-layout-wrap'
 import { dispatchFleetHudWrap } from './wm/editor-host-bridge'
+import { arrivalReadingOffset, cameraYForReadingOffset, readingOffsetOf } from './readingPosition'
 
 export const SPATIAL_MAP_ZOOM = 0.28
 /** Distance between neighbouring documents. One screen at reading zoom is about
@@ -169,6 +170,50 @@ export function activateSpatialDocument(
   // The anchor compensation exists to hold moved panels in place. Nothing
   // moved, nothing to compensate.
   if (plan.moves.length > 0) dispatchFleetHudWrap({ dx: plan.dx, dy: plan.dy })
+}
+
+/**
+ * Open a document: go to it, and arrive where you were last reading it.
+ *
+ * The wrap rule above carries the camera's offset from the document you left,
+ * which is right for the layout and wrong for the reading position — a long
+ * document's offset lands you past the end of a short one. So the y is resolved
+ * against the target instead of translated: your stored place in it, or its top
+ * when you have not read it. The x and the zoom still translate, because the
+ * layout wrap is what keeps your panels where you put them.
+ *
+ * This is the documents-panel and map gesture, deliberately not
+ * `activateSpatialDocument` itself. Going back is not opening: the place stack
+ * restores the camera it recorded, and the annotation viewer goes to bounds it
+ * is already showing you. Both mean a specific camera, not a reading position.
+ *
+ * `readReadingPosition` returns the stored offset for the target, or null.
+ * `writeReadingPosition` is handed the offset you are leaving the source at.
+ */
+export function openSpatialDocument(
+  editor: Editor,
+  source: SpatialDocumentNode,
+  target: SpatialDocumentNode,
+  camera: { x: number; y: number; z: number },
+  positions: {
+    read: (node: SpatialDocumentNode) => number | null
+    write: (node: SpatialDocumentNode, offset: number) => void
+  },
+) {
+  const plan = wrapFleetLayoutAroundDocument(editor, source.bounds, target.bounds)
+  // Opening the document you are already at is the identity, the same way the
+  // wrap rule makes it the identity: nothing is stored and nothing moves.
+  const sameDocument = source.id === target.id
+  if (!sameDocument) positions.write(source, readingOffsetOf(camera, source.bounds))
+  const arrival = sameDocument
+    ? readingOffsetOf(camera, target.bounds)
+    : arrivalReadingOffset(positions.read(target), camera.z)
+  const nextY = cameraYForReadingOffset(arrival, target.bounds)
+  editor.setCamera({ x: camera.x - plan.dx, y: nextY, z: camera.z })
+  // The HUD anchor tracks the camera, not the panels — see the wrap handler in
+  // FleetHUD, which shifts it by the same delta the camera moved. That delta is
+  // no longer plan.dy, so it is measured rather than assumed.
+  if (plan.moves.length > 0) dispatchFleetHudWrap({ dx: plan.dx, dy: camera.y - nextY })
 }
 
 export function focusSpatialDocument(editor: Editor, node: SpatialDocumentNode) {

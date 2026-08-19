@@ -11,7 +11,7 @@ import { resolve, relative, basename, dirname, join, delimiter } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync, renameSync, openSync, closeSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
-import { randomBytes, randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { execFileSync, spawn as cpSpawn, spawnSync } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectProjectSourceHashes, readForUpload, splitServerSourcePathsByManifest, withReferencedRoots } from './lib/source-files.mjs'
@@ -27,6 +27,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDependencyClosure } from '../shared/markdown-deps.mjs'
 import { planLaunchdApply } from './lib/config-apply-plan.mjs'
+import { botServicePaths as declaredBotServicePaths, parseBotMintId, resolveBotScript } from '../shared/bot-declaration.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { rotateBeforeOpen } from '../shared/rotating-log.mjs'
 import {
@@ -303,7 +304,13 @@ const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
   if (result.unchanged) {
     console.log(dim(unchangedMessage))
-  } else if (result.building) {
+  } else if (result.postAcceptEffects?.includes('build')) {
+    // The old route answered `building`, an intention. The accept answers
+    // `postAcceptEffects`, the list of what actually ran, and `build` is one of
+    // its names. Reading the old field here is not a display bug that shows
+    // something wrong -- it is `undefined`, so this falls to the else and
+    // `tlda push` silently stops ever saying "Build triggered", reporting the
+    // less informative of two true strings with no error anywhere.
     console.log(green('Build triggered.'))
   } else {
     console.log(green('Source pushed; viewer rebuilds on demand.'))
@@ -433,32 +440,47 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
     console.log(dim(`  ${deletedFiles.length} files deleted on server`))
   }
 
-  const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
-  let expectedRevision = sourceAuthority.currentRevision
-  let result = null
-  if (changedFiles.length > 0) {
-    const pushed = await pushSourceFileBatches(name, changedFiles, {
-      context: sourceContext,
-      initialManifestPaths: survivingServerPaths,
-      expectedRevision,
-      readBatchFiles: batch => batch.map(file => ({ path: file.path, ...readForUpload(file.fullPath) })),
-      extraBody,
-      logProgress: changedFiles.length !== changedPaths.length || changedFiles.some(file => file.size > 0),
-    })
-    result = pushed.result
-    expectedRevision = pushed.expectedRevision
-  }
+  const { staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, sourceManifest)
+  const expectedRevision = sourceAuthority.currentRevision
   const cleanupFiles = [...new Set([...(deletedFiles || []), ...staleServerPaths])]
-  if (cleanupFiles.length > 0 || forceMetadata || changedFiles.length === 0) {
-    result = await api('POST', `/api/projects/${name}/push`, {
-      files: [],
-      sourceManifest,
-      expectedRevision,
-      ...(cleanupFiles.length > 0 && { deletedFiles: cleanupFiles }),
-      ...extraBody,
-    })
+  if (changedFiles.length === 0 && cleanupFiles.length === 0 && !forceMetadata) {
+    return { ok: true, unchanged: true }
   }
-  return result || { ok: true, unchanged: true }
+
+  // One snapshot, not a batch sequence followed by a cleanup push. The carrier
+  // takes the whole intended project in a single accept, so the batching and
+  // its per-batch expectedRevision re-threading are gone -- and losing them is
+  // the point rather than a side effect. A mid-sequence failure used to leave
+  // earlier batches landed and later ones not; the accept is now atomic, so
+  // that partial landing cannot happen.
+  //
+  // Deletions are not sent. `sourceManifest` is every local path, so a file the
+  // server holds and the checkout does not is absent from the manifest, and a
+  // path that leaves the manifest is deleted by not being named.
+  const current = await api('GET', `/api/projects/${name}/source-entries`)
+  const entryByPath = new Map((current.files || []).map(entry => [entry.path, entry]))
+  const changedSet = new Set(changedFiles.map(file => file.path))
+  warnAboutFilesTooBigToCarry(changedFiles)
+  const files = sourceManifest.map(path => {
+    // Unchanged paths ride as references to the blob the server already has,
+    // which is what keeps this incremental: without them the only way to
+    // satisfy "an entry per manifest path" is to re-upload the whole project
+    // on every push. An unchanged path with no entry in the current revision
+    // falls back to content -- `/hashes` is the server's working directory and
+    // the entries are the accepted revision, so the two can disagree, and the
+    // bytes are on disk here either way.
+    if (!changedSet.has(path)) {
+      const entry = entryByPath.get(path)
+      if (entry) return { path, sha256: entry.sha256, size: entry.size }
+    }
+    return { path, ...readForUpload(join(dir, path)) }
+  })
+  return await api('POST', `/api/projects/${name}/source-snapshot`, {
+    files,
+    sourceManifest,
+    expectedRevision,
+    ...extraBody,
+  })
 }
 
 function sourceManifestForFiles(files, context = {}) {
@@ -540,33 +562,6 @@ export function warnAboutFilesTooBigToCarry(files) {
   console.warn(yellow('    A file this large has taken the server down rather than being rejected.'))
 }
 
-async function pushSourceFileBatches(name, files, {
-  context,
-  initialManifestPaths,
-  expectedRevision,
-  readBatchFiles,
-  extraBody = {},
-  logProgress = true,
-}) {
-  const currentPaths = new Set(initialManifestPaths)
-  const batches = sourceFileBatches(files)
-  warnAboutFilesTooBigToCarry(files)
-  let result = null
-  for (let index = 0; index < batches.length; index++) {
-    const batch = batches[index]
-    for (const file of batch) currentPaths.add(file.path)
-    result = await api('POST', `/api/projects/${name}/push`, {
-      files: readBatchFiles(batch),
-      sourceManifest: normalizeSourceManifest([...currentPaths], context),
-      expectedRevision,
-      ...extraBody,
-    })
-    expectedRevision = result.sourceRevision || await currentSourceRevision(name)
-    if (logProgress) console.log(dim(`  ${index + 1}/${batches.length}: ${batch.length} file(s)`))
-  }
-  return { result, expectedRevision, currentPaths }
-}
-
 function findMainTex(dir) {
   // Prefer a .tex file matching the directory name
   const dirName = basename(dir)
@@ -616,8 +611,12 @@ async function cmdBook() {
     console.log(green(`Created book "${name}" with ${members.length} members.`))
   } catch (e) {
     if (e.message.includes('already exists')) {
-      // Update members on existing book
-      await api('POST', `/api/projects/${name}/push`, { files: [], members })
+      // Update members on existing book. Membership is not a source
+      // transaction -- it carries no files, no manifest and no expected
+      // revision -- so it moves to the members route rather than a source
+      // carrier. `members` replaces the set: `--members` names the intended
+      // membership, and the additive form cannot express a removal.
+      await api('PATCH', `/api/projects/${name}/members`, { members })
       console.log(`Updated book "${name}" with ${members.length} members.`)
     } else {
       throw e
@@ -683,7 +682,7 @@ async function cmdScratch() {
   // Push the file
   const content = readFileSync(absPath)
   const files = [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }]
-  await api('POST', `/api/projects/${name}/push`, {
+  await api('POST', `/api/projects/${name}/source-snapshot`, {
     files,
     sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile: fileName }),
     expectedRevision: await currentSourceRevision(name),
@@ -801,11 +800,34 @@ async function cmdCreate() {
     if (deletedFiles.length > 0) {
       console.log(dim(`  Removing ${deletedFiles.length} stale artifact file(s) from server`))
     }
-    await api('POST', `/api/projects/${name}/push`, {
-      files: allFiles,
+    // The snapshot IS the project, so every manifest path needs an entry in
+    // `files`. `allFiles` covers the artifacts we just built; the preserved
+    // server paths are files only the server holds, and they are carried
+    // forward by reference rather than re-uploaded. Stale artifacts are not
+    // listed as deletions -- they are absent from the manifest, and a path
+    // that leaves the manifest is deleted by not being named.
+    const current = await api('GET', `/api/projects/${name}/source-entries`)
+    const entryByPath = new Map((current.files || []).map(entry => [entry.path, entry]))
+    // A preserved path with no entry in the current revision can be carried
+    // neither by reference nor by content -- only the server has the bytes.
+    // Dropping it from the manifest would delete someone's file to make this
+    // request well-formed, so fail and name them instead.
+    const uncarriable = preservedServerPaths.filter(path => !entryByPath.has(path))
+    if (uncarriable.length > 0) {
+      throw new Error(
+        `cannot carry ${uncarriable.length} server file(s) forward -- absent from revision ` +
+        `${current.sourceRevision || 'none'}: ${uncarriable.slice(0, 5).join(', ')}` +
+        `${uncarriable.length > 5 ? ', ...' : ''}`
+      )
+    }
+    const carriedForward = preservedServerPaths.map(path => {
+      const entry = entryByPath.get(path)
+      return { path, sha256: entry.sha256, size: entry.size }
+    })
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
+      files: [...allFiles, ...carriedForward],
       sourceManifest,
       expectedRevision: await currentSourceRevision(name),
-      ...(deletedFiles.length > 0 && { deletedFiles }),
     })
     console.log(green('Slides processed.'))
 
@@ -858,7 +880,7 @@ async function cmdCreate() {
     }
 
     console.log(`Pushing ${allFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, {
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
       files: allFiles,
       sourceManifest: sourceManifestForFiles(allFiles, { format: 'html' }),
       expectedRevision: await currentSourceRevision(name),
@@ -943,36 +965,25 @@ async function cmdCreate() {
     }
     collectQmdDir(dir)
 
-    const readBatchFiles = batch => batch.map(file => ({
-      path: file.path,
-      content: readFileSync(file.fullPath).toString('base64'),
-      encoding: 'base64',
-    }))
     const finalManifest = normalizeSourceManifest(qmdFiles.map(file => file.path), qmdContext)
-    const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
-    const { survivingServerPaths, staleServerPaths } = splitServerSourcePathsByManifest(serverHashes, finalManifest)
-    let expectedRevision = await currentSourceRevision(name)
-    const priority = new Set([mainFile, '_quarto.yml', '_quarto_book.yml', 'development.qmd', 'scratch/fall-2026-development-schedule.html'])
-    qmdFiles.sort((a, b) => Number(priority.has(b.path)) - Number(priority.has(a.path)) || a.path.localeCompare(b.path))
-    const batches = sourceFileBatches(qmdFiles)
+    const expectedRevision = await currentSourceRevision(name)
 
-    console.log(`Pushing ${qmdFiles.length} file(s) in ${batches.length} bounded request(s)...`)
-    const pushed = await pushSourceFileBatches(name, qmdFiles, {
-      context: qmdContext,
-      initialManifestPaths: survivingServerPaths,
+    // This path sends every file's content rather than a diff, so the snapshot
+    // is the whole project in one accept. The ordering that fed the batcher is
+    // gone with it: a single request has no first batch to put the main file
+    // in. Stale server files are deleted by being absent from the manifest, so
+    // there is no cleanup push after this one.
+    console.log(`Pushing ${qmdFiles.length} file(s) in one snapshot...`)
+    warnAboutFilesTooBigToCarry(qmdFiles)
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
+      files: qmdFiles.map(file => ({
+        path: file.path,
+        content: readFileSync(file.fullPath).toString('base64'),
+        encoding: 'base64',
+      })),
+      sourceManifest: finalManifest,
       expectedRevision,
-      readBatchFiles,
     })
-    expectedRevision = pushed.expectedRevision
-    const staleFiles = staleServerPaths
-    if (staleFiles.length > 0) {
-      await api('POST', `/api/projects/${name}/push`, {
-        files: [],
-        deletedFiles: staleFiles,
-        sourceManifest: finalManifest,
-        expectedRevision,
-      })
-    }
     console.log(green('Quarto project processed.'))
 
     const server = getServer()
@@ -1014,7 +1025,7 @@ async function cmdCreate() {
       const labels = closure.missing.slice(0, 5).map(item => `${item.from} → ${item.ref}`)
       console.log(dim(`  Skipped ${closure.missing.length} unresolved local ref(s): ${labels.join(', ')}${closure.missing.length > 5 ? '…' : ''}`))
     }
-    await api('POST', `/api/projects/${name}/push`, {
+    await api('POST', `/api/projects/${name}/source-snapshot`, {
       files,
       sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
       expectedRevision: await currentSourceRevision(name),
@@ -1315,7 +1326,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1332,7 +1343,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'html', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1349,7 +1360,7 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, {
+      await api('POST', `/api/projects/${name}/source-snapshot`, {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'svg', mainFile }),
         expectedRevision: await currentSourceRevision(name),
@@ -1527,42 +1538,19 @@ function printSupervisedJobRefusal(verb, { label, restartCommand }) {
   console.error(dim(`  Restart: ${restartCommand}`))
 }
 
-function botServiceName(name) {
-  return String(name || '').trim()
-}
-
-function botServiceSuffix(name) {
-  const suffix = botServiceName(name).replace(/[^A-Za-z0-9_.-]/g, '-')
-  if (!suffix) throw new Error('bot name is required')
-  return suffix
-}
-
-function botEnvironmentSuffix(configName = null) {
-  if (!configName) return ''
-  return `.${String(configName).replace(/[^A-Za-z0-9_.-]/g, '-')}`
-}
-
 // A bot's files, and nothing about a terminal. There is no per-bot launchd label
 // any more — one bot manager supervises every bot on this machine — and no tmux
 // session name, which is the string that made the old per-bot supervisor restart
 // a healthy bot forever.
+// Both of these live in shared/bot-declaration.mjs now, because wake resolves a
+// bot's files from the declaration too and two encodings of where a bot's pidfile
+// is would be the same defect this change removes.
 function botServicePaths(name, { configName = null } = {}) {
-  if (!configName) {
-    const configured = getManagedBots().find(bot => bot.name === name)
-    configName = configured?.environment || getActiveEnvName()
-  }
-  const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
-  return {
-    logFile: join(CONFIG_DIR, `${suffix}.log`),
-    pidFile: join(CONFIG_DIR, `${suffix}.pid`),
-    heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
-  }
+  return declaredBotServicePaths(name, { configName })
 }
 
 function resolveBotScriptForCli(script) {
-  if (!script) throw new Error('bot script is required')
-  if (script.startsWith('/')) return script
-  return join(FLEET_DAEMON_MAIN_ROOT, script)
+  return resolveBotScript(script, FLEET_DAEMON_MAIN_ROOT)
 }
 
 function configuredBots() {
@@ -2032,6 +2020,89 @@ function botManagerLog(message) {
   console.log(`${new Date().toISOString()} bot-manager: ${message}`)
 }
 
+// A bot's code is the tree its declared script lives in, minus `node_modules`
+// and `.git`. Skip, 2026-08-19 03:01 EDT: "the fucking bot manager should
+// restart on fucking code change too."
+//
+// Why the tree and not the entry file's mtime: a bot is more than one file, and
+// an entry-mtime check silently misses a change to a module the bot imports from
+// its own repo — which is the class of change most likely to be made and least
+// likely to be noticed.
+//
+// Why `node_modules` is excluded, and what that costs: `@tlda/bot` is a symlink
+// inside `node_modules` pointing into this repository, so a tree walk that
+// followed it would restart every bot on the box on every commit here. The
+// exclusion is what makes the boundary fall out instead of needing a special
+// case. The price is real and is stated rather than hidden: **a change to
+// `@tlda/bot` does not restart bots.** The alternative is worse.
+//
+// Mtime and size rather than content hashing. The question is only "is this the
+// tree I started", not "what changed", and this walks a bot repo in a few ms.
+function botCodeFingerprint(unit) {
+  const root = dirname(resolveBotScriptForCli(unit.bot.script))
+  const parts = []
+  const walk = dir => {
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      const full = join(dir, entry.name)
+      // Never follow a symlink: `isDirectory()` is false for one, so a link into
+      // another tree contributes its own entry and nothing beneath it.
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile()) {
+        try {
+          const st = statSync(full)
+          parts.push(`${full}:${st.mtimeMs}:${st.size}`)
+        } catch { /* vanished mid-walk; the next pass sees the settled tree */ }
+      }
+    }
+  }
+  walk(root)
+  return `${parts.length}|${createHash('sha1').update(parts.join('\n')).digest('hex')}`
+}
+
+// label -> { running, pending }
+const botCodeState = new Map()
+
+function rememberBotCode(unit) {
+  botCodeState.set(unit.label, { running: botCodeFingerprint(unit), pending: null })
+}
+
+// True once, when the tree has changed AND has held still for a full pass.
+//
+// The settle is not optional. Working copies here are edited in place, not only
+// pushed to: `npm install` in a bot's directory rewrites many files over several
+// seconds, and a change observed mid-write would restart the bot repeatedly while
+// the write continued — the relaunch storm this supervision model exists to end,
+// arriving through a new door.
+//
+// A bot seen for the first time records its tree and does NOT restart. Otherwise
+// every manager start would bounce every healthy bot on the box.
+function botCodeChanged(unit) {
+  const current = botCodeFingerprint(unit)
+  const prior = botCodeState.get(unit.label)
+  if (!prior) {
+    botCodeState.set(unit.label, { running: current, pending: null })
+    return false
+  }
+  if (current === prior.running) {
+    prior.pending = null
+    return false
+  }
+  if (prior.pending !== current) {
+    prior.pending = current
+    return false
+  }
+  prior.running = current
+  prior.pending = null
+  return true
+}
+
 function runBotCliCommand(args, unit) {
   const env = { ...process.env, ...Object.fromEntries(botEnvironmentEntries(unit.bot, unit.paths)) }
   const logFd = openSync(unit.paths.logFile, 'a')
@@ -2066,7 +2137,54 @@ export function botMintId(envName, botName) {
   return `bot:${envName}:${botName}`
 }
 
+// Is there already a bot of this model in the daemon ledger? `bot:<env>:<model>`
+// is that ledger's key for one: the declaration key in bots.yaml IS the bot's
+// model — `todd`, `dev`, `grammar` — and renaming a bot changes the name its
+// fleet row holds, never which model it is. So this lookup is name-independent
+// by construction, which is the whole point.
+//
+// Skip, 2026-08-18 14:27 EDT: "if we have no bot of this model in the ledger [we
+// mint]. Otherwise, we wake them. That's name-independent, right? It's
+// model-specific."
+//
+// Why not key it on the name. Renaming a bot is the sanctioned way to stop one,
+// and a name-keyed check reads a rename as a vacancy — which a KeepAlive
+// launcher fills within seconds, so stopping a bot causes its replacement and
+// you "can basically never have" a stopped bot. Keyed on the model there is no
+// vacancy to fill and the duplicate is impossible rather than prevented.
+async function recordedBotOfModel(unit) {
+  const { MintStore } = await import('../daemon/mint-store.mjs')
+  const store = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: unit.envName })
+  try {
+    const row = store.get(botMintId(unit.envName, unit.bot.name))
+    return row?.fleetId ? row : null
+  } finally {
+    store.close()
+  }
+}
+
+// One bot of a model, for its whole life.
+//
+// Skip, 2026-08-18 14:21 EDT: "what it's supposed to do is call mint with a
+// special argument that says instead of, like, rotating, fail if I don't get the
+// name I'm asking for. AND IF YOU FAIL, WAKE"
+//
+// A name collision hands a mint an alternate name rather than rejecting it, and
+// that is the design — for two different beings wanting one name. A bot starting
+// again is not a different being, so it must not take the substitute: it comes
+// up, sees it is not under its canonical name, and goes inert. That is how the
+// `dev` bot spent 2026-08-18 running as `quiet-dev` sweeping nothing while the
+// box reached 120 MB free.
 async function startBot(unit) {
+  const mintId = botMintId(unit.envName, unit.bot.name)
+  const wake = async why => {
+    botManagerLog(`${unit.label}: ${why} — waking ${mintId}`)
+    const code = await runBotCliCommand(['agent', 'wake', mintId], unit)
+    if (code !== 0) botManagerLog(`${unit.label}: wake exited ${code}`)
+    return code
+  }
+  if (await recordedBotOfModel(unit)) return await wake('already in the ledger')
+
   // `bots.yaml`'s `env:` travels as an argument, not as ambient environment. It
   // is configuration the operator wrote for this bot, so it is data; the
   // environment this process happens to hold is a different thing, and the
@@ -2077,11 +2195,14 @@ async function startBot(unit) {
   const declaredEnv = Object.fromEntries(
     Object.entries(unit.bot.env || {}).map(([key, value]) => [key, String(value)]),
   )
-  await runBotCliCommand([
+  const code = await runBotCliCommand([
     'agent', 'mint', unit.bot.name,
-    '--mint-id', botMintId(unit.envName, unit.bot.name),
+    '--mint-id', mintId,
     '--model', 'bot',
     '--kind', 'bot',
+    // Fail rather than rotate. Without this the launcher accepts whatever name
+    // it is handed and the bot discovers at runtime that it is not itself.
+    '--fail-if-not-fresh',
     '--cwd', FLEET_DAEMON_MAIN_ROOT,
     '--bot-script', resolveBotScriptForCli(unit.bot.script),
     '--bot-name', unit.bot.name,
@@ -2089,6 +2210,12 @@ async function startBot(unit) {
     '--bot-heartbeat-file', unit.paths.heartbeatFile,
     ...(Object.keys(declaredEnv).length ? ['--bot-env', JSON.stringify(declaredEnv)] : []),
   ], unit)
+  if (code === 0) return code
+  // "AND IF YOU FAIL, WAKE". If the ledger has this model under some other name
+  // the wake starts it; if it has nothing, `wake` says so, and that is the honest
+  // end of it — the name belongs to something that is not this bot and there is
+  // nobody to wake. Launching anyway would only add a second inert process.
+  return await wake(`mint did not get the name "${unit.bot.name}"`)
 }
 
 async function runBotManager() {
@@ -2113,9 +2240,27 @@ async function runBotManager() {
       announced = declaration
     }
     for (const unit of units) {
-      if (liveBotPid(unit.paths)) continue
+      const pid = liveBotPid(unit.paths)
+      if (pid) {
+        // A code change stops the bot and does nothing else. The next pass finds
+        // no live pid and goes through the ordinary start path below — so the
+        // ledger check and the canonical-name guard are not merely still applied,
+        // they are the same code. There is no second start path to keep in sync,
+        // and in particular a renamed bot cannot come back under its old name
+        // through this door.
+        if (botCodeChanged(unit)) {
+          botManagerLog(`${unit.label}: code changed — stopping pid ${pid}; the next pass starts it`)
+          try {
+            process.kill(pid, 'SIGTERM')
+          } catch (error) {
+            if (error?.code !== 'ESRCH') botManagerLog(`${unit.label}: could not stop pid ${pid}: ${error.message}`)
+          }
+        }
+        continue
+      }
       botManagerLog(`${unit.label}: no live process — starting`)
       await startBot(unit)
+      rememberBotCode(unit)
     }
     await wait()
   }
@@ -2960,10 +3105,15 @@ async function cmdMoveProject() {
   const moveContext = { format: project.format, mainFile: project.mainFile }
   const files = collectSourceFiles(sourceDir, moveContext)
   const targetAuthority = await apiAt(targetServer, 'GET', `/api/projects/${encodeURIComponent(name)}/source-authority`)
-  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, {
+  // A move carries the whole project, and the manifest is derived from the
+  // files being sent, so the two match without carry-forward references.
+  //
+  // `sourceDir` is not sent. The old route never read it -- it is absent from
+  // that handler's destructure, and every server use reads `project.sourceDir`
+  // from storage -- so the move has been sending a field nobody consumes.
+  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/source-snapshot`, {
     files,
     sourceManifest: sourceManifestForFiles(files, moveContext),
-    sourceDir,
     expectedRevision: targetAuthority.currentRevision,
   }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
@@ -3841,7 +3991,7 @@ export async function runFleetSpawn(spawnArgs, {
     } finally {
       mintStore.close()
     }
-    assertWakeModelMatchesRecipe({ name, requestedModel: explicitModelArg, recipeModel: restored.model })
+    assertWakeModelMatches({ name, mintId: restored.identifier, requestedModel: explicitModelArg, recipeModel: restored.model })
     // The daemon has taken `permissionGrant` on wake since wake-permission-profile
     // existed; this call is the wire that was never connected, so `--permissions`
     // on wake resolved to nothing at all. The daemon writes the ledger from what
@@ -3960,7 +4110,7 @@ export async function runFleetSpawn(spawnArgs, {
       result = await spawn(params)
     } catch (e) {
       if (preallocatedAgentId) {
-        await ledger.delete(preallocatedAgentId).catch(cleanupError => {
+        await ledger.markDead(preallocatedAgentId).catch(cleanupError => {
           console.error(`warning: failed to clean preallocated grant for ${preallocatedAgentId}: ${cleanupError.message}`)
         })
       }
@@ -4048,7 +4198,7 @@ export function resolveWakeRecipeFields({
   if (!stored.serverAgentId || !stored.serverAgentId.startsWith('fleet:')) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no fleet_id binding`)
   }
-  assertWakeModelMatchesRecipe({ name: label, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
+  assertWakeModelMatches({ name: label, mintId: stored.mintId, requestedModel: explicitModelArg, recipeModel: stored.launchRecipe?.model || null })
   const permissionArg = explicitPermissionArg || stored.process.permissionGrant || undefined
   return {
     cwd: resolve(stored.process.cwd),
@@ -4059,9 +4209,31 @@ export function resolveWakeRecipeFields({
   }
 }
 
-function assertWakeModelMatchesRecipe({ name, requestedModel, recipeModel } = {}) {
+// Checked against whatever actually decides the model, which is not the same
+// source for a bot as for anyone else.
+//
+// A bot's model is declared in `bots.yaml` and carried in its mint id —
+// `bot:<env>:<model>`. It used to be checked against the stored recipe, where
+// every bot's model was the literal string `bot`, so the check compared a
+// requested `todd` against a recorded `bot` and the recorded value described the
+// harness rather than the model. Reading the declaration is the fix; renaming
+// the function around the old source would not have been.
+//
+// For every other agent the recipe's model is the only record of what was
+// launched, so it stays the source there.
+function assertWakeModelMatches({ name, mintId, requestedModel, recipeModel } = {}) {
   if (!requestedModel) return
   const label = name || '(unknown)'
+  const bot = parseBotMintId(mintId)
+  if (bot) {
+    if (!getManagedBots().some(declared => declared.name === bot.model)) {
+      throw new Error(`wake refused: bots.yaml does not declare a bot named "${bot.model}" for "${label}"`)
+    }
+    if (String(bot.model) !== String(requestedModel)) {
+      throw new Error(`wake refused: --model ${requestedModel} does not match the declared bot model ${bot.model} for "${label}"`)
+    }
+    return
+  }
   if (!recipeModel) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no model; cannot assert --model ${requestedModel}`)
   }
@@ -4210,7 +4382,7 @@ export async function bindDoctorYoloDurableSeat(launched, {
     }
     if (seededGrant) {
       try {
-        await permissionLedger.delete(launched.fleetId)
+        await permissionLedger.markDead(launched.fleetId)
       } catch (e) {
         cleanupError ||= e
       }
@@ -5727,6 +5899,10 @@ async function cmdDoctorYolo() {
   })
   const { localAgentId, fleetId, tmuxSession, harness: harnessKind, model } = launched
   const reportedName = launched.name || name
+  if (launched.reused) {
+    console.log(yellow(`${reportedName} is already running here; nothing was launched.`))
+    console.log(dim('  Its mint record was re-recorded, so wake and routing resolve against it.'))
+  }
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
@@ -5738,7 +5914,7 @@ async function cmdDoctorYolo() {
     return
   }
 
-  console.log(green(bold('Break-glass agent launched locally.')))
+  console.log(green(bold(launched.reused ? 'Break-glass agent already running locally.' : 'Break-glass agent launched locally.')))
   if (fleetId) console.log(`  fleet_id: ${fleetId}`)
   console.log(`  local_agent_id: ${localAgentId}`)
   console.log(`  name: ${reportedName}`)

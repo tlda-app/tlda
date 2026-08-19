@@ -266,15 +266,6 @@ function getHosts(fleetId) {
   return db.prepare('SELECT host FROM hosts WHERE fleet_id = ?').all(fleetId).map(r => r.host);
 }
 
-/** Remove an agent and its session mappings */
-function removeAgent(fleetId) {
-  const db = getDb();
-  db.transaction(() => {
-    db.prepare('DELETE FROM sessions WHERE fleet_id = ?').run(fleetId);
-    db.prepare('DELETE FROM hosts WHERE fleet_id = ?').run(fleetId);
-    db.prepare('DELETE FROM agents WHERE fleet_id = ?').run(fleetId);
-  })();
-}
 
 /** Transfer sessions from one agent to another (for adopt) */
 function transferSessions(fromFleetId, toFleetId) {
@@ -299,7 +290,6 @@ export const ledger = {
   upsertHuman,
   updateName,
   listAgents,
-  removeAgent,
   transferSessions,
   fleetIdFromHost,
   getHosts,

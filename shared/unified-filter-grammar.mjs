@@ -1,3 +1,5 @@
+import { parseCanonicalEventReference } from './canonical-references.mjs'
+
 const OP_CHARS = new Set(['&', '|', '!', '(', ')'])
 
 /**
@@ -142,17 +144,18 @@ export function parseUnifiedFilter(input, { sort = 'agent' } = {}) {
   }
 
   function parseLiteral(value) {
-    for (const key of ['from', 'to', 'involving', 'since', 'before', 'type']) {
+    for (const key of ['from', 'to', 'involving', 'since', 'before', 'type', 'id']) {
       const prefix = `${key}:`
       if (value.startsWith(prefix)) {
-        if (sort !== 'message' && (key === 'from' || key === 'to' || key === 'involving' || key === 'since' || key === 'before' || key === 'type')) {
+        if (sort !== 'message') {
           throw new Error(`filter parse error: ${key}: is only valid in message filters`)
         }
         const rest = value.slice(prefix.length)
         if (!rest) {
-          if (key === 'since' || key === 'before' || key === 'type') throw new Error(`filter parse error: missing value after ${prefix}`)
+          if (key === 'since' || key === 'before' || key === 'type' || key === 'id') throw new Error(`filter parse error: missing value after ${prefix}`)
           return { t: key, x: parseAtom() }
         }
+        if (key === 'id') return parseIdLiteral(rest, value)
         if (key === 'since' || key === 'before' || key === 'type') return { t: key, v: rest }
         return { t: key, x: parseAgentLiteral(rest) }
       }
@@ -163,6 +166,27 @@ export function parseUnifiedFilter(input, { sort = 'agent' } = {}) {
   const ast = parseOr()
   if (p !== toks.length) throw new Error(`filter parse error: trailing "${toks[p].v}" in "${input}"`)
   return ast
+}
+
+/**
+ * `id:2923649` — the id the system already hands out, as a term. It is what
+ * `inbox()` prints beside a message, what `chat()` returns, and what
+ * `approval_id` and `amend_id` take, so a reader copies the printed `id:2923649`
+ * unchanged and it is a query.
+ *
+ * The chips' canonical `chat#2923649` spelling is the same reference wearing the
+ * presentation syntax, and it says one thing more — the type — so it desugars to
+ * the conjunction it means. A canonical form naming the wrong type then matches
+ * nothing, which is what keeps the type in a reference load-bearing, and it is
+ * expressible in the language rather than special-cased beside it.
+ */
+function parseIdLiteral(rest, token) {
+  const canonical = parseCanonicalEventReference(rest)
+  if (canonical) return { t: 'and', l: { t: 'id', v: canonical.id }, r: { t: 'type', v: canonical.type } }
+  if (!/^\d+$/.test(rest) || !Number.isSafeInteger(Number(rest)) || Number(rest) <= 0) {
+    throw new Error(`filter parse error: "${token}" is not a message id. Pass the number an id: prefix carries (e.g. id:2923649), or its canonical form (e.g. id:chat#2923649).`)
+  }
+  return { t: 'id', v: Number(rest) }
 }
 
 export function parseAgentLiteral(value) {

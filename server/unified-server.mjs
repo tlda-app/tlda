@@ -69,7 +69,7 @@ import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { killAllBuilds, setShadowMirrorHandler, adoptShadowHistory } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { killAllDispatchedBuilds, resumeDurableBuildIntents } from './lib/build-dispatch.mjs'
-import projectRoutes, { processProjectPush, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
+import projectRoutes, { acceptSourceSnapshot, setAcceptedRevisionMirrorHandler, setAcceptedSourceMutationHandler, setPendingSourceReplicaHandler, setSourceBindingTargetProvider } from './routes/projects.mjs'
 import { createClassroomRouter } from './routes/classroom.mjs'
 import { initAuth, isTokenGatingEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, roomResidency, updateShape, putShape } from './lib/sync-rooms.mjs'
@@ -228,7 +228,7 @@ const sourceRoomDaemon = createSourceRoomDaemon({
   readProject,
   sourceLifecycleStore,
   readClientSourceManifest,
-  processProjectPush,
+  acceptSourceSnapshot,
   recordHeldEdit: recordSourceSyncRefusal,
   clearHeldEdit: clearSourceSyncRefusal,
 })
@@ -478,7 +478,7 @@ function daemonTerminalInputAllowed(daemonKey) {
 
 function agentWithDaemonCapabilities(agent) {
   if (!agent) return agent
-  const daemonKey = agent.daemon_key || agent.route_daemon_key
+  const daemonKey = agent.route_daemon_key
   return {
     ...agent,
     terminalInputAllowed: daemonKey ? daemonTerminalInputAllowed(daemonKey) : false,
@@ -1135,6 +1135,19 @@ async function reanimateAgent(agentQuery) {
     throw err
   }
 
+  // Clearing `dead` IS the reanimate. It is the explicit request, it is honoured
+  // immediately, and nothing after this point un-clears it.
+  //
+  // Skip, 2026-08-19 03:27 EDT: "An agent should never be marked dead. Unless
+  // someone explicitly fucking requests that." And on this path specifically:
+  // "A failed reanimate is a failed wake … if you reanimate an agent and it
+  // doesn't work, on a process level, you have a fucking hibernating agent."
+  //
+  // So a wake that fails after this leaves a live row with no process, and that
+  // is not a new state to be afraid of — it is what `hibernating` already means.
+  // The `markDead` that used to sit in the catch below was an unrequested write
+  // of the one flag only a request may set, and it undid what the caller had
+  // just asked for.
   const revived = await fleetStore.markAlive(before.id)
   markAgentNotAlive(before.id, { source: 'reanimate', reason: 'dead bit cleared; waking agent' })
   broadcastState(before.id)
@@ -1145,10 +1158,22 @@ async function reanimateAgent(agentQuery) {
       throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
     }
   } catch (e) {
-    await fleetStore.markDead(before.id)
-    markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake failed: ${e.message}` })
+    // Skip's words, and both halves in his order: what failed, then what state
+    // you are in. "the wake phase of the reanimate failed. Agent left
+    // hibernating." The second sentence is the one that saves the caller from
+    // guessing at the consequence — it says the next verb is `wake` without
+    // requiring them to know the model.
+    //
+    // "Hibernating" is asserted without a qualifier because the route survives:
+    // `markDead` does not touch `agent_daemon_routes` (only `removeAgent` does),
+    // and `reanimate` refuses to start at all without a route. So this agent is
+    // addressable and reachable, which is what hibernating means.
+    markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake phase failed: ${e.message}` })
     broadcastState(before.id)
-    throw e
+    throw new Error(
+      `the wake phase of the reanimate failed for ${before.friendly_name || before.id}. ` +
+      `Agent left hibernating: ${e.message}`
+    )
   }
   const nextSeat = await waitForAgentDaemonRoute(before.id)
   if (!nextSeat?.daemon_key) throw new Error(`reanimate for ${before.id} did not establish a daemon route`)
@@ -1156,17 +1181,19 @@ async function reanimateAgent(agentQuery) {
   try {
     await sendReanimateNoticeWithRetry(before.id, revived, nextSeat, noticeText)
   } catch (e) {
-    let killError = null
-    try {
-      await sendDaemonDurable(nextSeat.daemon_key, 'kill-session', terminalRpcPayload(revived, nextSeat))
-    } catch (killErr) {
-      killError = killErr
-    }
-    await fleetStore.markDead(before.id)
+    // A notice that did not land does not kill the agent it was about.
+    //
+    // This used to kill the session and mark the row dead — an undo of the whole
+    // reanimate because its last, least important step failed. Both halves are
+    // now wrong. Marking dead is the inferred death the rule forbids, and the
+    // kill would leave a row marked alive with no process behind it, which is
+    // the same phantom from the other side.
+    //
+    // The agent is up and reachable. What failed is that it was not told it had
+    // been reanimated, and that is what the caller is told.
     markAgentNotAlive(before.id, { source: 'reanimate', reason: `notice failed: ${e.message}` })
     broadcastState(before.id)
-    const suffix = killError ? `; also failed to kill resumed session: ${killError.message}` : ''
-    throw new Error(`reanimate notice failed after wake; agent left dead${suffix}: ${e.message}`)
+    throw new Error(`reanimate woke ${before.friendly_name || before.id} and it is running, but the return notice failed: ${e.message}`)
   }
   await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore.insertEventRecord({
     type: 'lifecycle',
@@ -2814,7 +2841,7 @@ async function performSpawnRelay(caller, msg) {
       name: caller.friendly_name || caller.name || undefined,
       human: !!caller.human,
       permissionGrant: caller.metadata?.permissionGrant || undefined,
-      daemonId: caller.daemon_key || caller.metadata?.daemon_key || undefined,
+      daemonId: caller.route_daemon_key || undefined,
     },
     spawnRoute: route.source,
     daemon_env_name: route.env_name,
@@ -3320,18 +3347,24 @@ onGlobalEvent(async (event) => {
 //   { via: 'daemon', machine_id, daemon: <ws> }   on success
 //   { via: 'none', error: '...', code: 503 }      if no daemon
 function resolveRpc(op, agent) {
-  if (!agent || !agent.machine_id || !agent.env_name) {
+  const daemonKey = agent?.route_daemon_key
+  if (!daemonKey) {
     return { via: 'none', code: 503, error: `agent has no daemon address (op=${op})` }
   }
-  const dws = daemonConnections.get(daemonAddress(agent.machine_id, agent.env_name))
+  const dws = daemonConnections.get(daemonKey)
   if (!dws || dws.readyState !== 1) {
-    return { via: 'none', code: 503, error: `no fleet-daemon connected for ${describeAgentAddress(agent.machine_id, agent.env_name)} (op=${op})` }
+    return { via: 'none', code: 503, error: `no fleet-daemon connected for ${daemonKey} (op=${op})` }
   }
-  return { via: 'daemon', machine_id: daemonAddress(agent.machine_id, agent.env_name), daemon_address: daemonAddress(agent.machine_id, agent.env_name), env_name: agent.env_name, daemon: dws }
+  // `machine_id` carries the whole daemon key, not a machine id, and every
+  // caller passes it straight to sendDaemonDurable/sendDaemonEphemeral as one.
+  // It was already the joined key before this change; the name is recorded in
+  // docs/naming-errata.md rather than renamed across twelve call sites here.
+  // The sibling `daemon_address` and `env_name` are deleted: nothing read them.
+  return { via: 'daemon', machine_id: daemonKey, daemon: dws }
 }
 
 function agentDaemonAddress(agent) {
-  return daemonAddress(agent?.machine_id, agent?.env_name)
+  return agent?.route_daemon_key || null
 }
 
 // Liveness is checked here, explicitly, rather than inferred from the absence of
@@ -5286,8 +5319,7 @@ function terminalAgentContext(agent) {
   return compactObject({
     agentId: agent?.id,
     label: agent?.friendly_name || agent?.id,
-    machineId: agent?.machine_id,
-    envName: agent?.env_name,
+    daemonKey: agent?.route_daemon_key,
   })
 }
 
@@ -7061,6 +7093,10 @@ async function dispatchFleetWsMessage(ws, msg) {
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
+          // The id we hand out is the event id. A session row carries an id of
+          // its own that nothing prints and nobody can reference, so `id:` is
+          // false against one rather than matching a different numbering.
+          case 'id': return row.source === 'fleet' && Number(row.id) === node.v
           case 'and': return await matchesMessageNode(node.l, row) && await matchesMessageNode(node.r, row)
           case 'or': return await matchesMessageNode(node.l, row) || await matchesMessageNode(node.r, row)
           case 'not': return !await matchesMessageNode(node.x, row)
@@ -7875,17 +7911,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'delete-task') {
-    const { task_id } = msg
-    if (!task_id) { error('missing task_id'); return }
-    const task = await fleetStore.getTask?.(task_id)
-    if (!task) { error('task not found'); return }
-    await fleetStore.removeTask?.(task_id)
-    broadcastState()
-    reply({ ok: true, task_id })
-    return
-  }
-
   if (type === 'my-task') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
@@ -8580,9 +8605,10 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!caller || !subscription) { error('caller or subscription not found'); return }
     // No authorization gate here. The fence lives in the MCP layer, which is where
     // agents act — see the authorization gate section in AGENTS.md.
-    if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.removeWiretap(subscription.adapter_id)
-    await fleetStore.removeSubscription(subscription.subscription_id)
-    // Release after the row is gone — the remaining-subscriber check reads the table.
+    if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.endWiretap(subscription.adapter_id)
+    await fleetStore.endSubscription(subscription.subscription_id)
+    // Release after the row is marked — the remaining-subscriber check reads the
+    // table, and that read is live-only.
     if (subscription.adapter === 'document_monitor') {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
       if (docMatch) await tldaFeedback.releaseIfUnsubscribed(docMatch[1])
@@ -9790,18 +9816,47 @@ async function handleDaemonWsMessage(ws, msg) {
     if (await readProject(project)) {
       await updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
-    // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
+    // Hand off to the same accept used by POST /api/projects/:name/source-snapshot.
     let replied = false
     try {
+      // `crashAt` replaces the old `transactionTest`. The two boundary names
+      // map -- `after-terminal-result` directly, `after-source-mutation` onto
+      // `after-accept`, which is the same place: the revision is durable and
+      // the effects have not run.
+      //
+      // **The kill semantics do NOT transfer, and that is not fixed here.** The
+      // old hooks called `process.kill(pid, 'SIGKILL')`; `acceptSourceSnapshot`
+      // RETURNS `{status: 599, simulatedCrash: true}` instead of dying. So a
+      // test that asserted recovery after real process death does not go red
+      // when it is repointed -- it passes while testing something weaker.
+      // `durable-source-acceptance` owes a decision about whether its window is
+      // still its window. Deciding it here would be repointing a death test
+      // onto a return value.
       const crashBoundary = process.env.TLDA_DEV_SERVER === '1'
         ? process.env.TLDA_TEST_SOURCE_CRASH_BOUNDARY
         : null
-      const transactionTest = crashBoundary === 'after-source-mutation'
-        ? { simulateCrashAfterSourceMutation: true, crash: () => process.kill(process.pid, 'SIGKILL') }
+      const crashAt = crashBoundary === 'after-source-mutation'
+        ? 'after-accept'
         : crashBoundary === 'after-terminal-result'
-          ? { simulateCrashAfterTerminalResult: true, crash: () => process.kill(process.pid, 'SIGKILL') }
-          : undefined
-      const result = await processProjectPush(project, {
+          ? 'after-terminal-result'
+          : null
+      // **Hand the accept this object whole; never trim it to what
+      // `acceptSourceSnapshot` destructures.** Its destructure names only what
+      // the accept uses itself -- the payload is passed on intact to
+      // `acceptUnderOperationJournal` (which spreads it into
+      // `prepareOperation`, where `deliveryId`, `editOperation` and
+      // `editOperations` are read) and to `sourceConflictOwner` (which reads
+      // `sourceMachineId` and `sourceEnvName`). Enumerating against the
+      // destructure list would drop five fields silently while every grep for
+      // them still succeeded. See projects.mjs:2585.
+      //
+      // `deletedFiles` is deliberately not read by the accept: removal is
+      // expressed by leaving the manifest, and the sender guarantees the
+      // omission -- daemon/source-sync.mjs:1406 deletes each path from
+      // `authorityManifest` before the manifest is built from it, because a
+      // path in both is refused whole. It stays in the payload because
+      // trimming this object is the failure above.
+      const { status: httpStatus, body } = await acceptSourceSnapshot(project, {
         files,
         deletedFiles,
         sourceManifest,
@@ -9815,17 +9870,23 @@ async function handleDaemonWsMessage(ws, msg) {
         sourceDaemonKey: ws._daemonKey || null,
         sourceMachineId: ws._machineId || null,
         sourceEnvName: ws._envName || null,
-      }, transactionTest)
-      const { status: httpStatus, lifecycleStatus, ...payload } = result
-      const durablePayload = result.sourceOperationResult || payload
+      }, { crashAt })
+      // The accept returns `{status, body}` where the old push returned one
+      // flat object. Reading it flat leaves `ok` and the lifecycle status
+      // undefined, so the ternary below falls through to `'error'` on every
+      // successful accept -- a green push reported to the daemon as a failure.
+      const { status: lifecycleStatus, ...payload } = body
+      const durablePayload = body.sourceOperationResult || payload
       // deliveryId travels on every reply for the same reason it does on the
       // replay above: it is the only identifier in this exchange that both
-      // sides still agree on after a reconnect.
-      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (result.ok ? 'accepted' : 'error') }
+      // sides still agree on after a reconnect. It is carried through the
+      // accept's new `{status, body}` shape rather than lost with the old flat
+      // one -- the shape changed, the reason for the field did not.
+      const reply = { type: 'source-change-result', requestId, project, deliveryId, ...durablePayload, httpStatus, status: lifecycleStatus || durablePayload.lifecycleStatus || (body.ok ? 'accepted' : 'error') }
       ws.send(JSON.stringify(reply))
       replied = true
-      if (!result.ok) {
-        console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
+      if (!body.ok) {
+        console.error(`[fleet-daemon] source-change ${project}: ${body.error || 'unknown'}`)
       }
     } catch (e) {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)

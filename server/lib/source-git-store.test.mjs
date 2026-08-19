@@ -42,8 +42,17 @@ test('an unchanged file is not stored again', async () => {
     let head = await store.acceptRevision({ project: 'paper', files: [{ path: 'big.tex', content: big }, { path: 'main.tex', content: 'v1' }] })
     const afterFirst = Number(execFileSync('git', ['--git-dir', gitDir, 'count-objects', '-v'], { encoding: 'utf8' }).match(/^count: (\d+)/m)[1])
 
+    // **Every revision names BOTH files**, because the tree is the manifest and
+    // a member nobody names is a member that left the paper. That is what makes
+    // this test the sharper version of itself: the unchanged file is sent every
+    // single time and is still stored exactly once, because git addresses blobs
+    // by content. Dedup was never a property of sending deltas.
     for (let i = 2; i <= 20; i += 1) {
-      head = await store.acceptRevision({ project: 'paper', parent: head, files: [{ path: 'main.tex', content: `v${i}` }] })
+      head = await store.acceptRevision({
+        project: 'paper',
+        parent: head,
+        files: [{ path: 'big.tex', content: big }, { path: 'main.tex', content: `v${i}` }],
+      })
     }
     const afterTwenty = Number(execFileSync('git', ['--git-dir', gitDir, 'count-objects', '-v'], { encoding: 'utf8' }).match(/^count: (\d+)/m)[1])
 
@@ -121,14 +130,20 @@ test('applied, built and mirrored are refs and are independent', async () => {
   }
 })
 
-test('a deletion removes the path from the manifest', async () => {
+test('a deletion is a path nobody named, not a path someone listed as deleted', async () => {
+  // **Removal used to need its own parameter** — `deleted: ['scratch.tex']` —
+  // because the tree was built over the parent's, so a path the caller forgot
+  // was inherited rather than dropped. That was safe and it is why a file could
+  // outlive its own removal: forgetting looked identical to keeping.
+  //
+  // Under a complete tree there is nothing to name. Absence IS the removal.
   const { dir, store } = repo()
   try {
     const one = await store.acceptRevision({
       project: 'paper',
       files: [{ path: 'main.tex', content: 'one' }, { path: 'scratch.tex', content: 'notes' }],
     })
-    const two = await store.acceptRevision({ project: 'paper', parent: one, deleted: ['scratch.tex'] })
+    const two = await store.acceptRevision({ project: 'paper', parent: one, files: [{ path: 'main.tex', content: 'one' }] })
 
     assert.deepEqual((await store.readManifest(two)).map(entry => entry.path), ['main.tex'])
     assert.equal(await store.readRevisionFile(two, 'scratch.tex'), null)

@@ -157,6 +157,11 @@ export function compileMessageFilterSql(node, { idsFor, eventsAlias = 'e', sessi
         return { sql: `(${ctx.timestamp} IS NULL OR ${ctx.timestamp} < ?)`, params: [n.v] }
       case 'type':
         return { sql: `(${ctx.type.map(c => `${c} = ?`).join(' OR ')})`, params: ctx.type.map(() => n.v) }
+      // `ctx.id` is null for the sessions predicate: a session row's id is not
+      // the id anything hands out, so `id:` is flatly false against one — the
+      // same way `to:` is, and for the same reason.
+      case 'id':
+        return ctx.id ? { sql: `${ctx.id} = ?`, params: [n.v] } : FALSE
       case 'and':
       case 'or': {
         const l = messageExpr(n.l, ctx)
@@ -180,6 +185,7 @@ export function compileMessageFilterSql(node, { idsFor, eventsAlias = 'e', sessi
     owner: `${eventsAlias}.agent_id`,
     timestamp: `${eventsAlias}.timestamp`,
     type: [`${eventsAlias}.type`],
+    id: `${eventsAlias}.id`,
   })
   const sessions = messageExpr(node, {
     // A session row has no sender, which the evaluator reads as a sender of
@@ -193,6 +199,7 @@ export function compileMessageFilterSql(node, { idsFor, eventsAlias = 'e', sessi
     owner: `${sessionsAlias}.agent_id`,
     timestamp: `${sessionsAlias}.timestamp`,
     type: [`${sessionsAlias}.role`],
+    id: null,
   })
   if (!events || !sessions) return null
   return { events, sessions }

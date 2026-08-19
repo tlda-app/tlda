@@ -220,7 +220,7 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
 const BLOCKED_RETRY_BASE_MS = 2000
 const BLOCKED_RETRY_MAX_MS = 30000
 
-export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, sourceChangeSettleDeadlineMs, editOperationStore = null, verifyOutbox = () => null, retryFault = null, reconcileIntervalMs = 1000, now = Date.now, watch = chokidar.watch }) {
+export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, sourceChangeSettleDeadlineMs, editOperationStore = null, verifyOutbox = () => null, retryFault = null, reconcileIntervalMs = 1000, now = Date.now, watch = chokidar.watch, createSourcePushFor = null }) {
   if (typeof sourceChangeSettleDeadlineMs !== 'number' || !Number.isFinite(sourceChangeSettleDeadlineMs) || sourceChangeSettleDeadlineMs <= 0) {
     throw new Error(`createSourceSync requires a positive sourceChangeSettleDeadlineMs (got ${JSON.stringify(sourceChangeSettleDeadlineMs)})`)
   }
@@ -228,7 +228,75 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   const sourceCorrelation = createSourceChangeCorrelation({ log, now })
   const sourceMaterializer = createSourceMaterializer({ journalPath: `${sourceBindingsFile}.materializations.json` })
 
+  // One pusher per project, because each holds a git handle on that checkout.
+  const sourcePushers = new Map()
+
+  /**
+   * Propose this change as a commit over HTTP, instead of sending whole file
+   * contents over the socket under a base we may not hold.
+   *
+   * **This is the fix for the incident recorded below, and it is structural.**
+   * A bundle's parent is a commit this checkout HAS; the server accepts iff it
+   * fast-forwards. So "pushing under a revision we never materialized" is not a
+   * thing that can be expressed, rather than a thing a field has to be honest
+   * about. The contents are not sent at all — the tree is — so there is nothing
+   * to write over somebody's prose.
+   *
+   * Returns false when there is no push available for this project, and the
+   * socket path below runs unchanged.
+   */
+  function proposeOverHttp(payload) {
+    if (!createSourcePushFor) return false
+    const sourceDir = getSourceDir(payload.project)
+    if (!sourceDir) return false
+    let pusher = sourcePushers.get(payload.project)
+    if (!pusher) {
+      pusher = createSourcePushFor({ sourceDir, project: payload.project })
+      if (!pusher) return false
+      sourcePushers.set(payload.project, pusher)
+    }
+    const changed = (payload.files || []).map(file => file.path)
+    const deleted = payload.deletedFiles || []
+    pusher.push({
+      changed,
+      deleted,
+      editedBy: payload.editedBy || null,
+      sourceBindingId: payload.sourceBindingId || null,
+      requestId: payload.requestId || null,
+    }).then(result => {
+      if (result.ok) {
+        log.info(`${payload.project}: proposed ${changed.length} changed, ${deleted.length} deleted -> ${String(result.sourceRevision || '').slice(0, 7)}`)
+        // **Lower the alarm this carrier is able to raise.**
+        //
+        // `deferBlockedProject` below raises a CRITICAL per-document alarm and
+        // starts the self-heal cadence, and it is reached from this path. The
+        // only thing that lowered it was `handleSourceChangeResult` -- the
+        // SOCKET carrier's result handler -- which an HTTP proposal never
+        // reaches. So a project could raise the pill here, recover here, and
+        // keep the pill forever: `_blockedStatusRaised` stays true, which also
+        // means the alarm never re-raises for a real later block.
+        //
+        // That is a state nobody can clear from the outside, which is the one
+        // thing this system is not allowed to have. It is the same severed-wire
+        // shape as the loop-back header: raised on one carrier, cleared on the
+        // other, and every grep for the symbol healthy.
+        if (sourceWatchers.get(payload.project)?._blockedStatusRaised) recoverBlockedProject(payload.project)
+        return
+      }
+      // Refused twice means somebody else landed twice while we were writing.
+      // The edit is still on disk and still ours, so re-arm rather than drop it.
+      log.warn(`${payload.project}: ${result.status}; re-arming for the next flush`)
+      deferBlockedProject(payload.project, payload)
+    }).catch(error => {
+      // Never lose the edit. The bytes are on disk; what failed is the telling.
+      log.warn(`${payload.project}: proposing failed (${error.message}); re-arming for the next flush`)
+      deferBlockedProject(payload.project, payload)
+    })
+    return true
+  }
+
   function sendSourceChange(payload, retried = false) {
+    if (!retried && proposeOverHttp(payload)) return true
     const binding = payload.sourceBindingId ? sourceMaterializer.readBinding(payload.sourceBindingId) : null
     // The base is `materializedRevision` — what this machine actually WROTE
     // DOWN — never `serverHeadRevision`, which is only what the server said

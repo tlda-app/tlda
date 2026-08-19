@@ -23,7 +23,7 @@
 // when `activeTargetRevision` was a field in a JSON file and had to be edited
 // by hand to clear it.
 import { spawn } from 'node:child_process'
-import { readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 
 const NULL_SHA = '0000000000000000000000000000000000000000'
 
@@ -93,6 +93,17 @@ export function createSourceGitStore({ gitDir }) {
     return next
   }
 
+  /**
+   * Remove a ref, compare-and-swap, so that undoing the FIRST accept is
+   * expressible. `moveRef` cannot express it: there is no sha meaning "back to
+   * nothing", and a project's very first accept creates the ref rather than
+   * moving it. Without this, a failed first accept leaves a head behind and the
+   * project is permanently past a revision nobody accepted.
+   */
+  async function removeRef(kind, name, expected) {
+    await git(['update-ref', '-d', refFor(kind, name), expected])
+  }
+
   /** Write bytes as a blob and return its sha. Identical content is free. */
   async function writeBlob(content) {
     const buffer = Buffer.isBuffer(content) ? content : Buffer.from(String(content))
@@ -100,31 +111,83 @@ export function createSourceGitStore({ gitDir }) {
   }
 
   /**
-   * Accept a revision: build its tree from `files` (path → bytes) applied over
-   * `parent`, and commit it. Returns the commit sha, which is the revision id.
+   * Write many blobs in ONE spawn, in order.
    *
-   * Only changed paths are passed; everything else is inherited from the parent
-   * tree, so an unchanged file costs nothing. That is the property the previous
-   * store did not have and the reason it grew without bound.
+   * **The budget is a spawn budget.** A subprocess costs ~130-150ms on this box
+   * under load and everything git actually does is free next to it, so
+   * `writeBlob` per file made the accept linear in a quantity that should not
+   * have appeared in the cost at all -- the same harness importing 2,040 blobs
+   * one at a time took six minutes.
+   *
+   * `--stdin-paths` reads PATHS rather than content, so in-memory bytes go
+   * through a temp directory: N writes plus one spawn, against N spawns. A file
+   * write is microseconds and a spawn is milliseconds, so this is a win from
+   * the second blob onward and the single-blob case keeps the direct `--stdin`
+   * form with no temp file at all.
    */
-  async function acceptRevision({ project, parent = null, files = [], deleted = [], message = 'source revision', author = null, replaceTree = false }) {
-    const index = []
+  async function writeBlobs(contents) {
+    const buffers = contents.map(content => (Buffer.isBuffer(content) ? content : Buffer.from(String(content))))
+    if (buffers.length === 0) return []
+    if (buffers.length === 1) return [await writeBlob(buffers[0])]
+    const dir = `${gitDir}/tlda-blobs-${process.pid}-${Date.now()}`
+    try {
+      await mkdir(dir, { recursive: true })
+      const paths = []
+      for (const [index, buffer] of buffers.entries()) {
+        const file = `${dir}/${index}`
+        await writeFile(file, buffer)
+        paths.push(file)
+      }
+      const out = await git(['hash-object', '-w', '--stdin-paths'], { input: `${paths.join('\n')}\n` })
+      const shas = out.split('\n').map(line => line.trim()).filter(Boolean)
+      if (shas.length !== buffers.length) {
+        throw new Error(`hash-object returned ${shas.length} shas for ${buffers.length} blobs`)
+      }
+      return shas
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {
+        // Best effort on a temp directory; the blobs are already in the object
+        // store and a leftover directory is litter rather than a failure.
+      })
+    }
+  }
+
+  /**
+   * Accept a revision: build its tree from `files` — the project's COMPLETE
+   * member set — and commit it. Returns the commit sha, which is the revision id.
+   *
+   * **The tree IS the manifest.** A path that left the paper is absent because
+   * nobody named it, rather than absent because somebody remembered to list it
+   * as deleted. There is no second description of membership to disagree with
+   * the bytes, which is what makes a member with no content and a phantom the
+   * server holds unrepresentable rather than guarded against.
+   *
+   * **A complete tree does not mean re-storing anything.** Git addresses blobs
+   * by content, so naming every member each time writes one object per member
+   * that actually changed and finds the rest already present. The property the
+   * previous store lacked — 397 revisions holding 397 copies of every unchanged
+   * file, 13GB for a history git keeps in 22MB — is a property of content
+   * addressing, not of sending deltas.
+   *
+   * **A caller that already hashed the bytes passes `sha` instead of
+   * `content`,** which is how naming an unchanged file costs nothing at all.
+   */
+  async function acceptRevision({ project, parent = null, files = [], message = 'source revision', author = null }) {
     for (const file of files) {
       if (!file || typeof file.path !== 'string') throw new Error('Every file needs a path')
-      // A caller that already hashed the bytes passes the blob sha instead.
-      // Re-writing the blob would be identical work for an identical result.
-      const sha = file.sha || await writeBlob(file.content)
-      index.push(`100644 blob ${sha}\t${file.path}`)
     }
-    for (const path of deleted) index.push(`0 ${NULL_SHA}\t${path}`)
-
-    // `replaceTree` builds the tree from `files` alone rather than over the
-    // parent's. A caller holding the project's COMPLETE manifest wants that: a
-    // path that left the manifest is then absent because it was not named,
-    // which is exact, rather than absent because someone remembered to list it
-    // as deleted — and forgetting is how a file outlives its own removal.
-    const base = parent && !replaceTree ? (await git(['rev-parse', `${parent}^{tree}`])).trim() : null
-    const tree = await buildTree(base, index)
+    // **One spawn for every blob, not one spawn per blob.**
+    //
+    // A caller that already hashed the bytes passes the blob sha instead, and
+    // re-writing it would be identical work for an identical result -- so only
+    // the un-hashed ones are written, and they go together. On a book this is
+    // the difference between a constant cost and a linear one in the quantity
+    // that dominates: spawns.
+    const needsWriting = files.filter(file => !file.sha)
+    const written = await writeBlobs(needsWriting.map(file => file.content))
+    const shaFor = new Map(needsWriting.map((file, i) => [file, written[i]]))
+    const index = files.map(file => `100644 blob ${file.sha || shaFor.get(file)}\t${file.path}`)
+    const tree = await buildTree(index)
 
     const args = ['commit-tree', tree, '-m', message]
     if (parent) args.push('-p', parent)
@@ -148,18 +211,31 @@ export function createSourceGitStore({ gitDir }) {
     return (await run('git', ['--git-dir', gitDir, ...args], { env })).toString('utf8').trim()
   }
 
-  // read-tree the parent into a scratch index, apply the changed paths, write
-  // it back out. The index is a temp file so concurrent accepts do not collide.
-  async function buildTree(baseTree, indexLines) {
+  // Write the named paths into a scratch index and write it out as a tree. The
+  // index is a temp file so concurrent accepts do not collide.
+  //
+  // **It starts EMPTY, and that is the whole of complete-tree semantics.** The
+  // parent's tree was read in here once, so a path the caller did not name was
+  // inherited — safe, and it made removal inexpressible, which cost the feature
+  // Skip asked for: "we manually remove roots and then automatically delete
+  // unreferenced files." Automatic removal of an unreferenced file is exactly
+  // what inheriting the parent refuses to do. It also cost a spawn per accept.
+  async function buildTree(indexLines) {
     const indexFile = `${gitDir}/tlda-index-${process.pid}-${Date.now()}`
     const env = { ...process.env, GIT_INDEX_FILE: indexFile }
     const g = async (args, input = null) => (await run('git', ['--git-dir', gitDir, ...args], { env, input })).toString('utf8')
     try {
-      if (baseTree) await g(['read-tree', baseTree])
       if (indexLines.length) await g(['update-index', '--index-info'], indexLines.join('\n') + '\n')
       return (await g(['write-tree'])).trim()
     } finally {
-      await run('rm', ['-f', indexFile]).catch(() => {})
+      // `fs.rm`, not a subprocess. A spawn costs ~130-150ms on this box under
+      // load -- measured -- and everything git actually does is free next to
+      // that, so a whole process to unlink one temp file was a sixth of the
+      // accept's cost doing nothing. `rm` was already imported two lines above.
+      await rm(indexFile, { force: true }).catch(() => {
+        // Best effort on a temp index. A leftover file is litter; reporting it
+        // would replace the accept's result with a cleanup error.
+      })
     }
   }
 
@@ -206,6 +282,45 @@ export function createSourceGitStore({ gitDir }) {
   }
 
   /** One file's bytes out of one revision, without materialising the rest. */
+  /**
+   * Many blobs from one revision, in ONE spawn.
+   *
+   * **The spawn budget again.** A guard that re-derives the closure has to read
+   * every text file in the tree, and `readRevisionFile` per path would put a
+   * ~130-150ms subprocess against each one — linear in file count on the accept
+   * path, which is the cost this store exists to remove.
+   *
+   * `cat-file --batch` reads `<rev>:<path>` lines and answers
+   * `<sha> <type> <size>\n<bytes>\n` for each, in order. A path the tree does
+   * not hold answers `<request> missing` and is returned as null rather than
+   * throwing: absence is an ordinary answer here, not a failure.
+   */
+  async function readRevisionFiles(revision, paths) {
+    const wanted = [...paths]
+    if (wanted.length === 0) return new Map()
+    const out = await run('git', ['--git-dir', gitDir, 'cat-file', '--batch'], {
+      input: `${wanted.map(path => `${revision}:${path}`).join('\n')}\n`,
+    })
+    const result = new Map()
+    let offset = 0
+    for (const path of wanted) {
+      const newline = out.indexOf(0x0a, offset)
+      if (newline === -1) break
+      const header = out.subarray(offset, newline).toString('utf8')
+      if (header.endsWith(' missing')) {
+        result.set(path, null)
+        offset = newline + 1
+        continue
+      }
+      const size = Number(header.split(' ')[2])
+      const start = newline + 1
+      result.set(path, out.subarray(start, start + size))
+      // git writes a newline after the payload as well as after the header.
+      offset = start + size + 1
+    }
+    return result
+  }
+
   async function readRevisionFile(revision, path) {
     try {
       return await git(['cat-file', 'blob', `${revision}:${path}`], { buffer: true })
@@ -246,8 +361,15 @@ export function createSourceGitStore({ gitDir }) {
    * The bundle names a ref rather than a bare sha: `git bundle` refuses to
    * create a bundle that carries no refs, so a sha alone writes nothing.
    */
-  async function bundleSince(project, revision, { includeRefused = false } = {}) {
-    const have = await readRef('mirrored', project)
+  async function bundleSince(project, revision, { includeRefused = false, have: declaredHave } = {}) {
+    // `have` defaults to the `mirrored` ref because the mirror is this
+    // function's original caller and that ref is what the checkout last took.
+    // A proposer recovering from a refusal is asking on its OWN behalf and
+    // holds something different, so it says what it has. Defaulting to the
+    // mirrored ref for that caller would ship a bundle computed against a third
+    // party's position -- correct-looking, and missing exactly the commits the
+    // proposer needs when the two have diverged.
+    const have = declaredHave !== undefined ? declaredHave : await readRef('mirrored', project)
     const ref = refFor('source', project)
     const bundlePath = `${gitDir}/tlda-bundle-${process.pid}-${revision.slice(0, 7)}`
     const range = have && await isAncestor(have, revision)
@@ -312,6 +434,49 @@ export function createSourceGitStore({ gitDir }) {
     return { ok: true, status: 'accepted', revision: proposed, previous: current }
   }
 
+  /**
+   * What changed between two revisions, derived rather than declared.
+   *
+   * The old push route is handed `files: [{path, content}]` and builds every
+   * post-accept effect from that list. A bundle carries a tree and no list, so
+   * the effects have to ask what moved — which is the same reason the tree is
+   * authoritative in the first place: a path is gone because it is absent, not
+   * because somebody remembered to name it.
+   *
+   * `base` is null for a project's first revision, and then every path in
+   * `head` is a change. That is not an edge case to guard; it is what a first
+   * revision means.
+   *
+   * `-z` rather than the tab-splitting the readers above use: this feeds the
+   * replica fan-out, and a path this misses is a path a bound checkout never
+   * hears changed. A filename containing a tab or newline is unlikely and
+   * silent, which is the combination worth one flag to remove.
+   */
+  async function diffRevisions(base, head) {
+    if (!head) return { changed: [], deleted: [] }
+    // No --full-tree here: it is an ls-tree option and diff-tree rejects it
+    // with a usage error, which `git()` surfaces as a throw rather than an
+    // empty diff. Checked against real output rather than assumed.
+    const args = base
+      ? ['diff-tree', '-r', '-z', '--name-status', base, head]
+      : ['diff-tree', '-r', '-z', '--name-status', '--root', head]
+    const fields = (await git(args)).split('\0').filter(Boolean)
+    const changed = []
+    const deleted = []
+    // NUL-separated status/path pairs. With --root the first field is the
+    // commit id rather than a status, so anything that is not a known status
+    // letter is skipped rather than read as a path.
+    for (let i = 0; i < fields.length - 1; i += 1) {
+      const status = fields[i]
+      if (!/^[AMDTC]/.test(status) || status.length > 3) continue
+      const path = fields[i + 1]
+      i += 1
+      if (status.startsWith('D')) deleted.push(path)
+      else changed.push(path)
+    }
+    return { changed, deleted }
+  }
+
   /** True when `candidate` is in `head`'s history — the stale-base test. */
   async function isAncestor(candidate, head) {
     if (!candidate || !head) return false
@@ -323,14 +488,39 @@ export function createSourceGitStore({ gitDir }) {
     }
   }
 
+  /**
+   * The commit two revisions actually diverged at.
+   *
+   * **The base of a rebase, and it is asked rather than assumed.** The proposed
+   * commit's first parent is the base it was *written* on, which is usually the
+   * same answer and is not always: a daemon that already rebased once, or a
+   * bundle carrying several commits, has moved. Git knows which commit they
+   * share; nothing else here does.
+   *
+   * Null when they share no history at all, which is a real state — two
+   * projects adopted separately — and one a three-way merge cannot be run over.
+   */
+  async function mergeBase(a, b) {
+    if (!a || !b) return null
+    try {
+      return (await git(['merge-base', a, b])).trim() || null
+    } catch {
+      return null
+    }
+  }
+
   return {
     acceptRevision,
     readManifest,
     readRevisionFile,
+    readRevisionFiles,
     isAncestor,
+    mergeBase,
     ingestBundle,
     fastForward,
+    diffRevisions,
     writeBlob,
+    writeBlobs,
     blobSize,
     readBlobBytes,
     readCommitMeta,
@@ -338,6 +528,7 @@ export function createSourceGitStore({ gitDir }) {
 
     head: project => readRef('source', project),
     advanceHead: (project, next, expected) => moveRef('source', project, next, expected),
+    retractHead: (project, expected) => removeRef('source', project, expected),
 
     applied: bindingId => readRef('applied', bindingId),
     markApplied: (bindingId, revision, expected) => moveRef('applied', bindingId, revision, expected),
@@ -347,6 +538,16 @@ export function createSourceGitStore({ gitDir }) {
 
     mirrored: project => readRef('mirrored', project),
     markMirrored: (project, revision, expected) => moveRef('mirrored', project, revision, expected),
+
+    // What the SERVER's own working copy holds. The fourth of these, and the
+    // one whose absence let a document go missing: the effects computed what to
+    // write by diffing the accepted revision against its PARENT, which assumes
+    // the disk already matches the parent. After a crash before the effects
+    // ran, it does not -- and the retry's clean rebase has an identical tree,
+    // so the diff is empty and nothing is ever written. Accepted, reported
+    // preserved, and not on disk.
+    materialized: project => readRef('materialized', project),
+    markMaterialized: (project, revision, expected) => moveRef('materialized', project, revision, expected),
 
     // The last push this project refused. Not a lifecycle phase like the others
     // — it is the pointer that makes a refused commit reachable, and reachable

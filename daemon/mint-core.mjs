@@ -12,8 +12,30 @@ function emitLifecycle(onLifecycleEvent, event, data = {}) {
   }
 }
 
+// What a wake needs that has no other source: the harness, the model, the cwd,
+// the grant. Not the bot fields — `bots.yaml` declares those, and a copy taken
+// here at mint time is a second answer to a question the declaration already
+// answers, free to drift from it the moment anyone edits the file.
+//
+// Skip, 2026-08-19: "there shouldn't be a fucking bot recipe. Bots use fucking
+// mint and wake like everybody else. The whole recipe garbage is just a recipe
+// for fucking disaster."
+//
+// The bot recipe and the wake recipe were different things sharing one field,
+// which is why this reads as deleting a whole concept and is in fact deleting
+// six keys. The wake recipe stays; every agent is woken from it.
+const DECLARED_BY_BOTS_YAML = [
+  'botScript', 'bot_script', 'script',
+  'botName', 'bot_name',
+  'botPidFile', 'bot_pid_file',
+  'botHeartbeatFile', 'bot_heartbeat_file',
+  'botWaitChannel', 'bot_wait_channel',
+  'botEnv', 'bot_env',
+]
+
 function persistentLaunchRecipe(launch = {}) {
   const { permissionSet: _permissionSet, permission_set: _permission_set, ...rest } = launch || {}
+  for (const key of DECLARED_BY_BOTS_YAML) delete rest[key]
   return rest
 }
 

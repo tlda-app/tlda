@@ -120,8 +120,7 @@ export function activityHealthIncidentPayload(agent, health, now = new Date()) {
     actors: {
       agentId,
       agentName: agent?.friendly_name || agent?.name || null,
-      machineId: agent?.machine_id || null,
-      envName: agent?.env_name || null,
+      daemonKey: agent?.route_daemon_key || null,
       tmuxSession: agent?.tmux_session || null,
     },
     impact: `Activity visibility for ${agent?.friendly_name || agentId || 'unknown agent'} is ${health?.state || 'unknown'} at ${health?.boundary || 'unknown boundary'}.`,
