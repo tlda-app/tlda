@@ -58,7 +58,7 @@ const app = express()
 app.post('/api/projects/:name/source-bundle', express.raw({ type: () => true, limit: '500mb' }), async (req, res) => {
   const bundlePath = path.join(root, `proposed-${accepts.length}.bundle`)
   fs.writeFileSync(bundlePath, req.body)
-  accepts.push({ bytes: req.body.length, editedBy: req.get('x-tlda-edited-by') || null })
+  accepts.push({ bytes: req.body.length, editedBy: req.get('x-tlda-edited-by') || null, daemonKey: req.get('x-tlda-source-daemon') || null })
   try {
     const proposed = await store.ingestBundle(project, bundlePath)
     if (!proposed) return res.status(400).json({ ok: false, error: 'empty bundle' })
@@ -89,7 +89,7 @@ const listening = await new Promise(resolve => {
 const origin = `http://127.0.0.1:${listening.address().port}`
 
 const proposal = createSourceProposal({ sourceDir: checkout, project })
-const pusher = createSourcePush({ proposal, project, server: origin, token: null })
+const pusher = createSourcePush({ proposal, project, server: origin, token: null, daemonKey: 'mini:testing' })
 
 // ---------------------------------------------------------------------------
 // 1. An ordinary push crosses and is accepted.
@@ -100,6 +100,14 @@ const first = await pusher.push({ changed: ['main.tex', 'figure.tex'], editedBy:
 assert.equal(first.ok, true, 'the first proposal is accepted')
 assert.equal(await store.head(project), first.sourceRevision, 'the server head is the commit we sent')
 assert.equal(accepts[0].editedBy, 'the author', 'the headers cross the wire too')
+// **THE LOOP-BACK SUPPRESSION, over the wire.** `projects.mjs` reads
+// `x-tlda-source-daemon` so the fan-out does not send a change back to the
+// machine it came from -- "a daemon that materializes its own push would
+// overwrite the file its author is still editing". Nothing SENT it: one
+// occurrence tree-wide, the reader, against two for `x-tlda-source-binding`.
+// The suppression was inert on this carrier and both ends still grepped clean.
+assert.equal(accepts[0].daemonKey, 'mini:testing',
+  'THE LOOP-BACK HEADER: the push names the machine it came from, or the fan-out sends it back')
 
 // ---------------------------------------------------------------------------
 // 2. **A multi-megabyte body.** Measured, not reasoned about.

@@ -551,6 +551,9 @@ const sourceSync = createSourceSync({
     project,
     server: SERVER,
     token: TOKEN,
+    // Identifies the machine this push came from, so the fan-out does not send
+    // it back here and materialize over the file its author is still editing.
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
     log,
   }),
 })

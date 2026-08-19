@@ -18,7 +18,7 @@
 
 const ATTEMPTS = 2
 
-export function createSourcePush({ proposal, project, server, token, fetchImpl = fetch, log = null }) {
+export function createSourcePush({ proposal, project, server, token, daemonKey = null, fetchImpl = fetch, log = null }) {
   if (!proposal) throw new Error('createSourcePush requires a proposal')
   if (!project) throw new Error('createSourcePush requires a project')
   if (!server) throw new Error('createSourcePush requires a server')
@@ -78,6 +78,14 @@ export function createSourcePush({ proposal, project, server, token, fetchImpl =
           'content-type': 'application/octet-stream',
           ...(editedBy ? { 'x-tlda-edited-by': editedBy } : {}),
           ...(sourceBindingId ? { 'x-tlda-source-binding': sourceBindingId } : {}),
+          // **The loop-back suppression, which was inert on this carrier.**
+          // `projects.mjs` reads `x-tlda-source-daemon` to keep the fan-out
+          // from sending a change back to the machine it came from -- its own
+          // comment: "a daemon that materializes its own push would overwrite
+          // the file its author is still editing." Nothing sent it. One
+          // occurrence tree-wide, against two for `x-tlda-source-binding`,
+          // which is the control that says the grep works.
+          ...(daemonKey ? { 'x-tlda-source-daemon': daemonKey } : {}),
           ...(requestId ? { 'x-tlda-request-id': requestId } : {}),
         },
         body: bundle,
