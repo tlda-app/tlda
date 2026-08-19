@@ -111,7 +111,7 @@ test('an agent that unsubscribes receives nothing, and that is allowed', async (
   await withFleet(async store => {
     // "if someone wants to, like, have their agents be completely
     // unaddressable, that's their fucking choice." No floor puts it back.
-    for (const row of store.getSubscriptionsByOwner('fleet:alice')) store.removeSubscription(row.subscription_id)
+    for (const row of store.getSubscriptionsByOwner('fleet:alice')) store.endSubscription(row.subscription_id)
     const notified = notifiedFor(store, 'fleet:sender', 'fleet:alice')
     assert.equal(notified.size, 0, 'with no subscription there is no delivery — nothing underneath restores one')
   })
@@ -159,7 +159,7 @@ test('the one-time migration does not resurrect a deleted subscription', async (
     // delete it deliberately.
     store = new FleetStore(dbPath)
     store.ensureSubscription({ owner: 'fleet:quiet', query: DEFAULT_SUBSCRIPTION_QUERY })
-    for (const row of store.getSubscriptionsByOwner('fleet:quiet')) store.removeSubscription(row.subscription_id)
+    for (const row of store.getSubscriptionsByOwner('fleet:quiet')) store.endSubscription(row.subscription_id)
     assert.equal(store.getSubscriptionsByOwner('fleet:quiet').length, 0)
     store.close()
 

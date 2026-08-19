@@ -8569,9 +8569,10 @@ async function dispatchFleetWsMessage(ws, msg) {
     if (!caller || !subscription) { error('caller or subscription not found'); return }
     // No authorization gate here. The fence lives in the MCP layer, which is where
     // agents act — see the authorization gate section in AGENTS.md.
-    if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.removeWiretap(subscription.adapter_id)
-    await fleetStore.removeSubscription(subscription.subscription_id)
-    // Release after the row is gone — the remaining-subscriber check reads the table.
+    if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.endWiretap(subscription.adapter_id)
+    await fleetStore.endSubscription(subscription.subscription_id)
+    // Release after the row is marked — the remaining-subscriber check reads the
+    // table, and that read is live-only.
     if (subscription.adapter === 'document_monitor') {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
       if (docMatch) await tldaFeedback.releaseIfUnsubscribed(docMatch[1])

@@ -692,16 +692,28 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_recipients_agent_ts ON recipients(agent_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_recipients_event ON recipients(event_id);
 
-      -- Wiretaps: persistent message subscriptions
+      -- Wiretaps: persistent message subscriptions.
+      --
+      -- Skip, 2026-08-19 05:40 EDT, on unsubscribing: "Oh, that's interesting.
+      -- Yeah. Unsubscribing should mark". So ending one sets ended_at and the
+      -- row stays -- the filter query has no other copy anywhere, and neither
+      -- does the fact that the subscription ever existed. ended_at IS NULL means
+      -- live, and every read below says so.
       CREATE TABLE IF NOT EXISTS wiretaps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         agent_id TEXT NOT NULL,          -- who is listening
         filter TEXT NOT NULL,            -- JSON object: { from?: string[][], to?: string[][] }
         types TEXT,                      -- JSON array of event types to filter (null = all)
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TEXT DEFAULT (datetime('now')),
+        ended_at TEXT                    -- NULL = live; set once, never cleared
       );
 
       CREATE INDEX IF NOT EXISTS idx_wiretaps_agent ON wiretaps(agent_id);
+      -- The reads are all live-only, so the index is too: an agent that has
+      -- subscribed and unsubscribed for a year keeps one live row and the
+      -- lookup stays the size of what is live, not of the history.
+      CREATE INDEX IF NOT EXISTS idx_wiretaps_agent_live
+        ON wiretaps(agent_id) WHERE ended_at IS NULL;
 
       CREATE TABLE IF NOT EXISTS subscriptions (
         subscription_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -711,10 +723,13 @@ export class FleetStore {
         created_at TEXT NOT NULL,
         created_by TEXT NOT NULL,
         adapter TEXT NOT NULL,
-        adapter_id INTEGER
+        adapter_id INTEGER,
+        ended_at TEXT                    -- NULL = live; set once, never cleared
       );
 
       CREATE INDEX IF NOT EXISTS idx_subscriptions_owner ON subscriptions(owner);
+      CREATE INDEX IF NOT EXISTS idx_subscriptions_owner_live
+        ON subscriptions(owner) WHERE ended_at IS NULL;
 
       -- Daemon outbox at-most-once ledger. A daemon redelivers an envelope it
       -- did not see acked, so the server has to recognise one it already
@@ -877,12 +892,19 @@ export class FleetStore {
     // cannot be diagnosed; a row set to `hold` can, and today was a whole day of
     // the first kind.
     //
-    // Enforced by the trigger below rather than by a check in the delete path,
+    // Enforced by the triggers below rather than by a check in the removal path,
     // for the same reason the living-name rule is a partial unique index: a code
-    // check drifts, and there is more than one way to reach a delete.
+    // check drifts, and there is more than one way to reach a removal.
     const subscriptionCols = this.db.prepare("PRAGMA table_info(subscriptions)").all();
     if (!subscriptionCols.some(c => c.name === 'mandatory')) {
       this.db.exec("ALTER TABLE subscriptions ADD COLUMN mandatory INTEGER DEFAULT 0");
+    }
+    if (!subscriptionCols.some(c => c.name === 'ended_at')) {
+      this.db.exec("ALTER TABLE subscriptions ADD COLUMN ended_at TEXT");
+    }
+    const wiretapCols = this.db.prepare("PRAGMA table_info(wiretaps)").all();
+    if (!wiretapCols.some(c => c.name === 'ended_at')) {
+      this.db.exec("ALTER TABLE wiretaps ADD COLUMN ended_at TEXT");
     }
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_undeletable
@@ -891,6 +913,25 @@ export class FleetStore {
       BEGIN
         SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
       END;
+    `);
+    // The delete trigger above is now the guard on a path nothing takes, so on
+    // its own it would silently stop protecting anything: unsubscribing marks,
+    // and an UPDATE is not a DELETE. This is the same guard on the path that is
+    // actually taken. Both stay -- the delete one because the table can still be
+    // reached by hand, this one because it is the live route.
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_unendable
+      BEFORE UPDATE OF ended_at ON subscriptions
+      WHEN OLD.mandatory = 1 AND OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
+      END;
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_subscriptions_owner_live
+        ON subscriptions(owner) WHERE ended_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_wiretaps_agent_live
+        ON wiretaps(agent_id) WHERE ended_at IS NULL;
     `);
 
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
@@ -1816,14 +1857,19 @@ export class FleetStore {
 
     // Wiretap queries
     this._addWiretap = this.db.prepare('INSERT INTO wiretaps (agent_id, filter, types) VALUES (?, ?, ?)');
-    this._getWiretaps = this.db.prepare('SELECT * FROM wiretaps');
+    this._getWiretaps = this.db.prepare('SELECT * FROM wiretaps WHERE ended_at IS NULL');
     this._getResolvableWiretaps = this.db.prepare(`
       SELECT * FROM wiretaps
-      WHERE json_type(CASE WHEN json_valid(filter) THEN filter ELSE 'null' END) = 'text'
+      WHERE ended_at IS NULL
+        AND json_type(CASE WHEN json_valid(filter) THEN filter ELSE 'null' END) = 'text'
         AND json_extract(filter, '$') != 'to:' || agent_id
+        -- The suppression list is live subscriptions only. Without the
+        -- ended_at test an ended subscription would go on suppressing the
+        -- wiretap it once adapted, which is a silent loss of delivery that
+        -- nothing surfaces.
         AND id NOT IN (
           SELECT adapter_id FROM subscriptions
-          WHERE adapter = 'wiretap' AND adapter_id IS NOT NULL
+          WHERE adapter = 'wiretap' AND adapter_id IS NOT NULL AND ended_at IS NULL
         )
     `);
     // A subscription is read from the subscriptions table. `query` is the filter;
@@ -1845,15 +1891,16 @@ export class FleetStore {
         s.created_at
       FROM subscriptions s
       JOIN agents a ON a.id = s.owner AND a.dead = 0
+      WHERE s.ended_at IS NULL
     `);
-    this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
-    this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
-    this._deleteWiretapsByAgent = this.db.prepare('DELETE FROM wiretaps WHERE agent_id = ?');
+    this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ? AND ended_at IS NULL');
+    this._endWiretap = this.db.prepare('UPDATE wiretaps SET ended_at = ? WHERE id = ? AND ended_at IS NULL');
+    this._endWiretapsByAgent = this.db.prepare('UPDATE wiretaps SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL');
     this._addSubscription = this.db.prepare(`INSERT INTO subscriptions (owner, query, notification_policy, created_at, created_by, adapter, adapter_id, mandatory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-    this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? ORDER BY subscription_id DESC');
-    this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? ORDER BY subscription_id');
-    this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
-    this._deleteSubscription = this.db.prepare('DELETE FROM subscriptions WHERE subscription_id = ?');
+    this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? AND ended_at IS NULL ORDER BY subscription_id DESC');
+    this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? AND ended_at IS NULL ORDER BY subscription_id');
+    this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ? AND ended_at IS NULL');
+    this._endSubscription = this.db.prepare('UPDATE subscriptions SET ended_at = ? WHERE subscription_id = ? AND ended_at IS NULL');
     this._updateWiretapFilter = this.db.prepare('UPDATE wiretaps SET filter = ? WHERE id = ?');
 
     // Event queries for chat history
@@ -3130,7 +3177,7 @@ export class FleetStore {
     this.db.transaction(() => {
       marked = this.db.prepare(
         `UPDATE subscriptions SET mandatory = 1
-          WHERE mandatory = 0 AND adapter = 'subscription' AND query IN (?, ?)`,
+          WHERE mandatory = 0 AND ended_at IS NULL AND adapter = 'subscription' AND query IN (?, ?)`,
       ).run('to:me', DEFAULT_SUBSCRIPTION_QUERY).changes;
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
@@ -4776,18 +4823,27 @@ export class FleetStore {
     return this._getWiretapsByAgent.all(agentId).map(r => this._hydrateWiretap(r));
   }
 
-  removeWiretap(id) {
-    this._deleteWiretap.run(id);
-    this._wiretapCache = null;
-    this._resolvableWiretapCache = null;
-    this._resolvableSubscriptionWiretapCache = null;
+  // Named for what they do. A wiretap that has been ended stops matching --
+  // every read is live-only -- and its filter stays readable, which a delete
+  // could not give: the filter expression has no other copy anywhere.
+  endWiretap(id, at = new Date().toISOString()) {
+    const ended = this._endWiretap.run(at, id).changes > 0;
+    if (ended) {
+      this._wiretapCache = null;
+      this._resolvableWiretapCache = null;
+      this._resolvableSubscriptionWiretapCache = null;
+    }
+    return ended;
   }
 
-  removeWiretapsByAgent(agentId) {
-    this._deleteWiretapsByAgent.run(agentId);
-    this._wiretapCache = null;
-    this._resolvableWiretapCache = null;
-    this._resolvableSubscriptionWiretapCache = null;
+  endWiretapsByAgent(agentId, at = new Date().toISOString()) {
+    const ended = this._endWiretapsByAgent.run(at, agentId).changes > 0;
+    if (ended) {
+      this._wiretapCache = null;
+      this._resolvableWiretapCache = null;
+      this._resolvableSubscriptionWiretapCache = null;
+    }
+    return ended;
   }
 
   addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null, mandatory = false }) {
@@ -4841,17 +4897,20 @@ export class FleetStore {
     if (!owners?.length) return {};
     const placeholders = owners.map(() => '?').join(',');
     const rows = this.db.prepare(
-      `SELECT subscription_id, owner, query, notification_policy FROM subscriptions WHERE owner IN (${placeholders}) ORDER BY subscription_id`,
+      `SELECT subscription_id, owner, query, notification_policy FROM subscriptions WHERE owner IN (${placeholders}) AND ended_at IS NULL ORDER BY subscription_id`,
     ).all(...owners);
     const byOwner = {};
     for (const row of rows) (byOwner[row.owner] ||= []).push(row);
     return byOwner;
   }
 
-  removeSubscription(subscriptionId) {
-    const removed = this._deleteSubscription.run(subscriptionId).changes > 0;
-    if (removed) this._resolvableSubscriptionWiretapCache = null;
-    return removed;
+  // Ending is idempotent by construction: the UPDATE carries `ended_at IS NULL`,
+  // so a second unsubscribe changes nothing and reports false rather than
+  // overwriting the moment the first one recorded.
+  endSubscription(subscriptionId, at = new Date().toISOString()) {
+    const ended = this._endSubscription.run(at, subscriptionId).changes > 0;
+    if (ended) this._resolvableSubscriptionWiretapCache = null;
+    return ended;
   }
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd

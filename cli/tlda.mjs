@@ -4016,7 +4016,7 @@ export async function runFleetSpawn(spawnArgs, {
       result = await spawn(params)
     } catch (e) {
       if (preallocatedAgentId) {
-        await ledger.delete(preallocatedAgentId).catch(cleanupError => {
+        await ledger.markDead(preallocatedAgentId).catch(cleanupError => {
           console.error(`warning: failed to clean preallocated grant for ${preallocatedAgentId}: ${cleanupError.message}`)
         })
       }
@@ -4266,7 +4266,7 @@ export async function bindDoctorYoloDurableSeat(launched, {
     }
     if (seededGrant) {
       try {
-        await permissionLedger.delete(launched.fleetId)
+        await permissionLedger.markDead(launched.fleetId)
       } catch (e) {
         cleanupError ||= e
       }
