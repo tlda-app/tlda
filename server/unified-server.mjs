@@ -1135,6 +1135,19 @@ async function reanimateAgent(agentQuery) {
     throw err
   }
 
+  // Clearing `dead` IS the reanimate. It is the explicit request, it is honoured
+  // immediately, and nothing after this point un-clears it.
+  //
+  // Skip, 2026-08-19 03:27 EDT: "An agent should never be marked dead. Unless
+  // someone explicitly fucking requests that." And on this path specifically:
+  // "A failed reanimate is a failed wake … if you reanimate an agent and it
+  // doesn't work, on a process level, you have a fucking hibernating agent."
+  //
+  // So a wake that fails after this leaves a live row with no process, and that
+  // is not a new state to be afraid of — it is what `hibernating` already means.
+  // The `markDead` that used to sit in the catch below was an unrequested write
+  // of the one flag only a request may set, and it undid what the caller had
+  // just asked for.
   const revived = await fleetStore.markAlive(before.id)
   markAgentNotAlive(before.id, { source: 'reanimate', reason: 'dead bit cleared; waking agent' })
   broadcastState(before.id)
@@ -1145,10 +1158,22 @@ async function reanimateAgent(agentQuery) {
       throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
     }
   } catch (e) {
-    await fleetStore.markDead(before.id)
-    markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake failed: ${e.message}` })
+    // Skip's words, and both halves in his order: what failed, then what state
+    // you are in. "the wake phase of the reanimate failed. Agent left
+    // hibernating." The second sentence is the one that saves the caller from
+    // guessing at the consequence — it says the next verb is `wake` without
+    // requiring them to know the model.
+    //
+    // "Hibernating" is asserted without a qualifier because the route survives:
+    // `markDead` does not touch `agent_daemon_routes` (only `removeAgent` does),
+    // and `reanimate` refuses to start at all without a route. So this agent is
+    // addressable and reachable, which is what hibernating means.
+    markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake phase failed: ${e.message}` })
     broadcastState(before.id)
-    throw e
+    throw new Error(
+      `the wake phase of the reanimate failed for ${before.friendly_name || before.id}. ` +
+      `Agent left hibernating: ${e.message}`
+    )
   }
   const nextSeat = await waitForAgentDaemonRoute(before.id)
   if (!nextSeat?.daemon_key) throw new Error(`reanimate for ${before.id} did not establish a daemon route`)
@@ -1156,17 +1181,19 @@ async function reanimateAgent(agentQuery) {
   try {
     await sendReanimateNoticeWithRetry(before.id, revived, nextSeat, noticeText)
   } catch (e) {
-    let killError = null
-    try {
-      await sendDaemonDurable(nextSeat.daemon_key, 'kill-session', terminalRpcPayload(revived, nextSeat))
-    } catch (killErr) {
-      killError = killErr
-    }
-    await fleetStore.markDead(before.id)
+    // A notice that did not land does not kill the agent it was about.
+    //
+    // This used to kill the session and mark the row dead — an undo of the whole
+    // reanimate because its last, least important step failed. Both halves are
+    // now wrong. Marking dead is the inferred death the rule forbids, and the
+    // kill would leave a row marked alive with no process behind it, which is
+    // the same phantom from the other side.
+    //
+    // The agent is up and reachable. What failed is that it was not told it had
+    // been reanimated, and that is what the caller is told.
     markAgentNotAlive(before.id, { source: 'reanimate', reason: `notice failed: ${e.message}` })
     broadcastState(before.id)
-    const suffix = killError ? `; also failed to kill resumed session: ${killError.message}` : ''
-    throw new Error(`reanimate notice failed after wake; agent left dead${suffix}: ${e.message}`)
+    throw new Error(`reanimate woke ${before.friendly_name || before.id} and it is running, but the return notice failed: ${e.message}`)
   }
   await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore.insertEventRecord({
     type: 'lifecycle',
