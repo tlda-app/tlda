@@ -17,7 +17,10 @@ export type ReadabilityProfile = {
 export type ReadabilityProfiles = Record<string, Partial<ReadabilityProfile>>
 
 export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
-  fontSize: 11,
+  // Skip, 2026-08-18: "if 14 is standard, let's use 14" — "let's just do
+  // standard shit." He reads at 13 himself and did not want that to become the
+  // default; where a conventional value exists it wins over his personal one.
+  fontSize: 14,
   lineHeight: 1.5,
   touchTarget: 28,
   faint: false,
@@ -31,8 +34,15 @@ export const DEFAULT_READABILITY_PROFILE: ReadabilityProfile = {
   // 1:1 screen px, so at 0.54/0.66 a 13" Air M2 was left 287px for the page and
   // rendered it at 36% of its width, against 61% on Skip's own larger screen.
   // The document is the point, so the aspects give it back the difference.
+  //
+  // chatAspect is Skip's own setting, read off his settings panel on the M2 Air
+  // rather than derived: he runs 0.8 and has been doing so for long enough to
+  // call the default "too narrow". Skip, 2026-08-18: "what I'm using for my
+  // three column layout in my settings is 70% height, aspect ratio point eight."
+  // The other three here already match what he runs, so this is the one value
+  // between a first-time reader and the layout the expert user chose.
   railAspect: 0.40,
-  chatAspect: 0.50,
+  chatAspect: 0.80,
   marginAspect: 0.06,
   agentsFrac: 0.4,
   nudgeStrength: 1,
