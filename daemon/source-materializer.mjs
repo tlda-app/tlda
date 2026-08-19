@@ -68,7 +68,28 @@ function localHash(path) {
   return existsSync(path) ? hash(readFileSync(path)) : null
 }
 
-export function createSourceMaterializer({ journalPath, fault = null } = {}) {
+/**
+ * `mayLandNow` is **the timing rule, and it is deliberately one predicate with
+ * one call site.**
+ *
+ * Skip, 05:18: *"the subtlety is you don't want, like, mid keystroke... just
+ * wait for the fucking file to — just find a moment. It's like if agents are
+ * editing, then you can just do whatever."* So the agent case is *now* and the
+ * human case waits.
+ *
+ * **The agent case is built; the human case is not, and no interval is chosen
+ * here on purpose.** Measuring the daemon side established that the obvious
+ * rule is wrong: the daemon cannot see whether an editor's buffer is dirty —
+ * that lives in the editor's memory — so disk-quiet is not idleness. Without
+ * autosave a paragraph typed into an unsaved buffer produces no disk activity
+ * at all, and a settle timer fires exactly mid-sentence. The observably safe
+ * moment is just AFTER A SAVE rather than after a silence.
+ *
+ * A configured number encoding the wrong rule is worse than an unbuilt one: it
+ * reads as a decision and gets tuned instead of replaced. So this stays `() =>
+ * true` until the rule is settled, and settling it is a change to one function.
+ */
+export function createSourceMaterializer({ journalPath, fault = null, mergeIntoWorkingCopy = null, commitWorkingCopy = null, baseBytes = null, mayLandNow = () => true } = {}) {
   if (!journalPath) throw new Error('journalPath is required')
 
   function journal() {
@@ -261,15 +282,46 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
     if (pathRecord.action === 'change') {
       if (currentHash === pathRecord.targetHash) return complete()
       // The local file has moved off the base this revision expects, so the
-      // person owning that checkout is editing it right now. Report the
-      // conflict and leave their file alone: writing both copies in with
-      // markers destroys the text they are mid-sentence in, and on 2026-08-17
-      // it did so three times to a paper being dictated into, once wrapping a
-      // 282KB document into a 564KB whole-file conflict. The conflict is
-      // already surfaced to the person by the source-sync status; the file is
-      // not the place to report it.
+      // person owning that checkout has been editing it.
       if (pending || currentHash !== pathRecord.baseHash) {
-        return conflict(pending ? 'outbound-edit-pending' : 'local-change-conflict')
+        // **Commit the working copy, then merge.** Skip, 05:14: *"if you have
+        // to do a merge, into a working copy that isn't committed, commit the
+        // fucking working copy and do a fucking merge."*
+        //
+        // Committing first is what makes the merge safe rather than brave:
+        // whatever was on disk is recoverable from a commit before a byte is
+        // touched, so the worst case stops being "their text is gone" and
+        // becomes "their text is one command away". It goes onto the daemon's
+        // own ref rather than the author's branch -- we are a guest in that
+        // repository, and moving somebody's branch under them is not ours to do.
+        //
+        // What does NOT change is the conflicted case. A three-way that comes
+        // back with markers still leaves the file alone, because writing both
+        // copies in destroyed text being dictated into three times on
+        // 2026-08-17, once wrapping a 282KB document into a 564KB whole-file
+        // conflict. Merge when it is mechanical; refuse when it is a judgement.
+        // The one call site. A `false` here is "not now", never "never": the
+        // path stays conflicted, so the next settle retries it.
+        if (!mayLandNow({ path: pathRecord.path, sourceDir: record.sourceDir })) {
+          return conflict('waiting-for-a-quiet-moment')
+        }
+        const merged = mergeIntoWorkingCopy && baseBytes
+          ? mergeIntoWorkingCopy({
+            path: pathRecord.path,
+            base: baseBytes(pathRecord.baseHash),
+            ours: existsSync(full) ? readFileSync(full) : null,
+            theirs: target,
+          })
+          : null
+        if (!merged) return conflict(pending ? 'outbound-edit-pending' : 'local-change-conflict')
+        commitWorkingCopy?.(record.sourceDir, `before merging ${pathRecord.path}`)
+        atomicWrite(full, merged)
+        pathRecord.merged = true
+        // The readback checks the MERGED bytes rather than the target: after a
+        // merge the file is deliberately neither side, so asserting it equals
+        // the target would fail on every successful merge.
+        if (localHash(full) !== hash(merged)) throw new Error(`Merged readback failed for ${pathRecord.path}`)
+        return complete()
       }
       atomicWrite(full, target)
       if (localHash(full) !== pathRecord.targetHash) throw new Error(`Target readback failed for ${pathRecord.path}`)
@@ -312,7 +364,13 @@ export function createSourceMaterializer({ journalPath, fault = null } = {}) {
         persistPath(state, record, null, 'terminal-conflict')
         return record
       }
+      // **A merged path is deliberately neither side**, so it cannot be
+      // required to equal the target. Its own readback already checked it
+      // against the merged bytes; asserting the target here would fail on every
+      // successful merge, which is the whole of what his ruling asks for.
+      const mergedPaths = new Set(record.paths.filter(item => item.merged).map(item => item.path))
       for (const entry of record.targetManifest) {
+        if (mergedPaths.has(entry.path)) continue
         if (localHash(safePath(record.sourceDir, entry.path)) !== entry.sha256) {
           throw new Error(`Final manifest readback failed for ${entry.path}`)
         }
