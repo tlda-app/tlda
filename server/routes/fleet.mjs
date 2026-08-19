@@ -454,7 +454,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/agents/:id/mark-dead ---
-  // Called by the daemon when it detects an agent's process is gone.
+  // An explicit request to retire an agent. `tlda agent dismiss` is the human
+  // caller; the other two are launch paths retiring a shell whose process they
+  // just terminated.
+  //
+  // It previously said "Called by the daemon when it detects an agent's process
+  // is gone." Nothing in the daemon calls this route, and death is never
+  // inferred from an absent process — Skip, 2026-08-19 03:27 EDT: "An agent
+  // should never be marked dead. Unless someone explicitly fucking requests
+  // that." The comment described the one behaviour this endpoint must not have,
+  // so an audit that read comments would report a defect that is not there.
   router.post('/api/agents/:id/mark-dead', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
@@ -1315,8 +1324,26 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   router.post('/api/agents/:agent/wake', async (req, res) => {
     const agent = await fleetStore?.findAgent?.(req.params.agent)
-    if (!agent || agent.dead || agent.human) {
+    if (!agent || agent.human) {
       res.status(404).json({ ok: false, error: `agent not found: ${req.params.agent}` })
+      return
+    }
+    // Wake refuses the dead, and says so. Skip, 2026-08-19 03:27 EDT: "wake
+    // should fail for dead agents. W a k e. That's why there's a different
+    // fucking verb."
+    //
+    // It already refused them — as `agent not found`, which is true of nothing
+    // and names no next action. Three conditions shared one message, so a caller
+    // waking a dead agent was told it did not exist and had no way to learn that
+    // `reanimate` is the verb it wanted. Same rule as `checkNameAvailable`: one
+    // gate, one error shape, and the message says which of the cases it is,
+    // because the next action differs.
+    if (agent.dead) {
+      res.status(409).json({
+        ok: false,
+        code: 'agent_dead',
+        error: `${agent.friendly_name || agent.id} is dead; wake is for living agents. Use reanimate.`,
+      })
       return
     }
     const seat = await agentRouteOrHttpError(res, agent)
