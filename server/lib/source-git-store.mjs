@@ -23,7 +23,7 @@
 // when `activeTargetRevision` was a field in a JSON file and had to be edited
 // by hand to clear it.
 import { spawn } from 'node:child_process'
-import { readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 
 const NULL_SHA = '0000000000000000000000000000000000000000'
 
@@ -111,6 +111,48 @@ export function createSourceGitStore({ gitDir }) {
   }
 
   /**
+   * Write many blobs in ONE spawn, in order.
+   *
+   * **The budget is a spawn budget.** A subprocess costs ~130-150ms on this box
+   * under load and everything git actually does is free next to it, so
+   * `writeBlob` per file made the accept linear in a quantity that should not
+   * have appeared in the cost at all -- the same harness importing 2,040 blobs
+   * one at a time took six minutes.
+   *
+   * `--stdin-paths` reads PATHS rather than content, so in-memory bytes go
+   * through a temp directory: N writes plus one spawn, against N spawns. A file
+   * write is microseconds and a spawn is milliseconds, so this is a win from
+   * the second blob onward and the single-blob case keeps the direct `--stdin`
+   * form with no temp file at all.
+   */
+  async function writeBlobs(contents) {
+    const buffers = contents.map(content => (Buffer.isBuffer(content) ? content : Buffer.from(String(content))))
+    if (buffers.length === 0) return []
+    if (buffers.length === 1) return [await writeBlob(buffers[0])]
+    const dir = `${gitDir}/tlda-blobs-${process.pid}-${Date.now()}`
+    try {
+      await mkdir(dir, { recursive: true })
+      const paths = []
+      for (const [index, buffer] of buffers.entries()) {
+        const file = `${dir}/${index}`
+        await writeFile(file, buffer)
+        paths.push(file)
+      }
+      const out = await git(['hash-object', '-w', '--stdin-paths'], { input: `${paths.join('\n')}\n` })
+      const shas = out.split('\n').map(line => line.trim()).filter(Boolean)
+      if (shas.length !== buffers.length) {
+        throw new Error(`hash-object returned ${shas.length} shas for ${buffers.length} blobs`)
+      }
+      return shas
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {
+        // Best effort on a temp directory; the blobs are already in the object
+        // store and a leftover directory is litter rather than a failure.
+      })
+    }
+  }
+
+  /**
    * Accept a revision: build its tree from `files` (path → bytes) applied over
    * `parent`, and commit it. Returns the commit sha, which is the revision id.
    *
@@ -119,14 +161,20 @@ export function createSourceGitStore({ gitDir }) {
    * store did not have and the reason it grew without bound.
    */
   async function acceptRevision({ project, parent = null, files = [], deleted = [], message = 'source revision', author = null, replaceTree = false }) {
-    const index = []
     for (const file of files) {
       if (!file || typeof file.path !== 'string') throw new Error('Every file needs a path')
-      // A caller that already hashed the bytes passes the blob sha instead.
-      // Re-writing the blob would be identical work for an identical result.
-      const sha = file.sha || await writeBlob(file.content)
-      index.push(`100644 blob ${sha}\t${file.path}`)
     }
+    // **One spawn for every blob, not one spawn per blob.**
+    //
+    // A caller that already hashed the bytes passes the blob sha instead, and
+    // re-writing it would be identical work for an identical result -- so only
+    // the un-hashed ones are written, and they go together. On a book this is
+    // the difference between a constant cost and a linear one in the quantity
+    // that dominates: spawns.
+    const needsWriting = files.filter(file => !file.sha)
+    const written = await writeBlobs(needsWriting.map(file => file.content))
+    const shaFor = new Map(needsWriting.map((file, i) => [file, written[i]]))
+    const index = files.map(file => `100644 blob ${file.sha || shaFor.get(file)}\t${file.path}`)
     for (const path of deleted) index.push(`0 ${NULL_SHA}\t${path}`)
 
     // `replaceTree` builds the tree from `files` alone rather than over the
@@ -156,7 +204,14 @@ export function createSourceGitStore({ gitDir }) {
       if (indexLines.length) await g(['update-index', '--index-info'], indexLines.join('\n') + '\n')
       return (await g(['write-tree'])).trim()
     } finally {
-      await run('rm', ['-f', indexFile]).catch(() => {})
+      // `fs.rm`, not a subprocess. A spawn costs ~130-150ms on this box under
+      // load -- measured -- and everything git actually does is free next to
+      // that, so a whole process to unlink one temp file was a sixth of the
+      // accept's cost doing nothing. `rm` was already imported two lines above.
+      await rm(indexFile, { force: true }).catch(() => {
+        // Best effort on a temp index. A leftover file is litter; reporting it
+        // would replace the accept's result with a cleanup error.
+      })
     }
   }
 
@@ -379,6 +434,7 @@ export function createSourceGitStore({ gitDir }) {
     fastForward,
     diffRevisions,
     writeBlob,
+    writeBlobs,
     blobSize,
     readBlobBytes,
     readCommitMeta,
