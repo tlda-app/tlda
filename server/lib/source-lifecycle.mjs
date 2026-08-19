@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { isTextSourcePath, normalizeSourceManifest } from '../../shared/source-manifest.mjs'
+import { latexDependencyClosure } from '../../shared/latex-deps.mjs'
 import { createSourceGitStore } from './source-git-store.mjs'
 import { gitBlobId } from '../../shared/git-blob-id.mjs'
 
@@ -706,6 +707,58 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
   // avoids: on a large book that is three full projects resident to classify a
   // handful of edited files.
   /**
+   * §7.3's guard: paths this revision REMOVED that the new tree still references.
+   *
+   * > *"Refuse a revision in which a path that was in the previous tree is
+   * > absent from the new tree while the new tree still references it."*
+   *
+   * **The server computes this itself, which is the whole point.** It holds both
+   * trees and the referencing documents are IN the tree, so it re-derives the
+   * closure rather than trusting a claim the daemon made about its own work — a
+   * guard inside the component it guards is not a guard (§7.5).
+   *
+   * **The construction is one trick.** Run the closure over the new tree with an
+   * oracle that pretends the removed paths are still present. Anything removed
+   * that still turns up in the closure is, by definition, still referenced.
+   * That answers every row of §7.3's table without a second mechanism:
+   *
+   *   cut a section, `\input` and file both go   → not reached → accept
+   *   `git rm` a figure the paper still includes → reached     → REFUSE
+   *   referenced and absent from BOTH trees      → never in prev → accept,
+   *                                                a broken build, not a refusal
+   *
+   * **Two honest limits.** The roots are the project's main file rather than
+   * §4's derived `roots(R)`, which does not exist yet — so a second document
+   * nothing includes is not a root here. And this runs for LaTeX only: the
+   * markdown closure reads a filesystem, and there is no tree-backed oracle for
+   * it, so a markdown project is not guarded rather than being guarded wrongly.
+   */
+  async function referencedButRemoved(previous, proposed) {
+    const mainFile = String(context?.mainFile || '')
+    if (!/\.tex$/i.test(mainFile) || !previous) return []
+    const store = await sourceGit()
+    const [before, after] = await Promise.all([store.readManifest(previous), store.readManifest(proposed)])
+    const kept = new Set(after.map(entry => entry.path))
+    const removed = before.map(entry => entry.path).filter(path => !kept.has(path))
+    if (removed.length === 0) return []
+
+    // One spawn per tree rather than one per file. Only text can reference
+    // anything, so a book's figures are never read.
+    const readable = after.map(entry => entry.path).filter(isTextSourcePath)
+    const [current, gone] = await Promise.all([
+      store.readRevisionFiles(proposed, readable),
+      store.readRevisionFiles(previous, removed.filter(isTextSourcePath)),
+    ])
+    const removedSet = new Set(removed)
+    const closure = latexDependencyClosure({
+      roots: [mainFile],
+      exists: path => kept.has(path) || removedSet.has(path),
+      read: path => (current.get(path) ?? gone.get(path) ?? Buffer.alloc(0)).toString('utf8'),
+    })
+    return removed.filter(path => closure.files.includes(path))
+  }
+
+  /**
    * Rebase a refused proposal onto the head that beat it, on the SERVER.
    *
    * Returns the new revision id, or null when a path needs a judgement — which
@@ -972,6 +1025,28 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const store = await sourceGit()
       const proposed = await store.ingestBundle(project, bundlePath)
       if (!proposed) return { ok: false, status: 'empty-bundle' }
+      // **§7.3, and it runs before anything is taken.** A revision that removes a
+      // file the paper still references is refused rather than wedged: this is
+      // what replaces the wedge, and it is the server's check rather than the
+      // daemon's because a guard inside the component it guards is not a guard.
+      //
+      // Damped, not surfaced (§7.3, 1069): a settle window can split an ordinary
+      // two-step edit -- delete `sec3.tex`, remove `\input{sec3}` four seconds
+      // later -- so revision 1 refuses and revision 2 self-heals with no data at
+      // risk. `damped` says so, and the daemon surfaces it only if the NEXT
+      // settle reproduces it. An alarm that fires constantly and an alarm that
+      // never clears are the same alarm.
+      const orphaned = await referencedButRemoved(await store.head(project), proposed)
+      if (orphaned.length > 0) {
+        await store.markRefused(project, proposed, await store.refused(project))
+        return {
+          ok: false,
+          status: 'references-a-removed-path',
+          damped: true,
+          removedButReferenced: orphaned,
+          refusedRevision: proposed,
+        }
+      }
       let result = await store.fastForward(project, proposed)
       if (!result.ok) {
         // **The server rebases; it refuses only when a person has to decide.**

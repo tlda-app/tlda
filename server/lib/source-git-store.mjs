@@ -282,6 +282,45 @@ export function createSourceGitStore({ gitDir }) {
   }
 
   /** One file's bytes out of one revision, without materialising the rest. */
+  /**
+   * Many blobs from one revision, in ONE spawn.
+   *
+   * **The spawn budget again.** A guard that re-derives the closure has to read
+   * every text file in the tree, and `readRevisionFile` per path would put a
+   * ~130-150ms subprocess against each one — linear in file count on the accept
+   * path, which is the cost this store exists to remove.
+   *
+   * `cat-file --batch` reads `<rev>:<path>` lines and answers
+   * `<sha> <type> <size>\n<bytes>\n` for each, in order. A path the tree does
+   * not hold answers `<request> missing` and is returned as null rather than
+   * throwing: absence is an ordinary answer here, not a failure.
+   */
+  async function readRevisionFiles(revision, paths) {
+    const wanted = [...paths]
+    if (wanted.length === 0) return new Map()
+    const out = await run('git', ['--git-dir', gitDir, 'cat-file', '--batch'], {
+      input: `${wanted.map(path => `${revision}:${path}`).join('\n')}\n`,
+    })
+    const result = new Map()
+    let offset = 0
+    for (const path of wanted) {
+      const newline = out.indexOf(0x0a, offset)
+      if (newline === -1) break
+      const header = out.subarray(offset, newline).toString('utf8')
+      if (header.endsWith(' missing')) {
+        result.set(path, null)
+        offset = newline + 1
+        continue
+      }
+      const size = Number(header.split(' ')[2])
+      const start = newline + 1
+      result.set(path, out.subarray(start, start + size))
+      // git writes a newline after the payload as well as after the header.
+      offset = start + size + 1
+    }
+    return result
+  }
+
   async function readRevisionFile(revision, path) {
     try {
       return await git(['cat-file', 'blob', `${revision}:${path}`], { buffer: true })
@@ -474,6 +513,7 @@ export function createSourceGitStore({ gitDir }) {
     acceptRevision,
     readManifest,
     readRevisionFile,
+    readRevisionFiles,
     isAncestor,
     mergeBase,
     ingestBundle,
