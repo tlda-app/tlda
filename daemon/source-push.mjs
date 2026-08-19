@@ -1,7 +1,7 @@
 /**
  * The wire between a checkout's proposal and the server's accept.
  *
- * The daemon commits what changed (`daemon/source-proposal.mjs`), bundles what
+ * The daemon commits the project's members (`daemon/source-proposal.mjs`), bundles what
  * the server does not have, and POSTs the bytes. The server accepts iff the
  * commit fast-forwards. **There is no retry state machine and nothing to get
  * stuck in**: a refusal comes back naming the head it was refused against, the
@@ -39,15 +39,28 @@ export function createSourcePush({ proposal, project, server, token, fetchImpl =
   }
 
   /**
-   * Propose `changed` and `deleted` to the server.
+   * Propose the project's members to the server.
    *
    * Returns the accept result, or a refusal that survived a rebase — which
    * means somebody else landed twice while we were writing. That is reported
    * rather than looped on: the next change re-proposes anyway, and a loop here
    * would be a retry machine with no one watching it.
    */
-  async function push({ changed = [], deleted = [], editedBy = null, sourceBindingId = null, requestId = null } = {}) {
-    const proposed = await proposal.proposeCommit({ changed, deleted })
+  /**
+   * `members` is the project's COMPLETE member set, not what changed.
+   *
+   * The tree is the manifest, so shedding is a smaller tree and there is
+   * nothing to name as deleted. The caller owes one property this file cannot
+   * check: the set must be computed from the commit's tree rather than from the
+   * moving disk.
+   */
+  async function push({ members = null, changed = [], deleted = [], editedBy = null, sourceBindingId = null, requestId = null } = {}) {
+    // A caller with a closure passes `members`. A caller that only knows what
+    // moved hands over the delta and the member set is derived FROM THE LAST
+    // COMMIT'S TREE -- see `membersFrom`, which is the bridge until the closure
+    // exists. Either way what reaches the proposal is the complete set.
+    const memberSet = members || await proposal.membersFrom(await proposal.local() || await proposal.held(), { changed, deleted })
+    const proposed = await proposal.proposeCommit({ members: memberSet })
     if (!proposed.changed) return { ok: true, status: 'nothing-to-propose', sourceRevision: proposed.commit }
 
     // What we believe the server has. `held` is what the mirror last applied
@@ -91,7 +104,29 @@ export function createSourcePush({ proposal, project, server, token, fetchImpl =
       if (!(await proposal.hasCommit(head))) {
         throw new Error(`${project}: the server refused against ${head.slice(0, 7)} and did not send it`)
       }
-      await proposal.rebaseOnto(head, { changed, deleted })
+      // **Their member set, not ours.** A path they added is in their tree and
+      // not in ours, and under complete-tree semantics a member we do not name
+      // is a member we DELETE. Deriving from their head is what stops our
+      // proposal from removing the file they just added.
+      const rebased = await proposal.rebaseOnto(head, {
+        members: members || await proposal.membersFrom(head, { changed, deleted }),
+      })
+      // **The settle loop holds while any member path is conflicted**, and this
+      // is the clause that carries the guarantee rather than computes anything.
+      // The merge brought the working copy forward; where it could not, two
+      // people changed the same lines and the markers are in the file. Proposing
+      // now would pick a side silently, which is the failure the merge exists to
+      // prevent -- so the change stays here, with the person who can resolve it.
+      if (rebased.status === 'conflicted') {
+        log?.warn?.(`${project}: holding at ${head.slice(0, 7)} — ${rebased.conflicted.length} path(s) need a person`)
+        return {
+          ok: false,
+          status: 'conflicted',
+          currentRevision: head,
+          conflicted: rebased.conflicted,
+          attempts: attempt,
+        }
+      }
       have = head
     }
 

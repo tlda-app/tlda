@@ -2,11 +2,12 @@ import { spawn } from 'node:child_process'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createSourceGitStore } from '../server/lib/source-git-store.mjs'
+import { classifyThreeWay } from '../server/lib/source-lifecycle.mjs'
 
 /**
  * A checkout proposing a commit to the server.
  *
- * The daemon commits what changed onto `refs/tlda/local/<project>` in the
+ * The daemon commits the project's members onto `refs/tlda/local/<project>` in the
  * author's own repository, bundles what the server does not have, and POSTs it.
  * The server accepts iff it fast-forwards; a non-fast-forward comes back and the
  * daemon rebases onto the head it names and proposes again.
@@ -14,24 +15,25 @@ import { createSourceGitStore } from '../server/lib/source-git-store.mjs'
  * **The invariant this exists to hold**, and the reason it is built the way it
  * is rather than from a manifest:
  *
- *   The tree committed for a revision is the PREVIOUS tree, plus what was
- *   added, minus what was OBSERVED being removed. A scan is evidence for
- *   adding. It is never, on its own, evidence for removing.
+ *   The tree committed for a revision IS the project's membership. There is no
+ *   second description of what belongs, so nothing can disagree with the bytes.
  *
- * `acceptRevision` is called **without `replaceTree`**, so the tree is built
- * over the parent's and every path nobody mentions is inherited unchanged. That
- * makes the invariant structural rather than a rule the caller has to remember:
- * a caller that forgets a file cannot delete it, because it never had to name
- * it. `bin/a-tree-is-not-a-scan-test.mjs` demonstrates the other way round —
- * `replaceTree: true` handed an incomplete set is a silent mass deletion — and
- * that is the call this deliberately does not make.
+ * `acceptRevision` is called **with `replaceTree`**: the proposal carries the
+ * project's complete member set, so the tree IS the manifest and a path that
+ * left the paper is absent because nobody named it.
  *
- * It matters here more than anywhere. The reference closure that decides what
- * the daemon watches cannot distinguish *deleted* from *mid-rename*, or a failed
- * read from a file with no references — `edits-dont-reach-the-file` demonstrated
- * both on fixtures one permission bit apart. Every one of those failures is an
- * inability to observe. Inheriting the parent tree means none of them can
- * remove anything.
+ * **This reverses an earlier invariant in this file, and the reversal is the
+ * design's, not a relaxation.** The old form built over the parent's tree so
+ * that a caller which forgot a path could not delete it — safe, and it made
+ * *"we manually remove roots and then automatically delete unreferenced files"*
+ * unimplementable, because automatic removal is exactly what it refuses.
+ *
+ * **What replaces that safety is where the member set comes from.** The closure
+ * is computed from the COMMIT'S TREE, never from the moving disk: a scan of a
+ * filesystem being written underneath it can shrink for reasons that are not
+ * edits, and a scan cannot tell *deleted* from *mid-rename* or from a failed
+ * read. A closure over a commit has no such failure mode. **That property is
+ * the caller's to hold and this file cannot check it.**
  */
 export function createSourceProposal({ sourceDir, project, log = null }) {
   if (!sourceDir) throw new Error('createSourceProposal requires sourceDir')
@@ -63,6 +65,39 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
     return (await git(['rev-parse', `${commit}^{tree}`])).toString('utf8').trim()
   }
 
+  // The bytes a commit holds at a path, or null when the commit does not hold
+  // it. **Null is a fact here, not a failure** -- absence from a tree is how
+  // this design expresses "not a member", so the merge below reads a missing
+  // path as a deletion and a throw would turn every added file into an error.
+  async function readBlobAt(commit, path) {
+    if (!commit) return null
+    try {
+      return await git(['cat-file', 'blob', `${commit}:${path}`])
+    } catch {
+      return null
+    }
+  }
+
+  async function mergeBase(a, b) {
+    try {
+      return (await git(['merge-base', a, b])).toString('utf8').trim() || null
+    } catch {
+      return null
+    }
+  }
+
+  async function readWorkingCopy(path) {
+    try {
+      return await readFile(join(sourceDir, path))
+    } catch (error) {
+      if (error?.code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  const isBinary = buffer => buffer != null && buffer.includes(0)
+  const same = (a, b) => (a == null && b == null) || (a != null && b != null && a.equals(b))
+
   async function readRef(ref) {
     try {
       return (await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])).toString('utf8').trim() || null
@@ -72,20 +107,37 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
   }
 
   /**
-   * Commit `changed` and `deleted` over whatever this checkout holds.
+   * Commit the project's complete member set as it stands.
    *
-   * `changed` is paths whose bytes are read from disk now; `deleted` is paths
-   * the watcher **observed** being removed. A path in neither is inherited from
-   * the parent tree without being read, which is why a scan that misses a file
-   * costs a late push rather than a deletion.
+   * **`members` is the whole project, not a delta.** The tree IS the manifest,
+   * so a path that left the paper is absent because nobody named it — and
+   * shedding is just a smaller tree rather than a mechanism. That is what makes
+   * the wedge class stop existing: there is no second description of membership
+   * to disagree with the bytes, so a member with no content and a phantom the
+   * server holds and the daemon forgot are both unrepresentable.
+   *
+   * **This replaces the tree-over-parent form, and the replacement is
+   * deliberate rather than a relaxation.** The old shape made deletion
+   * inexpressible — a caller that forgot a path could not remove it — which was
+   * safe and cost the feature Skip asked for: *"we manually remove roots and
+   * then automatically delete unreferenced files."* Automatic removal of an
+   * unreferenced file is exactly what a tree-over-parent proposal refuses to do.
+   *
+   * **What makes complete-tree safe is where the member set comes from: the
+   * COMMIT'S TREE, never the moving disk.** A closure computed from a
+   * filesystem being written underneath it can shrink for reasons that are not
+   * edits; a closure computed from a commit cannot. The caller owes that
+   * property — this function cannot check it — and it is the whole of why the
+   * old invariant could be retired without reinstating the phantom class.
    */
-  async function proposeCommit({ changed = [], deleted = [], message = 'source revision', onto = null }) {
+  async function proposeCommit({ members = [], message = 'source revision', onto = null }) {
     const parent = onto || (await readRef(LOCAL_REF)) || (await readRef(HELD_REF))
     const files = []
-    for (const rel of changed) {
+    for (const rel of members) {
       // Read failures throw rather than being skipped. A file we cannot read is
-      // not a file with no content, and the push not happening is recoverable
-      // where a push that silently omits it is not.
+      // not a file with no content — and under complete-tree semantics that
+      // distinction got sharper, not softer: a skipped read is now a DELETION,
+      // because the path simply would not be in the tree.
       const content = await readFile(join(sourceDir, rel))
       files.push({ path: rel, content })
     }
@@ -93,9 +145,11 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
       project,
       parent,
       files,
-      deleted,
       message,
-      // Deliberately absent: replaceTree. The tree is built OVER the parent's.
+      // The tree is built from `files` alone. `deleted` is gone with it: under
+      // a complete tree there is nothing to name as removed, because absence is
+      // the removal.
+      replaceTree: true,
     })
     // **Compare TREES, not commits.** `commit-tree` mints a fresh sha every
     // time -- the timestamp is in it -- so `commit === parent` is never true
@@ -104,13 +158,40 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
     // and all six post-accept effects fire -- mirror, build, replica fan-out --
     // for a change that does not exist. A watcher that fires on a touched file
     // would have driven a build storm on his paper.
+    //
+    // Under complete-tree semantics this guard is load-bearing rather than
+    // defensive: every settle rebuilds the whole tree, so an unchanged project
+    // proposes an identical tree every time the watcher fires.
     if (parent && (await treeOf(commit)) === (await treeOf(parent))) {
       return { commit: parent, parent, changed: false }
     }
     const expected = await readRef(LOCAL_REF)
     await git(['update-ref', LOCAL_REF, commit, ...(expected ? [expected] : [])])
-    log?.info?.(`${project}: proposing ${commit.slice(0, 7)} (${changed.length} changed, ${deleted.length} deleted)`)
+    log?.info?.(`${project}: proposing ${commit.slice(0, 7)} (${members.length} members)`)
     return { commit, parent, changed: true }
+  }
+
+  /**
+   * The member set, derived from the last commit's tree plus what moved.
+   *
+   * **This is a bridge, and naming it as one matters.** The design's member set
+   * is the transitive closure of the declared roots, computed from the commit's
+   * tree — and that closure does not exist yet. Until it does, the members are
+   * *what the previous tree held, plus what changed, minus what was observed
+   * removed*, which reproduces today's behaviour through the complete-tree
+   * interface rather than changing it.
+   *
+   * **The property the design actually requires is already held here: the set
+   * comes from the TREE, not from the disk.** A scan of a filesystem being
+   * written underneath it can shrink for reasons that are not edits and cannot
+   * tell *deleted* from *mid-rename*; `readManifest` of a commit cannot. So
+   * when the closure lands it replaces the union-and-difference below, and
+   * nothing above or below this function has to move.
+   */
+  async function membersFrom(parent, { changed = [], deleted = [] }) {
+    const held = parent ? (await store.readManifest(parent)).map(entry => entry.path) : []
+    const removed = new Set(deleted)
+    return [...new Set([...held.filter(path => !removed.has(path)), ...changed])].sort()
   }
 
   /**
@@ -154,12 +235,14 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
    * state to get stuck in: the daemon holds the change, so the daemon is the one
    * that can move it.
    *
-   * It re-applies the SAME changed and deleted paths over the server's head —
-   * it does not reuse the tree we already built. Reusing that tree would take
-   * our whole view of the project and hand it back as a proposal, **silently
-   * discarding whatever the server accepted from anyone else in between.** The
-   * delta is ours; the base is theirs; that is what a rebase means and the
-   * distinction is the difference between a merge and a clobber.
+   * **It re-proposes our member set on THEIR head**, rather than re-parenting
+   * the tree we already built. Under complete-tree semantics that distinction
+   * is sharper than it was, not softer: our tree is the whole project, so
+   * handing it back on their head would discard whatever they accepted from
+   * anybody else — every path, not just the ones we touched.
+   *
+   * The members come from the caller because they come from the CLOSURE, and
+   * recomputing that is not this function's job. What it owes is the base.
    *
    * If re-applying conflicts with what the head now holds, that is a genuine
    * two-writer disagreement — but it cannot conflict here, because applying a
@@ -167,11 +250,140 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
    * somebody else made to the SAME path, which is why the server refused in the
    * first place and why the person is told rather than the machine deciding.
    */
-  async function rebaseOnto(head, { changed = [], deleted = [] }) {
+  /**
+   * Bring the working copy forward onto the head we were refused against.
+   *
+   * **This is the step that makes complete-tree semantics safe, and without it
+   * the rebase below is a clobber by construction.** Under a complete tree
+   * every member's bytes come from the working copy — including paths we never
+   * edited and whose content we are behind on. So re-proposing on their head
+   * without first taking their bytes hands back OUR stale copy of THEIR file
+   * and the server accepts it: their accepted paragraph is gone, with no error,
+   * no refusal and no marker. That is the failure this whole mechanism exists
+   * to prevent, arriving through the mechanism.
+   *
+   * The three sides are the design's: **base `applied`** — the revision this
+   * checkout last took, which is the only honest common ancestor — **ours** the
+   * working copy, **theirs** the head. Per member path:
+   *
+   * - only they moved it → take their bytes
+   * - only we moved it → keep ours
+   * - both moved it → `git merge-file`, and a clean result is written down
+   * - both moved it and it does not merge → **conflicted, and we hold**
+   *
+   * **Deletion is a side moving too**, because absence from a tree is how this
+   * design says "not a member". Their deletion of a file we did not touch
+   * removes it here; their deletion of a file we edited is a conflict rather
+   * than a silent choice between the two.
+   *
+   * **Binary files cannot be three-way merged and are not guessed at.** If both
+   * sides moved one, it conflicts and a person decides.
+   */
+  async function mergeOnto(head, { members = [] }) {
+    // **The design names the base `applied` — the revision this checkout last
+    // took — and `merge-base` COMPUTES that rather than replacing it.** Our
+    // local proposal is built on what we last took, so their head and our local
+    // meet exactly there, and git answers it from the graph instead of from a
+    // ref somebody has to have written.
+    //
+    // The distinction is not academic: `refs/tlda/shadow/HEAD` is the MIRROR's
+    // write, so it is unset in a checkout that has never had a revision
+    // delivered and stale in one whose mirror has failed. Reading it directly
+    // makes every path look like it has no common ancestor, which turns a
+    // one-sided edit into a conflict and stops the settle loop over nothing.
+    // `merge-base` degrades the other way: worst case it finds nothing, and
+    // nothing is what a genuinely unrelated history has.
+    const base = (await mergeBase(LOCAL_REF, head)) || await readRef(HELD_REF)
+    const merged = []
+    const taken = []
+    const removed = []
+    const conflicted = []
+
+    // **The member set alone cannot see a deletion, and that is the phantom
+    // class.** A path they removed is absent from their head, so it is not a
+    // member, so a loop over members never visits it — the proposal correctly
+    // drops it and the FILE STAYS ON DISK. The author then has a checkout
+    // holding a file the paper does not, which is what thirty phantom files
+    // looked like on `talk-opening`.
+    //
+    // So the walk is members ∪ what the base held. **Not the disk**: a file the
+    // author created and has not pushed is in no tree at all, and widening this
+    // to a scan would delete it. Base-held-and-gone is exactly the set somebody
+    // removed on purpose.
+    const held = base ? (await store.readManifest(base)).map(entry => entry.path) : []
+    const walk = [...new Set([...members, ...held])].sort()
+
+    for (const path of walk) {
+      const [baseContent, theirContent] = await Promise.all([readBlobAt(base, path), readBlobAt(head, path)])
+      const ourContent = await readWorkingCopy(path)
+
+      if (same(ourContent, theirContent)) continue
+      // We never moved it, so whatever they did to it is simply the truth.
+      if (same(baseContent, ourContent)) {
+        if (theirContent == null) {
+          await rm(join(sourceDir, path), { force: true })
+          removed.push(path)
+        } else {
+          await writeFile(join(sourceDir, path), theirContent)
+          taken.push(path)
+        }
+        continue
+      }
+      // They never moved it, so ours stands and there is nothing to write.
+      if (same(baseContent, theirContent)) continue
+
+      // Both sides moved it. A deletion against an edit is not a merge and not
+      // ours to settle -- one of the two people has to be told.
+      if (theirContent == null || ourContent == null || baseContent == null) {
+        conflicted.push({ path, reason: theirContent == null ? 'deleted-and-edited' : ourContent == null ? 'added-both-sides' : 'no-common-ancestor' })
+        continue
+      }
+      if (isBinary(baseContent) || isBinary(ourContent) || isBinary(theirContent)) {
+        conflicted.push({ path, reason: 'binary' })
+        continue
+      }
+
+      // `current` is what the project holds and `incoming` is our change --
+      // that is the order the marker labels are written for, so the person who
+      // opens this file in their own editor reads sides that name themselves.
+      const result = classifyThreeWay({
+        base: baseContent.toString('utf8'),
+        current: theirContent.toString('utf8'),
+        incoming: ourContent.toString('utf8'),
+      })
+      if (result.status === 'clean-rebase-candidate') {
+        await writeFile(join(sourceDir, path), result.merged)
+        merged.push(path)
+        continue
+      }
+      // A conflict is written down WITH ITS MARKERS. The settle loop holds, so
+      // nothing proposes this text -- but the person editing this checkout is
+      // the one who resolves it, and they resolve it in the file.
+      if (result.status === 'conflict') await writeFile(join(sourceDir, path), result.merged)
+      conflicted.push({ path, reason: result.status === 'conflict' ? 'conflict' : (result.error || 'classification-unavailable') })
+    }
+
+    if (conflicted.length) {
+      log?.warn?.(`${project}: holding — ${conflicted.length} member path(s) conflicted onto ${head.slice(0, 7)}: ${conflicted.map(item => item.path).join(', ')}`)
+    } else if (merged.length || taken.length || removed.length) {
+      log?.info?.(`${project}: brought forward onto ${head.slice(0, 7)} (${taken.length} taken, ${merged.length} merged, ${removed.length} removed)`)
+    }
+    return { conflicted, merged, taken, removed, base }
+  }
+
+  async function rebaseOnto(head, { members = [] }) {
     if (!head) throw new Error(`${project}: cannot rebase onto nothing`)
-    const result = await proposeCommit({ changed, deleted, onto: head, message: 'source revision' })
+    // **The merge comes first, and a conflict stops the re-proposal rather than
+    // colouring it.** A merge that resolves what it can and proposes anyway is
+    // the clobber again with more steps, so the one path that refuses to
+    // proceed is the one that carries the guarantee.
+    const brought = await mergeOnto(head, { members })
+    if (brought.conflicted.length) {
+      return { commit: null, parent: head, changed: false, status: 'conflicted', conflicted: brought.conflicted }
+    }
+    const result = await proposeCommit({ members, onto: head, message: 'source revision' })
     log?.info?.(`${project}: re-proposed on ${head.slice(0, 7)} as ${result.commit.slice(0, 7)}`)
-    return result
+    return { ...result, status: 'rebased', conflicted: [] }
   }
 
   /**
@@ -200,7 +412,9 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
 
   return {
     proposeCommit,
+    membersFrom,
     bundleSince,
+    mergeOnto,
     rebaseOnto,
     ingest,
     isAncestor,

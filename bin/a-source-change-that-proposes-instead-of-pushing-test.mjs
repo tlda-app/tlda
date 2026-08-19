@@ -94,7 +94,17 @@ try {
   writeFileSync(main, 'his revised prose\n')
   activeWatcher.emit('change', main)
 
-  const deadline = Date.now() + 10000
+  // **A deadline, widened because 10s was measuring the box rather than the
+  // code.** Measured 2026-08-19 on the Mini at load average 52: five green runs
+  // took 7.3–8.8s wall, so the old bound had ~1.5s of headroom and went red in
+  // a sequential suite while passing 3/3 standalone. That is a false negative
+  // arriving as a failed assertion about the daemon, which is the most
+  // expensive kind of flake here — somebody chases a proposal path that works.
+  //
+  // The assertion is unchanged: the change must reach the server. Only the
+  // patience is, and it is a bound on the fleet's slowest moment rather than on
+  // anything this test is about.
+  const deadline = Date.now() + 60000
   while (!(await store.head(project)) && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
