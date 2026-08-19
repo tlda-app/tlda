@@ -330,8 +330,8 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
     // class.** A path they removed is absent from their head, so it is not a
     // member, so a loop over members never visits it — the proposal correctly
     // drops it and the FILE STAYS ON DISK. The author then has a checkout
-    // holding a file the paper does not, which is what thirty phantom files
-    // looked like on `talk-opening`.
+    // holding a file the paper does not — measured at thirty such files on one
+    // real project, where every push was refused for four days.
     //
     // So the walk is members ∪ what the base held. **Not the disk**: a file the
     // author created and has not pushed is in no tree at all, and widening this

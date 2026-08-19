@@ -18,11 +18,11 @@
 //     reaches outside the project; the project does not grow to meet it.
 //   - **A reference that does not resolve is not a member either, and it is
 //     RECORDED.** A member with no bytes is the phantom class that refused every
-//     push Skip made for four days. An unresolvable `\input` must never become a
-//     manifest entry, and it must not vanish silently either.
+//     push on one project for four days. An unresolvable `\input` must never
+//     become a manifest entry, and it must not vanish silently either.
 //
-// **The directive set is measured from his actual papers, not assumed.** Counted
-// across `eiv-paper` and `bregman-lower-bound` on 2026-08-19:
+// **The directive set is measured rather than assumed.** Counted across two
+// real, substantial LaTeX projects on 2026-08-19:
 //
 //   \usepackage 109 · \documentclass 11 · \bibliography 7 · \addbibresource 7
 //   \includegraphics 7 · \RequirePackage 5 · \input 3
@@ -38,7 +38,7 @@
 import path from 'path'
 
 // **Extension inference is not a convenience, it is the common case.** Measured
-// in his papers: 3 of 3 `\input`, 3 of 3 `\bibliography` and 1 of 5
+// in those projects: 3 of 3 `\input`, 3 of 3 `\bibliography` and 1 of 5
 // `\includegraphics` are written WITHOUT one. A closure that required the
 // extension would miss `\input{body}` — which is the entire paper.
 //
@@ -89,7 +89,7 @@ const BY_NAME = new Map(DIRECTIVES.map(d => [d.name, d]))
  * the failure this module exists to prevent — an entry in the manifest that the
  * document does not reach.
  *
- * Neither of his papers has one today. Commenting out an `\input` while drafting
+ * Neither project measured has one today. Commenting out an `\input` while drafting
  * is ordinary enough that the zero is a fact about this afternoon, not a property
  * of the input.
  *
