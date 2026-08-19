@@ -17,9 +17,14 @@
 // daemon uses (`source-room-daemon.mjs:367-372`), so this tests the shape the
 // production caller actually has.
 //
-// ONE OF THEM IS RED, and it is red against real behaviour rather than against
-// the repoint -- see `bootstrapAdoption` at the bottom. Left asserting the
-// promise.
+// ONE OF THEM IS RED -- `bootstrapAdoption` at the bottom -- and it is red
+// against real behaviour rather than against the repoint. Left asserting the
+// promise, unchanged.
+//
+// The escaping-path assertion that was also red has MOVED to its proper subject,
+// `membershipExcludesReferencesOutsideTheProject`. It was asserting a route-level
+// 400 that no caller can reach; the closure is where membership is decided and it
+// already excludes an outside reference. See that function for the whole finding.
 
 import assert from 'assert/strict'
 import fs from 'fs'
@@ -41,6 +46,7 @@ import {
   updateProject,
 } from '../server/lib/project-store.mjs'
 import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
+import { scanMarkdownDependencyClosure, scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 
 function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -100,33 +106,20 @@ async function assertSnapshotEqual(name, before) {
   assert.deepEqual(await snapshotProject(name), before)
 }
 
-// **A rejected push leaves NOTHING behind.** Not the escaping path, and not any
-// of the incidental fields it tried to carry -- `sourceDir`, `session`,
-// `editedBy`, `members`. This is path containment plus "a rejected write does
-// not stick", neither of which is a manifest concern; `AGENTS.md` keeps path
-// containment in the list of limits that are not authorization.
+// **A rejected push leaves NOTHING behind.** Not the file it tried to write, and
+// not any of the incidental fields it carried -- `sourceDir`, `session`,
+// `editedBy`, `members`. "A rejected write does not stick" is not a manifest
+// concern, so it survives the cut.
 //
-// KNOWN RED on the second case, and it is the more serious of the two reds in
-// this file. Same input, each tree's own code, fresh store:
+// The TRIGGER changed and the promise did not. It used to reject with an
+// escaping path; that case moved to
+// `membershipExcludesReferencesOutsideTheProject`, because the route no longer
+// refuses escaping paths and no caller can emit one anyway. The trigger here is
+// now the new carrier's own contract -- a manifest naming a file that was
+// neither sent nor already held -- which is a real rejection on this path.
 //
-//   main    400, ok:false, "Invalid file path", nothing written
-//   here    200, ok:TRUE,  no error,            nothing written
-//
-// **Containment itself still holds** -- I checked the filesystem, and the file
-// lands neither inside the project nor outside it. What changed is that the
-// push is no longer REFUSED: it is accepted, reported successful, and the file
-// is silently discarded.
-//
-// That is the shape this repo treats as worst -- an accept that reports success
-// while the work was not preserved. `applyAcceptedSourceEffects`'s own docstring
-// names the distinction ("*the accept worked* and *the work was preserved* are
-// different facts and a caller cannot see the second"); this is a case where the
-// caller is told the first and the second is false.
-//
-// NOT ESTABLISHED, and deliberately not claimed: whether any real client can
-// emit a path that trips this. If none can, it is a latent contract break rather
-// than a live data-loss path. That reachability question is what decides its
-// severity and I have not answered it.
+// The snapshot comparison is the whole assertion: it covers the project
+// directory as well as the source tree, so a fingerprint anywhere fails it.
 async function rejectedPushLeavesNothing() {
   createProject({ name: 'failed', title: 'Failed', mainFile: 'main.tex', format: 'svg' })
   await updateProject('failed', { pages: 1, buildStatus: 'success' })
@@ -134,9 +127,9 @@ async function rejectedPushLeavesNothing() {
   await updateClientSourceManifest('failed', ['main.tex'])
   write(path.join(sourceDir('failed'), 'main.tex'), 'kept\n')
 
-  let before = await snapshotProject('failed')
-  let result = await push('failed', {
-    files: [{ path: '../escape.tex', content: 'bad\n' }],
+  const before = await snapshotProject('failed')
+  const result = await push('failed', {
+    files: [{ path: 'main.tex', content: Buffer.from('sent\n').toString('base64'), encoding: 'base64' }],
     sourceManifest: ['main.tex', 'other.tex'],
     sourceDir: '/tmp/should-not-stick',
     session: 'bad-session', sessionAt: 123, editedBy: 'bad-editor',
@@ -145,17 +138,62 @@ async function rejectedPushLeavesNothing() {
   assert.equal(result.status, 400)
   assert.equal(result.ok, false)
   await assertSnapshotEqual('failed', before)
+}
 
-  before = await snapshotProject('failed')
-  result = await push('failed', {
-    files: [{ path: '../escape.tex', content: 'bad\n' }],
-    sourceManifest: ['../escape.tex'],
-    sourceDir: '/tmp/should-not-stick',
-    session: 'bad-session', sessionAt: 123, editedBy: 'bad-editor',
-    members: ['should-not-stick'],
-  })
-  assert.equal(result.status, 400)
-  await assertSnapshotEqual('failed', before)
+// **An escaping path is not a member, and membership is where that is decided.**
+//
+// This assertion used to live at the route: push `../escape.tex` and get a 400.
+// It moved here because the route is the wrong subject. Skip's ruling is that
+// the closure is the single place a path can enter a project, so a second
+// refusal downstream is a check on a fact this function already owns.
+//
+// Established while moving it, and the reason this is a characterisation test
+// rather than a red: **no caller can emit an escaping path in the first place.**
+// The closure drops it (below), `normalizeSourceManifest` drops `..` and
+// absolute paths, and the CLI's Quarto collector checks the REALPATH so a
+// symlink pointing out is caught too. The route's old 400 was unreachable.
+//
+// Note what the two calls below show together: the raw scanner DOES see the
+// outside reference. It is not that the reference is invisible -- it is that
+// membership excludes it. That distinction is the whole promise, which is why
+// both are asserted.
+//
+// LaTeX has no equivalent. `shared/tex-deps.mjs` is 152 lines of pure comment
+// left behind when `e9c3ba890` reverted `22fb6182b`, so LaTeX membership is
+// still a directory walk plus an extension test. A walk cannot produce `..`, so
+// nothing escapes there either -- but his rule is implemented for Markdown only,
+// and that gap is live.
+async function membershipExcludesReferencesOutsideTheProject() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-closure-'))
+  try {
+    const project = path.join(root, 'project')
+    fs.mkdirSync(project)
+    fs.mkdirSync(path.join(root, 'shared'))
+    write(path.join(root, 'shared', 'macros.md'), '# shared preamble\n')
+    write(path.join(project, 'inside.md'), '# inside\n')
+    write(path.join(project, 'main.md'), 'up [macros](../shared/macros.md) and in [ok](inside.md)\n')
+
+    const seen = scanMarkdownDeps(fs.readFileSync(path.join(project, 'main.md'), 'utf8'), project)
+    assert.deepEqual(
+      seen.map(dep => dep.ref).sort(),
+      ['../shared/macros.md', 'inside.md'],
+      'the scanner sees the outside reference; the control that makes the next assertion mean something',
+    )
+
+    const closure = scanMarkdownDependencyClosure('main.md', project)
+    assert.deepEqual(
+      closure.files.sort(),
+      ['inside.md', 'main.md'],
+      'a reference outside the project root is not a member',
+    )
+    assert.equal(
+      closure.files.some(file => file.startsWith('..')),
+      false,
+      'no member escapes the project root',
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 }
 
 // **A rejected push does not mutate membership; an accepted one does.** About
@@ -170,9 +208,24 @@ async function rejectedPushDoesNotStickMembers() {
   assert.equal(result.status, 400)
   await assertSnapshotEqual('book-project', before)
 
-  result = await push('book-project', { files: [], members: ['accepted-book-member'] })
-  assert.equal(result.status, 200)
-  assert.deepEqual((await readProject('book-project')).members, ['accepted-book-member'])
+  // The other half of this test DID NOT COME ACROSS, and the reason is the
+  // classification this file exists to make.
+  //
+  // It asserted that a members-only push -- `{ files: [], members: [...] }` with
+  // no manifest -- returns 200 and updates the members. That is not a
+  // preservation promise. It is an incidental capability of the old carrier,
+  // where the push route doubled as a members updater. The new carrier refuses
+  // it: "files[] and sourceManifest[] are required", because a snapshot IS the
+  // project and a snapshot with no manifest is not a statement about anything.
+  //
+  // Nothing is lost. `PATCH /:name/members` (projects.mjs:685) is the route that
+  // owns membership and it is untouched. So this half dies with the mechanism it
+  // was testing, which is the correct outcome and not a regression -- and
+  // rewriting it to expect 400 would be asserting the absence of a capability
+  // rather than a promise.
+  //
+  // What survives is the assertion above it: a REJECTED push does not stick
+  // members. That is preservation, and it still holds.
 }
 
 // **A delete really removes the file.** The manifest half of this retires with
@@ -214,8 +267,21 @@ async function deleteRemovesTheBytes() {
 //
 // **Left asserting 200.** The promise is that pushing nothing does not endanger
 // what is already there, and rewriting it to expect 400 would make the suite
-// assert the regression. Two files now hold this promise, which is why it is
-// worth saying it is one defect and not two.
+// assert the regression. Two files hold this promise, so it is one defect and
+// not two.
+//
+// REACHABILITY, established 2026-08-19 and the reason this is not a deploy
+// blocker: it needs source bytes on disk that were never accepted into any
+// revision. Nothing produces that state -- `writeSourceFile`, the server-side
+// direct write, has NO production callers, and every other route onto disk goes
+// through the accept's working-copy effect, which by construction leaves a
+// revision. With a revision present the same daemon shape returns 409
+// stale-base instead, which is the ordinary refusal the retry path handles.
+//
+// So this is a test fixture reaching a state production cannot. It stays red
+// rather than being deleted, because the promise is real and the day something
+// does seed a project's disk ahead of its first accept, this is the assertion
+// that says so.
 async function bootstrapAdoption() {
   createProject({ name: 'zero-first', title: 'Zero', mainFile: 'main.tex', format: 'svg' })
   await updateProject('zero-first', { pages: 1, buildStatus: 'success' })
@@ -233,6 +299,7 @@ async function main() {
   await initProjectStore(root)
   try {
     await rejectedPushLeavesNothing()
+    await membershipExcludesReferencesOutsideTheProject()
     await rejectedPushDoesNotStickMembers()
     await deleteRemovesTheBytes()
     await bootstrapAdoption()
