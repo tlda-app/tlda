@@ -146,6 +146,11 @@ const ALLOWED = {
     category: 'tooling',
     reason: 'Wire test for the model backfill: drives /ws/fleet directly to prove the frames, not the function. Endpoint: /ws/fleet.',
   },
+  'bin/search-takes-a-message-id-test.mjs': {
+    count: 1,
+    category: 'tooling',
+    reason: 'Wire test for the `id:` search term: boots a real server and drives /ws/fleet directly so the shared parser is on the path from a typed string, rather than a hand-built filter expression. Same shape and same endpoint as conversation-search-wire.test.mjs. Endpoint: /ws/fleet.',
+  },
   'server/lib/conversation-search-wire.test.mjs': {
     count: 1,
     category: 'tooling',
