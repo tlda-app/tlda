@@ -89,6 +89,7 @@ assert.equal(retiring.ok, true,
   `ORDINARY: removing a file nothing references is accepted — got ${JSON.stringify(retiring).slice(0, 200)}`)
 assert.ok(!(await store.readManifest(await store.head(project))).some(e => e.path === 'retired.tex'),
   'and it really left the paper')
+const acceptedBeforeOrphan = await store.head(project)
 
 // ---------------------------------------------------------------------------
 // 2. THE REAL SAVE. The figure goes; the paper still \includegraphics it.
@@ -102,6 +103,8 @@ assert.equal(orphaning.status, 'references-a-removed-path', 'and it says exactly
 assert.deepEqual(orphaning.removedButReferenced, ['figures/plot.pdf'],
   'NAMING IT: the author is told which path, not that something is wrong')
 assert.ok(orphaning.refusedRevision, 'the refused commit is kept, so the work is not lost')
+assert.equal(orphaning.revision, acceptedBeforeOrphan,
+  'SELF-HEALING: the refusal names the accepted head so the checkout can rebuild its proposal on the complete tree')
 assert.equal(await store.head(project), base === undefined ? undefined : await store.head(project),
   'sanity: the head is readable')
 assert.ok((await store.readManifest(await store.head(project))).some(e => e.path === 'figures/plot.pdf'),
