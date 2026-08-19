@@ -627,12 +627,16 @@ export class FleetStore {
         ON native_subagent_notifications(parent_agent_id, acknowledged_at, event_id);
 
       -- Task state. THE RECORD, not a cache: nothing rebuilds this table from
-      -- events, so a column lost here is lost. It said "cache, rebuilt from
-      -- events" for as long as git can see, which is why removeTask() and
-      -- pruneDoneTasks() hard-delete rows -- safe under that claim, and not safe
-      -- in fact: success_criteria, blocked_by, metadata and the timestamps have
-      -- no other copy. Transitions are additionally recorded as task_update
-      -- events (_insertTaskStateEvent), but those carry the transition, not the row.
+      -- events, so a column lost here is lost -- success_criteria, blocked_by,
+      -- metadata and the timestamps have no other copy. Transitions are
+      -- additionally recorded as task_update events (_insertTaskStateEvent), but
+      -- those carry the transition, not the row.
+      --
+      -- NOTHING DELETES A ROW HERE. A task that is no longer current is marked
+      -- status = 'retracted', which every active-task query and both partial
+      -- indexes below already exclude. It said "cache, rebuilt from events" for
+      -- as long as git can see, and under that false claim removeTask() and
+      -- pruneDoneTasks() hard-deleted rows; both are gone.
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         agent TEXT NOT NULL,
@@ -1704,7 +1708,6 @@ export class FleetStore {
       INSERT INTO agent_daemon_routes (agent_id, daemon_key) VALUES (?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET daemon_key = excluded.daemon_key
     `);
-    this._deleteAgentDaemonRoute = this.db.prepare('DELETE FROM agent_daemon_routes WHERE agent_id = ?');
     // last_active is a maintained column on agents (bumped on every event
     // insert — see share()), so this is a plain indexed read that never touches
     // the events table. Earlier versions computed last_active inline (correlated
@@ -1729,7 +1732,6 @@ export class FleetStore {
       FROM agents
       LEFT JOIN lineages ON lineages.id = agents.lineage_id
     `);
-    this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
     this._retirePendingShell = this.db.prepare(`
@@ -1776,7 +1778,6 @@ export class FleetStore {
       LIMIT @limit
     `);
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
-    this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
     this._hasSessionEntries = this.db.prepare('SELECT 1 FROM session_entries WHERE session_id = ? LIMIT 1');
     this._getDelegateEventForTask = this.db.prepare(`
       SELECT ${this._EVT} FROM events WHERE task_id = ? AND type = 'delegate' ORDER BY id DESC LIMIT 1
@@ -3896,23 +3897,13 @@ export class FleetStore {
     return aliveIds.has(agent.id);
   }
 
-  removeAgent(id) {
-    this.retireTasksForGoneAgent(id, 'agent row deleted');
-    this.db.transaction(() => {
-      this._deleteAgentDaemonRoute.run(id);
-      this._deleteAgent.run(id);
-    })();
-    this._bustAgentsCache();
-    this._syncAgentRegistry(id);
-  }
-
   /**
    * An agent's open tasks die when the agent does.
    *
-   * Called from the two places an agent stops existing — markDead() and
-   * removeAgent(). Without this, every death leaves its tasks open forever and
-   * the active-task list grows without bound; 851 rows had accumulated by
-   * 2026-07-26, 688 of them on agents that were dead or whose row was gone.
+   * Called from markDead(), the one place an agent stops being current. Without
+   * this, every death leaves its tasks open forever and the active-task list
+   * grows without bound; 851 rows had accumulated by 2026-07-26, 688 of them on
+   * agents that were dead or whose row was gone.
    */
   retireTasksForGoneAgent(id, why) {
     const open = this.getActiveTasksByAgent(id);
@@ -4499,13 +4490,6 @@ export class FleetStore {
     return this._getAllTasks.all().map(r => this._hydrateTask(r));
   }
 
-  removeTask(id) {
-    const task = this.getTask(id);
-    this._deleteTask.run(id);
-    this._queueTaskDocChange({ type: 'delete', task, taskId: id, actor: task?.agent });
-    this._queueTaskDelta({ type: 'remove', taskId: id });
-  }
-
   _queueTaskDelta(change) {
     if (!change || !this._taskChanges) return;
     if (this._taskChanges.length >= this._maxQueuedTaskChanges) {
@@ -4568,10 +4552,21 @@ export class FleetStore {
           retracted_before_delivery: true,
         });
       }
-      this.removeTask(task.id);
+      this.upsertTask({
+        ...task,
+        status: 'retracted',
+        completed_at: task.completed_at || retractedAt,
+        metadata: {
+          ...(task.metadata || {}),
+          retracted: true,
+          retracted_at: retractedAt,
+          retracted_by: retractedBy,
+          retracted_before_delivery: true,
+        },
+      });
       return {
         task_id: task.id,
-        mode: 'removed_unread',
+        mode: 'retracted_unread',
         event_id: event?.id || null,
         unread_removed: !!(event && unreadPending),
         exposed: false,
@@ -4626,10 +4621,10 @@ export class FleetStore {
    * the row itself.
    *
    * Distinct from retractTask(): a retract un-sends a task the recipient never
-   * saw, so it may remove the row. A retire is for a task that was delivered and
-   * has simply outlived its agent — the row stays, carrying the reason, so a
-   * bulk close is auditable afterwards. It writes no report document, sends no
-   * chat, and wakes nobody.
+   * saw. A retire is for a task that was delivered and has simply outlived its
+   * agent. Neither removes the row — both mark it 'retracted' and record why, so
+   * a close is auditable afterwards. A retire additionally writes no report
+   * document, sends no chat, and wakes nobody.
    *
    * The unread delegate row is cleared too: leaving it behind would keep the
    * item in the agent's inbox forever.
@@ -6394,11 +6389,6 @@ export class FleetStore {
   }
 
   // ---- Cleanup ----
-
-  pruneDoneTasks(maxAgeMs = 86400000) {
-    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
-    return this.db.prepare("DELETE FROM tasks WHERE status = 'done' AND completed_at < ?").run(cutoff).changes;
-  }
 
   addSkillRead(agentId, skillKey) {
     this.db.prepare('INSERT OR IGNORE INTO skill_reads (agent_id, skill_key) VALUES (?, ?)').run(agentId, skillKey);

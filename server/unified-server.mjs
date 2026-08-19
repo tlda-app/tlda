@@ -7875,17 +7875,6 @@ async function dispatchFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'delete-task') {
-    const { task_id } = msg
-    if (!task_id) { error('missing task_id'); return }
-    const task = await fleetStore.getTask?.(task_id)
-    if (!task) { error('task not found'); return }
-    await fleetStore.removeTask?.(task_id)
-    broadcastState()
-    reply({ ok: true, task_id })
-    return
-  }
-
   if (type === 'my-task') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
