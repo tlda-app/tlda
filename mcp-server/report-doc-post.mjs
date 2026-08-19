@@ -46,7 +46,6 @@ export function reportDocName(taskId) {
  * @param {string}   opts.reportTaskId    task id the report belongs to
  * @param {string}   opts.taskDescription doc title
  * @param {string}   opts.reportContent   markdown body to push
- * @param {string}  [opts.cwd]            source dir hint for the push
  * @param {string}  [opts.session]        session id for the push
  * @param {Function} opts.fetchImpl       (path, options) => Promise<body>, throws with err.status on non-2xx
  * @param {string}  [opts.server]         server override forwarded to fetchImpl
@@ -56,7 +55,6 @@ export async function postReportDoc({
   reportTaskId,
   taskDescription,
   reportContent,
-  cwd = null,
   session = null,
   fetchImpl,
   server = undefined,
@@ -82,16 +80,23 @@ export async function postReportDoc({
     });
   }
 
-  // A freshly-created doc is uninitialized (currentRevision === null); the push
-  // route requires expectedRevision to be present (null is accepted, undefined
-  // is a 428), so read it straight from the parsed authority body.
+  // A freshly-created doc is uninitialized, so `currentRevision` is null and is
+  // sent as null. The old route's rule -- null accepted, undefined a 428 -- no
+  // longer applies here: the carrier destructures `expectedRevision = null`, so
+  // absent and null reach the same branch. Kept explicit anyway, because the
+  // value being read is the point; do not carry the 428 claim forward, it
+  // describes a route this no longer calls.
   const authority = await fetchImpl(`${base}/source-authority`, { server });
-  await fetchImpl(`${base}/push`, {
+  // The JSON accept carrier. `sourceDir` is deliberately NOT carried: it is not
+  // read from any request body, the old route's destructure already dropped it,
+  // and every server use reads `project.sourceDir` from storage. Sending it was
+  // a field nobody read, so dropping it corrects a defect rather than losing a
+  // capability -- and it is dropped knowingly rather than by not being listed.
+  await fetchImpl(`${base}/source-snapshot`, {
     method: 'POST',
     body: {
       files: [{ path: mainFile, content: reportContent }],
       sourceManifest: normalizeSourceManifest([mainFile], { format: 'markdown', mainFile }),
-      sourceDir: cwd || '/tmp',
       session: session || undefined,
       expectedRevision: authority?.currentRevision ?? null,
     },
