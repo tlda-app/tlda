@@ -35,12 +35,21 @@ export type FleetHudDefaultAnchor = {
  */
 export function computeFleetHudDefaultAnchor({
   bounds,
+  nearMarginFarEdge,
   docNearScreen,
   flowAxis,
   screenPad,
   marginGap,
 }: {
   bounds: ClipBounds
+  /**
+   * Far edge of the NEAR-margin group on the margin axis, in `bounds`' own
+   * coordinate space. The near margin is the shapes between the document and
+   * the edge the HUD is anchored to — everything whose far edge is at or before
+   * the document's near edge. Omit it and the whole layout's far edge is used,
+   * which is the same number for any layout living in one margin.
+   */
+  nearMarginFarEdge?: number
   /** The document's near edge on the margin axis, projected to screen. */
   docNearScreen: number
   flowAxis: Axis
@@ -49,9 +58,18 @@ export function computeFleetHudDefaultAnchor({
 }): FleetHudDefaultAnchor {
   const marginAxis = crossAxis(flowAxis)
   const alongFlow = screenPad - (flowAxis === 'x' ? bounds.x : bounds.y)
-  const acrossFlow = docNearScreen - marginGap - (marginAxis === 'x'
-    ? bounds.x + bounds.w
-    : bounds.y + bounds.h)
+  // The edge that sits one marginGap before the document belongs to the NEAR
+  // margin. Using the whole layout's far edge is the same thing for every
+  // variant that lives in one margin, and wrong for the one that straddles:
+  // both-margins puts a source editor past the document, so its bounding box's
+  // far edge is on the FAR side — and anchoring that in the near margin drags
+  // the entire arrangement, document-shaped gap and all, into the near margin.
+  // Measured on a 13" at 1470x866: every panel 1347px left of where it belongs,
+  // which is what Skip saw as "a nice two column layout in the left margin of my
+  // document with a hole for my document to go in".
+  const layoutFarEdge = marginAxis === 'x' ? bounds.x + bounds.w : bounds.y + bounds.h
+  const farEdge = nearMarginFarEdge ?? layoutFarEdge
+  const acrossFlow = docNearScreen - marginGap - farEdge
 
   // The margin is where the layout WANTS to be. Being on screen is what it has
   // to be. Skip: "you also make a layout that actually works on a slideshow...

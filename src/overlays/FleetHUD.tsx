@@ -652,8 +652,24 @@ export function FleetHUD({
     const flowAxis = documentPageFlowAxis(mainEditor)
     const marginAxis = crossAxis(flowAxis)
     const docNear = marginAxis === 'x' ? docBounds.minLeft : docBounds.minTop
+    // The near margin is the shapes between the document and the edge the HUD is
+    // anchored to: those whose far edge is at or before the document's near edge.
+    // Anchor on the furthest of them. For every layout that lives in one margin
+    // this is the same edge the whole bounding box gives, so they do not move;
+    // for both-margins it excludes the far-margin source editor, which is the bug.
+    let nearMarginFarEdge: number | undefined
+    for (const shape of ownedFleetShapes) {
+      const b = mainEditor.getShapePageBounds(shape.id)
+      if (!b) continue
+      const far = marginAxis === 'x' ? b.x + b.w : b.y + b.h
+      // Tolerance: a shape's far edge is placed AT docNear - marginGap, so exact
+      // equality is not something to rely on after rounding.
+      if (far > docNear + 1) continue
+      if (nearMarginFarEdge === undefined || far > nearMarginFarEdge) nearMarginFarEdge = far
+    }
     return computeFleetHudDefaultAnchor({
       bounds,
+      nearMarginFarEdge,
       docNearScreen: projectFleetHudDocumentNearEdgeWithWM(hudWm, mainEditor, docNear, marginAxis),
       flowAxis,
       screenPad: isPhoneDefaultLayout
