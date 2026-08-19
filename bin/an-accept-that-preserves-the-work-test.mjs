@@ -34,7 +34,6 @@ const project = 'paper'
 
 const before = await store.acceptRevision({
   project,
-  replaceTree: true,
   message: 'his night, before',
   files: [
     { path: 'main.tex', content: 'one\ntwo\nthree\n' },
@@ -45,7 +44,6 @@ const before = await store.acceptRevision({
 const after = await store.acceptRevision({
   project,
   parent: before,
-  replaceTree: true,
   message: 'his night, after',
   files: [
     { path: 'main.tex', content: 'one\nTWO, revised\nthree\n' },

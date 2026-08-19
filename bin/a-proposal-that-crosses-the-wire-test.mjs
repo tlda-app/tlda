@@ -126,11 +126,25 @@ assert.equal(
 // 3. Somebody else lands while we are writing. The refusal must be recoverable
 //    **and must not clobber them.**
 
+// **Their accept names the whole project, because every accept does now.** The
+// tree is the manifest, so a fixture that names only the file it is changing is
+// not "somebody edited one file" — it is somebody deleting the other two. This
+// stood in for another author back when a tree was built over its parent's.
+//
+// The unchanged files are carried by SHA rather than by bytes, which is how a
+// caller names an unchanged 6MB file for free.
 const theirs = await store.acceptRevision({
   project,
   parent: await store.head(project),
   message: 'somebody else, on the server',
-  files: [{ path: 'figure.tex', content: 'a figure THEY edited\n' }],
+  files: [
+    { path: 'figure.tex', content: 'a figure THEY edited\n' },
+    ...(await store.readManifest(await store.head(project)))
+      .filter(entry => entry.path !== 'figure.tex')
+      // `sha256` is the manifest's name for what is a GIT BLOB sha. See
+      // docs/naming-errata.md — the field is not a SHA-256 of anything.
+      .map(entry => ({ path: entry.path, sha: entry.sha256 })),
+  ],
 })
 await store.advanceHead(project, theirs, large.sourceRevision)
 assert.equal(await proposal.hasCommit(theirs), false,

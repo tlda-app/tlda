@@ -590,7 +590,6 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       // history therefore begins at the cutover rather than pretending to
       // reach back through revisions git never held.
       parent: isGitObjectId(parent) ? parent : null,
-      replaceTree: true,
       files: entries.map(entry => ({ path: entry.path, sha: entry.sha256 })),
       message: `source revision\n\n${pinsTrailer(pins)}`,
     })

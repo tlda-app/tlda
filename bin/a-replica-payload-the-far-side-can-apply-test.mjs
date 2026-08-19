@@ -32,7 +32,6 @@ const store = createSourceGitStore({ gitDir })
 
 const first = await store.acceptRevision({
   project: 'paper',
-  replaceTree: true,
   message: 'first',
   files: [
     { path: 'main.tex', content: 'the paper\n' },
@@ -42,7 +41,6 @@ const first = await store.acceptRevision({
 const second = await store.acceptRevision({
   project: 'paper',
   parent: first,
-  replaceTree: true,
   message: 'second',
   files: [{ path: 'main.tex', content: 'the paper, revised\n' }],
 })

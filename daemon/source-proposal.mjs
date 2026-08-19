@@ -18,9 +18,9 @@ import { classifyThreeWay } from '../server/lib/source-lifecycle.mjs'
  *   The tree committed for a revision IS the project's membership. There is no
  *   second description of what belongs, so nothing can disagree with the bytes.
  *
- * `acceptRevision` is called **with `replaceTree`**: the proposal carries the
- * project's complete member set, so the tree IS the manifest and a path that
- * left the paper is absent because nobody named it.
+ * The proposal carries the project's complete member set, so the tree IS the
+ * manifest and a path that left the paper is absent because nobody named it.
+ * That is the store's only behaviour now rather than a flag this file passes.
  *
  * **This reverses an earlier invariant in this file, and the reversal is the
  * design's, not a relaxation.** The old form built over the parent's tree so
@@ -146,10 +146,9 @@ export function createSourceProposal({ sourceDir, project, log = null }) {
       parent,
       files,
       message,
-      // The tree is built from `files` alone. `deleted` is gone with it: under
-      // a complete tree there is nothing to name as removed, because absence is
-      // the removal.
-      replaceTree: true,
+      // The tree is built from `files` alone -- that is now the store's only
+      // behaviour rather than an option. There is nothing to name as removed,
+      // because absence IS the removal.
     })
     // **Compare TREES, not commits.** `commit-tree` mints a fresh sha every
     // time -- the timestamp is in it -- so `commit === parent` is never true

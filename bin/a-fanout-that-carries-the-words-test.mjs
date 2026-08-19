@@ -88,6 +88,11 @@ assert.notEqual(asTheRoomReadsIt, '',
 setAcceptedSourceMutationHandler(null)
 setSourceBindingTargetProvider(null)
 await closeProjectStore()
-fs.rmSync(root, { recursive: true, force: true })
+// **Retried, because the accept's effects outlive the assertions.** The fan-out
+// is awaited above, but the mirror and the working-copy write are not, and one
+// of them lands a file inside `root` while `rmSync` is walking it — which comes
+// back as ENOTEMPTY *after* every assertion has passed. A teardown race that
+// exits non-zero is a test reporting a defect it did not find.
+fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 console.log('a fanout that carries the words: a collaborator receives the paragraph, not an empty string')
 process.exit(0)

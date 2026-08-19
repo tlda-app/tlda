@@ -153,14 +153,26 @@ export function createSourceGitStore({ gitDir }) {
   }
 
   /**
-   * Accept a revision: build its tree from `files` (path → bytes) applied over
-   * `parent`, and commit it. Returns the commit sha, which is the revision id.
+   * Accept a revision: build its tree from `files` — the project's COMPLETE
+   * member set — and commit it. Returns the commit sha, which is the revision id.
    *
-   * Only changed paths are passed; everything else is inherited from the parent
-   * tree, so an unchanged file costs nothing. That is the property the previous
-   * store did not have and the reason it grew without bound.
+   * **The tree IS the manifest.** A path that left the paper is absent because
+   * nobody named it, rather than absent because somebody remembered to list it
+   * as deleted. There is no second description of membership to disagree with
+   * the bytes, which is what makes a member with no content and a phantom the
+   * server holds unrepresentable rather than guarded against.
+   *
+   * **A complete tree does not mean re-storing anything.** Git addresses blobs
+   * by content, so naming every member each time writes one object per member
+   * that actually changed and finds the rest already present. The property the
+   * previous store lacked — 397 revisions holding 397 copies of every unchanged
+   * file, 13GB for a history git keeps in 22MB — is a property of content
+   * addressing, not of sending deltas.
+   *
+   * **A caller that already hashed the bytes passes `sha` instead of
+   * `content`,** which is how naming an unchanged file costs nothing at all.
    */
-  async function acceptRevision({ project, parent = null, files = [], deleted = [], message = 'source revision', author = null, replaceTree = false }) {
+  async function acceptRevision({ project, parent = null, files = [], message = 'source revision', author = null }) {
     for (const file of files) {
       if (!file || typeof file.path !== 'string') throw new Error('Every file needs a path')
     }
@@ -175,15 +187,7 @@ export function createSourceGitStore({ gitDir }) {
     const written = await writeBlobs(needsWriting.map(file => file.content))
     const shaFor = new Map(needsWriting.map((file, i) => [file, written[i]]))
     const index = files.map(file => `100644 blob ${file.sha || shaFor.get(file)}\t${file.path}`)
-    for (const path of deleted) index.push(`0 ${NULL_SHA}\t${path}`)
-
-    // `replaceTree` builds the tree from `files` alone rather than over the
-    // parent's. A caller holding the project's COMPLETE manifest wants that: a
-    // path that left the manifest is then absent because it was not named,
-    // which is exact, rather than absent because someone remembered to list it
-    // as deleted — and forgetting is how a file outlives its own removal.
-    const base = parent && !replaceTree ? (await git(['rev-parse', `${parent}^{tree}`])).trim() : null
-    const tree = await buildTree(base, index)
+    const tree = await buildTree(index)
 
     const args = ['commit-tree', tree, '-m', message]
     if (parent) args.push('-p', parent)
@@ -193,14 +197,20 @@ export function createSourceGitStore({ gitDir }) {
     return (await run('git', ['--git-dir', gitDir, ...args], { env })).toString('utf8').trim()
   }
 
-  // read-tree the parent into a scratch index, apply the changed paths, write
-  // it back out. The index is a temp file so concurrent accepts do not collide.
-  async function buildTree(baseTree, indexLines) {
+  // Write the named paths into a scratch index and write it out as a tree. The
+  // index is a temp file so concurrent accepts do not collide.
+  //
+  // **It starts EMPTY, and that is the whole of complete-tree semantics.** The
+  // parent's tree was read in here once, so a path the caller did not name was
+  // inherited — safe, and it made removal inexpressible, which cost the feature
+  // Skip asked for: "we manually remove roots and then automatically delete
+  // unreferenced files." Automatic removal of an unreferenced file is exactly
+  // what inheriting the parent refuses to do. It also cost a spawn per accept.
+  async function buildTree(indexLines) {
     const indexFile = `${gitDir}/tlda-index-${process.pid}-${Date.now()}`
     const env = { ...process.env, GIT_INDEX_FILE: indexFile }
     const g = async (args, input = null) => (await run('git', ['--git-dir', gitDir, ...args], { env, input })).toString('utf8')
     try {
-      if (baseTree) await g(['read-tree', baseTree])
       if (indexLines.length) await g(['update-index', '--index-info'], indexLines.join('\n') + '\n')
       return (await g(['write-tree'])).trim()
     } finally {

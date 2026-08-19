@@ -107,7 +107,6 @@ const theirs = await store.acceptRevision({
   project,
   parent: await store.head(project),
   message: 'somebody else, on the server',
-  replaceTree: true,
   files: [
     { path: 'main.tex', content: theirProse },
     { path: 'figure.tex', content: 'a figure THEY edited\n' },
@@ -146,7 +145,6 @@ const theirWord = await store.acceptRevision({
   project,
   parent: headBefore,
   message: 'they take the closing line',
-  replaceTree: true,
   files: [
     { path: 'main.tex', content: mergedText.replace('closing line, as WE revised it', 'closing line, THEIR final word') },
     { path: 'figure.tex', content: 'a figure THEY edited\n' },
