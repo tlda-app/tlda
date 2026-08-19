@@ -9,6 +9,7 @@ import {
 import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 // @ts-ignore - vanilla JS module
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
+import { machineOfDaemonKey } from '../../shared/agent-move-target.mjs'
 
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
 const nickMap = new Map<string, string>()
@@ -239,7 +240,7 @@ export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirector
   const ts = agentTimestamp(agent)
   const meta = agent?.metadata || {}
   const ago = formatFleetAgentRelativeTime(ts)
-  const machine = agent?.machine_id || ''
+  const machine = machineOfDaemonKey(agent?.route_daemon_key)
   const project = String(meta.project || meta.doc || agent?.project || '').trim()
   const cwd = String(meta.cwd || agent?.cwd || '').trim()
   const cwdLabel = readablePath(cwd)

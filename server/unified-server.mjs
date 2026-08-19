@@ -478,7 +478,7 @@ function daemonTerminalInputAllowed(daemonKey) {
 
 function agentWithDaemonCapabilities(agent) {
   if (!agent) return agent
-  const daemonKey = agent.daemon_key || agent.route_daemon_key
+  const daemonKey = agent.route_daemon_key
   return {
     ...agent,
     terminalInputAllowed: daemonKey ? daemonTerminalInputAllowed(daemonKey) : false,
@@ -2814,7 +2814,7 @@ async function performSpawnRelay(caller, msg) {
       name: caller.friendly_name || caller.name || undefined,
       human: !!caller.human,
       permissionGrant: caller.metadata?.permissionGrant || undefined,
-      daemonId: caller.daemon_key || caller.metadata?.daemon_key || undefined,
+      daemonId: caller.route_daemon_key || undefined,
     },
     spawnRoute: route.source,
     daemon_env_name: route.env_name,
@@ -3320,18 +3320,24 @@ onGlobalEvent(async (event) => {
 //   { via: 'daemon', machine_id, daemon: <ws> }   on success
 //   { via: 'none', error: '...', code: 503 }      if no daemon
 function resolveRpc(op, agent) {
-  if (!agent || !agent.machine_id || !agent.env_name) {
+  const daemonKey = agent?.route_daemon_key
+  if (!daemonKey) {
     return { via: 'none', code: 503, error: `agent has no daemon address (op=${op})` }
   }
-  const dws = daemonConnections.get(daemonAddress(agent.machine_id, agent.env_name))
+  const dws = daemonConnections.get(daemonKey)
   if (!dws || dws.readyState !== 1) {
-    return { via: 'none', code: 503, error: `no fleet-daemon connected for ${describeAgentAddress(agent.machine_id, agent.env_name)} (op=${op})` }
+    return { via: 'none', code: 503, error: `no fleet-daemon connected for ${daemonKey} (op=${op})` }
   }
-  return { via: 'daemon', machine_id: daemonAddress(agent.machine_id, agent.env_name), daemon_address: daemonAddress(agent.machine_id, agent.env_name), env_name: agent.env_name, daemon: dws }
+  // `machine_id` carries the whole daemon key, not a machine id, and every
+  // caller passes it straight to sendDaemonDurable/sendDaemonEphemeral as one.
+  // It was already the joined key before this change; the name is recorded in
+  // docs/naming-errata.md rather than renamed across twelve call sites here.
+  // The sibling `daemon_address` and `env_name` are deleted: nothing read them.
+  return { via: 'daemon', machine_id: daemonKey, daemon: dws }
 }
 
 function agentDaemonAddress(agent) {
-  return daemonAddress(agent?.machine_id, agent?.env_name)
+  return agent?.route_daemon_key || null
 }
 
 // Liveness is checked here, explicitly, rather than inferred from the absence of
@@ -5286,8 +5292,7 @@ function terminalAgentContext(agent) {
   return compactObject({
     agentId: agent?.id,
     label: agent?.friendly_name || agent?.id,
-    machineId: agent?.machine_id,
-    envName: agent?.env_name,
+    daemonKey: agent?.route_daemon_key,
   })
 }
 

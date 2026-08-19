@@ -189,3 +189,20 @@ the same tier three times.
 message and whether it keeps it — storage, an index, a query path, or anything that changes
 behaviour means durable; a component that repaints means disposable. `jsonl-index` looks like
 plumbing and feeds *search*, so it is durable for the same reason.
+
+## `machine_id` on a `resolveRpc` result — `server/unified-server.mjs`
+
+**It holds the whole daemon key, `<machine>:<env>`, not a machine id.**
+
+Every one of its twelve callers passes it straight to `sendDaemonDurable` /
+`sendDaemonEphemeral`, which key `daemonConnections` on the joined form — so the value has
+always been correct and only the name is wrong. It was already the joined key before
+`projectAgentDaemonRoute` stopped splitting `daemon_key` into `machine_id` and `env_name`;
+that change made the lie visible rather than causing it.
+
+Not renamed because a rename touches twelve call sites in a live routing path for no
+behaviour change. Read it as `daemon_key`.
+
+**Its two siblings are gone.** `daemon_address` and `env_name` were on the same result object
+and nothing read either — `grep -rn '\.daemon_address'` returned zero across the tree, with
+`.machine_id` returning many as the positive control.
