@@ -7,7 +7,7 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 
 import { closeProjectStore, createProject, initProjectStore, readProject, readClientSourceManifest } from './project-store.mjs'
-import { processProjectPush, setSourceBindingTargetProvider } from '../routes/projects.mjs'
+import { acceptSourceSnapshot, setSourceBindingTargetProvider } from '../routes/projects.mjs'
 import { linkOverleaf, syncOverleaf, stopPolling } from './overleaf-sync.mjs'
 
 const execFile = promisify(execFileCallback)
@@ -52,13 +52,13 @@ test('a linked remote never deletes content it did not itself introduce, and sti
   // the Bregman shape: a scratch/backup file that was never round-tripped
   // through the linked remote.
   createProject({ name, mainFile: 'main.tex', format: 'svg' })
-  const localPush = await processProjectPush(name, {
+  const localPush = await acceptSourceSnapshot(name, {
     project: name, requestId: 'R-local-1', deliveryId: 'D-local-1',
     expectedRevision: null,
     files: [{ path: 'main.tex', content: 'local seed\n' }, { path: 'scratch.bak.tex', content: 'never pushed anywhere\n' }],
     deletedFiles: [], sourceManifest: ['main.tex', 'scratch.bak.tex'], editedBy: 'skip',
   })
-  assert.equal(localPush.ok, true, JSON.stringify(localPush))
+  assert.equal(localPush.body.ok, true, JSON.stringify(localPush))
 
   // Link to the remote. The initial sync must not delete scratch.bak.tex —
   // the remote never had it and has no claim over it.
