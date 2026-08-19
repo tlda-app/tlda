@@ -156,9 +156,20 @@ function renderSemanticOperationResult(toolName, text, ctx, input, ts, arg = '')
   if (kind === 'thread') {
     return `<div class="semantic-operation-body" data-semantic-key="${key}" data-semantic-operation="${json}"></div>`
   }
+  // No expand control. A search card shows every result it has: the clipped
+  // preview it used to expand FROM was deleted in 9496c3322, on Skip's
+  // instruction that we were "over-truncating search results which are already
+  // truncated for us" -- and the button outlived its mechanism by two days,
+  // doing nothing but relabelling itself. Skip, 2026-08-19 05:37 EDT: "there are
+  // four results. It shows the four results. If there's nothing to expand, don't
+  // put a fucking expand button."
+  //
+  // The controls for there being MORE are inside the view and are each already
+  // conditional on having something to reveal: the per-group "Show N more" when
+  // a group exceeds its initial limit, and "More" when the server has another
+  // page.
   return `<div class="semantic-chat-operation semantic-search-operation" data-semantic-key="${key}">
     <div class="semantic-operation-body" data-semantic-operation="${json}"></div>
-    <div class="pretty-expand-btn" data-semantic-collapsed-label="Show all search results">Show all search results</div>
   </div>`
 }
 

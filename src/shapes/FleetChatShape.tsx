@@ -2260,14 +2260,12 @@ function SemanticChatOperationView({
   descriptor,
   renderCtx,
   currentProject,
-  host,
   hostShapeId,
   pageSize,
 }: {
   descriptor: any
   renderCtx: any
   currentProject?: string
-  host: HTMLElement
   hostShapeId: TLShapeId
   pageSize: number
 }) {
@@ -2279,7 +2277,6 @@ function SemanticChatOperationView({
   const [searched, setSearched] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [expandedSearchGroups, setExpandedSearchGroups] = useState<Record<string, boolean>>({})
-  const collapseRef = useFloatingCollapse(host)
   const loadedRef = useRef(false)
   const searchVisibleLimitRef = useRef(pageSize)
 
@@ -2320,23 +2317,15 @@ function SemanticChatOperationView({
     searchVisibleLimitRef.current = pageSize
   }, [descriptor?.semanticKey, currentProject, pageSize])
 
+  // Loads on mount, unconditionally. It used to also wait on a
+  // `semantic-operation-expand` event for the case where the body was hidden
+  // behind the expand control — nothing hides a search body and nothing
+  // dispatches that event now that the control is gone.
   useEffect(() => {
-    const load = () => {
-      if (loadedRef.current) return
-      loadedRef.current = true
-      void loadSearch(true)
-    }
-    host.addEventListener('semantic-operation-expand', load)
-    if (host.style.display !== 'none') load()
-    return () => host.removeEventListener('semantic-operation-expand', load)
-  }, [host, loadSearch])
-
-  const collapse = useCallback((event: any) => {
-    stopEventPropagation(event)
-    const op = host.closest('.semantic-chat-operation') as HTMLElement | null
-    const btn = op?.querySelector('.pretty-expand-btn') as HTMLElement | null
-    btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-  }, [host])
+    if (loadedRef.current) return
+    loadedRef.current = true
+    void loadSearch(true)
+  }, [loadSearch])
 
   const openChatForResult = useCallback(async (result: any) => {
     const agents = renderCtx.getAgents?.() || []
@@ -2353,8 +2342,12 @@ function SemanticChatOperationView({
   }, [editor, hostShapeId, renderCtx])
 
   return (
+    // No collapse control either, and it is a SECOND control with its own
+    // condition rather than the same one twice: it appeared only while
+    // `semantic-operation-expanded` was set, which only the expand button ever
+    // set. With nothing to expand from, there is nothing to collapse to. The
+    // gutter column stays -- the card's appearance is not in scope here.
     <div className="semantic-operation-expanded-shell">
-      <button ref={collapseRef} type="button" className="semantic-operation-collapse" onPointerUp={collapse}>Collapse</button>
       <div className="semantic-operation-view">
         <FleetSearchResultsView
           results={results}
@@ -2761,7 +2754,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess,
   itemKey,
   expandedRowsRef,
-  collapsedRowsRef,
   semanticRenderCtx,
   currentProject,
   hostShapeId,
@@ -2772,7 +2764,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   postProcess: (html: string) => string
   itemKey: string
   expandedRowsRef: React.RefObject<Set<string>>
-  collapsedRowsRef: React.RefObject<Set<string>>
   semanticRenderCtx: any
   currentProject?: string
   hostShapeId: TLShapeId
@@ -2812,7 +2803,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
       }
     })
     const expanded = expandedRowsRef.current
-    const collapsed = collapsedRowsRef.current
     // A thread's rows arrive after its read resolves, so the same restore runs
     // again once the view has drawn them.
     const restorePrettyExpansions = (root: HTMLElement) => {
@@ -2831,23 +2821,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
       })
     }
     restorePrettyExpansions(el)
-    el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach((body, i) => {
-      const op = body.closest('.semantic-chat-operation')
-      const key = `${itemKey}:semantic:${op?.getAttribute('data-semantic-key') || i}`
-      // A thread renders open, so it is expanded unless this row was explicitly
-      // collapsed. Restoring only remembered keys would close every thread the
-      // moment its row re-rendered.
-      const startsOpen = op?.classList.contains('semantic-chat-operation-open')
-      if (expanded.has(key) || (startsOpen && !collapsed.has(key) && body.style.display !== 'none')) {
-        body.style.display = ''
-        body.closest('.semantic-chat-operation')?.classList.add('semantic-operation-expanded')
-        const btn = body.parentElement?.querySelector('.pretty-expand-btn') as HTMLElement | null
-        if (btn) {
-          if (!btn.dataset.semanticCollapsedLabel) btn.dataset.semanticCollapsedLabel = btn.textContent || 'Expand'
-          btn.textContent = 'collapse'
-        }
-      }
-    })
+    // No `:semantic:` expansion state to restore: the only control that wrote
+    // those keys was the search card's expand button, and it is gone along with
+    // the clipped preview it toggled. (`semantic-chat-operation-open`, the other
+    // half of this restore, has not been emitted by anything since f7c2ec866.)
     const semanticRoots: any[] = []
     el.querySelectorAll<HTMLElement>('.semantic-operation-body').forEach(body => {
       const descriptor = decodeSemanticOperation(body)
@@ -2877,7 +2854,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
               descriptor={descriptor}
               renderCtx={semanticRenderCtx}
               currentProject={currentProject}
-              host={body}
               hostShapeId={hostShapeId}
               pageSize={semanticOperationPageSize}
             />
@@ -2901,14 +2877,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     return () => {
       for (const root of semanticRoots) root.unmount()
     }
-  }, [processed, itemKey, expandedRowsRef, collapsedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize, editor])
+  }, [processed, itemKey, expandedRowsRef, semanticRenderCtx, currentProject, hostShapeId, semanticOperationPageSize, editor])
 
   return (
     <>
       <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
     </>
   )
-}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.collapsedRowsRef === next.collapsedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.editor === next.editor)
+}, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey && prev.expandedRowsRef === next.expandedRowsRef && prev.currentProject === next.currentProject && prev.semanticRenderCtx === next.semanticRenderCtx && prev.hostShapeId === next.hostShapeId && prev.semanticOperationPageSize === next.semanticOperationPageSize && prev.editor === next.editor)
 
 function FleetChatInner({ shape }: { shape: any }) {
   const { addToast } = useToasts()
@@ -4635,7 +4611,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.
   const expandedRowsRef = useRef<Set<string>>(new Set())
-  const collapsedRowsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     setFleetEventsLiveTailPinned(shape.id, !userScrolledUpRef.current, chatEventBufferKey)
     return () => clearFleetEventsLiveTailPinned(shape.id, chatEventBufferKey)
@@ -5033,41 +5008,11 @@ function FleetChatInner({ shape }: { shape: any }) {
       // Expand tool result (show more search results / earlier thread messages)
       const expandBtn = (e.target as HTMLElement).closest('.pretty-expand-btn') as HTMLElement
       if (expandBtn) {
-        // A gap marker owns the rows next to it. Check that first: inside a
-        // thread card the marker sits within the semantic operation, and
-        // treating it as the card's own toggle would close the thread instead
-        // of revealing its middle.
-        const ownRows = expandBtn.nextElementSibling?.classList.contains('pretty-more-rows')
-          ? expandBtn.nextElementSibling as HTMLElement
-          : null
-        const semanticOp = ownRows ? null : expandBtn.closest('.semantic-chat-operation') as HTMLElement | null
-        const semanticBody = semanticOp?.querySelector('.semantic-operation-body') as HTMLElement | null
-        if (semanticOp && semanticBody) {
-          const isSearchOperation = semanticOp.classList.contains('semantic-search-operation')
-          const wasExpanded = isSearchOperation
-            ? semanticOp.classList.contains('semantic-operation-expanded')
-            : semanticBody.style.display !== 'none'
-          if (!expandBtn.dataset.semanticCollapsedLabel) {
-            expandBtn.dataset.semanticCollapsedLabel = expandBtn.textContent || 'Expand'
-          }
-          if (!isSearchOperation) semanticBody.style.display = wasExpanded ? 'none' : ''
-          semanticOp.classList.toggle('semantic-operation-expanded', !wasExpanded)
-          if (!wasExpanded) semanticBody.dispatchEvent(new Event('semantic-operation-expand'))
-          expandBtn.textContent = wasExpanded ? (expandBtn.dataset.semanticCollapsedLabel || 'Expand') : 'collapse'
-          const itemKey = expandBtn.closest('[data-item-key]')?.getAttribute('data-item-key')
-          const semanticKey = semanticOp.getAttribute('data-semantic-key') || '0'
-          if (itemKey) {
-            const key = `${itemKey}:semantic:${semanticKey}`
-            if (wasExpanded) {
-              expandedRowsRef.current.delete(key)
-              collapsedRowsRef.current.add(key)
-            } else {
-              expandedRowsRef.current.add(key)
-              collapsedRowsRef.current.delete(key)
-            }
-          }
-          return
-        }
+        // Only the thread card's gap marker reaches here now. The search card's
+        // expand/collapse pair was deleted along with the clipped preview it
+        // toggled, so `.semantic-chat-operation` -- emitted only by that card --
+        // no longer contains a `.pretty-expand-btn`, and the ownership check
+        // that used to disambiguate the two went with it.
         const moreRows = expandBtn.parentElement?.querySelector('.pretty-more-rows') as HTMLElement
         if (moreRows) {
           const wasExpanded = moreRows.style.display !== 'none'
@@ -6936,7 +6881,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                     postProcess={postProcess}
                     itemKey={String(item.key)}
                     expandedRowsRef={expandedRowsRef}
-                    collapsedRowsRef={collapsedRowsRef}
                     semanticRenderCtx={ctx}
                     currentProject={doc?.projectName}
                     hostShapeId={shape.id}
