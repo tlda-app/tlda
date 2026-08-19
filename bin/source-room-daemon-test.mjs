@@ -21,7 +21,7 @@ import {
 } from '../server/lib/project-store.mjs'
 import { createSourceRoomDaemon } from '../server/lib/source-room-daemon.mjs'
 import { initSyncRooms } from '../server/lib/sync-rooms.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+import { acceptSourceSnapshot, setAcceptedSourceMutationHandler, setSourceBindingTargetProvider } from '../server/routes/projects.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'tlda-source-room-'))
 await initProjectStore(root)
@@ -78,11 +78,25 @@ function suppressBuilds(name) {
   writeFileSync(join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['not-this-test.tex'] }))
 }
 
+// The accept returns `{status, body}` where the old push returned one flat
+// object, so `ok` and the error live under `body`. The room daemon normalizes
+// the same way at source-room-daemon.mjs:368 -- stubs below must return that
+// shape or they are testing a contract the daemon does not have.
+// Returns `result.body` ITSELF, not a copy. Callers below read
+// `.acceptedSourceMutation`, which projects.mjs:972 attaches with
+// `Object.defineProperty` and therefore NON-ENUMERABLY -- so `{...result.body}`
+// silently drops it, `applyAcceptedSourceMutation` receives a mutation carrying
+// nothing, and the room never sees the peer's edit. The assertion that fails is
+// about the room's text, three lines away from the spread that caused it.
+//
+// The accept returns `{status, body}` where the old push returned one flat
+// object. Nothing here reads the HTTP status off the return -- it is asserted
+// below -- so the body is the whole useful value.
 async function acceptedPush(name, body) {
-  const result = await processProjectPush(name, body)
-  assert.equal(result.status, 200, result.error)
-  assert.equal(result.ok, true, result.error)
-  return result
+  const result = await acceptSourceSnapshot(name, body)
+  assert.equal(result.status, 200, JSON.stringify(result))
+  assert.equal(result.body.ok, true, JSON.stringify(result))
+  return result.body
 }
 
 function makeRoomDaemon(pushDelayMs = 1000000) {
@@ -91,7 +105,7 @@ function makeRoomDaemon(pushDelayMs = 1000000) {
     readProject,
     sourceLifecycleStore,
     readClientSourceManifest,
-    processProjectPush,
+    acceptSourceSnapshot,
     pushDelayMs,
     log: { error() {} },
   })
@@ -114,16 +128,39 @@ try {
   const room = await roomDaemon.getRoom(name, 'main.tex')
   room.ytext.insert(6, 'browser draft\n')
 
-  const peer = await acceptedPush(name, {
+  // **The accept no longer hands the mutation back to its caller.** The old
+  // path tagged its result with `acceptedSourceMutation` and the caller passed
+  // that on; projects.mjs:1270 says why this path cannot -- the serialized
+  // operation returns BEFORE the effects run, so a result-tagged hook would
+  // fire with nothing recorded to send. The accept dispatches to a registered
+  // handler instead, from inside `applyAcceptedSourceEffects`.
+  //
+  // So the test registers the room daemon the way the server does, rather than
+  // rebuilding the mutation from named keys and calling
+  // `applyAcceptedSourceMutation` by hand. Reconstructing it here would prove
+  // the room applies a payload the test wrote, not the one the accept sends.
+  // The dispatch lives inside `if (targets.length)` (projects.mjs:1232), so
+  // with no linked machine there is nothing to send to and the handler never
+  // fires. One target is what makes the real producer run -- without it this
+  // test would hang waiting for a dispatch that cannot happen.
+  setSourceBindingTargetProvider(() => [{ bindingId: 'a-peer-machine' }])
+  const dispatched = new Promise(resolve => {
+    setAcceptedSourceMutationHandler(async mutation => {
+      await roomDaemon.applyAcceptedSourceMutation(mutation)
+      resolve()
+    })
+  })
+  await acceptedPush(name, {
     expectedRevision: base.sourceRevision,
     sourceManifest: ['main.tex'],
     files: [{ path: 'main.tex', content: 'intro\noutro\npeer accepted\n' }],
   })
-  await roomDaemon.applyAcceptedSourceMutation({
-    project: name,
-    ...peer.acceptedSourceMutation,
-    sourceRevision: peer.sourceRevision,
-  })
+  // The dispatch is deliberately fire-and-forget (a sleeping machine must not
+  // fail an author's push), so the test waits for it rather than assuming it
+  // has already run.
+  await dispatched
+  setAcceptedSourceMutationHandler(null)
+  setSourceBindingTargetProvider(null)
 
   assert.equal(room.ytext.toString(), 'intro\nbrowser draft\noutro\npeer accepted\n')
   await roomDaemon.flushRoom(room)
@@ -188,9 +225,9 @@ try {
     readProject,
     sourceLifecycleStore,
     readClientSourceManifest,
-    processProjectPush: async (_project, body) => {
+    acceptSourceSnapshot: async (_project, body) => {
       retryRequests.push(body)
-      return { status: 503, ok: false, error: 'temporarily unavailable' }
+      return { status: 503, body: { ok: false, error: 'temporarily unavailable' } }
     },
     pushDelayMs: 100,
     log: { error() {} },
@@ -209,9 +246,9 @@ try {
     readProject,
     sourceLifecycleStore,
     readClientSourceManifest,
-    processProjectPush: async (project, body) => {
+    acceptSourceSnapshot: async (project, body) => {
       recoveredRequest = body
-      return processProjectPush(project, body)
+      return acceptSourceSnapshot(project, body)
     },
     pushDelayMs: 10,
     log: { error() {} },
@@ -248,14 +285,20 @@ try {
       readProject,
       sourceLifecycleStore,
       readClientSourceManifest,
-      processProjectPush: async (_project, body) => {
+      acceptSourceSnapshot: async (_project, body) => {
         blockedRequests.push(body)
+        // `lifecycleStatus` and `authority` are DERIVED by the daemon from
+        // `body.status` and `body.currentRevision` (source-room-daemon.mjs:370).
+        // Returning them at the top level, as the old flat shape did, would
+        // leave the daemon reading undefined and the test asserting nothing.
         return {
           status: 409,
-          ok: false,
-          lifecycleStatus,
-          error: `terminal ${lifecycleStatus}`,
-          authority: { currentRevision: blockedBase.sourceRevision },
+          body: {
+            ok: false,
+            status: lifecycleStatus,
+            error: `terminal ${lifecycleStatus}`,
+            currentRevision: blockedBase.sourceRevision,
+          },
         }
       },
       recordHeldEdit: async (project, entry) => heldEdits.push({ project, entry }),
@@ -348,10 +391,9 @@ try {
     readProject,
     sourceLifecycleStore,
     readClientSourceManifest,
-    processProjectPush: async () => ({
+    acceptSourceSnapshot: async () => ({
       status: 409,
-      ok: false,
-      error: 'Source transaction failed: remote unavailable',
+      body: { ok: false, error: 'Source transaction failed: remote unavailable' },
     }),
     pushDelayMs: 10,
     log: { error() {} },
@@ -397,9 +439,9 @@ try {
     readProject,
     sourceLifecycleStore,
     readClientSourceManifest,
-    processProjectPush: async (...args) => {
+    acceptSourceSnapshot: async (...args) => {
       duplicatePushes += 1
-      return processProjectPush(...args)
+      return acceptSourceSnapshot(...args)
     },
     pushDelayMs: 25,
     log: { error() {} },
