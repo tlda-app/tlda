@@ -3188,8 +3188,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       sourcePath: source?.path,
       sourceSection: source?.section,
       logPrefix: 'fleet-chat',
+      showError: (message) => addToast({ title: message, severity: 'error' }),
     })
-  }, [editor, shape.id])
+  }, [addToast, editor, shape.id])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),
@@ -3844,8 +3845,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [editor])
 
   const openMarkdownChipFromTarget = useCallback((target: HTMLElement, stopPropagation: () => void): boolean => {
-    return openMarkdownChipFromTargetElement({ target, stopPropagation, openMarkdownColumn })
-  }, [openMarkdownColumn])
+    return openMarkdownChipFromTargetElement({
+      target,
+      stopPropagation,
+      openMarkdownColumn,
+      showError: (message) => addToast({ title: message, severity: 'error' }),
+    })
+  }, [addToast, openMarkdownColumn])
 
   // Handle clicks on doc-link spans
   const handleDocLinkClick = useCallback((e: React.MouseEvent) => {
