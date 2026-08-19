@@ -5,7 +5,21 @@ export function createBuildQueue({
   recordDisposition = async () => {},
   logError = (name, e) => console.error(`[build-dispatch] worker error for ${name}: ${e.message}`),
 }, options = {}) {
-  const maxConcurrency = Math.max(1, Number(options.maxConcurrency || 1) || 1)
+  // **`k >= 2` is a correctness bound, not a throughput preference** (§10.2b).
+  //
+  // At `k = 1` the only slot is the contested one, so a collaborator with
+  // finished, buildable work never gets to run it while someone upstream keeps
+  // typing and keeps reclaiming the slot on an older `waitingSince`. At `k >= 2`
+  // their build runs concurrently and promotes normally, and the typist simply
+  // never wins with unsettled work.
+  //
+  // So the DEFAULT is 2. `server.yaml` can still say otherwise — including 1,
+  // which is a decision somebody is allowed to make and this does not prevent —
+  // but an unset value must not silently be the starving case. It was: nothing
+  // supplies a default, `buildMaxConcurrency` ships commented out, and
+  // `Number(undefined || 1)` is 1.
+  const configured = Number(options.maxConcurrency)
+  const maxConcurrency = Number.isFinite(configured) && configured >= 1 ? configured : 2
   const buildPriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 10
   const _inFlight = new Map() // jobKey(name, kind) -> { handle, waiters }
   const _queued = new Map()   // jobKey(name, kind) -> { name, kind, waiters }
