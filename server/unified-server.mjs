@@ -56,6 +56,7 @@ import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { DEFAULT_SUBSCRIPTION_QUERY, DEFAULT_SUBSCRIPTION_POLICY, MINT_SLOTS } from '../shared/subscriptions.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
+import { agentNodesInMessageFilter } from './lib/message-filter-sql.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
@@ -7070,7 +7071,24 @@ async function dispatchFleetWsMessage(ws, msg) {
       // Support lineage search: agents[] (array of fleet IDs to union)
       let searchAgent = msg.agents?.length ? msg.agents : msg.agent;
       const messageFilter = msg.filterExpression ? parseMessageFilter(msg.filterExpression) : null
+      // Resolve every agent leaf ONCE, onto the tree, and send the tree to the
+      // store so the filter is in the WHERE clause rather than applied to
+      // whatever the LIMIT happened to return. `matchesMessageNode` below stays
+      // the authority and still runs; this is what makes `limit` mean "limit
+      // matching rows". See server/lib/message-filter-sql.mjs.
       if (messageFilter) {
+        for (const node of agentNodesInMessageFilter(messageFilter)) {
+          node.ids = [...await resolveAgentNode(node)]
+        }
+      }
+      if (messageFilter) {
+        // KNOWN GAP, deliberate: this id union is a superset of the answer only
+        // while every mention of a name is positive. `from:a | !from:b` matches
+        // rows naming neither, and narrowing to {a} drops them. Left as it is
+        // because removing the narrowing turns a filter that matches little
+        // into a scan of the whole window on a 2.7 GB events table, and a
+        // negated agent term is rare where a slow read on Skip's box is not.
+        // The compiled predicate above bounds everything else.
         const ids = [...await collectPrefilterIds(messageFilter)]
         if (ids.length) searchAgent = ids
       }
@@ -7109,6 +7127,7 @@ async function dispatchFleetWsMessage(ws, msg) {
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
         between: betweenPair,
+        messageFilterAst: messageFilter,
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
