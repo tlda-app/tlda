@@ -54,6 +54,28 @@ name only has one job and this is what failing at it looks like.
 and nobody opened it. It clears presence markers. **Skip caught it with one sentence — "edits
 happen on the file system" — which is the fact that makes the claim impossible.**
 
+**And a third time, on 2026-08-19, in the direction that now matters most.** Skip's ruling that
+night was *"DEATH IS A FUCKING FLAG IN THE DATABASE. A FLAG THAT IS ONLY SET EXPLICITLY."* An
+audit reading `else if (liveness.state === 'dead' || liveness.state === 'wedged')
+markAgentNotAlive(agentId, detail)` reported it as a second inferred-death path — a `wedged`
+verdict invented from a 90-second timeout, marking an agent dead.
+
+**It does not mark anything dead.** `markAgentNotAlive` never touches the `dead` column. It
+writes runtime-status evidence and calls `recordRuntimeState` with **`detail.status ||
+RUNTIME_STATUS.HIBERNATING`**, so the default outcome of the whole function is *hibernating* —
+which is the state Skip says a non-running agent should be in.
+
+**The relationship is the reverse of what the name suggests.** `recordRuntimeState` computes
+`agent.dead ? RUNTIME_STATUS.DEAD : …` — it **reads** the column to decide what to record.
+So the `dead` flag is an *input* to runtime status, never an output of it. Even the two
+kill-session callers that pass `status: RUNTIME_STATUS.DEAD` explicitly do not thereby kill
+anything: that status only survives because those paths call `markDead` separately, and if they
+did not, the column would override the argument.
+
+**So the name costs a specific thing, and it is worse than confusion:** it makes an auditor
+looking for inferred death find a false positive, in a file where real ones existed. Two of the
+three flattened cases in this entry are `dead` and `wedged`, and neither is a death.
+
 **So the entry documenting a misleading name was itself written from the misleading name.** That
 is the whole argument for this file, demonstrated at its own expense: **a name in a call site is
 not evidence about behaviour, and the cost of believing one is a false claim in a durable
