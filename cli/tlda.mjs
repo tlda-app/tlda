@@ -2066,7 +2066,54 @@ export function botMintId(envName, botName) {
   return `bot:${envName}:${botName}`
 }
 
+// Is there already a bot of this model in the daemon ledger? `bot:<env>:<model>`
+// is that ledger's key for one: the declaration key in bots.yaml IS the bot's
+// model — `todd`, `dev`, `grammar` — and renaming a bot changes the name its
+// fleet row holds, never which model it is. So this lookup is name-independent
+// by construction, which is the whole point.
+//
+// Skip, 2026-08-18 14:27 EDT: "if we have no bot of this model in the ledger [we
+// mint]. Otherwise, we wake them. That's name-independent, right? It's
+// model-specific."
+//
+// Why not key it on the name. Renaming a bot is the sanctioned way to stop one,
+// and a name-keyed check reads a rename as a vacancy — which a KeepAlive
+// launcher fills within seconds, so stopping a bot causes its replacement and
+// you "can basically never have" a stopped bot. Keyed on the model there is no
+// vacancy to fill and the duplicate is impossible rather than prevented.
+async function recordedBotOfModel(unit) {
+  const { MintStore } = await import('../daemon/mint-store.mjs')
+  const store = new MintStore(resolve(CONFIG_DIR, 'daemon-mints.sqlite'), { defaultEnvName: unit.envName })
+  try {
+    const row = store.get(botMintId(unit.envName, unit.bot.name))
+    return row?.fleetId ? row : null
+  } finally {
+    store.close()
+  }
+}
+
+// One bot of a model, for its whole life.
+//
+// Skip, 2026-08-18 14:21 EDT: "what it's supposed to do is call mint with a
+// special argument that says instead of, like, rotating, fail if I don't get the
+// name I'm asking for. AND IF YOU FAIL, WAKE"
+//
+// A name collision hands a mint an alternate name rather than rejecting it, and
+// that is the design — for two different beings wanting one name. A bot starting
+// again is not a different being, so it must not take the substitute: it comes
+// up, sees it is not under its canonical name, and goes inert. That is how the
+// `dev` bot spent 2026-08-18 running as `quiet-dev` sweeping nothing while the
+// box reached 120 MB free.
 async function startBot(unit) {
+  const mintId = botMintId(unit.envName, unit.bot.name)
+  const wake = async why => {
+    botManagerLog(`${unit.label}: ${why} — waking ${mintId}`)
+    const code = await runBotCliCommand(['agent', 'wake', mintId], unit)
+    if (code !== 0) botManagerLog(`${unit.label}: wake exited ${code}`)
+    return code
+  }
+  if (await recordedBotOfModel(unit)) return await wake('already in the ledger')
+
   // `bots.yaml`'s `env:` travels as an argument, not as ambient environment. It
   // is configuration the operator wrote for this bot, so it is data; the
   // environment this process happens to hold is a different thing, and the
@@ -2077,11 +2124,14 @@ async function startBot(unit) {
   const declaredEnv = Object.fromEntries(
     Object.entries(unit.bot.env || {}).map(([key, value]) => [key, String(value)]),
   )
-  await runBotCliCommand([
+  const code = await runBotCliCommand([
     'agent', 'mint', unit.bot.name,
-    '--mint-id', botMintId(unit.envName, unit.bot.name),
+    '--mint-id', mintId,
     '--model', 'bot',
     '--kind', 'bot',
+    // Fail rather than rotate. Without this the launcher accepts whatever name
+    // it is handed and the bot discovers at runtime that it is not itself.
+    '--fail-if-not-fresh',
     '--cwd', FLEET_DAEMON_MAIN_ROOT,
     '--bot-script', resolveBotScriptForCli(unit.bot.script),
     '--bot-name', unit.bot.name,
@@ -2089,6 +2139,12 @@ async function startBot(unit) {
     '--bot-heartbeat-file', unit.paths.heartbeatFile,
     ...(Object.keys(declaredEnv).length ? ['--bot-env', JSON.stringify(declaredEnv)] : []),
   ], unit)
+  if (code === 0) return code
+  // "AND IF YOU FAIL, WAKE". If the ledger has this model under some other name
+  // the wake starts it; if it has nothing, `wake` says so, and that is the honest
+  // end of it — the name belongs to something that is not this bot and there is
+  // nobody to wake. Launching anyway would only add a second inert process.
+  return await wake(`mint did not get the name "${unit.bot.name}"`)
 }
 
 async function runBotManager() {
@@ -5727,6 +5783,10 @@ async function cmdDoctorYolo() {
   })
   const { localAgentId, fleetId, tmuxSession, harness: harnessKind, model } = launched
   const reportedName = launched.name || name
+  if (launched.reused) {
+    console.log(yellow(`${reportedName} is already running here; nothing was launched.`))
+    console.log(dim('  Its mint record was re-recorded, so wake and routing resolve against it.'))
+  }
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
@@ -5738,7 +5798,7 @@ async function cmdDoctorYolo() {
     return
   }
 
-  console.log(green(bold('Break-glass agent launched locally.')))
+  console.log(green(bold(launched.reused ? 'Break-glass agent already running locally.' : 'Break-glass agent launched locally.')))
   if (fleetId) console.log(`  fleet_id: ${fleetId}`)
   console.log(`  local_agent_id: ${localAgentId}`)
   console.log(`  name: ${reportedName}`)
