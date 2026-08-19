@@ -690,11 +690,12 @@ export class FleetStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_wiretaps_agent ON wiretaps(agent_id);
-      -- The reads are all live-only, so the index is too: an agent that has
-      -- subscribed and unsubscribed for a year keeps one live row and the
-      -- lookup stays the size of what is live, not of the history.
-      CREATE INDEX IF NOT EXISTS idx_wiretaps_agent_live
-        ON wiretaps(agent_id) WHERE ended_at IS NULL;
+      -- The live-only partial index on ended_at is NOT created here. On an
+      -- existing database the CREATE TABLE above is a no-op, so ended_at does
+      -- not exist yet -- it is added by the ALTER further down -- and a partial
+      -- index on a column that is not there fails the whole open with
+      -- SQLITE_ERROR. It is created after the ALTER instead. On a fresh
+      -- database both orders work, which is exactly why every test passed.
 
       CREATE TABLE IF NOT EXISTS subscriptions (
         subscription_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -709,8 +710,8 @@ export class FleetStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_subscriptions_owner ON subscriptions(owner);
-      CREATE INDEX IF NOT EXISTS idx_subscriptions_owner_live
-        ON subscriptions(owner) WHERE ended_at IS NULL;
+      -- Same as the wiretaps one above: the live-only partial index is created
+      -- after the ALTER that adds ended_at, not here.
 
       -- Daemon outbox at-most-once ledger. A daemon redelivers an envelope it
       -- did not see acked, so the server has to recognise one it already
