@@ -19,7 +19,48 @@ import {
   updateProject,
 } from '../server/lib/project-store.mjs'
 import { linkOverleaf, stopPolling, unlinkOverleaf } from '../server/lib/overleaf-sync.mjs'
-import { processProjectPush } from '../server/routes/projects.mjs'
+// STATUS 2026-08-19: LOADS AGAIN, AND RED ON A REAL PROMISE. It imported
+// `processProjectPush`, which no longer exists, so it threw a SyntaxError at
+// import and neither of Skip's promises below had been checked since.
+//
+// Repointed to `acceptSourceSnapshot`. Both promises then FAIL, and they fail
+// for a reason that is already written down and already decided -- so this is
+// not a new finding and not something to fix here:
+//
+//   `bin/a-remote-pull-tells-nobody-test.mjs` records that the OUTBOUND half --
+//   publishing a local edit back out to a linked Overleaf remote -- is
+//   deliberately unwired on this path. `pushSourceToOverleaf` exists and "has
+//   never been called by anything, ever"; the old caller
+//   `processProjectPushSerialized` was the one reaching
+//   `prepareSourcePushToOverleaf`, and it is gone. In that file's words,
+//   wiring never-executed code into the path Skip's paper travels "was judged
+//   the wrong risk to take even though the gap is real. It stays unwired on
+//   purpose."
+//
+// So the two promises below depend on an integration that is intentionally
+// absent right now:
+//   - a browser edit concurrent with a remote edit must be REFUSED (409,
+//     `overleaf-conflict`). It is accepted with 200 instead: there is no
+//     remote-side prepare to detect the divergence.
+//   - a non-overlapping browser edit must reach the remote. The remote still
+//     reads `base main`: nothing publishes.
+//
+// **The assertions are left exactly as they were, asserting 200/409 and the
+// published bytes.** Weakening them to match current behaviour would turn his
+// promise into a description of the gap, and a test that passes for a new
+// reason is worse than one that is red for the right one. This file goes green
+// when the outbound push is wired, and it is the check for that work.
+
+import { acceptSourceSnapshot } from '../server/routes/projects.mjs'
+
+// `processProjectPush` returned one flat object; `acceptSourceSnapshot` returns
+// `{status, body}` and spells the lifecycle status `body.status`. Normalised the
+// way the room daemon normalises it (`source-room-daemon.mjs:367-372`) so this
+// file tests the shape the production caller actually has.
+async function push(name, body) {
+  const response = await acceptSourceSnapshot(name, body)
+  return { ...response.body, status: response.status, lifecycleStatus: response.body.status ?? null }
+}
 
 const gitEnv = { ...process.env }
 for (const key of Object.keys(gitEnv)) {
@@ -146,7 +187,7 @@ test('overlapping remote and browser edits preserve both sides and accepted auth
     })
     const remoteHead = advanceRemote(root, remote, { filePath: 'main.tex', content: 'remote side\n' })
 
-    const result = await processProjectPush(name, {
+    const result = await push(name, {
       expectedRevision: acceptedAuthority.currentRevision,
       files: [{ path: 'main.tex', content: 'browser side\n' }],
       sourceManifest: ['main.tex'],
@@ -184,7 +225,7 @@ test('non-overlapping remote and browser edits publish on top of each other', as
     write(path.join(outputDir(name), 'relevant-files.json'), JSON.stringify({ files: ['unrelated.tex'] }))
     const remoteHead = advanceRemote(root, remote, { filePath: 'notes.tex', content: 'remote notes\n' })
 
-    const result = await processProjectPush(name, {
+    const result = await push(name, {
       expectedRevision: acceptedAuthority.currentRevision,
       files: [{ path: 'main.tex', content: 'browser main\n' }],
       sourceManifest: ['main.tex', 'notes.tex'],
