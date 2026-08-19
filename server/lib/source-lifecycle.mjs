@@ -1036,12 +1036,14 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       // risk. `damped` says so, and the daemon surfaces it only if the NEXT
       // settle reproduces it. An alarm that fires constantly and an alarm that
       // never clears are the same alarm.
-      const orphaned = await referencedButRemoved(await store.head(project), proposed)
+      const current = await store.head(project)
+      const orphaned = await referencedButRemoved(current, proposed)
       if (orphaned.length > 0) {
         await store.markRefused(project, proposed, await store.refused(project))
         return {
           ok: false,
           status: 'references-a-removed-path',
+          revision: current,
           damped: true,
           removedButReferenced: orphaned,
           refusedRevision: proposed,
