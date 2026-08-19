@@ -466,25 +466,6 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
-      -- pendingEditActivities() had no index it could use, so it scanned the
-      -- whole events table -- the largest table here -- evaluating json_extract
-      -- twice per row, with no LIMIT, and it runs on EVERY accepted source
-      -- mutation. That wedged the single store worker for two minutes at a
-      -- time while the main thread stayed healthy, so every store call behind
-      -- it (login, fleet-search, chat) timed out and every aggregate measure
-      -- said the server was fine. Observed at depth 61 with this method at the
-      -- head of the queue and its elapsed time still climbing past 118s.
-      --
-      -- The WHERE here is the query's WHERE, so the index holds only the rows
-      -- still pending and a row leaves it as soon as canonical_source is set.
-      -- Cost becomes the number of pending activities rather than the number of
-      -- events that have ever happened. Leading on $.project so the project
-      -- filter in the query is served by the index too.
-      CREATE INDEX IF NOT EXISTS idx_events_pending_edit_activity
-        ON events(json_extract(metadata, '$.project'), id)
-        WHERE type = 'activity'
-          AND json_extract(metadata, '$.input.edit_operation.operation_id') IS NOT NULL
-          AND json_extract(metadata, '$.input.canonical_source') IS NULL;
       CREATE TABLE IF NOT EXISTS transport_operations (
         operation_id TEXT PRIMARY KEY,
         operation_type TEXT NOT NULL,
@@ -627,12 +608,16 @@ export class FleetStore {
         ON native_subagent_notifications(parent_agent_id, acknowledged_at, event_id);
 
       -- Task state. THE RECORD, not a cache: nothing rebuilds this table from
-      -- events, so a column lost here is lost. It said "cache, rebuilt from
-      -- events" for as long as git can see, which is why removeTask() and
-      -- pruneDoneTasks() hard-delete rows -- safe under that claim, and not safe
-      -- in fact: success_criteria, blocked_by, metadata and the timestamps have
-      -- no other copy. Transitions are additionally recorded as task_update
-      -- events (_insertTaskStateEvent), but those carry the transition, not the row.
+      -- events, so a column lost here is lost -- success_criteria, blocked_by,
+      -- metadata and the timestamps have no other copy. Transitions are
+      -- additionally recorded as task_update events (_insertTaskStateEvent), but
+      -- those carry the transition, not the row.
+      --
+      -- NOTHING DELETES A ROW HERE. A task that is no longer current is marked
+      -- status = 'retracted', which every active-task query and both partial
+      -- indexes below already exclude. It said "cache, rebuilt from events" for
+      -- as long as git can see, and under that false claim removeTask() and
+      -- pruneDoneTasks() hard-deleted rows; both are gone.
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         agent TEXT NOT NULL,
@@ -688,16 +673,28 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_recipients_agent_ts ON recipients(agent_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_recipients_event ON recipients(event_id);
 
-      -- Wiretaps: persistent message subscriptions
+      -- Wiretaps: persistent message subscriptions.
+      --
+      -- Skip, 2026-08-19 05:40 EDT, on unsubscribing: "Oh, that's interesting.
+      -- Yeah. Unsubscribing should mark". So ending one sets ended_at and the
+      -- row stays -- the filter query has no other copy anywhere, and neither
+      -- does the fact that the subscription ever existed. ended_at IS NULL means
+      -- live, and every read below says so.
       CREATE TABLE IF NOT EXISTS wiretaps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         agent_id TEXT NOT NULL,          -- who is listening
         filter TEXT NOT NULL,            -- JSON object: { from?: string[][], to?: string[][] }
         types TEXT,                      -- JSON array of event types to filter (null = all)
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TEXT DEFAULT (datetime('now')),
+        ended_at TEXT                    -- NULL = live; set once, never cleared
       );
 
       CREATE INDEX IF NOT EXISTS idx_wiretaps_agent ON wiretaps(agent_id);
+      -- The reads are all live-only, so the index is too: an agent that has
+      -- subscribed and unsubscribed for a year keeps one live row and the
+      -- lookup stays the size of what is live, not of the history.
+      CREATE INDEX IF NOT EXISTS idx_wiretaps_agent_live
+        ON wiretaps(agent_id) WHERE ended_at IS NULL;
 
       CREATE TABLE IF NOT EXISTS subscriptions (
         subscription_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -707,10 +704,13 @@ export class FleetStore {
         created_at TEXT NOT NULL,
         created_by TEXT NOT NULL,
         adapter TEXT NOT NULL,
-        adapter_id INTEGER
+        adapter_id INTEGER,
+        ended_at TEXT                    -- NULL = live; set once, never cleared
       );
 
       CREATE INDEX IF NOT EXISTS idx_subscriptions_owner ON subscriptions(owner);
+      CREATE INDEX IF NOT EXISTS idx_subscriptions_owner_live
+        ON subscriptions(owner) WHERE ended_at IS NULL;
 
       -- Daemon outbox at-most-once ledger. A daemon redelivers an envelope it
       -- did not see acked, so the server has to recognise one it already
@@ -873,12 +873,19 @@ export class FleetStore {
     // cannot be diagnosed; a row set to `hold` can, and today was a whole day of
     // the first kind.
     //
-    // Enforced by the trigger below rather than by a check in the delete path,
+    // Enforced by the triggers below rather than by a check in the removal path,
     // for the same reason the living-name rule is a partial unique index: a code
-    // check drifts, and there is more than one way to reach a delete.
+    // check drifts, and there is more than one way to reach a removal.
     const subscriptionCols = this.db.prepare("PRAGMA table_info(subscriptions)").all();
     if (!subscriptionCols.some(c => c.name === 'mandatory')) {
       this.db.exec("ALTER TABLE subscriptions ADD COLUMN mandatory INTEGER DEFAULT 0");
+    }
+    if (!subscriptionCols.some(c => c.name === 'ended_at')) {
+      this.db.exec("ALTER TABLE subscriptions ADD COLUMN ended_at TEXT");
+    }
+    const wiretapCols = this.db.prepare("PRAGMA table_info(wiretaps)").all();
+    if (!wiretapCols.some(c => c.name === 'ended_at')) {
+      this.db.exec("ALTER TABLE wiretaps ADD COLUMN ended_at TEXT");
     }
     this.db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_undeletable
@@ -887,6 +894,25 @@ export class FleetStore {
       BEGIN
         SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
       END;
+    `);
+    // The delete trigger above is now the guard on a path nothing takes, so on
+    // its own it would silently stop protecting anything: unsubscribing marks,
+    // and an UPDATE is not a DELETE. This is the same guard on the path that is
+    // actually taken. Both stay -- the delete one because the table can still be
+    // reached by hand, this one because it is the live route.
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_subscriptions_mandatory_unendable
+      BEFORE UPDATE OF ended_at ON subscriptions
+      WHEN OLD.mandatory = 1 AND OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'mandatory subscription cannot be removed — set its policy to hold instead');
+      END;
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_subscriptions_owner_live
+        ON subscriptions(owner) WHERE ended_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_wiretaps_agent_live
+        ON wiretaps(agent_id) WHERE ended_at IS NULL;
     `);
 
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
@@ -1704,7 +1730,6 @@ export class FleetStore {
       INSERT INTO agent_daemon_routes (agent_id, daemon_key) VALUES (?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET daemon_key = excluded.daemon_key
     `);
-    this._deleteAgentDaemonRoute = this.db.prepare('DELETE FROM agent_daemon_routes WHERE agent_id = ?');
     // last_active is a maintained column on agents (bumped on every event
     // insert — see share()), so this is a plain indexed read that never touches
     // the events table. Earlier versions computed last_active inline (correlated
@@ -1729,7 +1754,6 @@ export class FleetStore {
       FROM agents
       LEFT JOIN lineages ON lineages.id = agents.lineage_id
     `);
-    this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
     this._retirePendingShell = this.db.prepare(`
@@ -1776,7 +1800,6 @@ export class FleetStore {
       LIMIT @limit
     `);
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
-    this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
     this._hasSessionEntries = this.db.prepare('SELECT 1 FROM session_entries WHERE session_id = ? LIMIT 1');
     this._getDelegateEventForTask = this.db.prepare(`
       SELECT ${this._EVT} FROM events WHERE task_id = ? AND type = 'delegate' ORDER BY id DESC LIMIT 1
@@ -1815,14 +1838,19 @@ export class FleetStore {
 
     // Wiretap queries
     this._addWiretap = this.db.prepare('INSERT INTO wiretaps (agent_id, filter, types) VALUES (?, ?, ?)');
-    this._getWiretaps = this.db.prepare('SELECT * FROM wiretaps');
+    this._getWiretaps = this.db.prepare('SELECT * FROM wiretaps WHERE ended_at IS NULL');
     this._getResolvableWiretaps = this.db.prepare(`
       SELECT * FROM wiretaps
-      WHERE json_type(CASE WHEN json_valid(filter) THEN filter ELSE 'null' END) = 'text'
+      WHERE ended_at IS NULL
+        AND json_type(CASE WHEN json_valid(filter) THEN filter ELSE 'null' END) = 'text'
         AND json_extract(filter, '$') != 'to:' || agent_id
+        -- The suppression list is live subscriptions only. Without the
+        -- ended_at test an ended subscription would go on suppressing the
+        -- wiretap it once adapted, which is a silent loss of delivery that
+        -- nothing surfaces.
         AND id NOT IN (
           SELECT adapter_id FROM subscriptions
-          WHERE adapter = 'wiretap' AND adapter_id IS NOT NULL
+          WHERE adapter = 'wiretap' AND adapter_id IS NOT NULL AND ended_at IS NULL
         )
     `);
     // A subscription is read from the subscriptions table. `query` is the filter;
@@ -1844,15 +1872,16 @@ export class FleetStore {
         s.created_at
       FROM subscriptions s
       JOIN agents a ON a.id = s.owner AND a.dead = 0
+      WHERE s.ended_at IS NULL
     `);
-    this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
-    this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
-    this._deleteWiretapsByAgent = this.db.prepare('DELETE FROM wiretaps WHERE agent_id = ?');
+    this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ? AND ended_at IS NULL');
+    this._endWiretap = this.db.prepare('UPDATE wiretaps SET ended_at = ? WHERE id = ? AND ended_at IS NULL');
+    this._endWiretapsByAgent = this.db.prepare('UPDATE wiretaps SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL');
     this._addSubscription = this.db.prepare(`INSERT INTO subscriptions (owner, query, notification_policy, created_at, created_by, adapter, adapter_id, mandatory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-    this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? ORDER BY subscription_id DESC');
-    this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? ORDER BY subscription_id');
-    this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
-    this._deleteSubscription = this.db.prepare('DELETE FROM subscriptions WHERE subscription_id = ?');
+    this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? AND ended_at IS NULL ORDER BY subscription_id DESC');
+    this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? AND ended_at IS NULL ORDER BY subscription_id');
+    this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ? AND ended_at IS NULL');
+    this._endSubscription = this.db.prepare('UPDATE subscriptions SET ended_at = ? WHERE subscription_id = ? AND ended_at IS NULL');
     this._updateWiretapFilter = this.db.prepare('UPDATE wiretaps SET filter = ? WHERE id = ?');
 
     // Event queries for chat history
@@ -3130,7 +3159,7 @@ export class FleetStore {
     this.db.transaction(() => {
       marked = this.db.prepare(
         `UPDATE subscriptions SET mandatory = 1
-          WHERE mandatory = 0 AND adapter = 'subscription' AND query IN (?, ?)`,
+          WHERE mandatory = 0 AND ended_at IS NULL AND adapter = 'subscription' AND query IN (?, ?)`,
       ).run('to:me', DEFAULT_SUBSCRIPTION_QUERY).changes;
       this.db.prepare('INSERT INTO store_migrations (name, ran_at) VALUES (?, ?)').run(NAME, new Date().toISOString());
     })();
@@ -3897,23 +3926,13 @@ export class FleetStore {
     return aliveIds.has(agent.id);
   }
 
-  removeAgent(id) {
-    this.retireTasksForGoneAgent(id, 'agent row deleted');
-    this.db.transaction(() => {
-      this._deleteAgentDaemonRoute.run(id);
-      this._deleteAgent.run(id);
-    })();
-    this._bustAgentsCache();
-    this._syncAgentRegistry(id);
-  }
-
   /**
    * An agent's open tasks die when the agent does.
    *
-   * Called from the two places an agent stops existing — markDead() and
-   * removeAgent(). Without this, every death leaves its tasks open forever and
-   * the active-task list grows without bound; 851 rows had accumulated by
-   * 2026-07-26, 688 of them on agents that were dead or whose row was gone.
+   * Called from markDead(), the one place an agent stops being current. Without
+   * this, every death leaves its tasks open forever and the active-task list
+   * grows without bound; 851 rows had accumulated by 2026-07-26, 688 of them on
+   * agents that were dead or whose row was gone.
    */
   retireTasksForGoneAgent(id, why) {
     const open = this.getActiveTasksByAgent(id);
@@ -4500,13 +4519,6 @@ export class FleetStore {
     return this._getAllTasks.all().map(r => this._hydrateTask(r));
   }
 
-  removeTask(id) {
-    const task = this.getTask(id);
-    this._deleteTask.run(id);
-    this._queueTaskDocChange({ type: 'delete', task, taskId: id, actor: task?.agent });
-    this._queueTaskDelta({ type: 'remove', taskId: id });
-  }
-
   _queueTaskDelta(change) {
     if (!change || !this._taskChanges) return;
     if (this._taskChanges.length >= this._maxQueuedTaskChanges) {
@@ -4569,10 +4581,21 @@ export class FleetStore {
           retracted_before_delivery: true,
         });
       }
-      this.removeTask(task.id);
+      this.upsertTask({
+        ...task,
+        status: 'retracted',
+        completed_at: task.completed_at || retractedAt,
+        metadata: {
+          ...(task.metadata || {}),
+          retracted: true,
+          retracted_at: retractedAt,
+          retracted_by: retractedBy,
+          retracted_before_delivery: true,
+        },
+      });
       return {
         task_id: task.id,
-        mode: 'removed_unread',
+        mode: 'retracted_unread',
         event_id: event?.id || null,
         unread_removed: !!(event && unreadPending),
         exposed: false,
@@ -4627,10 +4650,10 @@ export class FleetStore {
    * the row itself.
    *
    * Distinct from retractTask(): a retract un-sends a task the recipient never
-   * saw, so it may remove the row. A retire is for a task that was delivered and
-   * has simply outlived its agent — the row stays, carrying the reason, so a
-   * bulk close is auditable afterwards. It writes no report document, sends no
-   * chat, and wakes nobody.
+   * saw. A retire is for a task that was delivered and has simply outlived its
+   * agent. Neither removes the row — both mark it 'retracted' and record why, so
+   * a close is auditable afterwards. A retire additionally writes no report
+   * document, sends no chat, and wakes nobody.
    *
    * The unread delegate row is cleared too: leaving it behind would keep the
    * item in the agent's inbox forever.
@@ -4782,18 +4805,27 @@ export class FleetStore {
     return this._getWiretapsByAgent.all(agentId).map(r => this._hydrateWiretap(r));
   }
 
-  removeWiretap(id) {
-    this._deleteWiretap.run(id);
-    this._wiretapCache = null;
-    this._resolvableWiretapCache = null;
-    this._resolvableSubscriptionWiretapCache = null;
+  // Named for what they do. A wiretap that has been ended stops matching --
+  // every read is live-only -- and its filter stays readable, which a delete
+  // could not give: the filter expression has no other copy anywhere.
+  endWiretap(id, at = new Date().toISOString()) {
+    const ended = this._endWiretap.run(at, id).changes > 0;
+    if (ended) {
+      this._wiretapCache = null;
+      this._resolvableWiretapCache = null;
+      this._resolvableSubscriptionWiretapCache = null;
+    }
+    return ended;
   }
 
-  removeWiretapsByAgent(agentId) {
-    this._deleteWiretapsByAgent.run(agentId);
-    this._wiretapCache = null;
-    this._resolvableWiretapCache = null;
-    this._resolvableSubscriptionWiretapCache = null;
+  endWiretapsByAgent(agentId, at = new Date().toISOString()) {
+    const ended = this._endWiretapsByAgent.run(at, agentId).changes > 0;
+    if (ended) {
+      this._wiretapCache = null;
+      this._resolvableWiretapCache = null;
+      this._resolvableSubscriptionWiretapCache = null;
+    }
+    return ended;
   }
 
   addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null, mandatory = false }) {
@@ -4847,17 +4879,20 @@ export class FleetStore {
     if (!owners?.length) return {};
     const placeholders = owners.map(() => '?').join(',');
     const rows = this.db.prepare(
-      `SELECT subscription_id, owner, query, notification_policy FROM subscriptions WHERE owner IN (${placeholders}) ORDER BY subscription_id`,
+      `SELECT subscription_id, owner, query, notification_policy FROM subscriptions WHERE owner IN (${placeholders}) AND ended_at IS NULL ORDER BY subscription_id`,
     ).all(...owners);
     const byOwner = {};
     for (const row of rows) (byOwner[row.owner] ||= []).push(row);
     return byOwner;
   }
 
-  removeSubscription(subscriptionId) {
-    const removed = this._deleteSubscription.run(subscriptionId).changes > 0;
-    if (removed) this._resolvableSubscriptionWiretapCache = null;
-    return removed;
+  // Ending is idempotent by construction: the UPDATE carries `ended_at IS NULL`,
+  // so a second unsubscribe changes nothing and reports false rather than
+  // overwriting the moment the first one recorded.
+  endSubscription(subscriptionId, at = new Date().toISOString()) {
+    const ended = this._endSubscription.run(at, subscriptionId).changes > 0;
+    if (ended) this._resolvableSubscriptionWiretapCache = null;
+    return ended;
   }
 
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
@@ -5254,14 +5289,6 @@ export class FleetStore {
 
   updateEventMetadata(eventId, patch) {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
-  }
-
-  pendingEditActivities(project = null) {
-    const rows = this.db.prepare(`SELECT id,type,timestamp,from_id,text,metadata FROM events
-      WHERE type='activity' AND json_extract(metadata,'$.input.edit_operation.operation_id') IS NOT NULL
-        AND json_extract(metadata,'$.input.canonical_source') IS NULL
-        AND (? IS NULL OR json_extract(metadata,'$.project')=?) ORDER BY id`).all(project, project)
-    return rows.map(row => ({ id:row.id, type:row.type, timestamp:row.timestamp, from:row.from_id, text:row.text, metadata:JSON.parse(row.metadata||'{}') }))
   }
 
   // Who last touched this source file, and when. One row, index-served.
@@ -6395,11 +6422,6 @@ export class FleetStore {
   }
 
   // ---- Cleanup ----
-
-  pruneDoneTasks(maxAgeMs = 86400000) {
-    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
-    return this.db.prepare("DELETE FROM tasks WHERE status = 'done' AND completed_at < ?").run(cutoff).changes;
-  }
 
   addSkillRead(agentId, skillKey) {
     this.db.prepare('INSERT OR IGNORE INTO skill_reads (agent_id, skill_key) VALUES (?, ?)').run(agentId, skillKey);

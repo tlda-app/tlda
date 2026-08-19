@@ -806,17 +806,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, task_id: taskId })
   })
 
-  // --- POST /api/tasks/delete ---
-  router.post('/api/tasks/delete', async (req, res) => {
-    const { task_id } = req.body || {}
-    if (!task_id) { res.status(400).send('missing task_id'); return }
-    const task = await fleetStore?.getTask?.(task_id)
-    if (!task) { res.status(404).send('task not found'); return }
-    await fleetStore?.removeTask?.(task_id)
-    broadcastState()
-    res.json({ ok: true, task_id })
-  })
-
   // --- POST /api/tasks/retire ---
   // Administratively close tasks nobody is going to do, recording the reason on
   // each row. The caller passes the exact ids and the reason — the server holds

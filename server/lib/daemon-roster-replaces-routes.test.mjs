@@ -2,8 +2,10 @@
 //
 // `setAgentDaemonRoute` can only add. One message says "this agent is here" and
 // nothing can say "and nobody else is", so a route for an agent that died or
-// moved survived until its agent row was deleted -- `removeAgent()` is the only
-// caller of the route delete in the whole server. Measured 2026-08-18: the
+// moved survived until its agent row was deleted by `removeAgent()`, which was
+// then the only caller of the route delete. That function is gone -- nothing
+// deletes an agent row any more -- so this replace is now the only thing that
+// can retire a stale route at all. Measured 2026-08-18: the
 // daemon republished one `agent-route` per agent on every roster change and
 // every reconnect, 8,532 messages in 5h40m against ~200/day of real mints, and
 // none of them could remove anything.

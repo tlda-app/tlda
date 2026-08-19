@@ -89,12 +89,19 @@ export class LocalAgentLedger {
       this.db.pragma('foreign_keys = ON')
     }
     this.db.exec(`
+      -- Skip, 2026-08-19 05:39 EDT: "never inhabited shells, though. Like,
+      -- release the name means mark dead, dude." / "you kill a never inhabited
+      -- shell. You don't delete it." The name is released because the row is
+      -- dead, not because the row is gone -- so every read here is `dead = 0`
+      -- and the reservation, its recipe and its conversation stay readable.
       CREATE TABLE IF NOT EXISTS local_agents (
         local_agent_id TEXT PRIMARY KEY,
         server_agent_id TEXT UNIQUE,
         friendly_name TEXT,
         created_at TEXT NOT NULL,
-        bound_at TEXT
+        bound_at TEXT,
+        dead INTEGER NOT NULL DEFAULT 0,
+        died_at TEXT
       );
       CREATE TABLE IF NOT EXISTS local_agent_conversations (
         local_agent_id TEXT PRIMARY KEY REFERENCES local_agents(local_agent_id) ON DELETE CASCADE,
@@ -125,9 +132,17 @@ export class LocalAgentLedger {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_local_agents_server_agent_id
         ON local_agents(server_agent_id) WHERE server_agent_id IS NOT NULL;
     `)
+    for (const ddl of [
+      'ALTER TABLE local_agents ADD COLUMN dead INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE local_agents ADD COLUMN died_at TEXT',
+    ]) {
+      try { this.db.exec(ddl) } catch (e) {
+        if (!String(e?.message || '').includes('duplicate column name')) throw e
+      }
+    }
     markLocalRecipeSchemaCurrent(this.db)
-    this._getLocal = this.db.prepare('SELECT * FROM local_agents WHERE local_agent_id = ?')
-    this._getServer = this.db.prepare('SELECT * FROM local_agents WHERE server_agent_id = ?')
+    this._getLocal = this.db.prepare('SELECT * FROM local_agents WHERE local_agent_id = ? AND dead = 0')
+    this._getServer = this.db.prepare('SELECT * FROM local_agents WHERE server_agent_id = ? AND dead = 0')
     this._insertAgent = this.db.prepare(`
       INSERT INTO local_agents (local_agent_id, server_agent_id, friendly_name, created_at, bound_at)
       VALUES (?, ?, ?, ?, ?)
@@ -184,7 +199,7 @@ export class LocalAgentLedger {
     if (!key) return null
     const row = this.db.prepare(`
       SELECT local_agent_id FROM local_agents
-      WHERE friendly_name = ?
+      WHERE friendly_name = ? AND dead = 0
       ORDER BY created_at DESC
       LIMIT 1
     `).get(key)
@@ -194,6 +209,7 @@ export class LocalAgentLedger {
   list() {
     return this.db.prepare(`
       SELECT local_agent_id FROM local_agents
+      WHERE dead = 0
       ORDER BY created_at DESC
     `).all().map(row => this.get(row.local_agent_id))
   }
@@ -301,10 +317,15 @@ export class LocalAgentLedger {
     return this.get(local.localAgentId)
   }
 
-  delete(localAgentId) {
+  // Kill the reservation, do not remove it. Every read is `dead = 0`, so the
+  // name is free and the row is still there -- including its conversation and
+  // process recipe, which are ON DELETE CASCADE children and would have gone
+  // with it.
+  markDead(localAgentId, at = new Date().toISOString()) {
     const local = this.get(localAgentId)
     if (!local) return false
-    return this.db.prepare('DELETE FROM local_agents WHERE local_agent_id = ?').run(local.localAgentId).changes === 1
+    return this.db.prepare('UPDATE local_agents SET dead = 1, died_at = ? WHERE local_agent_id = ? AND dead = 0')
+      .run(at, local.localAgentId).changes === 1
   }
 
   close() {
