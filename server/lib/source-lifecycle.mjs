@@ -218,39 +218,32 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
    * `sha256:` id in the file is the answer until its next accept creates one.
    */
   /**
-   * The stored state decides whether the ref is consulted; the ref then supplies
-   * the revision.
+   * **The ref is the accepted revision; `authority.json` is derived.**
    *
-   * **This and `recordAcceptedAuthority` are a MATCHED PAIR and must not be
-   * mixed.** They are the two halves of one answer to *what happens when the
-   * ref has moved and the JSON write has not landed*:
+   * If a commit is on the ref, the project is at that commit, whatever the JSON
+   * says. Reading the JSON first made a crash between the two decide the
+   * answer: on a bootstrap it read UNINITIALIZED while the ref held a real
+   * commit, so the project looked like it had no history and the next
+   * `bootstrap()` would stack a second unrelated first-revision on top of it.
+   * `bin/a-bootstrap-does-not-repeat-over-real-history-test.mjs` is that.
    *
-   *   this pair          the JSON gates the read, and a failed write on a
-   *                      bootstrap throws so the pusher retries
+   * `acceptSeq` still comes from the JSON, because it is a counter nothing
+   * reads for correctness.
    *
-   *   the other pair     the ref is always believed, and a failed write ROLLS
-   *                      THE REF BACK so the two cannot disagree
+   * `reconciliation-required` is exempt. That is a real state somebody has to
+   * clear, not a stale copy of one, and a ref must not silently clear it.
    *
-   * Both are coherent. Taking one half of each is not, and doing exactly that
-   * during the `main` merge on 2026-08-19 made a crashed bootstrap read as
-   * `current` at a revision nothing had accepted — caught by
-   * `bin/source-lifecycle-authority-test.mjs`.
-   *
-   * **There is a real question still open here and it is not settled by this
-   * merge.** Trusting the ref was written against a failure this version still
-   * has: a bootstrap whose JSON write fails leaves the ref moved and the stored
-   * state uninitialized, so the retry calls `advanceSourceHead(next, null)` on a
-   * ref that now exists and errors rather than recovering. That is recoverable
-   * and loud, where the rollback version recovers silently and correctly — but
-   * the rollback version has its own cost, argued in `recordAcceptedAuthority`.
-   * Routed to the chief rather than decided in a merge commit.
+   * **This only works because `recordAcceptedAuthority` never leaves a ref the
+   * project did not accept** — see the three tests enumerated there. Trusting
+   * the ref and retracting it on a failed BOOTSTRAP record are one design; take
+   * either half alone and one of those three tests goes red.
    */
-
   async function state() {
     const stored = readJson(statePath) || { state: SOURCE_AUTHORITY_UNINITIALIZED, currentRevision: null, acceptSeq: 0 }
-    if (stored.state !== SOURCE_AUTHORITY_CURRENT) return stored
+    if (stored.state === SOURCE_AUTHORITY_RECONCILIATION_REQUIRED) return stored
     const head = await (await sourceGit()).head(project)
-    return head ? { ...stored, currentRevision: head } : stored
+    if (!head) return stored
+    return { ...stored, state: SOURCE_AUTHORITY_CURRENT, currentRevision: head }
   }
 
   // A `version: 1` entry stores base64 in `content` and does not say so, while
@@ -600,21 +593,56 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
    * have — which is the argument for one record rather than a better order
    * between two.
    */
-  function recordAcceptedAuthority(authority, { refIsBelieved }) {
-    // **On a bootstrap the ref is NOT believed**, because `state()` only
-    // consults it once the stored state says `current` — so swallowing the
-    // failure there would report an accept the store then refuses to
-    // acknowledge, which is a worse inconsistency than the one being fixed.
-    // Nothing is current yet, nothing is pinned, and the pusher retrying is
-    // correct. `bin/source-lifecycle-authority-test.mjs` asserts exactly that
-    // and caught this.
-    if (!refIsBelieved) {
-      atomicJson(statePath, authority, fault)
-      return
-    }
+  async function recordAcceptedAuthority(authority, { isBootstrap = false } = {}) {
     try {
       atomicJson(statePath, authority, fault)
+      return
     } catch (error) {
+      // **The ref has already moved, so the two answers below are not a matter
+      // of taste — they are what the project has to protect at this moment, and
+      // it differs between the first accept and every later one.**
+      //
+      // Three tests pin this and no single answer satisfies all three:
+      //
+      //   source-lifecycle-authority          a crashed BOOTSTRAP must not
+      //                                       leave the project reading
+      //                                       `current`
+      //   a-bootstrap-does-not-repeat-over-real-history
+      //                                       a ref holding real history must
+      //                                       never read `uninitialized`, or
+      //                                       the next bootstrap stacks a
+      //                                       second first-revision on top
+      //   an-accept-the-daemon-is-never-told-about
+      //                                       a LATER accept must not be
+      //                                       reported as failed because a
+      //                                       cache write failed -- the full
+      //                                       disk on 2026-08-18 left a project
+      //                                       where every push after it was
+      //                                       stale-base forever
+      //
+      // **They are jointly satisfiable, because a bootstrap and a later accept
+      // are protecting opposite things.**
+      if (isBootstrap) {
+        // **Nothing is behind us, so undoing is free and honest.** There is no
+        // history to lose by retracting, and leaving the ref would let the
+        // project read as accepted at a revision its own record never took.
+        try {
+          await (await sourceGit()).retractHead(project, authority.currentRevision)
+        } catch (rollbackError) {
+          // Swallowed so the ORIGINAL failure is what the caller sees: the
+          // write failing is the fact they act on, and a cleanup error on top
+          // would be read as the whole problem. Logged, because a ref left
+          // ahead of its record is a real thing to go and look at.
+          console.error(`[${project}] the ref could not be retracted after a failed bootstrap record: ${rollbackError.message}`)
+        }
+        throw error
+      }
+      // **There IS history behind us, so the ref is the authority and the
+      // accept stands.** Rolling back here would undo work the project took;
+      // reporting failure would send the pusher back to a revision now behind
+      // the head, which is stale-base with nothing that will ever move it
+      // forward. What is lost is `acceptSeq`, a counter nothing reads for
+      // correctness.
       console.error(
         `[${project}] accepted ${String(authority.currentRevision).slice(0, 12)} but could not record it in authority.json: `
         + `${error.message}. The ref is the authority and the accept stands; acceptSeq may lag.`,
@@ -901,7 +929,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       // it merged with no conflict while carrying the signature of a function
       // this merge deleted. Testing `stored.state` rather than inventing a
       // second signal from `result.previous`: one question, one encoding.
-      recordAcceptedAuthority(authority, { refIsBelieved: stored.state === SOURCE_AUTHORITY_CURRENT })
+      await recordAcceptedAuthority(authority)
       return { ...result, authority, revision: record }
     },
 
@@ -1194,7 +1222,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: next.id, acceptSeq: (before.acceptSeq || 0) + 1 }
       // Bootstrap: the stored state is not yet `current`, so the ref is not
       // consulted and a failure here must fail the push.
-      recordAcceptedAuthority(authority, { refIsBelieved: false })
+      await recordAcceptedAuthority(authority, { isBootstrap: true })
       return { ok: true, status: 'accepted', authority, revision: next }
     },
     async submit({ expectedRevision, files, sourceManifest, dependencyPins = [] }) {
@@ -1222,7 +1250,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
           )
           await advanceSourceHead(rebased.id, before.currentRevision)
           const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: rebased.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-          recordAcceptedAuthority(authority, { refIsBelieved: before.state === SOURCE_AUTHORITY_CURRENT })
+          await recordAcceptedAuthority(authority)
           return { ok: true, status: 'accepted-clean-rebase', authority, revision: rebased, evidence }
         }
         // The refused push is already a commit — `persistSnapshot` ran before
@@ -1236,7 +1264,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null, p
       }
       await advanceSourceHead(incoming.id, before.currentRevision)
       const authority = { state: SOURCE_AUTHORITY_CURRENT, currentRevision: incoming.id, acceptSeq: (before.acceptSeq || 0) + 1 }
-      recordAcceptedAuthority(authority, { refIsBelieved: before.state === SOURCE_AUTHORITY_CURRENT })
+      await recordAcceptedAuthority(authority)
       return { ok: true, status: 'accepted', authority, revision: incoming }
     },
   }
