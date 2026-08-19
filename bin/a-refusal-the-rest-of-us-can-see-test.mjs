@@ -69,7 +69,32 @@ const stuck = sourceSyncLedger(await readProject(project), Date.now())
 assert.equal(stuck.entries.length, 1,
   `THE TRACE: the paper knows somebody is stuck (${JSON.stringify(stuck).slice(0, 300)})`)
 
+// ---------------------------------------------------------------------------
+// **And it clears when the work arrives.**
+//
+// The ledger is keyed by owner, so the write side and the clear side have to
+// agree about what an owner is. They did not: the refusal was recorded from the
+// full identity while the clear was handed a bare `editedBy` STRING —
+// `sourceConflictOwner` reads `.editedBy`/`.machineId` off that string, gets
+// `undefined` for each, and returns `{id: 'unknown'}`. The key matched no row,
+// so the refusal survived forever.
+//
+// A person reported stuck after their work arrived is worse than no trace at
+// all: an alarm that never clears is one nobody reads, and the next real one is
+// invisible inside it.
+const resolved = await acceptSourceSnapshot(project, {
+  expectedRevision: (await readProject(project)).currentRevision ?? second.body.sourceRevision,
+  sourceManifest: ['main.tex'],
+  files: [{ path: 'main.tex', content: 'the stuck author, rebased and landed\n' }],
+  editedBy: 'the stuck author',
+})
+assert.equal(resolved.status, 200, `the retry lands (${JSON.stringify(resolved.body).slice(0, 200)})`)
+
+const afterward = sourceSyncLedger(await readProject(project), Date.now())
+assert.equal(afterward.entries.length, 0,
+  `THE ALARM CLEARS: nobody is reported stuck once their work arrived (${JSON.stringify(afterward).slice(0, 300)})`)
+
 await closeProjectStore()
 fs.rmSync(root, { recursive: true, force: true })
-console.log('a refusal the rest of us can see: the trace is written, not only returned')
+console.log('a refusal the rest of us can see: written when it happens, cleared when the work lands')
 process.exit(0)

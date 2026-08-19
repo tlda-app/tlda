@@ -1238,6 +1238,20 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
   // back to the machine it came from. Absent means "tell everyone", which is
   // correct for a carrier that is not a daemon.
   sourceDaemonKey = null,
+  // **The identity, computed ONCE by the caller and passed to both sides.**
+  //
+  // The ledger is keyed by owner, and the write side and the clear side have to
+  // agree about what an owner is. They did not: the refusal was recorded from
+  // the full identity while the clear was handed a bare `editedBy` string --
+  // and `sourceConflictOwner` reads `.editedBy`/`.machineId` OFF that string,
+  // gets `undefined` for every one, and returns `{id: 'unknown'}`. The key was
+  // `unknown`, so it matched no row and the refusal was never cleared: a person
+  // reported stuck after their work arrived, and an alarm that never clears is
+  // one nobody reads.
+  //
+  // Taking it as a value rather than re-deriving it here is what makes the two
+  // sides unable to disagree.
+  owner = null,
 }) {
   if (!sourceRevision) return []
   const ran = []
@@ -1392,8 +1406,9 @@ export async function applyAcceptedSourceEffects(name, lifecycle, {
 
   // Whoever's work reached the paper is no longer stuck, whichever files it was.
   try {
-    await clearSourceSyncConflicts(name, [...changed, ...deleted], editedBy || null)
-    if (editedBy) await clearSourceSyncRefusal(name, editedBy)
+    const clearFor = owner || sourceConflictOwner({ editedBy, sourceDaemonKey, sourceBindingId })
+    await clearSourceSyncConflicts(name, [...changed, ...deleted], clearFor)
+    if (editedBy || sourceDaemonKey) await clearSourceSyncRefusal(name, clearFor)
     ran.push('cleared-conflicts')
   } catch (error) {
     // Derived state. It must not unwind an accept that already happened.
@@ -2526,6 +2541,10 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
   try {
     const project = await readProject(name)
     if (!project) return { status: 404, body: { ok: false, error: 'Project not found' } }
+    // One identity for this accept, used by the refusal record and by the
+    // clear. Two derivations of "who is this" is how a row gets written under
+    // one key and looked up under another.
+    const acceptOwner = sourceConflictOwner(payload)
     // **The carrier normalizes; the caller does not have to.**
     //
     // `canonicalSnapshot` demands a manifest that is already normalized, unique
@@ -2635,7 +2654,7 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
       // participant but no machine says somebody is stuck without saying which
       // machine to go and look at. For anyone working from two machines that is
       // the whole content of the row.
-      const refusalOwner = sourceConflictOwner(payload)
+      const refusalOwner = acceptOwner
       const conflicted = conflictFilesFromLifecycleResult(result)
       try {
         if (conflicted.length > 0) {
@@ -2696,6 +2715,7 @@ export async function acceptSourceSnapshot(name, payload = {}, { crashAt = null 
       editedBy,
       sourceBindingId,
       sourceDaemonKey,
+      owner: acceptOwner,
       requestId: requestId || randomUUID(),
     })
     return {
